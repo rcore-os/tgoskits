@@ -55,7 +55,8 @@
 #                      Makefile builds it (same feature flags) — with loongarch64-linux-musl-gcc.
 #                      Both source inputs are sha256-pinned so a clean checkout reproduces it
 #                      (the small C lib compiles in ~1 min). If the loong musl cross-toolchain is
-#                      genuinely absent it degrades to a DOCUMENTED SKIP (never a silent fallback).
+#                      genuinely absent, prebuild fails hard — run-jweb.sh runs all six carpets
+#                      with no skip path, so a missing JNI is a real failure, never skipped.
 #                      The jetty / netty / r2dbc / war carpets do not use sqlite and run normally.
 #
 # ── ROOTFS SIZE ───────────────────────────────────────────────────────────────────────
@@ -385,7 +386,7 @@ ensure_deps() {
 #   loongarch64: the upstream jar ships NO loongarch64 native at all; the loong JDK17 is
 #     Alpine-musl, so a musl loong JNI is CROSS-COMPILED IN-PREBUILD from xerial/sqlite-jdbc's own
 #     C source (build_loong_sqlite_jni below), reproducibly (sha256-pinned sources). If the loong
-#     musl cross-toolchain is genuinely unavailable it degrades to a documented SKIP.
+#     musl cross-toolchain is genuinely unavailable, prebuild fails hard (no skip path).
 #
 # build_loong_sqlite_jni <dest.so> — cross-compile the musl loongarch64 sqlite-jdbc JNI exactly
 # as xerial's own Makefile does, then install it at <dest.so>. Steps (all from official source):
@@ -397,8 +398,8 @@ ensure_deps() {
 #       JDBC_EXTENSIONS compile-option) and append src/main/ext/*.c;
 #   (4) compile sqlite3.o + NativeDB.o with loongarch64-linux-musl-gcc using xerial's exact
 #       CCFLAGS + SQLITE feature flags, link `-shared -static-libgcc -pthread -lm`, strip.
-# Returns non-zero (never a hard exit) if the cross-toolchain / perl / unzip is unavailable, so
-# the caller can fall back to a documented SKIP. The built .so's own sha256 is NOT pinned (it
+# Returns non-zero if the cross-toolchain / perl / unzip is unavailable; the caller then fails
+# prebuild hard (run-jweb.sh has no skip path). The built .so's own sha256 is NOT pinned (it
 # varies with the cross-gcc version); reproducibility is anchored on the pinned SOURCE inputs.
 SQLITE_JDBC_SRC_URL="${SQLITE_JDBC_SRC_URL:-https://github.com/xerial/sqlite-jdbc/archive/refs/tags/3.46.1.3.tar.gz}"
 SQLITE_JDBC_SRC_SHA="${SQLITE_JDBC_SRC_SHA:-5d662eb23a0db84ef597ef1800811a6dc42727e0d5fc43b752efd3224dc2695c}"
@@ -470,7 +471,7 @@ ensure_sqlite_native() {
             if [[ ! -f "$so" ]]; then
                 extract_jar_entry "$DEP_CACHE/sqlite-jdbc-3.46.1.3.jar" \
                     "org/sqlite/native/Linux/riscv64/libsqlitejdbc.so" "$so" \
-                    || { echo "prebuild: WARNING could not extract the glibc riscv64 sqlite JNI from the jar; mybatis/hibernate carpets will run as a documented SKIP" >&2; return 0; }
+                    || { echo "prebuild: ERROR could not extract the glibc riscv64 sqlite JNI from the pinned jar; MyBatis/Hibernate need it and run-jweb.sh fails (never skipped) without it" >&2; return 1; }
             fi
             echo "prebuild: sqlite-jdbc riscv64 JNI = jar-bundled glibc build (extracted from the pinned jar, staged)" ;;
         loongarch64)
@@ -479,8 +480,8 @@ ensure_sqlite_native() {
             elif build_loong_sqlite_jni "$so"; then
                 echo "prebuild: sqlite-jdbc loongarch64 JNI cross-compiled in-prebuild from official source (musl loong; staged)"
             else
-                echo "prebuild: WARNING could not cross-compile the loongarch64 sqlite JNI (loong musl toolchain / source unavailable);" >&2
-                echo "prebuild:      the mybatis + hibernate carpets will run as a DOCUMENTED SKIP on loongarch64 (partial-arch-deliver; see programs/SOURCES.md)." >&2
+                echo "prebuild: ERROR could not cross-compile the loongarch64 sqlite JNI (needs the loongarch64-linux-musl cross-toolchain); MyBatis/Hibernate need it and run-jweb.sh fails (never skipped) without it" >&2
+                return 1
             fi ;;
     esac
 }
@@ -529,7 +530,8 @@ stage_payload() {
                 install -m0644 "$so" "$jw/native/libsqlitejdbc.so"
                 echo "prebuild: staged sqlite-jdbc JNI for $arch into /root/jweb/native"
             else
-                echo "prebuild: no sqlite-jdbc JNI for $arch — mybatis/hibernate carpets handled as a documented SKIP by run-jweb.sh"
+                echo "prebuild: ERROR sqlite-jdbc JNI for $arch missing at stage time (ensure_sqlite_native should have provisioned or failed); run-jweb.sh has no skip path" >&2
+                exit 6
             fi ;;
     esac
     install -Dm0755 "$PROG/run-jweb.sh" "$overlay_dir/usr/bin/run-jweb.sh"
@@ -541,7 +543,7 @@ main() {
     ensure_host_tools
     ensure_jdk17
     ensure_deps
-    ensure_sqlite_native
+    ensure_sqlite_native || { echo "prebuild: ERROR sqlite-jdbc JNI required for $arch but could not be provisioned; run-jweb.sh runs all six carpets with no skip path, so this is a hard failure" >&2; exit 6; }
     grow_rootfs
     stage_jdk17
     stage_glibc_runtime_rv   # riscv64 only: real Debian glibc closure for the prebuilt glibc JDK17

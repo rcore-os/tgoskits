@@ -81,7 +81,8 @@ MyBatis and Hibernate run over sqlite-jdbc 3.46.1.3:
   in-prebuild from xerial/sqlite-jdbc's official source** (reproducing xerial's own native build:
   `NativeDB.c` + the official SQLite amalgamation, `loongarch64-linux-musl-gcc`). It is
   reproducible (both source inputs are sha256-pinned; the small C lib compiles in ~1 min) and
-  needs the loong musl cross-toolchain; see `programs/SOURCES.md`. **Only** if that toolchain is
-  genuinely unavailable do the **MyBatis and Hibernate carpets degrade to a documented SKIP** on
-  loongarch64 (partial-arch-deliver rule) — printed loudly with their reason and never counted as
-  a pass or a failure. The jetty / netty / r2dbc / war carpets do not use sqlite and run normally.
+  needs the loong musl cross-toolchain; see `programs/SOURCES.md`. The JNI is provisioned on all
+  four arches (x86_64 / aarch64 jar-bundled musl, riscv64 jar-bundled glibc extracted, loongarch64
+  cross-built musl); if it cannot be provisioned the prebuild fails hard. **All six carpets always
+  run and are counted — a missing or unloadable JNI is a real FAIL, never a skip** (`run-jweb.sh`
+  requires `PASS==TOTAL==6`). The jetty / netty / r2dbc / war carpets do not use sqlite.

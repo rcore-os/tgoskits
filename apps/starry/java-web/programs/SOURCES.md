@@ -187,10 +187,10 @@ of the libc it was built against. Every arch is provisioned by a download on a c
   sha256 is **not** pinned (it varies with the cross-gcc version) — reproducibility is anchored on
   the two sha256-pinned source inputs + the fixed recipe. A developer who has already built it can
   seed the cache (`$JAVA_DL_ROOT/sqlitejdbc-native/loongarch64/libsqlitejdbc.so`) to skip the
-  ~1-min compile. **Only** if the loong musl cross-toolchain is genuinely unavailable do the
-  MyBatis + Hibernate carpets degrade to a documented SKIP on loongarch64 (partial-arch-deliver,
-  decided at run time by `run-jweb.sh`) — never a hard exit and never a silent fallback. The jetty
-  / netty / r2dbc / war carpets do not use sqlite and run normally.
+  ~1-min compile. The JNI is provisioned on all four arches; if the loong musl cross-toolchain is
+  genuinely unavailable, `prebuild.sh` **fails hard** (no skip path). `run-jweb.sh` always runs and
+  counts all six carpets — a missing or unloadable JNI is a real FAIL, never a documented skip. The
+  jetty / netty / r2dbc / war carpets do not use sqlite.
 
 ## Version-pinning notes (pom-less shaded deps)
 
