@@ -132,6 +132,11 @@ fn run_server(bind: &str, lossy: u32) -> std::io::Result<()> {
                 if unique > 0 && last.elapsed() > Duration::from_secs(3) {
                     break;
                 }
+                // never saw any traffic for a long time (peer never booted): give up
+                // so a single-boot run wraps up instead of hanging to the harness timeout.
+                if unique == 0 && last.elapsed() > Duration::from_secs(300) {
+                    break;
+                }
                 continue;
             }
         };
@@ -190,7 +195,7 @@ fn run_client(peer: &str, count: u32) -> std::io::Result<()> {
     // Be very patient: under the cooperative scheduler the peer guest's boot can
     // be heavily contended and take a long time to reach "listening".
     let mut ready = false;
-    for _ in 0..900 {
+    for _ in 0..700 {
         let _ = sock.send(&encode(T_CONTROL, 0, b"hello"));
         let mut b = [0u8; 2048];
         if let Ok(n) = sock.recv(&mut b) {
