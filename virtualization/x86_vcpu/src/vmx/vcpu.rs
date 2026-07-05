@@ -112,6 +112,8 @@ pub struct VmxVcpu {
     entry: Option<GuestPhysAddr>,
     /// The EPT root address.
     ept_root: Option<HostPhysAddr>,
+    /// Whether this vCPU exposes KVM-compatible hypervisor CPUID leaves.
+    expose_kvm_hypervisor: bool,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 
@@ -150,6 +152,7 @@ impl VmxVcpu {
             launched: false,
             entry: None,
             ept_root: None,
+            expose_kvm_hypervisor: false,
             // is_host: false,
             vmcs: VmxRegion::new(vmcs_revision_id, false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
@@ -513,6 +516,7 @@ impl VmxVcpu {
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
         }
+        self.expose_kvm_hypervisor = config.expose_kvm_hypervisor;
         self.bind_to_current_processor()?;
         self.setup_msr_bitmap()?;
         self.setup_vmcs_guest(entry)?;
@@ -1471,7 +1475,12 @@ impl VmxVcpu {
                 res
             }
             crate::kvm::KVM_HYPERVISOR_INFO_LEAF | crate::kvm::KVM_HYPERVISOR_FEATURE_LEAF => {
-                crate::kvm::kvm_hypervisor_cpuid(function).expect("known KVM CPUID leaf")
+                if self.expose_kvm_hypervisor {
+                    crate::kvm::kvm_hypervisor_cpuid(function).expect("known KVM CPUID leaf")
+                } else {
+                    crate::kvm::rustvisor_hypervisor_cpuid(function)
+                        .expect("known hypervisor CPUID leaf")
+                }
             }
             LEAF_FREQUENCY_INFO => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);

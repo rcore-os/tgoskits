@@ -417,6 +417,8 @@ impl AxVM {
                     .emu_devices()
                     .iter()
                     .any(|dev| dev.emu_type == axvmconfig::EmulatedDeviceType::Console),
+                expose_kvm_hypervisor: inner_mut.config.interrupt_mode()
+                    == axvmconfig::VMInterruptMode::NoIrq,
             };
 
             let entry = if vcpu.id() == 0 {

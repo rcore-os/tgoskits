@@ -43,6 +43,30 @@ pub(crate) fn kvm_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
     }
 }
 
+const RUSTVISOR_VENDOR_REGS: [u32; 3] = [
+    u32::from_le_bytes(*b"RVMR"),
+    u32::from_le_bytes(*b"VMRV"),
+    u32::from_le_bytes(*b"MRVM"),
+];
+
+pub(crate) fn rustvisor_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
+    match function {
+        KVM_HYPERVISOR_INFO_LEAF => Some(CpuIdResult {
+            eax: KVM_HYPERVISOR_FEATURE_LEAF,
+            ebx: RUSTVISOR_VENDOR_REGS[0],
+            ecx: RUSTVISOR_VENDOR_REGS[1],
+            edx: RUSTVISOR_VENDOR_REGS[2],
+        }),
+        KVM_HYPERVISOR_FEATURE_LEAF => Some(CpuIdResult {
+            eax: 0,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) const KVM_REGS_SIZE: usize = 18 * 8;
 pub(crate) const KVM_SREGS_SIZE: usize = 312;
 

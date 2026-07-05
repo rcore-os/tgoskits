@@ -34,6 +34,8 @@ mod test_utils;
 pub struct X86VCpuSetupConfig {
     /// Intercept COM1 PIO ports so the VMM path can emulate or forward them.
     pub intercept_com1: bool,
+    /// Expose KVM-compatible hypervisor CPUID leaves to the guest.
+    pub expose_kvm_hypervisor: bool,
 }
 
 #[cfg(any(feature = "vmx", feature = "svm"))]

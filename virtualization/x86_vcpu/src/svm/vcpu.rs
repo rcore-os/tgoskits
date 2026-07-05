@@ -195,6 +195,8 @@ pub struct SvmVcpu {
     entry: Option<GuestPhysAddr>,
     /// The nested page table root address.
     npt_root: Option<HostPhysAddr>,
+    /// Whether this vCPU exposes KVM-compatible hypervisor CPUID leaves.
+    expose_kvm_hypervisor: bool,
     /// The guest VMCB.
     vmcb: VmcbFrame,
     /// Host state saved with VMSAVE and restored with VMLOAD.
@@ -222,6 +224,7 @@ impl SvmVcpu {
             launched: false,
             entry: None,
             npt_root: None,
+            expose_kvm_hypervisor: false,
             vmcb: VmcbFrame::new()?,
             load_save_states: VmLoadSaveStates::new()?,
             iopm: IOPm::passthrough_all()?,
@@ -241,6 +244,7 @@ impl SvmVcpu {
         npt_root: HostPhysAddr,
         config: X86VCpuSetupConfig,
     ) -> AxResult {
+        self.expose_kvm_hypervisor = config.expose_kvm_hypervisor;
         self.setup_io_bitmap(config)?;
         self.setup_msr_bitmap()?;
         self.setup_vmcb_guest(entry)?;
@@ -801,7 +805,12 @@ impl SvmVcpu {
                 edx: 0,
             },
             crate::kvm::KVM_HYPERVISOR_INFO_LEAF | crate::kvm::KVM_HYPERVISOR_FEATURE_LEAF => {
-                crate::kvm::kvm_hypervisor_cpuid(function).expect("known KVM CPUID leaf")
+                if self.expose_kvm_hypervisor {
+                    crate::kvm::kvm_hypervisor_cpuid(function).expect("known KVM CPUID leaf")
+                } else {
+                    crate::kvm::rustvisor_hypervisor_cpuid(function)
+                        .expect("known hypervisor CPUID leaf")
+                }
             }
             LEAF_FREQUENCY_INFO => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
