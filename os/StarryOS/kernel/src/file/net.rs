@@ -45,6 +45,8 @@ const IFF_MULTICAST: i16 = 0x1000;
 const IFREQ_NAME_LEN: usize = 16;
 const IFREQ_DATA_OFFSET: usize = 16;
 const IFREQ_COMPAT_LEN: usize = 40;
+// ethtool ioctl; not exported by linux-raw-sys. The value is arch-independent.
+const SIOCETHTOOL: u32 = 0x8946;
 const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
 
@@ -344,6 +346,20 @@ impl FileLike for Socket {
             SIOCGIFINDEX => {
                 let idx = read_ifreq_interface(arg)?.id.get() as i32;
                 write_ifreq_data(arg, &idx.to_ne_bytes())?;
+            }
+            // Link speed/duplex query. No PHY is emulated, so report "not supported" the way a
+            // virtual NIC (loopback, tun/tap) does. Tools like psutil's net_if_stats() treat
+            // EOPNOTSUPP as "no ethtool" and degrade gracefully; any other errno makes them abort
+            // the whole interface-status probe. Resolve the interface first so an unknown name
+            // yields ENODEV, then fault on a bad ifr_data pointer, keeping Linux's error priority
+            // (ENODEV, then EFAULT, then EOPNOTSUPP) and parity with the sibling SIOC*IF* arms.
+            SIOCETHTOOL => {
+                read_ifreq_interface(arg)?;
+                let data_ptr = usize::from_ne_bytes(read_user_bytes::<8>(
+                    (arg + IFREQ_DATA_OFFSET) as *const u8,
+                )?);
+                read_user_bytes::<4>(data_ptr as *const u8)?;
+                return Err(AxError::OperationNotSupported);
             }
             _ => {
                 if super::wext::is_wext_ioctl(cmd) {

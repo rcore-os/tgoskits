@@ -408,6 +408,29 @@ fn render_mounts() -> String {
     buf
 }
 
+fn render_mountinfo() -> String {
+    // /proc/<pid>/mountinfo (Linux fs/proc_namespace.c show_mountinfo layout):
+    //   id parent major:minor root mount_point options [optional-fields] - fstype source super_opts
+    // Same mount set as render_mounts(): the root fs type is read live; the pseudo mounts are the
+    // fixed boot set. No optional propagation fields are emitted, so the "-" separator immediately
+    // precedes the fs type. Tools such as node_exporter's filesystem collector and findmnt read
+    // this file (in preference to /proc/mounts) to discover mount points before statfs().
+    let root_fstype = {
+        let ctx = FS_CONTEXT.lock();
+        ctx.root_dir().filesystem().name().to_string()
+    };
+    let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");
+    buf.push_str("22 21 0:5 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw\n");
+    buf.push_str("23 22 0:16 / /dev/shm rw,nosuid,nodev - tmpfs tmpfs rw\n");
+    buf.push_str("24 21 0:17 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw\n");
+    buf.push_str("25 21 0:18 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n");
+    buf.push_str("26 21 0:19 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw\n");
+    buf.push_str(
+        "27 26 0:20 / /sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw\n",
+    );
+    buf
+}
+
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -1009,6 +1032,7 @@ impl SimpleDirOps for ThreadDir {
                 "mem",
                 "auxv",
                 "mounts",
+                "mountinfo",
                 "cmdline",
                 "comm",
                 "exe",
@@ -1104,6 +1128,7 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
             "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
+            "mountinfo" => SimpleFile::new_regular(fs, move || Ok(render_mountinfo())).into(),
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
