@@ -31,6 +31,9 @@ use crate::kvm::{
     util::{access_width_bytes, access_width_mask, checked_add, read_u32_user},
 };
 
+// KVM IRQFD/IOEVENTFD payloads are plain UAPI data. The registered listeners and
+// host file references are runtime state and are kept in axvisor_core::kvm.
+
 pub(in crate::kvm) fn set_gsi_routing(
     control_file: api_control::ControlFileId,
     arg: usize,

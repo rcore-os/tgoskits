@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compatibility re-exports for axvisor_core's KVM control endpoint.
+//! x86_vcpu's thin facade over host-neutral KVM UAPI helpers.
 //!
-//! The actual KVM UAPI definitions live in `kvm-uapi`. This module keeps the
-//! existing local `abi` namespace so the control implementation can stay focused
-//! on host interactions instead of import churn.
+//! vCPU code imports from this module to keep KVM wire-format details separate
+//! from VMX/SVM state access.
 
-pub(super) use raw::*;
+pub(crate) use kvm_uapi::x86::{
+    KVM_HYPERVISOR_FEATURE_LEAF, KVM_HYPERVISOR_INFO_LEAF, KVM_REGS_SIZE, KVM_SREGS_SIZE,
+    KvmDtable, KvmRegs, KvmSegment, KvmSregs, kvm_hypervisor_cpuid, rustvisor_hypervisor_cpuid,
+};
 
-pub mod public {
-    pub use kvm_uapi::ioctl::public::*;
-}
-
-pub(in crate::kvm) mod raw {
-    pub(in crate::kvm) use kvm_uapi::ioctl::*;
+pub(crate) fn map_kvm_uapi_error(_err: kvm_uapi::KvmUapiError) -> ax_errno::AxError {
+    ax_errno::AxError::InvalidInput
 }

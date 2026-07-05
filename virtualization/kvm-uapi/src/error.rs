@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compatibility re-exports for axvisor_core's KVM control endpoint.
+//! Errors returned by pure KVM UAPI helpers.
 //!
-//! The actual KVM UAPI definitions live in `kvm-uapi`. This module keeps the
-//! existing local `abi` namespace so the control implementation can stay focused
-//! on host interactions instead of import churn.
+//! Runtime crates map these errors into their own host-specific error type.
 
-pub(super) use raw::*;
-
-pub mod public {
-    pub use kvm_uapi::ioctl::public::*;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvmUapiError {
+    /// The supplied byte buffer does not match the KVM wire-format size.
+    InvalidSize,
+    /// The supplied KVM register or operation is not part of the supported ABI.
+    Unsupported,
 }
 
-pub(in crate::kvm) mod raw {
-    pub(in crate::kvm) use kvm_uapi::ioctl::*;
-}
+pub type Result<T = ()> = core::result::Result<T, KvmUapiError>;

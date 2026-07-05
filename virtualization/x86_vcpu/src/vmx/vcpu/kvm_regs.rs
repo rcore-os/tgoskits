@@ -16,7 +16,9 @@ use ax_errno::AxResult;
 
 use super::VmxVcpu;
 use crate::{
-    kvm::{KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs},
+    kvm::{
+        KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs, map_kvm_uapi_error,
+    },
     vmx::{
         vmcs,
         vmcs::{VmcsGuest16, VmcsGuest32, VmcsGuest64, VmcsGuestNW},
@@ -56,6 +58,7 @@ impl VmxVcpu {
             rflags: VmcsGuestNW::RFLAGS.read()? as u64,
         }
         .encode(buf)
+        .map_err(map_kvm_uapi_error)
     }
 
     pub(super) fn decode_kvm_regs(&mut self, buf: &[u8]) -> AxResult {
@@ -65,7 +68,7 @@ impl VmxVcpu {
     }
 
     fn decode_kvm_regs_loaded(&mut self, buf: &[u8]) -> AxResult {
-        let kvm_regs = KvmRegs::decode(buf)?;
+        let kvm_regs = KvmRegs::decode(buf).map_err(map_kvm_uapi_error)?;
         let regs = self.regs_mut();
         regs.rax = kvm_regs.rax;
         regs.rbx = kvm_regs.rbx;
@@ -165,6 +168,7 @@ impl VmxVcpu {
             interrupt_bitmap: [0; 4],
         }
         .encode(buf)
+        .map_err(map_kvm_uapi_error)
     }
 
     pub(super) fn decode_kvm_sregs(&mut self, buf: &[u8]) -> AxResult {
@@ -174,7 +178,7 @@ impl VmxVcpu {
     }
 
     fn decode_kvm_sregs_loaded(&mut self, buf: &[u8]) -> AxResult {
-        let sregs = KvmSregs::decode(buf)?;
+        let sregs = KvmSregs::decode(buf).map_err(map_kvm_uapi_error)?;
         write_segment(
             VmcsGuest16::CS_SELECTOR,
             VmcsGuestNW::CS_BASE,

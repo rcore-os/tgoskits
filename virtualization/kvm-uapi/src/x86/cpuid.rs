@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Synthetic CPUID leaves exposed by KVM-compatible x86 guests.
+
 use raw_cpuid::CpuIdResult;
 
-pub(crate) const KVM_HYPERVISOR_INFO_LEAF: u32 = 0x4000_0000;
-pub(crate) const KVM_HYPERVISOR_FEATURE_LEAF: u32 = 0x4000_0001;
+pub const KVM_HYPERVISOR_INFO_LEAF: u32 = 0x4000_0000;
+pub const KVM_HYPERVISOR_FEATURE_LEAF: u32 = 0x4000_0001;
 
 const KVM_CLOCKSOURCE2_FEATURE: u32 = 1 << 3;
 const KVM_VENDOR_REGS: [u32; 3] = [
@@ -24,7 +26,8 @@ const KVM_VENDOR_REGS: [u32; 3] = [
     u32::from_le_bytes(*b"M\0\0\0"),
 ];
 
-pub(crate) fn kvm_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
+/// Returns the CPUID leaf values used by Linux KVM's paravirtual interface.
+pub fn kvm_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
     match function {
         KVM_HYPERVISOR_INFO_LEAF => Some(CpuIdResult {
             eax: KVM_HYPERVISOR_FEATURE_LEAF,
@@ -48,7 +51,8 @@ const RUSTVISOR_VENDOR_REGS: [u32; 3] = [
     u32::from_le_bytes(*b"MRVM"),
 ];
 
-pub(crate) fn rustvisor_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
+/// Returns the Rustvisor vendor leaves used by existing x86_vcpu guests.
+pub fn rustvisor_hypervisor_cpuid(function: u32) -> Option<CpuIdResult> {
     match function {
         KVM_HYPERVISOR_INFO_LEAF => Some(CpuIdResult {
             eax: KVM_HYPERVISOR_FEATURE_LEAF,

@@ -12,18 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compatibility re-exports for axvisor_core's KVM control endpoint.
+//! x86-specific KVM ABI helpers.
 //!
-//! The actual KVM UAPI definitions live in `kvm-uapi`. This module keeps the
-//! existing local `abi` namespace so the control implementation can stay focused
-//! on host interactions instead of import churn.
+//! The register structs live here because their layout is architecture-specific,
+//! even though axvisor_core transports them as opaque bytes.
 
-pub(super) use raw::*;
+#[cfg(target_arch = "x86_64")]
+mod cpuid;
+mod pvclock;
+mod regs;
 
-pub mod public {
-    pub use kvm_uapi::ioctl::public::*;
-}
-
-pub(in crate::kvm) mod raw {
-    pub(in crate::kvm) use kvm_uapi::ioctl::*;
-}
+#[cfg(target_arch = "x86_64")]
+pub use cpuid::{
+    KVM_HYPERVISOR_FEATURE_LEAF, KVM_HYPERVISOR_INFO_LEAF, kvm_hypervisor_cpuid,
+    rustvisor_hypervisor_cpuid,
+};
+pub use pvclock::{PvClockVcpuTimeInfo, PvClockWallClock};
+pub use regs::{KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs};

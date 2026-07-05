@@ -43,3 +43,4 @@ ax-memory-addr = { workspace = true }
 axaddrspace = { workspace = true }
 axvcpu = { workspace = true }
 axvisor_api = { workspace = true }
+kvm-uapi = { workspace = true }

@@ -1989,6 +1989,7 @@ dependencies = [
  "byte-unit",
  "fdt-parser",
  "hashbrown 0.14.5",
+ "kvm-uapi",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -5090,6 +5091,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvm-uapi"
+version = "0.1.0"
+dependencies = [
+ "raw-cpuid 11.6.0",
+]
+
+[[package]]
 name = "lab"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7012,6 +7020,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.11.1",
  "cfg-if",
+ "kvm-uapi",
  "log",
  "memoffset",
  "riscv",
@@ -10186,6 +10195,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.11.1",
  "cfg-if",
+ "kvm-uapi",
  "log",
  "memoffset",
  "numeric-enum-macro",

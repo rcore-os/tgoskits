@@ -191,6 +191,7 @@ ax-fs-vfs = { version = "0.3.11", path = "components/axfs_crates/axfs_vfs" }
 ax-hal = { version = "0.5.15", path = "os/arceos/modules/axhal" }
 ax-handler-table = { version = "0.3.7", path = "components/handler_table" }
 irq-framework = { version = "0.1.0", path = "components/irq-framework" }
+kvm-uapi = { version = "0.1.0", path = "virtualization/kvm-uapi" }
 ax-helloworld = { version = "0.3.1", path = "os/arceos/examples/helloworld" }
 ax-helloworld-myplat = { version = "0.3.1", path = "os/arceos/examples/helloworld-myplat" }
 ax-httpclient = { version = "0.3.1", path = "os/arceos/examples/httpclient" }

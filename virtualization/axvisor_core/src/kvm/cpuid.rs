@@ -24,6 +24,9 @@ use crate::kvm::{
     util::{checked_add, read_u32_user, write_u32_user},
 };
 
+// This module owns host probing and userspace copy logic. The CPUID entry shape
+// itself lives in kvm-uapi so other KVM-compatible frontends can reuse it.
+
 pub(in crate::kvm) fn get_supported_cpuid(arg: usize) -> AxResult<isize> {
     let entries = supported_cpuid_entries();
     write_cpuid_entries(arg, &entries)
@@ -83,7 +86,7 @@ fn write_cpuid_entries(arg: usize, entries: &[KvmCpuidEntry2]) -> AxResult<isize
 
     let mut offset = checked_add(arg, abi::KVM_CPUID2_SIZE as usize)?;
     for entry in entries {
-        api_control::copy_to_user(offset, &entry.to_bytes())?;
+        api_control::copy_to_user(offset, &cpuid_entry_to_bytes(*entry))?;
         offset = checked_add(offset, abi::KVM_CPUID_ENTRY2_SIZE)?;
     }
     Ok(0)
@@ -104,18 +107,16 @@ fn read_cpuid_entry(arg: usize) -> AxResult<KvmCpuidEntry2> {
     })
 }
 
-impl KvmCpuidEntry2 {
-    fn to_bytes(self) -> [u8; abi::KVM_CPUID_ENTRY2_SIZE] {
-        let mut bytes = [0u8; abi::KVM_CPUID_ENTRY2_SIZE];
-        bytes[0..4].copy_from_slice(&self.function.to_ne_bytes());
-        bytes[4..8].copy_from_slice(&self.index.to_ne_bytes());
-        bytes[8..12].copy_from_slice(&self.flags.to_ne_bytes());
-        bytes[12..16].copy_from_slice(&self.eax.to_ne_bytes());
-        bytes[16..20].copy_from_slice(&self.ebx.to_ne_bytes());
-        bytes[20..24].copy_from_slice(&self.ecx.to_ne_bytes());
-        bytes[24..28].copy_from_slice(&self.edx.to_ne_bytes());
-        bytes
-    }
+fn cpuid_entry_to_bytes(entry: KvmCpuidEntry2) -> [u8; abi::KVM_CPUID_ENTRY2_SIZE] {
+    let mut bytes = [0u8; abi::KVM_CPUID_ENTRY2_SIZE];
+    bytes[0..4].copy_from_slice(&entry.function.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&entry.index.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&entry.flags.to_ne_bytes());
+    bytes[12..16].copy_from_slice(&entry.eax.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&entry.ebx.to_ne_bytes());
+    bytes[20..24].copy_from_slice(&entry.ecx.to_ne_bytes());
+    bytes[24..28].copy_from_slice(&entry.edx.to_ne_bytes());
+    bytes
 }
 
 fn supported_cpuid_entries() -> Vec<KvmCpuidEntry2> {

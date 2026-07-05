@@ -12,12 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Runtime state for the KVM-compatible control endpoint.
+//!
+//! Pure ioctl payloads are imported from `kvm-uapi`. The types defined here own
+//! AxVisor and host-control resources, so they intentionally remain in
+//! axvisor_core.
+
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::AtomicBool;
 
 use axaddrspace::device::AccessWidth;
 use axvisor_api::{control as api_control, task::TaskHandle};
 use axvm::AxVMRef;
+#[cfg(target_arch = "x86_64")]
+pub(in crate::kvm) use kvm_uapi::x86::{PvClockVcpuTimeInfo, PvClockWallClock};
+pub(in crate::kvm) use kvm_uapi::{
+    KvmCpuidEntry2, KvmEnableCap, KvmIoEventFd, KvmIrqFd, OneReg, UserspaceMemoryRegion,
+};
 
 #[derive(Clone)]
 pub(in crate::kvm) enum ControlFileState {
@@ -43,6 +54,10 @@ pub(in crate::kvm) struct VmFileState {
     pub(in crate::kvm) gsi_routing_count: u32,
 }
 
+/// Host-side state associated with one KVM vCPU fd.
+///
+/// Some fields, such as FPU/LAPIC/XSAVE blobs, are stored as opaque bytes
+/// because the current control endpoint only needs to preserve KVM ABI payloads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::kvm) struct VcpuFileState {
     pub(in crate::kvm) vm_file: api_control::ControlFileId,
@@ -73,29 +88,6 @@ pub(in crate::kvm) struct PendingMmioRead {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::kvm) struct PendingIoRead {
     pub(in crate::kvm) width: AccessWidth,
-}
-
-#[cfg(target_arch = "x86_64")]
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(in crate::kvm) struct PvClockWallClock {
-    pub(in crate::kvm) version: u32,
-    pub(in crate::kvm) sec: u32,
-    pub(in crate::kvm) nsec: u32,
-}
-
-#[cfg(target_arch = "x86_64")]
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(in crate::kvm) struct PvClockVcpuTimeInfo {
-    pub(in crate::kvm) version: u32,
-    pub(in crate::kvm) pad0: u32,
-    pub(in crate::kvm) tsc_timestamp: u64,
-    pub(in crate::kvm) system_time: u64,
-    pub(in crate::kvm) tsc_to_system_mul: u32,
-    pub(in crate::kvm) tsc_shift: i8,
-    pub(in crate::kvm) flags: u8,
-    pub(in crate::kvm) pad: [u8; 2],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,54 +132,4 @@ pub(in crate::kvm) struct IrqFd {
 pub(in crate::kvm) enum GsiRoute {
     IrqChip { pin: u32 },
     Msi { vector: u8 },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::kvm) struct UserspaceMemoryRegion {
-    pub(in crate::kvm) slot: u32,
-    pub(in crate::kvm) flags: u32,
-    pub(in crate::kvm) guest_phys_addr: u64,
-    pub(in crate::kvm) memory_size: u64,
-    pub(in crate::kvm) userspace_addr: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::kvm) struct OneReg {
-    pub(in crate::kvm) id: u64,
-    pub(in crate::kvm) addr: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::kvm) struct KvmIoEventFd {
-    pub(in crate::kvm) datamatch: u64,
-    pub(in crate::kvm) addr: u64,
-    pub(in crate::kvm) len: u32,
-    pub(in crate::kvm) fd: i32,
-    pub(in crate::kvm) flags: u32,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(in crate::kvm) struct KvmCpuidEntry2 {
-    pub(in crate::kvm) function: u32,
-    pub(in crate::kvm) index: u32,
-    pub(in crate::kvm) flags: u32,
-    pub(in crate::kvm) eax: u32,
-    pub(in crate::kvm) ebx: u32,
-    pub(in crate::kvm) ecx: u32,
-    pub(in crate::kvm) edx: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::kvm) struct KvmIrqFd {
-    pub(in crate::kvm) fd: u32,
-    pub(in crate::kvm) gsi: u32,
-    pub(in crate::kvm) flags: u32,
-    pub(in crate::kvm) resamplefd: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::kvm) struct KvmEnableCap {
-    pub(in crate::kvm) cap: u32,
-    pub(in crate::kvm) flags: u32,
-    pub(in crate::kvm) args: [u64; 4],
 }

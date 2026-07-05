@@ -17,7 +17,9 @@ use tock_registers::interfaces::{Readable, Writeable};
 
 use super::SvmVcpu;
 use crate::{
-    kvm::{KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs},
+    kvm::{
+        KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs, map_kvm_uapi_error,
+    },
     svm::vmcb::VmcbSegment,
 };
 
@@ -49,10 +51,11 @@ impl SvmVcpu {
             rflags: state.rflags.get(),
         }
         .encode(buf)
+        .map_err(map_kvm_uapi_error)
     }
 
     pub(super) fn decode_kvm_regs(&mut self, buf: &[u8]) -> AxResult {
-        let kvm_regs = KvmRegs::decode(buf)?;
+        let kvm_regs = KvmRegs::decode(buf).map_err(map_kvm_uapi_error)?;
         let regs = self.regs_mut();
         regs.rax = kvm_regs.rax;
         regs.rbx = kvm_regs.rbx;
@@ -108,10 +111,11 @@ impl SvmVcpu {
             interrupt_bitmap: [0; 4],
         }
         .encode(buf)
+        .map_err(map_kvm_uapi_error)
     }
 
     pub(super) fn decode_kvm_sregs(&mut self, buf: &[u8]) -> AxResult {
-        let sregs = KvmSregs::decode(buf)?;
+        let sregs = KvmSregs::decode(buf).map_err(map_kvm_uapi_error)?;
         {
             let state = unsafe { &mut self.vmcb.as_vmcb().state };
             write_segment(&mut state.cs, sregs.cs);

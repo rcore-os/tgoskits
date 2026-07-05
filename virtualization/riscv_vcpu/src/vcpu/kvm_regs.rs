@@ -13,126 +13,18 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxResult};
+use kvm_uapi::riscv::*;
 use riscv::register::time;
 
 use super::RISCVVCpu;
 use crate::regs::GprIndex;
 
-const KVM_REG_RISCV: u64 = 0x8000_0000_0000_0000;
-const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
-const KVM_REG_RISCV_TYPE_MASK: u64 = 0x0000_0000_ff00_0000;
-const KVM_REG_RISCV_SUBTYPE_MASK: u64 = 0x0000_0000_00ff_0000;
-const KVM_REG_RISCV_CONFIG: u64 = 0x01 << 24;
-const KVM_REG_RISCV_CORE: u64 = 0x02 << 24;
-const KVM_REG_RISCV_CSR: u64 = 0x03 << 24;
-const KVM_REG_RISCV_CSR_GENERAL: u64 = 0x00 << 16;
-const KVM_REG_RISCV_TIMER: u64 = 0x04 << 24;
-const KVM_REG_RISCV_ISA_EXT: u64 = 0x07 << 24;
-const KVM_RISCV_BASE_ISA: u64 = (1 << 0) | (1 << 2) | (1 << 8) | (1 << 12);
-const KVM_REG_RISCV_MODE_S: u64 = 1;
-const KVM_RISCV_TIMER_STATE_OFF: u64 = 0;
-const KVM_RISCV_TIMER_STATE_ON: u64 = 1;
-const KVM_RISCV_TIMER_FREQUENCY: u64 = 10_000_000;
-const KVM_RISCV_SATP_MODE_SV48: u64 = 9;
-const KVM_REG_RISCV_CONFIG_ISA: u64 = 0;
-const KVM_REG_RISCV_CONFIG_MVENDORID: u64 = 2;
-const KVM_REG_RISCV_CONFIG_MARCHID: u64 = 3;
-const KVM_REG_RISCV_CONFIG_MIMPID: u64 = 4;
-const KVM_REG_RISCV_CONFIG_SATP_MODE: u64 = 6;
-const KVM_REG_RISCV_CORE_PC: u64 = 0;
-const KVM_REG_RISCV_CORE_MODE: u64 = 32;
-const KVM_REG_RISCV_CSR_SSTATUS: u64 = 0;
-const KVM_REG_RISCV_CSR_SIE: u64 = 1;
-const KVM_REG_RISCV_CSR_STVEC: u64 = 2;
-const KVM_REG_RISCV_CSR_SSCRATCH: u64 = 3;
-const KVM_REG_RISCV_CSR_SEPC: u64 = 4;
-const KVM_REG_RISCV_CSR_SCAUSE: u64 = 5;
-const KVM_REG_RISCV_CSR_STVAL: u64 = 6;
-const KVM_REG_RISCV_CSR_SIP: u64 = 7;
-const KVM_REG_RISCV_CSR_SATP: u64 = 8;
-const KVM_REG_RISCV_CSR_SCOUNTEREN: u64 = 9;
-const KVM_REG_RISCV_CSR_SENVCFG: u64 = 10;
-const KVM_REG_RISCV_TIMER_FREQUENCY_INDEX: u64 = 0;
-const KVM_REG_RISCV_TIMER_TIME: u64 = 1;
-const KVM_REG_RISCV_TIMER_COMPARE: u64 = 2;
-const KVM_REG_RISCV_TIMER_STATE: u64 = 3;
-const KVM_RISCV_ISA_EXT_A: u64 = 0;
-const KVM_RISCV_ISA_EXT_C: u64 = 1;
-const KVM_RISCV_ISA_EXT_D: u64 = 2;
-const KVM_RISCV_ISA_EXT_F: u64 = 3;
-const KVM_RISCV_ISA_EXT_I: u64 = 5;
-const KVM_RISCV_ISA_EXT_M: u64 = 6;
-const KVM_RISCV_ISA_EXT_ZICSR: u64 = 20;
-const KVM_RISCV_ISA_EXT_ZIFENCEI: u64 = 21;
-
-const RISCV_REG_IDS: [u64; 53] = [
-    riscv_config_reg_id(KVM_REG_RISCV_CONFIG_ISA),
-    riscv_config_reg_id(KVM_REG_RISCV_CONFIG_MVENDORID),
-    riscv_config_reg_id(KVM_REG_RISCV_CONFIG_MARCHID),
-    riscv_config_reg_id(KVM_REG_RISCV_CONFIG_MIMPID),
-    riscv_config_reg_id(KVM_REG_RISCV_CONFIG_SATP_MODE),
-    riscv_core_reg_id(0),
-    riscv_core_reg_id(1),
-    riscv_core_reg_id(2),
-    riscv_core_reg_id(3),
-    riscv_core_reg_id(4),
-    riscv_core_reg_id(5),
-    riscv_core_reg_id(6),
-    riscv_core_reg_id(7),
-    riscv_core_reg_id(8),
-    riscv_core_reg_id(9),
-    riscv_core_reg_id(10),
-    riscv_core_reg_id(11),
-    riscv_core_reg_id(12),
-    riscv_core_reg_id(13),
-    riscv_core_reg_id(14),
-    riscv_core_reg_id(15),
-    riscv_core_reg_id(16),
-    riscv_core_reg_id(17),
-    riscv_core_reg_id(18),
-    riscv_core_reg_id(19),
-    riscv_core_reg_id(20),
-    riscv_core_reg_id(21),
-    riscv_core_reg_id(22),
-    riscv_core_reg_id(23),
-    riscv_core_reg_id(24),
-    riscv_core_reg_id(25),
-    riscv_core_reg_id(26),
-    riscv_core_reg_id(27),
-    riscv_core_reg_id(28),
-    riscv_core_reg_id(29),
-    riscv_core_reg_id(30),
-    riscv_core_reg_id(31),
-    riscv_core_reg_id(32),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SSTATUS),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SIE),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_STVEC),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SSCRATCH),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SEPC),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SCAUSE),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_STVAL),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SIP),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SATP),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SCOUNTEREN),
-    riscv_csr_general_reg_id(KVM_REG_RISCV_CSR_SENVCFG),
-    riscv_timer_reg_id(KVM_REG_RISCV_TIMER_FREQUENCY_INDEX),
-    riscv_timer_reg_id(KVM_REG_RISCV_TIMER_TIME),
-    riscv_timer_reg_id(KVM_REG_RISCV_TIMER_COMPARE),
-    riscv_timer_reg_id(KVM_REG_RISCV_TIMER_STATE),
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum KvmRiscvRegKind {
-    Config(u64),
-    Core(u64),
-    CsrGeneral(u64),
-    IsaExt(u64),
-    Timer(u64),
-}
+// kvm-uapi classifies RISC-V one-reg IDs; this file maps those IDs to the
+// concrete RISCVVCpu register storage.
 
 impl RISCVVCpu {
     pub(super) fn get_kvm_arch_reg(&self, reg_id: u64) -> AxResult<u64> {
-        match riscv_reg_kind(reg_id)? {
+        match riscv_reg_kind(reg_id).map_err(map_kvm_uapi_error)? {
             KvmRiscvRegKind::Config(index) => self.get_kvm_config_reg(index),
             KvmRiscvRegKind::Core(index) => self.get_kvm_core_reg(index),
             KvmRiscvRegKind::CsrGeneral(index) => self.get_kvm_csr_general_reg(index),
@@ -146,7 +38,7 @@ impl RISCVVCpu {
     }
 
     pub(super) fn set_kvm_arch_reg(&mut self, reg_id: u64, value: u64) -> AxResult {
-        match riscv_reg_kind(reg_id)? {
+        match riscv_reg_kind(reg_id).map_err(map_kvm_uapi_error)? {
             KvmRiscvRegKind::Config(index) => self.set_kvm_config_reg(index, value),
             KvmRiscvRegKind::Core(index) => self.set_kvm_core_reg(index, value),
             KvmRiscvRegKind::CsrGeneral(index) => self.set_kvm_csr_general_reg(index, value),
@@ -290,56 +182,6 @@ impl RISCVVCpu {
     }
 }
 
-const fn riscv_config_reg_id(index: u64) -> u64 {
-    KVM_REG_RISCV | KVM_REG_SIZE_U64 | KVM_REG_RISCV_CONFIG | index
-}
-
-const fn riscv_core_reg_id(index: u64) -> u64 {
-    KVM_REG_RISCV | KVM_REG_SIZE_U64 | KVM_REG_RISCV_CORE | index
-}
-
-const fn riscv_csr_general_reg_id(index: u64) -> u64 {
-    KVM_REG_RISCV | KVM_REG_SIZE_U64 | KVM_REG_RISCV_CSR | KVM_REG_RISCV_CSR_GENERAL | index
-}
-
-const fn riscv_timer_reg_id(index: u64) -> u64 {
-    KVM_REG_RISCV | KVM_REG_SIZE_U64 | KVM_REG_RISCV_TIMER | index
-}
-
-const fn kvm_isa_ext_supported(index: u64) -> bool {
-    matches!(
-        index,
-        KVM_RISCV_ISA_EXT_A
-            | KVM_RISCV_ISA_EXT_C
-            | KVM_RISCV_ISA_EXT_D
-            | KVM_RISCV_ISA_EXT_F
-            | KVM_RISCV_ISA_EXT_I
-            | KVM_RISCV_ISA_EXT_M
-            | KVM_RISCV_ISA_EXT_ZICSR
-            | KVM_RISCV_ISA_EXT_ZIFENCEI
-    )
-}
-
-fn riscv_reg_kind(reg_id: u64) -> AxResult<KvmRiscvRegKind> {
-    if reg_id & (KVM_REG_RISCV | KVM_REG_SIZE_U64) != KVM_REG_RISCV | KVM_REG_SIZE_U64 {
-        return Err(AxError::Unsupported);
-    }
-
-    let reg_type = reg_id & KVM_REG_RISCV_TYPE_MASK;
-    let index = reg_id
-        & !(KVM_REG_RISCV
-            | KVM_REG_SIZE_U64
-            | KVM_REG_RISCV_TYPE_MASK
-            | KVM_REG_RISCV_SUBTYPE_MASK);
-    match reg_type {
-        KVM_REG_RISCV_CONFIG => Ok(KvmRiscvRegKind::Config(index)),
-        KVM_REG_RISCV_CORE => Ok(KvmRiscvRegKind::Core(index)),
-        KVM_REG_RISCV_CSR => match reg_id & KVM_REG_RISCV_SUBTYPE_MASK {
-            KVM_REG_RISCV_CSR_GENERAL => Ok(KvmRiscvRegKind::CsrGeneral(index)),
-            _ => Err(AxError::Unsupported),
-        },
-        KVM_REG_RISCV_TIMER => Ok(KvmRiscvRegKind::Timer(index)),
-        KVM_REG_RISCV_ISA_EXT => Ok(KvmRiscvRegKind::IsaExt(index)),
-        _ => Err(AxError::Unsupported),
-    }
+fn map_kvm_uapi_error(_err: kvm_uapi::KvmUapiError) -> AxError {
+    AxError::Unsupported
 }

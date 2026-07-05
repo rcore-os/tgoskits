@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxError, AxResult};
+//! Encoding helpers for x86 KVM `regs` and `sregs` byte layouts.
+//!
+//! The structs are convenient typed views. `encode` and `decode` keep the exact
+//! byte layout expected by the Linux KVM ioctls.
 
-pub(crate) const KVM_REGS_SIZE: usize = 18 * 8;
-pub(crate) const KVM_SREGS_SIZE: usize = 312;
+use crate::{KvmUapiError, Result};
+
+pub const KVM_REGS_SIZE: usize = 18 * 8;
+pub const KVM_SREGS_SIZE: usize = 312;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KvmRegs {
+pub struct KvmRegs {
     pub rax: u64,
     pub rbx: u64,
     pub rcx: u64,
@@ -40,7 +45,7 @@ pub(crate) struct KvmRegs {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KvmSegment {
+pub struct KvmSegment {
     pub base: u64,
     pub limit: u32,
     pub selector: u16,
@@ -56,13 +61,13 @@ pub(crate) struct KvmSegment {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KvmDtable {
+pub struct KvmDtable {
     pub base: u64,
     pub limit: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct KvmSregs {
+pub struct KvmSregs {
     pub cs: KvmSegment,
     pub ds: KvmSegment,
     pub es: KvmSegment,
@@ -84,9 +89,9 @@ pub(crate) struct KvmSregs {
 }
 
 impl KvmRegs {
-    pub(crate) fn decode(buf: &[u8]) -> AxResult<Self> {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
         if buf.len() != KVM_REGS_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(KvmUapiError::InvalidSize);
         }
         Ok(Self {
             rax: read_u64(buf, 0),
@@ -110,9 +115,9 @@ impl KvmRegs {
         })
     }
 
-    pub(crate) fn encode(self, buf: &mut [u8]) -> AxResult {
+    pub fn encode(self, buf: &mut [u8]) -> Result {
         if buf.len() != KVM_REGS_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(KvmUapiError::InvalidSize);
         }
         write_u64(buf, 0, self.rax);
         write_u64(buf, 8, self.rbx);
@@ -137,9 +142,9 @@ impl KvmRegs {
 }
 
 impl KvmSregs {
-    pub(crate) fn decode(buf: &[u8]) -> AxResult<Self> {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
         if buf.len() != KVM_SREGS_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(KvmUapiError::InvalidSize);
         }
 
         let mut interrupt_bitmap = [0u64; 4];
@@ -169,9 +174,9 @@ impl KvmSregs {
         })
     }
 
-    pub(crate) fn encode(self, buf: &mut [u8]) -> AxResult {
+    pub fn encode(self, buf: &mut [u8]) -> Result {
         if buf.len() != KVM_SREGS_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(KvmUapiError::InvalidSize);
         }
         buf.fill(0);
         self.cs.encode(buf, 0);
@@ -198,14 +203,9 @@ impl KvmSregs {
     }
 }
 
-#[cfg_attr(not(feature = "vmx"), allow(dead_code))]
 impl KvmSegment {
-    pub(crate) fn from_access_rights(
-        selector: u16,
-        base: u64,
-        limit: u32,
-        access_rights: u32,
-    ) -> Self {
+    /// Builds a KVM segment from VMX-style access-right bits.
+    pub fn from_access_rights(selector: u16, base: u64, limit: u32, access_rights: u32) -> Self {
         Self {
             base,
             limit,
@@ -222,7 +222,8 @@ impl KvmSegment {
         }
     }
 
-    pub(crate) fn access_rights(self) -> u32 {
+    /// Converts this segment into VMX-style access-right bits.
+    pub fn access_rights(self) -> u32 {
         (self.type_ as u32)
             | ((self.s as u32) << 4)
             | ((self.dpl as u32) << 5)

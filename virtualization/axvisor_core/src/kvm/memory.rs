@@ -23,6 +23,9 @@ use crate::kvm::{
     state::{MemorySlot, UserspaceMemoryRegion, VmFileState},
 };
 
+// UserspaceMemoryRegion is a plain KVM UAPI payload. MemorySlot below adds the
+// host pinning handle and therefore remains local to axvisor_core.
+
 pub(in crate::kvm) fn read_userspace_memory_region(arg: usize) -> AxResult<UserspaceMemoryRegion> {
     let mut bytes = [0u8; abi::KVM_USERSPACE_MEMORY_REGION_SIZE as usize];
     api_control::copy_from_user(arg, &mut bytes)?;

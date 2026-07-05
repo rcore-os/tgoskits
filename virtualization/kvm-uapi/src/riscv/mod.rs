@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod cpuid;
-mod regs;
+//! RISC-V-specific KVM ABI helpers.
+//!
+//! RISC-V exposes most architectural state through KVM one-reg IDs, so this
+//! module provides the ID construction and classification logic.
 
-pub(crate) use cpuid::{
-    KVM_HYPERVISOR_FEATURE_LEAF, KVM_HYPERVISOR_INFO_LEAF, kvm_hypervisor_cpuid,
-    rustvisor_hypervisor_cpuid,
-};
-pub(crate) use regs::{KVM_REGS_SIZE, KVM_SREGS_SIZE, KvmDtable, KvmRegs, KvmSegment, KvmSregs};
+mod one_reg;
+
+pub use one_reg::*;

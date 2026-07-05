@@ -12,18 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compatibility re-exports for axvisor_core's KVM control endpoint.
+//! Host-neutral Linux KVM userspace ABI definitions.
 //!
-//! The actual KVM UAPI definitions live in `kvm-uapi`. This module keeps the
-//! existing local `abi` namespace so the control implementation can stay focused
-//! on host interactions instead of import churn.
+//! This crate intentionally contains only UAPI constants, wire-format structs,
+//! and small encoding/decoding helpers. It must not depend on AxVisor runtime
+//! state, host control callbacks, VM objects, or vCPU implementations.
 
-pub(super) use raw::*;
+#![no_std]
 
-pub mod public {
-    pub use kvm_uapi::ioctl::public::*;
-}
+pub mod error;
+pub mod ioctl;
+pub mod riscv;
+pub mod structs;
+pub mod x86;
 
-pub(in crate::kvm) mod raw {
-    pub(in crate::kvm) use kvm_uapi::ioctl::*;
-}
+pub use error::{KvmUapiError, Result};
+pub use structs::*;
