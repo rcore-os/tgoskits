@@ -38,3 +38,18 @@ pub enum ExceptionKind {
     /// Other kinds of exceptions.
     Other,
 }
+
+/// Architecture-neutral syndrome fields for user-space exceptions.
+///
+/// The meaning of each field remains architecture-specific, but this shape
+/// gives OS code a single way to log or forward the raw trap details without
+/// reaching into every architecture's private register type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExceptionSyndrome {
+    /// Raw syndrome/status register value when the architecture exposes one.
+    pub raw: u64,
+    /// Primary exception class or code.
+    pub class: u64,
+    /// Architecture-specific instruction syndrome or subcode.
+    pub iss: u64,
+}

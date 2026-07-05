@@ -1,22 +1,18 @@
 extern crate alloc;
 
-use alloc::format;
-#[cfg(plat_dyn)]
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 
-#[cfg(plat_dyn)]
-use fdt_edit::{Fdt, PciInterruptMap};
-use fdt_edit::{NodeType, PciRange, PciSpace};
+use fdt_edit::{Fdt, NodeType, PciInterruptMap, PciRange, PciSpace};
 use log::{debug, trace, warn};
-#[cfg(plat_dyn)]
-use rdrive::probe::pci::{PciInfo, PciIntxRoute};
 use rdrive::{
     probe::{
         OnProbeError,
-        pci::{PciMem32, PciMem64, PcieController, new_driver_generic},
+        pci::{PciInfo, PciIntxRoute, PciMem32, PciMem64, PcieController, new_driver_generic},
     },
     register::{FdtInfo, ProbeFdt},
 };
+
+use crate::BindingIrq;
 
 #[cfg(feature = "rk3588-pcie")]
 mod rk3588;
@@ -118,7 +114,7 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
         );
         return;
     };
-    let Ok(mut intc) = intc.lock() else {
+    let Ok(intc) = intc.lock() else {
         warn!(
             "failed to lock PCIe legacy IRQ parent device {:?} for phandle {}",
             parent, interrupt.interrupt_parent
@@ -126,20 +122,26 @@ pub(super) fn register_fdt_legacy_irq(info: &FdtInfo<'_>, logical_bus_end: u8) {
         return;
     };
 
-    let irq: usize = intc.setup_irq_by_fdt(&interrupt.specifier).into();
-    super::register_legacy_irq_route(0, logical_bus_end, irq);
+    let irq = intc
+        .translate_fdt(&interrupt.specifier)
+        .map(|translation| translation.id)
+        .ok();
+    super::register_native_legacy_irq_route(
+        0,
+        logical_bus_end,
+        BindingIrq::fdt_interrupt_with_controller(parent, interrupt.specifier),
+        irq.and_then(axklib::irq::legacy_irq_raw),
+    );
 }
 
-#[cfg(plat_dyn)]
-pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+pub fn fdt_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
     let Some(result) = rdrive::with_fdt(|fdt| resolve_pci_irq_from_fdt(fdt, info)) else {
         return Ok(None);
     };
     result.map(Some)
 }
 
-#[cfg(plat_dyn)]
-fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<usize, OnProbeError> {
+fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnProbeError> {
     let route = info.intx_route.ok_or_else(|| {
         OnProbeError::other(format!("PCI endpoint {} has no INTx route", info.address))
     })?;
@@ -200,22 +202,12 @@ fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<usize, OnProbeEr
             interrupt.interrupt_parent, info.address
         ))
     })?;
-    let intc = rdrive::get::<rdif_intc::Intc>(parent).map_err(|err| {
-        OnProbeError::other(format!(
-            "failed to get PCI interrupt parent {:?} for endpoint {}: {err:?}",
-            parent, info.address
-        ))
-    })?;
-    let mut intc = intc.lock().map_err(|err| {
-        OnProbeError::other(format!(
-            "failed to lock PCI interrupt parent {:?} for endpoint {}: {err:?}",
-            parent, info.address
-        ))
-    })?;
-    Ok(intc.setup_irq_by_fdt(&interrupt.parent_irq).into())
+    Ok(BindingIrq::fdt_interrupt_with_controller(
+        parent,
+        interrupt.parent_irq,
+    ))
 }
 
-#[cfg(plat_dyn)]
 fn pci_interrupt_map_entry(
     pci_host: fdt_edit::PciNodeView<'_>,
     bus: u8,
@@ -235,7 +227,6 @@ fn pci_interrupt_map_entry(
         .find(|entry| entry.child_address == child_address && entry.child_irq == child_irq)
 }
 
-#[cfg(plat_dyn)]
 fn encoded_pci_child_address(bus: u8, device: u8, function: u8) -> [u32; 3] {
     [
         ((u32::from(bus) & 0xff) << 16)
@@ -246,7 +237,6 @@ fn encoded_pci_child_address(bus: u8, device: u8, function: u8) -> [u32; 3] {
     ]
 }
 
-#[cfg(plat_dyn)]
 fn masked_cells(values: &[u32], len: usize, mask: &[u32], mask_offset: usize) -> Vec<u32> {
     let mut cells = Vec::with_capacity(len);
     for idx in 0..len {

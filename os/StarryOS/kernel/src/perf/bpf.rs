@@ -23,7 +23,7 @@ use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
-    linux_bpf::perf_event_sample_format,
+    linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
 };
 use kprobe::PtRegs;
@@ -36,6 +36,11 @@ use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
 };
+
+/// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
+/// Each JIT-compiled eBPF program fits within this space; the allocation
+/// is sized generously (16 KiB) since programs are typically < 1 page.
+const BPF_JIT_MEM_PAGES: usize = 4;
 
 /// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll
 /// set so readers can wait for new records, and a weak handle to the
@@ -186,6 +191,15 @@ impl PerfEventOps for BpfPerfEventWrapper {
         self.inner
             .do_mmap(kvirt.as_usize(), len, 0)
             .map_err(|_| AxError::InvalidInput)?;
+        // kbpf_basic::RingPage::init sets the data-region geometry but leaves
+        // version at 0. perf checks `perf_event_mmap_page.version == 1` and
+        // rejects 0 (`perf_mmap__is_mmap_ok`), so we must set it here.
+        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
+        // SAFETY: header points at the freshly allocated header page, no reader yet.
+        unsafe {
+            core::ptr::addr_of_mut!((*header).version).write(1);
+            core::ptr::addr_of_mut!((*header).compat_version).write(0);
+        }
         let pages = Arc::new(pages);
         // Keep only a `Weak`; hand the sole strong ref to the caller, which
         // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
@@ -276,14 +290,17 @@ impl OwnedEbpfVm {
         // TODO: not all of the address space is accessible to a BPF program;
         // allowing the full `0..u64::MAX` range disables rbpf's bounds check
         // and lets a buggy/hostile program read arbitrary kernel memory via
-        // direct loads. Narrow this to the legitimately-reachable context /
-        // map / stack ranges once kbpf-basic exposes the per-program bounds.
+        // direct loads.
+        //
+        // FIXME: narrow this to the legitimately-reachable context /
+        // map / stack ranges once kbpf-basic exposes per-program
+        // bounds.
         vm.register_allowed_memory(0..u64::MAX);
 
         #[cfg(target_arch = "x86_64")]
         {
             // TODO: calculate a more precise size.
-            let mut jit_exec_memory = BPFJitMemory::new(4)?;
+            let mut jit_exec_memory = BPFJitMemory::new(BPF_JIT_MEM_PAGES)?;
             // SAFETY: `jit_exec_memory` is moved into the returned
             // `OwnedEbpfVm` after `vm`; field drop order guarantees `vm` is
             // destroyed before the executable mapping is unmapped.

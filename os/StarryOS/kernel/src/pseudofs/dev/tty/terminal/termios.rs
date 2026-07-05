@@ -6,11 +6,21 @@ use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::{
     B50, B75, B110, B134, B150, B200, B300, B600, B1200, B1800, B2400, B4800, B9600, B19200,
     B38400, B57600, B115200, B230400, B460800, B500000, B576000, B921600, B1000000, B1152000,
-    B1500000, B2000000, B2500000, B3000000, B3500000, B4000000, BOTHER, CBAUD, CREAD, CS8, ECHO,
-    ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG, IXON, ONLCR, OPOST, VDISCARD, VEOF,
-    VEOL, VEOL2, VERASE, VINTR, VKILL, VLNEXT, VQUIT, VREPRINT, VSUSP, VWERASE, speed_t, tcflag_t,
+    B1500000, B2000000, B2500000, B3000000, B3500000, B4000000, BOTHER, CBAUD, CMSPAR, CREAD, CS5,
+    CS6, CS7, CS8, CSIZE, CSTOPB, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ICANON, ICRNL, IEXTEN, ISIG,
+    IXON, ONLCR, OPOST, PARENB, PARODD, VDISCARD, VEOF, VEOL, VEOL2, VERASE, VINTR, VKILL, VLNEXT,
+    VQUIT, VREPRINT, VSUSP, VWERASE, speed_t, tcflag_t,
 };
 use starry_signal::Signo;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TermiosParity {
+    None,
+    Odd,
+    Even,
+    Mark,
+    Space,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
@@ -79,6 +89,37 @@ impl Termios {
         self.c_cflag
     }
 
+    pub fn data_bits(&self) -> u8 {
+        match self.c_cflag & CSIZE {
+            CS5 => 5,
+            CS6 => 6,
+            CS7 => 7,
+            CS8 => 8,
+            _ => 8,
+        }
+    }
+
+    pub fn stop_bits(&self) -> u8 {
+        if self.has_cflag(CSTOPB) { 2 } else { 1 }
+    }
+
+    pub fn parity(&self) -> TermiosParity {
+        if !self.has_cflag(PARENB) {
+            return TermiosParity::None;
+        }
+        if self.has_cflag(CMSPAR) {
+            if self.has_cflag(PARODD) {
+                TermiosParity::Mark
+            } else {
+                TermiosParity::Space
+            }
+        } else if self.has_cflag(PARODD) {
+            TermiosParity::Odd
+        } else {
+            TermiosParity::Even
+        }
+    }
+
     pub fn has_lflag(&self, flag: u32) -> bool {
         self.c_lflag & flag != 0
     }
@@ -136,6 +177,16 @@ impl Termios2 {
             termios,
             c_ispeed: B38400,
             c_ospeed: B38400,
+        }
+    }
+
+    pub fn default_b115200() -> Self {
+        let mut termios = Termios::default();
+        termios.c_cflag = (termios.c_cflag & !CBAUD) | B115200;
+        Self {
+            termios,
+            c_ispeed: B115200,
+            c_ospeed: B115200,
         }
     }
 

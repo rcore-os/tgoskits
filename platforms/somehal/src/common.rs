@@ -1,4 +1,4 @@
-use rdif_intc::IrqId;
+use irq_framework::{IrqError, IrqId, IrqSource};
 use rdrive::probe::OnProbeError;
 use someboot::PagingError;
 
@@ -7,24 +7,30 @@ use crate::setup::MmioRaw;
 pub trait PlatOp {
     type ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool);
+    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError>;
 
-    fn irq_set_affinity(
-        _irq: IrqId,
-        _affinity: crate::irq::IrqAffinity,
-    ) -> Result<(), &'static str> {
-        Err("IRQ affinity is not supported by this platform")
+    fn irq_set_affinity(_irq: IrqId, _affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
     }
 
     fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
         panic!("IPI is not implemented for this dynamic platform");
     }
 
+    fn ipi_irq() -> IrqId;
+
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
     fn systick_irq() -> IrqId;
+
+    fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
+        match source {
+            IrqSource::ControllerLine { domain, hwirq } => Ok(IrqId::new(domain, hwirq)),
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
+        }
+    }
 
     fn secondary_init();
 

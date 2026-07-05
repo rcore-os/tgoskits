@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.6...ax-dma-v0.6.7) - 2026-07-02
+
+### Added
+
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.5...ax-dma-v0.6.6) - 2026-06-27
+
+### Other
+
+- updated the following local packages: ax-allocator, ax-hal, ax-alloc, ax-mm
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.4...ax-dma-v0.6.5) - 2026-06-23
 
 ### Other

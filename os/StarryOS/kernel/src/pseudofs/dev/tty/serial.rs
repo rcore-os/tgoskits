@@ -1,15 +1,19 @@
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    time::Duration,
+};
 
 use ax_driver::serial::{
-    self as ax_serial, Config, ConfigError, OwnerId, RxFlag, RxItem, RxQueue, SerialDevice,
-    SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, TxQueue,
+    self as ax_serial, Config, ConfigError, DataBits, OwnerId, Parity, RxFlag, RxItem, RxQueue,
+    SerialDevice, SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, StopBits,
+    TxQueue,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqRequest, ShareMode},
+    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
 use ax_task::IrqNotify;
@@ -24,7 +28,7 @@ use super::{
     terminal::{
         Terminal,
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
-        termios::Termios2,
+        termios::{Termios2, TermiosParity},
     },
 };
 use crate::pseudofs::DeviceOps;
@@ -74,7 +78,7 @@ struct SerialBackend {
     port: Arc<SerialPort>,
     tx: SpinNoIrq<TxQueue>,
     rx: SpinNoIrq<RxQueue>,
-    irq_num: usize,
+    irq: IrqId,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
     start_lock: Mutex<()>,
@@ -283,9 +287,16 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         info,
         runtime,
     } = serial;
-    let Some(irq_num) = info.irq_num else {
+    let Some(irq_binding) = info.irq.clone() else {
         return Err(AxError::Unsupported);
     };
+    let irq_id = ax_runtime::irq::resolve_binding_irq(irq_binding).map_err(|err| {
+        warn!(
+            "Failed to resolve {} IRQ binding for {}: {err:?}",
+            tty_name, info.fdt_path
+        );
+        AxError::Unsupported
+    })?;
     let port = runtime.port;
     let tx = runtime.tx;
     let rx = runtime.rx;
@@ -300,7 +311,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         port,
         tx: SpinNoIrq::new(tx),
         rx: SpinNoIrq::new(rx),
-        irq_num,
+        irq: irq_id,
         irq_handle: SpinNoIrq::new(None),
         started: AtomicBool::new(false),
         start_lock: Mutex::new(()),
@@ -331,7 +342,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
     );
     info!(
         "{} registered: path={}, alias={:?}, paddr={:#x}, mapped={:#x}, irq={:?}, mode=interrupt",
-        tty_name, info.fdt_path, info.alias_index, info.paddr, info.mapped_base, irq_num
+        tty_name, info.fdt_path, info.alias_index, info.paddr, info.mapped_base, irq_id
     );
     Ok(SerialTtyEntry {
         number,
@@ -343,7 +354,7 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
 impl SerialBackend {
     fn register_irq(self: &Arc<Self>, mut irq: SerialIrqHandler) -> AxResult<()> {
         let backend = self.clone();
-        let request = IrqRequest::new_boxed(Box::new(move |ctx| {
+        let request = IrqRequest::new(move |ctx| {
             let outcome = backend.handle_irq_on_owner(ctx.cpu, &mut irq);
             if !outcome.claimed {
                 return ax_runtime::hal::irq::IrqReturn::Unhandled;
@@ -354,19 +365,19 @@ impl SerialBackend {
             } else {
                 ax_runtime::hal::irq::IrqReturn::Wake
             }
-        }))
+        })
         .share_mode(ShareMode::Shared)
         .affinity(IrqAffinity::Fixed(CpuId(self.owner.0)))
         .auto_enable(AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(self.irq_num, request) {
+        match ax_runtime::hal::irq::request_irq(self.irq, request) {
             Ok(handle) => {
                 *self.irq_handle.lock() = Some(handle);
                 Ok(())
             }
             Err(err) => {
                 warn!(
-                    "Failed to register {} IRQ handler for irq {}: {err:?}",
-                    self.tty_name, self.irq_num
+                    "Failed to register {} IRQ handler for irq {:?}: {err:?}",
+                    self.tty_name, self.irq
                 );
                 Err(AxError::Unsupported)
             }
@@ -399,8 +410,8 @@ impl SerialBackend {
         if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
             self.shutdown_port();
             warn!(
-                "Failed to enable {} IRQ handler for irq {}: {err:?}",
-                self.tty_name, self.irq_num
+                "Failed to enable {} IRQ handler for irq {:?}: {err:?}",
+                self.tty_name, self.irq
             );
             return false;
         }
@@ -463,6 +474,23 @@ impl SerialBackend {
         (submit.accepted, outcome)
     }
 
+    fn tx_idle(&self) -> bool {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.tx_idle(lease)).unwrap_or(false)
+    }
+
+    fn drain_tx(&self) -> AxResult<()> {
+        self.ensure_started()?;
+        let _guard = self.output_lock.lock();
+        loop {
+            let outcome = self.service_on_owner(SerialSoftWork::TX_KICK);
+            publish_serial_outcome(self, outcome, false);
+            if self.tx_idle() {
+                return Ok(());
+            }
+            ax_task::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
         self.rx.lock().drain(out)
     }
@@ -474,6 +502,32 @@ fn startup_baudrate(current: u32) -> u32 {
     } else {
         current
     }
+}
+
+fn serial_config_from_termios(termios: &Termios2) -> Config {
+    let mut config = Config::new()
+        .data_bits(match termios.data_bits() {
+            5 => DataBits::Five,
+            6 => DataBits::Six,
+            7 => DataBits::Seven,
+            _ => DataBits::Eight,
+        })
+        .stop_bits(if termios.stop_bits() == 2 {
+            StopBits::Two
+        } else {
+            StopBits::One
+        })
+        .parity(match termios.parity() {
+            TermiosParity::None => Parity::None,
+            TermiosParity::Odd => Parity::Odd,
+            TermiosParity::Even => Parity::Even,
+            TermiosParity::Mark => Parity::Mark,
+            TermiosParity::Space => Parity::Space,
+        });
+    if let Some(baudrate) = termios.baudrate() {
+        config = config.baudrate(baudrate);
+    }
+    config
 }
 
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
@@ -613,11 +667,16 @@ impl TtyWrite for SerialWriter {
         SERIAL_SYNC_ECHO_LIMIT
     }
 
+    fn drain(&self) -> AxResult<()> {
+        self.backend.drain_tx()
+    }
+
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {
-        let Some(new_baud) = new.baudrate() else {
-            return;
-        };
-        if old.baudrate() == Some(new_baud) {
+        if old.baudrate() == new.baudrate()
+            && old.data_bits() == new.data_bits()
+            && old.stop_bits() == new.stop_bits()
+            && old.parity() == new.parity()
+        {
             return;
         }
         if self.backend.ensure_started().is_err() {
@@ -625,10 +684,10 @@ impl TtyWrite for SerialWriter {
         }
         if let Err(err) = self
             .backend
-            .set_port_config(&Config::new().baudrate(new_baud))
+            .set_port_config(&serial_config_from_termios(new))
         {
             warn!(
-                "{} failed to set baudrate {new_baud} on {}: {:?}",
+                "{} failed to apply termios on {}: {:?}",
                 self.backend.tty_name, self.backend.name, err
             );
         }

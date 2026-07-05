@@ -2,12 +2,12 @@ extern crate alloc;
 
 use core::time::Duration;
 
-use crab_usb::{EventHandler, USBHost};
+use crab_usb::{EventHandler, USBHost, usb_if::Speed};
 use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -15,6 +15,8 @@ use crate::{PciIrqRequirement, binding_info_from_pci};
 
 #[cfg(feature = "rockchip-dwc-xhci")]
 mod dwc;
+#[cfg(feature = "rockchip-ehci")]
+mod ehci;
 #[cfg(feature = "xhci-mmio")]
 mod xhci_mmio;
 #[cfg(feature = "xhci-pci")]
@@ -137,15 +139,26 @@ pub struct PlatformUsbHost {
     name: &'static str,
     info: BindingInfo,
     host: USBHost,
+    root_hub_speed: Speed,
     irq_handler_taken: bool,
 }
 
 impl PlatformUsbHost {
     fn new(name: &'static str, host: USBHost, info: BindingInfo) -> Self {
+        Self::new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
+    }
+
+    fn new_with_root_hub_speed(
+        name: &'static str,
+        host: USBHost,
+        info: BindingInfo,
+        root_hub_speed: Speed,
+    ) -> Self {
         Self {
             name,
             info,
             host,
+            root_hub_speed,
             irq_handler_taken: false,
         }
     }
@@ -162,8 +175,20 @@ impl PlatformUsbHost {
         self.info.irq_num()
     }
 
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.info.irq()
+    }
+
+    pub fn irq_cloned(&self) -> Option<BindingIrq> {
+        self.info.irq_cloned()
+    }
+
     pub fn binding_info(&self) -> &BindingInfo {
         &self.info
+    }
+
+    pub fn root_hub_speed(&self) -> Speed {
+        self.root_hub_speed
     }
 
     pub fn enable_irq(&mut self) -> crab_usb::err::Result {
@@ -249,6 +274,13 @@ pub trait ProbeFdtUsbHost {
         name: &'static str,
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError>;
+
+    fn register_usb_host_with_root_hub_speed(
+        self,
+        name: &'static str,
+        host: USBHost,
+        root_hub_speed: Speed,
+    ) -> Result<Option<usize>, OnProbeError>;
 }
 
 impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
@@ -263,6 +295,22 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
             name,
             host,
             info,
+        ))
+    }
+
+    fn register_usb_host_with_root_hub_speed(
+        self,
+        name: &'static str,
+        host: USBHost,
+        root_hub_speed: Speed,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_usb_host_with_info_and_root_hub_speed(
+            self.into_platform_device(),
+            name,
+            host,
+            info,
+            root_hub_speed,
         ))
     }
 }
@@ -326,6 +374,19 @@ fn register_usb_host_with_info(
     info: BindingInfo,
 ) -> Option<usize> {
     register_bound_device(plat_dev, PlatformUsbHost::new(name, host, info))
+}
+
+fn register_usb_host_with_info_and_root_hub_speed(
+    plat_dev: rdrive::PlatformDevice,
+    name: &'static str,
+    host: USBHost,
+    info: BindingInfo,
+    root_hub_speed: Speed,
+) -> Option<usize> {
+    register_bound_device(
+        plat_dev,
+        PlatformUsbHost::new_with_root_hub_speed(name, host, info, root_hub_speed),
+    )
 }
 
 #[cfg(feature = "xhci-pci")]

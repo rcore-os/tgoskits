@@ -9,16 +9,17 @@
 //!
 //! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
 
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::{ClockSpeed, SignalVoltage},
+    sdio::host::{ClockSpeed, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -36,6 +37,20 @@ use crate::{
 /// (RK3399, RK356x, RK35xx). Other SoCs may differ — pass a custom
 /// offset to [`DwMmc::new_with_fifo_offset`].
 pub const DEFAULT_FIFO_OFFSET: usize = 0x200;
+const ALL_INT_CLR: u32 = u32::MAX;
+const DEFAULT_TMOUT: u32 = u32::MAX;
+const DEFAULT_FIFO_DEPTH_WORDS: u32 = 0x100;
+const DEFAULT_FIFOTH_MSIZE: u32 = 0x2;
+const DEFAULT_FIFOTH: u32 = fifoth(
+    DEFAULT_FIFOTH_MSIZE,
+    DEFAULT_FIFO_DEPTH_WORDS / 2 - 1,
+    DEFAULT_FIFO_DEPTH_WORDS / 2,
+);
+pub(crate) const DWMMC_HW_POLL_LIMIT: u32 = 500_000;
+
+const fn fifoth(msize: u32, rx_wmark: u32, tx_wmark: u32) -> u32 {
+    ((msize & 0x7) << 28) | ((rx_wmark & 0x0fff) << 16) | (tx_wmark & 0x0fff)
+}
 
 /// Cached state for a pending data phase.
 #[derive(Clone, Copy, Debug)]
@@ -56,47 +71,143 @@ pub(crate) struct PendingData {
 /// valid, exclusively-owned MMIO base for a DW_mshc-compatible
 /// register block. Concurrent access to the same controller from
 /// multiple `DwMmc` instances is undefined.
+const IRQ_GENERATION_SHIFT: u64 = 32;
+const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
+
 pub(crate) struct IrqState {
-    pending_status: AtomicU32,
+    mailbox: AtomicU64,
+    next_generation: AtomicU32,
 }
 
 impl IrqState {
     const fn new() -> Self {
         Self {
-            pending_status: AtomicU32::new(0),
+            mailbox: AtomicU64::new(0),
+            next_generation: AtomicU32::new(0),
         }
     }
 
-    pub(crate) fn cache(&self, status: u32) {
-        if status != 0 {
-            self.pending_status.fetch_or(status, Ordering::AcqRel);
+    pub(crate) fn begin_request(&self) {
+        let generation = self.next_generation();
+        self.mailbox
+            .store(pack_mailbox(generation, 0), Ordering::Release);
+    }
+
+    pub(crate) fn end_request(&self) {
+        self.mailbox.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn cache_if_current(&self, generation: u32, status: u32) {
+        if generation == 0 || status == 0 {
+            return;
         }
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            if mailbox_generation(cur) != generation {
+                return;
+            }
+            let next = pack_mailbox(generation, mailbox_status(cur) | status);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u32 {
+        mailbox_generation(self.mailbox.load(Ordering::Acquire))
     }
 
     pub(crate) fn take(&self, mask: u32) -> u32 {
-        take_cached_bits(&self.pending_status, mask)
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let status = mailbox_status(cur);
+            let taken = status & mask;
+            if taken == 0 {
+                return 0;
+            }
+            let next = pack_mailbox(mailbox_generation(cur), status & !mask);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return taken,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     pub(crate) fn clear(&self, mask: u32) {
-        self.pending_status.fetch_and(!mask, Ordering::AcqRel);
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let next = pack_mailbox(mailbox_generation(cur), mailbox_status(cur) & !mask);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn pending(&self) -> u32 {
-        self.pending_status.load(Ordering::Acquire)
+        mailbox_status(self.mailbox.load(Ordering::Acquire))
+    }
+
+    fn next_generation(&self) -> u32 {
+        let mut cur = self.next_generation.load(Ordering::Acquire);
+        loop {
+            let mut next = cur.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.next_generation.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return next,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 }
 
-fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
-    let mut cur = cache.load(Ordering::Acquire);
-    loop {
-        let taken = cur & mask;
-        if taken == 0 {
-            return 0;
-        }
-        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return taken,
-            Err(next) => cur = next,
+fn pack_mailbox(generation: u32, status: u32) -> u64 {
+    ((generation as u64) << IRQ_GENERATION_SHIFT) | status as u64
+}
+
+fn mailbox_generation(value: u64) -> u32 {
+    (value >> IRQ_GENERATION_SHIFT) as u32
+}
+
+fn mailbox_status(value: u64) -> u32 {
+    (value & IRQ_STATUS_MASK) as u32
+}
+
+pub(crate) struct IrqCore {
+    pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
+    pub(crate) state: IrqState,
+}
+
+// SAFETY: `IrqCore` is shared only between the task-side host and the IRQ
+// top-half. Both access the register block with volatile operations and share
+// interrupt status through atomics.
+unsafe impl Send for IrqCore {}
+// SAFETY: See the `Send` impl.
+unsafe impl Sync for IrqCore {}
+
+impl IrqCore {
+    fn new(regs: VolatilePtr<'static, RegisterBlock>) -> Self {
+        Self {
+            regs,
+            state: IrqState::new(),
         }
     }
 }
@@ -106,14 +217,19 @@ pub struct DwMmc {
     pub(crate) base_addr: usize,
     pub(crate) fifo_offset: usize,
     pub(crate) ref_clock_hz: u32,
+    pub(crate) card_detect: CardDetect,
+    pub(crate) ext_clock: Option<Box<dyn HostClock>>,
     pub(crate) pending_data: Option<PendingData>,
     pub(crate) command_state: CommandState,
     pub(crate) data_blocks_remaining: u32,
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
-    pub(crate) irq_state: IrqState,
+    pub(crate) dma_poisoned: bool,
+    pub(crate) irq: Arc<IrqCore>,
     pub(crate) completion_irq_enabled: AtomicBool,
+    pub(crate) host2_next_id: u64,
+    pub(crate) host2_active_id: Option<u64>,
 }
 
 impl DwMmc {
@@ -145,14 +261,19 @@ impl DwMmc {
             base_addr: base.as_ptr() as usize,
             fifo_offset,
             ref_clock_hz: 0,
+            card_detect: CardDetect::ControllerActiveLow,
+            ext_clock: None,
             pending_data: None,
             command_state: CommandState::Idle,
             data_blocks_remaining: 0,
             data_cmd_index: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
-            irq_state: IrqState::new(),
+            dma_poisoned: false,
+            irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
+            host2_next_id: 0,
+            host2_active_id: None,
         }
     }
 
@@ -216,6 +337,48 @@ impl DwMmc {
         self.ref_clock_hz = ref_clock_hz;
     }
 
+    /// Current controller reference clock used by the DWMMC divider logic.
+    pub fn reference_clock(&self) -> u32 {
+        self.ref_clock_hz
+    }
+
+    /// Configure how the host interprets its card-detect input.
+    ///
+    /// The DesignWare controller's onboard CDETECT bit follows the Linux
+    /// `dw_mci_get_cd()` convention for removable slots: bit 0 clear means
+    /// card present, bit 0 set means no card.
+    pub fn set_card_detect(&mut self, detect: CardDetect) {
+        self.card_detect = detect;
+    }
+
+    /// Return whether slot 0 currently reports a card present.
+    pub fn card_present(&self) -> bool {
+        match self.card_detect {
+            CardDetect::ControllerActiveLow => self.regs.cdetect().read() & 1 == 0,
+            CardDetect::ControllerActiveHigh => self.regs.cdetect().read() & 1 != 0,
+            CardDetect::AlwaysPresent => true,
+        }
+    }
+
+    /// Install a platform clock callback for DWMMC integrations where the
+    /// controller input clock is controlled outside the DW_mshc register file.
+    ///
+    /// Rockchip DWMMC follows the Linux `dw_mci_rk3288_set_ios()` model: the
+    /// platform `ciu` clock is retuned on each bus-speed change and the
+    /// controller divider is then programmed relative to the effective bus
+    /// clock.
+    pub fn set_external_clock<C>(&mut self, clock: C)
+    where
+        C: HostClock + 'static,
+    {
+        self.ext_clock = Some(Box::new(clock));
+    }
+
+    /// Remove a previously installed platform clock callback.
+    pub fn clear_external_clock(&mut self) {
+        self.ext_clock = None;
+    }
+
     /// Install a DMA capability used by high-level data-transfer hooks.
     ///
     /// Once installed, `SdioHost::submit_read_data` and
@@ -225,6 +388,18 @@ impl DwMmc {
     pub fn set_dma(&mut self, dma: DeviceDma) {
         self.dma_mask = dma.dma_mask();
         self.dma = Some(dma);
+    }
+
+    pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {
+        if self.dma_poisoned {
+            Err(Error::BusError(ErrorContext::new(Phase::DataRead)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn poison_dma(&mut self) {
+        self.dma_poisoned = true;
     }
 
     /// Bring the controller to a known state and arm it for card
@@ -263,8 +438,9 @@ impl DwMmc {
         // Mask every interrupt; clear any leftover raw status.
         self.regs.intmask().write(0);
         self.clear_all_int_status();
-        self.irq_state.clear(u32::MAX);
+        self.irq.state.clear(u32::MAX);
         self.completion_irq_enabled.store(false, Ordering::Release);
+        self.program_linux_init_baseline();
 
         // Default to 1-bit bus until the protocol layer asks for wider.
         self.regs.ctype().write(CType::new());
@@ -273,13 +449,23 @@ impl DwMmc {
         // Program the divider for 400 kHz (the SD spec ID-mode rate).
         self.program_clock(400_000)?;
 
+        self.dma_poisoned = false;
+        Ok(())
+    }
+
+    pub(crate) fn reset_and_init_preserving_irq(&mut self) -> Result<(), Error> {
+        let was_irq_enabled = self.completion_irq_enabled();
+        self.reset_and_init()?;
+        if was_irq_enabled {
+            self.enable_completion_irq();
+        }
         Ok(())
     }
 
     /// Wait for [`Ctrl::controller_reset`] / [`Ctrl::fifo_reset`] /
     /// [`Ctrl::dma_reset`] to all clear, indicating the reset finished.
     fn wait_reset_clear(&self) -> Result<(), Error> {
-        for _ in 0..1_000_000 {
+        for _ in 0..DWMMC_HW_POLL_LIMIT {
             let c = self.regs.ctrl().read();
             if !c.controller_reset() && !c.fifo_reset() && !c.dma_reset() {
                 return Ok(());
@@ -334,15 +520,14 @@ impl DwMmc {
     /// to the CIU" sequence. Polls the [`Cmd::start_cmd`] bit until
     /// the controller acks the update.
     fn send_update_clock(&self) -> Result<(), Error> {
-        // wait_prvdata_complete=true so we don't preempt an in-flight
-        // data phase — same default we use for real commands.
         self.regs.cmd().write(
             Cmd::new()
                 .with_start_cmd(true)
-                .with_wait_prvdata_complete(true)
+                .with_use_hold_reg(false)
+                .with_wait_prvdata_complete(false)
                 .with_update_clock_registers_only(true),
         );
-        for _ in 0..1_000_000 {
+        for _ in 0..DWMMC_HW_POLL_LIMIT {
             if !self.regs.cmd().read().start_cmd() {
                 return Ok(());
             }
@@ -353,8 +538,13 @@ impl DwMmc {
 
     /// Clear every bit in RINTSTS by writing it back (write-1-to-clear).
     pub(crate) fn clear_all_int_status(&self) {
-        let cur = self.regs.rintsts().read();
-        self.regs.rintsts().write(cur);
+        self.regs.rintsts().write(RIntSts::from_bits(ALL_INT_CLR));
+    }
+
+    pub(crate) fn program_linux_init_baseline(&self) {
+        self.regs.tmout().write(DEFAULT_TMOUT);
+        self.regs.fifoth().write(DEFAULT_FIFOTH);
+        self.regs.clksrc().write(0);
     }
 
     pub fn enable_completion_irq(&mut self) {
@@ -362,11 +552,21 @@ impl DwMmc {
         self.regs.intmask().write(
             crate::DWMMC_INT_DATA_TRANSFER_OVER
                 | crate::DWMMC_INT_COMMAND_DONE
-                | crate::DWMMC_INT_RXDR
-                | crate::DWMMC_INT_TXDR
                 | crate::DWMMC_INT_ERROR_MASK,
         );
         self.regs.ctrl().update(|r| r.with_int_enable(true));
+    }
+
+    pub(crate) fn program_fifo_interrupt_mask(&self) {
+        if self.completion_irq_enabled() {
+            self.regs.intmask().write(
+                crate::DWMMC_INT_DATA_TRANSFER_OVER
+                    | crate::DWMMC_INT_COMMAND_DONE
+                    | crate::DWMMC_INT_RXDR
+                    | crate::DWMMC_INT_TXDR
+                    | crate::DWMMC_INT_ERROR_MASK,
+            );
+        }
     }
 
     pub fn disable_completion_irq(&mut self) {
@@ -381,8 +581,8 @@ impl DwMmc {
 
     /// Set bus width. DW_mshc encodes width in CTYPE: bit 0 of `width4`
     /// = 4-bit, bit 0 of `width8` = 8-bit; both clear = 1-bit.
-    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::BusWidth) {
-        use sdmmc_protocol::sdio::BusWidth;
+    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::host::BusWidth) {
+        use sdmmc_protocol::sdio::host::BusWidth;
         let ct = match width {
             BusWidth::Bit1 => CType::new(),
             BusWidth::Bit4 => CType::new().with_width4(1),
@@ -436,7 +636,7 @@ impl DwMmc {
     /// so the next transfer starts from a clean state.
     pub fn reset_fifo(&self) -> Result<(), Error> {
         self.regs.ctrl().update(|r| r.with_fifo_reset(true));
-        for _ in 0..1_000_000 {
+        for _ in 0..DWMMC_HW_POLL_LIMIT {
             if !self.regs.ctrl().read().fifo_reset() {
                 return Ok(());
             }
@@ -474,6 +674,24 @@ impl DwMmc {
 unsafe impl Send for DwMmc {}
 unsafe impl Sync for DwMmc {}
 
+/// Platform clock capability for DWMMC hosts with a SoC-side CIU clock.
+pub trait HostClock: Send {
+    /// Retune the platform clock for a requested SD/MMC bus clock and return
+    /// the effective controller bus clock used by the DWMMC divider logic.
+    fn set_clock(&self, target_hz: u32) -> Result<u32, Error>;
+}
+
+/// Card-detect policy for DWMMC slot 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardDetect {
+    /// Controller CDETECT bit is active-low: 0 means present, 1 means absent.
+    ControllerActiveLow,
+    /// Controller CDETECT bit is active-high: 1 means present, 0 means absent.
+    ControllerActiveHigh,
+    /// Treat the card as fixed/non-removable.
+    AlwaysPresent,
+}
+
 #[cfg(test)]
 mod tests {
     use core::ptr::NonNull;
@@ -493,5 +711,47 @@ mod tests {
         let host = unsafe { DwMmc::new_from_addr(0x1000_0000) };
 
         assert_eq!(host.base_addr, 0x1000_0000);
+    }
+
+    #[test]
+    fn external_clock_can_be_scoped_and_cleared() {
+        struct Clock;
+
+        impl HostClock for Clock {
+            fn set_clock(&self, target_hz: u32) -> Result<u32, Error> {
+                Ok(target_hz)
+            }
+        }
+
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+
+        host.set_external_clock(Clock);
+        assert!(host.ext_clock.is_some());
+
+        host.clear_external_clock();
+        assert!(host.ext_clock.is_none());
+    }
+
+    #[test]
+    fn controller_card_detect_defaults_to_linux_active_low() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const CDETECT_WORD: usize = 20;
+
+        unsafe {
+            mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(0);
+        }
+        assert!(host.card_present());
+
+        unsafe {
+            mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(1);
+        }
+        assert!(!host.card_present());
+
+        host.set_card_detect(CardDetect::AlwaysPresent);
+        assert!(host.card_present());
     }
 }

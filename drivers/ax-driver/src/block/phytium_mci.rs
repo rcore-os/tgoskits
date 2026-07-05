@@ -2,7 +2,7 @@ use alloc::format;
 use core::time::Duration;
 
 use log::{info, warn};
-use phytium_mci_host::PhytiumMci;
+use phytium_mci_host::{PhytiumMci, rdif as phytium_rdif};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -10,18 +10,21 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, CardInitPreference, SdioInitScratch, SdioSdmmc},
-};
-
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
     },
-    mmio::iomap,
 };
 
-type PhytiumSdMmc = SdioSdmmc<PhytiumMci>;
+use crate::{block::ProbeFdtBlock, mmio::iomap};
+
+type PhytiumSdMmc = SdioSdmmc<SdioHost2Adapter<PhytiumMci>>;
+
+// Phytium MCI exposes a lock-free top-half IRQ handle: interrupt context
+// acknowledges/caches raw and IDMAC status, while task-side RDIF polling
+// advances the request and releases DMA buffers.
+const PHYTIUM_MCI_IRQ_DRIVEN: bool = true;
 
 crate::model_register!(
     name: "Phytium MCI",
@@ -57,12 +60,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { PhytiumMci::new(mmio_base) };
-    info!("phytium-mci: reset controller");
-    host.reset_and_init()
-        .map_err(|e| init_error(base_reg.address, mmio_size, e))?;
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    host.set_dma(dma.clone());
 
-    info!("phytium-mci: initialize card");
-    let mut card = SdioSdmmc::new(host);
+    info!("phytium-mci: initialize card through native host2 bus ops");
+    let mut card = SdioSdmmc::new_host2(host);
     card.set_sd_uhs_selection_enabled(false);
     let preference = card_init_preference(info);
     let card_info = poll_card_init(&mut card, preference).map_err(|e| {
@@ -81,10 +83,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(card);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::fifo("phytium-mci", card_info.capacity_blocks.unwrap_or(0), false),
+    let dev = phytium_rdif::device(
+        card,
+        phytium_rdif::dma_config(
+            "phytium-mci",
+            card_info.capacity_blocks.unwrap_or(0),
+            PHYTIUM_MCI_IRQ_DRIVEN,
+            dma,
+        ),
     );
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);
@@ -172,5 +178,18 @@ mod tests {
         let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
 
         assert!(!is_absent_card_init_error(err));
+    }
+
+    #[test]
+    fn phytium_mci_block_io_uses_dma_config_with_irq_completion() {
+        let config = phytium_rdif::dma_config(
+            "phytium-mci",
+            8,
+            PHYTIUM_MCI_IRQ_DRIVEN,
+            axklib::dma::device_with_mask(u32::MAX as u64),
+        );
+
+        assert!(config.uses_dma());
+        assert!(config.irq_driven);
     }
 }

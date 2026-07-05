@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.16](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.15...axbuild-v0.4.16) - 2026-07-02
+
+### Added
+
+- *(axtest)* simplify kernel test targets ([#1470](https://github.com/rcore-os/tgoskits/pull/1470))
+- *(axbuild)* add ArceOS dynamic board flow ([#1466](https://github.com/rcore-os/tgoskits/pull/1466))
+- *(axtest)* add ArceOS QEMU smoke coverage ([#1365](https://github.com/rcore-os/tgoskits/pull/1365))
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(starry)* stabilize riscv64 qemu ci tests ([#1445](https://github.com/rcore-os/tgoskits/pull/1445))
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(clippy)* reduce redundant incremental checks ([#1448](https://github.com/rcore-os/tgoskits/pull/1448))
+- *(axbuild)* use typed config serialization ([#1420](https://github.com/rcore-os/tgoskits/pull/1420))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(axbuild)* stabilize grouped runner command labels
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
+## [0.4.15](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.14...axbuild-v0.4.15) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(claw-code)* respect managed rootfs image paths ([#1389](https://github.com/rcore-os/tgoskits/pull/1389))
+- *(starryos)* bound signal interrupt qemu test wait ([#1374](https://github.com/rcore-os/tgoskits/pull/1374))
+
+### Other
+
+- *(starry)* cover UV 0.11 and subcommand behavior in functional tests. ([#1211](https://github.com/rcore-os/tgoskits/pull/1211))
+- *(platforms)* remove VisionFive2 static platform ([#1371](https://github.com/rcore-os/tgoskits/pull/1371))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.4.14](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.13...axbuild-v0.4.14) - 2026-06-23
 
 ### Added

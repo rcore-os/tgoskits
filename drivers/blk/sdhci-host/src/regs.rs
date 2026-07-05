@@ -46,6 +46,8 @@ pub(crate) const PRESENT_DAT_INHIBIT: u32 = 1 << 1;
 pub(crate) const PRESENT_BUFFER_WRITE_ENABLE: u32 = 1 << 10;
 pub(crate) const PRESENT_BUFFER_READ_ENABLE: u32 = 1 << 11;
 pub(crate) const PRESENT_CARD_INSERTED: u32 = 1 << 16;
+pub(crate) const PRESENT_DAT0_LINE_SIGNAL_LEVEL: u32 = 1 << 20;
+pub(crate) const PRESENT_DAT_3_0_LINE_SIGNAL_LEVEL: u32 = 0x0F << 20;
 
 // ── Software Reset ─────────────────────────────────────────────────────
 

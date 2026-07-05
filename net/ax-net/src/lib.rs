@@ -70,7 +70,7 @@ use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
 use core::{
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicBool, Ordering},
     task::Waker,
     time::Duration,
@@ -189,7 +189,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -471,8 +471,14 @@ fn poll_until_idle() {
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    if !NET_POLL_REQUESTED.swap(true, Ordering::AcqRel) {
+    publish_poll_request(&NET_POLL_REQUESTED, || {
         NET_POLL_WAKE.notify_one(true);
+    });
+}
+
+fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
+    if !requested.swap(true, Ordering::AcqRel) {
+        wake();
     }
 }
 
@@ -524,6 +530,26 @@ pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
 /// Returns the IPv4 configuration for an interface by name.
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
     get_control().ipv4_config(name)
+}
+
+/// Assigns a static IPv4 address to an interface at runtime.
+pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+    {
+        let mut service = get_service();
+        service.configure_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Removes a configured IPv4 address from an interface at runtime.
+pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+    {
+        let mut service = get_service();
+        service.remove_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
+    }
+    request_poll();
+    Ok(())
 }
 
 /// Returns public snapshots of configured IPv4 default routes.
@@ -722,15 +748,67 @@ fn net_poll_worker() {
                 || NET_IRQ_NOTIFY.is_pending()
                 || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
         });
-        if !timed_out && NET_POLL_REQUESTED.load(Ordering::Acquire) {
-            NET_POLL_REQUESTED.store(false, Ordering::Release);
+        if !timed_out {
+            take_poll_request(&NET_POLL_REQUESTED, || {});
         }
-        if NET_IRQ_NOTIFY.drain() {
+        let irq_pending = NET_IRQ_NOTIFY.drain();
+        if device_poll_fallback_due(timed_out, irq_pending, delay) {
             get_service().wake_all_devices();
         }
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
+    }
+}
+
+fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
+    irq_pending || (timed_out && delay > Duration::ZERO)
+}
+
+fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bool {
+    if requested.swap(false, Ordering::AcqRel) {
+        after_observe();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    use super::{device_poll_fallback_due, publish_poll_request, take_poll_request};
+
+    #[test]
+    fn poll_request_after_worker_drain_stays_pending() {
+        let requested = AtomicBool::new(true);
+        let mut wakes = 0;
+
+        assert!(take_poll_request(&requested, || {
+            publish_poll_request(&requested, || wakes += 1);
+        }));
+
+        assert!(requested.load(Ordering::Acquire));
+        assert_eq!(wakes, 1);
+    }
+
+    #[test]
+    fn poll_timeout_wakes_devices_as_polling_fallback() {
+        assert!(device_poll_fallback_due(
+            true,
+            false,
+            Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn immediate_socket_poll_does_not_force_device_fallback() {
+        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
+        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
     }
 }
 
@@ -885,7 +963,7 @@ pub(crate) mod test_support {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            let routes: SharedRouteTable = Arc::new(spin::RwLock::new(RouteTable::new()));
+            let routes: SharedRouteTable = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
             let mut router = Router::new(routes.clone());
             let local_dev = router.add_device(LOCAL_IF, Box::new(LoopbackDevice::new()));
             let peer_dev = router.add_device(PEER_IF, Box::new(LoopbackDevice::new()));

@@ -57,6 +57,11 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
+#[cfg(feature = "multitask")]
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "multitask")] {
         #[macro_use]

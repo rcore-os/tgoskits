@@ -1,6 +1,6 @@
 [package]
 name = "ax-posix-api"
-version = "0.5.22"
+version = "0.5.24"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -22,8 +22,7 @@ smp = ["ax-feat/smp"]
 irq = ["ax-feat/irq"]
 alloc = ["dep:ax-alloc", "ax-feat/alloc"]
 multitask = ["alloc", "ax-task/multitask", "ax-feat/multitask", "ax-sync/multitask"]
-lockdep = ["multitask", "ax-feat/lockdep", "ax-sync/lockdep"]
-plat-dyn = ["ax-feat/plat-dyn", "smp"]
+lockdep = ["multitask", "ax-feat/lockdep", "ax-sync/lockdep", "ax-kspin/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "ax-feat/fs", "fd"]
 net = ["dep:ax-net", "ax-feat/net", "fd"]
@@ -35,10 +34,10 @@ epoll = ["fd"]
 [dependencies]
 # ArceOS modules
 ax-alloc = { workspace = true, optional = true }
-ax-config.workspace = true
 ax-feat.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
+ax-kspin.workspace = true
 ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true

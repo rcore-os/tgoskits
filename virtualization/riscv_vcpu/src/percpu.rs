@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use ax_errno::{AxError, AxResult};
-use axvcpu::AxArchPerCpu;
+use axvm_types::VmArchPerCpuOps;
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 
@@ -22,7 +22,7 @@ use crate::{consts::traps, has_hardware_support};
 /// Risc-V per-CPU state.
 pub struct RISCVPerCpu;
 
-impl AxArchPerCpu for RISCVPerCpu {
+impl VmArchPerCpuOps for RISCVPerCpu {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         unsafe {
             setup_csrs();
@@ -45,6 +45,18 @@ impl AxArchPerCpu for RISCVPerCpu {
 
     fn hardware_disable(&mut self) -> AxResult<()> {
         unimplemented!()
+    }
+
+    fn max_guest_page_table_levels(&self) -> usize {
+        crate::max_guest_page_table_levels()
+    }
+
+    fn guest_phys_addr_bits(&self) -> usize {
+        match crate::max_guest_page_table_levels() {
+            3 => 41,
+            4 => 50,
+            _ => 0,
+        }
     }
 }
 

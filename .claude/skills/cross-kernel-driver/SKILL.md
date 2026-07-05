@@ -13,11 +13,11 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 
 ## Workflow
 
-1. Inspect the requested device, existing `drivers/` crates, root `Cargo.toml`, and any platform glue under `platform/axplat-dyn/src/drivers`.
+1. Inspect the requested device, existing `drivers/` crates, root `Cargo.toml`, and any platform glue under `platforms/axplat-dyn/src/drivers`.
 2. Place reusable hardware/IP crates under `drivers/<device-type>/...`; add a vendor/family subdirectory when it matches the existing type layout or avoids ambiguity.
 3. Keep `src/` OS independent. Put target-kernel glue, FDT/probe code, board setup, `iomap`, IRQ registration, and OS wakeups in `tests/`, examples, platform glue, or adapter crates.
 4. Add new driver crates to workspace `members` and `[workspace.dependencies]` when they are meant to be consumed by this repo.
-5. For ArceOS/dynamic-platform integration, keep adapters in the existing platform module names such as `platform/axplat-dyn/src/drivers/blk`, even if the reusable crate lives under `drivers/block`.
+5. For ArceOS/dynamic-platform integration, keep adapters in the existing platform module names such as `platforms/axplat-dyn/src/drivers/blk`, even if the reusable crate lives under `drivers/block`.
 6. Use small capability traits or API objects instead of a monolithic `KernelHal`. Split MMIO, DMA, IRQ event, queue contract, and wake/poll boundaries.
 7. Model queues as independent running units. Prefer APIs such as `submit`, `reclaim`, `poll`, `submit_request`, and `poll_request`.
 8. For IRQ-driven devices, keep control, IRQ handler, and queue endpoints separate. The control endpoint owns startup/config/service operations; the IRQ endpoint synchronizes hardware events; queue endpoints submit/reclaim work using queue-local state.
@@ -53,7 +53,7 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 
 Use `&mut self` APIs where exclusive access is the natural contract. Do not require callers to provide an OS lock as part of the portable abstraction. If only the IRQ callback should call a handler, make that visible in the type shape: move the handler into the callback and expose `handle(&mut self, ...)` instead of making the handler a clonable shared object.
 
-For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus `handle_irq() -> Event`.
+For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus an owned IRQ endpoint with `handle_irq(&mut self) -> Event`.
 
 Prefer small interfaces:
 

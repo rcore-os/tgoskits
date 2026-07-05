@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.8...loongarch_vcpu-v0.5.9) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Other
+
+- *(axvm)* decouple axvisor arch logic ([#1471](https://github.com/rcore-os/tgoskits/pull/1471))
+- *(axvm)* decouple vcpu backends ([#1467](https://github.com/rcore-os/tgoskits/pull/1467))
+
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.7...loongarch_vcpu-v0.5.8) - 2026-06-27
+
+### Other
+
+- updated the following local packages: axvcpu
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.6...loongarch_vcpu-v0.5.7) - 2026-06-23
 
 ### Other

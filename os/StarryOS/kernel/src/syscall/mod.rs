@@ -226,7 +226,15 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         // fd ops
         #[cfg(target_arch = "x86_64")]
         Sysno::open => sys_open(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::creat => sys_creat(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::openat => sys_openat(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::openat2 => sys_openat2(
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -247,7 +255,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::write => sys_write(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::writev => sys_writev(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::lseek => sys_lseek(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
-        Sysno::truncate => sys_truncate(uctx.arg0().into(), uctx.arg1() as _),
+        Sysno::truncate => sys_truncate(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::ftruncate => sys_ftruncate(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fallocate => sys_fallocate(
             uctx.arg0() as _,
@@ -465,6 +473,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
 
         // event
         Sysno::eventfd2 => sys_eventfd2(uctx.arg0() as _, uctx.arg1() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::eventfd => sys_eventfd(uctx.arg0() as _),
         #[cfg(target_arch = "x86_64")]
         Sysno::inotify_init => sys_inotify_init1(0),
         Sysno::inotify_init1 => sys_inotify_init1(uctx.arg0() as _),
@@ -780,7 +790,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::getrandom => sys_getrandom(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::seccomp => sys_seccomp(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         #[cfg(target_arch = "riscv64")]
-        Sysno::riscv_flush_icache => sys_riscv_flush_icache(),
+        Sysno::riscv_flush_icache => sys_riscv_flush_icache(uctx.arg0(), uctx.arg1(), uctx.arg2()),
         #[cfg(target_arch = "riscv64")]
         Sysno::riscv_hwprobe => sys_riscv_hwprobe(
             uctx.arg0() as _,

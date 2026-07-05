@@ -1,13 +1,5 @@
 mod binding;
 
-#[cfg(any(
-    feature = "k230-sdhci",
-    feature = "phytium-mci",
-    feature = "rockchip-dwmmc",
-    feature = "rockchip-sdhci",
-    feature = "starfive-jh7110-dwmmc"
-))]
-pub(crate) mod sdmmc;
 #[allow(unused)]
 mod shared;
 
@@ -25,18 +17,16 @@ pub mod nvme;
 pub mod phytium_mci;
 #[cfg(feature = "ramdisk")]
 pub mod ramdisk;
-#[cfg(feature = "rockchip-sdhci")]
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
 mod rockchip;
-#[cfg(feature = "rockchip-sdhci")]
-pub mod rockchip_mmc;
-#[cfg(feature = "rockchip-dwmmc")]
-pub mod rockchip_sd;
 #[cfg(feature = "starfive-jh7110-dwmmc")]
 pub mod starfive_mmc;
 
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};
 
+#[cfg(sync_block_dev)]
+use ax_kspin::SpinRaw as Mutex;
 pub use binding::*;
 #[cfg(sync_block_dev)]
 use rdif_block::{
@@ -45,8 +35,6 @@ use rdif_block::{
 };
 #[allow(unused)]
 pub(crate) use shared::SharedDriver;
-#[cfg(sync_block_dev)]
-use spin::Mutex;
 
 #[cfg(sync_block_dev)]
 pub(crate) trait SyncBlockOps: Send + 'static {

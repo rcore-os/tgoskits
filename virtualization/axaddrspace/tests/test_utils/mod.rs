@@ -15,8 +15,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
-use ax_page_table_multiarch::PagingHandler;
+use ax_memory_addr::{PhysAddr, VirtAddr};
 use lazy_static::lazy_static;
 
 /// The starting physical address for the simulated memory region in tests.
@@ -62,41 +61,6 @@ pub static ALLOC_SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
 /// It simulates memory allocation and deallocation without actual hardware interaction.
 pub struct MockHal {}
 
-impl PagingHandler for MockHal {
-    fn alloc_frame() -> Option<PhysAddr> {
-        Self::mock_alloc_frame()
-    }
-
-    fn alloc_frames(count: usize, _align: usize) -> Option<PhysAddr> {
-        if count == 0 {
-            return Some(PhysAddr::from(0));
-        }
-        // For simplicity, just allocate frames sequentially
-        let first = Self::mock_alloc_frame()?;
-        for _ in 1..count {
-            if Self::mock_alloc_frame().is_none() {
-                return None;
-            }
-        }
-        Some(first)
-    }
-
-    fn dealloc_frame(_paddr: PhysAddr) {
-        Self::mock_dealloc_frame(_paddr)
-    }
-
-    fn dealloc_frames(paddr: PhysAddr, count: usize) {
-        for i in 0..count {
-            let offset = i * PAGE_SIZE;
-            Self::mock_dealloc_frame(PhysAddr::from(paddr.as_usize() + offset));
-        }
-    }
-
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        Self::mock_phys_to_virt(paddr)
-    }
-}
-
 /// A utility decorator for test functions that require the MockHal state to be reset before execution.
 pub fn mock_hal_test<F, R>(test_fn: F) -> R
 where
@@ -108,26 +72,6 @@ where
 }
 
 impl MockHal {
-    /// Simulates the allocation of a single physical frame.
-    pub fn mock_alloc_frame() -> Option<PhysAddr> {
-        // Use a static mutable variable to control alloc_should_fail state
-        if ALLOC_SHOULD_FAIL.load(Ordering::SeqCst) {
-            return None;
-        }
-
-        let paddr = NEXT_PADDR.fetch_add(PAGE_SIZE, Ordering::SeqCst);
-        if paddr >= MEMORY_LEN + BASE_PADDR {
-            return None;
-        }
-        ALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
-        Some(PhysAddr::from_usize(paddr))
-    }
-
-    /// Simulates the deallocation of a single physical frame.
-    pub fn mock_dealloc_frame(_paddr: PhysAddr) {
-        DEALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
-    }
-
     /// In this test mock, the "virtual address" is simply a direct pointer
     /// to the corresponding location within the `MEMORY` array.
     /// It simulates a physical-to-virtual memory mapping for test purposes.

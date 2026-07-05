@@ -18,7 +18,7 @@ use ax_errno::{AxError, AxResult};
 use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceRegistration, IrqResolver,
+    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, MmioDeviceAdapter,
 };
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink,
@@ -44,7 +44,7 @@ impl ConsoleIf for TestConsole {
 
     fn claim_runtime_output() {}
 
-    fn irq_num() -> Option<usize> {
+    fn irq_num() -> Option<irq_framework::IrqId> {
         None
     }
 
@@ -75,8 +75,8 @@ impl TimeIf for TestTime {
         0
     }
 
-    fn irq_num() -> usize {
-        0
+    fn irq_num() -> irq_framework::IrqId {
+        irq_framework::IrqId::new(irq_framework::IrqDomainId(0), irq_framework::HwIrq(0))
     }
 
     fn set_oneshot_timer(_deadline_ns: u64) {}
@@ -153,11 +153,13 @@ impl DeviceFactory for IrqMmioFactory {
             return Err(AxError::InvalidInput);
         };
         let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
-        Ok(DeviceRegistration::Mmio(Arc::new(IrqMmioDevice {
-            range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
-            line,
-        }))
-        .into())
+        Ok(
+            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(Arc::new(IrqMmioDevice {
+                range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
+                line,
+            })))
+            .into(),
+        )
     }
 }
 
@@ -325,5 +327,5 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
         vec![IrqEvent::Pulse(IrqLineId(17))]
     );
     assert!(sink_b.upgrade().unwrap().events().is_empty());
-    assert_eq!(devices_b.iter_mmio_dev().count(), 1);
+    assert_eq!(devices_b.devices().count(), 1);
 }

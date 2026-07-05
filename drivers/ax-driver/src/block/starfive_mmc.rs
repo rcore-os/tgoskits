@@ -1,7 +1,7 @@
 use alloc::format;
 use core::time::Duration;
 
-use dwmmc_host::DwMmc;
+use dwmmc_host::{DwMmc, rdif as dwmmc_rdif};
 use log::{info, warn};
 use rdrive::{
     probe::OnProbeError,
@@ -10,21 +10,19 @@ use rdrive::{
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
-    sdio::{CardInfo, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::SdioInitScratch,
+    },
 };
 
-use crate::{
-    block::{
-        ProbeFdtBlock, SharedDriver,
-        sdmmc::{SdmmcBlockConfig, SdmmcBlockDevice},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 const STARFIVE_JH7110_MMC1_BASE: u64 = 0x1602_0000;
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 
-type StarFiveDwMmc = SdioSdmmc<DwMmc>;
+type StarFiveDwMmc = SdioSdmmc<SdioHost2Adapter<DwMmc>>;
 
 crate::model_register!(
     name: "StarFive JH7110 MMC",
@@ -77,7 +75,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .map_err(|err| init_error(address, mmio_size, err))?;
 
     info!("starfive-jh7110-dwmmc: initialize card");
-    let mut sd = SdioSdmmc::new(host);
+    let mut sd = SdioSdmmc::new_host2(host);
     sd.set_sd_speed_selection_enabled(false);
     let card_info = poll_card_init(&mut sd).map_err(|err| {
         warn!("starfive-jh7110-dwmmc: card init failed: {:?}", err);
@@ -95,10 +93,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         card_info.ext_csd.is_some()
     );
 
-    let raw = SharedDriver::new(sd);
-    let dev = SdmmcBlockDevice::new(
-        raw,
-        SdmmcBlockConfig::fifo(
+    let dev = dwmmc_rdif::device(
+        sd,
+        dwmmc_rdif::fifo_config(
             "starfive-jh7110-mmc",
             card_info.capacity_blocks.unwrap_or(0),
             false,

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.5...starry-kernel-v0.6.6) - 2026-07-02
+
+### Added
+
+- *(axtest)* simplify kernel test targets ([#1470](https://github.com/rcore-os/tgoskits/pull/1470))
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+- *(axtest)* add ArceOS QEMU smoke coverage ([#1365](https://github.com/rcore-os/tgoskits/pull/1365))
+- *(starry)* ARM PMUv3 hardware-PMU perf support (perf stat / record / report) ([#1395](https://github.com/rcore-os/tgoskits/pull/1395))
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(starry-kernel)* make evdev polling demand driven ([#1450](https://github.com/rcore-os/tgoskits/pull/1450))
+- *(starry-kernel)* sync riscv ptrace single-step text ([#1444](https://github.com/rcore-os/tgoskits/pull/1444))
+- *(starry-kernel)* resolve PMU IRQ through typed domain
+- *(irq)* close domain runtime review gaps
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- fix LTP-derived syscall conformance gaps ([#1464](https://github.com/rcore-os/tgoskits/pull/1464))
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- # feat(starry): add Qt6 calculator test + fix input event delivery ([#1396](https://github.com/rcore-os/tgoskits/pull/1396))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.4...starry-kernel-v0.6.5) - 2026-06-27
+
+### Added
+
+- *(starry-kernel)* add USB serial tty support
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(rknpu)* honor GEM cache flags for mmap ([#1364](https://github.com/rcore-os/tgoskits/pull/1364))
+- *(starry-kernel)* Cow RSS per-VA charge tracking, and /proc memory stats improvements ([#1173](https://github.com/rcore-os/tgoskits/pull/1173))
+- *(starry-kernel)* align socket QoS options with Linux ([#1319](https://github.com/rcore-os/tgoskits/pull/1319))
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
+### Other
+
+- Merge pull request #1378 from rcore-os/feat/starry-usb-serial-tty
+- *(starry-kernel)* move USB serial logic into driver crate
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+- # feat(starry): implement PRIME dma-buf for card0 + add ffplay Wayland integration test ([#1268](https://github.com/rcore-os/tgoskits/pull/1268))
+
 ## [0.6.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.3...starry-kernel-v0.6.4) - 2026-06-23
 
 ### Added

@@ -1,8 +1,9 @@
 //! `Sdhci` core: MMIO accessors, reset, clock and bus-width setup.
 
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
@@ -32,68 +33,188 @@ pub(crate) struct PendingData {
 /// `new` is `unsafe` because the caller must provide a valid, exclusive
 /// MMIO base address for an SDHCI v3.x compatible controller. Concurrent
 /// use of the same controller from multiple `Sdhci` instances is undefined.
+const IRQ_GENERATION_SHIFT: u64 = 32;
+const IRQ_NORMAL_MASK: u64 = 0xffff;
+const IRQ_ERROR_SHIFT: u64 = 16;
+
 pub(crate) struct IrqState {
-    pending_normal: AtomicU32,
-    pending_error: AtomicU32,
+    mailbox: AtomicU64,
+    next_generation: AtomicU32,
 }
 
 impl IrqState {
     const fn new() -> Self {
         Self {
-            pending_normal: AtomicU32::new(0),
-            pending_error: AtomicU32::new(0),
+            mailbox: AtomicU64::new(0),
+            next_generation: AtomicU32::new(0),
         }
     }
 
-    pub(crate) fn cache(&self, normal: u16, error: u16) {
-        if normal != 0 {
-            self.pending_normal
-                .fetch_or(normal as u32, Ordering::AcqRel);
+    pub(crate) fn begin_request(&self) {
+        let generation = self.next_generation();
+        self.mailbox
+            .store(pack_mailbox(generation, 0, 0), Ordering::Release);
+    }
+
+    pub(crate) fn end_request(&self) {
+        self.mailbox.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn cache_if_current(&self, generation: u32, normal: u16, error: u16) {
+        if generation == 0 || (normal == 0 && error == 0) {
+            return;
         }
-        if error != 0 {
-            self.pending_error.fetch_or(error as u32, Ordering::AcqRel);
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            if mailbox_generation(cur) != generation {
+                return;
+            }
+            let next = pack_mailbox(
+                generation,
+                mailbox_normal(cur) | normal,
+                mailbox_error(cur) | error,
+            );
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
         }
+    }
+
+    pub(crate) fn generation(&self) -> u32 {
+        mailbox_generation(self.mailbox.load(Ordering::Acquire))
     }
 
     pub(crate) fn take_normal(&self, mask: u16) -> u16 {
-        take_cached_bits(&self.pending_normal, mask as u32) as u16
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let normal = mailbox_normal(cur);
+            let taken = normal & mask;
+            if taken == 0 {
+                return 0;
+            }
+            let next = pack_mailbox(mailbox_generation(cur), normal & !mask, mailbox_error(cur));
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return taken,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     pub(crate) fn take_error_all(&self) -> u16 {
-        self.pending_error.swap(0, Ordering::AcqRel) as u16
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let error = mailbox_error(cur);
+            if error == 0 {
+                return 0;
+            }
+            let next = pack_mailbox(mailbox_generation(cur), mailbox_normal(cur), 0);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return error,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     pub(crate) fn clear_normal(&self, mask: u16) {
-        self.pending_normal
-            .fetch_and(!(mask as u32), Ordering::AcqRel);
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let next = pack_mailbox(
+                mailbox_generation(cur),
+                mailbox_normal(cur) & !mask,
+                mailbox_error(cur),
+            );
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     pub(crate) fn clear_all(&self) {
-        self.pending_normal.store(0, Ordering::Release);
-        self.pending_error.store(0, Ordering::Release);
+        let mut cur = self.mailbox.load(Ordering::Acquire);
+        loop {
+            let next = pack_mailbox(mailbox_generation(cur), 0, 0);
+            match self
+                .mailbox
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn pending_normal(&self) -> u16 {
-        self.pending_normal.load(Ordering::Acquire) as u16
+        mailbox_normal(self.mailbox.load(Ordering::Acquire))
     }
 
     #[cfg(test)]
     pub(crate) fn pending_error(&self) -> u16 {
-        self.pending_error.load(Ordering::Acquire) as u16
+        mailbox_error(self.mailbox.load(Ordering::Acquire))
+    }
+
+    fn next_generation(&self) -> u32 {
+        let mut cur = self.next_generation.load(Ordering::Acquire);
+        loop {
+            let mut next = cur.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.next_generation.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return next,
+                Err(observed) => cur = observed,
+            }
+        }
     }
 }
 
-fn take_cached_bits(cache: &AtomicU32, mask: u32) -> u32 {
-    let mut cur = cache.load(Ordering::Acquire);
-    loop {
-        let taken = cur & mask;
-        if taken == 0 {
-            return 0;
-        }
-        match cache.compare_exchange_weak(cur, cur & !mask, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return taken,
-            Err(next) => cur = next,
+fn pack_mailbox(generation: u32, normal: u16, error: u16) -> u64 {
+    ((generation as u64) << IRQ_GENERATION_SHIFT)
+        | normal as u64
+        | ((error as u64) << IRQ_ERROR_SHIFT)
+}
+
+fn mailbox_generation(value: u64) -> u32 {
+    (value >> IRQ_GENERATION_SHIFT) as u32
+}
+
+fn mailbox_normal(value: u64) -> u16 {
+    (value & IRQ_NORMAL_MASK) as u16
+}
+
+fn mailbox_error(value: u64) -> u16 {
+    ((value >> IRQ_ERROR_SHIFT) & IRQ_NORMAL_MASK) as u16
+}
+
+pub(crate) struct IrqCore {
+    pub(crate) base_addr: usize,
+    pub(crate) state: IrqState,
+}
+
+impl IrqCore {
+    fn new(base_addr: usize) -> Self {
+        Self {
+            base_addr,
+            state: IrqState::new(),
         }
     }
 }
@@ -110,7 +231,15 @@ pub struct Sdhci {
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
     /// Used on controllers whose internal divider is unusable.
-    pub(crate) ext_clock: Option<&'static dyn HostClock>,
+    pub(crate) ext_clock: Option<Box<dyn HostClock>>,
+    /// Optional platform hook that runs after a controller-wide reset has
+    /// completed and before protocol commands are issued. DWCMSHC-style
+    /// integrations use this for vendor PHY/DLL defaults that reset does not
+    /// leave in a usable identification-mode state.
+    pub(crate) reset_hook: Option<&'static dyn HostResetHook>,
+    /// Optional monotonic timer used by asynchronous bus-operation state
+    /// machines that have specification-defined wall-clock delays.
+    pub(crate) timer: Option<&'static dyn HostTimer>,
     /// Whether the platform has wired up the IO-domain regulator needed to
     /// actually run the bus at 1.8 V. Default `false` — toggling
     /// `HOST_CONTROL2.1V8_SIGNALING_ENABLE` alone changes the controller
@@ -123,7 +252,10 @@ pub struct Sdhci {
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
-    pub(crate) irq_state: IrqState,
+    pub(crate) dma_poisoned: bool,
+    pub(crate) irq: Arc<IrqCore>,
+    pub(crate) host2_next_id: u64,
+    pub(crate) host2_active_id: Option<u64>,
 }
 
 impl Sdhci {
@@ -140,11 +272,16 @@ impl Sdhci {
             pending_data: None,
             use_dma: false,
             ext_clock: None,
+            reset_hook: None,
+            timer: None,
             support_1v8: false,
             active_data_cmd: 0,
             dma: None,
             dma_mask: u32::MAX as u64,
-            irq_state: IrqState::new(),
+            dma_poisoned: false,
+            irq: Arc::new(IrqCore::new(base.as_ptr() as usize)),
+            host2_next_id: 0,
+            host2_active_id: None,
         }
     }
 
@@ -175,6 +312,11 @@ impl Sdhci {
         unsafe { Self::new(base) }
     }
 
+    /// Return the mapped MMIO base address owned by this driver instance.
+    pub fn mmio_base(&self) -> usize {
+        self.base_addr
+    }
+
     /// Install a CRU-side clock callback so subsequent `set_clock` calls
     /// retune the platform's reference clock instead of using the SDHCI
     /// internal divider. The callback receives the desired SD bus
@@ -184,11 +326,35 @@ impl Sdhci {
     /// After installing the callback, the host runs in "external clock"
     /// mode: the SDHCI internal divider stays at 1:1, all rate control
     /// is delegated to the platform.
-    pub fn set_external_clock<C>(&mut self, clock: &'static C)
+    pub fn set_external_clock<C>(&mut self, clock: C)
     where
         C: HostClock + 'static,
     {
-        self.ext_clock = Some(clock);
+        self.ext_clock = Some(Box::new(clock));
+    }
+
+    /// Remove the platform clock callback once the caller no longer wants
+    /// the host to borrow the probe-time clock device.
+    pub fn clear_external_clock(&mut self) {
+        self.ext_clock = None;
+    }
+
+    /// Install a platform post-reset hook. The hook is called after ResetAll
+    /// clears, both for the legacy blocking reset helper and for the native
+    /// `sdio-host2` bus-operation state machine.
+    pub fn set_reset_hook<H>(&mut self, hook: &'static H)
+    where
+        H: HostResetHook + 'static,
+    {
+        self.reset_hook = Some(hook);
+    }
+
+    /// Install a platform monotonic timer in milliseconds.
+    pub fn set_timer<T>(&mut self, timer: &'static T)
+    where
+        T: HostTimer + 'static,
+    {
+        self.timer = Some(timer);
     }
 
     /// Declare that the platform can switch the SD/eMMC IO rail to 1.8 V.
@@ -213,10 +379,23 @@ impl Sdhci {
         self.dma = Some(dma);
     }
 
+    pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {
+        if self.dma_poisoned {
+            Err(Error::BusError(ErrorContext::new(Phase::DataRead)))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn poison_dma(&mut self) {
+        self.dma_poisoned = true;
+    }
+
     /// Reset the controller (CMD line + DAT line + state) by writing the
     /// "Reset All" bit and waiting for it to clear.
     pub fn reset_all(&mut self) -> Result<(), Error> {
         self.reset_with_mask(RESET_ALL, Phase::Init)
+            .inspect(|_| self.dma_poisoned = false)
     }
 
     /// Reset the CMD line state machine (clears any stuck CMD inhibit).
@@ -230,9 +409,19 @@ impl Sdhci {
     }
 
     fn reset_with_mask(&mut self, mask: u8, phase: Phase) -> Result<(), Error> {
+        if mask == RESET_ALL
+            && let Some(hook) = self.reset_hook
+        {
+            hook.before_reset_all(self)?;
+        }
         self.write_u8(REG_SOFTWARE_RESET, mask);
         for _ in 0..1000 {
             if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
+                if mask == RESET_ALL
+                    && let Some(hook) = self.reset_hook
+                {
+                    hook.after_reset(self)?;
+                }
                 return Ok(());
             }
             spin_loop();
@@ -282,24 +471,33 @@ impl Sdhci {
         Err(Error::Timeout(ErrorContext::new(Phase::Init)))
     }
 
-    /// Bypass the internal divider and trust the platform-supplied ref
-    /// clock to already be at the SD bus frequency.
+    /// Enable SD clock after the platform-supplied input clock has been set.
     ///
     /// Use this on controllers whose internal 10-bit divider is unusable
     /// (e.g. DWC MSHC variants, or cores that report `BaseClockFreq = 0`
     /// in Capabilities and require the SoC's CRU to do all the frequency
     /// scaling). In that mode the caller is expected to:
     ///
-    /// 1. Reprogram the SoC clock controller so the controller's input
-    ///    reference clock equals the desired SD bus frequency.
-    /// 2. Call `enable_clock_external()` to gate the SD clock on with a
-    ///    1:1 divider.
+    /// 1. Reprogram the SoC clock controller to a usable input clock.
+    /// 2. Call `enable_clock_external()` to gate the SD clock on, usually
+    ///    with a 1:1 divider. Platforms that quantize low rates can pass the
+    ///    actual input rate so the standard divider avoids broken encodings.
     ///
     /// If `target_hz` is 0 the SD clock is left disabled.
-    pub fn enable_clock_external(&mut self) -> Result<(), Error> {
-        // Disable, then re-enable with divider = 0 (== 1:1 passthrough).
+    pub fn enable_clock_external(
+        &mut self,
+        input_hz: u32,
+        target_hz: u32,
+        div_zero_broken: bool,
+    ) -> Result<(), Error> {
+        // Disable, then re-enable with the smallest SDHCI divider that does
+        // not exceed the requested bus clock.
         self.write_u16(REG_CLOCK_CONTROL, 0);
-        let clk_ctrl = CLOCK_INTERNAL_ENABLE; // div=0
+        if target_hz == 0 {
+            return Ok(());
+        }
+        let div = crate::sdhci_clock_divisor_with_quirk(input_hz, target_hz, div_zero_broken);
+        let clk_ctrl = ((div & 0xFF) << 8) | ((div & 0x300) >> 2) | CLOCK_INTERNAL_ENABLE;
         self.write_u16(REG_CLOCK_CONTROL, clk_ctrl);
         for _ in 0..1000 {
             if self.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0 {
@@ -310,6 +508,35 @@ impl Sdhci {
             spin_loop();
         }
         Err(Error::Timeout(ErrorContext::new(Phase::Init)))
+    }
+
+    /// Enable SDHCI internal/card clock without programming a divided
+    /// SDCLK value. Rockchip DWCMSHC follows Linux's `sdhci_enable_clk(host,
+    /// 0)` path after SoC-side clocking and DLL registers have already been
+    /// configured; applying the generic divider again can underclock
+    /// identification mode and leave the command FSM stuck.
+    pub fn enable_clock_passthrough(&mut self, target_hz: u32) -> Result<(), Error> {
+        self.write_u16(REG_CLOCK_CONTROL, 0);
+        if target_hz == 0 {
+            return Ok(());
+        }
+        self.write_u16(REG_CLOCK_CONTROL, CLOCK_INTERNAL_ENABLE);
+        for _ in 0..1000 {
+            if self.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0 {
+                let stable = self.read_u16(REG_CLOCK_CONTROL) | CLOCK_SD_ENABLE;
+                self.write_u16(REG_CLOCK_CONTROL, stable);
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
+    }
+
+    pub(crate) fn start_passthrough_clock(&mut self, target_hz: u32) {
+        self.write_u16(REG_CLOCK_CONTROL, 0);
+        if target_hz != 0 {
+            self.write_u16(REG_CLOCK_CONTROL, CLOCK_INTERNAL_ENABLE);
+        }
     }
 
     /// Disable the SD clock without reprogramming the divider. Use this
@@ -334,6 +561,10 @@ impl Sdhci {
         // Don't route to host CPU IRQ — leave Signal Enable cleared.
         self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
         self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
+    }
+
+    pub(crate) fn enable_polling_interrupt_status(&mut self) {
+        self.enable_interrupts();
     }
 
     /// Route command/data-completion and error status to the host CPU IRQ line.
@@ -431,8 +662,45 @@ impl Sdhci {
 /// OS glue implements this boundary and installs it with
 /// [`Sdhci::set_external_clock`]. The driver core only knows that the
 /// callback retunes the controller input clock to the requested SD bus rate.
-pub trait HostClock: Sync {
+pub trait HostClock: Send {
     fn set_clock(&self, target_hz: u32) -> Result<(), Error>;
+
+    /// Effective bus clock to request from the platform for a protocol speed.
+    ///
+    /// Platforms may quantize requested rates before the clock controller sees
+    /// them. RK35xx, for example, uses 375 kHz for identification mode.
+    fn effective_clock_hz(&self, target_hz: u32) -> u32 {
+        target_hz
+    }
+
+    /// Whether SDHCI divider encoding zero is unusable for this integration.
+    fn clock_div_zero_broken(&self) -> bool {
+        false
+    }
+
+    /// Configure host-controller side clock glue after the platform input
+    /// clock has been retuned and while SD clock output is still gated off.
+    ///
+    /// DWCMSHC-style integrations use this for vendor DLL/bypass registers.
+    /// Plain SDHCI hosts can rely on the default no-op implementation.
+    fn prepare_host_clock(&self, _host: &mut Sdhci, _target_hz: u32) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Platform hook for SDHCI integrations that need vendor register setup after
+/// controller ResetAll has completed.
+pub trait HostResetHook: Sync {
+    fn before_reset_all(&self, _host: &mut Sdhci) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn after_reset(&self, host: &mut Sdhci) -> Result<(), Error>;
+}
+
+/// Platform monotonic-time capability used for specification-defined delays.
+pub trait HostTimer: Sync {
+    fn now_ms(&self) -> u64;
 }
 
 #[inline]
@@ -442,7 +710,10 @@ fn spin_loop() {
 
 #[cfg(test)]
 mod tests {
-    use core::ptr::NonNull;
+    use core::{
+        ptr::NonNull,
+        sync::atomic::{AtomicU8, Ordering},
+    };
 
     use super::*;
 
@@ -459,5 +730,76 @@ mod tests {
         let host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
 
         assert_eq!(host.base_addr, 0x1000_0000);
+    }
+
+    #[test]
+    fn external_clock_can_be_scoped_and_cleared() {
+        struct Clock;
+
+        impl HostClock for Clock {
+            fn set_clock(&self, _target_hz: u32) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+
+        let mut mmio = [0u8; 256];
+        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+
+        host.set_external_clock(Clock);
+        assert!(host.ext_clock.is_some());
+
+        host.clear_external_clock();
+        assert!(host.ext_clock.is_none());
+    }
+
+    #[test]
+    fn reset_all_calls_platform_before_hook_before_software_reset() {
+        struct Hook;
+        static OBSERVED_RESET: AtomicU8 = AtomicU8::new(u8::MAX);
+
+        impl HostResetHook for Hook {
+            fn before_reset_all(&self, host: &mut Sdhci) -> Result<(), Error> {
+                OBSERVED_RESET.store(host.read_u8(REG_SOFTWARE_RESET), Ordering::Release);
+                Ok(())
+            }
+
+            fn after_reset(&self, _host: &mut Sdhci) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+
+        static HOOK: Hook = Hook;
+        let mut mmio = [0u8; 256];
+        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.set_reset_hook(&HOOK);
+
+        assert!(host.reset_all().is_err());
+
+        assert_eq!(OBSERVED_RESET.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn polling_interrupt_status_enable_keeps_signal_irq_masked() {
+        let mut mmio = [0u8; 256];
+        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.write_u16(REG_NORMAL_INT_STATUS_ENABLE, 0);
+        host.write_u16(REG_ERROR_INT_STATUS_ENABLE, 0);
+        host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CLEAR_ALL);
+        host.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, ERROR_INT_CLEAR_ALL);
+
+        host.enable_polling_interrupt_status();
+        assert_eq!(
+            host.read_u16(REG_NORMAL_INT_STATUS_ENABLE),
+            NORMAL_INT_CLEAR_ALL
+        );
+        assert_eq!(
+            host.read_u16(REG_ERROR_INT_STATUS_ENABLE),
+            ERROR_INT_CLEAR_ALL
+        );
+        assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+        assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
     }
 }

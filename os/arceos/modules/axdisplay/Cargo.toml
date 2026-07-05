@@ -1,6 +1,6 @@
 [package]
 name = "ax-display"
-version = "0.5.20"
+version = "0.6.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>"]
@@ -12,3 +12,4 @@ ax-sync.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true
 rdif-display.workspace = true
+irq-framework.workspace = true

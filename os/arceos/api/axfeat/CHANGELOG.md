@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.23...ax-feat-v0.5.24) - 2026-07-02
+
+### Other
+
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.22...ax-feat-v0.5.23) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-feat-v0.5.21...ax-feat-v0.5.22) - 2026-06-23
 
 ### Other

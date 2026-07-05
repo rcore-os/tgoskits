@@ -27,12 +27,12 @@
 
 use alloc::{collections::VecDeque, string::String, sync::Arc};
 use core::{
-    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
+use ax_memory_addr::PhysAddr;
 use ax_task::WaitQueue;
 use sg2002_tpu::{
     ion::IonBuffer,
@@ -50,7 +50,10 @@ use sg2002_tpu::{
 
 use crate::{
     file::{get_file_like, ion::IonBufferFile},
-    pseudofs::DeviceOps,
+    pseudofs::{
+        DeviceOps,
+        dev::{IrqRegistration, request_shared_disabled},
+    },
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -97,41 +100,140 @@ static HW_PTR: AtomicPtr<Sg2002Tpu> = AtomicPtr::new(core::ptr::null_mut());
 pub struct TpuDevice {
     /// 硬件层
     hw: Arc<Sg2002Tpu>,
-    /// 是否已注册中断
-    irq_registered: bool,
+    resource: TpuResource,
+    /// TDMA IRQ action registration.
+    irq_registration: Option<IrqRegistration>,
 }
 
-// From SG2002 TPU DT node:
-// interrupts = <0x4b 0x04 0x4c 0x04>;
-// interrupt-names = "tiu_irq\0tdma_irq";
-// so TDMA uses the second IRQ: 0x4c (76).
-const TPU_TDMA_IRQ: usize = 76;
+const TPU_COMPATIBLES: &[&str] = &["cvitek,tpu"];
+const TPU_TDMA_IRQ_NAME: &str = "tdma_irq";
+const TPU_DEFAULT_MMIO_SIZE: usize = 0x1000;
 
 /// 等待 TDMA 完成的总超时（约 10 秒）。
 const TPU_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn register_tpu_irq(hw: &Arc<Sg2002Tpu>) -> bool {
-    let data = unsafe { NonNull::new_unchecked(Arc::as_ptr(hw) as *mut ()) };
-    if ax_runtime::hal::irq::request_shared_irq(TPU_TDMA_IRQ, tpu_tdma_irq_handler, data).is_err() {
-        warn!("[TPU] failed to register tdma irq {}", TPU_TDMA_IRQ);
-        return false;
-    }
-    ax_runtime::hal::irq::set_enable(TPU_TDMA_IRQ, true);
-    true
+#[derive(Clone, Copy)]
+struct TpuResource {
+    tdma_paddr: usize,
+    tdma_size: usize,
+    tiu_paddr: usize,
+    tiu_size: usize,
+    irq: Option<ax_runtime::hal::irq::IrqId>,
 }
 
-unsafe fn tpu_tdma_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    let hw = unsafe { &*(data.as_ptr() as *const Sg2002Tpu) };
-    if hw.handle_irq() {
-        warn!("[TPU] tdma irq {} reports error status", TPU_TDMA_IRQ);
+impl TpuResource {
+    fn probe() -> Option<Self> {
+        let resource = Self::from_fdt();
+        if resource.is_none() {
+            warn!("[TPU] cvitek,tpu node not found or invalid in FDT");
+        }
+        resource
     }
-    // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
-    // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
-    IRQ_WQ.notify_all(false);
-    ax_runtime::hal::irq::IrqReturn::Handled
+
+    fn from_fdt() -> Option<Self> {
+        rdrive::with_fdt(|fdt| {
+            fdt.find_compatible(TPU_COMPATIBLES)
+                .into_iter()
+                .find_map(Self::from_fdt_node)
+        })
+        .flatten()
+    }
+
+    fn from_fdt_node(node: rdrive::probe::fdt::NodeType<'_>) -> Option<Self> {
+        if matches!(
+            node.as_node().status(),
+            Some(rdrive::probe::fdt::Status::Disabled)
+        ) {
+            return None;
+        }
+
+        let mut regs = node.regs().into_iter();
+        let tdma = regs.next()?;
+        let tiu = regs.next()?;
+        let irq = match resolve_named_fdt_irq(&node, TPU_TDMA_IRQ_NAME) {
+            Ok(irq) => irq,
+            Err(err) => {
+                warn!("[TPU] failed to resolve {TPU_TDMA_IRQ_NAME}: {err:?}");
+                return None;
+            }
+        };
+
+        Some(Self {
+            tdma_paddr: tdma.address as usize,
+            tdma_size: tdma.size.unwrap_or(TPU_DEFAULT_MMIO_SIZE as u64) as usize,
+            tiu_paddr: tiu.address as usize,
+            tiu_size: tiu.size.unwrap_or(TPU_DEFAULT_MMIO_SIZE as u64) as usize,
+            irq,
+        })
+    }
+}
+
+fn resolve_named_fdt_irq(
+    node: &rdrive::probe::fdt::NodeType<'_>,
+    name: &str,
+) -> Result<Option<ax_runtime::hal::irq::IrqId>, ax_runtime::hal::irq::IrqError> {
+    let Some(irq) = ax_driver::binding_irq_from_named_fdt_interrupt(node, name)
+        .map_err(|_| ax_runtime::hal::irq::IrqError::Unsupported)?
+    else {
+        return Ok(None);
+    };
+    ax_runtime::irq::resolve_binding_irq(irq).map(Some)
+}
+
+fn map_tpu_mmio(resource: TpuResource) -> Option<(*mut u8, *mut u8)> {
+    let tdma = match axklib::mem::iomap(PhysAddr::from(resource.tdma_paddr), resource.tdma_size) {
+        Ok(vaddr) => vaddr.as_mut_ptr(),
+        Err(err) => {
+            warn!(
+                "[TPU] failed to map TDMA MMIO at {:#x}+{:#x}: {err:?}",
+                resource.tdma_paddr, resource.tdma_size
+            );
+            return None;
+        }
+    };
+    let tiu = match axklib::mem::iomap(PhysAddr::from(resource.tiu_paddr), resource.tiu_size) {
+        Ok(vaddr) => vaddr.as_mut_ptr(),
+        Err(err) => {
+            warn!(
+                "[TPU] failed to map TIU MMIO at {:#x}+{:#x}: {err:?}",
+                resource.tiu_paddr, resource.tiu_size
+            );
+            return None;
+        }
+    };
+    Some((tdma, tiu))
+}
+
+fn register_tpu_irq(
+    irq: Option<ax_runtime::hal::irq::IrqId>,
+    hw: &Arc<Sg2002Tpu>,
+) -> Option<IrqRegistration> {
+    let Some(irq) = irq else {
+        warn!("[TPU] TDMA IRQ not available; execution will use MMIO poll fallback");
+        return None;
+    };
+    let hw = Arc::clone(hw);
+    let registration = match request_shared_disabled(irq, move |_| {
+        if hw.handle_irq() {
+            warn!("[TPU] TDMA IRQ {irq:?} reports error status");
+        }
+        // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
+        // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
+        IRQ_WQ.notify_all(false);
+        ax_runtime::hal::irq::IrqReturn::Handled
+    }) {
+        Ok(registration) => registration,
+        Err(err) => {
+            warn!("[TPU] failed to register TDMA IRQ {irq:?}: {err:?}");
+            return None;
+        }
+    };
+    if let Err(err) = registration.enable() {
+        warn!("[TPU] failed to enable TDMA IRQ {irq:?}: {err:?}");
+        return None;
+    }
+    info!("[TPU] TDMA IRQ {irq:?} registered and enabled");
+    Some(registration)
 }
 
 /// 注入给 driver core 的阻塞等待函数：在超时内睡眠等待 TDMA 中断到达。
@@ -194,32 +296,32 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
 }
 
 impl TpuDevice {
-    /// 创建 TPU 设备（使用默认物理地址）
-    ///
-    /// # Safety
-    /// 调用者必须确保偏移计算后的虚拟地址有效。
-    pub unsafe fn new() -> Self {
-        let hw = Arc::new(unsafe { Sg2002Tpu::new() });
-        Self::setup(hw)
-    }
-
-    /// 使用指定的虚拟地址创建 TPU 设备
-    ///
-    /// # Safety
-    /// 调用者必须确保虚拟地址有效。
-    #[allow(dead_code)]
-    pub unsafe fn from_vaddr(tdma_vaddr: *mut u8, tiu_vaddr: *mut u8) -> Self {
-        let hw = Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma_vaddr, tiu_vaddr) });
-        Self::setup(hw)
+    pub fn probe() -> Option<Self> {
+        let resource = TpuResource::probe()?;
+        let hw = {
+            let (tdma, tiu) = map_tpu_mmio(resource)?;
+            Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma, tiu) })
+        };
+        Some(Self::setup(hw, resource))
     }
 
     /// 公共初始化：注入等待函数、注册中断、启动 worker 线程。
-    fn setup(hw: Arc<Sg2002Tpu>) -> Self {
+    fn setup(hw: Arc<Sg2002Tpu>, resource: TpuResource) -> Self {
         hw.set_wait_irq_fn(tpu_wait_irq);
         if let Err(err) = hw.init() {
             warn!("[TPU] init failed: {:?}", err);
         }
-        let irq_registered = register_tpu_irq(&hw);
+        let irq_registration = register_tpu_irq(resource.irq, &hw);
+        info!(
+            "[TPU] resource tdma=[{:#x}, +{:#x}) tiu=[{:#x}, +{:#x}) irq={:?} irq_wait={} \
+             source=fdt",
+            resource.tdma_paddr,
+            resource.tdma_size,
+            resource.tiu_paddr,
+            resource.tiu_size,
+            resource.irq,
+            irq_registration.is_some(),
+        );
 
         // 发布硬件指针供 tpu_wait_irq 读取中断标志，并启动唯一 worker 线程。
         if WORKER_SPAWNED
@@ -231,7 +333,11 @@ impl TpuDevice {
             ax_task::spawn_with_name(move || tpu_worker(worker_hw), String::from("tpu-worker"));
         }
 
-        Self { hw, irq_registered }
+        Self {
+            hw,
+            resource,
+            irq_registration,
+        }
     }
 
     /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
@@ -243,11 +349,8 @@ impl TpuDevice {
             "[TPU] submit dmabuf: fd={}, seq_no={}",
             submit_arg.fd, submit_arg.seq_no
         );
-        if !self.irq_registered {
-            warn!(
-                "[TPU] tdma irq {} not registered, execution may timeout",
-                TPU_TDMA_IRQ
-            );
+        if self.irq_registration.is_none() {
+            warn!("[TPU] TDMA IRQ {:?} not registered", self.resource.irq);
         }
 
         // 从文件描述符获取 IonBufferFile

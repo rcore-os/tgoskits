@@ -7,7 +7,63 @@ pub(super) struct StdBuildTarget {
     pub(super) env: HashMap<String, String>,
 }
 
-pub(super) fn std_build_target_for(target: &str, plat_dyn: bool) -> anyhow::Result<StdBuildTarget> {
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct StdCargoConfig {
+    unstable: StdCargoUnstableConfig,
+    profile: StdCargoProfileConfig,
+    target: HashMap<String, StdCargoTargetConfig>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct StdCargoUnstableConfig {
+    build_std: Vec<&'static str>,
+    build_std_features: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct StdCargoProfileConfig {
+    release: StdCargoReleaseProfile,
+}
+
+#[derive(Serialize)]
+struct StdCargoReleaseProfile {
+    lto: bool,
+    panic: &'static str,
+}
+
+#[derive(Serialize)]
+struct StdCargoTargetConfig {
+    linker: String,
+    rustflags: Vec<String>,
+}
+
+impl StdCargoConfig {
+    fn new(target: &str, linker: &Path, extra_rustflags: &[String]) -> Self {
+        Self {
+            unstable: StdCargoUnstableConfig {
+                build_std: vec!["std", "panic_abort"],
+                build_std_features: Vec::new(),
+            },
+            profile: StdCargoProfileConfig {
+                release: StdCargoReleaseProfile {
+                    lto: false,
+                    panic: "abort",
+                },
+            },
+            target: HashMap::from([(
+                target.to_string(),
+                StdCargoTargetConfig {
+                    linker: linker.display().to_string(),
+                    rustflags: extra_rustflags.to_vec(),
+                },
+            )]),
+        }
+    }
+}
+
+pub(super) fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarget> {
     let (target_name, tool_prefix) = if target.starts_with("x86_64-") {
         ("x86_64-unknown-linux-musl", "x86_64-linux-musl")
     } else if target.starts_with("aarch64-") {
@@ -29,9 +85,7 @@ pub(super) fn std_build_target_for(target: &str, plat_dyn: bool) -> anyhow::Resu
 
     Ok(StdBuildTarget {
         target_name: target_name.to_string(),
-        target: std_target_json_path(target_name, plat_dyn)
-            .display()
-            .to_string(),
+        target: std_target_json_path(target_name).display().to_string(),
         cargo_args: vec!["-Z".to_string(), "json-target-spec".to_string()],
         env,
     })
@@ -55,6 +109,7 @@ pub(super) fn std_c_toolchain_env(target_name: &str, tool_prefix: &str) -> HashM
             format!("--target={tool_prefix}"),
             format!("--sysroot={sysroot}"),
         ];
+        bindgen_args.extend(musl_toolchain_bindgen_args(&cc, &sysroot, tool_prefix));
         bindgen_args.extend(
             std_c_target_flags(target_name)
                 .into_iter()
@@ -107,68 +162,89 @@ pub(super) fn musl_toolchain_sysroot(cc: &str) -> Option<String> {
     (!sysroot.is_empty()).then(|| sysroot.to_string())
 }
 
-pub(super) fn std_target_json_path(target: &str, plat_dyn: bool) -> PathBuf {
-    let path = Path::new(TARGET_JSON_ROOT).join(STD_TARGET_DIR);
-    if plat_dyn {
-        path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
-    } else {
-        path.join(format!("{target}.json"))
+pub(super) fn musl_toolchain_bindgen_args(
+    cc: &str,
+    sysroot: &str,
+    tool_prefix: &str,
+) -> Vec<String> {
+    let Some(toolchain_root) = musl_toolchain_root(cc, sysroot) else {
+        return Vec::new();
+    };
+
+    let mut args = vec![format!("--gcc-toolchain={}", toolchain_root.display())];
+
+    let include = Path::new(sysroot).join("include");
+    if include.is_dir() {
+        args.push("-isystem".to_string());
+        args.push(include.display().to_string());
     }
+
+    if let Some(gcc_include) = musl_gcc_include_dir(&toolchain_root, tool_prefix) {
+        args.push("-isystem".to_string());
+        args.push(gcc_include.display().to_string());
+    }
+
+    args
+}
+
+fn musl_toolchain_root(cc: &str, sysroot: &str) -> Option<PathBuf> {
+    let cc_path = command_path(cc)?;
+    let bin_dir = cc_path.parent()?;
+    let root = bin_dir.parent()?;
+    let sysroot_path = fs::canonicalize(sysroot).ok()?;
+    let root_path = fs::canonicalize(root).ok()?;
+
+    sysroot_path
+        .starts_with(&root_path)
+        .then(|| root.to_path_buf())
+}
+
+fn command_path(command: &str) -> Option<PathBuf> {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return path.exists().then(|| path.to_path_buf());
+    }
+
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .map(Path::new)
+        .map(|dir| dir.join(command))
+        .find(|path| path.exists())
+}
+
+fn musl_gcc_include_dir(toolchain_root: &Path, tool_prefix: &str) -> Option<PathBuf> {
+    let gcc_dir = toolchain_root.join("lib/gcc").join(tool_prefix);
+    fs::read_dir(gcc_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("include"))
+        .find(|path| path.is_dir())
+}
+
+pub(super) fn std_target_json_path(target: &str) -> PathBuf {
+    let path = Path::new(TARGET_JSON_ROOT).join(STD_TARGET_DIR);
+    path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
 }
 
 pub(crate) fn prepare_std_build_env(
     envs: &mut HashMap<String, String>,
     target: &str,
-    plat_dyn: bool,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
-    prepare_std_build_env_for_package(
-        envs,
-        AXSTD_STD_PACKAGE,
-        target,
-        plat_dyn,
-        &[],
-        metadata,
-        &[],
-    )
+    prepare_std_build_env_for_package(envs, AXSTD_STD_PACKAGE, target, &[], metadata)
 }
 
 pub(super) fn prepare_std_build_env_for_package(
     envs: &mut HashMap<String, String>,
     package: &str,
     target: &str,
-    plat_dyn: bool,
     features: &[String],
     metadata: &Metadata,
-    axconfig_overrides: &[String],
 ) -> anyhow::Result<()> {
     envs.insert("AX_TARGET".to_string(), target.to_string());
 
-    if plat_dyn {
-        return Ok(());
-    }
-
-    let platform_config = resolve_platform_config(package, target, features, metadata)?;
-    let out_config = generated_axconfig_path(package, target)?;
-    generate_axconfig(
-        &crate::context::workspace_root_path()?,
-        target,
-        &platform_config.name,
-        &platform_config.config_path,
-        &out_config,
-        envs.get("SMP")
-            .map(|smp| {
-                smp.parse()
-                    .with_context(|| format!("invalid SMP value `{smp}`"))
-            })
-            .transpose()?,
-        axconfig_overrides,
-    )?;
-    envs.insert(
-        "AX_CONFIG_PATH".to_string(),
-        out_config.display().to_string(),
-    );
-    envs.insert("AX_PLATFORM".to_string(), platform_config.name);
+    let _ = (package, features, metadata);
     Ok(())
 }
 
@@ -182,6 +258,9 @@ pub(super) fn pass_std_build_nested_features(
 
     for feature in features.drain(..) {
         let feature = normalize_std_feature(&feature);
+        if is_removed_dynamic_platform_feature(&feature) {
+            continue;
+        }
         if matches!(feature.as_str(), "ax-std" | "ax-feat") {
             continue;
         }
@@ -251,46 +330,12 @@ pub(super) fn axstd_feature_is_available(feature: &str, axstd_features: &[String
 pub(super) fn std_cargo_config_path(
     target: &str,
     linker: &Path,
-    plat_dyn: bool,
     extra_rustflags: &[String],
 ) -> anyhow::Result<PathBuf> {
-    let mode = std_link_mode_suffix(plat_dyn);
-    let path = std_build_dir()?.join(format!("config-{target}-{mode}.toml"));
-    let rustflags = std_rustflags_toml(extra_rustflags);
-    write_if_changed(
-        &path,
-        &format!(
-            r#"[unstable]
-build-std = ["std", "panic_abort"]
-build-std-features = []
-
-[profile.release]
-lto = false
-panic = "abort"
-
-[target.{target}]
-linker = "{}"
-rustflags = [
-{}
-]
-"#,
-            toml_escape_string(&linker.display().to_string()),
-            rustflags,
-        ),
-    )?;
+    let path = std_build_dir()?.join(format!("config-{target}-dynamic.toml"));
+    let config = toml::to_string_pretty(&StdCargoConfig::new(target, linker, extra_rustflags))?;
+    write_if_changed(&path, &config)?;
     Ok(path)
-}
-
-pub(super) fn std_link_mode_suffix(plat_dyn: bool) -> &'static str {
-    if plat_dyn { "dynamic" } else { "static" }
-}
-
-pub(super) fn std_rustflags_toml(extra_rustflags: &[String]) -> String {
-    extra_rustflags
-        .iter()
-        .map(|flag| format!("    {},", toml::Value::String(flag.clone())))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 pub(super) fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
@@ -306,14 +351,9 @@ pub(super) fn std_fake_lib_dir(target: &str) -> anyhow::Result<PathBuf> {
 pub(super) fn std_linker_wrapper_path(
     target: &str,
     fake_lib_dir: &Path,
-    plat_dyn: bool,
 ) -> anyhow::Result<PathBuf> {
-    let mode = std_link_mode_suffix(plat_dyn);
-    let path = std_build_dir()?.join(format!("linker-{target}-{mode}.sh"));
-    write_if_changed(
-        &path,
-        &std_linker_wrapper_script(target, fake_lib_dir, plat_dyn)?,
-    )?;
+    let path = std_build_dir()?.join(format!("linker-{target}-dynamic.sh"));
+    write_if_changed(&path, &std_linker_wrapper_script(target, fake_lib_dir)?)?;
     set_executable(&path)?;
     Ok(path)
 }
@@ -405,10 +445,8 @@ create_empty_archive "$fake_dir/libunwind.a"
 pub(super) fn std_linker_wrapper_script(
     target: &str,
     fake_lib_dir: &Path,
-    plat_dyn: bool,
 ) -> anyhow::Result<String> {
     let machine = lld_machine_for_std_target(target)?;
-    let dynamic_platform = if plat_dyn { "1" } else { "0" };
     Ok(format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -418,7 +456,6 @@ target_name={}
 lld_args=("-m" "{}")
 link_search_dirs=()
 archive_args=()
-dynamic_platform={}
 
 add_link_search_dir() {{
     local dir="$1"
@@ -505,30 +542,17 @@ add_arg() {{
             return
             ;;
         -static-pie)
-            if [[ "$dynamic_platform" == "1" ]]; then
-                append_lld_arg "-pie"
-            else
-                append_lld_arg "-static"
-                append_lld_arg "-no-pie"
-            fi
+            append_lld_arg "-pie"
             return
             ;;
         -static)
-            if [[ "$dynamic_platform" == "0" ]]; then
-                append_lld_arg "-static"
-            fi
             return
             ;;
         -pie)
-            if [[ "$dynamic_platform" == "1" ]]; then
-                append_lld_arg "-pie"
-            fi
+            append_lld_arg "-pie"
             return
             ;;
         -no-pie)
-            if [[ "$dynamic_platform" == "0" ]]; then
-                append_lld_arg "-no-pie"
-            fi
             return
             ;;
         -nostartfiles|-nodefaultlibs|-nostdlib|-m*)
@@ -567,7 +591,6 @@ exec rust-lld -flavor gnu "${{lld_args[@]}}"
         shell_single_quote(&fake_lib_dir.display().to_string()),
         shell_single_quote(target),
         machine,
-        dynamic_platform,
     ))
 }
 
@@ -583,10 +606,6 @@ pub(super) fn lld_machine_for_std_target(target: &str) -> anyhow::Result<&'stati
     } else {
         bail!("unsupported ArceOS std linker target `{target}`")
     }
-}
-
-pub(super) fn toml_escape_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 pub(super) fn shell_single_quote(value: &str) -> String {

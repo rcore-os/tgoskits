@@ -1,18 +1,18 @@
 extern crate alloc;
 
-#[cfg(plat_dyn)]
 use alloc::format;
 
 use log::debug;
-#[cfg(plat_dyn)]
-use rdrive::probe::pci::PciInfo;
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
         acpi::{AcpiId, ProbeAcpi},
+        pci::PciInfo,
     },
 };
+
+use crate::BindingIrq;
 
 crate::model_register!(
     name: "ACPI Generic PCIe Controller Driver",
@@ -53,8 +53,7 @@ fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     }
 }
 
-#[cfg(plat_dyn)]
-pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnProbeError> {
+pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
     let Some(result) = rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(info))
     else {
         return Ok(None);
@@ -64,18 +63,14 @@ pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<usize>, OnPr
         return Ok(None);
     };
 
-    let irq = crate::binding_info_from_acpi_route("PCI endpoint", Some(route.gsi))?
-        .irq_num()
-        .expect("Some ACPI GSI route must resolve to an IRQ");
     log::info!(
-        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} {:?} {} input {} vector {:#x}",
+        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} {:?} {} input {}",
         info.address,
         route.intx_route.root_pin,
         route.gsi.gsi,
         route.gsi.controller,
         route.gsi.controller_id,
         route.gsi.controller_input,
-        irq
     );
-    Ok(Some(irq))
+    Ok(Some(BindingIrq::from(route.gsi)))
 }

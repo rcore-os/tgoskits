@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.9...crab-usb-v0.9.10) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
+## [0.9.9](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.8...crab-usb-v0.9.9) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(crab-usb)* ignore xhci iso ring xrun events ([#1376](https://github.com/rcore-os/tgoskits/pull/1376))
+
+### Other
+
+- Merge pull request #1336 from sdio-host2-physical-model
+
 ## [0.9.8](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.7...crab-usb-v0.9.8) - 2026-06-23
 
 ### Other

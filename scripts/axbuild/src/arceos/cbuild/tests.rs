@@ -22,9 +22,8 @@ fn c_config_features_skips_nested_cargo_only_features() {
     let features = c_config_features(&strings(&[
         "ax-libc/net",
         "ax-feat/paging",
-        "ax-driver/plat-static",
         "ax-driver/virtio-net",
-        "ax-hal/loongarch64-qemu-virt",
+        "ax-hal/custom-board",
         "some-crate/feature",
     ]));
 
@@ -35,11 +34,12 @@ fn c_config_features_skips_nested_cargo_only_features() {
 }
 
 #[test]
-fn c_config_features_treats_dynamic_platform_as_smp() {
+fn c_config_features_ignore_removed_dynamic_platform_feature() {
     let features = c_config_features(&strings(&["plat-dyn", "multitask"]));
 
-    assert!(features.contains("smp"));
     assert!(features.contains("multitask"));
+    assert!(!features.contains("plat-dyn"));
+    assert!(!features.contains("smp"));
 }
 
 #[test]
@@ -92,16 +92,16 @@ fn c_compiler_features_keep_case_defines_for_cflags() {
 
 #[test]
 fn map_c_app_features_preserves_driver_features() {
+    let removed_static_driver_feature = concat!("ax-driver/", "plat", "-static");
     let features = map_c_app_features(
-        &strings(&["net", "ax-driver/plat-static", "ax-driver/virtio-net"]),
-        &strings(&["ax-hal/loongarch64-qemu-virt"]),
+        &strings(&["net", removed_static_driver_feature, "ax-driver/virtio-net"]),
+        &[],
     );
 
     assert!(features.contains(&"net".to_string()));
     assert!(features.contains(&"fd".to_string()));
-    assert!(features.contains(&"ax-driver/plat-static".to_string()));
+    assert!(!features.contains(&removed_static_driver_feature.to_string()));
     assert!(features.contains(&"ax-driver/virtio-net".to_string()));
-    assert!(features.contains(&"ax-hal/loongarch64-qemu-virt".to_string()));
 }
 
 #[test]
@@ -112,19 +112,20 @@ fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
 }
 
 #[test]
-fn map_c_app_features_maps_dynamic_platform_for_axlibc() {
+fn map_c_app_features_ignores_removed_dynamic_platform_feature() {
     let features = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"]));
 
-    assert!(features.contains(&"plat-dyn".to_string()));
     assert!(features.contains(&"alloc".to_string()));
-    assert!(features.contains(&"smp".to_string()));
+    assert!(!features.contains(&"plat-dyn".to_string()));
+    assert!(!features.contains(&"smp".to_string()));
 }
 
 #[test]
-fn dynamic_c_apps_use_pie_for_every_dynamic_platform() {
+fn c_apps_always_use_pie() {
+    assert!(dynamic_pie_for_c_app(&[]));
     assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
     assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
-    assert!(!dynamic_pie_for_c_app(&strings(&["smp"])));
+    assert!(dynamic_pie_for_c_app(&strings(&["smp"])));
 }
 
 #[test]
@@ -181,11 +182,11 @@ fn pthread_mutex_header_matches_plain_smp_layout() {
 }
 
 #[test]
-fn pthread_mutex_header_matches_dynamic_platform_smp_layout() {
+fn pthread_mutex_header_ignores_removed_dynamic_platform_feature() {
     let header = pthread_mutex_header_contents(&strings(&["multitask", "plat-dyn"]));
 
-    assert!(header.contains("long __l[6];"));
-    assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
+    assert!(header.contains("long __l[5];"));
+    assert!(header.contains("{0, 8, 0, 0, 0}"));
 }
 
 #[test]
@@ -210,61 +211,56 @@ fn final_linker_script_comes_from_axruntime_build_out_dir() {
 fn linker_search_dirs_use_current_platform_script_owner() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");
-    let target = "x86_64-unknown-none";
+    let target = "loongarch64-unknown-none-softfloat";
     let mode = "release";
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let axhal_out = build_dir.join("ax-hal-abc/out");
-    let loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-abc/out");
-    let stale_loong_out = build_dir.join("ax-plat-loongarch64-qemu-virt-old/out");
     let runtime_out = build_dir.join("ax-runtime-def/out");
-    let unrelated_out = build_dir.join("unrelated-ghi/out");
-    fs::create_dir_all(&axhal_out).unwrap();
-    fs::create_dir_all(&loong_out).unwrap();
-    fs::create_dir_all(&stale_loong_out).unwrap();
+    let axplat_out = build_dir.join("axplat-dyn-def/out");
+    let somehal_out = build_dir.join("somehal-ghi/out");
+    let someboot_out = build_dir.join("someboot-jkl/out");
     fs::create_dir_all(&runtime_out).unwrap();
-    fs::create_dir_all(&unrelated_out).unwrap();
-    fs::write(axhal_out.join("axplat.x"), "").unwrap();
-    fs::write(loong_out.join("axplat.x"), "").unwrap();
-    fs::write(stale_loong_out.join("axplat.x"), "").unwrap();
+    fs::create_dir_all(&axplat_out).unwrap();
+    fs::create_dir_all(&somehal_out).unwrap();
+    fs::create_dir_all(&someboot_out).unwrap();
     fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
-    fs::write(unrelated_out.join("note.txt"), "").unwrap();
+    fs::write(axplat_out.join("axplat.x"), "").unwrap();
+    fs::write(somehal_out.join("link.x"), "").unwrap();
+    fs::write(someboot_out.join("someboot.x"), "").unwrap();
 
-    let dirs = find_linker_search_dirs(
+    let link_scripts = find_link_scripts(
         &target_dir,
         target,
         mode,
-        "loongarch64-qemu-virt",
-        &strings(&["ax-hal/loongarch64-qemu-virt"]),
+        "plat-dyn",
+        &strings(&["plat-dyn"]),
     )
     .unwrap();
 
-    assert_eq!(dirs, vec![loong_out, runtime_out]);
+    assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
+    assert!(link_scripts.pie);
+    assert!(link_scripts.search_dirs.contains(&runtime_out));
+    assert!(link_scripts.search_dirs.contains(&axplat_out));
+    assert!(link_scripts.search_dirs.contains(&somehal_out));
+    assert!(link_scripts.search_dirs.contains(&someboot_out));
 }
 
 #[test]
-fn linker_search_dirs_use_axhal_for_generic_static_platforms() {
+fn linker_search_dirs_use_axplat_dyn_for_generic_dynamic_platforms() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");
     let target = "riscv64gc-unknown-none-elf";
     let mode = "release";
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let axhal_out = build_dir.join("ax-hal-abc/out");
+    let axplat_out = build_dir.join("axplat-dyn-abc/out");
     let runtime_out = build_dir.join("ax-runtime-def/out");
-    fs::create_dir_all(&axhal_out).unwrap();
+    fs::create_dir_all(&axplat_out).unwrap();
     fs::create_dir_all(&runtime_out).unwrap();
-    fs::write(axhal_out.join("axplat.x"), "").unwrap();
+    fs::write(axplat_out.join("axplat.x"), "").unwrap();
     fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
 
-    let dirs = find_linker_search_dirs(
-        &target_dir,
-        target,
-        mode,
-        "riscv64-sg2002",
-        &strings(&["ax-hal/riscv64-sg2002"]),
-    )
-    .unwrap();
+    let dirs = find_linker_search_dirs(&target_dir, target, mode, "riscv64-generic", &[]).unwrap();
 
-    assert_eq!(dirs, vec![axhal_out, runtime_out]);
+    assert_eq!(dirs, vec![runtime_out, axplat_out]);
 }
 
 #[test]

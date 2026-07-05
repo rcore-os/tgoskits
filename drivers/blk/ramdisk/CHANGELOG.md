@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.7...ramdisk-v0.1.8) - 2026-07-02
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.6...ramdisk-v0.1.7) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.5...ramdisk-v0.1.6) - 2026-06-23
 
 ### Other

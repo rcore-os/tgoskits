@@ -37,7 +37,6 @@ use alloc::{
 };
 use core::{
     any::Any,
-    ptr::NonNull,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     task::Context,
 };
@@ -404,14 +403,19 @@ impl Card0 {
         if !ax_display::has_display() {
             return;
         }
-        let Some(irq) = ax_display::framebuffer_irq_num() else {
+        let Some(irq) = ax_display::framebuffer_irq_id() else {
             return;
         };
 
-        let data = NonNull::from(self.as_ref()).cast();
-        let request = ax_runtime::hal::irq::IrqRequest::new(card0_irq_handler, data)
-            .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-            .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+        let request = ax_runtime::hal::irq::IrqRequest::new(|_| {
+            if ax_display::framebuffer_handle_irq() {
+                ax_runtime::hal::irq::IrqReturn::Handled
+            } else {
+                ax_runtime::hal::irq::IrqReturn::Unhandled
+            }
+        })
+        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(irq, request) {
             Ok(handle) => {
                 self.irq_handle.call_once(|| handle);
@@ -419,12 +423,12 @@ impl Card0 {
                 if let Some(handle) = self.irq_handle.get().copied()
                     && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
                 {
-                    warn!("failed to enable display irq handler for irq {irq}: {err:?}");
+                    warn!("failed to enable display irq handler for irq {irq:?}: {err:?}");
                     ax_display::framebuffer_disable_irq();
                 }
             }
             Err(err) => {
-                warn!("failed to register display irq handler for irq {irq}: {err:?}");
+                warn!("failed to register display irq handler for irq {irq:?}: {err:?}");
                 ax_display::framebuffer_disable_irq();
             }
         }
@@ -640,17 +644,6 @@ impl DeviceOps for Card0 {
 
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
-    }
-}
-
-unsafe fn card0_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    if ax_display::framebuffer_handle_irq() {
-        ax_runtime::hal::irq::IrqReturn::Handled
-    } else {
-        ax_runtime::hal::irq::IrqReturn::Unhandled
     }
 }
 

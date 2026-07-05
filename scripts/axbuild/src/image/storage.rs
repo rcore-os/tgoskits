@@ -327,6 +327,18 @@ pub(crate) async fn ensure_managed_rootfs(
         .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
     ensure_rootfs_image_name(image_name)?;
     let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    // A managed rootfs that is not a registry image but already exists locally was
+    // produced on-host (e.g. by a Starry app `prebuild.sh` that bakes its own
+    // rootfs into the canonical image-storage path). Accept the prepared file
+    // as-is; only registry-backed images are (re)pulled. A non-registry image that
+    // is missing locally still falls through to the error path below.
+    if storage
+        .resolve_image(ImageSpecRef::parse(image_name))
+        .is_err()
+        && path.is_file()
+    {
+        return Ok(());
+    }
     let prepared = storage
         .pull_rootfs_image(ImageSpecRef::parse(image_name))
         .await?;

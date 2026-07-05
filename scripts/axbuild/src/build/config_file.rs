@@ -27,21 +27,49 @@ pub(crate) fn load_build_info<T>(path: &Path) -> anyhow::Result<T>
 where
     T: DeserializeOwned,
 {
-    let contents = std::fs::read_to_string(path)?;
-    reject_removed_std_field(path, &contents)?;
+    load_toml_with_rejector(path, "build info", reject_removed_std_field)
+}
+
+pub(crate) fn load_toml_with_rejector<T>(
+    path: &Path,
+    description: &str,
+    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let contents = read_toml_with_rejector(path, description, rejector)?;
     toml::from_str::<T>(&contents)
-        .with_context(|| format!("failed to parse build info {}", path.display()))
+        .with_context(|| format!("failed to parse {description} {}", path.display()))
+}
+
+pub(crate) fn read_toml_with_rejector(
+    path: &Path,
+    description: &str,
+    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {description} {}", path.display()))?;
+    rejector(path, &contents)?;
+    Ok(contents)
 }
 
 pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if let Ok(table) = toml::from_str::<toml::Table>(contents)
-        && table.contains_key("std")
-    {
-        bail!(
-            "build config {} uses removed `std` field; std-aware Rust builds are now the default, \
-             remove `std = ...`",
-            path.display()
-        );
+    if let Ok(table) = toml::from_str::<toml::Table>(contents) {
+        if table.contains_key("std") {
+            bail!(
+                "build config {} uses removed `std` field; std-aware Rust builds are now the \
+                 default, remove `std = ...`",
+                path.display()
+            );
+        }
+        if table.contains_key("plat_dyn") {
+            bail!(
+                "build config {} uses removed `plat_dyn` field; dynamic platform builds are now \
+                 the only supported platform mode, remove `plat_dyn = ...`",
+                path.display()
+            );
+        }
     }
 
     Ok(())

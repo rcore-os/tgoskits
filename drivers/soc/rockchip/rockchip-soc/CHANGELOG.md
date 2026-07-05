@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.4...rockchip-soc-v0.3.5) - 2026-07-02
+
+### Added
+
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+
+### Other
+
+- *(rdrive)* apply default FDT pinctrl before probe ([#1458](https://github.com/rcore-os/tgoskits/pull/1458))
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+
+## [0.3.4](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.3...rockchip-soc-v0.3.4) - 2026-06-27
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.3.3](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.2...rockchip-soc-v0.3.3) - 2026-06-23
 
 ### Other

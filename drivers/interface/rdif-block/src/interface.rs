@@ -1,16 +1,25 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
-    BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, QueueInfo, QueueLimits,
-    Request, RequestId, RequestStatus,
+    BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, OwnedRequest, PollError,
+    QueueInfo, QueueLimits, Request, RequestId, RequestPoll, RequestStatus, SubmitError,
 };
+
+pub type BInterface = Box<dyn Interface>;
+pub type BQueue = Box<dyn IQueue>;
+pub type BOwnedQueue = Box<dyn IQueueOwned>;
+pub type BIrqHandler = Box<dyn IrqHandler>;
 
 pub trait Interface: DriverGeneric {
     fn device_info(&self) -> DeviceInfo;
 
     fn queue_limits(&self) -> QueueLimits;
 
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>>;
+    fn create_queue(&mut self) -> Option<BQueue>;
+
+    fn create_owned_queue(&mut self) -> Option<QueueHandle> {
+        None
+    }
 
     fn enable_irq(&self) {}
 
@@ -24,13 +33,85 @@ pub trait Interface: DriverGeneric {
         Vec::new()
     }
 
-    fn take_irq_handler(&mut self, _source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_handler(&mut self, _source_id: usize) -> Option<BIrqHandler> {
         None
     }
 }
 
 pub trait CompletionSink {
     fn complete(&mut self, request: RequestId, result: Result<(), BlkError>);
+}
+
+/// A request queue that owns DMA backing for every in-flight request.
+pub trait IQueueOwned: Send + 'static {
+    fn id(&self) -> usize;
+
+    fn info(&self) -> QueueInfo;
+
+    fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError>;
+
+    fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError>;
+
+    fn cancel_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError>;
+
+    fn shutdown(&mut self) {}
+}
+
+pub struct QueueHandle {
+    queue: Option<BOwnedQueue>,
+}
+
+impl QueueHandle {
+    pub fn new(queue: BOwnedQueue) -> Self {
+        Self { queue: Some(queue) }
+    }
+
+    pub fn id(&self) -> usize {
+        self.queue
+            .as_ref()
+            .expect("owned queue handle must contain queue")
+            .id()
+    }
+
+    pub fn info(&self) -> QueueInfo {
+        self.queue
+            .as_ref()
+            .expect("owned queue handle must contain queue")
+            .info()
+    }
+
+    pub fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+        self.queue
+            .as_mut()
+            .expect("owned queue handle must contain queue")
+            .submit_request(request)
+    }
+
+    pub fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
+        self.queue
+            .as_mut()
+            .expect("owned queue handle must contain queue")
+            .poll_request(request)
+    }
+
+    pub fn cancel_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
+        self.queue
+            .as_mut()
+            .expect("owned queue handle must contain queue")
+            .cancel_request(request)
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(queue) = self.queue.as_mut() {
+            queue.shutdown();
+        }
+    }
+}
+
+impl Drop for QueueHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 /// A request queue for one block device hardware/software queue.
@@ -85,10 +166,13 @@ mod tests {
     use super::*;
     use crate::{DeviceInfo, Event, QueueLimits, RequestOp};
 
-    struct NoopIrq;
+    struct NoopIrq {
+        calls: usize,
+    }
 
     impl IrqHandler for NoopIrq {
-        fn handle_irq(&self) -> Event {
+        fn handle_irq(&mut self) -> Event {
+            self.calls += 1;
             let mut event = Event::none();
             event.queues.insert(1);
             event
@@ -130,8 +214,10 @@ mod tests {
         assert_queue::<Queue>();
         assert_irq_handler::<NoopIrq>();
 
-        let event = NoopIrq.handle_irq();
+        let mut irq = NoopIrq { calls: 0 };
+        let event = irq.handle_irq();
         assert!(event.queues.contains(1));
+        assert_eq!(irq.calls, 1);
     }
 
     #[derive(Default)]
@@ -198,5 +284,69 @@ mod tests {
         let limits = QueueLimits::simple(512, u64::MAX);
 
         assert_eq!(limits.max_inflight, 1);
+    }
+
+    struct CountingIrq {
+        count: usize,
+    }
+
+    impl IrqHandler for CountingIrq {
+        fn handle_irq(&mut self) -> Event {
+            self.count += 1;
+            Event::from_queue_bits(self.count as u64)
+        }
+    }
+
+    #[test]
+    fn boxed_irq_handler_is_move_only_and_mutable() {
+        let mut handler: BIrqHandler = Box::new(CountingIrq { count: 0 });
+
+        assert_eq!(handler.handle_irq().queues.bits(), 1);
+        assert_eq!(handler.handle_irq().queues.bits(), 2);
+    }
+
+    struct OwnedQueue;
+
+    impl IQueueOwned for OwnedQueue {
+        fn id(&self) -> usize {
+            2
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 2,
+                device: DeviceInfo::new(8, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+            Err(SubmitError::new(BlkError::Retry, request))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            Ok(RequestPoll::Pending)
+        }
+
+        fn cancel_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            Err(PollError::UnknownRequest)
+        }
+    }
+
+    #[test]
+    fn owned_queue_submit_error_returns_request_ownership() {
+        let mut handle = QueueHandle::new(Box::new(OwnedQueue));
+        let request = OwnedRequest {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            data: None,
+            flags: Default::default(),
+        };
+
+        let err = handle.submit_request(request).unwrap_err();
+
+        assert_eq!(err.error, BlkError::Retry);
+        assert!(matches!(err.request().op, RequestOp::Flush));
     }
 }

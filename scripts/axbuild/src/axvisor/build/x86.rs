@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn backend_auto_selects_vmx_when_missing() {
-        let mut features = vec!["ept-level-4".to_string(), "fs".to_string()];
+        let mut features = vec!["fs".to_string()];
 
         normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx)).unwrap();
 
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn backend_auto_selects_svm_when_missing() {
-        let mut features = vec!["ept-level-4".to_string(), "fs".to_string()];
+        let mut features = vec!["fs".to_string()];
 
         normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Svm)).unwrap();
 
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn backend_keeps_explicit_choice() {
-        let mut features = vec!["ept-level-4".to_string(), "svm".to_string()];
+        let mut features = vec!["svm".to_string()];
 
         normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx)).unwrap();
 
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn backend_keeps_nested_axvm_choice() {
-        let mut features = vec!["ept-level-4".to_string(), "axvm/svm".to_string()];
+        let mut features = vec!["axvm/svm".to_string()];
 
         normalize_backend_features_with(&mut features, || Ok(VirtualizationBackend::Vmx)).unwrap();
 

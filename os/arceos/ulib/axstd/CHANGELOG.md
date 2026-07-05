@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.22...ax-std-v0.5.23) - 2026-07-02
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.21...ax-std-v0.5.22) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.20...ax-std-v0.5.21) - 2026-06-23
 
 ### Other

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.2...axfs-ng-vfs-v0.5.3) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-errno
+
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.1...axfs-ng-vfs-v0.5.2) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
 ## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.0...axfs-ng-vfs-v0.5.1) - 2026-06-22
 
 ### Other

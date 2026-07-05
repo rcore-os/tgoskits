@@ -1,15 +1,16 @@
 #![feature(used_with_arg)]
 
-use ax_driver::{PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "plat-dyn")]
+use ax_driver::{
+    probe::OnProbeError,
+    register::{ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
+};
 use axklib::{
-    AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr, impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
+    Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
-#[cfg(feature = "plat-dyn")]
 struct KlibImpl;
 
-#[cfg(feature = "plat-dyn")]
 impl_trait! {
     impl Klib for KlibImpl {
         fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
@@ -48,21 +49,28 @@ impl_trait! {
             false
         }
 
-        fn irq_set_enable(_irq: usize, _enabled: bool) {}
+        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
+            Ok(())
+        }
 
         fn irq_request_shared(
-            _irq: usize,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _irq: IrqId,
+            _handler: BoxedIrqHandler,
+        ) -> AxResult<IrqHandle> {
+            Err(AxError::Unsupported)
+        }
+
+        fn irq_request_shared_disabled(
+            _irq: IrqId,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
 
         fn irq_request_percpu(
-            _irq: usize,
+            _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             Err(AxError::Unsupported)
         }
@@ -85,12 +93,13 @@ ax_driver::model_register!(
     name: "ax-driver model register test",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Static {
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["test,model-register"],
         on_probe: probe,
     }],
 );
 
-fn probe(_plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(_probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 

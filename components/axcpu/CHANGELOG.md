@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.0...ax-cpu-v0.8.1) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+- *(starry)* ARM PMUv3 hardware-PMU perf support (perf stat / record / report) ([#1395](https://github.com/rcore-os/tgoskits/pull/1395))
+
+### Other
+
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.7.1...ax-cpu-v0.8.0) - 2026-06-27
+
+### Fixed
+
+- *(axcpu)* seed a fresh x86_64 task's x87 stack as empty (FXSAVE tag) ([#1366](https://github.com/rcore-os/tgoskits/pull/1366))
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.7.0...ax-cpu-v0.7.1) - 2026-06-23
 
 ### Other

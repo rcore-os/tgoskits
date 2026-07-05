@@ -33,6 +33,21 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
+## Resource Monitor
+
+The `resource-monitor` case provides an offline user-space collector and a static
+viewer for StarryOS application experiments. It samples existing `/proc` files
+into CSV/JSONL logs and replays StarryOS/Linux runs locally in the browser; it
+does not add kernel counters, drivers, online telemetry, or robot workload
+control.
+
+```bash
+cd apps/starry/resource-monitor/offline-viewer
+python3 -m http.server 8000
+```
+
+See `resource-monitor/README.md` for the demo usage, log export flow, and file format.
+
 ## PicoClaw CLI
 
 The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
@@ -68,7 +83,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
+See `k230-kpu-nncase/README.md` and `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
 ## macOS AArch64 Self-Build
@@ -112,6 +127,21 @@ cargo xtask starry app run -t redis --arch riscv64
 
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
+
+## Apache
+
+The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks
+and manual phase reruns. Before marking any StarryOS tracker item passed, run
+the same script or equivalent commands in Linux Alpine as the behavior oracle.
+
+```bash
+cargo xtask starry app qemu -t apache --arch riscv64
+```
+
+`apps/starry/apache` is organized into `runner/`, `smoke/`, `phase/`,
+`qemu/phase/`, `qemu/all/`, and `qemu/debug/`. The default app entry is
+smoke-only. Manual phase reruns live under `qemu/phase/`; issue-focused probes
+live under `qemu/debug/`.
 
 ## GDB Smoke
 

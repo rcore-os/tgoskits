@@ -1,9 +1,7 @@
 target = "loongarch64-unknown-none-softfloat"
 log = "Warn"
 features = [
-  "ax-hal/defplat",
-  "qemu",
+  "axplat-dyn/efi",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
 ]
-plat_dyn = false

@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：ArceOS 层 / DMA 内存服务层
 > 版本：`0.3.0-preview.3`
-> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/dma.rs`、`drivers/ax-driver/src/ixgbe.rs`、`drivers/ax-driver/src/drivers.rs`、`os/arceos/api/ax-api/src/imp/mem.rs`、`platforms/axplat-dyn/src/drivers/mod.rs`、`os/axvisor/src/driver/blk/mod.rs`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/dma.rs`、`os/arceos/api/ax-api/src/imp/mem.rs`、`drivers/tpu/sg2002-tpu/src/ion/heap.rs`、`platforms/axplat-dyn/src/drivers/mod.rs`、`os/axvisor/src/driver/blk/mod.rs`
 
 `ax-dma` 不是驱动聚合层，也不是某类设备驱动。它的真实职责是为 ArceOS 内核提供一套全局一致的 DMA 一致性内存分配服务：从页分配器拿到内存、把页表属性改成 `UNCACHED`、给设备返回可用的总线地址，并在释放时尽可能恢复映射属性。它位于 `ax-alloc` / `ax-mm` / `ax-hal` 等内存基础设施之上，位于需要软件管理 DMA 缓冲的驱动之下。
 
@@ -23,7 +23,7 @@
 | --- | --- |
 | `BusAddr` | 设备侧看到的总线地址包装类型 |
 | `DMAInfo` | 同时携带 CPU 虚拟地址与总线地址 |
-| `phys_to_bus()` | 按平台偏移把物理地址转成总线地址 |
+| `phys_to_bus()` | 把物理地址转换为设备侧总线地址 |
 | `alloc_coherent()` | 分配 DMA 一致性内存 |
 | `dealloc_coherent()` | 释放 DMA 一致性内存 |
 
@@ -60,21 +60,21 @@
 `phys_to_bus()` 的实现非常直接：
 
 - 先得到物理地址；
-- 再加上 `ax_config::plat::PHYS_BUS_OFFSET`；
-- 最终得到总线地址。
+- 当前动态平台路径下按物理地址与总线地址一致处理；
+- 最终把该地址包装成 `BusAddr`。
 
-这说明当前 `ax-dma` 假设平台满足一种简单的线性总线地址模型，而不是依赖 IOMMU 做复杂映射。
+这说明当前 `ax-dma` 假设平台满足一种简单的直通总线地址模型，而不是依赖 IOMMU 做复杂映射。需要偏移或 map/unmap 协议的平台应在平台 glue 或驱动能力边界中显式表达。
 
 ### 1.6 与驱动栈的真实接线关系
-当前仓库里，`ax-dma` 的最明确直接使用者是 `drivers/ax-driver/src/ixgbe.rs`：
+当前仓库里，`ax-dma` 的明确直接使用者包括：
 
-- `IxgbeHalImpl::dma_alloc()` 调用 `ax_dma::alloc_coherent()`；
-- `dma_dealloc()` 调用 `ax_dma::dealloc_coherent()`。
+- `os/arceos/api/ax-api/src/imp/mem.rs`：通过 `ax_alloc_coherent()` / `ax_dealloc_coherent()` 暴露系统级 DMA 一致性内存 API；
+- `drivers/tpu/sg2002-tpu/src/ion/heap.rs`：通过 `ax_dma::alloc_coherent_pages()` 为 ION 堆分配 DMA buffer。
 
 但要特别注意一个实现事实：
 
-- `ax-driver/Cargo.toml` 中 `fxmac` feature 也声明了 `dep:ax-dma`；
-- 可是 `drivers/ax-driver/src/drivers.rs` 里的 `FXmacDriver` glue 实际使用的是 `ax-alloc::global_allocator().alloc_pages(..., UsageKind::Dma)`，并没有直接调用 `ax-dma` 的 coherent allocator。
+- `ax-driver/Cargo.toml` 中的 FXMAC glue 通过 `dma-api` / `axklib::dma::op()` 获取一致性 DMA 内存；
+- 它并没有直接调用 `ax-dma` 的 coherent allocator。
 
 这说明在当前代码树里，**`ax-dma` 不是所有 DMA 驱动的唯一后端**，而是其中一条已被明确使用的 DMA 服务路径。
 
@@ -119,7 +119,6 @@
 | --- | --- |
 | `ax-alloc` | 全局页分配器与 DMA 用页申请 |
 | `axallocator` / `buddy-slab-allocator` | 字节级分配器实现 |
-| `axconfig` | 提供 `PHYS_BUS_OFFSET` |
 | `ax-hal` | 提供物理地址与页表标志相关能力 |
 | `ax-mm` | 修改内核地址空间页表属性 |
 | `ax-kspin` | 保护全局分配器 |
@@ -127,8 +126,8 @@
 | `log` | 错误与调试日志 |
 
 ### 主要消费者
-- `drivers/ax-driver/src/ixgbe.rs`
 - `os/arceos/api/ax-api/src/imp/mem.rs`
+- `drivers/tpu/sg2002-tpu/src/ion/heap.rs`
 
 ### 3.3 分层关系总结
 - 向下依赖内存分配和页表管理。
@@ -148,8 +147,8 @@
 ### 4.2 修改时必须同步检查的地方
 1. 页级与字节级两条分配路径是否都正确设置 `UNCACHED`。
 2. `dealloc_coherent()` 是否和分配路径对称。
-3. `PHYS_BUS_OFFSET` 的平台假设是否仍成立。
-4. 直接使用者，例如 `ixgbe` 和 `ax-api`，是否仍满足其地址与生命周期假设。
+3. 物理地址与设备总线地址直通的假设是否仍成立。
+4. 直接使用者，例如 `ax-api` 和 ION 堆，是否仍满足其地址与生命周期假设。
 
 ### 4.3 常见坑
 - 不要把 `ax-dma` 当成 IOMMU 管理器；它只做简单地址换算和一致性内存管理。
@@ -160,28 +159,28 @@
 ### 测试覆盖
 当前主要验证路径包括：
 
-- `ixgbe` 驱动的 DMA 分配与回收。
 - `ax-api` 的 `ax_alloc_coherent()` / `ax_dealloc_coherent()`。
+- ION 堆的 DMA buffer 分配与回收。
 - 小块分配和页级分配两条路径的正常工作。
 
 ### 单元测试
-- `phys_to_bus()` 对 `PHYS_BUS_OFFSET` 的换算。
+- `phys_to_bus()` 对直通总线地址模型的换算。
 - 小于 4 KiB 和大于等于 4 KiB 两条分配路径。
 - 分配后页属性变更与释放后属性恢复。
 - `hv` 与非 `hv` 两种模式的行为差异。
 
 ### 集成测试
-- `ixgbe` 真实收发路径。
 - API 层分配后由驱动消费的端到端场景。
+- ION 堆分配后由设备侧消费的端到端场景。
 - 在页分配器压力较大时的小块扩容与失败分支。
 
 ### 5.4 风险点
 - DMA 内存属性不正确时，错误通常不是立即 panic，而是表现为设备行为不稳定或数据损坏。
-- 若平台总线地址模型不再满足 `phys + offset`，本 crate 的地址换算将整体失效。
+- 若平台总线地址模型不再满足物理地址直通，本 crate 的地址换算将整体失效。
 
 ## 跨项目定位
 ### ArceOS
-`ax-dma` 是 ArceOS 主线中的 DMA 内存服务模块，当前最明确服务于 `ixgbe` 和 API 层。
+`ax-dma` 是 ArceOS 主线中的 DMA 内存服务模块，当前最明确服务于 API 层和 ION 堆。
 
 ### StarryOS
 当前仓库里没有看到 StarryOS 直接依赖 `ax-dma` 的证据，因此不应把它描述为 StarryOS 常规 DMA 子系统。

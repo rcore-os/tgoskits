@@ -87,12 +87,24 @@ impl DmaAllocator {
     }
 
     pub(crate) fn alloc_coherent_pages(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
+        self.alloc_coherent_pages_impl(layout, false)
+    }
+
+    /// Like [`Self::alloc_coherent_pages`], but constrains the allocation to
+    /// 32-bit physical addresses (< 4 GiB). For IOMMU-bypassed devices that
+    /// program raw 32-bit DMA addresses and cannot reach buffers above 4 GiB.
+    pub(crate) fn alloc_coherent_pages_dma32(&mut self, layout: Layout) -> AllocResult<DMAInfo> {
+        self.alloc_coherent_pages_impl(layout, true)
+    }
+
+    fn alloc_coherent_pages_impl(&mut self, layout: Layout, dma32: bool) -> AllocResult<DMAInfo> {
         let num_pages = layout_pages(&layout);
-        let vaddr_raw = global_allocator().alloc_pages(
-            num_pages,
-            PAGE_SIZE_4K.max(layout.align()),
-            UsageKind::Dma,
-        )?;
+        let align = PAGE_SIZE_4K.max(layout.align());
+        let vaddr_raw = if dma32 {
+            global_allocator().alloc_dma32_pages(num_pages, align, UsageKind::Dma)?
+        } else {
+            global_allocator().alloc_pages(num_pages, align, UsageKind::Dma)?
+        };
         let vaddr = va!(vaddr_raw);
         self.update_flags(
             vaddr,

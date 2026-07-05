@@ -73,7 +73,7 @@ flowchart TD
 - 通过 `cargo_metadata` 自动发现 `test-suit/arceos` 下的工作区包
 - 可选按 target triple 解析目标架构
 - 为每个包构造 `arceos::RunArgs`
-- 对 AArch64 测试自动倾向启用 `plat_dyn`
+- 使用默认动态平台构建路径
 - 使用 `RunScope::PackageRoot` 逐个执行 QEMU 测试
 
 这意味着 ArceOS 测试不是写死的包列表，而是“目录发现 + 统一运行模板”。

@@ -4,7 +4,7 @@ use super::*;
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
     let mut envs = HashMap::new();
     let mut features = vec![
-        "ax-hal/loongarch64-qemu-virt".to_string(),
+        "plat-dyn".to_string(),
         "ax-driver/plat-dyn".to_string(),
         "ax-driver/virtio-blk".to_string(),
         "ax-driver/virtio-net".to_string(),
@@ -17,7 +17,6 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         &["dns".to_string()],
         &[
             "dns".to_string(),
-            "loongarch64-qemu-virt".to_string(),
             "plat-dyn".to_string(),
             "std-compat".to_string(),
             "virtio-blk".to_string(),
@@ -29,8 +28,6 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         features,
         vec![
             "ax-std/dns".to_string(),
-            "ax-std/loongarch64-qemu-virt".to_string(),
-            "ax-std/plat-dyn".to_string(),
             "ax-std/std-compat".to_string(),
             "ax-std/virtio-blk".to_string(),
             "ax-std/virtio-net".to_string(),
@@ -43,10 +40,7 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
 #[test]
 fn std_build_runtime_features_are_passed_through_after_normalization() {
     let mut info = BuildInfo {
-        features: vec![
-            "ax-hal/loongarch64-qemu-virt".to_string(),
-            "dns".to_string(),
-        ],
+        features: vec!["plat-dyn".to_string(), "dns".to_string()],
         ..BuildInfo::default()
     };
 
@@ -58,7 +52,7 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
         &["dns".to_string()],
         &[
             "dns".to_string(),
-            "loongarch64-qemu-virt".to_string(),
+            "plat-dyn".to_string(),
             "std-compat".to_string(),
         ],
     );
@@ -67,7 +61,6 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
         info.features,
         vec![
             "ax-std/dns".to_string(),
-            "ax-std/loongarch64-qemu-virt".to_string(),
             "ax-std/std-compat".to_string(),
             "dns".to_string()
         ]
@@ -85,7 +78,6 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
-        None,
         &metadata,
     )
     .unwrap();
@@ -107,7 +99,6 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
             "arceos".to_string(),
             "ax-std/dns".to_string(),
             "ax-std/fs".to_string(),
-            "ax-std/plat-dyn".to_string(),
             "ax-std/smp".to_string(),
             "ax-std/std-compat".to_string(),
         ]

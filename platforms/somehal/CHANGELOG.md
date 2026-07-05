@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.3...somehal-v0.7.4) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(somehal)* validate GIC runtime INTIDs
+- *(somehal)* fast-path x86 IOAPIC IRQ enable
+- *(somehal)* enable GIC private IRQs without controller locks
+- *(irq)* avoid hard irq controller locks
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(somehal)* restructure RISC-V IRQ routing ([#1443](https://github.com/rcore-os/tgoskits/pull/1443))
+- *(somehal)* restructure LoongArch IRQ routing ([#1442](https://github.com/rcore-os/tgoskits/pull/1442))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.2...somehal-v0.7.3) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.1...somehal-v0.7.2) - 2026-06-23
 
 ### Fixed

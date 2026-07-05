@@ -12,12 +12,14 @@ use rdrive::{
 use riscv::register::{sie, sip};
 use sbi_rt::HartMask;
 
-use crate::common::ioremap;
+use crate::{
+    common::ioremap,
+    irq_routing::{
+        RISCV_S_EXT_IRQ, RISCV_S_SOFT_IRQ, RISCV_S_TIMER_IRQ, RiscvTrapIrq, classify_riscv_trap,
+        riscv_plic_hwirq_from_source, riscv_source_from_plic_hwirq,
+    },
+};
 
-const INTC_IRQ_BASE: usize = 1usize << (usize::BITS as usize - 1);
-const S_SOFT: usize = INTC_IRQ_BASE | 1;
-const S_TIMER: usize = INTC_IRQ_BASE | 5;
-const S_EXT: usize = INTC_IRQ_BASE | 9;
 const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
@@ -39,54 +41,53 @@ module_driver!(
 );
 
 pub fn systick_irq() -> rdrive::IrqId {
-    S_TIMER.into()
+    RISCV_S_TIMER_IRQ.into()
 }
 
-pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
+pub fn local_irq_set_enable(irq: rdrive::IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
     let raw: usize = irq.into();
     match raw {
-        S_TIMER => unsafe {
+        RISCV_S_TIMER_IRQ => unsafe {
             if enable {
                 sie::set_stimer();
             } else {
                 sie::clear_stimer();
             }
+            Ok(())
         },
-        S_SOFT => unsafe {
+        RISCV_S_SOFT_IRQ => unsafe {
             if enable {
                 sie::set_ssoft();
             } else {
                 sie::clear_ssoft();
             }
+            Ok(())
         },
-        S_EXT => unsafe {
+        RISCV_S_EXT_IRQ => unsafe {
             if enable {
                 sie::set_sext();
             } else {
                 sie::clear_sext();
             }
+            Ok(())
         },
-        external if external & INTC_IRQ_BASE == 0 => set_external_irq_enable(external, enable),
-        other => warn!("unsupported RISC-V local IRQ {other:#x}"),
+        other => {
+            warn!("unsupported RISC-V local IRQ {other:#x}");
+            Err(crate::irq::IrqError::InvalidIrq)
+        }
     }
 }
 
 pub fn irq_set_affinity(
-    irq: rdrive::IrqId,
+    hwirq: rdif_intc::HwIrq,
     affinity: crate::irq::IrqAffinity,
-) -> Result<(), &'static str> {
-    let raw: usize = irq.into();
-    if raw & INTC_IRQ_BASE != 0 {
-        return Err("RISC-V local IRQ affinity cannot be changed");
-    }
-    let Some(source) = NonZeroU32::new(raw as u32) else {
-        return Err("invalid PLIC source 0");
-    };
+) -> Result<(), crate::irq::IrqError> {
+    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
     with_plic("setting PLIC IRQ affinity", |plic| {
         plic.set_source_affinity(source, affinity)
     })
     .flatten()
-    .ok_or("RISC-V PLIC is not registered or affinity target is invalid")
+    .ok_or(crate::irq::IrqError::InvalidIrq)
 }
 
 enum Completion {
@@ -114,27 +115,27 @@ impl Drop for ActiveIrq {
 }
 
 pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
-    match raw {
-        S_TIMER => Some(ActiveIrq {
-            irq: S_TIMER.into(),
+    match classify_riscv_trap(raw) {
+        RiscvTrapIrq::Timer => Some(ActiveIrq {
+            irq: RISCV_S_TIMER_IRQ.into(),
             completion: Completion::None,
         }),
-        S_SOFT => {
+        RiscvTrapIrq::Ipi => {
             unsafe {
                 sip::clear_ssoft();
             }
             Some(ActiveIrq {
-                irq: S_SOFT.into(),
+                irq: RISCV_S_SOFT_IRQ.into(),
                 completion: Completion::None,
             })
         }
-        S_EXT => begin_external_irq(),
-        external if external & INTC_IRQ_BASE == 0 => Some(ActiveIrq {
-            irq: external.into(),
-            completion: Completion::None,
-        }),
-        other => {
-            warn!("unsupported RISC-V interrupt cause {other:#x}");
+        RiscvTrapIrq::External => begin_external_irq(),
+        RiscvTrapIrq::UnknownInterrupt { cause } => {
+            warn!("unsupported RISC-V interrupt cause {cause}");
+            None
+        }
+        RiscvTrapIrq::BareSource(source) => {
+            warn!("ignore bare RISC-V PLIC source {source} outside external interrupt claim path");
             None
         }
     }
@@ -199,7 +200,12 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .get_property("riscv,ndev")
         .and_then(|prop| prop.get_u32())
         .unwrap_or(1024) as usize;
+    let mut plic = plic;
+    plic.disable_all_sources(ndev);
     let contexts = parse_supervisor_contexts(&info);
+    for context in contexts.iter().filter_map(|context| *context) {
+        plic.disable_context_sources(context);
+    }
 
     let irq_handler = RiscvPlicIrqHandler {
         inner: plic.irq_handler(),
@@ -218,7 +224,12 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     };
     enable_local_interrupts();
 
-    dev.register(rdif_intc::Intc::new(plic));
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::RiscvPlic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register PLIC domain: {err:?}")))?;
+    dev.register(rdif_intc::Intc::new(domain, plic));
     Ok(())
 }
 
@@ -264,19 +275,6 @@ fn enable_local_interrupts() {
         sie::set_stimer();
         sie::set_sext();
     }
-}
-
-fn set_external_irq_enable(irq: usize, enable: bool) {
-    let Some(source) = NonZeroU32::new(irq as u32) else {
-        return;
-    };
-    with_plic("setting PLIC IRQ enable", |plic| {
-        if enable {
-            plic.enable_source(source);
-        } else {
-            plic.disable_source(source);
-        }
-    });
 }
 
 fn claim_external_irq_source() -> Option<NonZeroU32> {
@@ -382,10 +380,18 @@ impl RiscvPlicIrqHandler {
 }
 
 impl RiscvPlic {
-    fn enable_source(&mut self, source: NonZeroU32) {
+    fn hwirq_from_source(&self, source: usize) -> Result<rdif_intc::HwIrq, crate::irq::IrqError> {
+        riscv_plic_hwirq_from_source(source, self.sources)
+    }
+
+    fn source_from_hwirq(&self, hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
+        riscv_source_from_plic_hwirq(hwirq, self.sources)
+    }
+
+    fn enable_source(&mut self, source: NonZeroU32) -> Result<(), crate::irq::IrqError> {
         if source.get() as usize > self.sources {
             warn!("skip enabling out-of-range PLIC source {}", source.get());
-            return;
+            return Err(crate::irq::IrqError::InvalidIrq);
         }
         self.enabled_by_source[source.get() as usize] = true;
         self.inner.set_priority(source, DEFAULT_PRIORITY);
@@ -396,15 +402,17 @@ impl RiscvPlic {
         if current.is_none() {
             warn_missing_current_context();
         }
+        Ok(())
     }
 
-    fn disable_source(&mut self, source: NonZeroU32) {
+    fn disable_source(&mut self, source: NonZeroU32) -> Result<(), crate::irq::IrqError> {
         if source.get() as usize > self.sources {
             warn!("skip disabling out-of-range PLIC source {}", source.get());
-            return;
+            return Err(crate::irq::IrqError::InvalidIrq);
         }
         self.enabled_by_source[source.get() as usize] = false;
         self.disable_source_contexts(source);
+        Ok(())
     }
 
     fn disable_source_contexts(&mut self, source: NonZeroU32) {
@@ -475,6 +483,13 @@ fn warn_missing_current_context() {
     }
 }
 
+pub fn source_from_hwirq(hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
+    with_plic("validating PLIC hardware IRQ", |plic| {
+        plic.source_from_hwirq(hwirq)
+    })
+    .ok_or(crate::irq::IrqError::Controller)?
+}
+
 impl DriverGeneric for RiscvPlic {
     fn name(&self) -> &str {
         "RISC-V PLIC"
@@ -482,17 +497,30 @@ impl DriverGeneric for RiscvPlic {
 }
 
 impl Interface for RiscvPlic {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> rdrive::IrqId {
-        let Some(source) = irq_prop.first().copied().map(|source| source as usize) else {
+    fn translate_fdt(
+        &self,
+        irq_prop: &[u32],
+    ) -> Result<rdif_intc::ControllerIrqTranslation, rdif_intc::IrqError> {
+        let Some(source) = irq_prop.first().copied() else {
             warn!("empty PLIC interrupt specifier");
-            return 0usize.into();
+            return Err(rdif_intc::IrqError::InvalidIrq);
         };
-        if source > self.sources {
-            warn!(
-                "PLIC interrupt source {} exceeds riscv,ndev {}",
-                source, self.sources
-            );
+        Ok(rdif_intc::ControllerIrqTranslation::new(
+            self.hwirq_from_source(source as usize)?,
+        ))
+    }
+
+    fn set_enabled(
+        &mut self,
+        hwirq: rdif_intc::HwIrq,
+        enabled: bool,
+    ) -> Result<(), rdif_intc::IrqError> {
+        let source = NonZeroU32::new(self.source_from_hwirq(hwirq)? as u32)
+            .ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        if enabled {
+            self.enable_source(source)
+        } else {
+            self.disable_source(source)
         }
-        source.into()
     }
 }

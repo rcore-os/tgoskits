@@ -76,6 +76,55 @@ fn root_cargo_toml_semantic_noop_selects_no_packages() {
 }
 
 #[test]
+fn root_cargo_toml_workspace_package_metadata_change_selects_no_packages() {
+    let old_manifest = r#"
+            [workspace.package]
+            version = "0.5.11"
+            authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
+
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+    let new_manifest = r#"
+            [workspace.package]
+            version = "0.5.12"
+            authors = ["RCore Team <yuchen@tsinghua.edu.cn>", "CI Bot <ci@example.com>"]
+
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    assert_eq!(
+        change,
+        RootManifestChange::LocalWorkspaceDependencies(BTreeSet::new())
+    );
+
+    let (root, metadata, workspace_packages) = test_workspace();
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: Vec::new(),
+            affected: Vec::new(),
+        }
+    );
+}
+
+#[test]
 fn root_cargo_toml_semantic_noop_keeps_incremental_package_selection() {
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths_with_root_manifest_change(
@@ -218,6 +267,28 @@ fn root_manifest_classifier_keeps_external_dependency_changes_hard() {
 
             [workspace.dependencies]
             anyhow = "2.0"
+        "#;
+
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+
+    assert_eq!(change, RootManifestChange::Hard);
+}
+
+#[test]
+fn root_manifest_classifier_keeps_workspace_members_changes_hard() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1.0", path = "crates/alpha" }
         "#;
 
     let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();

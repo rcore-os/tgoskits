@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
 use atomic_waker::AtomicWaker;
-use spin::Mutex;
+use ax_kspin::SpinRaw as Mutex;
 
 use crate::{
     common::SDIOWIFI_INTR_CONFIG_REG,

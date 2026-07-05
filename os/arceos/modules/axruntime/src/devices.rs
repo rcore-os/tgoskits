@@ -8,8 +8,8 @@ pub(crate) fn probe_all_devices() {
         .unwrap_or_else(|err| panic!("failed to probe platform devices: {err:?}"));
 }
 
-#[cfg(all(feature = "display", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_display() {
+#[cfg(feature = "display")]
+pub(crate) fn init_display() {
     if !rdrive::is_initialized() {
         ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
         return;
@@ -17,29 +17,43 @@ pub(crate) fn init_dyn_display() {
     let devices = ax_driver::display::take_display_devices()
         .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
         .into_iter()
-        .map(|dev| {
-            let display = ax_display::rdif::RdifDisplayDevice::new(dev)
-                .unwrap_or_else(|err| panic!("failed to adapt display device: {err:?}"));
-            ax_display::ErasedDisplayDevice::new(display)
-        });
+        .map(adapt_display_device);
     ax_display::init_display(devices);
 }
 
-#[cfg(all(feature = "display", not(feature = "plat-dyn")))]
-pub(crate) fn init_static_display() {
-    let devices = ax_driver::display::take_display_devices()
-        .unwrap_or_else(|err| panic!("failed to open static display devices: {err:?}"))
-        .into_iter()
-        .map(|dev| {
-            let display = ax_display::rdif::RdifDisplayDevice::new(dev)
-                .unwrap_or_else(|err| panic!("failed to adapt static display device: {err:?}"));
-            ax_display::ErasedDisplayDevice::new(display)
-        });
-    ax_display::init_display(devices);
+#[cfg(feature = "display")]
+fn adapt_display_device(
+    taken: ax_driver::display::TakenDisplayDevice,
+) -> ax_display::ErasedDisplayDevice {
+    let name = alloc::string::String::from(taken.device.name());
+    let irq = resolve_display_irq(&name, taken.irq)
+        .unwrap_or_else(|err| panic!("failed to resolve display IRQ for {name}: {err:?}"));
+    let display = ax_display::rdif::RdifDisplayDevice::new_with_irq(taken.device, irq)
+        .unwrap_or_else(|err| panic!("failed to adapt display device: {err:?}"));
+    ax_display::ErasedDisplayDevice::new(display)
 }
 
-#[cfg(all(feature = "input", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_input() {
+#[cfg(all(feature = "display", feature = "irq"))]
+fn resolve_display_irq(
+    _name: &str,
+    irq: Option<ax_driver::BindingIrq>,
+) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
+    irq.map(crate::irq::resolve_binding_irq).transpose()
+}
+
+#[cfg(all(feature = "display", not(feature = "irq")))]
+fn resolve_display_irq(
+    name: &str,
+    irq: Option<ax_driver::BindingIrq>,
+) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
+    if irq.is_some() {
+        warn!("display device {name} has an IRQ binding but IRQ support is disabled");
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "input")]
+pub(crate) fn init_input() {
     if !rdrive::is_initialized() {
         ax_input::init_input(core::iter::empty::<ax_input::ErasedInputDevice>());
         return;
@@ -47,37 +61,47 @@ pub(crate) fn init_dyn_input() {
     let devices = ax_driver::input::take_input_devices()
         .unwrap_or_else(|err| panic!("failed to open input devices: {err:?}"))
         .into_iter()
-        .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
+        .map(adapt_input_device);
     ax_input::init_input(devices);
 }
 
-#[cfg(all(feature = "input", not(feature = "plat-dyn")))]
-pub(crate) fn init_static_input() {
-    let devices = ax_driver::input::take_input_devices()
-        .unwrap_or_else(|err| panic!("failed to open static input devices: {err:?}"))
-        .into_iter()
-        .map(|dev| ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new(dev)));
-    ax_input::init_input(devices);
+#[cfg(feature = "input")]
+fn adapt_input_device(taken: ax_driver::input::TakenInputDevice) -> ax_input::ErasedInputDevice {
+    let name = alloc::string::String::from(taken.device.name());
+    let irq = resolve_input_irq(&name, taken.irq)
+        .unwrap_or_else(|err| panic!("failed to resolve input IRQ for {name}: {err:?}"));
+    ax_input::ErasedInputDevice::new(ax_input::rdif::RdifInputDevice::new_with_irq(
+        taken.device,
+        irq,
+    ))
 }
 
-#[cfg(all(feature = "net", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_net() {
+#[cfg(all(feature = "input", feature = "irq"))]
+fn resolve_input_irq(
+    _name: &str,
+    irq: Option<ax_driver::BindingIrq>,
+) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
+    irq.map(crate::irq::resolve_binding_irq).transpose()
+}
+
+#[cfg(all(feature = "input", not(feature = "irq")))]
+fn resolve_input_irq(
+    name: &str,
+    irq: Option<ax_driver::BindingIrq>,
+) -> Result<Option<irq_framework::IrqId>, core::convert::Infallible> {
+    if irq.is_some() {
+        warn!("input device {name} has an IRQ binding but IRQ support is disabled");
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "net")]
+pub(crate) fn init_net() {
     #[cfg(feature = "irq")]
     ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
-    let (nics, wireless) = collect_dyn_net_devices();
-    ax_net::init_network(nics, config);
-    register_wireless_devices(wireless);
-}
-
-#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
-pub(crate) fn init_static_net() {
-    #[cfg(feature = "irq")]
-    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
-    register_unix_namespace();
-    let config = parse_network_config();
-    let (nics, wireless) = collect_static_net_devices();
+    let (nics, wireless) = collect_net_devices();
     ax_net::init_network(nics, config);
     register_wireless_devices(wireless);
 }
@@ -119,7 +143,7 @@ type WirelessDevice = (
 fn adapt_net_device(
     net: rd_net::Net,
     name: &'static str,
-    irq_num: Option<usize>,
+    irq: Option<ax_driver::BindingIrq>,
     nics: &mut alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>>,
     wireless: &mut alloc::vec::Vec<WirelessDevice>,
 ) {
@@ -141,7 +165,8 @@ fn adapt_net_device(
         ax_net::register_wifi_control(name, handle);
     }
 
-    let driver = ax_net::RdNetDriver::new(name, net, irq_num)
+    let irq = resolve_net_irq(name, irq);
+    let driver = ax_net::RdNetDriver::new(name, net, irq)
         .unwrap_or_else(|err| panic!("failed to adapt net device {name}: {err:?}"));
     let driver = alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>;
 
@@ -160,6 +185,26 @@ fn adapt_net_device(
     }
 }
 
+#[cfg(all(feature = "net", feature = "irq"))]
+fn resolve_net_irq(name: &str, irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
+    let irq = irq?;
+    match crate::irq::resolve_binding_irq(irq) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            warn!("failed to resolve net IRQ for {name}: {err:?}");
+            None
+        }
+    }
+}
+
+#[cfg(all(feature = "net", not(feature = "irq")))]
+fn resolve_net_irq(
+    _name: &str,
+    _irq: Option<ax_driver::BindingIrq>,
+) -> Option<irq_framework::IrqId> {
+    None
+}
+
 /// Registers wireless devices that carry a link policy with the
 /// already-initialized network stack (static IP + optional DHCP server +
 /// dedicated out-of-band RX poll). Plain NICs are handled by `init_network`.
@@ -170,8 +215,8 @@ fn register_wireless_devices(wireless: alloc::vec::Vec<WirelessDevice>) {
     }
 }
 
-#[cfg(all(feature = "vsock", feature = "plat-dyn"))]
-pub(crate) fn init_dyn_vsock() {
+#[cfg(feature = "vsock")]
+pub(crate) fn init_vsock() {
     if !rdrive::is_initialized() {
         ax_net::init_vsock(alloc::vec::Vec::new());
         return;
@@ -181,30 +226,8 @@ pub(crate) fn init_dyn_vsock() {
     ax_net::init_vsock(devices);
 }
 
-#[cfg(all(feature = "vsock", not(feature = "plat-dyn")))]
-pub(crate) fn init_static_vsock() {
-    let devices = ax_driver::vsock::take_vsock_devices()
-        .unwrap_or_else(|err| panic!("failed to open static vsock devices: {err:?}"));
-    ax_net::init_vsock(devices);
-}
-
-#[cfg(all(feature = "net", not(feature = "plat-dyn")))]
-fn collect_static_net_devices() -> (
-    alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>>,
-    alloc::vec::Vec<WirelessDevice>,
-) {
-    let mut nics = alloc::vec::Vec::new();
-    let mut wireless = alloc::vec::Vec::new();
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open static net device: {err:?}"));
-        adapt_net_device(net, name, irq_num, &mut nics, &mut wireless);
-    }
-    (nics, wireless)
-}
-
-#[cfg(all(feature = "net", feature = "plat-dyn"))]
-fn collect_dyn_net_devices() -> (
+#[cfg(feature = "net")]
+fn collect_net_devices() -> (
     alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>>,
     alloc::vec::Vec<WirelessDevice>,
 ) {
@@ -214,9 +237,9 @@ fn collect_dyn_net_devices() -> (
         return (nics, wireless);
     }
     for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq_num) = ax_driver::net::take_rd_net_device(dev)
+        let (net, name, irq) = ax_driver::net::take_rd_net_device(dev)
             .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-        adapt_net_device(net, name, irq_num, &mut nics, &mut wireless);
+        adapt_net_device(net, name, irq, &mut nics, &mut wireless);
     }
     (nics, wireless)
 }

@@ -22,11 +22,10 @@ use core::{
 use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_memory_addr::AddrRange;
 use axdevice_base::{BaseDeviceOps, SysRegAddrRange};
-use axvcpu::{
-    AccessWidth, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, MappingFlags,
-    NestedPageFaultInfo, Port, SysRegAddr, VCpuId, VMId,
+use axvm_types::{
+    AccessWidth, GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo,
+    NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchVcpuOps, VmExit,
 };
-use axvm_types::GuestVirtAddr;
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -48,8 +47,8 @@ use super::{
     },
 };
 use crate::{
-    X86VCpuSetupConfig, ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters,
-    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
+    X86VCpuCreateConfig, X86VCpuSetupConfig, ept::GuestPageWalkInfo, host, msr::Msr,
+    regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
@@ -114,7 +113,7 @@ pub struct VmxVcpu {
     /// The guest entry point.
     entry: Option<GuestPhysAddr>,
     /// The EPT root address.
-    ept_root: Option<HostPhysAddr>,
+    nested_page_table_root: Option<HostPhysAddr>,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 
@@ -154,7 +153,7 @@ impl VmxVcpu {
             host_rflags: 0,
             launched: false,
             entry: None,
-            ept_root: None,
+            nested_page_table_root: None,
             // is_host: false,
             vmcs: VmxRegion::new(vmcs_revision_id, false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
@@ -171,8 +170,12 @@ impl VmxVcpu {
     }
 
     /// Set the new [`VmxVcpu`] context from guest OS.
-    pub fn setup(&mut self, ept_root: HostPhysAddr, entry: GuestPhysAddr) -> AxResult {
-        self.setup_vmcs(entry, ept_root, X86VCpuSetupConfig::default())?;
+    pub fn setup(
+        &mut self,
+        nested_page_table_root: HostPhysAddr,
+        entry: GuestPhysAddr,
+    ) -> AxResult {
+        self.setup_vmcs(entry, nested_page_table_root, X86VCpuSetupConfig::default())?;
         Ok(())
     }
 
@@ -485,6 +488,10 @@ impl VmxVcpu {
                 true,
             );
         }
+        for range in config.passthrough_port_ranges() {
+            self.io_bitmap
+                .set_intercept_of_range(range.base as u32, range.length as u32, true);
+        }
         Ok(())
     }
 
@@ -514,7 +521,7 @@ impl VmxVcpu {
     fn setup_vmcs(
         &mut self,
         entry: GuestPhysAddr,
-        ept_root: HostPhysAddr,
+        nested_page_table_root: HostPhysAddr,
         config: X86VCpuSetupConfig,
     ) -> AxResult {
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
@@ -524,7 +531,7 @@ impl VmxVcpu {
         self.bind_to_current_processor()?;
         self.setup_msr_bitmap()?;
         self.setup_vmcs_guest(entry)?;
-        self.setup_vmcs_control(ept_root, true, config)?;
+        self.setup_vmcs_control(nested_page_table_root, true, config)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -627,7 +634,7 @@ impl VmxVcpu {
 
     fn setup_vmcs_control(
         &mut self,
-        ept_root: HostPhysAddr,
+        nested_page_table_root: HostPhysAddr,
         is_guest: bool,
         config: X86VCpuSetupConfig,
     ) -> AxResult {
@@ -739,7 +746,7 @@ impl VmxVcpu {
             0,
         )?;
 
-        vmcs::set_ept_pointer(ept_root)?;
+        vmcs::set_ept_pointer(nested_page_table_root)?;
 
         // No MSR switches if hypervisor doesn't use and there is only one vCPU.
         VmcsControl32::VMEXIT_MSR_STORE_COUNT.write(0)?;
@@ -1016,7 +1023,7 @@ impl VmxVcpu {
         }
     }
 
-    fn handle_apic_msr_access(&mut self, write: bool, msr: u32) -> AxResult<AxVCpuExitReason> {
+    fn handle_apic_msr_access(&mut self, write: bool, msr: u32) -> AxResult<VmExit> {
         const VMEXIT_INSTR_LEN_RDMSR_WRMSR: u8 = 2;
 
         self.advance_rip(VMEXIT_INSTR_LEN_RDMSR_WRMSR)?;
@@ -1028,7 +1035,7 @@ impl VmxVcpu {
             trace!("handle_vlapic_msr_write: msr={msr:#x}, value={value:#x}");
 
             if msr == X2APIC_EOI_MSR {
-                Ok(AxVCpuExitReason::InterruptEnd {
+                Ok(VmExit::InterruptEnd {
                     vector: self.vlapic.handle_eoi(),
                 })
             } else {
@@ -1038,7 +1045,7 @@ impl VmxVcpu {
                     AccessWidth::Qword,
                     value,
                 )?;
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(VmExit::Nothing)
             }
         } else {
             let value = <EmulatedLocalApic as BaseDeviceOps<SysRegAddrRange>>::handle_read(
@@ -1050,7 +1057,7 @@ impl VmxVcpu {
             trace!("handle_vlapic_msr_read: msr={msr:#x}, value={value:#x}");
 
             self.write_edx_eax(value);
-            Ok(AxVCpuExitReason::Nothing)
+            Ok(VmExit::Nothing)
         }
     }
 
@@ -1064,7 +1071,7 @@ impl VmxVcpu {
         Ok(())
     }
 
-    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult<AxVCpuExitReason> {
+    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult<VmExit> {
         let apic_access_exit_info = self.apic_access_exit_info()?;
 
         let write = match apic_access_exit_info.access_type {
@@ -1081,11 +1088,11 @@ impl VmxVcpu {
 
         let reg = apic_access_exit_info.offset as usize;
         let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + reg);
-        let mut exit_reason = AxVCpuExitReason::Nothing;
+        let mut exit_reason = VmExit::Nothing;
         if write {
             let value = self.decode_apic_mmio_write_value(exit_info)?;
             if reg == X86_LOCAL_APIC_EOI_OFFSET {
-                exit_reason = AxVCpuExitReason::InterruptEnd {
+                exit_reason = VmExit::InterruptEnd {
                     vector: self.vlapic.handle_eoi(),
                 };
             } else {
@@ -1150,7 +1157,7 @@ impl VmxVcpu {
         exit_info: &VmxExitInfo,
         addr: GuestPhysAddr,
         write: bool,
-    ) -> Option<(AxVCpuExitReason, u8)> {
+    ) -> Option<(VmExit, u8)> {
         // Keep EPT-violation MMIO decoding scoped to the PC APIC windows used
         // by the current x86 Linux direct-boot path. The VMX exit qualification
         // alone does not tell us whether an unmapped GPA is an emulated device
@@ -1213,9 +1220,9 @@ impl VmxVcpu {
                         .ok()?;
                     self.regs_mut()
                         .set_reg_of_index(reg as u8, val as u32 as u64);
-                    AxVCpuExitReason::Nothing
+                    VmExit::Nothing
                 } else {
-                    AxVCpuExitReason::MmioRead {
+                    VmExit::MmioRead {
                         addr,
                         width: AccessWidth::Dword,
                         reg,
@@ -1237,9 +1244,9 @@ impl VmxVcpu {
         addr: GuestPhysAddr,
         data: u64,
         local_apic: bool,
-    ) -> Option<AxVCpuExitReason> {
+    ) -> Option<VmExit> {
         if !local_apic {
-            return Some(AxVCpuExitReason::MmioWrite {
+            return Some(VmExit::MmioWrite {
                 addr,
                 width: AccessWidth::Dword,
                 data,
@@ -1248,7 +1255,7 @@ impl VmxVcpu {
 
         let offset = addr.as_usize() - X86_APIC_ACCESS_GPA;
         if offset == X86_LOCAL_APIC_EOI_OFFSET {
-            return Some(AxVCpuExitReason::InterruptEnd {
+            return Some(VmExit::InterruptEnd {
                 vector: self.vlapic.handle_eoi(),
             });
         }
@@ -1260,7 +1267,7 @@ impl VmxVcpu {
             data as usize,
         )
         .ok()?;
-        Some(AxVCpuExitReason::Nothing)
+        Some(VmExit::Nothing)
     }
 
     fn skip_simple_prefixes(&self, rip: &mut GuestVirtAddr, rex: &mut u8) -> AxResult {
@@ -1619,8 +1626,8 @@ impl Debug for VmxVcpu {
     }
 }
 
-impl AxArchVCpu for VmxVcpu {
-    type CreateConfig = ();
+impl VmArchVcpuOps for VmxVcpu {
+    type CreateConfig = X86VCpuCreateConfig;
 
     type SetupConfig = X86VCpuSetupConfig;
 
@@ -1633,19 +1640,23 @@ impl AxArchVCpu for VmxVcpu {
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        self.ept_root = Some(ept_root);
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        self.nested_page_table_root = Some(config.root_paddr);
         Ok(())
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap(), config)
+        self.setup_vmcs(
+            self.entry.unwrap(),
+            self.nested_page_table_root.unwrap(),
+            config,
+        )
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<VmExit> {
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
-                AxVCpuExitReason::FailEntry {
+                VmExit::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
                     hardware_entry_failure_reason: 0,
                 }
@@ -1653,7 +1664,7 @@ impl AxArchVCpu for VmxVcpu {
                 match exit_info.exit_reason {
                     VmxExitReason::VMCALL => {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        AxVCpuExitReason::Hypercall {
+                        VmExit::Hypercall {
                             nr: self.regs().rax,
                             args: [
                                 self.regs().rdi,
@@ -1674,19 +1685,19 @@ impl AxArchVCpu for VmxVcpu {
                         if io_info.is_repeat || io_info.is_string {
                             warn!("VMX unsupported IO-Exit: {io_info:#x?} of {exit_info:#x?}");
                             warn!("VCpu {self:#x?}");
-                            AxVCpuExitReason::Halt
+                            VmExit::Halt
                         } else {
                             let width = match AccessWidth::try_from(io_info.access_size as usize) {
                                 Ok(width) => width,
                                 Err(_) => {
                                     warn!("VMX invalid IO-Exit: {io_info:#x?} of {exit_info:#x?}");
                                     warn!("VCpu {self:#x?}");
-                                    return Ok(AxVCpuExitReason::Halt);
+                                    return Ok(VmExit::Halt);
                                 }
                             };
 
                             if io_info.is_in {
-                                AxVCpuExitReason::IoRead {
+                                VmExit::IoRead {
                                     port: Port(port),
                                     width,
                                 }
@@ -1694,9 +1705,9 @@ impl AxArchVCpu for VmxVcpu {
                                 && width == AccessWidth::Word
                                 && self.regs().rax == QEMU_EXIT_MAGIC
                             {
-                                AxVCpuExitReason::SystemDown
+                                VmExit::SystemDown
                             } else {
-                                AxVCpuExitReason::IoWrite {
+                                VmExit::IoWrite {
                                     port: Port(port),
                                     width,
                                     data: self.regs().rax.get_bits(width.bits_range()),
@@ -1707,28 +1718,28 @@ impl AxArchVCpu for VmxVcpu {
                     VmxExitReason::EXTERNAL_INTERRUPT => {
                         let int_info = self.interrupt_exit_info()?;
                         assert!(int_info.valid);
-                        AxVCpuExitReason::ExternalInterrupt {
+                        VmExit::ExternalInterrupt {
                             vector: int_info.vector as _,
                         }
                     }
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
-                        AxVCpuExitReason::PreemptionTimer
+                        VmExit::PreemptionTimer
                     }
                     VmxExitReason::HLT => {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        AxVCpuExitReason::PreemptionTimer
+                        VmExit::PreemptionTimer
                     }
-                    VmxExitReason::VIRTUALIZED_EOI => AxVCpuExitReason::InterruptEnd {
+                    VmxExitReason::VIRTUALIZED_EOI => VmExit::InterruptEnd {
                         vector: self.vlapic.handle_eoi(),
                     },
                     VmxExitReason::APIC_WRITE => {
                         let offset = self.apic_access_exit_info()?.offset as usize;
                         if offset == X86_LOCAL_APIC_EOI_OFFSET {
                             let vector = self.vlapic.handle_eoi();
-                            AxVCpuExitReason::InterruptEnd { vector }
+                            VmExit::InterruptEnd { vector }
                         } else {
-                            AxVCpuExitReason::Nothing
+                            VmExit::Nothing
                         }
                     }
                     VmxExitReason::APIC_ACCESS => self.handle_apic_access(&exit_info)?,
@@ -1746,7 +1757,7 @@ impl AxArchVCpu for VmxVcpu {
                             self.advance_rip(instruction_len)?;
                             mmio_exit
                         } else {
-                            AxVCpuExitReason::NestedPageFault {
+                            VmExit::NestedPageFault {
                                 addr: info.fault_guest_paddr,
                                 access_flags: info.access_flags,
                             }
@@ -1758,7 +1769,7 @@ impl AxArchVCpu for VmxVcpu {
                             self.handle_apic_msr_access(false, msr)?
                         } else {
                             // `reg` is unused here.
-                            AxVCpuExitReason::SysRegRead {
+                            VmExit::SysRegRead {
                                 addr: SysRegAddr::new(msr as _),
                                 reg: 0,
                             }
@@ -1771,7 +1782,7 @@ impl AxArchVCpu for VmxVcpu {
                         } else {
                             let value = (self.regs().rax & 0xffff_ffff)
                                 | ((self.regs().rdx & 0xffff_ffff) << 32);
-                            AxVCpuExitReason::SysRegWrite {
+                            VmExit::SysRegWrite {
                                 addr: SysRegAddr::new(msr as _),
                                 value,
                             }
@@ -1780,11 +1791,11 @@ impl AxArchVCpu for VmxVcpu {
                     _ => {
                         warn!("VMX unsupported VM-Exit: {exit_info:#x?}");
                         warn!("VCpu {self:#x?}");
-                        AxVCpuExitReason::Halt
+                        VmExit::Halt
                     }
                 }
             }),
-            None => Ok(AxVCpuExitReason::Nothing),
+            None => Ok(VmExit::Nothing),
         }
     }
 
@@ -1815,7 +1826,7 @@ impl AxArchVCpu for VmxVcpu {
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
-        trigger: axvcpu::InterruptTriggerMode,
+        trigger: axvm_types::InterruptTriggerMode,
     ) -> AxResult {
         if vector == 0 {
             warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
@@ -1824,7 +1835,7 @@ impl AxArchVCpu for VmxVcpu {
         self.queue_event_with_trigger(
             vector as u8,
             None,
-            trigger == axvcpu::InterruptTriggerMode::LevelTriggered,
+            trigger == axvm_types::InterruptTriggerMode::LevelTriggered,
         );
         Ok(())
     }
@@ -2042,7 +2053,7 @@ mod tests {
         #[test]
         fn test_access_width_operations() {
             // Test access width enumeration
-            use axvcpu::AccessWidth;
+            use axvm_types::AccessWidth;
 
             assert_eq!(AccessWidth::Byte as usize, 0);
             assert_eq!(AccessWidth::Word as usize, 1);

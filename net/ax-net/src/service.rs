@@ -62,8 +62,9 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
+use ax_kspin::SpinRwLock as RwLock;
 use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
@@ -75,7 +76,6 @@ use smoltcp::{
         Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr,
     },
 };
-use spin::RwLock;
 
 use crate::{
     SOCKET_SET,
@@ -636,6 +636,85 @@ impl Service {
         self.router.device_index(name)
     }
 
+    /// Assigns a static IPv4 address to an interface at runtime.
+    ///
+    /// The current control model owns a single IPv4 address per interface. Keep
+    /// `ip addr add` conservative and report `EEXIST` once an address is
+    /// already present instead of silently replacing it or pretending to support
+    /// secondary addresses.
+    pub fn configure_static_ipv4(
+        &mut self,
+        interface_id: InterfaceId,
+        address: Ipv4Address,
+        prefix_len: u8,
+    ) -> AxResult {
+        if prefix_len > 32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+        if interface.kind != InterfaceKind::Ethernet {
+            return Err(AxError::OperationNotSupported);
+        }
+        if interface.ipv4.is_some() {
+            return Err(AxError::AlreadyExists);
+        }
+
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: Some(Ipv4Cidr::new(address, prefix_len)),
+            gateway: None,
+            dns_source: DnsSource::Dhcp,
+            dns_servers: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Removes a configured IPv4 address from an interface at runtime.
+    pub fn remove_static_ipv4(
+        &mut self,
+        interface_id: InterfaceId,
+        address: Ipv4Address,
+        prefix_len: u8,
+    ) -> AxResult {
+        if prefix_len > 32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+        // Runtime deletion is intentionally exact: with one IPv4 address per
+        // interface, a mismatched address or prefix must not clear the current
+        // configuration.
+        if interface.ipv4 != Some(Ipv4Cidr::new(address, prefix_len)) {
+            return Err(AxError::NotFound);
+        }
+
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Dhcp,
+            dns_servers: Vec::new(),
+        });
+        Ok(())
+    }
+
     /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
     pub fn reconfigure_as_ap(
         &mut self,
@@ -1055,7 +1134,7 @@ mod tests {
 
     #[test]
     fn dhcp_configured_is_true_once_any_interface_has_address() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(routes.clone());
         let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
@@ -1084,7 +1163,7 @@ mod tests {
 
     #[test]
     fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
-        let routes = Arc::new(spin::RwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_kspin::SpinRwLock::new(RouteTable::new()));
         let router = Router::new(routes.clone());
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
         let mut service = Service::new(router, control);

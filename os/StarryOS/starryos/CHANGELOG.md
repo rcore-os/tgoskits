@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.19...starryos-v0.5.20) - 2026-07-02
+
+### Added
+
+- *(axtest)* simplify kernel test targets ([#1470](https://github.com/rcore-os/tgoskits/pull/1470))
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+- *(axtest)* add ArceOS QEMU smoke coverage ([#1365](https://github.com/rcore-os/tgoskits/pull/1365))
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.18...starryos-v0.5.19) - 2026-06-27
+
+### Other
+
+- *(platforms)* remove VisionFive2 static platform ([#1371](https://github.com/rcore-os/tgoskits/pull/1371))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.17...starryos-v0.5.18) - 2026-06-23
 
 ### Other
@@ -86,7 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- updated the following local packages: starry-kernel, axplat-riscv64-visionfive2, axbuild, ax-plat-riscv64-sg2002, axplat-dyn, ax-feat
+- updated the following local packages: starry-kernel, axplat-riscv64-visionfive2, axbuild, axplat-dyn, ax-feat
 
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.9...starryos-v0.5.10) - 2026-05-15
 

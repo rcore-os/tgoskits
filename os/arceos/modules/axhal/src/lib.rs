@@ -6,7 +6,7 @@
 //!
 //! Currently supported platforms (specify by cargo features):
 //!
-//! - `plat-dyn`: Runtime-discovered platform, including x86_64, AArch64 and RISC-V QEMU boards.
+//! - Runtime-discovered platform support through `axplat-dyn`.
 //! - `dummy`: If none of the above platform is selected, the dummy platform
 //!   will be used. In this platform, most of the operations are no-op or
 //!   `unimplemented!()`. This platform is mainly used for [cargo test].
@@ -38,10 +38,16 @@ extern crate ax_memory_addr;
 mod platform_select;
 pub use platform_select::selected as platform;
 
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 pub mod boot;
+pub mod cache;
 pub mod dtb;
 pub mod mem;
 pub mod percpu;
+pub mod pmu;
 pub mod time;
 
 #[cfg(feature = "tls")]
@@ -118,8 +124,7 @@ pub fn init_early_secondary(cpu_id: usize) {
 /// When SMP is disabled, this function always returns 1.
 ///
 /// When SMP is enabled, it's the smaller one between the platform-declared CPU
-/// number [`ax_plat::power::cpu_num`] and the configured maximum CPU number
-/// `ax_config::plat::MAX_CPU_NUM`.
+/// number [`ax_plat::power::cpu_num`] and the build-time CPU capacity.
 ///
 /// This value is determined during the BSP initialization phase.
 pub fn cpu_num() -> usize {
@@ -130,7 +135,7 @@ pub fn cpu_num() -> usize {
         /// The number of CPUs in the system. Based on the number declared by the
         /// platform crate and limited by the configured maximum CPU number.
         static CPU_NUM: LazyLock<usize> = LazyLock::new(|| {
-            let max_cpu_num = ax_config::plat::MAX_CPU_NUM;
+            let max_cpu_num = build_info::CPU_CAPACITY;
             let plat_cpu_num = ax_plat::power::cpu_num();
             let cpu_num = plat_cpu_num.min(max_cpu_num);
 
@@ -160,4 +165,5 @@ macro_rules! addr_of_sym {
         $e as *const () as usize
     };
 }
+#[cfg(feature = "tls")]
 pub(crate) use addr_of_sym;

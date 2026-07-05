@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.6...axplat-dyn-v0.7.7) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+- *(irq)* avoid hard irq controller locks
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.5...axplat-dyn-v0.7.6) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.4...axplat-dyn-v0.7.5) - 2026-06-23
 
 ### Added

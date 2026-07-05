@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.7...rd-net-v0.2.0) - 2026-07-02
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.6...rd-net-v0.1.7) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.5...rd-net-v0.1.6) - 2026-06-23
 
 ### Other

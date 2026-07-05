@@ -3,6 +3,7 @@ mod pts;
 mod pty;
 mod serial;
 mod terminal;
+mod usb_serial;
 
 use alloc::{
     format,
@@ -33,6 +34,7 @@ pub use self::{
     serial::{
         SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
     },
+    usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
 };
 use crate::{
     pseudofs::DeviceOps,
@@ -45,6 +47,8 @@ const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
     if let Some(pts) = term.downcast_ref::<PtyDriver>() {
         Some(format!("/dev/pts/{}", pts.pty_number()))
+    } else if let Some(tty) = term.downcast_ref::<UsbSerialTtyDriver>() {
+        Some(format!("/dev/ttyUSB{}", tty.usb_serial_number()))
     } else {
         term.downcast_ref::<SerialTtyDriver>()
             .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))
@@ -139,11 +143,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 (arg as *mut Termios2).vm_write(termios)?;
             }
             TCSETS | TCSETSF | TCSETSW => {
-                // TODO: drain output?
                 // Note: vm_read() must complete before acquiring the terminal lock.
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                if matches!(cmd, TCSETSF | TCSETSW) {
+                    self.writer.drain()?;
+                }
                 let old = {
                     let mut guard = self.terminal.termios.lock();
                     let old = guard.clone();
@@ -156,8 +162,10 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                // TODO: drain output?
                 let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                if matches!(cmd, TCSETSF2 | TCSETSW2) {
+                    self.writer.drain()?;
+                }
                 let old = {
                     let mut guard = self.terminal.termios.lock();
                     let old = guard.clone();
@@ -204,6 +212,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
                     );
                 }
+            }
+            TCSBRK => {
+                self.writer.drain()?;
+                if arg == 0 {
+                    return Err(AxError::Unsupported);
+                }
+            }
+            TCSBRKP => {
+                self.writer.drain()?;
+                return Err(AxError::Unsupported);
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {

@@ -25,19 +25,10 @@ use selection::{
 use timing::print_clippy_timing;
 
 pub(super) const DEFAULT_FEATURE: &str = "default";
-pub(super) const AX_CONFIG_PATH_ENV: &str = "AX_CONFIG_PATH";
-pub(super) const AXCONFIG_FILE: &str = "axconfig.toml";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 pub(super) const AXSTD_STD_DEFAULT_FEATURE: &str = "default";
-pub(super) const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,plat-dyn,fs,multitask,irq,net";
+pub(super) const AXSTD_STD_CLIPPY_FEATURES: &str = "std-compat,fs,multitask,irq,net";
 pub(super) const AXSTD_STD_CLIPPY_TARGET: &str = "x86_64-unknown-none";
-pub(super) const DOCS_RS_METADATA: &str = "docs.rs";
-pub(super) const DOCS_METADATA: &str = "docs";
-pub(super) const RS_METADATA: &str = "rs";
-pub(super) const TARGETS_METADATA: &str = "targets";
-pub(super) const AXBUILD_METADATA: &str = "axbuild";
-pub(super) const CLIPPY_FEATURE_AXCONFIG_OVERRIDES_METADATA: &str =
-    "clippy-feature-axconfig-overrides";
 pub(super) const AX_HAL_PACKAGE: &str = "ax-hal";
 
 pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::Result<()> {

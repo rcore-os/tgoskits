@@ -53,8 +53,8 @@ percpu_static! {
 /// Access to this variable is marked as `unsafe` because it contains `MaybeUninit` references,
 /// which require careful handling to avoid undefined behavior. The array should be fully
 /// initialized before being accessed to ensure safe usage.
-static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; ax_config::plat::MAX_CPU_NUM] =
-    [ARRAY_REPEAT_VALUE; ax_config::plat::MAX_CPU_NUM];
+static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info::CPU_CAPACITY] =
+    [ARRAY_REPEAT_VALUE; crate::build_info::CPU_CAPACITY];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
@@ -66,7 +66,7 @@ fn main_task_stack() -> TaskStack {
 
 #[cfg(feature = "host-test")]
 fn main_task_stack() -> TaskStack {
-    TaskStack::alloc(ax_config::TASK_STACK_SIZE)
+    TaskStack::alloc(crate::default_task_stack_size())
 }
 
 /// Returns a reference to the current run queue in [`CurrentRunQueueRef`].
@@ -109,7 +109,7 @@ pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<'static, G
 ///
 /// This function will panic if `cpu_mask` is empty, indicating that there are no available CPUs for task execution.
 #[cfg(feature = "smp")]
-// The modulo operation is safe here because `ax_config::plat::MAX_CPU_NUM` is always greater than 1 with "smp" enabled.
+// The modulo operation is safe here because `CPU_CAPACITY` is always greater than 1 with "smp" enabled.
 #[allow(clippy::modulo_one)]
 #[inline]
 fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
@@ -120,7 +120,8 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
 
     // Round-robin selection of the run queue index.
     loop {
-        let index = RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % ax_config::plat::MAX_CPU_NUM;
+        let index =
+            RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % crate::build_info::CPU_CAPACITY;
         if cpumask.get(index) {
             return index;
         }
@@ -153,9 +154,13 @@ fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
 #[cfg_attr(all(test, feature = "host-test"), allow(dead_code))]
 fn request_current_reschedule() {
     clear_remote_reschedule_pending_for_current_cpu();
-    #[cfg(feature = "preempt")]
+    #[cfg(all(feature = "preempt", feature = "host-test"))]
     if let Some(curr) = crate::current_may_uninit() {
         curr.set_force_resched_pending(true);
+    }
+    #[cfg(all(feature = "preempt", not(feature = "host-test")))]
+    if crate::current_may_uninit().is_some() {
+        CurrentRunQueueRef::<ax_kernel_guard::NoOp>::force_resched_from_irq();
     }
 }
 
@@ -168,8 +173,8 @@ static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
-static REMOTE_RESCHEDULE_PENDING: [AtomicBool; ax_config::plat::MAX_CPU_NUM] =
-    [const { AtomicBool::new(false) }; ax_config::plat::MAX_CPU_NUM];
+static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -182,15 +187,45 @@ pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
     REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
 }
 
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn request_remote_reschedule_if_not_pending<F>(pending: &AtomicBool, request: F)
+where
+    F: FnOnce(),
+{
+    if !pending.swap(true, Ordering::AcqRel) {
+        request();
+    }
+}
+
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn force_remote_reschedule_request<F>(pending: &AtomicBool, request: F)
+where
+    F: FnOnce(),
+{
+    pending.store(true, Ordering::Release);
+    request();
+}
+
 #[cfg(all(
     feature = "smp",
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
 fn request_remote_reschedule(cpu_id: usize) {
-    if !REMOTE_RESCHEDULE_PENDING[cpu_id].swap(true, Ordering::AcqRel) {
+    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
         ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    }
+    });
+}
+
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+fn force_remote_reschedule(cpu_id: usize) {
+    force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
+        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
+    });
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
@@ -198,9 +233,17 @@ fn request_remote_reschedule(cpu_id: usize) {
     let _ = cpu_id;
     // Host tests run with one dummy CPU and a no-op send_ipi(), so record the
     // scheduler-visible request that a real ax-ipi callback would carry.
-    if !REMOTE_RESCHEDULE_PENDING.swap(true, Ordering::AcqRel) {
+    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING, || {
         REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
-    }
+    });
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+fn force_remote_reschedule(cpu_id: usize) {
+    let _ = cpu_id;
+    force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING, || {
+        REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
+    });
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -213,9 +256,16 @@ fn kick_remote_cpu(cpu_id: usize) {
     }
 }
 
+#[cfg(all(feature = "smp", feature = "ipi"))]
+fn force_kick_remote_cpu(cpu_id: usize) {
+    if cpu_id != this_cpu_id() {
+        force_remote_reschedule(cpu_id);
+    }
+}
+
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 mod tests {
-    use core::sync::atomic::Ordering;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     // Host-test mode collapses per-CPU state into process-global statics, so
     // keep the shared pending/count assertions in one test.
@@ -289,6 +339,42 @@ mod tests {
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn forced_remote_reschedule_bypasses_stale_pending() {
+        let pending = AtomicBool::new(true);
+        let requests = AtomicUsize::new(0);
+
+        super::force_remote_reschedule_request(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            1,
+            "forced remote kicks must bypass stale pending coalescing",
+        );
+
+        super::request_remote_reschedule_if_not_pending(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            1,
+            "ordinary remote kicks should still coalesce stale pending requests",
+        );
+
+        super::force_remote_reschedule_request(&pending, || {
+            requests.fetch_add(1, Ordering::Release);
+        });
+
+        assert_eq!(
+            requests.load(Ordering::Acquire),
+            2,
+            "forced remote kicks must not coalesce required migration reschedules",
+        );
     }
 }
 
@@ -365,7 +451,7 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let cpumask = task.cpumask();
         let index = if cpumask.get(current_cpu) {
             current_cpu
-        } else if last_cpu < ax_config::plat::MAX_CPU_NUM && cpumask.get(last_cpu) {
+        } else if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
             last_cpu
         } else {
             select_run_queue_index(cpumask)
@@ -446,7 +532,11 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
     /// which means the task is already unblocked by other cores.
     pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         // Try to change the state of the task from `Blocked` to `Ready`,
         // if successful, the task will be put into this run queue,
         // otherwise, the task is already unblocked by other cores.
@@ -458,7 +548,9 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             // Note: when the task is unblocked on another CPU's run queue,
             // we just ignore the `resched` flag.
             if resched && cpu_id == this_cpu_id() {
@@ -478,13 +570,19 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
     #[cfg(feature = "irq")]
     pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = task.id_name();
+        let task_id_name = if log::log_enabled!(log::Level::Debug) {
+            Some(task.id_name())
+        } else {
+            None
+        };
         if self
             .inner
             .put_task_with_state(task, TaskState::Blocked, resched)
         {
             let cpu_id = self.inner.cpu_id;
-            debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            if let Some(task_id_name) = task_id_name {
+                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
+            }
             if resched {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
@@ -586,10 +684,15 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "preempt")]
     pub fn force_resched(&mut self) {
+        self.force_resched_with_preempt_count(1);
+    }
+
+    #[cfg(feature = "preempt")]
+    fn force_resched_with_preempt_count(&mut self, current_disable_count: usize) {
         let curr = &self.current_task;
         assert!(curr.is_running());
 
-        let can_preempt = curr.can_preempt(1);
+        let can_preempt = curr.can_preempt(current_disable_count);
         trace!(
             "current task is forced to reschedule: {}, allow={}",
             curr.id_name(),
@@ -608,6 +711,17 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         } else {
             curr.set_force_resched_pending(true);
         }
+    }
+
+    #[cfg(all(
+        feature = "smp",
+        feature = "ipi",
+        feature = "preempt",
+        not(feature = "host-test")
+    ))]
+    fn force_resched_from_irq() {
+        let mut rq = current_run_queue::<ax_kernel_guard::NoOp>();
+        rq.force_resched_with_preempt_count(0);
     }
 
     /// Exit the current task with the specified exit code.
@@ -732,12 +846,11 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     #[cfg(feature = "smp")]
     fn migrate_current_to_affinity(&mut self) {
-        const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
         let curr = self.current_task.clone();
         let migration_task = TaskInner::new(
             move || crate::run_queue::migrate_entry(curr),
             "migration-task".into(),
-            MIGRATION_TASK_STACK_SIZE,
+            crate::default_task_stack_size(),
         )
         .into_arc();
 
@@ -749,7 +862,8 @@ impl AxRunQueue {
     /// Create a new run queue for the specified CPU.
     /// The run queue is initialized with a per-CPU gc task in its scheduler.
     fn new(cpu_id: usize) -> Self {
-        let gc_task = TaskInner::new(gc_entry, "gc".into(), ax_config::TASK_STACK_SIZE).into_arc();
+        let gc_task =
+            TaskInner::new(gc_entry, "gc".into(), crate::default_task_stack_size()).into_arc();
         // gc task should be pinned to the current CPU.
         gc_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
 
@@ -777,6 +891,10 @@ impl AxRunQueue {
         // If the task's state matches `current_state`, set its state to `Ready` and
         // put it back to the run queue (except idle task).
         if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+            #[cfg(feature = "smp")]
+            let waking_current_task = current_state == TaskState::Blocked
+                && self.cpu_id == this_cpu_id()
+                && crate::current().ptr_eq(&task);
             // If the task is blocked, wait for the task to finish its scheduling process.
             // See `unblock_task()` for details.
             if current_state == TaskState::Blocked {
@@ -791,9 +909,16 @@ impl AxRunQueue {
                 //    because the task may have been woken up by other cores.
                 // 2. This can be placed in the front of `switch_to()`
                 #[cfg(feature = "smp")]
-                while task.on_cpu() {
-                    // Wait for the task to finish its scheduling process.
-                    core::hint::spin_loop();
+                {
+                    // A scheduler tracepoint or other IRQ-safe notification can wake the
+                    // task that is currently being switched out on this CPU. Waiting for
+                    // `on_cpu` there would wait for the very switch we are still inside.
+                    if !waking_current_task {
+                        while task.on_cpu() {
+                            // Wait for the task to finish its scheduling process.
+                            core::hint::spin_loop();
+                        }
+                    }
                 }
             }
             // TODO: priority
@@ -958,7 +1083,9 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
         .lock()
         .put_prev_task(migrated_task, false);
     #[cfg(all(feature = "smp", feature = "ipi"))]
-    kick_remote_cpu(cpu_id);
+    // Current-task migration cannot make progress until the target CPU runs
+    // the migrated task, so do not let a stale coalescing bit suppress this IPI.
+    force_kick_remote_cpu(cpu_id);
 }
 
 /// Clear the `on_cpu` field of previous task running on this CPU.
@@ -977,11 +1104,11 @@ pub(crate) fn init() {
     // Create the `idle` task (not current task).
     // The idle task will run when there is no other runnable task.
     #[cfg(feature = "lockdep")]
-    const IDLE_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
+    let idle_task_stack_size = crate::default_task_stack_size();
     // TODO: Consider unifying the non-lockdep idle stack size with the task stack configuration.
     #[cfg(not(feature = "lockdep"))]
-    const IDLE_TASK_STACK_SIZE: usize = 16384;
-    let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), IDLE_TASK_STACK_SIZE);
+    let idle_task_stack_size = 16384;
+    let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), idle_task_stack_size);
     // idle task should be pinned to the current CPU.
     idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
     IDLE_TASK.with_current(|i| {

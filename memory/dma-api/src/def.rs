@@ -1,4 +1,4 @@
-use core::{alloc::Layout, cmp::PartialOrd, ptr::NonNull};
+use core::{alloc::Layout, cmp::PartialOrd, num::NonZeroU64, ptr::NonNull};
 
 use derive_more::{
     Add, AddAssign, Debug, Display, Div, From, Into, Mul, MulAssign, Sub, SubAssign,
@@ -46,6 +46,33 @@ impl PartialEq<u64> for DmaAddr {
 impl PartialOrd<u64> for DmaAddr {
     fn partial_cmp(&self, other: &u64) -> Option<core::cmp::Ordering> {
         self.0.partial_cmp(other)
+    }
+}
+
+/// Stable identity for one DMA translation domain.
+///
+/// Drivers use this to reject already-prepared DMA buffers that were prepared
+/// for a different device/IOMMU domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DmaDomainId(NonZeroU64);
+
+impl DmaDomainId {
+    pub const fn new(id: NonZeroU64) -> Self {
+        Self(id)
+    }
+
+    /// Compatibility domain for legacy callers that have not plumbed a
+    /// device/IOMMU-specific identity yet.
+    pub const fn legacy_global() -> Self {
+        Self(NonZeroU64::MIN)
+    }
+
+    pub fn from_raw(id: u64) -> Self {
+        Self(NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN))
+    }
+
+    pub const fn get(self) -> NonZeroU64 {
+        self.0
     }
 }
 

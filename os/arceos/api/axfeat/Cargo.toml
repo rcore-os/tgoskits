@@ -1,6 +1,6 @@
 [package]
 name = "ax-feat"
-version = "0.5.22"
+version = "0.5.24"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -24,16 +24,9 @@ hv = ["ax-hal/hv"]
 # Interrupts
 irq = ["ax-hal/irq", "ax-runtime/irq", "ax-task?/irq", "ax-driver?/irq"]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-runtime/ipi", "ax-task?/ipi"]
+wake-ipi = ["irq", "ax-hal/ipi", "ax-runtime/wake-ipi"]
 
-# Custom or default platforms
 ext-ld = ["ax-runtime/ext-ld"]
-myplat = ["ax-hal/myplat"]
-defplat = ["ax-hal/defplat"]
-plat-dyn = [
-    "paging",
-    "ax-runtime/plat-dyn",
-    "ax-config/plat-dyn",
-]
 
 # Memory
 alloc = ["ax-alloc"]
@@ -47,7 +40,12 @@ multitask = [
     "ax-sync/multitask",
     "ax-runtime/multitask",
 ]
-lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
+lockdep = [
+    "multitask",
+    "ax-sync/lockdep",
+    "ax-kspin/lockdep",
+    "ax-fs-ng?/lockdep",
+]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-fifo = ["ax-task/sched-fifo"]
@@ -110,7 +108,6 @@ dwarf = ["axbacktrace/dwarf"]
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 axbacktrace.workspace = true
-ax-config = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }

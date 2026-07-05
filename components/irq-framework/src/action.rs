@@ -1,16 +1,13 @@
 use core::{cell::UnsafeCell, ptr, sync::atomic::AtomicBool};
 
 use crate::{
-    AutoEnable, BoxedIrqHandler, CpuId, CpuMask, IrqContext, IrqExecution, IrqRequest, IrqReturn,
-    IrqScope, types::IrqHandler,
+    AutoEnable, BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId, CpuMask, IrqContext,
+    IrqExecution, IrqRequest, IrqReturn, IrqScope, types::IrqHandler,
 };
 
 pub(crate) enum ActionHandler {
-    Raw {
-        handler: unsafe fn(IrqContext, core::ptr::NonNull<()>) -> IrqReturn,
-        data: core::ptr::NonNull<()>,
-    },
-    Boxed(UnsafeCell<BoxedIrqHandler>),
+    NonReentrant(UnsafeCell<BoxedIrqHandler>),
+    Concurrent(ConcurrentBoxedIrqHandler),
 }
 
 unsafe impl Send for ActionHandler {}
@@ -28,9 +25,9 @@ pub(crate) struct Action {
     pub(crate) next: *mut Action,
 }
 
-// Raw handler context pointers and boxed callbacks are owned by the registered
-// action. Boxed callbacks are only called after the NonReentrant run guard
-// succeeds, so the UnsafeCell is not mutably aliased by framework dispatch.
+// Boxed callbacks are owned by the registered action and only called after the
+// NonReentrant run guard succeeds, so the UnsafeCell is not mutably aliased by
+// framework dispatch.
 unsafe impl Send for Action {}
 unsafe impl Sync for Action {}
 
@@ -41,8 +38,10 @@ impl Action {
             .take()
             .expect("IRQ handler was already consumed")
         {
-            IrqHandler::Raw { handler, data } => ActionHandler::Raw { handler, data },
-            IrqHandler::Boxed(handler) => ActionHandler::Boxed(UnsafeCell::new(handler)),
+            IrqHandler::NonReentrant(handler) => {
+                ActionHandler::NonReentrant(UnsafeCell::new(handler))
+            }
+            IrqHandler::Concurrent(handler) => ActionHandler::Concurrent(handler),
         };
         Self {
             id,
@@ -71,5 +70,15 @@ impl Action {
 
     pub(crate) fn clear_pending_enable_all(&self) {
         unsafe { *self.pending_enable.get() = CpuMask::empty() };
+    }
+
+    pub(crate) fn call(&self, ctx: IrqContext) -> IrqReturn {
+        match &self.handler {
+            ActionHandler::NonReentrant(handler) => {
+                let handler = unsafe { &mut *handler.get() };
+                handler(ctx)
+            }
+            ActionHandler::Concurrent(handler) => handler(ctx),
+        }
     }
 }

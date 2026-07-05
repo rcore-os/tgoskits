@@ -1,6 +1,7 @@
 use alloc::{format, string::ToString, sync::Arc};
 use core::{
     ffi::{c_char, c_int},
+    mem::size_of,
     ops::DerefMut,
 };
 
@@ -10,14 +11,14 @@ use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmMutPtr, VmPtr, vm_load};
 
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
         close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
-    mm::vm_load_string,
+    mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
     task::AsThread,
 };
@@ -170,6 +171,55 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     add_file_like(f, flags & O_CLOEXEC != 0)
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
+pub struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+const OPENAT2_VALID_RESOLVE: u64 = (RESOLVE_NO_XDEV
+    | RESOLVE_NO_MAGICLINKS
+    | RESOLVE_NO_SYMLINKS
+    | RESOLVE_BENEATH
+    | RESOLVE_IN_ROOT
+    | RESOLVE_CACHED) as u64;
+
+const OPENAT2_VALID_FLAGS: u64 = (O_ACCMODE
+    | O_CREAT
+    | O_EXCL
+    | O_NOCTTY
+    | O_TRUNC
+    | O_APPEND
+    | O_NONBLOCK
+    | O_DSYNC
+    | O_DIRECT
+    | O_LARGEFILE
+    | O_DIRECTORY
+    | O_NOFOLLOW
+    | O_NOATIME
+    | O_CLOEXEC
+    | O_SYNC
+    | O_PATH
+    | O_TMPFILE) as u64;
+
+fn openat2_check_extra_bytes(how: *const OpenHow, size: usize) -> AxResult<()> {
+    let base_size = size_of::<OpenHow>();
+    if size <= base_size {
+        return Ok(());
+    }
+
+    let extra = vm_load(
+        unsafe { (how as *const u8).add(base_size) },
+        size - base_size,
+    )?;
+    if extra.iter().any(|byte| *byte != 0) {
+        return Err(AxError::ArgumentListTooLong);
+    }
+    Ok(())
+}
+
 /// Check whether `path` refers to a `/proc/<pid>/ns/<type>` entry.
 /// If so, create an [`NsFd`] and add it to the fd table instead of
 /// opening a regular file.
@@ -266,17 +316,10 @@ pub fn sys_openat(
 
     let curr = current();
     let thread = curr.as_thread();
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
 
     let uflags = flags as u32;
-
-    // Pathname length check — man "ENAMETOOLONG — pathname was too long".
-    // starry path layer only checks per-component (255); add whole-path
-    // check (PATH_MAX = 4096). Fixes bug-open-pathmax-no-enametoolong.
-    if path.len() >= 4096 {
-        return Err(AxError::NameTooLong);
-    }
 
     // Empty pathname → ENOENT. openat() does not accept AT_EMPTY_PATH.
     // Fixes bug-openat-empty-path-no-enoent.
@@ -342,6 +385,50 @@ pub fn sys_openat(
     Ok(fd as isize)
 }
 
+pub fn sys_openat2(
+    dirfd: c_int,
+    path: *const c_char,
+    how: *const OpenHow,
+    size: usize,
+) -> AxResult<isize> {
+    let base_size = size_of::<OpenHow>();
+    if size < base_size {
+        return Err(AxError::InvalidInput);
+    }
+
+    let how_value = how.vm_read()?;
+    openat2_check_extra_bytes(how, size)?;
+
+    if how_value.flags & !OPENAT2_VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if how_value.mode & !0o7777 != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if how_value.mode != 0 && how_value.flags & ((O_CREAT | O_TMPFILE) as u64) == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    // This minimal openat2 implementation does not enforce Linux RESOLVE_*
+    // path-walk constraints yet, so reject known resolve bits explicitly.
+    if how_value.resolve != 0 {
+        return Err(AxError::OperationNotSupported);
+    }
+
+    let flags: i32 = how_value
+        .flags
+        .try_into()
+        .map_err(|_| AxError::InvalidInput)?;
+    let mode: __kernel_mode_t = how_value
+        .mode
+        .try_into()
+        .map_err(|_| AxError::InvalidInput)?;
+
+    sys_openat(dirfd, path, flags, mode)
+}
+
 /// Open a file by `filename` and insert it into the file descriptor table.
 ///
 /// Return its index in the file table (`fd`). Return `EMFILE` if it already
@@ -349,6 +436,16 @@ pub fn sys_openat(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_open(path: *const c_char, flags: i32, mode: __kernel_mode_t) -> AxResult<isize> {
     sys_openat(AT_FDCWD as _, path, flags, mode)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_creat(path: *const c_char, mode: __kernel_mode_t) -> AxResult<isize> {
+    sys_openat(
+        AT_FDCWD as _,
+        path,
+        (O_CREAT | O_WRONLY | O_TRUNC) as _,
+        mode,
+    )
 }
 
 pub fn sys_close(fd: c_int) -> AxResult<isize> {
@@ -374,7 +471,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        let new_files = Arc::new(spin::RwLock::new(FD_TABLE.read().clone()));
+        let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
         proc_data.with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });

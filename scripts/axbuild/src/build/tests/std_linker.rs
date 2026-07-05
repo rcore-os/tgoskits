@@ -1,18 +1,37 @@
 use super::*;
 
+fn load_std_cargo_config(path: &Path) -> toml::Table {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
 #[test]
 fn std_cargo_config_uses_linux_musl_wrapper_with_plain_std_build() {
     let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
-    let config = std_cargo_config_path("x86_64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
+    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir).unwrap();
+    let config = std_cargo_config_path("x86_64-unknown-linux-musl", &wrapper, &[]).unwrap();
     let config = fs::read_to_string(config).unwrap();
+    let parsed: toml::Table = toml::from_str(&config).unwrap();
 
-    assert!(config.contains("build-std = [\"std\", \"panic_abort\"]"));
-    assert!(config.contains("build-std-features = []"));
-    assert!(config.contains("[target.x86_64-unknown-linux-musl]"));
+    assert_eq!(
+        parsed["unstable"]["build-std"].as_array().unwrap(),
+        &vec![
+            toml::Value::String("std".to_string()),
+            toml::Value::String("panic_abort".to_string())
+        ]
+    );
+    assert_eq!(
+        parsed["unstable"]["build-std-features"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        parsed["target"]["x86_64-unknown-linux-musl"]["linker"].as_str(),
+        Some(wrapper.display().to_string().as_str())
+    );
     assert!(!config.contains("--cfg"));
     assert!(!config.contains("--check-cfg"));
-    assert!(config.contains(&wrapper.display().to_string()));
     assert!(!config.contains("relocation-model"));
     assert!(!config.contains("code-model"));
     assert!(!config.contains("--cfg"));
@@ -22,10 +41,8 @@ fn std_cargo_config_uses_linux_musl_wrapper_with_plain_std_build() {
 #[test]
 fn std_cargo_config_leaves_kernel_codegen_to_target_spec() {
     let fake_dir = std_fake_lib_dir("loongarch64-unknown-linux-musl").unwrap();
-    let wrapper =
-        std_linker_wrapper_path("loongarch64-unknown-linux-musl", &fake_dir, false).unwrap();
-    let config =
-        std_cargo_config_path("loongarch64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
+    let wrapper = std_linker_wrapper_path("loongarch64-unknown-linux-musl", &fake_dir).unwrap();
+    let config = std_cargo_config_path("loongarch64-unknown-linux-musl", &wrapper, &[]).unwrap();
     let config = fs::read_to_string(config).unwrap();
 
     assert!(!config.contains("--cfg"));
@@ -35,25 +52,10 @@ fn std_cargo_config_leaves_kernel_codegen_to_target_spec() {
 }
 
 #[test]
-fn std_cargo_config_uses_static_link_mode_without_codegen_override() {
-    let fake_dir = std_fake_lib_dir("aarch64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, false).unwrap();
-    let app_config =
-        std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, false, &[]).unwrap();
-
-    let config = fs::read_to_string(app_config).unwrap();
-    assert!(!config.contains("--cfg"));
-    assert!(!config.contains("--check-cfg"));
-    assert!(!config.contains("relocation-model"));
-    assert!(!config.contains("code-model"));
-}
-
-#[test]
 fn std_cargo_config_uses_dynamic_link_mode_without_codegen_override() {
     let fake_dir = std_fake_lib_dir("aarch64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, true).unwrap();
-    let app_config =
-        std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, true, &[]).unwrap();
+    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir).unwrap();
+    let app_config = std_cargo_config_path("aarch64-unknown-linux-musl", &wrapper, &[]).unwrap();
 
     let config = fs::read_to_string(app_config).unwrap();
     assert!(!config.contains("--cfg"));
@@ -63,49 +65,92 @@ fn std_cargo_config_uses_dynamic_link_mode_without_codegen_override() {
 }
 
 #[test]
-fn std_cargo_config_and_wrapper_paths_are_partitioned_by_link_mode() {
-    let fake_dir = std_fake_lib_dir("aarch64-unknown-linux-musl").unwrap();
-    let static_wrapper =
-        std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, false).unwrap();
-    let dynamic_wrapper =
-        std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, true).unwrap();
-    let static_config =
-        std_cargo_config_path("aarch64-unknown-linux-musl", &static_wrapper, false, &[]).unwrap();
-    let dynamic_config =
-        std_cargo_config_path("aarch64-unknown-linux-musl", &dynamic_wrapper, true, &[]).unwrap();
+fn std_cargo_config_serializes_structured_toml_fields() {
+    let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
+    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir).unwrap();
+    let path = std_cargo_config_path(
+        "x86_64-unknown-linux-musl",
+        &wrapper,
+        &["--cfg".to_string(), r#"feature="quote\slash""#.to_string()],
+    )
+    .unwrap();
 
-    assert_ne!(static_wrapper, dynamic_wrapper);
-    assert_ne!(static_config, dynamic_config);
-    assert!(
-        static_wrapper
-            .display()
-            .to_string()
-            .ends_with("linker-aarch64-unknown-linux-musl-static.sh")
+    let config = load_std_cargo_config(&path);
+    let unstable = config.get("unstable").unwrap().as_table().unwrap();
+    assert_eq!(
+        unstable.get("build-std").unwrap().as_array().unwrap(),
+        &vec![
+            toml::Value::String("std".to_string()),
+            toml::Value::String("panic_abort".to_string())
+        ]
     );
-    assert!(
-        dynamic_wrapper
-            .display()
-            .to_string()
-            .ends_with("linker-aarch64-unknown-linux-musl-dynamic.sh")
+    assert_eq!(
+        unstable
+            .get("build-std-features")
+            .unwrap()
+            .as_array()
+            .unwrap(),
+        &Vec::<toml::Value>::new()
     );
-    assert!(
-        static_config
-            .display()
-            .to_string()
-            .ends_with("config-aarch64-unknown-linux-musl-static.toml")
+
+    let profile = config
+        .get("profile")
+        .unwrap()
+        .get("release")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(profile.get("lto").unwrap().as_bool(), Some(false));
+    assert_eq!(profile.get("panic").unwrap().as_str(), Some("abort"));
+
+    let target = config
+        .get("target")
+        .unwrap()
+        .get("x86_64-unknown-linux-musl")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(
+        target.get("linker").unwrap().as_str(),
+        Some(wrapper.display().to_string().as_str())
     );
-    assert!(
-        dynamic_config
-            .display()
-            .to_string()
-            .ends_with("config-aarch64-unknown-linux-musl-dynamic.toml")
+    assert_eq!(
+        target
+            .get("rustflags")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["--cfg", r#"feature="quote\slash""#]
+    );
+}
+
+#[test]
+fn std_cargo_config_serializes_empty_rustflags_as_empty_array() {
+    let fake_dir = std_fake_lib_dir("riscv64gc-unknown-linux-musl").unwrap();
+    let wrapper = std_linker_wrapper_path("riscv64gc-unknown-linux-musl", &fake_dir).unwrap();
+    let path = std_cargo_config_path("riscv64gc-unknown-linux-musl", &wrapper, &[]).unwrap();
+
+    let config = load_std_cargo_config(&path);
+    let target = config
+        .get("target")
+        .unwrap()
+        .get("riscv64gc-unknown-linux-musl")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(
+        target.get("rustflags").unwrap().as_array().unwrap().len(),
+        0
     );
 }
 
 #[test]
 fn std_linker_wrapper_filters_crt_and_replaces_fixed_libs() {
     let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir, false).unwrap();
+    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir).unwrap();
     let wrapper = fs::read_to_string(wrapper).unwrap();
 
     assert!(wrapper.contains("rust-lld"));
@@ -120,7 +165,7 @@ fn std_linker_wrapper_filters_crt_and_replaces_fixed_libs() {
     assert!(wrapper.contains("failed to find linker.x in current linker search dirs"));
     assert!(!wrapper.contains("entry_symbol="));
     assert!(!wrapper.contains("link_mode_args="));
-    assert!(wrapper.contains("dynamic_platform=0"));
+    assert!(!wrapper.contains("dynamic_platform="));
     assert!(wrapper.contains("crtbegin"));
     assert!(wrapper.contains("static-pie"));
     assert!(wrapper.contains("-flavor"));
@@ -142,14 +187,14 @@ fn std_linker_wrapper_filters_crt_and_replaces_fixed_libs() {
 #[test]
 fn std_linker_wrapper_uses_explicit_dynamic_platform_mode() {
     let fake_dir = std_fake_lib_dir("aarch64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir, true).unwrap();
+    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir).unwrap();
     let wrapper = fs::read_to_string(wrapper).unwrap();
 
     assert!(wrapper.contains("find_linker_script"));
     assert!(!wrapper.contains("latest_build_output_script axplat.x"));
     assert!(!wrapper.contains("entry_symbol="));
     assert!(!wrapper.contains("link_mode_args="));
-    assert!(wrapper.contains("dynamic_platform=1"));
+    assert!(!wrapper.contains("dynamic_platform="));
     assert!(!wrapper.contains("_head"));
 }
 
@@ -162,7 +207,6 @@ fn std_build_dynamic_x86_64_prepares_binary_artifact() {
     .into_prepared_base_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
-        None,
         &metadata,
     )
     .unwrap();
@@ -173,7 +217,7 @@ fn std_build_dynamic_x86_64_prepares_binary_artifact() {
             .ends_with("scripts/targets/std/pie/x86_64-unknown-linux-musl.json")
     );
     assert!(cargo.to_bin);
-    assert!(cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
     assert_eq!(
         cargo.env.get("AX_TARGET"),

@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.5.21"
+version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -11,6 +11,7 @@ license.workspace = true
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = []
+lockdep = ["axfs-ng-vfs/lockdep"]
 times = []
 std = []
 
@@ -25,6 +26,7 @@ chrono = { workspace = true }
 dma-api = { workspace = true }
 intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
+irq-framework = { workspace = true }
 log = { workspace = true }
 lru = "0.16"
 rdif-block = { workspace = true }

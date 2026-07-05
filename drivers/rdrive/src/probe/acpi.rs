@@ -28,8 +28,9 @@ use acpi::{
     },
     sdt::spcr::{Spcr, SpcrInterfaceType},
 };
+use ax_kspin::SpinRaw as Mutex;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use crate::{
     DeviceId, PlatformDevice,
@@ -288,7 +289,7 @@ mod tests {
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
-        LinkIrqResourceKind, PciLinkAllocator, System, irq_descriptor_gsi,
+        LinkIrqResourceKind, Mutex, PciLinkAllocator, System, irq_descriptor_gsi,
         is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
         pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
@@ -387,13 +388,13 @@ mod tests {
             interpreter: interpreter_with_devices(handler.clone()),
             handler,
             pci: None,
-            probed_names: spin::Mutex::new(alloc::collections::BTreeSet::new()),
-            populated_paths: spin::Mutex::new(alloc::collections::BTreeMap::new()),
-            populated_resources: spin::Mutex::new(alloc::collections::BTreeMap::new()),
+            probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
+            populated_paths: Mutex::new(alloc::collections::BTreeMap::new()),
+            populated_resources: Mutex::new(alloc::collections::BTreeMap::new()),
         }
     }
 
-    static LAST_PATH: spin::Mutex<Option<String>> = spin::Mutex::new(None);
+    static LAST_PATH: Mutex<Option<String>> = Mutex::new(None);
 
     fn probe_rtc(probe: super::ProbeAcpi<'_>) -> Result<(), crate::probe::OnProbeError> {
         let info = probe.info();
@@ -739,6 +740,16 @@ pub struct AcpiResourceRange {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpiResourceDevice {
+    pub path: String,
+    pub hid: Option<String>,
+    pub cids: Vec<String>,
+    pub memory_ranges: Vec<AcpiResourceRange>,
+    pub io_ranges: Vec<AcpiResourceRange>,
+    pub irq_routes: Vec<AcpiGsiRoute>,
+}
+
 #[derive(Debug, Clone)]
 struct AcpiDeviceInfo {
     path: String,
@@ -829,6 +840,19 @@ impl AcpiInfo<'_> {
             .as_ref()
             .map(|device| device.irq_routes.as_slice())
             .unwrap_or_default()
+    }
+}
+
+impl From<AcpiDeviceInfo> for AcpiResourceDevice {
+    fn from(value: AcpiDeviceInfo) -> Self {
+        Self {
+            path: value.path,
+            hid: value.hid,
+            cids: value.cids,
+            memory_ranges: value.memory_ranges,
+            io_ranges: value.io_ranges,
+            irq_routes: value.irq_routes,
+        }
     }
 }
 
@@ -1194,6 +1218,29 @@ impl System {
             })
     }
 
+    pub fn resource_devices(&self) -> Result<Vec<AcpiResourceDevice>, ProbeError> {
+        self.device_infos().map(|devices| {
+            devices
+                .into_iter()
+                .map(AcpiResourceDevice::from)
+                .collect::<Vec<_>>()
+        })
+    }
+
+    pub fn serial_console_memory_range(&self) -> Option<AcpiResourceRange> {
+        let tables = self.handler.root.tables().ok()?;
+        let spcr = tables.find_table::<acpi::sdt::spcr::Spcr>()?;
+        let address = spcr.base_address()?.ok()?;
+        if address.address_space != acpi::address::AddressSpace::SystemMemory {
+            return None;
+        }
+
+        Some(AcpiResourceRange {
+            base: address.address,
+            size: spcr_uart_register_size(address.access_size),
+        })
+    }
+
     pub fn pci_irq_for_endpoint(
         &self,
         info: PciInfo,
@@ -1321,6 +1368,32 @@ impl System {
                 if !acpi_ids_match(&hid, &cids, ids) {
                     return Ok(true);
                 }
+                let resources = read_device_resources(&self.interpreter, path, &self.routing)?;
+                devices.push(AcpiDeviceInfo {
+                    path: path.as_string(),
+                    hid: Some(hid),
+                    cids,
+                    memory_ranges: resources.memory_ranges,
+                    io_ranges: resources.io_ranges,
+                    irq_routes: resources.irq_routes,
+                });
+                Ok(true)
+            })
+            .map_err(|err| ProbeError::OnProbe(OnProbeError::other(format!("{err:?}"))))?;
+        Ok(devices)
+    }
+
+    fn device_infos(&self) -> Result<Vec<AcpiDeviceInfo>, ProbeError> {
+        let mut devices = Vec::new();
+        let mut namespace = self.interpreter.namespace.lock().clone();
+        namespace
+            .traverse(|path, level| {
+                if level.kind != NamespaceLevelKind::Device {
+                    return Ok(true);
+                }
+                let Some((hid, cids)) = acpi_device_ids(&self.interpreter, path)? else {
+                    return Ok(true);
+                };
                 let resources = read_device_resources(&self.interpreter, path, &self.routing)?;
                 devices.push(AcpiDeviceInfo {
                     path: path.as_string(),
@@ -1554,6 +1627,17 @@ fn read_loongarch_bio_pic_entry(
         gsi_count: LOONGARCH_PCH_PIC_GSI_COUNT,
         gsi_base: u32::from(entry.gsi_base),
     });
+}
+
+fn spcr_uart_register_size(access_size: u8) -> u64 {
+    let access_bytes = match access_size {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 8,
+        _ => 1,
+    };
+    access_bytes * 8
 }
 
 #[derive(Default)]

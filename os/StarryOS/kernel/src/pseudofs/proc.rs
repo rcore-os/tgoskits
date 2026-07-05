@@ -17,6 +17,8 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
+#[cfg(target_arch = "aarch64")]
+use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -160,6 +162,29 @@ fn render_cpuinfo() -> String {
     buf
 }
 
+/// Read a root-node device-tree property as its raw bytes (NUL-separated,
+/// NUL-terminated string list), exactly as Linux exposes under
+/// `/proc/device-tree/`. Returns `None` when the FDT is unavailable (non-FDT
+/// platform) or the property is missing/empty. Only the JPU/MPP path consumes
+/// this, so it is gated on the `jpeg` feature.
+#[cfg(feature = "jpeg")]
+fn read_dt_root_property(name: &str) -> Option<Vec<u8>> {
+    rdrive::with_fdt(|fdt| {
+        let root = fdt.get_by_path("/")?;
+        let prop = root.as_node().get_property(name)?;
+        (!prop.data.is_empty()).then(|| prop.data.clone())
+    })
+    .flatten()
+    .map(|mut bytes| {
+        // Real OF always NUL-terminates; guard a malformed blob. Do NOT flatten
+        // interior NULs — consumers (e.g. librockchip_mpp) expect raw bytes.
+        if bytes.last() != Some(&0) {
+            bytes.push(0);
+        }
+        bytes
+    })
+}
+
 #[cfg(target_arch = "riscv64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf, "processor\t: {idx}");
@@ -171,13 +196,23 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
 
 #[cfg(target_arch = "aarch64")]
 fn render_cpu_entry(buf: &mut String, idx: usize) {
+    // Decode MIDR_EL1 so /proc/cpuinfo reflects the real core (perf and other
+    // tools key off implementer/part to identify the microarchitecture). On
+    // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
+    // cortex-a53 it reads 0x41/0xd03.
+    let midr = pmu::cpu_id_raw().unwrap_or(0);
+    let implementer = (midr >> 24) & 0xff;
+    let variant = (midr >> 20) & 0xf;
+    let part = (midr >> 4) & 0xfff;
+    let revision = midr & 0xf;
+
     let _ = writeln!(buf, "processor\t: {idx}");
     let _ = writeln!(buf, "BogoMIPS\t: 100.00");
-    let _ = writeln!(buf, "CPU implementer\t: 0x00");
+    let _ = writeln!(buf, "CPU implementer\t: {implementer:#04x}");
     let _ = writeln!(buf, "CPU architecture: 8");
-    let _ = writeln!(buf, "CPU variant\t: 0x0");
-    let _ = writeln!(buf, "CPU part\t: 0x000");
-    let _ = writeln!(buf, "CPU revision\t: 0");
+    let _ = writeln!(buf, "CPU variant\t: {variant:#x}");
+    let _ = writeln!(buf, "CPU part\t: {part:#05x}");
+    let _ = writeln!(buf, "CPU revision\t: {revision}");
     let _ = writeln!(buf);
 }
 
@@ -743,7 +778,7 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
         } = bi;
 
         let flag_end = if is_shared { 's' } else { 'p' };
-        let flags = area.flags();
+        let flags = area.reported_flags();
         let perms = {
             let r = if flags.contains(MappingFlags::READ) {
                 'r'
@@ -914,7 +949,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         let aspace = self.proc_data.aspace();
         let aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
-        ax_runtime::hal::cpu::asm::flush_icache_all();
+        ax_runtime::hal::cache::flush_icache_all();
         Ok(buf.len())
     }
 }
@@ -1403,6 +1438,25 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
             );
 
+            // perf knobs the upstream Linux `perf` tool probes at startup.
+            // `perf_event_paranoid` gates how much unprivileged users may
+            // measure; -1 is the most permissive setting (kernel/CPU/tracepoint
+            // events all allowed) so perf can profile freely here.
+            kernel.add(
+                "perf_event_paranoid",
+                SimpleFile::new_regular(fs.clone(), || Ok("-1\n")),
+            );
+            // Per-user locked pages for the perf ring buffer; Linux default.
+            kernel.add(
+                "perf_event_mlock_kb",
+                SimpleFile::new_regular(fs.clone(), || Ok("516\n")),
+            );
+            // Upper bound perf uses to clamp the requested sample frequency (-F).
+            kernel.add(
+                "perf_event_max_sample_rate",
+                SimpleFile::new_regular(fs.clone(), || Ok("100000\n")),
+            );
+
             SimpleDir::new_maker(fs.clone(), Arc::new(kernel))
         });
 
@@ -1467,6 +1521,30 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
+
+    // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
+    // live FDT, so SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
+    // can identify the chip. Built only for the JPU/MPP path (`jpeg` feature) and
+    // only when a real FDT actually provides the values; the raw bytes are exposed
+    // verbatim and never fabricated on non-FDT platforms. A full FDT mirror is
+    // unnecessary (only MPP reads device-tree; librga/rknn use their own nodes).
+    #[cfg(feature = "jpeg")]
+    if let Some(compatible) = read_dt_root_property("compatible") {
+        root.add("device-tree", {
+            let mut dt = DirMapping::new();
+            dt.add(
+                "compatible",
+                SimpleFile::new_regular(fs.clone(), move || Ok(compatible.clone())),
+            );
+            if let Some(model) = read_dt_root_property("model") {
+                dt.add(
+                    "model",
+                    SimpleFile::new_regular(fs.clone(), move || Ok(model.clone())),
+                );
+            }
+            SimpleDir::new_maker(fs.clone(), Arc::new(dt))
+        });
+    }
 
     root.add("dynamic_debug", {
         let mut dynamic_debug = DirMapping::new();

@@ -10,7 +10,6 @@ fn prepare_request_prefers_cli_over_snapshot() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "snapshot-target"
-plat_dyn = false
 
 [qemu]
 qemu_config = "configs/snapshot-qemu.toml"
@@ -30,7 +29,6 @@ uboot_config = "configs/snapshot-uboot.toml"
             package: Some("from-cli".into()),
             arch: Some("aarch64".into()),
             target: Some(DEFAULT_ARCEOS_TARGET.into()),
-            plat_dyn: Some(true),
             smp: Some(4),
             debug: true,
         },
@@ -41,7 +39,6 @@ uboot_config = "configs/snapshot-uboot.toml"
 
     assert_eq!(request.package, "from-cli");
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
-    assert_eq!(request.plat_dyn, Some(true));
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
     assert_eq!(
@@ -53,7 +50,6 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
     assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_ARCEOS_TARGET));
-    assert_eq!(snapshot.plat_dyn, Some(true));
     assert_eq!(snapshot.smp, Some(4));
     assert_eq!(
         snapshot.qemu.qemu_config,
@@ -85,7 +81,6 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, DEFAULT_ARCEOS_ARCH);
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(
         request.qemu_config,
         Some(root.path().join("configs/qemu.toml"))
@@ -95,7 +90,160 @@ qemu_config = "configs/qemu.toml"
 }
 
 #[test]
-fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
+fn prepare_request_inherits_snapshot_config_when_no_explicit_selectors() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("configs/board.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+max_cpu_num = 1
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+config = "configs/board.toml"
+
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) =
+        prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(
+        request.qemu_config,
+        Some(root.path().join("configs/qemu.toml"))
+    );
+    assert_eq!(snapshot.config, Some(PathBuf::from("configs/board.toml")));
+}
+
+#[test]
+fn prepare_request_explicit_config_uses_package_and_target_selectors() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("configs/orangepi.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+
+[qemu]
+qemu_config = "configs/qemu.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(config_path.clone()),
+            package: None,
+            arch: None,
+            target: None,
+            smp: None,
+            debug: false,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(request.arch, "aarch64");
+    assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(request.qemu_config, None);
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("configs/orangepi.toml"))
+    );
+}
+
+#[test]
+fn prepare_request_explicit_package_does_not_inherit_snapshot_config() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("configs")).unwrap();
+    fs::write(
+        root.path().join("configs/orangepi.toml"),
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+"#,
+    )
+    .unwrap();
+    write_snapshot_text(
+        root.path(),
+        ARCEOS_SNAPSHOT_FILE,
+        r#"
+package = "from-snapshot"
+arch = "aarch64"
+target = "aarch64-unknown-none-softfloat"
+config = "configs/orangepi.toml"
+"#,
+    )
+    .unwrap();
+
+    let app = test_app_context(root.path());
+
+    let (request, snapshot) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            package: Some("arceos-helloworld".to_string()),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(request.package, "arceos-helloworld");
+    assert_eq!(
+        request.build_info_path,
+        crate::arceos::build::default_build_info_path(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+        )
+        .unwrap()
+    );
+    assert_ne!(
+        snapshot.config,
+        Some(PathBuf::from("configs/orangepi.toml"))
+    );
+}
+
+#[test]
+fn prepare_request_explicit_config_drops_snapshot_platform_mode() {
     let root = tempdir().unwrap();
     write_snapshot_text(
         root.path(),
@@ -104,7 +252,6 @@ fn prepare_request_explicit_config_drops_snapshot_plat_dyn() {
 package = "from-snapshot"
 arch = "riscv64"
 target = "riscv64gc-unknown-none-elf"
-plat_dyn = false
 smp = 4
 
 [qemu]
@@ -122,7 +269,6 @@ qemu_config = "configs/snapshot-qemu.toml"
             package: Some("arceos-test-suit".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
-            plat_dyn: None,
             smp: None,
             debug: false,
         },
@@ -132,10 +278,8 @@ qemu_config = "configs/snapshot-qemu.toml"
     .unwrap();
 
     assert_eq!(request.package, "arceos-test-suit");
-    assert_eq!(request.plat_dyn, None);
     assert_eq!(request.smp, None);
     assert_eq!(request.qemu_config, None);
-    assert_eq!(snapshot.plat_dyn, None);
     assert_eq!(snapshot.smp, None);
     assert_eq!(snapshot.qemu.qemu_config, None);
 }
@@ -162,7 +306,6 @@ fn prepare_request_resolves_arceos_target_from_arch() {
             package: Some("arceos-helloworld".into()),
             arch: Some("x86_64".into()),
             target: None,
-            plat_dyn: None,
             smp: None,
             debug: false,
         },
@@ -216,28 +359,60 @@ fn find_loongarch_qemu_dir_prefers_explicit_env_override() {
 }
 
 #[test]
-fn find_loongarch_qemu_dir_checks_home_before_workspace_ancestors() {
+fn find_loongarch_qemu_dir_uses_latest_cache() {
     let _lock = ENV_LOCK.lock().unwrap();
     let home = tempdir().unwrap();
-    let workspace_parent = tempdir().unwrap();
-    let workspace_root = workspace_parent.path().join("workspace/repo");
-    let home_qemu_dir = home.path().join("QEMU-LVZ/build");
-    let ancestor_qemu_dir = workspace_parent.path().join("qemu-lvz/build");
+    let workspace = tempdir().unwrap();
+    let qemu_dir = home
+        .path()
+        .join(".cache/axvisor/qemu-lvz")
+        .join("latest")
+        .join("bin");
 
-    fs::create_dir_all(&workspace_root).unwrap();
-    fs::create_dir_all(&home_qemu_dir).unwrap();
-    fs::create_dir_all(&ancestor_qemu_dir).unwrap();
-    fs::write(home_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
-    fs::write(ancestor_qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
 
     let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
     let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
     let _home = TempEnvVar::set("HOME", home.path());
 
-    assert_eq!(
-        find_loongarch_qemu_dir(&workspace_root),
-        Some(home_qemu_dir)
-    );
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
+}
+
+#[test]
+fn find_loongarch_qemu_dir_honors_custom_latest_cache_root() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let cache = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let qemu_dir = cache.path().join("latest").join("bin");
+
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
+    let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
+    let _home = TempEnvVar::unset("HOME");
+    let _cache = TempEnvVar::set("AXVISOR_QEMU_LVZ_CACHE", cache.path());
+
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
+}
+
+#[test]
+fn find_loongarch_qemu_dir_uses_existing_cached_version() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let cache = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let qemu_dir = cache.path().join("abcdef1234567890").join("bin");
+
+    fs::create_dir_all(&qemu_dir).unwrap();
+    fs::write(qemu_dir.join("qemu-system-loongarch64"), "").unwrap();
+
+    let _qemu_dir = TempEnvVar::unset("AXBUILD_QEMU_DIR");
+    let _qemu_bin = TempEnvVar::unset("AXBUILD_QEMU_SYSTEM_LOONGARCH64");
+    let _home = TempEnvVar::unset("HOME");
+    let _cache = TempEnvVar::set("AXVISOR_QEMU_LVZ_CACHE", cache.path());
+
+    assert_eq!(find_loongarch_qemu_dir(workspace.path()), Some(qemu_dir));
 }
 
 #[test]
@@ -269,7 +444,6 @@ uboot_config = "configs/uboot-aarch64.toml"
             package: None,
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
-            plat_dyn: None,
             smp: None,
             debug: false,
         },

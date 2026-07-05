@@ -1,3 +1,7 @@
+// Shared contiguous dma-buf primitive + resolver used by every accelerator that
+// exchanges buffers (JPU / NPU; RGA when its node lands).
+#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+pub mod dmabuf;
 pub mod epoll;
 pub mod event;
 mod fs;
@@ -22,6 +26,7 @@ use core::{ffi::c_int, time::Duration};
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
+use ax_kspin::SpinRwLock as RwLock;
 use ax_task::current;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
@@ -31,7 +36,6 @@ use linux_raw_sys::general::{
     O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
     statx_timestamp,
 };
-use spin::RwLock;
 
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},

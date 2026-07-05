@@ -5,13 +5,13 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "512M",
+    "2G",
     "-smp",
     "4",
     "-device",
-    "nvme,serial=deadbeef,drive=nvm",
+    "virtio-blk-pci,drive=disk0",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -27,13 +27,14 @@ failed=0
 system_fail_marker=STARRY_SYSTEM_TEST_FAILED
 group_fail_marker=STARRY_GROUPED_TEST_FAILED
 timing_file=/tmp/starry-system-test-timing.$$
+output_file=/tmp/starry-system-test-output.$$
 : > "$timing_file"
 for bin in /usr/bin/starry-test-suit/*; do
     [ -f "$bin" ] && [ -x "$bin" ] || continue
     found=1
     start=$(date +%s 2>/dev/null || printf 0)
     echo "STARRY_SYSTEM_TEST_BEGIN: $bin"
-    if "$bin"; then
+    if "$bin" > "$output_file" 2>&1; then
         status=passed
         exit_status=0
     else
@@ -50,8 +51,10 @@ for bin in /usr/bin/starry-test-suit/*; do
     if [ "$status" = passed ]; then
         echo "STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"
     else
+        cat "$output_file"
         echo "$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"
     fi
+    rm -f "$output_file"
 done
 echo "STARRY_SYSTEM_TEST_TIMING_BEGIN"
 if [ -s "$timing_file" ]; then
@@ -64,7 +67,7 @@ if [ -s "$timing_file" ]; then
     done < "$timing_file"
 fi
 echo "STARRY_SYSTEM_TEST_TIMING_END"
-rm -f "$timing_file"
+rm -f "$timing_file" "$output_file"
 if [ "$found" -ne 1 ]; then
     echo "$group_fail_marker: no SMP system tests found"
     exit 1

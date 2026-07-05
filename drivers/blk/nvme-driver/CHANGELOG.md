@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.2...nvme-driver-v0.6.3) - 2026-07-02
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.1...nvme-driver-v0.6.2) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+### Other
+
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.0...nvme-driver-v0.6.1) - 2026-06-23
 
 ### Other
