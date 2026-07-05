@@ -78,10 +78,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit <SHA>  Expected source commit for identity verification"
             echo "  --ref <REF>     Expected git ref (informational, no strict check)"
             echo "  --log <level>   Log level: none, error, warn, info (default: info)"
-            echo "  --bootstrap     Provision a selfhost rootfs (musl, Rust, kallsyms,"
-            echo "                  source, firmware) from the Alpine base inside QEMU,"
-            echo "                  warm the offline cargo cache, then stop.  No host"
-            echo "                  sudo.  The resulting rootfs is self-compile-capable."
+            echo "  --bootstrap     Provision a selfhost rootfs for x86_64 (musl,"
+            echo "                  Rust, kallsyms, source, firmware) from the Alpine"
+            echo "                  base inside QEMU, warm the offline cargo cache,"
+            echo "                  then stop.  No host sudo.  The resulting rootfs"
+            echo "                  is self-compile-capable.  (x86_64 only.)"
             exit 0
             ;;
         *) error "Unknown argument: $1";;
@@ -89,6 +90,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 : "${CARGO_BUILD_JOBS:=$SMP}"
+
+# --bootstrap is x86_64-only (Alpine base + selfhost-bootstrap app only exist there).
+if [ "$BOOTSTRAP" = "true" ] && [ "$ARCH" != "x86_64" ]; then
+    error "--bootstrap is only supported for --arch x86_64"
+fi
 
 # ─── Architecture mapping ───────────────────────────────────────────────────────
 

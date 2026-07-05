@@ -54,7 +54,7 @@ fi
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
-set -e
+set -euo pipefail
 
 fail() {
     echo "SELFHOST_BOOTSTRAP_FAILED: $1"
@@ -118,7 +118,7 @@ echo "$FW_FILES" | while IFS="|" read -r remote name expected; do
         continue
     fi
     echo "[bootstrap]   fetching $name..."
-    curl -fsSL "$FW_BASE/$remote" -o "$dest" || fail "failed to download $name"
+    curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 120 -fsSL "$FW_BASE/$remote" -o "$dest" || fail "failed to download $name"
     actual=$(sha256sum "$dest" | awk '{print $1}')
     if [ "$actual" != "$expected" ]; then
         fail "sha256 mismatch for $name: expected $expected, got $actual"
@@ -161,7 +161,6 @@ echo "[bootstrap] kallsyms tools ready."
 # every workspace dependency into CARGO_HOME (~1–2 GB on disk); no compilation
 # occurs, so tmpfs/RAM pressure is minimal.
 echo "[bootstrap] Warming offline dependency cache (cargo fetch)..."
-. "$HOME/.cargo/env"
 cd /opt/starryos
 cargo fetch 2>&1 || fail "cargo fetch failed — cannot warm offline cache"
 cd /
