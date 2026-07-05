@@ -73,6 +73,9 @@ esac
 
 PASS=0
 TOTAL=0
+# strict count: a build/env that skips a module leaves TOTAL < the full set and must FAIL,
+# not vacuously pass on TOTAL > 0.
+EXPECTED_MODULES=6
 run() { # run <name> <marker> <cmd...>
     name="$1"; marker="$2"; shift 2
     TOTAL=$((TOTAL + 1))
@@ -95,7 +98,7 @@ run r2dbc     R2DBC_DONE     $J -cp "$R2DBC_CP"     org.starry.dod.R2dbcCarpet
 run war       WAR_DONE       $J -cp "$JETTY_CP"     org.starry.dod.WarCarpet
 
 echo "AGGREGATE: PASS=$PASS TOTAL=$TOTAL"
-if [ "$PASS" = "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
+if [ "$PASS" = "$TOTAL" ] && [ "$TOTAL" -eq "$EXPECTED_MODULES" ]; then
     echo "JAVA_WEB_OK=$PASS/$TOTAL"
     echo "TEST PASSED"
     exit 0
