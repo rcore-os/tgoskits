@@ -20,6 +20,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ax_errno::{AxError, AxErrorKind, AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
+#[cfg(target_arch = "x86_64")]
+use axdevice_base::EmuDeviceType;
 use axvcpu::AxVCpuExitReason;
 #[cfg(target_arch = "x86_64")]
 use axvcpu::InterruptTriggerMode;
@@ -1323,7 +1325,7 @@ fn handle_x86_in_kernel_device_exit(
             reg,
             reg_width,
             signed_ext,
-        } if irqchip_created && vm.get_devices().find_mmio_dev(*addr).is_some() => {
+        } if irqchip_created && is_x86_ioapic_mmio(vm, *addr) => {
             let raw = vm.get_devices().handle_mmio_read(*addr, *width)?;
             let masked = raw & access_width_mask(*width);
             let val = if *signed_ext {
@@ -1335,7 +1337,7 @@ fn handle_x86_in_kernel_device_exit(
             Ok(true)
         }
         AxVCpuExitReason::MmioWrite { addr, width, data }
-            if irqchip_created && vm.get_devices().find_mmio_dev(*addr).is_some() =>
+            if irqchip_created && is_x86_ioapic_mmio(vm, *addr) =>
         {
             vm.get_devices()
                 .handle_mmio_write(*addr, *width, *data as usize)?;
@@ -1355,6 +1357,13 @@ fn handle_x86_in_kernel_device_exit(
         }
         _ => Ok(false),
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn is_x86_ioapic_mmio(vm: &AxVMRef, addr: GuestPhysAddr) -> bool {
+    vm.get_devices()
+        .find_mmio_dev(addr)
+        .is_some_and(|dev| dev.emu_type() == EmuDeviceType::X86IoApic)
 }
 
 #[cfg(target_arch = "x86_64")]

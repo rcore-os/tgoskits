@@ -1981,6 +1981,7 @@ dependencies = [
  "ax-percpu",
  "ax-timer-list",
  "axaddrspace",
+ "axdevice_base",
  "axhvc",
  "axvcpu",
  "axvisor_api",

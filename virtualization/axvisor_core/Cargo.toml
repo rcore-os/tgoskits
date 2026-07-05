@@ -32,6 +32,7 @@ ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-page-table-multiarch = { workspace = true }
 axaddrspace = { workspace = true }
+axdevice_base = { workspace = true }
 axhvc = { workspace = true }
 axvcpu = { workspace = true }
 axvm = { workspace = true }

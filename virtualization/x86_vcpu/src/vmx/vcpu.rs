@@ -1420,12 +1420,7 @@ impl VmxVcpu {
         const LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION: u32 = 0x7;
         const LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION: u32 = 0xd;
         const LEAF_FREQUENCY_INFO: u32 = 0x16;
-        const LEAF_HYPERVISOR_INFO: u32 = 0x4000_0000;
-        const LEAF_HYPERVISOR_FEATURE: u32 = 0x4000_0001;
         const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
-        const KVM_CLOCKSOURCE2_FEATURE: u32 = 1 << 3;
-        const VENDOR_STR: &[u8; 12] = b"KVMKVMKVM\0\0\0";
-        let vendor_regs = unsafe { &*(VENDOR_STR.as_ptr() as *const [u32; 3]) };
 
         let regs_clone = *self.regs_mut();
         let function = regs_clone.rax as u32;
@@ -1475,18 +1470,9 @@ impl VmxVcpu {
 
                 res
             }
-            LEAF_HYPERVISOR_INFO => CpuIdResult {
-                eax: LEAF_HYPERVISOR_FEATURE,
-                ebx: vendor_regs[0],
-                ecx: vendor_regs[1],
-                edx: vendor_regs[2],
-            },
-            LEAF_HYPERVISOR_FEATURE => CpuIdResult {
-                eax: KVM_CLOCKSOURCE2_FEATURE,
-                ebx: 0,
-                ecx: 0,
-                edx: 0,
-            },
+            crate::kvm::KVM_HYPERVISOR_INFO_LEAF | crate::kvm::KVM_HYPERVISOR_FEATURE_LEAF => {
+                crate::kvm::kvm_hypervisor_cpuid(function).expect("known KVM CPUID leaf")
+            }
             LEAF_FREQUENCY_INFO => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if res.eax == 0 {
