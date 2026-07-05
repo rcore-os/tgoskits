@@ -426,7 +426,8 @@ pub fn sys_setsockopt(
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         use linux_raw_sys::net::{
-            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SOL_SOCKET,
+            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SO_SNDBUF,
+            SO_SNDBUFFORCE, SOL_SOCKET,
         };
 
         match (level, optname) {
@@ -436,6 +437,14 @@ pub fn sys_setsockopt(
             (SOL_SOCKET, SO_RCVBUF | SO_RCVBUFFORCE) => {
                 let value = read_int_sockopt(optval, optlen)?;
                 socket.set_receive_buffer_size(value.max(0) as usize);
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_SNDBUF | SO_SNDBUFFORCE) => {
+                // Starry netlink handles send requests synchronously and does
+                // not have a byte-counted send queue yet. Accept the option so
+                // iproute2 can finish socket setup; the receive side is also
+                // only partially modeled and still uses a fixed message limit.
+                let _ = read_int_sockopt(optval, optlen)?;
                 return Ok(0);
             }
             (SOL_SOCKET, SO_PASSCRED) => {
