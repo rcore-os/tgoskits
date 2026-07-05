@@ -42,6 +42,26 @@ static BLOCK_DRAIN_FULL_SCAN: AtomicBool = AtomicBool::new(false);
 static BLOCK_DRAIN_SPAWNED: spin::Once<()> = spin::Once::new();
 static BLOCK_RUNTIME: spin::Once<Arc<BlockRuntime>> = spin::Once::new();
 
+const SECTOR_BYTES: u64 = 512;
+
+static BLOCK_READS: AtomicU64 = AtomicU64::new(0);
+static BLOCK_SECTORS_READ: AtomicU64 = AtomicU64::new(0);
+static BLOCK_WRITES: AtomicU64 = AtomicU64::new(0);
+static BLOCK_SECTORS_WRITTEN: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative block-device I/O counters, in the order
+/// `(reads, sectors_read, writes, sectors_written)`, where a sector is 512
+/// bytes. Read counters cover `RequestOp::Read` submissions and write counters
+/// cover `RequestOp::Write` submissions.
+pub fn block_io_stats() -> (u64, u64, u64, u64) {
+    (
+        BLOCK_READS.load(Ordering::Relaxed),
+        BLOCK_SECTORS_READ.load(Ordering::Relaxed),
+        BLOCK_WRITES.load(Ordering::Relaxed),
+        BLOCK_SECTORS_WRITTEN.load(Ordering::Relaxed),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct WindowEntry {
     key: RequestKey,
@@ -667,9 +687,18 @@ impl BlockDeviceHandle {
         let buf_len = write_src.map_or(read_dst.len(), <[u8]>::len);
         validate_io(info, block_id, buf_len)?;
 
+        let sectors = buf_len as u64 / SECTOR_BYTES;
         let direction = match op {
-            RequestOp::Read => DmaDirection::FromDevice,
-            RequestOp::Write => DmaDirection::ToDevice,
+            RequestOp::Read => {
+                BLOCK_READS.fetch_add(1, Ordering::Relaxed);
+                BLOCK_SECTORS_READ.fetch_add(sectors, Ordering::Relaxed);
+                DmaDirection::FromDevice
+            }
+            RequestOp::Write => {
+                BLOCK_WRITES.fetch_add(1, Ordering::Relaxed);
+                BLOCK_SECTORS_WRITTEN.fetch_add(sectors, Ordering::Relaxed);
+                DmaDirection::ToDevice
+            }
             _ => return Err(AxError::InvalidInput),
         };
         let active_queues = self.active_queues();

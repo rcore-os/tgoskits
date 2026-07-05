@@ -13,7 +13,7 @@ pub mod queue;
 pub use device::NoopDrainWake;
 pub use device::{
     BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockIrqAction, BlockRuntime,
-    BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, map_blk_err_to_ax_err,
+    BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, block_io_stats, map_blk_err_to_ax_err,
 };
 #[cfg(test)]
 pub use dma::VEC_DMA_OP;

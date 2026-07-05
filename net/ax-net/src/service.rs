@@ -87,7 +87,7 @@ use crate::{
     consts::STANDARD_MTU,
     device::{ArpEntry, EthernetDevice},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -994,6 +994,10 @@ impl Service {
 
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
+    }
+
+    pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
+        self.router.net_dev_stats()
     }
 
     pub fn wake_all_devices(&self) {
