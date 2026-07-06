@@ -253,6 +253,7 @@ macro_rules! call_dispatch {
             $dispatch, $pat,
             // ---- Implemented socket options ----
             (SOL_SOCKET, SO_REUSEADDR) => ReuseAddress as IntBool,
+            (SOL_SOCKET, SO_REUSEPORT) => ReusePort as IntBool,
             (SOL_SOCKET, SO_ERROR) => Error,
             (SOL_SOCKET, SO_DONTROUTE) => DontRoute as IntBool,   // stored but routing logic ignores it
             (SOL_SOCKET, SO_SNDBUF) => SendBuffer as Int<usize>,  // TODO: set is no-op, smoltcp uses fixed buffer
@@ -279,7 +280,6 @@ macro_rules! call_dispatch {
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
-            // (SOL_SOCKET, SO_REUSEPORT) => ...,     // TODO: needs kernel support
             // (SOL_SOCKET, SO_RCVLOWAT) => ...,       // TODO: needs kernel support
             // (SOL_SOCKET, SO_SNDLOWAT) => ...,       // TODO: needs kernel support
             // (PROTO_TCP, TCP_CORK) => ...,           // TODO: needs smoltcp support
