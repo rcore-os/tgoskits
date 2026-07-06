@@ -59,16 +59,13 @@ pub trait ConsoleIf {
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.
-    #[cfg(feature = "irq")]
     fn irq_num() -> Option<irq_framework::IrqId>;
 
     /// Enables or disables device-side console input interrupts.
-    #[cfg(feature = "irq")]
     fn set_input_irq_enabled(enabled: bool);
 
     /// Handles a console input IRQ in interrupt context and returns the
     /// corresponding device events.
-    #[cfg(feature = "irq")]
     fn handle_irq() -> ConsoleIrqEvent;
 }
 

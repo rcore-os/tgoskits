@@ -11,11 +11,7 @@ pub fn ax_yield_now() {
     #[cfg(feature = "multitask")]
     ax_task::yield_now();
     #[cfg(not(feature = "multitask"))]
-    if cfg!(feature = "irq") {
-        ax_hal::asm::wait_for_irqs();
-    } else {
-        core::hint::spin_loop();
-    }
+    ax_hal::asm::wait_for_irqs();
 }
 
 #[track_caller]
@@ -111,14 +107,10 @@ cfg_task! {
 
     #[track_caller]
     pub fn ax_wait_queue_wait(wq: &AxWaitQueueHandle, timeout: Option<Duration>) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout(dur);
         }
 
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait: the `timeout` argument is ignored without the `irq` feature");
-        }
         wq.0.wait();
         false
     }
@@ -129,14 +121,10 @@ cfg_task! {
         until_condition: impl Fn() -> bool,
         timeout: Option<Duration>,
     ) -> bool {
-        #[cfg(feature = "irq")]
         if let Some(dur) = timeout {
             return wq.0.wait_timeout_until(dur, until_condition);
         }
 
-        if timeout.is_some() {
-            ax_log::warn!("ax_wait_queue_wait_until: the `timeout` argument is ignored without the `irq` feature");
-        }
         wq.0.wait_until(until_condition);
         false
     }

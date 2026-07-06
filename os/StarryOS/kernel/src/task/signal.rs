@@ -289,6 +289,7 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
         );
         let _ = send_signal_to_process(waiter_pid, Some(sigchld));
         // Ptrace stop report is published before waking waiters.
+        parent_data.child_wait_queue.notify_all(true);
         unsafe { parent_data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }
@@ -419,6 +420,7 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
     let _ = send_signal_to_process(parent.pid(), Some(sig));
     if let Ok(data) = get_process_data(parent.pid()) {
         // Job-control report is published before waking waiters.
+        data.child_wait_queue.notify_all(true);
         unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
     }
 }

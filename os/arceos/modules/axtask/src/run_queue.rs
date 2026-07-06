@@ -1,16 +1,24 @@
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
+use alloc::boxed::Box;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
 use core::ptr::NonNull;
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_hal::percpu::this_cpu_id;
 use ax_kernel_guard::BaseGuard;
-use ax_kspin::{SpinNoIrqGuard, SpinRaw};
+use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
-use ax_sched::BaseScheduler;
+#[cfg(all(
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    not(all(test, feature = "host-test"))
+))]
+use bare_task::IpiEvent;
+use bare_task::{BareCpuCore, CpuId, WaitQueueCore};
 
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
@@ -57,6 +65,20 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info:
     [ARRAY_REPEAT_VALUE; crate::build_info::CPU_CAPACITY];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
+
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
+static TEST_RUN_QUEUE_INIT: [AtomicBool; crate::build_info::CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
+
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
+static REMOTE_WAKE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
+pub(crate) fn remote_wake_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    REMOTE_WAKE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -164,30 +186,52 @@ fn request_current_reschedule() {
     }
 }
 
-#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
 static REMOTE_RESCHEDULE_REQUESTS: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(all(
-    feature = "smp",
-    feature = "ipi",
-    not(all(test, feature = "host-test"))
-))]
-static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] =
-    [const { AtomicBool::new(false) }; crate::build_info::CPU_CAPACITY];
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
 
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
+static REMOTE_IRQ_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+
 #[cfg(all(feature = "smp", feature = "ipi"))]
 pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
     #[cfg(not(all(test, feature = "host-test")))]
-    REMOTE_RESCHEDULE_PENDING[this_cpu_id()].store(false, Ordering::Release);
+    get_run_queue(this_cpu_id())
+        .core
+        .clear_ipi(IpiEvent::Reschedule);
     #[cfg(all(test, feature = "host-test"))]
     REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
 }
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
+pub(crate) fn clear_remote_irq_wake_pending_for_current_cpu() {
+    #[cfg(not(all(test, feature = "host-test")))]
+    get_run_queue(this_cpu_id())
+        .core
+        .clear_ipi(IpiEvent::IrqWakeDrain);
+    #[cfg(all(test, feature = "host-test"))]
+    REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
+}
+
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
 fn request_remote_reschedule_if_not_pending<F>(pending: &AtomicBool, request: F)
 where
     F: FnOnce(),
@@ -197,7 +241,7 @@ where
     }
 }
 
-#[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 fn force_remote_reschedule_request<F>(pending: &AtomicBool, request: F)
 where
     F: FnOnce(),
@@ -212,9 +256,9 @@ where
     not(all(test, feature = "host-test"))
 ))]
 fn request_remote_reschedule(cpu_id: usize) {
-    request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
+    if get_run_queue(cpu_id).core.request_ipi(IpiEvent::Reschedule) {
         ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    });
+    }
 }
 
 #[cfg(all(
@@ -223,9 +267,25 @@ fn request_remote_reschedule(cpu_id: usize) {
     not(all(test, feature = "host-test"))
 ))]
 fn force_remote_reschedule(cpu_id: usize) {
-    force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
-        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    });
+    let _ = get_run_queue(cpu_id).core.request_ipi(IpiEvent::Reschedule);
+    ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
+}
+
+#[cfg(all(
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    not(all(test, feature = "host-test"))
+))]
+fn request_remote_irq_wake(cpu_id: usize) {
+    if get_run_queue(cpu_id)
+        .core
+        .request_ipi(IpiEvent::IrqWakeDrain)
+    {
+        ax_hal::irq::send_ipi(
+            ax_hal::irq::ipi_irq(),
+            ax_hal::irq::IpiTarget::Other { cpu_id },
+        );
+    }
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
@@ -246,6 +306,19 @@ fn force_remote_reschedule(cpu_id: usize) {
     });
 }
 
+#[cfg(all(
+    test,
+    feature = "smp",
+    any(feature = "ipi", feature = "irq-wake-ipi"),
+    feature = "host-test"
+))]
+fn request_remote_irq_wake(cpu_id: usize) {
+    let _ = cpu_id;
+    request_remote_reschedule_if_not_pending(&REMOTE_IRQ_WAKE_PENDING, || {
+        REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
+    });
+}
+
 #[cfg(all(feature = "smp", feature = "ipi"))]
 fn kick_remote_cpu(cpu_id: usize) {
     if cpu_id != this_cpu_id() {
@@ -253,6 +326,13 @@ fn kick_remote_cpu(cpu_id: usize) {
         // IPI can wake an idle CPU, but it does not ask a running remote CPU to
         // reschedule after a task is queued there.
         request_remote_reschedule(cpu_id);
+    }
+}
+
+#[cfg(all(feature = "smp", any(feature = "ipi", feature = "irq-wake-ipi")))]
+pub(crate) fn kick_remote_cpu_for_irq_wake(cpu_id: usize) {
+    if cpu_id != this_cpu_id() {
+        request_remote_irq_wake(cpu_id);
     }
 }
 
@@ -271,10 +351,12 @@ mod tests {
     // keep the shared pending/count assertions in one test.
     #[test]
     fn remote_reschedule_request_is_coalesced_and_forced() {
+        let _remote_wake_guard = super::remote_wake_test_guard();
         const REMOTE_CPU: usize = 1;
 
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
 
         super::kick_remote_cpu(REMOTE_CPU);
 
@@ -338,6 +420,7 @@ mod tests {
         }
 
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 
@@ -375,6 +458,29 @@ mod tests {
             2,
             "forced remote kicks must not coalesce required migration reschedules",
         );
+    }
+
+    #[test]
+    fn remote_irq_wake_does_not_coalesce_scheduler_reschedule() {
+        let _remote_wake_guard = super::remote_wake_test_guard();
+        const REMOTE_CPU: usize = 1;
+
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
+
+        super::kick_remote_cpu_for_irq_wake(REMOTE_CPU);
+        super::kick_remote_cpu(REMOTE_CPU);
+
+        assert_eq!(
+            super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
+            2,
+            "a pending IRQ-wake IPI must not suppress a scheduler-visible reschedule callback",
+        );
+
+        super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_IRQ_WAKE_PENDING.store(false, Ordering::Release);
+        super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
     }
 }
 
@@ -471,7 +577,7 @@ pub(crate) struct AxRunQueue {
     /// The core scheduler of this run queue.
     /// Since irq and preempt are preserved by the kernel guard hold by `AxRunQueueRef`,
     /// we just use a simple raw spin lock here.
-    scheduler: SpinRaw<Scheduler>,
+    core: BareCpuCore<Scheduler>,
 }
 
 /// A reference to the run queue with specific guard.
@@ -522,7 +628,7 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         assert!(task.is_ready());
         #[cfg(feature = "smp")]
         task.set_cpu_id(cpu_id as _);
-        self.inner.scheduler.lock().add_task(task);
+        self.inner.core.with_run_queue(|core| core.add_task(task));
         #[cfg(all(feature = "smp", feature = "ipi"))]
         kick_remote_cpu(cpu_id);
     }
@@ -531,7 +637,7 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
     ///
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
     /// which means the task is already unblocked by other cores.
-    pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+    pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) -> bool {
         let task_id_name = if log::log_enabled!(log::Level::Debug) {
             Some(task.id_name())
         } else {
@@ -559,41 +665,26 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
             }
             #[cfg(all(feature = "smp", feature = "ipi"))]
             kick_remote_cpu(cpu_id);
+            true
+        } else {
+            false
         }
     }
 }
 
 /// Core functions of run queue.
 impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
-    /// Unblock one task by inserting it into the current CPU's run queue.
-    ///
-    /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
-    #[cfg(feature = "irq")]
-    pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
-        let task_id_name = if log::log_enabled!(log::Level::Debug) {
-            Some(task.id_name())
-        } else {
-            None
-        };
-        if self
-            .inner
-            .put_task_with_state(task, TaskState::Blocked, resched)
-        {
-            let cpu_id = self.inner.cpu_id;
-            if let Some(task_id_name) = task_id_name {
-                debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
-            }
-            if resched {
-                #[cfg(feature = "preempt")]
-                crate::current().set_preempt_pending(true);
-            }
-        }
+    pub(crate) fn mark_timer_irq_pending(&mut self) {
+        self.inner.core.mark_timer_service_pending();
     }
 
-    #[cfg(feature = "irq")]
+    pub(crate) fn clear_timer_service_pending(&mut self) {
+        self.inner.core.clear_timer_service_pending();
+    }
+
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
-        if !curr.is_idle() && self.inner.scheduler.lock().task_tick(curr) {
+        if !curr.is_idle() && self.inner.core.with_run_queue(|core| core.task_tick(curr)) {
             #[cfg(feature = "preempt")]
             curr.set_preempt_pending(true);
         }
@@ -760,13 +851,14 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
     }
 
     /// Block the current task, put current task into the wait queue and reschedule.
-    /// Mark the state of current task as `Blocked`, set the `in_wait_queue` flag as true.
+    /// Mark the state of current task as `Blocked` and record this queue as
+    /// the task's current wait-queue membership.
     /// Note:
     ///     1. The caller must hold the lock of the wait queue.
     ///     2. The caller must ensure that the current task is in the running state.
     ///     3. The caller must ensure that the current task is not the idle task.
     ///     4. The lock of the wait queue will be released explicitly after current task is pushed into it.
-    pub fn blocked_resched(&mut self, mut wq_guard: WaitQueueGuard) {
+    pub fn blocked_resched(&mut self, mut wq_guard: WaitQueueGuard, wait_queue_key: usize) {
         let curr = &self.current_task;
         assert!(curr.is_running());
         assert!(!curr.is_idle());
@@ -780,13 +872,12 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
 
-        // A preemptive future wake can re-enter a wait path before a previous
-        // wait-queue entry has been consumed. Avoid leaving a stale duplicate
-        // waiter that may receive mutex ownership after the task is running.
-        if !curr.in_wait_queue() {
-            curr.set_in_wait_queue(true);
-            wq_guard.push_back(curr.clone());
-        }
+        // Wait-queue membership is keyed by the queue address. If the task was
+        // left in an older queue, that entry becomes stale and the old queue will
+        // discard it without clearing this new membership.
+        wq_guard.retain(|task| !curr.ptr_eq(task));
+        curr.set_wait_queue_key(wait_queue_key);
+        wq_guard.push_back(curr.clone());
         // Drop the lock of wait queue explicitly.
         drop(wq_guard);
 
@@ -798,22 +889,68 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         self.inner.resched();
     }
 
+    /// Block the current task in `wq_guard`, then optionally abort before the
+    /// actual context switch.
+    ///
+    /// The abort predicate runs after the task has been linked into the wait
+    /// queue, but after the wait-queue lock is dropped. If it aborts the sleep,
+    /// the task is removed from the same wait queue before returning to keep
+    /// wait-queue membership and task state in sync.
+    pub fn blocked_resched_abortable(
+        &mut self,
+        wait_queue: &SpinNoIrq<WaitQueueCore<AxTaskRef>>,
+        should_abort_sleep: impl Fn() -> bool,
+    ) -> bool {
+        let curr = &self.current_task;
+        assert!(curr.is_running());
+        assert!(!curr.is_idle());
+        // Current expected preempt count is 1 for `NoPreemptIrqSave`.
+        // This helper takes the wait-queue lock after the check below.
+        #[cfg(feature = "preempt")]
+        assert!(curr.can_preempt(1));
+
+        let wait_queue_key = core::ptr::from_ref(wait_queue) as usize;
+        let mut wq_guard = wait_queue.lock();
+        curr.set_state(TaskState::Blocked);
+        wq_guard.retain(|task| !curr.ptr_eq(task));
+        curr.set_wait_queue_key(wait_queue_key);
+        wq_guard.push_back(curr.clone());
+        drop(wq_guard);
+
+        if should_abort_sleep() {
+            let mut wq_guard = wait_queue.lock();
+            if curr.clear_wait_queue_key(wait_queue_key) {
+                wq_guard.retain(|task| !curr.ptr_eq(task));
+            }
+            drop(wq_guard);
+
+            if curr.transition_state(TaskState::Blocked, TaskState::Running) {
+                return true;
+            }
+        }
+
+        debug!("task block: {}", curr.id_name());
+        self.inner.resched();
+        false
+    }
+
     /// Block the current task, put current task into the wait queue and reschedule.
     /// This is special just for future.
-    pub fn future_blocked_resched(&mut self, mut woke: SpinNoIrqGuard<'_, bool>) {
+    pub fn future_blocked_resched(&mut self, should_abort_sleep: impl Fn() -> bool) {
         let curr = &self.current_task;
         assert!(curr.is_running());
         assert!(!curr.is_idle());
         // we must not block current task with preemption disabled.
-        // Current expected preempt count is 2 for `NoPreemptIrqSave` and `woke`.
+        // Current expected preempt count is 1 for `NoPreemptIrqSave`.
         #[cfg(feature = "preempt")]
-        assert!(curr.can_preempt(2));
+        assert!(curr.can_preempt(1));
 
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
-        *woke = false;
-        drop(woke);
+        if should_abort_sleep() && curr.transition_state(TaskState::Blocked, TaskState::Running) {
+            return;
+        }
 
         // Current task's state has been changed to `Blocked` and added to the wait queue.
         // Note that the state may have been set as `Ready` in `unblock_task()`,
@@ -823,7 +960,6 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         self.inner.resched();
     }
 
-    #[cfg(feature = "irq")]
     pub fn sleep_until(&mut self, deadline: ax_hal::time::TimeValue) {
         let curr = &self.current_task;
         debug!("task sleep: {}, deadline={:?}", curr.id_name(), deadline);
@@ -839,9 +975,8 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
 
     pub fn set_current_priority(&mut self, prio: isize) -> bool {
         self.inner
-            .scheduler
-            .lock()
-            .set_priority(&self.current_task, prio)
+            .core
+            .with_run_queue(|core| core.set_priority(&self.current_task, prio))
     }
 
     #[cfg(feature = "smp")]
@@ -867,12 +1002,9 @@ impl AxRunQueue {
         // gc task should be pinned to the current CPU.
         gc_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
 
-        let mut scheduler = Scheduler::new();
-        scheduler.add_task(gc_task);
-        Self {
-            cpu_id,
-            scheduler: SpinRaw::new(scheduler),
-        }
+        let core = BareCpuCore::new(CpuId(cpu_id), Scheduler::new());
+        core.with_run_queue(|run_queue| run_queue.add_task(gc_task));
+        Self { cpu_id, core }
     }
 
     /// Puts target task into current run queue with `Ready` state
@@ -888,13 +1020,15 @@ impl AxRunQueue {
         current_state: TaskState,
         preempt: bool,
     ) -> bool {
-        // If the task's state matches `current_state`, set its state to `Ready` and
-        // put it back to the run queue (except idle task).
-        if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+        // If the task's state matches `current_state`, set it to `Ready` through
+        // the bare run-queue core and then put it back to the scheduler (except idle task).
+        if self
+            .core
+            .with_run_queue(|core| core.transition_to_ready(&task, current_state))
+        {
             #[cfg(feature = "smp")]
-            let waking_current_task = current_state == TaskState::Blocked
-                && self.cpu_id == this_cpu_id()
-                && crate::current().ptr_eq(&task);
+            let waking_local_task =
+                current_state == TaskState::Blocked && self.cpu_id == this_cpu_id();
             // If the task is blocked, wait for the task to finish its scheduling process.
             // See `unblock_task()` for details.
             if current_state == TaskState::Blocked {
@@ -910,10 +1044,12 @@ impl AxRunQueue {
                 // 2. This can be placed in the front of `switch_to()`
                 #[cfg(feature = "smp")]
                 {
-                    // A scheduler tracepoint or other IRQ-safe notification can wake the
-                    // task that is currently being switched out on this CPU. Waiting for
-                    // `on_cpu` there would wait for the very switch we are still inside.
-                    if !waking_current_task {
+                    // A local wake can target the previous task that is still marked
+                    // `on_cpu` until this CPU completes the switch bookkeeping. Waiting
+                    // here would deadlock: the target must be queued before it can run
+                    // again and finish clearing the marker. Remote wakes still wait for
+                    // the owning CPU to finish touching the task context.
+                    if !waking_local_task {
                         while task.on_cpu() {
                             // Wait for the task to finish its scheduling process.
                             core::hint::spin_loop();
@@ -924,7 +1060,8 @@ impl AxRunQueue {
             // TODO: priority
             #[cfg(feature = "smp")]
             task.set_cpu_id(self.cpu_id as _);
-            self.scheduler.lock().put_prev_task(task, preempt);
+            self.core
+                .with_run_queue(|core| core.put_prev_task(task, preempt));
             true
         } else {
             false
@@ -935,9 +1072,8 @@ impl AxRunQueue {
     /// Pick the next task to run and switch to it.
     fn resched(&mut self) {
         let next = self
-            .scheduler
-            .lock()
-            .pick_next_task()
+            .core
+            .with_run_queue(|core| core.pick_next_task())
             .unwrap_or_else(|| unsafe {
                 // Safety: IRQs must be disabled at this time.
                 IDLE_TASK.current_ref_raw().get_unchecked().clone()
@@ -953,7 +1089,7 @@ impl AxRunQueue {
 
     fn switch_to(&mut self, prev_task: CurrentTask, next_task: AxTaskRef) {
         // Make sure that IRQs are disabled by kernel guard or other means.
-        #[cfg(all(feature = "irq", not(feature = "host-test")))]
+        #[cfg(not(feature = "host-test"))]
         assert!(
             !ax_hal::asm::irqs_enabled(),
             "IRQs must be disabled during scheduling"
@@ -1002,11 +1138,15 @@ impl AxRunQueue {
         );
 
         unsafe {
+            // `CurrentTask` is a borrowed Arc view over the per-CPU current-task
+            // pointer. `set_current()` consumes that per-CPU strong reference,
+            // so keep an explicit owner alive until this saved context resumes.
+            let _prev_task_keepalive = prev_task.clone();
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
             // Store a raw pointer to prev_task in PREV_TASK.
-            // Safety: prev_task is alive (Arc held on caller's stack) and will
+            // Safety: prev_task is alive (`_prev_task_keepalive`) and will
             // remain so through clear_prev_task_on_cpu() below.
             #[cfg(feature = "smp")]
             {
@@ -1056,15 +1196,10 @@ fn gc_entry() {
         // Note: we cannot block current task with preemption disabled,
         // use `current_ref_raw` to get the `WAIT_FOR_EXIT`'s reference here to avoid the use of `NoPreemptGuard`.
         // Since gc task is pinned to the current CPU, there is no effect if the gc task is preempted during the process.
-        #[cfg(feature = "irq")]
         unsafe {
             let _timeout = WAIT_FOR_EXIT
                 .current_ref_raw()
                 .wait_timeout(core::time::Duration::from_millis(100));
-        }
-        #[cfg(not(feature = "irq"))]
-        unsafe {
-            WAIT_FOR_EXIT.current_ref_raw().wait();
         }
     }
 }
@@ -1079,9 +1214,8 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
     let cpu_id = rq.inner.cpu_id;
     migrated_task.set_cpu_id(cpu_id as _);
     rq.inner
-        .scheduler
-        .lock()
-        .put_prev_task(migrated_task, false);
+        .core
+        .with_run_queue(|core| core.put_prev_task(migrated_task, false));
     #[cfg(all(feature = "smp", feature = "ipi"))]
     // Current-task migration cannot make progress until the target CPU runs
     // the migrated task, so do not let a stale coalescing bit suppress this IPI.
@@ -1098,6 +1232,23 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
     // (switch_to has not yet returned), so the pointer is valid.
     unsafe { prev.as_ref() }.set_on_cpu(false);
 }
+
+pub(crate) fn wake_task_from_irq_queue(task: AxTaskRef) -> bool {
+    select_wake_run_queue::<ax_kernel_guard::NoPreemptIrqSave>(&task).unblock_task(task, true)
+}
+
+#[cfg(all(test, feature = "host-test", feature = "smp"))]
+pub(crate) fn init_test_run_queue_for_cpu(cpu_id: usize) {
+    assert!(cpu_id < crate::build_info::CPU_CAPACITY);
+    if TEST_RUN_QUEUE_INIT[cpu_id].swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let run_queue = Box::leak(Box::new(AxRunQueue::new(cpu_id)));
+    unsafe {
+        RUN_QUEUES[cpu_id].write(run_queue);
+    }
+}
+
 pub(crate) fn init() {
     let cpu_id = this_cpu_id();
 
@@ -1123,6 +1274,7 @@ pub(crate) fn init() {
     RUN_QUEUE.with_current(|rq| {
         rq.init_once(AxRunQueue::new(cpu_id));
     });
+    crate::irq_wake::init_irq_wake_queue_current_cpu();
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
@@ -1146,6 +1298,7 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     RUN_QUEUE.with_current(|rq| {
         rq.init_once(AxRunQueue::new(cpu_id));
     });
+    crate::irq_wake::init_irq_wake_queue_current_cpu();
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }

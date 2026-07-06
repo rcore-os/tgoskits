@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
@@ -40,8 +41,9 @@ static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
-static BLOCK_DRAIN_NOTIFY: ax_task::IrqNotify = ax_task::IrqNotify::new();
-#[cfg(feature = "irq")]
+static BLOCK_DRAIN_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
+static BLOCK_DRAIN_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
+static BLOCK_DRAIN_IRQ_WAKER: spin::Once<ax_task::HardIrqWaker> = spin::Once::new();
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
 struct RuntimeTaskOps;
@@ -76,15 +78,20 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn notify_drain(&self) {
-        BLOCK_DRAIN_NOTIFY.notify();
+        BLOCK_DRAIN_NOTIFY_PENDING.store(true, Ordering::Release);
+        BLOCK_DRAIN_WAIT_WQ.notify_one(true);
     }
 
     fn notify_drain_from_irq(&self) {
-        BLOCK_DRAIN_NOTIFY.notify_irq();
+        BLOCK_DRAIN_NOTIFY_PENDING.store(true, Ordering::Release);
+        if let Some(waker) = BLOCK_DRAIN_IRQ_WAKER.get() {
+            let _ = waker.wake_from_irq(0);
+        }
     }
 
     fn wait_for_drain_notification(&self) {
-        BLOCK_DRAIN_NOTIFY.wait();
+        BLOCK_DRAIN_IRQ_WAKER.call_once(ax_task::current_hard_irq_waker);
+        BLOCK_DRAIN_WAIT_WQ.wait_until(|| BLOCK_DRAIN_NOTIFY_PENDING.swap(false, Ordering::AcqRel));
     }
 
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
@@ -92,10 +99,8 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 }
 
-#[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistrar;
 
-#[cfg(feature = "irq")]
 struct RuntimeBlockIrqRegistration {
     _inner: crate::irq::Registration,
 }
@@ -105,7 +110,6 @@ struct RuntimeBlockIrqRegistration {
 // the IRQ framework and is not exposed through this token.
 unsafe impl Sync for RuntimeBlockIrqRegistration {}
 
-#[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {}
 
 fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
@@ -126,7 +130,6 @@ fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
     }
 }
 
-#[cfg(feature = "irq")]
 impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
     fn register_shared(
         &self,
@@ -154,14 +157,8 @@ pub(super) fn init(bootargs: Option<&str>) {
     ax_fs_ng::root::init_root_from_rdif(take_rdif_block_devices(), bootargs);
 }
 
-#[cfg(feature = "irq")]
 fn irq_registrar() -> Option<&'static dyn BlockIrqRegistrar> {
     Some(&IRQ_REGISTRAR)
-}
-
-#[cfg(not(feature = "irq"))]
-fn irq_registrar() -> Option<&'static dyn BlockIrqRegistrar> {
-    None
 }
 
 fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
@@ -175,7 +172,6 @@ fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
         .collect()
 }
 
-#[cfg(feature = "irq")]
 fn resolve_block_irq(irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
     let irq = irq?;
     match crate::irq::resolve_binding_irq(irq) {
@@ -185,11 +181,6 @@ fn resolve_block_irq(irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework
             None
         }
     }
-}
-
-#[cfg(not(feature = "irq"))]
-fn resolve_block_irq(_irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
-    None
 }
 
 #[cfg(test)]

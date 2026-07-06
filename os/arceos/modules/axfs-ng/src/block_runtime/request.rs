@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use rdif_block::{BlkError, RequestId};
+use rdif_block::{BlkError, RequestId, RequestToken};
 
 use super::RuntimeDmaBuffer;
 
@@ -25,6 +25,7 @@ pub type RequestKey = RuntimeRequestId;
 pub struct SubmittedRequest {
     pub queue_id: usize,
     pub request_id: RequestId,
+    pub token: Option<RequestToken>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -187,6 +188,7 @@ impl PendingTable {
         &mut self,
         queue_id: usize,
         request_id: RequestId,
+        token: Option<RequestToken>,
         buffer_guard: Option<RuntimeDmaBuffer>,
     ) -> Result<RequestKey, BlkError> {
         if self.contains_inflight_driver_request(queue_id, request_id) {
@@ -200,6 +202,7 @@ impl PendingTable {
                 SubmittedRequest {
                     queue_id,
                     request_id,
+                    token,
                 },
                 buffer_guard,
             ),
@@ -324,6 +327,22 @@ impl PendingTable {
                 (request.submitted.queue_id == queue_id
                     && request.result.is_none()
                     && ids.contains(&request.submitted.request_id))
+                .then_some(*key)
+            })
+            .collect()
+    }
+
+    pub fn matching_driver_token_keys(
+        &self,
+        queue_id: usize,
+        token: RequestToken,
+    ) -> Vec<RequestKey> {
+        self.requests
+            .iter()
+            .filter_map(|(key, request)| {
+                (request.submitted.queue_id == queue_id
+                    && request.result.is_none()
+                    && request.submitted.token == Some(token))
                 .then_some(*key)
             })
             .collect()

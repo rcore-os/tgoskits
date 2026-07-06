@@ -6,7 +6,7 @@
 //! interrupt (PPI 7 / INTID 23). [`pmu_overflow_handler`] runs in hard-IRQ
 //! context, reads the interrupted PC, builds one `PERF_RECORD_SAMPLE` per
 //! overflowed counter, writes it into that event's mmap ring buffer, re-arms the
-//! counter, and wakes a deferred worker (via [`ax_task::IrqNotify`]) that
+//! counter, and wakes a deferred worker (via [`ax_task::HardIrqSignal`]) that
 //! delivers `POLLIN` to userspace pollers.
 //!
 //! The record emitted honours the event's `attr.sample_type`: [`build_sample`]
@@ -34,9 +34,9 @@
 //!
 //! # `notify` raw pointer soundness
 //!
-//! `SampleSlot::notify` is a raw `*const IrqNotify`. It is valid for the whole
+//! `SampleSlot::notify` is a raw `*const HardIrqSignal`. It is valid for the whole
 //! time the slot is registered because the owning event holds a strong
-//! `Arc<IrqNotify>` for its entire life, and teardown
+//! `Arc<HardIrqSignal>` for its entire life, and teardown
 //! ([`super::hw::HwPerfEvent`]'s disable/Drop) calls [`unregister`] — clearing
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
@@ -45,7 +45,7 @@ use core::sync::atomic::Ordering;
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
-use ax_task::IrqNotify;
+use ax_task::HardIrqSignal;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
@@ -172,8 +172,8 @@ pub struct SampleSlot {
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
     pub id: u64,
-    /// Raw pointer to the owning event's [`IrqNotify`], woken after each sample.
-    /// Kept alive by the event's strong `Arc<IrqNotify>` for as long as the slot
+    /// Raw pointer to the owning event's [`HardIrqSignal`], woken after each sample.
+    /// Kept alive by the event's strong `Arc<HardIrqSignal>` for as long as the slot
     /// is registered (see module docs).
     pub notify: *const (),
     /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
@@ -230,7 +230,7 @@ pub fn register(n: usize, slot: SampleSlot) {
 /// Clears the sampling slot for programmable counter `n` on the current CPU.
 ///
 /// Mirror of [`register`]. Teardown calls this *before* the owning event drops
-/// its `Arc<IrqNotify>`, so once this returns the handler can no longer reach a
+/// its `Arc<HardIrqSignal>`, so once this returns the handler can no longer reach a
 /// stale `notify` pointer for counter `n`.
 pub fn unregister(n: usize) {
     if n > MAX_COUNTER {
@@ -400,9 +400,9 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         // leader's ring but has no notify of its own — its `notify` is null, and
         // the leader's own poller re-checks `data_head` on its next poll. The
         // pointer, when non-null, is valid: the owning event holds the backing
-        // `Arc<IrqNotify>` while registered (see the module-level soundness note).
+        // `Arc<HardIrqSignal>` while registered (see the module-level soundness note).
         if !notify_ptr.is_null() {
-            let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
+            let notify = unsafe { &*(notify_ptr as *const HardIrqSignal) };
             notify.notify_irq();
         }
     }

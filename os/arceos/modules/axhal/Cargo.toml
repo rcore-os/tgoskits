@@ -12,11 +12,6 @@ smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
 ]
-irq = [
-    "ax-plat/irq",
-    "axplat-dyn/irq",
-    "dep:ax-kspin",
-]
 fp-simd = [
     "ax-cpu/fp-simd",
     "axplat-dyn/fp-simd",
@@ -42,12 +37,13 @@ axvisor-linker = []
 host-test = []
 
 default = []
-ipi = ["irq"]
+ipi = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
-ax-kspin = { workspace = true, optional = true }
+ax-crate-interface = { workspace = true, features = ["weak_default"] }
+ax-kspin = { workspace = true }
 ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"

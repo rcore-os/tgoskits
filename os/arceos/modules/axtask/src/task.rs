@@ -1,17 +1,14 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 #[cfg(not(feature = "stack-guard-page"))]
 use core::alloc::Layout;
-#[cfg(any(
-    feature = "preempt",
-    all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
-))]
+#[cfg(all(feature = "stack-guard-page", feature = "smp", feature = "ipi"))]
 use core::sync::atomic::AtomicUsize;
 use core::{
     cell::{Cell, UnsafeCell},
     fmt,
     mem::ManuallyDrop,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicI32, Ordering},
     task::{Context, Poll},
 };
 
@@ -22,6 +19,7 @@ use ax_kspin::SpinNoIrq;
 #[cfg(feature = "stack-guard-page")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{VirtAddr, align_up_4k};
+use bare_task::{CpuId, CpuMask, TaskCore};
 use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
@@ -38,23 +36,10 @@ const STACK_END_MAGIC: usize = 0x57AC_CE11usize;
 pub(crate) const TASK_STACK_ALIGN: usize = 16;
 
 /// A unique identifier for a thread.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct TaskId(u64);
+pub type TaskId = bare_task::TaskId;
 
 /// The possible states of a task.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum TaskState {
-    /// Task is running on some CPU.
-    Running = 1,
-    /// Task is ready to run on some scheduler's ready queue.
-    Ready   = 2,
-    /// Task is blocked (in the wait queue or timer list),
-    /// and it has finished its scheduling process, it can be wake up by `notify()` on any run queue safely.
-    Blocked = 3,
-    /// Task is exited and waiting for being dropped.
-    Exited  = 4,
-}
+pub type TaskState = bare_task::TaskState;
 
 /// User-defined task extended data.
 #[cfg(feature = "task-ext")]
@@ -71,16 +56,12 @@ pub trait TaskExt {
 
 /// The inner task structure.
 pub struct TaskInner {
-    id: TaskId,
+    core: TaskCore,
     name: SpinNoIrq<String>,
     is_idle: bool,
     is_init: bool,
 
     entry: Cell<Option<Box<dyn FnOnce()>>>,
-    state: AtomicU8,
-
-    /// CPU affinity mask.
-    cpumask: SpinNoIrq<AxCpuMask>,
 
     /// Scheduling policy of the task.
     sched_policy: AtomicI32,
@@ -88,29 +69,6 @@ pub struct TaskInner {
     /// Scheduling priority of the task.
     sched_priority: AtomicI32,
 
-    /// Mark whether the task is in the wait queue.
-    in_wait_queue: AtomicBool,
-
-    /// Used to indicate the CPU ID where the task is running or will run.
-    cpu_id: AtomicU32,
-    /// Used to indicate whether the task is running on a CPU.
-    #[cfg(feature = "smp")]
-    on_cpu: AtomicBool,
-
-    /// A ticket ID used to identify the timer event.
-    /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
-    /// expired by setting it as zero in `timer_ticket_expired()`, which is called by `cancel_events()`.
-    #[cfg(feature = "irq")]
-    timer_ticket_id: AtomicU64,
-
-    #[cfg(feature = "preempt")]
-    need_resched: AtomicBool,
-    #[cfg(feature = "preempt")]
-    force_resched: AtomicBool,
-    #[cfg(feature = "preempt")]
-    preempt_disable_count: AtomicUsize,
-
-    interrupted: AtomicBool,
     interrupt_waker: AtomicWaker,
 
     exit_code: AtomicI32,
@@ -128,31 +86,6 @@ pub struct TaskInner {
     tls: TlsArea,
 }
 
-impl TaskId {
-    fn new() -> Self {
-        static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-        Self(ID_COUNTER.fetch_add(1, Ordering::Relaxed))
-    }
-
-    /// Convert the task ID to a `u64`.
-    pub const fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u8> for TaskState {
-    #[inline]
-    fn from(state: u8) -> Self {
-        match state {
-            1 => Self::Running,
-            2 => Self::Ready,
-            3 => Self::Blocked,
-            4 => Self::Exited,
-            _ => unreachable!(),
-        }
-    }
-}
-
 unsafe impl Send for TaskInner {}
 unsafe impl Sync for TaskInner {}
 
@@ -163,7 +96,7 @@ impl TaskInner {
         F: FnOnce() + Send + 'static,
     {
         let kstack = TaskStack::alloc(align_up_4k(stack_size));
-        let mut t = Self::new_common(TaskId::new(), name, kstack);
+        let mut t = Self::new_common(TaskId::allocate(), name, kstack);
         debug!("new task: {}", t.id_name());
 
         #[cfg(feature = "tls")]
@@ -183,7 +116,7 @@ impl TaskInner {
 
     /// Gets the ID of the task.
     pub const fn id(&self) -> TaskId {
-        self.id
+        self.core.id()
     }
 
     /// Gets the name of the task.
@@ -198,7 +131,7 @@ impl TaskInner {
 
     /// Get a combined string of the task ID and name.
     pub fn id_name(&self) -> alloc::string::String {
-        alloc::format!("Task({}, {:?})", self.id.as_u64(), self.name())
+        alloc::format!("Task({}, {:?})", self.id().as_u64(), self.name())
     }
 
     /// Wait for the task to exit, and return the exit code.
@@ -253,7 +186,7 @@ impl TaskInner {
     /// Note: the task may not be running on the CPU, it just exists in the run queue.
     #[inline]
     pub fn cpu_id(&self) -> u32 {
-        self.cpu_id.load(Ordering::Acquire)
+        self.core.cpu_id().0 as u32
     }
 
     /// Gets the cpu affinity mask of the task.
@@ -261,7 +194,7 @@ impl TaskInner {
     /// Returns the cpu affinity mask of the task in type [`AxCpuMask`].
     #[inline]
     pub fn cpumask(&self) -> AxCpuMask {
-        *self.cpumask.lock()
+        bare_to_ax_cpumask(self.core.cpumask())
     }
 
     /// Sets the cpu affinity mask of the task.
@@ -270,7 +203,7 @@ impl TaskInner {
     /// `cpumask` - The cpu affinity mask to be set in type [`AxCpuMask`].
     #[inline]
     pub fn set_cpumask(&self, cpumask: AxCpuMask) {
-        *self.cpumask.lock() = cpumask
+        self.core.set_cpumask(ax_to_bare_cpumask(cpumask));
     }
 
     #[inline]
@@ -301,7 +234,7 @@ impl TaskInner {
         // allow `interrupt()` to run and call `wake()` on an empty waker
         // slot — the wake is lost. Registering first closes the window.
         self.interrupt_waker.register(cx.waker());
-        if self.interrupted.swap(false, Ordering::AcqRel) {
+        if self.core.take_interrupt() {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -311,7 +244,7 @@ impl TaskInner {
     /// Clears the interrupt state of the task.
     #[inline]
     pub fn clear_interrupt(&self) {
-        self.interrupted.store(false, Ordering::Release);
+        self.core.clear_interrupt();
     }
 
     /// Atomically checks and clears the interrupt flag.
@@ -319,7 +252,7 @@ impl TaskInner {
     /// Returns `true` if the task was interrupted.
     #[inline]
     pub fn take_interrupt(&self) -> bool {
-        self.interrupted.swap(false, Ordering::AcqRel)
+        self.core.take_interrupt()
     }
 
     /// Checks whether the task has been interrupted without clearing
@@ -330,14 +263,76 @@ impl TaskInner {
     /// consumers (e.g., an [`interruptible`] future wrapper).
     #[inline]
     pub fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
+        self.core.interrupted()
     }
 
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
+        self.core.interrupt();
         self.interrupt_waker.wake();
+    }
+
+    #[inline]
+    pub(crate) fn irq_wake_generation(&self) -> u64 {
+        self.core.wake_generation()
+    }
+
+    #[inline]
+    pub(crate) fn irq_wake_generation_matches(&self, generation: u64) -> bool {
+        self.core.wake_generation_matches(generation)
+    }
+
+    #[inline]
+    pub(crate) fn expire_irq_wakers(&self) {
+        self.core.expire_wakers();
+    }
+
+    #[inline]
+    pub(crate) fn publish_irq_wake_bits(&self, bits: u64) {
+        if bits != 0 {
+            self.core.publish_wake_bits(bits);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn take_irq_wake_bits(&self) -> u64 {
+        self.core.take_wake_bits()
+    }
+
+    #[inline]
+    pub(crate) fn bump_irq_wake_seq(&self) -> u64 {
+        self.core.bump_wake_seq()
+    }
+
+    #[inline]
+    pub(crate) fn irq_wake_seq(&self) -> u64 {
+        self.core.wake_seq()
+    }
+
+    #[inline]
+    pub(crate) fn mark_irq_wake_pending(&self) -> bool {
+        self.core.mark_wake_pending()
+    }
+
+    #[inline]
+    pub(crate) fn take_irq_wake_pending(&self) -> bool {
+        self.core.take_wake_pending()
+    }
+
+    #[inline]
+    pub(crate) fn set_irq_wake_next(&self, next: *mut AxTask) {
+        self.core.set_wake_next(next);
+    }
+
+    #[inline]
+    pub(crate) fn irq_wake_next(&self) -> *mut AxTask {
+        self.core.wake_next()
+    }
+
+    #[inline]
+    pub(crate) fn clear_irq_wake_link(&self) {
+        self.core.clear_wake_link();
     }
 }
 
@@ -345,29 +340,17 @@ impl TaskInner {
 impl TaskInner {
     fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {
         Self {
-            id,
+            core: {
+                let core = TaskCore::new(id, CpuId(0));
+                core.set_cpumask(ax_to_bare_cpumask(crate::api::cpu_mask_full()));
+                core
+            },
             name: SpinNoIrq::new(name),
             is_idle: false,
             is_init: false,
             entry: Cell::new(None),
-            state: AtomicU8::new(TaskState::Ready as u8),
-            // By default, the task is allowed to run on all CPUs.
-            cpumask: SpinNoIrq::new(crate::api::cpu_mask_full()),
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
-            in_wait_queue: AtomicBool::new(false),
-            #[cfg(feature = "irq")]
-            timer_ticket_id: AtomicU64::new(0),
-            cpu_id: AtomicU32::new(0),
-            #[cfg(feature = "smp")]
-            on_cpu: AtomicBool::new(false),
-            #[cfg(feature = "preempt")]
-            need_resched: AtomicBool::new(false),
-            #[cfg(feature = "preempt")]
-            force_resched: AtomicBool::new(false),
-            #[cfg(feature = "preempt")]
-            preempt_disable_count: AtomicUsize::new(0),
-            interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
@@ -391,8 +374,10 @@ impl TaskInner {
     /// And there is no need to set the `entry`, `kstack` or `tls` fields, as
     /// they will be filled automatically when the task is switches out.
     pub(crate) fn new_init(name: String, kstack: TaskStack) -> Self {
-        let mut t = Self::new_common(TaskId::new(), name, kstack);
+        let mut t = Self::new_common(TaskId::allocate(), name, kstack);
         t.is_init = true;
+        #[cfg(feature = "smp")]
+        t.set_cpu_id(ax_hal::percpu::this_cpu_id() as u32);
         #[cfg(feature = "smp")]
         t.set_on_cpu(true);
         if t.name() == "idle" {
@@ -408,12 +393,12 @@ impl TaskInner {
     /// Returns the current state of the task.
     #[inline]
     pub fn state(&self) -> TaskState {
-        self.state.load(Ordering::Acquire).into()
+        self.core.state()
     }
 
     #[inline]
     pub(crate) fn set_state(&self, state: TaskState) {
-        self.state.store(state as u8, Ordering::Release)
+        self.core.set_state(state)
     }
 
     /// Transition the task state from `current_state` to `new_state`,
@@ -421,14 +406,7 @@ impl TaskInner {
     /// otherwise returns `false`.
     #[inline]
     pub(crate) fn transition_state(&self, current_state: TaskState, new_state: TaskState) -> bool {
-        self.state
-            .compare_exchange(
-                current_state as u8,
-                new_state as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
+        self.core.transition_state(current_state, new_state)
     }
 
     #[inline]
@@ -453,66 +431,76 @@ impl TaskInner {
 
     #[inline]
     pub(crate) fn in_wait_queue(&self) -> bool {
-        self.in_wait_queue.load(Ordering::Acquire)
+        self.core.in_wait_queue()
     }
 
     #[inline]
-    pub(crate) fn set_in_wait_queue(&self, in_wait_queue: bool) {
-        self.in_wait_queue.store(in_wait_queue, Ordering::Release);
+    pub(crate) fn is_waiting_on(&self, wait_queue_key: usize) -> bool {
+        self.core.is_waiting_on(wait_queue_key)
+    }
+
+    #[inline]
+    pub(crate) fn set_wait_queue_key(&self, wait_queue_key: usize) {
+        self.core.set_wait_queue_key(wait_queue_key);
+    }
+
+    #[inline]
+    pub(crate) fn clear_wait_queue_key(&self, wait_queue_key: usize) -> bool {
+        self.core.clear_wait_queue_key(wait_queue_key)
+    }
+
+    #[inline]
+    pub(crate) fn clear_wait_queue_membership(&self) -> bool {
+        self.core.take_wait_queue_key() != 0
     }
 
     /// Returns task's current timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket(&self) -> u64 {
-        self.timer_ticket_id.load(Ordering::Acquire)
+        self.core.timer_ticket()
     }
 
     /// Set the timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn set_timer_ticket(&self, timer_ticket_id: u64) {
         // CAN NOT set timer_ticket_id to 0,
         // because 0 is used to indicate the timer event is expired.
         assert!(timer_ticket_id != 0);
-        self.timer_ticket_id
-            .store(timer_ticket_id, Ordering::Release);
+        self.core.set_timer_ticket(timer_ticket_id);
     }
 
     /// Expire timer ticket ID by setting it to 0,
     /// it can be used to identify one timer event is triggered or expired.
-    #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket_expired(&self) {
-        self.timer_ticket_id.store(0, Ordering::Release);
+        self.core.timer_ticket_expired();
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn set_preempt_pending(&self, pending: bool) {
-        self.need_resched.store(pending, Ordering::Release)
+        self.core.set_preempt_pending(pending)
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn set_force_resched_pending(&self, pending: bool) {
-        self.force_resched.store(pending, Ordering::Release)
+        self.core.set_force_resched_pending(pending)
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     fn force_resched_pending(&self) -> bool {
-        self.force_resched.load(Ordering::Acquire)
+        self.core.force_resched_pending()
     }
 
     #[inline]
-    #[cfg(all(test, feature = "preempt"))]
+    #[cfg(all(test, feature = "preempt", feature = "ipi"))]
     pub(crate) fn preempt_pending_for_test(&self) -> bool {
-        self.need_resched.load(Ordering::Acquire)
+        self.core.preempt_pending()
     }
 
     #[inline]
-    #[cfg(all(test, feature = "preempt"))]
+    #[cfg(all(test, feature = "preempt", feature = "ipi"))]
     pub(crate) fn force_resched_pending_for_test(&self) -> bool {
         self.force_resched_pending()
     }
@@ -520,31 +508,31 @@ impl TaskInner {
     #[inline]
     #[cfg(feature = "preempt")]
     fn take_force_resched_pending(&self) -> bool {
-        self.force_resched.swap(false, Ordering::AcqRel)
+        self.core.take_force_resched_pending()
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn preempt_count(&self) -> usize {
-        self.preempt_disable_count.load(Ordering::Acquire)
+        self.core.preempt_count()
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn can_preempt(&self, current_disable_count: usize) -> bool {
-        self.preempt_disable_count.load(Ordering::Acquire) == current_disable_count
+        self.core.can_preempt(current_disable_count)
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn disable_preempt(&self) {
-        self.preempt_disable_count.fetch_add(1, Ordering::Release);
+        self.core.disable_preempt();
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn enable_preempt(&self, resched: bool) {
-        if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
+        if self.core.enable_preempt() && resched {
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }
@@ -554,9 +542,7 @@ impl TaskInner {
     fn current_check_preempt_pending() {
         use ax_kernel_guard::NoPreemptIrqSave;
         let curr = crate::current();
-        if (curr.force_resched_pending() || curr.need_resched.load(Ordering::Acquire))
-            && curr.can_preempt(0)
-        {
+        if (curr.force_resched_pending() || curr.core.preempt_pending()) && curr.can_preempt(0) {
             // Note: if we want to print log msg during `preempt_resched`, we have to
             // disable preemption here, because the ax-log may cause preemption.
             let mut rq = crate::current_run_queue::<NoPreemptIrqSave>();
@@ -564,7 +550,7 @@ impl TaskInner {
                 #[cfg(all(feature = "smp", feature = "ipi"))]
                 crate::run_queue::clear_remote_reschedule_pending_for_current_cpu();
                 rq.force_resched()
-            } else if curr.need_resched.load(Ordering::Acquire) {
+            } else if curr.core.preempt_pending() {
                 rq.preempt_resched()
             }
         }
@@ -572,6 +558,7 @@ impl TaskInner {
 
     /// Notify all tasks that join on this task.
     pub(crate) fn notify_exit(&self, exit_code: i32) {
+        self.expire_irq_wakers();
         self.set_state(TaskState::Exited);
         self.exit_code.store(exit_code, Ordering::Release);
         self.wait_for_exit.notify_all(false);
@@ -602,7 +589,7 @@ impl TaskInner {
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn set_cpu_id(&self, cpu_id: u32) {
-        self.cpu_id.store(cpu_id, Ordering::Release);
+        self.core.set_cpu_id(CpuId(cpu_id as usize));
     }
 
     /// Returns whether the task is running on a CPU.
@@ -614,30 +601,67 @@ impl TaskInner {
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn on_cpu(&self) -> bool {
-        self.on_cpu.load(Ordering::Acquire)
+        self.core.on_cpu()
     }
 
     /// Sets whether the task is running on a CPU.
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn set_on_cpu(&self, on_cpu: bool) {
-        self.on_cpu.store(on_cpu, Ordering::Release)
+        self.core.set_on_cpu(on_cpu)
     }
 }
 
 impl fmt::Debug for TaskInner {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("TaskInner")
-            .field("id", &self.id)
+            .field("id", &self.id())
             .field("name", &self.name)
             .field("state", &self.state())
             .finish()
     }
 }
 
+fn ax_to_bare_cpumask(mask: AxCpuMask) -> CpuMask {
+    let mut bits = 0u64;
+    for cpu_id in 0..crate::build_info::CPU_CAPACITY.min(64) {
+        if mask.get(cpu_id) {
+            bits |= 1u64 << cpu_id;
+        }
+    }
+    CpuMask::from_bits(bits)
+}
+
+fn bare_to_ax_cpumask(mask: CpuMask) -> AxCpuMask {
+    let mut ax_mask = AxCpuMask::new();
+    for cpu_id in 0..crate::build_info::CPU_CAPACITY.min(64) {
+        ax_mask.set(cpu_id, mask.contains(CpuId(cpu_id)));
+    }
+    ax_mask
+}
+
 impl Drop for TaskInner {
     fn drop(&mut self) {
+        crate::irq_wake::expire_task_irq_wakers(self);
         debug!("task drop: {}", self.id_name());
+    }
+}
+
+impl bare_task::TaskOps for TaskInner {
+    fn core(&self) -> &TaskCore {
+        &self.core
+    }
+
+    fn id_name(&self) -> String {
+        self.id_name()
+    }
+
+    fn is_idle(&self) -> bool {
+        self.is_idle
+    }
+
+    fn is_init(&self) -> bool {
+        self.is_init
     }
 }
 
@@ -1008,8 +1032,8 @@ extern "C" fn task_entry() -> ! {
         // Clear the prev task on CPU before running the task entry function.
         crate::run_queue::clear_prev_task_on_cpu();
     }
-    // Enable irq (if feature "irq" is enabled) before running the task entry function.
-    #[cfg(all(feature = "irq", not(feature = "host-test")))]
+    // Enable IRQs before running the task entry function.
+    #[cfg(not(feature = "host-test"))]
     ax_hal::asm::enable_irqs();
     let task = crate::current();
     if let Some(entry) = task.entry.take() {

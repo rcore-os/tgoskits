@@ -3,11 +3,7 @@
 /// For single-task situation, we just relax the CPU and wait for incoming
 /// interrupts.
 pub fn yield_now() {
-    if cfg!(feature = "irq") {
-        ax_hal::asm::wait_for_irqs();
-    } else {
-        core::hint::spin_loop();
-    }
+    ax_hal::asm::wait_for_irqs();
 }
 
 /// For single-task situation, we just busy wait for the given duration.

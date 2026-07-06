@@ -234,7 +234,7 @@ graph TD
 
 ```toml
 [dependencies]
-ax-plat = { workspace = true, features = ["irq", "smp"] }
+ax-plat = { workspace = true, features = ["smp"] }
 ```
 
 构建时由上层选择合适的平台包，例如：
@@ -250,14 +250,14 @@ cargo build -p ax-plat --all-features
 - `ax_percpu::init_primary()` / `init_secondary()` 应尽早调用，因为后续初始化可能依赖当前 CPU ID。
 - `MemIf::virt_to_phys()` 只保证对 `phys_to_virt()` 生成的线性映射地址可逆，不能用来翻译任意虚拟地址。
 - `busy_wait()` 使用墙钟时间，平台若未正确设置 `epochoffset_nanos()`，墙钟语义可能不准确。
-- `irq` 与 `smp` 是显式 feature，平台包与上层 crate 的 feature 需要一致传播。
+- IRQ 接口默认存在；平台包与上层 crate 只需要继续一致传播 `smp` 等真实可选 feature。
 
 ## 测试
 
 ### 5.1 当前源码中的可验证点
 
 - `mem` 模块已经包含区间重叠检测与差集算法的单元测试，是 `ax-plat` 当前最稳定、最适合主机侧验证的部分。
-- `docs.rs` 配置为 `all-features = true`，意味着文档构建默认覆盖 `irq`/`smp` 等接口可见性。
+- `docs.rs` 配置为 `all-features = true`，意味着文档构建默认覆盖 `smp` 等接口可见性；IRQ 接口默认可见。
 - 真实的平台契约验证主要依赖各 `ax-plat-*` 平台包及示例内核的交叉构建与启动冒烟。
 
 ### 5.2 建议的测试分层
@@ -270,7 +270,7 @@ cargo build -p ax-plat --all-features
 ### 5.3 重点关注的风险
 
 - 接口签名变更会影响所有 `ax-plat-*` 平台包，属于高传播面修改。
-- `irq` 和 `smp` feature 的不一致传播容易造成“接口存在但实现未编译”或“实现存在但上层未启用”的构建问题。
+- `smp` 等 feature 的不一致传播容易造成“接口存在但实现未编译”或“实现存在但上层未启用”的构建问题；IRQ 相关风险主要来自平台实现是否正确返回或处理 `Unsupported`。
 - 若平台包错误实现 `phys_to_virt()`/`virt_to_phys()`，上层内存管理和设备映射会出现隐蔽错误。
 
 ## 跨项目定位

@@ -22,6 +22,7 @@ members = [
     "components/axtest/axtest_macros",
     "components/ax-lazyinit",
     "components/axbacktrace",
+    "components/bare-task",
     "components/axcpu",
     "components/axerrno",
     "components/axfs-ng-vfs",
@@ -187,6 +188,7 @@ ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
 axaddrspace = { version = "0.5.15", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.4", path = "components/axbacktrace" }
 axbuild = { version = "0.4.16", path = "scripts/axbuild" }
+bare-task = { version = "0.1.0", path = "components/bare-task" }
 axdevice = { version = "0.5.1", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.6.0", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.5.3", path = "components/axfs-ng-vfs" }

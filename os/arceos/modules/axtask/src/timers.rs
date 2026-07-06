@@ -2,12 +2,10 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{TimeValue, monotonic_time};
-use ax_kernel_guard::{NoOp, NoPreemptIrqSave};
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_timer_list::{TimerEvent, TimerList};
 
-#[cfg(feature = "smp")]
-use crate::select_run_queue;
-use crate::{AxTaskRef, current_run_queue};
+use crate::{AxTaskRef, HardIrqWaker, TaskWaker};
 
 static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -20,6 +18,7 @@ percpu_static! {
 struct TaskWakeupEvent {
     ticket_id: u64,
     task: AxTaskRef,
+    irq_waker: HardIrqWaker,
 }
 
 impl TimerEvent for TaskWakeupEvent {
@@ -33,26 +32,10 @@ impl TimerEvent for TaskWakeupEvent {
             return;
         }
 
-        // Timer ticket match. Timers are per-CPU, so prefer waking the task on
-        // the CPU that owns and expires this timer event. Falling back to the
-        // affinity selector is only needed if the task's affinity changed while
-        // it was sleeping.
-        wake_task_from_timer(self.task)
+        // Timer interrupts are hard IRQ context. Do not touch scheduler or
+        // wait-queue locks here; the IRQ epilogue drains the wake queue.
+        let _ = self.irq_waker.wake_from_irq(0);
     }
-}
-
-#[cfg(feature = "smp")]
-fn wake_task_from_timer(task: AxTaskRef) {
-    if task.cpumask().get(ax_hal::percpu::this_cpu_id()) {
-        current_run_queue::<NoOp>().unblock_task(task, true);
-    } else {
-        select_run_queue::<NoOp>(&task).unblock_task(task, true);
-    }
-}
-
-#[cfg(not(feature = "smp"))]
-fn wake_task_from_timer(task: AxTaskRef) {
-    current_run_queue::<NoOp>().unblock_task(task, true);
 }
 
 /// Registers a callback function to be called on each timer tick.
@@ -105,10 +88,18 @@ pub(crate) fn next_deadline_nanos() -> Option<u64> {
 
 pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
     let _g = NoPreemptIrqSave::new();
+    let irq_waker = TaskWaker::new(task.clone()).to_hard_irq_waker();
     TIMER_LIST.with_current(|timer_list| {
         let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
         task.set_timer_ticket(ticket_id);
-        timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
+        timer_list.set(
+            deadline,
+            TaskWakeupEvent {
+                ticket_id,
+                task,
+                irq_waker,
+            },
+        );
     });
     maybe_reprogram_timer(deadline);
 }

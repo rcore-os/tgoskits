@@ -1,105 +1,100 @@
-use alloc::collections::BTreeMap;
+use alloc::string::String;
 use core::{
     fmt,
     pin::Pin,
-    task::{Context, Poll, Waker},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    task::{Context, Poll},
     time::Duration,
 };
 
 use ax_errno::AxError;
 use ax_hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_kspin::SpinNoIrq;
+use bare_task::{TimerKey, TimerRuntimeCore};
 use futures_util::{FutureExt, select_biased};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TimerKey {
-    deadline: TimeValue,
-    key: u64,
-}
-
-struct TimerRuntime {
-    key: u64,
-    wheel: BTreeMap<TimerKey, Waker>,
-}
-
-impl TimerRuntime {
-    const fn new() -> Self {
-        TimerRuntime {
-            key: 0,
-            wheel: BTreeMap::new(),
-        }
-    }
-
-    fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
-        if deadline <= monotonic_time() {
-            return None;
-        }
-
-        let key = TimerKey {
-            deadline,
-            key: self.key,
-        };
-        self.wheel.insert(key, Waker::noop().clone());
-        self.key += 1;
-
-        Some(key)
-    }
-
-    fn poll(&mut self, key: &TimerKey, cx: &mut Context<'_>) -> Poll<()> {
-        if let Some(w) = self.wheel.get_mut(key) {
-            *w = cx.waker().clone();
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    }
-
-    fn cancel(&mut self, key: &TimerKey) {
-        self.wheel.remove(key);
-    }
-
-    #[cfg(feature = "irq")]
-    fn next_deadline(&self) -> Option<TimeValue> {
-        self.wheel.keys().next().map(|key| key.deadline)
-    }
-
-    fn wake(&mut self) {
-        if self.wheel.is_empty() {
-            return;
-        }
-
-        let now = monotonic_time();
-
-        let pending = self.wheel.split_off(&TimerKey {
-            deadline: now,
-            key: u64::MAX,
-        });
-
-        let expired = core::mem::replace(&mut self.wheel, pending);
-        for (_, w) in expired {
-            w.wake();
-        }
-    }
-}
-
-percpu_static! {
-    TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
-}
+static TIMER_RUNTIME: SpinNoIrq<TimerRuntimeCore> = SpinNoIrq::new(TimerRuntimeCore::new());
+static TIMER_SIGNAL: crate::HardIrqSignal = crate::HardIrqSignal::new();
+static TIMER_SERVICE_SPAWNED: AtomicBool = AtomicBool::new(false);
+static TIMER_SERVICE_PENDING: AtomicBool = AtomicBool::new(false);
+static NEXT_DEADLINE_NANOS: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 pub(crate) fn check_timer_events() {
-    // SAFETY: only called in timer::check_events
-    unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+    check_timer_events_at(deadline_to_nanos(monotonic_time()));
 }
 
-#[cfg(feature = "irq")]
+fn check_timer_events_at(now_nanos: u64) {
+    let deadline = NEXT_DEADLINE_NANOS.load(Ordering::Acquire);
+    if deadline != 0 && deadline <= now_nanos && !TIMER_SERVICE_PENDING.swap(true, Ordering::AcqRel)
+    {
+        TIMER_SIGNAL.notify_irq();
+    }
+}
+
 pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
-    with_current(|r| r.next_deadline())
+    if TIMER_SERVICE_PENDING.load(Ordering::Acquire) {
+        return None;
+    }
+    let deadline = NEXT_DEADLINE_NANOS.load(Ordering::Acquire);
+    (deadline != 0).then(|| TimeValue::from_nanos(deadline))
 }
 
-fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    // FIXME: optimize `ax-percpu` crate! should disable irq and provide more apis
-    let _g = ax_kernel_guard::NoPreemptIrqSave::new();
-    f(unsafe { TIMER_RUNTIME.current_ref_mut_raw() })
+fn with_runtime<R>(f: impl FnOnce(&mut TimerRuntimeCore) -> R) -> R {
+    f(&mut TIMER_RUNTIME.lock())
+}
+
+fn deadline_to_nanos(deadline: TimeValue) -> u64 {
+    deadline.as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn update_next_deadline(runtime: &TimerRuntimeCore) {
+    let deadline = runtime.next_deadline_nanos().unwrap_or(0);
+    NEXT_DEADLINE_NANOS.store(deadline, Ordering::Release);
+}
+
+fn ensure_timer_service_spawned() {
+    if TIMER_SERVICE_SPAWNED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    crate::spawn_raw(
+        || loop {
+            TIMER_SIGNAL.wait();
+            drain_expired_timers();
+        },
+        String::from("future-timer"),
+        crate::default_task_stack_size(),
+    );
+}
+
+fn drain_expired_timers() {
+    loop {
+        TIMER_SERVICE_PENDING.store(false, Ordering::Release);
+        let now = monotonic_time();
+        let now_nanos = deadline_to_nanos(now);
+        let expired = with_runtime(|runtime| {
+            let expired = runtime.take_expired(now_nanos);
+            update_next_deadline(runtime);
+            expired
+        });
+        if expired.is_empty() {
+            break;
+        }
+        for waker in expired {
+            waker.wake();
+        }
+    }
+    if let Some(deadline) = next_timer_deadline() {
+        if deadline <= monotonic_time() {
+            TIMER_SIGNAL.notify();
+        } else {
+            crate::timers::maybe_reprogram_timer(deadline);
+        }
+    }
 }
 
 /// Future returned by `sleep` and `sleep_until`.
@@ -110,13 +105,16 @@ impl Future for TimerFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_current(|r| r.poll(&self.0, cx))
+        with_runtime(|r| r.poll(&self.0, cx.waker()))
     }
 }
 
 impl Drop for TimerFuture {
     fn drop(&mut self) {
-        with_current(|r| r.cancel(&self.0));
+        with_runtime(|runtime| {
+            runtime.cancel(&self.0);
+            update_next_deadline(runtime);
+        });
     }
 }
 
@@ -127,9 +125,15 @@ pub async fn sleep(duration: Duration) {
 
 /// Waits until the monotonic `deadline` is reached.
 pub async fn sleep_until(deadline: TimeValue) {
-    let key = with_current(|r| r.add(deadline));
+    ensure_timer_service_spawned();
+    let deadline_nanos = deadline_to_nanos(deadline);
+    let now_nanos = deadline_to_nanos(monotonic_time());
+    let key = with_runtime(|runtime| {
+        let key = runtime.add(deadline_nanos, now_nanos);
+        update_next_deadline(runtime);
+        key
+    });
     if let Some(key) = key {
-        #[cfg(feature = "irq")]
         crate::timers::maybe_reprogram_timer(deadline);
         TimerFuture(key).await;
     }
@@ -197,5 +201,65 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
         now_mono
             .checked_add(deadline - now_wall)
             .unwrap_or(TimeValue::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
+
+    use super::*;
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn timer_runtime_takes_expired_wakers_without_waking_under_lock() {
+        let mut runtime = TimerRuntimeCore::new();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+
+        let deadline = monotonic_time() + Duration::from_millis(1);
+        let deadline_nanos = deadline_to_nanos(deadline);
+        let key = runtime
+            .add(deadline_nanos, deadline_to_nanos(monotonic_time()))
+            .expect("future timer should be armed");
+        assert!(runtime.poll(&key, &waker).is_pending());
+
+        let expired = runtime.take_expired(deadline_to_nanos(deadline + Duration::from_millis(1)));
+        assert_eq!(counter.0.load(Ordering::Acquire), 0);
+        assert_eq!(expired.len(), 1);
+
+        for waker in expired {
+            waker.wake();
+        }
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn check_timer_events_marks_service_pending_without_losing_deadline() {
+        let expired = 1;
+        NEXT_DEADLINE_NANOS.store(expired, Ordering::Release);
+        TIMER_SERVICE_PENDING.store(false, Ordering::Release);
+
+        check_timer_events_at(expired);
+
+        assert_eq!(NEXT_DEADLINE_NANOS.load(Ordering::Acquire), expired);
+        assert!(TIMER_SERVICE_PENDING.load(Ordering::Acquire));
+        let _ = TIMER_SIGNAL.drain();
+        TIMER_SERVICE_PENDING.store(false, Ordering::Release);
     }
 }

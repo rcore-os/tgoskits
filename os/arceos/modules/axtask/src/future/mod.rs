@@ -1,18 +1,12 @@
 //! Future support.
 
-use alloc::{sync::Arc, task::Wake};
-use core::{
-    fmt,
-    future::poll_fn,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use core::{fmt, future::poll_fn, pin::pin, task::Poll};
 
 use ax_errno::AxError;
 use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
+use bare_task::{BlockOnTaskWake, BlockOnThreadWaker};
 
-use crate::{AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue};
+use crate::{TaskWaker, current, current_run_queue};
 
 mod poll;
 pub use poll::*;
@@ -20,31 +14,16 @@ pub use poll::*;
 mod time;
 pub use time::*;
 
-struct AxWaker {
-    task: WeakAxTaskRef,
-    woke: SpinNoIrq<bool>,
-}
+#[derive(Clone)]
+struct AxBlockOnWake(TaskWaker);
 
-impl AxWaker {
-    fn new(task: &AxTaskRef) -> Arc<Self> {
-        Arc::new(AxWaker {
-            task: Arc::downgrade(task),
-            woke: SpinNoIrq::new(false),
-        })
-    }
-}
-
-impl Wake for AxWaker {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
+impl BlockOnTaskWake for AxBlockOnWake {
+    fn wake_task(&self) {
+        let _ = self.0.wake(0);
     }
 
-    fn wake_by_ref(self: &Arc<Self>) {
-        if let Some(task) = self.task.upgrade() {
-            let mut rq = select_wake_run_queue::<NoPreemptIrqSave>(&task);
-            *self.woke.lock() = true;
-            rq.unblock_task(task, true);
-        }
+    fn wake_seq(&self) -> u64 {
+        self.0.seq()
     }
 }
 
@@ -64,11 +43,12 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
     let curr = current();
     let task = curr.clone();
 
-    let axwaker = AxWaker::new(&task);
-    let waker = Waker::from(axwaker.clone());
-    let mut cx = Context::from_waker(&waker);
+    let axwaker = BlockOnThreadWaker::new(AxBlockOnWake(TaskWaker::new(task.clone())));
+    let waker = axwaker.waker();
+    let mut cx = core::task::Context::from_waker(&waker);
 
     loop {
+        let observed_irq_seq = axwaker.wake_seq();
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
                 // Before sleeping, check if a signal has arrived. If so,
@@ -82,15 +62,17 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
                     continue;
                 }
 
+                if axwaker.should_repoll(observed_irq_seq) {
+                    crate::yield_now();
+                    continue;
+                }
+
                 let mut rq = current_run_queue::<NoPreemptIrqSave>();
-                let mut woke = axwaker.woke.lock();
-                if !*woke {
-                    rq.future_blocked_resched(woke);
-                } else {
-                    *woke = false;
-                    drop(woke);
+                if axwaker.should_repoll(observed_irq_seq) {
                     drop(rq);
                     crate::yield_now();
+                } else {
+                    rq.future_blocked_resched(|| axwaker.should_repoll(observed_irq_seq));
                 }
             }
             Poll::Ready(output) => break output,

@@ -29,8 +29,7 @@ pub fn exit(exit_code: i32) -> ! {
 
 /// Current thread is going to sleep for the given duration.
 ///
-/// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
-/// instead.
+/// Without `multitask`, this uses the single-task busy-wait sleep path instead.
 #[track_caller]
 pub fn sleep(dur: core::time::Duration) {
     sleep_until(ax_api::time::ax_monotonic_time() + dur);
@@ -39,8 +38,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// Current thread is going to sleep, it will be woken up at the given deadline.
 /// The deadline is measured against the monotonic clock.
 ///
-/// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
-/// instead.
+/// Without `multitask`, this uses the single-task busy-wait sleep path instead.
 #[track_caller]
 pub fn sleep_until(deadline: ax_api::time::AxTimeValue) {
     api::ax_sleep_until(deadline);

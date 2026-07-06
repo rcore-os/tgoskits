@@ -36,14 +36,12 @@ pub trait TimeIf {
     fn epochoffset_nanos() -> u64;
 
     /// Returns the IRQ number for the timer interrupt.
-    #[cfg(feature = "irq")]
     fn irq_num() -> irq_framework::IrqId;
 
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
     /// deadline (in nanoseconds).
-    #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64);
 }
 

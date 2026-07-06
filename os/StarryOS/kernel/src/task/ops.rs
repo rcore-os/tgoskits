@@ -569,9 +569,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let table = futex_table_for_process(&thr.proc_data, &key);
         let guard = table.get(&key);
         if let Some(futex) = guard {
+            // Wake pthread joiners, but do not yield here. The process zombie
+            // state is not published until `process.exit()` below, so yielding
+            // in the middle of exit can leave the parent unable to observe this
+            // task while the exiting thread waits to be scheduled again.
             futex.wq.wake(1, u32::MAX);
         }
-        ax_task::yield_now();
     }
 
     let process = &thr.proc_data.proc;
@@ -630,6 +633,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             wait_parent_tid,
         );
         process.exit();
+        thr.set_exit();
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 use starry_signal::Signo;
@@ -646,6 +650,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
             if let Ok(data) = get_process_data(parent.pid()) {
                 // Child exit state is published before waking waiters.
+                data.child_wait_queue.notify_all(true);
                 unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
             }
         }
@@ -656,6 +661,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             && let Ok(data) = get_process_data(tracer_pid)
         {
             // Child exit state is published before waking waiters.
+            data.child_wait_queue.notify_all(true);
             unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
         }
         // Send pdeathsig to child processes
@@ -686,10 +692,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.release_aspace_slot_if_needed();
     }
     // Thread exit state is published before waking waiters.
+    thr.set_exit();
     unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
-
-    thr.set_exit();
 }
 
 /// Rebinds a task's user-visible TID in [`TASK_TABLE`] from `old_tid` to

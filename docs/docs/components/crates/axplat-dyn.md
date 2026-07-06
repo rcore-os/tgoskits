@@ -28,7 +28,7 @@
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
-| `lib.rs` | crate 根与装配层 | 裸机目标限定、模块导入、无 `irq` 时的空中断入口 |
+| `lib.rs` | crate 根与装配层 | 裸机目标限定、模块导入、平台入口装配 |
 | `boot` | 启动 glue | `#[somehal::entry(Kernel)]`、`#[somehal::secondary_entry]`、`Kernel` 的 `MmioOp` 实现 |
 | `init` | `InitIf` 实现 | trap 初始化、计时器打开、`post_paging()`、后期 IRQ 打开 |
 | `console` | `ConsoleIf` 实现 | 控制台读写、`\n` 到 `\r\n` 的串口兼容转换 |
@@ -167,18 +167,17 @@ flowchart TD
 - 通过 `build.rs + link.ld` 生成适配当前内核镜像的 `axplat.x` 链接脚本扩展。
 - 作为 `ax-hal` 的固定平台实现依赖接入这一动态平台路径。
 - 让 `ax-driver` 复用其设备探测与动态块设备封装。
-- 通过 `hv`、`uspace`、`smp`、`irq` feature 把能力向 `somehal` 和 `axplat` 两侧传播。
+- 通过 `hv`、`uspace`、`smp` feature 把能力向 `somehal` 和 `axplat` 两侧传播；IRQ 接口默认存在。
 
 ### 2.2 feature 行为
 
 | Feature | 作用 |
 | --- | --- |
 | `smp` | 透传到 `ax-plat/smp`，启用次核入口、次核初始化和 `cpu_boot()` 路径 |
-| `irq` | 透传到 `ax-plat/irq`，编译 `irq.rs` 并启用 timer IRQ 相关接口 |
 | `uspace` | 透传到 `somehal/uspace`，说明该路径允许 `somehal` 切换到含用户态支持的构建 |
 | `hv` | 透传到 `somehal/hv` 与 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
 
-需要注意，默认 feature 就是 `["smp", "irq"]`，这意味着该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
+需要注意，默认 feature 启用 `smp`，IRQ 接口则作为平台基础能力默认编译；该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
 
 ### 2.3 典型使用场景
 

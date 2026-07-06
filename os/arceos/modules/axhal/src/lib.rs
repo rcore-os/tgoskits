@@ -16,7 +16,6 @@
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fp-simd`: Enable floating-point and SIMD support.
 //! - `paging`: Enable page table manipulation.
-//! - `irq`: Enable interrupt handling support.
 //! - `tls`: Enable kernel space thread-local storage support.
 //! - `rtc`: Enable real-time clock support.
 //! - `uspace`: Enable user space support.
@@ -25,6 +24,7 @@
 //! [cargo test]: https://doc.rust-lang.org/cargo/guide/tests.html
 
 #![no_std]
+#![feature(linkage)]
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -53,7 +53,6 @@ pub mod time;
 #[cfg(feature = "tls")]
 pub mod tls;
 
-#[cfg(feature = "irq")]
 pub mod irq;
 
 #[cfg(feature = "paging")]
@@ -62,11 +61,10 @@ pub mod paging;
 /// Console input and output.
 pub mod console {
     pub use ax_plat::console::{
-        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output,
-        device_id, read_bytes, write_bytes, write_text_bytes,
+        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIrqEvent,
+        claim_runtime_output, device_id, handle_irq, irq_num, read_bytes, set_input_irq_enabled,
+        write_bytes, write_text_bytes,
     };
-    #[cfg(feature = "irq")]
-    pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
 }
 
 /// CPU power management.

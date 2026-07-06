@@ -2,11 +2,11 @@ pub use crate::block::runtime::*;
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+    use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
     use core::{
         any::Any,
         cell::Cell,
-        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     };
     use std::{
         collections::HashMap,
@@ -15,17 +15,24 @@ mod tests {
 
     use ax_errno::AxError;
     use dma_api::{DeviceDma, DmaDomainId};
+    use irq_framework::{HwIrq, IrqContext, IrqDomainId, IrqId};
     use rdif_block::{
-        BlkError, CompletionHint, DeviceInfo, DriverGeneric, IQueue, IQueueOwned, Interface,
-        OwnedRequest, PollError, QueueHandle, QueueInfo, QueueLimits, Request, RequestId,
-        RequestOp, RequestPoll, RequestStatus, SubmitError,
+        BlkError, CompletionHint, DeviceInfo, DriverGeneric, Event as RdifIrqEvent, IQueue,
+        IQueueOwned, IdList, Interface, IrqHandler, IrqSourceInfo, OwnedRequest, PollError,
+        QueueHandle, QueueInfo, QueueLimits, Request, RequestId, RequestOp, RequestPoll,
+        RequestStatus, SubmitError,
     };
 
     use super::*;
-    use crate::os::{BlockTaskOps, install_dma_op, set_task_ops, sync::IrqMutex as SpinNoIrq};
+    use crate::os::{
+        BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, install_dma_op,
+        set_irq_registrar, set_task_ops, sync::IrqMutex as SpinNoIrq,
+    };
 
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;
+    static TEST_IRQ_REGISTRAR: TestIrqRegistrar = TestIrqRegistrar;
     static NEXT_TEST_TASK_ID: AtomicU64 = AtomicU64::new(1_000_000);
+    static TEST_SPAWNS: AtomicUsize = AtomicUsize::new(0);
     static TEST_TIMEOUT_WAITS: AtomicUsize = AtomicUsize::new(0);
     static TEST_TASKS: OnceLock<StdMutex<HashMap<u64, StdArc<TestTaskState>>>> = OnceLock::new();
     static TEST_TASK_LOCK: StdMutex<()> = StdMutex::new(());
@@ -136,6 +143,49 @@ mod tests {
 
         fn wait_for_drain_notification(&self) {
             self.task_wait();
+        }
+
+        fn spawn(&self, _name: String, _f: Box<dyn FnOnce() + Send + 'static>) {
+            TEST_SPAWNS.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct TestIrqRegistrar;
+
+    struct TestIrqRegistration;
+
+    impl BlockIrqRegistration for TestIrqRegistration {}
+
+    impl BlockIrqRegistrar for TestIrqRegistrar {
+        fn register_shared(
+            &self,
+            _name: String,
+            _irq: IrqId,
+            _action: Box<dyn FnMut(IrqContext) -> BlockIrqOutcome + Send + 'static>,
+        ) -> Result<Box<dyn BlockIrqRegistration>, AxError> {
+            Ok(Box::new(TestIrqRegistration))
+        }
+    }
+
+    struct IrqEnableTrace {
+        enabled: AtomicBool,
+        enable_seen_spawns: AtomicUsize,
+    }
+
+    impl IrqEnableTrace {
+        fn new() -> Self {
+            Self {
+                enabled: AtomicBool::new(false),
+                enable_seen_spawns: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    struct TestIrqHandler;
+
+    impl IrqHandler for TestIrqHandler {
+        fn handle_irq(&mut self) -> RdifIrqEvent {
+            RdifIrqEvent::from_queue_bits(1)
         }
     }
 
@@ -383,7 +433,9 @@ mod tests {
     #[test]
     fn request_completes_before_wait_token_registration() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
         assert!(table.complete(key(1), Ok(())).is_none());
 
         assert_eq!(table.register_waiter_task(key(1), 7), Some(Ok(())));
@@ -396,7 +448,9 @@ mod tests {
     #[test]
     fn request_completes_after_waiter_task_registration() {
         let mut table = PendingTable::new();
-        let key = table.insert_submitted(0, RequestId::new(2), None).unwrap();
+        let key = table
+            .insert_submitted(0, RequestId::new(2), None, None)
+            .unwrap();
         assert_eq!(table.register_waiter_task(key, 7), None);
 
         let wake = table.complete(key, Ok(())).unwrap();
@@ -410,9 +464,13 @@ mod tests {
     #[test]
     fn runtime_request_key_survives_driver_request_id_reuse() {
         let mut table = PendingTable::new();
-        let first = table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        let first = table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
         assert!(table.complete(first, Ok(())).is_none());
-        let second = table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        let second = table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_ne!(first, second);
         assert_eq!(
@@ -426,10 +484,12 @@ mod tests {
     #[test]
     fn pending_table_rejects_inflight_driver_request_id_reuse() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(
-            table.insert_submitted(0, RequestId::new(1), None),
+            table.insert_submitted(0, RequestId::new(1), None, None),
             Err(BlkError::InvalidRequest)
         );
     }
@@ -439,11 +499,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -460,15 +520,54 @@ mod tests {
     }
 
     #[test]
+    fn token_hint_wakes_only_matching_generation() {
+        let pending = SpinNoIrq::new(PendingTable::new());
+        let stale =
+            rdif_block::RequestToken::new(RequestId::new(1), rdif_block::RequestGeneration::new(1));
+        let current =
+            rdif_block::RequestToken::new(RequestId::new(1), rdif_block::RequestGeneration::new(2));
+        let key = pending
+            .lock()
+            .insert_submitted(0, RequestId::new(1), Some(current), None)
+            .unwrap();
+        pending.lock().register_waiter_task(key, 1);
+
+        let mut poller = Poller::default();
+        poller.complete(driver_key(1));
+        let mut drain = CompletionDrain::new(&pending, &mut poller);
+
+        assert_eq!(
+            drain.drain_hint(CompletionHint::Token {
+                queue_id: 0,
+                token: stale,
+            }),
+            0
+        );
+        assert_eq!(pending.lock().result(key), None);
+
+        assert_eq!(
+            drain.drain_hint(CompletionHint::Token {
+                queue_id: 0,
+                token: current,
+            }),
+            1
+        );
+        assert_eq!(
+            pending.lock().take_completed(key).map(|(result, _)| result),
+            Some(Ok(()))
+        );
+    }
+
+    #[test]
     fn queue_hint_scans_all_pending_requests_on_queue() {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -485,11 +584,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -511,15 +610,15 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(2), None)
+            .insert_submitted(0, RequestId::new(2), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(3), None)
+            .insert_submitted(0, RequestId::new(3), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -548,7 +647,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 4);
 
@@ -572,11 +671,11 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending
             .lock()
-            .insert_submitted(1, RequestId::new(7), None)
+            .insert_submitted(1, RequestId::new(7), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key(1), 1);
         pending.lock().register_waiter_task(key(2), 2);
@@ -589,6 +688,7 @@ mod tests {
 
         assert_eq!(
             drain.drain_events(DrainEvents {
+                seq: 1,
                 queue_bits: 0b11,
                 hints: rdif_block::CompletionList::new(),
             }),
@@ -603,7 +703,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         assert!(pending.lock().complete(key(1), Ok(())).is_none());
 
@@ -627,7 +727,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         assert!(pending.lock().complete(key(1), Ok(())).is_none());
 
@@ -655,7 +755,9 @@ mod tests {
     #[test]
     fn pending_table_allows_only_one_active_poll_per_request() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(table.begin_poll(key(1)), PollClaim::Claimed);
         assert_eq!(table.begin_poll(key(1)), PollClaim::AlreadyPolling);
@@ -667,7 +769,9 @@ mod tests {
     #[test]
     fn completed_request_cannot_reenter_poll_after_submit_side_completion() {
         let mut table = PendingTable::new();
-        table.insert_submitted(0, RequestId::new(1), None).unwrap();
+        table
+            .insert_submitted(0, RequestId::new(1), None, None)
+            .unwrap();
 
         assert_eq!(table.begin_poll(key(1)), PollClaim::Claimed);
         assert!(table.complete(key(1), Ok(())).is_none());
@@ -715,7 +819,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(1), None)
+            .insert_submitted(0, RequestId::new(1), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 1);
 
@@ -745,7 +849,7 @@ mod tests {
         let pending = SpinNoIrq::new(PendingTable::new());
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(3), None)
+            .insert_submitted(0, RequestId::new(3), None, None)
             .unwrap();
         pending.lock().register_waiter_task(key, 1);
 
@@ -784,7 +888,12 @@ mod tests {
                 .unwrap();
         let key = pending
             .lock()
-            .insert_submitted(0, RequestId::new(4), Some(RuntimeDmaBuffer::Legacy(guard)))
+            .insert_submitted(
+                0,
+                RequestId::new(4),
+                None,
+                Some(RuntimeDmaBuffer::Legacy(guard)),
+            )
             .unwrap();
         pending.lock().abandon(key);
         assert_eq!(
@@ -1135,6 +1244,68 @@ mod tests {
         }
     }
 
+    struct IrqMockInterface {
+        name: &'static str,
+        queue: Option<Box<dyn IQueue>>,
+        info: QueueInfo,
+        trace: Arc<IrqEnableTrace>,
+    }
+
+    impl IrqMockInterface {
+        fn new(queue: MockQueue, trace: Arc<IrqEnableTrace>) -> Self {
+            let info = queue.info();
+            Self {
+                name: "irq-mock-rdif",
+                queue: Some(Box::new(queue)),
+                info,
+                trace,
+            }
+        }
+    }
+
+    impl DriverGeneric for IrqMockInterface {
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
+
+    impl Interface for IrqMockInterface {
+        fn device_info(&self) -> DeviceInfo {
+            self.info.device
+        }
+
+        fn queue_limits(&self) -> QueueLimits {
+            self.info.limits
+        }
+
+        fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
+            self.queue.take()
+        }
+
+        fn enable_irq(&self) {
+            self.trace
+                .enable_seen_spawns
+                .store(TEST_SPAWNS.load(Ordering::Acquire), Ordering::Release);
+            self.trace.enabled.store(true, Ordering::Release);
+        }
+
+        fn disable_irq(&self) {
+            self.trace.enabled.store(false, Ordering::Release);
+        }
+
+        fn is_irq_enabled(&self) -> bool {
+            self.trace.enabled.load(Ordering::Acquire)
+        }
+
+        fn irq_sources(&self) -> Vec<IrqSourceInfo> {
+            vec![IrqSourceInfo::legacy(IdList::from_bits(1))]
+        }
+
+        fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+            (source_id == 0).then(|| Box::new(TestIrqHandler) as Box<dyn IrqHandler>)
+        }
+    }
+
     struct MockOwnedQueue {
         info: QueueInfo,
         next: usize,
@@ -1284,6 +1455,33 @@ mod tests {
         runtime.devices()[0].read_blocks(7, &mut buf).unwrap();
 
         assert_eq!(buf[0], 7);
+    }
+
+    #[test]
+    fn install_enables_irq_after_drain_task_is_spawned() {
+        let _guard = test_task_guard();
+        install_test_task_ops();
+        set_irq_registrar(&TEST_IRQ_REGISTRAR);
+        TEST_SPAWNS.store(0, Ordering::Release);
+        let trace = Arc::new(IrqEnableTrace::new());
+
+        let runtime = BlockRuntime::install_from_rdif_devices([RdifBlockDevice::new(
+            "irq-mock-rdif",
+            Some(IrqId::new(IrqDomainId(0), HwIrq(32))),
+            Box::new(IrqMockInterface::new(MockQueue::new(), trace.clone())),
+        )]);
+
+        assert_eq!(runtime.devices().len(), 1);
+        assert!(trace.enabled.load(Ordering::Acquire));
+        assert_eq!(
+            trace.enable_seen_spawns.load(Ordering::Acquire),
+            1,
+            "IRQ-driven mode must not be enabled before the block drain task is spawned",
+        );
+        assert_eq!(
+            runtime.devices()[0].completion_mode(),
+            BlockCompletionMode::IrqDriven,
+        );
     }
 
     #[test]

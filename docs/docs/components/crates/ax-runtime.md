@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 内核模块
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`ax-driver`、`buddy-slab`、`display`、`dma`、`fs`、`fs-ng`、`input`、`ipi`、`irq` 等（另有 9 个 feature） 控制编译期能力装配。
+- feature 视角：主要通过 `alloc`、`ax-driver`、`buddy-slab`、`display`、`dma`、`fs`、`fs-ng`、`input`、`ipi` 等 feature 控制编译期能力装配；IRQ 初始化与调度闭环默认存在。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `LogIfImpl`、`AddrTranslatorImpl`、`KlibImpl`、`LOGO`、`INITED_CPUS`、`TRANSLATOR`、`PERIODIC_INTERVAL_NANOS`。
 
 ### 模块结构

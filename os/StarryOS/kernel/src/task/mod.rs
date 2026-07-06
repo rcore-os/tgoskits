@@ -637,6 +637,8 @@ pub struct ProcessData {
 
     /// The child exit wait event
     pub child_exit_event: Arc<PollSet>,
+    /// Scheduler wait queue used by waitpid/waitid.
+    pub child_wait_queue: ax_task::WaitQueue,
     /// Self exit event
     pub exit_event: Arc<PollSet>,
     /// Woken every time a thread in this process exits. Used by a thread
@@ -834,6 +836,7 @@ impl ProcessData {
             rlim: RwLock::default(),
 
             child_exit_event: Arc::default(),
+            child_wait_queue: ax_task::WaitQueue::new(),
             exit_event: Arc::default(),
             thread_exit_event: Arc::default(),
             exec_lock: Mutex::new(()),

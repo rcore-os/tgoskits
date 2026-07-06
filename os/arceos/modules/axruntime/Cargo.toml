@@ -17,18 +17,9 @@ ipi = ["dep:ax-ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
-wake-ipi = ["irq", "ax-hal/ipi"]
-irq = [
-  "ax-hal/irq",
-  "ax-task?/irq",
-  "dep:ax-kspin",
-  "dep:ax-percpu",
-  "dep:axklib",
-  "dep:rdif-intc",
-  "ax-driver/irq",
-]
+wake-ipi = ["ax-hal/ipi", "ax-task?/irq-wake-ipi"]
 multitask = ["ax-task/multitask"]
-paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
+paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task?/smp"]
 stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
@@ -37,7 +28,6 @@ tls = ["ax-hal/tls", "ax-task?/tls"]
 
 display = ["dep:ax-display", "ax-driver/display"]
 fs = [
-  "irq",
   "multitask",
   "dma",
   "dep:ax-errno",
@@ -45,7 +35,6 @@ fs = [
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
-  "dep:axklib",
   "dep:dma-api",
   "dep:rdif-block",
   "ax-driver/block",
@@ -53,7 +42,7 @@ fs = [
 fs-ext4 = ["fs", "ax-fs-ng/ext4"]
 fs-fat = ["fs", "ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-driver/input"]
-net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+net = ["dep:ax-net", "dep:rd-net", "dep:spin", "ax-driver/net"]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
 # the ArceOS runtime glue (the driver cores are OS-independent) before probing.
 aic8800-wifi = [
@@ -79,17 +68,17 @@ axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}
 ax-ipi = {workspace = true, optional = true}
-ax-kspin = {workspace = true, optional = true}
+ax-kspin = {workspace = true}
 ax-lazyinit = {workspace = true}
 ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
-ax-percpu = {workspace = true, optional = true}
+ax-percpu = {workspace = true}
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}
 axbacktrace = {workspace = true}
-axklib = {workspace = true, optional = true}
+axklib = {workspace = true}
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
@@ -97,7 +86,7 @@ dma-api = { workspace = true, optional = true }
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
-rdif-intc = { workspace = true, optional = true }
+rdif-intc.workspace = true
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}

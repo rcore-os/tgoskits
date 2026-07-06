@@ -1,13 +1,13 @@
 use core::{
     any::Any,
     mem::{MaybeUninit, size_of},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use ax_runtime::hal::cpu::asm::user_copy;
-use ax_task::WaitQueue;
+use ax_task::{HardIrqSignal, WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use k230_kpu::{
     CommandRange, KPU_CFG_PADDR, KPU_CFG_SIZE, KPU_INFO_F_FAKE_OUTPUT, KPU_INFO_F_FDT,
@@ -29,6 +29,8 @@ const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 // K230 exposes one KPU instance. If a future platform exposes more instances,
 // move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+static KPU_IRQ_NOTIFY: HardIrqSignal = HardIrqSignal::new();
+static KPU_IRQ_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 
 pub struct KpuDevice {
@@ -85,6 +87,7 @@ impl KpuDevice {
             return Ok(());
         }
         if self.irq_registration.is_some() {
+            ensure_kpu_irq_worker();
             let timed_out =
                 KPU_DONE_WQ.wait_timeout_until(KPU_IRQ_WAIT_TIMEOUT, || self.hw.is_done());
             if !timed_out {
@@ -448,8 +451,22 @@ fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration>
 
 fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
-    KPU_DONE_WQ.notify_all_from_irq();
+    KPU_IRQ_NOTIFY.notify_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+fn ensure_kpu_irq_worker() {
+    if KPU_IRQ_WORKER_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    ax_task::spawn_with_name(
+        || loop {
+            KPU_IRQ_NOTIFY.wait();
+            KPU_DONE_WQ.notify_all_deferred();
+        },
+        "kpu-irq".into(),
+    );
 }
 
 fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {

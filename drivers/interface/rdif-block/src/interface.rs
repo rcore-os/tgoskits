@@ -2,7 +2,8 @@ use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
     BlkError, DeviceInfo, DriverGeneric, IrqHandler, IrqSourceList, OwnedRequest, PollError,
-    QueueInfo, QueueLimits, Request, RequestId, RequestPoll, RequestStatus, SubmitError,
+    QueueInfo, QueueLimits, Request, RequestId, RequestPoll, RequestStatus, RequestToken,
+    SubmitError,
 };
 
 pub type BInterface = Box<dyn Interface>;
@@ -50,6 +51,11 @@ pub trait IQueueOwned: Send + 'static {
 
     fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError>;
 
+    fn request_token(&self, request: RequestId) -> Option<RequestToken> {
+        let _ = request;
+        None
+    }
+
     fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError>;
 
     fn cancel_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError>;
@@ -85,6 +91,13 @@ impl QueueHandle {
             .as_mut()
             .expect("owned queue handle must contain queue")
             .submit_request(request)
+    }
+
+    pub fn request_token(&self, request: RequestId) -> Option<RequestToken> {
+        self.queue
+            .as_ref()
+            .expect("owned queue handle must contain queue")
+            .request_token(request)
     }
 
     pub fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
@@ -129,6 +142,11 @@ pub unsafe trait IQueue: Send + 'static {
     fn info(&self) -> QueueInfo;
 
     fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError>;
+
+    fn request_token(&self, request: RequestId) -> Option<RequestToken> {
+        let _ = request;
+        None
+    }
 
     fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError>;
 

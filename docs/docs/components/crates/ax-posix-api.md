@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 公共 API/feature 聚合层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`epoll`、`fd`、`fs`、`irq`、`multitask`、`net`、`pipe`、`select`、`smp` 控制编译期能力装配。
+- feature 视角：主要通过 `alloc`、`epoll`、`fd`、`fs`、`multitask`、`net`、`pipe`、`select`、`smp` 控制编译期能力装配；IRQ 作为基础能力默认存在。
 - 关键数据结构：该 crate 暴露的数据结构较少，关键复杂度主要体现在模块协作、trait 约束或初始化时序。
 
 ### 模块结构

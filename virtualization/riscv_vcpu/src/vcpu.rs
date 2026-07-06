@@ -38,8 +38,13 @@ use rustsbi::{Forward, RustSBI};
 use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
 
 use crate::{
-    EID_HVC, RISCVVCpuCreateConfig, consts::traps::irq::S_EXT, guest_mem, regs::*, sbi_console::*,
-    trap::Exception, vpmu::VirtualPmu,
+    EID_HVC, RISCVVCpuCreateConfig,
+    consts::traps::irq::{S_EXT, S_SOFT},
+    guest_mem,
+    regs::*,
+    sbi_console::*,
+    trap::Exception,
+    vpmu::VirtualPmu,
 };
 
 unsafe extern "C" {
@@ -680,6 +685,14 @@ impl RISCVVCpu {
                 }
 
                 Ok(VmExit::Nothing)
+            }
+            Trap::Interrupt(Interrupt::SupervisorSoft) => {
+                // This is a host software interrupt, commonly used for IPI and
+                // scheduler wakeups. Route it through the normal host IRQ path
+                // instead of treating it as a guest trap.
+                Ok(VmExit::ExternalInterrupt {
+                    vector: S_SOFT as _,
+                })
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
                 // 9 == Interrupt::SupervisorExternal

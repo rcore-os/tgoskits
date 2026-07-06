@@ -9,9 +9,6 @@
 //! - `multitask`: Enable multi-task support. If it's enabled, complex task
 //!   management and scheduling is used, as well as more task-related APIs.
 //!   Otherwise, only a few APIs with naive implementation is available.
-//! - `irq`: Interrupts are enabled. If this feature is enabled, timer-based
-//!   APIs can be used, such as [`sleep`], [`sleep_until`], and
-//!   [`WaitQueue::wait_timeout`].
 //! - `preempt`: Enable preemptive scheduling.
 //! - `sched-fifo`: Use the [FIFO cooperative scheduler][1]. It also enables the
 //!   `multitask` feature if it is enabled. This feature is enabled by default,
@@ -22,9 +19,9 @@
 //!   the `multitask` and `preempt` features if it is enabled.
 //! - `host-test`: Use host-safe fallbacks for unit tests.
 //!
-//! [1]: ax_sched::FifoScheduler
-//! [2]: ax_sched::RRScheduler
-//! [3]: ax_sched::CFScheduler
+//! [1]: bare_task::FifoScheduler
+//! [2]: bare_task::RRScheduler
+//! [3]: bare_task::CFScheduler
 
 #![cfg_attr(any(not(test), target_os = "none"), no_std)]
 #![cfg_attr(all(test, target_os = "none"), no_main)]
@@ -76,11 +73,12 @@ cfg_if::cfg_if! {
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]
         mod sched_tracepoint;
-        #[cfg(feature = "irq")]
         mod irq_notify;
+        mod irq_wake;
+        mod bare_adapter;
+        pub mod local;
         mod wait_queue;
 
-        #[cfg(feature = "irq")]
         mod timers;
 
         #[cfg(feature = "multitask")]
@@ -88,8 +86,17 @@ cfg_if::cfg_if! {
 
         #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
         pub use self::api::*;
-        #[cfg(feature = "irq")]
-        pub use self::irq_notify::IrqNotify;
+        pub use self::irq_notify::HardIrqSignal;
+        pub mod wake {
+            pub use super::irq_wake::{
+                HardIrqWaker, TaskWaker, WakeBits, WakeResult, WakeSeq, current_hard_irq_waker,
+                current_task_waker, try_current_task_waker,
+            };
+        }
+        pub use self::irq_wake::{
+            HardIrqWaker, TaskWaker, WakeBits, WakeResult, WakeSeq, current_hard_irq_waker,
+            current_task_waker, drain_irq_wake_queue_current_cpu, try_current_task_waker,
+        };
         pub use self::api::{sleep, sleep_until, yield_now};
         #[cfg(feature = "tracepoint-hooks")]
         pub use self::sched_tracepoint::SchedTracepoint;

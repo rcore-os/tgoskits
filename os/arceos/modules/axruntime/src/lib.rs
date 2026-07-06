@@ -20,7 +20,6 @@
 //! # Cargo Features
 //!
 //! - `paging`: Enable page table manipulation support.
-//! - `irq`: Enable interrupt handling support.
 //! - `multitask`: Enable multi-threading support.
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fs`: Enable filesystem support.
@@ -50,12 +49,10 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
-#[cfg(any(feature = "irq", feature = "paging"))]
 mod klib;
 
 mod devices;
 mod fs;
-#[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
 
@@ -81,7 +78,6 @@ pub(crate) fn runtime_default_task_stack_size() -> usize {
     build_info::TASK_STACK_SIZE
 }
 
-#[cfg(feature = "irq")]
 fn ticks_per_sec() -> u64 {
     build_info::TICKS_PER_SEC as u64
 }
@@ -277,11 +273,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "ipi")]
     {
         ax_ipi::init();
-        #[cfg(feature = "irq")]
         ax_hal::irq::set_run_on_cpu_sync(ax_ipi_run_on_cpu_sync);
     }
 
-    #[cfg(feature = "irq")]
     {
         info!("Initialize interrupt handlers...");
         init_interrupt();
@@ -335,7 +329,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "irq", feature = "ipi"))]
+    #[cfg(feature = "ipi")]
     ax_ipi::wait_for_all_cpus_ready();
 
     ax_app_entry();
@@ -396,7 +390,6 @@ fn init_allocator() {
     }
 }
 
-#[cfg(feature = "irq")]
 fn init_interrupt() {
     init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
@@ -407,7 +400,6 @@ fn init_interrupt() {
     ax_ipi::mark_current_cpu_ready();
 }
 
-#[cfg(feature = "irq")]
 pub(crate) fn init_percpu_irq(cpu_id: usize) {
     ax_hal::irq::cpu_online(cpu_id).expect("failed to mark CPU online for IRQ framework");
     ax_hal::irq::init_common_irq_handler();
@@ -425,7 +417,7 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
     init_timer();
 }
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 unsafe fn ax_ipi_run_on_cpu_sync(
     cpu: usize,
     f: unsafe fn(*mut ()),
@@ -434,16 +426,13 @@ unsafe fn ax_ipi_run_on_cpu_sync(
     unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, f, arg) }
 }
 
-#[cfg(feature = "irq")]
 fn periodic_interval_nanos() -> u64 {
     ax_hal::time::NANOS_PER_SEC / ticks_per_sec()
 }
 
-#[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
 static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
-#[cfg(feature = "irq")]
 fn init_timer() {
     ax_hal::time::enable_timer_irq();
     let now_ns = ax_hal::time::monotonic_time_nanos();
@@ -454,7 +443,6 @@ fn init_timer() {
     program_next_timer();
 }
 
-#[cfg(feature = "irq")]
 fn advance_periodic_timer(now_ns: u64) -> bool {
     let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
     if deadline == 0 {
@@ -478,7 +466,6 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
     true
 }
 
-#[cfg(feature = "irq")]
 fn program_next_timer() {
     let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
     if deadline == 0 {
@@ -496,7 +483,6 @@ fn program_next_timer() {
     ax_task::note_programmed_timer_deadline_nanos(deadline);
 }
 
-#[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
     #[cfg(feature = "multitask")]
@@ -509,13 +495,13 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", feature = "ipi"))]
+#[cfg(feature = "ipi")]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::ipi_handler();
     ax_hal::irq::IrqReturn::Handled
 }
 
-#[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
+#[cfg(all(feature = "wake-ipi", not(feature = "ipi")))]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }

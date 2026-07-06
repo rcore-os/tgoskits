@@ -1,13 +1,13 @@
-#[cfg(feature = "irq")]
-use alloc::sync::Arc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
-use core::alloc::Layout;
-#[cfg(feature = "irq")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    alloc::Layout,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
@@ -31,7 +31,6 @@ pub struct Block {
     name: String,
     info: BindingInfo,
     irq_enabled: bool,
-    #[cfg(feature = "irq")]
     irq_handler: Option<BlockIrqHandler>,
     interface: Box<dyn Interface>,
     queues: SpinNoIrq<BlockQueues>,
@@ -40,7 +39,6 @@ pub struct Block {
 struct BlockQueues {
     queue: RuntimeQueue,
     pool: BlockBufferPool,
-    #[cfg(feature = "irq")]
     irq_events: Arc<BlockIrqEvents>,
 }
 
@@ -96,13 +94,11 @@ impl BoundDevice for PlatformBlockDevice {
     }
 }
 
-#[cfg(feature = "irq")]
 pub struct BlockIrqHandler {
     handler: Box<dyn rdif_block::IrqHandler>,
     events: Option<Arc<BlockIrqEvents>>,
 }
 
-#[cfg(feature = "irq")]
 impl BlockIrqHandler {
     fn new(handler: Box<dyn rdif_block::IrqHandler>, events: Arc<BlockIrqEvents>) -> Self {
         Self {
@@ -127,16 +123,11 @@ impl BlockIrqHandler {
     }
 }
 
-#[cfg(not(feature = "irq"))]
-pub struct BlockIrqHandler;
-
-#[cfg(feature = "irq")]
 #[derive(Default)]
 struct BlockIrqEvents {
     queues: AtomicU64,
 }
 
-#[cfg(feature = "irq")]
 impl BlockIrqEvents {
     fn record(&self, event: rdif_block::Event) {
         let queues = event.queues.bits();
@@ -197,17 +188,10 @@ impl Block {
         self.info.irq()
     }
 
-    #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self) -> Option<(usize, BlockIrqHandler)> {
         let irq = self.info.irq_num()?;
         let handler = self.irq_handler.take()?;
         Some((irq, handler))
-    }
-
-    #[cfg(not(feature = "irq"))]
-    pub fn take_irq_handler(&mut self) -> Option<(usize, BlockIrqHandler)> {
-        let _ = self;
-        None
     }
 
     pub fn num_blocks(&self) -> u64 {
@@ -379,7 +363,6 @@ impl RdifBlockDevice {
         self.interface.disable_irq();
     }
 
-    #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
         let irq_num = self.irq_num()?;
         self.interface
@@ -387,18 +370,10 @@ impl RdifBlockDevice {
             .map(BlockIrqHandler::new_raw)
             .map(|handler| (irq_num, handler))
     }
-
-    #[cfg(not(feature = "irq"))]
-    pub fn take_irq_handler(&mut self, _source_id: usize) -> Option<(usize, BlockIrqHandler)> {
-        None
-    }
 }
 
 impl BlockQueues {
-    fn new(
-        queue: RuntimeQueue,
-        #[cfg(feature = "irq")] irq_events: Arc<BlockIrqEvents>,
-    ) -> AxResult<Self> {
+    fn new(queue: RuntimeQueue, irq_events: Arc<BlockIrqEvents>) -> AxResult<Self> {
         let info = queue.info();
         let block_size = info.device.logical_block_size;
         if block_size == 0 {
@@ -418,7 +393,6 @@ impl BlockQueues {
                 size: layout.size(),
                 align: layout.align(),
             },
-            #[cfg(feature = "irq")]
             irq_events,
         })
     }
@@ -449,12 +423,10 @@ impl BlockQueues {
                 .map_err(map_blk_err_to_ax_err)?;
             match status {
                 RequestStatus::Complete => {
-                    #[cfg(feature = "irq")]
                     let _ = self.irq_events.take_queue(self.queue.id());
                     return Ok(());
                 }
                 RequestStatus::Pending => {
-                    #[cfg(feature = "irq")]
                     if self.irq_events.take_queue(self.queue.id()) {
                         continue;
                     }
@@ -474,13 +446,11 @@ impl BlockQueues {
                 .map_err(|err| map_blk_err_to_ax_err(err.into()))?;
             match status {
                 RequestPoll::Ready(completed) => {
-                    #[cfg(feature = "irq")]
                     let _ = self.irq_events.take_queue(self.queue.id());
                     completed.result.map_err(map_blk_err_to_ax_err)?;
                     return Ok(completed);
                 }
                 RequestPoll::Pending => {
-                    #[cfg(feature = "irq")]
                     if self.irq_events.take_queue(self.queue.id()) {
                         continue;
                     }
@@ -512,7 +482,6 @@ impl BlockBufferPool {
 }
 
 impl RuntimeQueue {
-    #[cfg(feature = "irq")]
     fn id(&self) -> usize {
         match self {
             Self::Legacy(queue) => queue.id(),
@@ -560,32 +529,18 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             .map(RuntimeQueue::Owned)
             .or_else(|| interface.create_queue().map(RuntimeQueue::Legacy))
             .ok_or(AxError::BadState)?;
-        #[cfg(feature = "irq")]
         let irq_events = Arc::new(BlockIrqEvents::default());
-        let queues = BlockQueues::new(
-            queue,
-            #[cfg(feature = "irq")]
-            Arc::clone(&irq_events),
-        )?;
+        let queues = BlockQueues::new(queue, Arc::clone(&irq_events))?;
 
-        #[cfg(feature = "irq")]
         let irq_handler = irq
             .as_ref()
             .and_then(|_| take_legacy_irq_handler(interface.as_mut()))
             .map(|handler| BlockIrqHandler::new(handler, irq_events));
         drop(dev);
 
-        #[cfg(feature = "irq")]
         let info = if irq_handler.is_some() {
             info
         } else {
-            BindingInfo::empty()
-        };
-        #[cfg(feature = "irq")]
-        let irq_handler = irq_handler;
-        #[cfg(not(feature = "irq"))]
-        let info = {
-            let _ = irq;
             BindingInfo::empty()
         };
 
@@ -593,7 +548,6 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             name,
             info,
             irq_enabled: interface.is_irq_enabled(),
-            #[cfg(feature = "irq")]
             irq_handler,
             interface,
             queues: SpinNoIrq::new(queues),
@@ -733,7 +687,6 @@ pub fn take_raw_block_devices() -> Vec<RdifBlockDevice> {
 #[deprecated(note = "use RdifBlockDevice")]
 pub type RawBlockDevice = RdifBlockDevice;
 
-#[cfg(feature = "irq")]
 fn take_legacy_irq_handler(
     interface: &mut dyn Interface,
 ) -> Option<Box<dyn rdif_block::IrqHandler>> {
@@ -1196,7 +1149,6 @@ mod tests {
             name: String::from("test-block"),
             info: BindingInfo::empty(),
             irq_enabled: false,
-            #[cfg(feature = "irq")]
             irq_handler: None,
             interface: Box::new(TestInterface),
             queues: SpinNoIrq::new(BlockQueues {
@@ -1207,7 +1159,6 @@ mod tests {
                     size: layout.size(),
                     align: layout.align(),
                 },
-                #[cfg(feature = "irq")]
                 irq_events: Arc::new(BlockIrqEvents::default()),
             }),
         }
@@ -1361,7 +1312,6 @@ mod tests {
                 size: layout.size(),
                 align: layout.align(),
             },
-            #[cfg(feature = "irq")]
             irq_events: Arc::new(BlockIrqEvents::default()),
         };
         let mut buf = [0_u8; 4096];

@@ -164,12 +164,12 @@ ax-hal = { workspace = true }
 更关键的是系统级验证：
 
 - ArceOS 最小启动路径，例如 `arceos-helloworld`。
-- 依赖 `paging`、`irq`、`smp` 的场景，如 `ax-mm`、`ax-task` 相关测试。
+- 依赖 `paging`、IRQ、`smp` 的场景，如 `ax-mm`、`ax-task` 相关测试。
 - StarryOS 与 Axvisor 的最小 bring-up 路径，验证 HAL 改动没有破坏上层复用。
 
 ### 5.3 覆盖率要求
 - `ax-hal` 不以行覆盖率为核心指标，而以“平台组合覆盖”和“启动链覆盖”为核心指标。
-- 涉及 `irq`、`paging`、`tls`、`smp` 的改动，至少应覆盖一条启用 feature 的真实系统路径。
+- 涉及 IRQ、`paging`、`tls`、`smp` 的改动，至少应覆盖一条真实系统路径。
 - 涉及链接脚本、内存布局、页表和 trap 的改动，应视为高风险改动，需要跨系统验证。
 
 ## 跨项目定位

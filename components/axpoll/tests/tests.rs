@@ -105,35 +105,6 @@ fn wake_runs_wakers_after_releasing_pollset_lock() {
 }
 
 #[test]
-fn register_overwrite_wakes_after_releasing_pollset_lock() {
-    let ps = Arc::new(PollSet::new());
-    let (started_tx, started_rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
-    let reentrant = Arc::new(ReentrantRegister {
-        poll: ps.clone(),
-        interests: IoEvents::OUT,
-        started: started_tx,
-        done: done_tx,
-    });
-    let reentrant_waker = Waker::from(reentrant);
-    unsafe { ps.register(&reentrant_waker, IoEvents::IN) };
-    for _ in 1..64 {
-        let waker = Waker::from(Counter::new());
-        unsafe { ps.register(&waker, IoEvents::IN) };
-    }
-
-    let register_ps = ps.clone();
-    let register_thread = thread::spawn(move || {
-        let waker = Waker::from(Counter::new());
-        unsafe { register_ps.register(&waker, IoEvents::IN) };
-    });
-
-    assert_reentrant_wake_completed(started_rx, done_rx);
-    register_thread.join().unwrap();
-    assert_eq!(unsafe { ps.wake(IoEvents::OUT) }, 1);
-}
-
-#[test]
 fn empty_return() {
     let ps = PollSet::new();
     assert_eq!(unsafe { ps.wake(IoEvents::IN) }, 0);
@@ -275,7 +246,7 @@ fn irq_wake_drains_without_double_wake() {
 }
 
 #[test]
-fn full_capacity() {
+fn repeated_same_waker_register_is_idempotent() {
     let ps = PollSet::new();
     let counter = Counter::new();
     for _ in 0..64 {
@@ -284,12 +255,26 @@ fn full_capacity() {
         unsafe { ps.register(cx.waker(), IoEvents::IN) };
     }
     let woke = unsafe { ps.wake(IoEvents::IN) };
-    assert_eq!(woke, 64);
-    assert_eq!(counter.count(), 64);
+    assert_eq!(woke, 1);
+    assert_eq!(counter.count(), 1);
 }
 
 #[test]
-fn overwrite() {
+fn repeated_same_waker_register_merges_interests() {
+    let ps = PollSet::new();
+    let counter = Counter::new();
+    let w = Waker::from(counter.clone());
+    unsafe {
+        ps.register(&w, IoEvents::IN);
+        ps.register(&w, IoEvents::OUT);
+    }
+
+    assert_eq!(unsafe { ps.wake(IoEvents::IN) }, 1);
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
+fn more_than_legacy_capacity_keeps_all_waiters_until_ready() {
     let ps = PollSet::new();
     let counters = (0..65).map(|_| Counter::new()).collect::<Vec<_>>();
     for c in &counters {
@@ -297,9 +282,24 @@ fn overwrite() {
         let cx = Context::from_waker(&w);
         unsafe { ps.register(cx.waker(), IoEvents::IN) };
     }
-    assert_eq!(unsafe { ps.wake(IoEvents::IN) }, 64);
+    assert!(counters.iter().all(|counter| counter.count() == 0));
+    assert_eq!(unsafe { ps.wake(IoEvents::IN) }, 65);
     let total: usize = counters.iter().map(|c| c.count()).sum();
     assert_eq!(total, 65);
+}
+
+#[test]
+fn irq_wake_batches_more_than_legacy_capacity() {
+    let ps = PollSet::new();
+    let counters = (0..130).map(|_| Counter::new()).collect::<Vec<_>>();
+    for c in &counters {
+        let w = Waker::from(c.clone());
+        unsafe { ps.register(&w, IoEvents::IN) };
+    }
+
+    assert_eq!(ps.wake_from_irq(IoEvents::IN), 130);
+    assert!(counters.iter().all(|counter| counter.count() == 1));
+    assert_eq!(ps.wake_from_irq(IoEvents::IN), 0);
 }
 
 #[test]
@@ -312,5 +312,5 @@ fn drop_wakes() {
         unsafe { ps.register(cx.waker(), IoEvents::IN) };
     }
     drop(ps);
-    assert_eq!(counters.count(), 10);
+    assert_eq!(counters.count(), 1);
 }

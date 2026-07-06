@@ -10,7 +10,6 @@ license.workspace = true
 [features]
 default = []
 
-irq = ["ax-feat/irq"]
 ipi = ["dep:ax-ipi", "ax-feat/ipi"]
 alloc = ["dep:ax-alloc", "ax-feat/alloc"]
 paging = ["dep:ax-mm", "ax-feat/paging"]

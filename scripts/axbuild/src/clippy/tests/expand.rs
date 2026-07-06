@@ -467,11 +467,11 @@ fn docs_rs_targets_expand_base_and_feature_checks() {
 }
 
 #[test]
-fn ax_hal_platform_features_are_filtered_by_target_arch() {
+fn ax_hal_features_expand_for_each_docs_rs_target() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[])],
+        &[("fp-simd", &[])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -483,32 +483,35 @@ fn ax_hal_platform_features_are_filtered_by_target_arch() {
     };
 
     assert!(has_feature_on_target(
-        "irq",
+        "fp-simd",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
+    assert!(has_feature_on_target(
+        "fp-simd",
+        "riscv64gc-unknown-none-elf"
+    ));
 }
 
 #[test]
-fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
+fn ax_hal_features_expand_for_host_clippy() {
     let checks = expand(&[pkg(
         "ax-hal",
         "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("irq", &[])],
+        &[("fp-simd", &[])],
         None,
     )]);
 
     assert!(checks.iter().any(|check| {
-        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "irq")
+        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "fp-simd")
     }));
 }
 
 #[test]
-fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
+fn ax_hal_feature_forwards_expand_for_each_docs_rs_target() {
     let checks = expand(&[pkg(
         "platform-forwarder",
         "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
-        &[("irq", &["ax-hal/irq"])],
+        &[("fp-simd", &["ax-hal/fp-simd"])],
         Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
     )]);
 
@@ -520,10 +523,13 @@ fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
     };
 
     assert!(has_feature_on_target(
-        "irq",
+        "fp-simd",
         "loongarch64-unknown-none-softfloat"
     ));
-    assert!(has_feature_on_target("irq", "riscv64gc-unknown-none-elf"));
+    assert!(has_feature_on_target(
+        "fp-simd",
+        "riscv64gc-unknown-none-elf"
+    ));
 }
 
 #[test]

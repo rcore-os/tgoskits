@@ -18,8 +18,6 @@ pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wa
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
-#[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "irq"))))]
-#[cfg(feature = "irq")]
 pub use crate::timers::register_timer_callback;
 #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use crate::{
@@ -48,15 +46,15 @@ pub fn default_task_stack_size() -> usize {
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
         const MAX_TIME_SLICE: usize = 5;
-        pub(crate) type AxTask = ax_sched::RRTask<TaskInner, MAX_TIME_SLICE>;
-        pub(crate) type Scheduler = ax_sched::RRScheduler<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type AxTask = bare_task::RRTask<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type Scheduler = bare_task::RRScheduler<TaskInner, MAX_TIME_SLICE>;
     } else if #[cfg(feature = "sched-cfs")] {
-        pub(crate) type AxTask = ax_sched::CFSTask<TaskInner>;
-        pub(crate) type Scheduler = ax_sched::CFScheduler<TaskInner>;
+        pub(crate) type AxTask = bare_task::CFSTask<TaskInner>;
+        pub(crate) type Scheduler = bare_task::CFScheduler<TaskInner>;
     } else {
         // If no scheduler features are set, use FIFO as the default.
-        pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
-        pub(crate) type Scheduler = ax_sched::FifoScheduler<TaskInner>;
+        pub(crate) type AxTask = bare_task::FifoTask<TaskInner>;
+        pub(crate) type Scheduler = bare_task::FifoScheduler<TaskInner>;
     }
 }
 
@@ -112,6 +110,15 @@ impl ax_kspin::lockdep::KspinLockdepIf for KspinLockdepIfImpl {
 
     fn fatal() -> ! {
         ax_hal::power::system_off()
+    }
+}
+
+struct IrqEpilogueIfImpl;
+
+#[ax_crate_interface::impl_interface]
+impl ax_hal::irq::IrqEpilogueIf for IrqEpilogueIfImpl {
+    fn drain_irq_wake_queue_current_cpu() -> usize {
+        crate::drain_irq_wake_queue_current_cpu()
     }
 }
 
@@ -174,18 +181,16 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 /// Handles periodic timer ticks for the task manager.
 ///
 /// For example, advance scheduler states, checks timed events, etc.
-#[cfg(feature = "irq")]
-#[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
     on_timer_irq(true);
 }
 
 /// Handles a hardware timer interrupt.
-#[cfg(feature = "irq")]
-#[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
+    current_run_queue::<NoOp>().mark_timer_irq_pending();
     crate::timers::check_events(scheduler_tick);
+    current_run_queue::<NoOp>().clear_timer_service_pending();
     if scheduler_tick {
         // Since irq and preemption are both disabled here,
         // we can get current run queue with the default `ax_kernel_guard::NoOp`.
@@ -193,13 +198,11 @@ pub fn on_timer_irq(scheduler_tick: bool) {
     }
 }
 
-#[cfg(feature = "irq")]
 #[doc(hidden)]
 pub fn next_timer_deadline_nanos() -> Option<u64> {
     crate::timers::next_deadline_nanos()
 }
 
-#[cfg(feature = "irq")]
 #[doc(hidden)]
 pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
     crate::timers::note_programmed_deadline_nanos(deadline_nanos);
@@ -313,8 +316,6 @@ pub(crate) fn yield_now_unchecked() {
 }
 
 /// Current task is going to sleep for the given duration.
-///
-/// If the feature `irq` is not enabled, it uses busy-wait instead.
 #[track_caller]
 pub fn sleep(dur: core::time::Duration) {
     sleep_until(ax_hal::time::monotonic_time() + dur);
@@ -322,16 +323,10 @@ pub fn sleep(dur: core::time::Duration) {
 
 /// Current task is going to sleep, it will be woken up at the given deadline.
 /// The deadline is measured against the monotonic clock.
-///
-/// If the feature `irq` is not enabled, it uses busy-wait instead.
 #[track_caller]
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
-    #[cfg(feature = "irq")]
     might_sleep();
-    #[cfg(feature = "irq")]
     current_run_queue::<NoPreemptIrqSave>().sleep_until(deadline);
-    #[cfg(not(feature = "irq"))]
-    ax_hal::time::busy_wait_until(deadline);
 }
 
 /// Exits the current task.
@@ -343,14 +338,7 @@ pub fn exit(exit_code: i32) -> ! {
 }
 
 fn current_irq_context() -> bool {
-    #[cfg(feature = "irq")]
-    {
-        ax_hal::irq::in_irq_context()
-    }
-    #[cfg(not(feature = "irq"))]
-    {
-        false
-    }
+    ax_hal::irq::in_irq_context()
 }
 
 #[derive(Clone, Copy)]
@@ -430,19 +418,8 @@ impl AtomicContextSnapshot {
     }
 
     fn reasons(self) -> AtomicContextReasons {
-        let irq_disabled = {
-            #[cfg(feature = "irq")]
-            {
-                !self.irq_enabled
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                false
-            }
-        };
-
         AtomicContextReasons {
-            irq_disabled,
+            irq_disabled: !self.irq_enabled,
             irq_context: self.irq_context,
             preempt_disabled: self.preempt_count != 0,
         }
@@ -531,18 +508,18 @@ pub fn wake_task(task: &AxTaskRef) {
     // unblocks the task via the registered waker callback.
     task.interrupt();
 
-    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a
-    // no-op (no waker registered). Force-unblock by transitioning the task
-    // from Blocked to Ready and placing it on the run queue of its
-    // affinity CPU.
+    // For tasks blocked on a raw WaitQueue, interrupt_waker.wake() is a no-op
+    // (no waker registered). Clear the unknown wait-queue membership before
+    // force-unblocking so the original queue will discard its stale node later
+    // instead of consuming a future notify for this already-ready task.
     //
     // SAFETY: unblock_task uses a CAS on the task state (Blocked → Ready),
     // so if the task is concurrently being woken by its WaitQueue, the CAS
-    // fails and this is a harmless no-op. The stale entry in the WaitQueue
-    // is benign: when WaitQueue::notify_one eventually pops it, the
-    // subsequent unblock_task call will again CAS-fail (task already Ready
-    // or Running).
+    // fails and this is a harmless no-op. Clearing the wait-queue key is also
+    // harmless in that race: a waiter popped by its queue has already cleared
+    // the same key, and a remaining queue node is stale by construction.
     if task.state() == TaskState::Blocked {
+        task.clear_wait_queue_membership();
         let mut rq = select_run_queue::<NoPreemptIrqSave>(task);
         rq.unblock_task(task.clone(), false);
     }
@@ -602,7 +579,7 @@ pub fn run_idle() -> ! {
     loop {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
-        #[cfg(all(feature = "irq", not(feature = "host-test")))]
+        #[cfg(not(feature = "host-test"))]
         ax_hal::asm::wait_for_irqs();
     }
 }

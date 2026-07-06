@@ -19,7 +19,7 @@ ax-io = { workspace = true }
 ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 ax-sync = { workspace = true }
-ax-task = { workspace = true, features = ["irq", "multitask"] }
+ax-task = { workspace = true, features = ["multitask"] }
 bitflags = "2.9"
 cfg-if = { workspace = true }
 enum_dispatch = "0.3"

@@ -9,7 +9,7 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_runtime::hal::irq::IrqId;
 use ax_sync::Mutex as BlockingMutex;
-use ax_task::IrqNotify;
+use ax_task::HardIrqSignal;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
@@ -233,7 +233,7 @@ pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
     open_lock: BlockingMutex<()>,
     usb_activity: UsbActivity,
-    irq_notify: IrqNotify,
+    irq_notify: HardIrqSignal,
 }
 
 struct UsbActivity {
@@ -390,7 +390,7 @@ impl UsbFsManager {
             state: Mutex::new(UsbFsState { hosts, devices }),
             open_lock: BlockingMutex::new(()),
             usb_activity: UsbActivity::new(),
-            irq_notify: IrqNotify::new(),
+            irq_notify: HardIrqSignal::new(),
         }
     }
 

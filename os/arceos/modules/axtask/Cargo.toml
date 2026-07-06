@@ -10,12 +10,16 @@ version = "0.5.24"
 [features]
 default = []
 
-irq = ["ax-hal/irq", "dep:ax-timer-list"]
-ipi = ["irq", "ax-hal/ipi", "dep:ax-ipi"]
+# Full remote callback IPI support. This includes the lightweight IRQ-wake IPI
+# path plus the ax-ipi callback queue used by scheduler reschedule requests.
+ipi = ["irq-wake-ipi", "dep:ax-ipi"]
+# Lightweight hardware IPI support for hard-IRQ task wake. This wakes the target
+# CPU so its IRQ epilogue can drain the per-CPU IRQ wake queue, but does not
+# enable ax-ipi remote callback execution.
+irq-wake-ipi = ["ax-hal/ipi"]
 multitask = [
   "stack-canary",
   "dep:axpoll",
-  "dep:ax-sched",
   "dep:ax-cpumask",
   "dep:ax-crate-interface",
   "dep:futures-util",
@@ -24,9 +28,11 @@ multitask = [
   "dep:ax-lazyinit",
   "dep:ax-memory-addr",
   "dep:ax-percpu",
+  "dep:bare-task",
   "dep:spin",
+  "dep:ax-timer-list",
 ]
-preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
+preempt = ["ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
 stack-canary = []
 stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
@@ -72,9 +78,9 @@ ax-lazyinit = {workspace = true, optional = true}
 ax-memory-addr = {workspace = true, optional = true}
 ax-mm = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
-ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
+bare-task = {workspace = true, optional = true}
 cfg-if.workspace = true
 extern-trait = {version = "0.4", optional = true}
 futures-util = {version = "0.3", default-features = false, optional = true, features = [

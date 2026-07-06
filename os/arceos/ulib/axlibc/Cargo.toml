@@ -27,9 +27,6 @@ smp = ["ax-posix-api/smp"]
 # Floating point/SIMD
 fp-simd = ["ax-feat/fp-simd"]
 
-# Interrupts
-irq = ["ax-posix-api/irq", "ax-feat/irq"]
-
 # Memory
 alloc = ["ax-posix-api/alloc"]
 tls = ["alloc", "ax-feat/tls"]

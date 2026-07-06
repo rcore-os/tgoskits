@@ -10,7 +10,7 @@ use irq_framework::IrqId;
 use rdif_block::{
     BlkError, CompletionHint, CompletionSink as RdifCompletionSink, DeviceInfo, IQueue,
     OwnedRequest, QueueHandle, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
-    RequestPoll as OwnedRequestPoll, RequestStatus, TransferChunk, TransferPlanner,
+    RequestPoll as OwnedRequestPoll, RequestStatus, RequestToken, TransferChunk, TransferPlanner,
     TransferRuntimeCaps, validate_request,
 };
 
@@ -202,6 +202,13 @@ impl RuntimeQueue {
             Self::Owned(queue) => queue.info(),
         }
     }
+
+    fn request_token(&self, request: RequestId) -> Option<RequestToken> {
+        match self {
+            Self::Legacy(queue) => queue.request_token(request),
+            Self::Owned(queue) => queue.request_token(request),
+        }
+    }
 }
 
 impl QueueRuntime {
@@ -232,14 +239,14 @@ impl QueueRuntime {
 
 pub struct BlockRuntime {
     devices: Vec<Arc<BlockDeviceHandle>>,
-    irq_registrations: Vec<Box<dyn BlockIrqRegistration>>,
+    irq_registrations: SpinNoIrq<Vec<Box<dyn BlockIrqRegistration>>>,
 }
 
 impl BlockRuntime {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            irq_registrations: Vec::new(),
+            irq_registrations: SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -251,8 +258,8 @@ impl BlockRuntime {
         &self.devices
     }
 
-    pub fn push_irq_registration(&mut self, registration: Box<dyn BlockIrqRegistration>) {
-        self.irq_registrations.push(registration);
+    pub fn push_irq_registration(&self, registration: Box<dyn BlockIrqRegistration>) {
+        self.irq_registrations.lock().push(registration);
     }
 }
 
@@ -356,31 +363,75 @@ impl BlockIrqAction {
 
 impl BlockRuntime {
     pub fn from_rdif_devices(devices: impl IntoIterator<Item = RdifBlockDevice>) -> Self {
+        let (runtime, pending_irqs) = Self::from_rdif_devices_deferred(devices);
+        if !pending_irqs.is_empty() {
+            warn!(
+                "rdif filesystem block devices registered IRQ handlers without an installed drain \
+                 task; keeping completion mode polling"
+            );
+        }
+        drop(pending_irqs);
+        runtime
+    }
+
+    fn from_rdif_devices_deferred(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+    ) -> (Self, Vec<DeferredRdifBlockIrq>) {
         let mut runtime = Self::new();
+        let mut pending_irqs = Vec::new();
         for block in devices {
             let device_index = runtime.devices.len();
             let drain_wake = Arc::new(RuntimeDrainWake { device_index });
             match build_rdif_block_device(block, device_index, drain_wake) {
                 Ok(registered) => {
-                    let (device, registrations) = registered;
-                    for registration in registrations {
-                        runtime.push_irq_registration(registration);
+                    let (device, pending_irq) = registered;
+                    if let Some(pending_irq) = pending_irq {
+                        pending_irqs.push(pending_irq);
                     }
                     runtime.push_device(device);
                 }
                 Err(err) => warn!("failed to register rdif filesystem block device: {err:?}"),
             }
         }
-        runtime
+        (runtime, pending_irqs)
     }
 
     pub fn install_from_rdif_devices(
         devices: impl IntoIterator<Item = RdifBlockDevice>,
     ) -> Arc<BlockRuntime> {
-        let runtime = Arc::new(Self::from_rdif_devices(devices));
+        let (runtime, pending_irqs) = Self::from_rdif_devices_deferred(devices);
+        let runtime = Arc::new(runtime);
         BLOCK_RUNTIME.call_once(|| runtime.clone());
         spawn_block_drain_task(runtime.clone());
+        for pending_irq in pending_irqs {
+            runtime.enable_deferred_rdif_irq(pending_irq);
+        }
         runtime
+    }
+
+    fn enable_deferred_rdif_irq(&self, pending: DeferredRdifBlockIrq) {
+        let DeferredRdifBlockIrq {
+            name,
+            block,
+            device,
+            registrations,
+        } = pending;
+
+        block.enable_irq();
+        if block.is_irq_enabled() {
+            device.set_completion_mode(BlockCompletionMode::IrqDriven);
+            for registration in registrations {
+                self.push_irq_registration(registration);
+            }
+            warn!("rdif filesystem block device {name} registered with IRQ-driven completion");
+        } else {
+            block.disable_irq();
+            drop(registrations);
+            warn!(
+                "rdif filesystem block device {name} registered IRQ handler but device did not \
+                 enable completion IRQ; falling back to polling"
+            );
+        }
     }
 }
 
@@ -491,6 +542,14 @@ impl BlockDeviceHandle {
         self.with_drain(|| {
             let events = self.event_latch.bridge().take_events();
             self.drain_given_events(events)
+        })
+    }
+
+    pub fn drain_pending_requests(&self) -> usize {
+        self.with_drain(|| {
+            let keys = self.pending.lock().active_keys();
+            let mut poller = DeviceRequestPoller { device: self };
+            CompletionDrain::new(&self.pending, &mut poller).poll_keys(&keys)
         })
     }
 
@@ -608,10 +667,11 @@ impl BlockDeviceHandle {
             let info = queue.info;
             match submit_flush_request(&mut queue, info) {
                 Ok(request_id) => {
+                    let token = queue.queue.request_token(request_id);
                     let key = self
                         .pending
                         .lock()
-                        .insert_submitted(info.id, request_id, None)
+                        .insert_submitted(info.id, request_id, token, None)
                         .map_err(map_blk_err_to_ax_err)?;
                     drop(queue);
                     self.wake_drain_after_irq_submit();
@@ -939,7 +999,8 @@ impl BlockDeviceHandle {
                 self.poison_driver_contract_violation();
                 return Err(BlkError::InvalidRequest);
             }
-            pending.insert_submitted(info.id, request_id, buffer)?
+            let token = queue.queue.request_token(request_id);
+            pending.insert_submitted(info.id, request_id, token, buffer)?
         };
         Ok(WindowEntry {
             key,
@@ -1199,8 +1260,15 @@ impl BlockDeviceHandle {
 }
 
 type BlockIrqRegistrations = Vec<Box<dyn BlockIrqRegistration>>;
-type RegisteredRdifBlockDevice = (Arc<BlockDeviceHandle>, BlockIrqRegistrations);
+type RegisteredRdifBlockDevice = (Arc<BlockDeviceHandle>, Option<DeferredRdifBlockIrq>);
 type RegisterIrqResult = Result<BlockIrqRegistrations, (AxError, BlockIrqRegistrations)>;
+
+struct DeferredRdifBlockIrq {
+    name: String,
+    block: RdifBlockDevice,
+    device: Arc<BlockDeviceHandle>,
+    registrations: BlockIrqRegistrations,
+}
 
 fn build_rdif_block_device(
     mut block: RdifBlockDevice,
@@ -1230,19 +1298,7 @@ fn build_rdif_block_device(
     )
     .map_err(map_blk_err_to_ax_err)?;
 
-    let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index)
-        .and_then(|registrations| {
-            block.enable_irq();
-            if block.is_irq_enabled() {
-                Ok(registrations)
-            } else {
-                warn!(
-                    "rdif filesystem block device {name} registered IRQ handler but device did \
-                     not enable completion IRQ"
-                );
-                Err((AxError::Unsupported, registrations))
-            }
-        }) {
+    let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index) {
         Ok(registrations) => registrations,
         Err((err, registrations)) => {
             block.disable_irq();
@@ -1251,12 +1307,14 @@ fn build_rdif_block_device(
             Vec::new()
         }
     };
-    if !registrations.is_empty() {
-        device.set_completion_mode(BlockCompletionMode::IrqDriven);
-        warn!("rdif filesystem block device {name} registered with IRQ-driven completion");
-    }
+    let pending_irq = (!registrations.is_empty()).then_some(DeferredRdifBlockIrq {
+        name: name.clone(),
+        block,
+        device: device.clone(),
+        registrations,
+    });
     info!("registered rdif filesystem block device {name}");
-    Ok((device, registrations))
+    Ok((device, pending_irq))
 }
 
 fn register_rdif_irq_handlers(
@@ -1319,14 +1377,23 @@ fn mark_block_drain_device_from_irq(device_index: usize) {
     notify_drain_from_irq();
 }
 
-fn block_drain_has_pending() -> bool {
-    BLOCK_DRAIN_FULL_SCAN.load(Ordering::Acquire)
-        || BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) != 0
+fn runtime_has_ready_bridge(runtime: &BlockRuntime) -> bool {
+    runtime
+        .devices()
+        .iter()
+        .any(|device| device.bridge().drain_ready())
 }
 
-fn take_block_drain_selection() -> DrainSelection {
+fn block_drain_has_pending(runtime: &BlockRuntime) -> bool {
+    BLOCK_DRAIN_FULL_SCAN.load(Ordering::Acquire)
+        || BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) != 0
+        || runtime_has_ready_bridge(runtime)
+}
+
+fn take_block_drain_selection(runtime: &BlockRuntime) -> DrainSelection {
     DrainSelection {
-        full_scan: BLOCK_DRAIN_FULL_SCAN.swap(false, Ordering::AcqRel),
+        full_scan: BLOCK_DRAIN_FULL_SCAN.swap(false, Ordering::AcqRel)
+            || runtime_has_ready_bridge(runtime),
         device_bits: BLOCK_DRAIN_DEVICE_BITS.swap(0, Ordering::AcqRel),
     }
 }
@@ -1336,22 +1403,40 @@ fn drain_selection_contains(selection: DrainSelection, device_index: usize) -> b
         || (device_index < u64::BITS as usize && selection.device_bits & (1 << device_index) != 0)
 }
 
+fn drain_selected_device(device_index: usize, device: &BlockDeviceHandle) {
+    device.drain_events();
+    if device.bridge().drain_ready() {
+        set_block_drain_pending(device_index);
+    }
+}
+
+fn scan_block_drain_sources(runtime: &BlockRuntime) -> bool {
+    let mut completed = 0;
+    for (device_index, device) in runtime.devices().iter().enumerate() {
+        completed += device.drain_pending_requests();
+        if device.bridge().drain_ready() {
+            set_block_drain_pending(device_index);
+        }
+    }
+    completed != 0 || block_drain_has_pending(runtime)
+}
+
 fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
     BLOCK_DRAIN_SPAWNED.call_once(|| {
         spawn_task(
             String::from("block_drain"),
             Box::new(move || {
                 loop {
-                    if !block_drain_has_pending() {
+                    if !block_drain_has_pending(&runtime) && !scan_block_drain_sources(&runtime) {
                         wait_for_drain_notification();
                     }
-                    if !block_drain_has_pending() {
+                    if !block_drain_has_pending(&runtime) && !scan_block_drain_sources(&runtime) {
                         continue;
                     }
-                    let selection = take_block_drain_selection();
+                    let selection = take_block_drain_selection(&runtime);
                     for (device_index, device) in runtime.devices().iter().enumerate() {
                         if drain_selection_contains(selection, device_index) {
-                            device.drain_events();
+                            drain_selected_device(device_index, device);
                         }
                     }
                 }
@@ -1565,4 +1650,162 @@ pub fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
 #[cfg(feature = "ext4")]
 fn queue_ids_from_bits(bits: u64) -> impl Iterator<Item = usize> {
     (0..u64::BITS as usize).filter(move |queue_id| bits & (1 << queue_id) != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    use rdif_block::{QueueLimits, RequestStatus};
+
+    use super::*;
+
+    static BLOCK_DRAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct BusyDrainQueue;
+
+    // SAFETY: This test queue never retains request segment references beyond
+    // `submit_request`; the test does not submit any request through it.
+    unsafe impl IQueue for BusyDrainQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(1))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Pending)
+        }
+    }
+
+    struct ReadyWithoutHintQueue;
+
+    // SAFETY: This test queue never retains request segment references beyond
+    // `submit_request`; the test inserts pending requests directly.
+    unsafe impl IQueue for ReadyWithoutHintQueue {
+        fn id(&self) -> usize {
+            0
+        }
+
+        fn info(&self) -> QueueInfo {
+            QueueInfo {
+                id: 0,
+                device: DeviceInfo::new(16, 512),
+                limits: QueueLimits::simple(512, u64::MAX),
+            }
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(7))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Complete)
+        }
+    }
+
+    #[test]
+    fn drain_selection_rearms_device_when_core_drain_is_busy() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "busy-drain",
+            [Box::new(BusyDrainQueue) as Box<dyn IQueue>],
+            bridge.clone(),
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+
+        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
+        set_block_drain_pending(0);
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device.clone());
+
+        let selection = take_block_drain_selection(&runtime);
+        assert!(drain_selection_contains(selection, 0));
+        assert_eq!(BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire), 0);
+
+        device.drain_running.store(true, Ordering::Release);
+        drain_selected_device(0, &device);
+        device.drain_running.store(false, Ordering::Release);
+
+        assert!(bridge.drain_ready());
+        assert_ne!(BLOCK_DRAIN_DEVICE_BITS.load(Ordering::Acquire) & 1, 0);
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn drain_selection_scans_backend_state_when_global_bit_is_lost() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "lost-drain-bit",
+            [Box::new(BusyDrainQueue) as Box<dyn IQueue>],
+            bridge.clone(),
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device);
+
+        bridge.record_hint(CompletionHint::Queue { queue_id: 0 });
+        assert!(block_drain_has_pending(&runtime));
+
+        let selection = take_block_drain_selection(&runtime);
+        assert!(selection.full_scan);
+        assert!(drain_selection_contains(selection, 0));
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn drain_worker_scans_pending_backend_state_before_sleep() {
+        let _guard = BLOCK_DRAIN_TEST_LOCK.lock().unwrap();
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+
+        let bridge = Arc::new(BlockIrqBridge::new());
+        let device = BlockDeviceHandle::new(
+            "ready-without-hint",
+            [Box::new(ReadyWithoutHintQueue) as Box<dyn IQueue>],
+            bridge,
+            BlockRuntimeConfig::new(Arc::new(NoopDrainWake)),
+        )
+        .unwrap();
+        let key = device
+            .pending
+            .lock()
+            .insert_submitted(0, RequestId::new(7), None, None)
+            .unwrap();
+        let mut runtime = BlockRuntime::new();
+        runtime.push_device(device.clone());
+
+        assert!(!block_drain_has_pending(&runtime));
+        assert!(scan_block_drain_sources(&runtime));
+        assert!(device.pending.lock().result(key).is_some());
+
+        BLOCK_DRAIN_DEVICE_BITS.store(0, Ordering::Release);
+        BLOCK_DRAIN_FULL_SCAN.store(false, Ordering::Release);
+    }
 }
