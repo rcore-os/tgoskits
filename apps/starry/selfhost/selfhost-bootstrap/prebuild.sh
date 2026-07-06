@@ -82,6 +82,7 @@ apk add --no-cache \
 # scripts.
 [ -x /bin/bash ] || fail "bash missing after install"
 ln -sf /bin/bash /usr/bin/bash 2>/dev/null || true
+	[ -x /usr/bin/bash ] || fail "/usr/bin/bash symlink missing after bootstrap"
 
 # musl cross-toolchain names the std build expects (Alpine's native gcc IS musl).
 gcc_path="$(command -v gcc)" || fail "gcc not found"
