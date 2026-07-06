@@ -75,9 +75,12 @@ apk add --no-cache \
     linux-headers openssl-dev perl bash tar xz musl-dev \
     || fail "apk add failed"
 
-# Inner scripts and the kernel linker wrapper use bash arrays; make /bin/sh bash.
+# Inner scripts carry '#!/usr/bin/bash' shebangs and are invoked via
+# shell_init_cmd; they do NOT depend on /bin/sh.  The kernel init process
+# (/bin/sh -c init.sh) MUST stay on busybox — replacing it with bash
+# breaks init loading.  Only ensure /usr/bin/bash exists for the inner
+# scripts.
 [ -x /bin/bash ] || fail "bash missing after install"
-ln -sf /bin/bash /bin/sh
 ln -sf /bin/bash /usr/bin/bash 2>/dev/null || true
 
 # musl cross-toolchain names the std build expects (Alpine's native gcc IS musl).
