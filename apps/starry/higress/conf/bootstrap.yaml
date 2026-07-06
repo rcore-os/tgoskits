@@ -1,0 +1,209 @@
+# higress standalone gateway - static Envoy bootstrap (no xDS control plane).
+#
+# Exercises the data-plane feature set higress builds on top of Envoy: prefix/
+# host routing, weighted load balancing, request/response header mutation, path
+# rewrite, upstream retry, per-route local rate limiting, and downstream +
+# upstream TLS. All clusters are STATIC with hardcoded loopback endpoints so the
+# gateway never needs DNS. Listeners pin enable_reuse_port:false so this config
+# runs on kernels without SO_REUSEPORT; conf/bootstrap-reuseport.yaml flips it on.
+node:
+  id: higress-standalone
+  cluster: higress-standalone
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
+
+static_resources:
+  listeners:
+  - name: http_listener
+    enable_reuse_port: false
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 10000
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: app_vhost
+              domains: ["app.example.com", "*"]
+              routes:
+              - match:
+                  prefix: "/limited"
+                route:
+                  cluster: backend_a
+                typed_per_filter_config:
+                  envoy.filters.http.local_ratelimit:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                    stat_prefix: limited_route
+                    token_bucket:
+                      max_tokens: 2
+                      tokens_per_fill: 2
+                      fill_interval: 300s
+                    filter_enabled:
+                      default_value:
+                        numerator: 100
+                        denominator: HUNDRED
+                    filter_enforced:
+                      default_value:
+                        numerator: 100
+                        denominator: HUNDRED
+              - match:
+                  prefix: "/flaky"
+                route:
+                  cluster: backend_fail
+                  retry_policy:
+                    retry_on: "5xx"
+                    num_retries: 2
+              - match:
+                  prefix: "/secure"
+                route:
+                  cluster: backend_tls
+                  prefix_rewrite: "/cgi-bin/echo"
+              - match:
+                  prefix: "/api"
+                route:
+                  prefix_rewrite: "/cgi-bin/echo"
+                  weighted_clusters:
+                    clusters:
+                    - name: backend_a
+                      weight: 2
+                    - name: backend_b
+                      weight: 1
+                request_headers_to_add:
+                - header:
+                    key: "x-higress-added"
+                    value: "starry"
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                response_headers_to_add:
+                - header:
+                    key: "x-higress-gateway"
+                    value: "envoy-standalone"
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: backend_a
+          http_filters:
+          - name: envoy.filters.http.local_ratelimit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+              stat_prefix: http_local_rate_limiter
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  - name: https_listener
+    enable_reuse_port: false
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 10443
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_https
+          route_config:
+            name: tls_route
+            virtual_hosts:
+            - name: tls_vhost
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: backend_a
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+            - certificate_chain:
+                filename: "/etc/higress/certs/server.crt"
+              private_key:
+                filename: "/etc/higress/certs/server.key"
+  clusters:
+  - name: backend_a
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_a
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8081
+  - name: backend_b
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_b
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8082
+  - name: backend_c
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_c
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8083
+  - name: backend_fail
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_fail
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8084
+  - name: backend_tls
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_tls
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 8443
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context: {}
