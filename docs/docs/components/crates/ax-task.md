@@ -13,7 +13,7 @@
 `ax-task` 的设计目标不是提供“单一线程库”，而是构造一个可裁剪的内核任务运行时：
 
 - 通过 `multitask` feature 在“真正多任务调度器”和“单任务桩实现”之间切换。
-- 通过 `multitask`、`rr`、`cfs` 在同一套 API 下选择不同调度策略。
+- 通过 `multitask`、`sched-rr`、`sched-cfs` 在同一套 API 下选择不同调度策略。
 - 通过 `irq`、`preempt`、`smp`、`tls`、`task-ext` 决定任务系统究竟具备多少内核能力。
 
 因此，`ax-task` 是一个强 feature 驱动的状态机模块，而不是简单的 API 封装。
@@ -45,8 +45,8 @@
 `ax-task` 并不自己实现完整调度算法，而是通过 `api.rs` 中的类型别名把 `TaskInner` 适配到 `axsched`：
 
 - `multitask`：`FifoScheduler` + `FifoTask`，协作式调度。
-- `rr`：`RRScheduler` + `RRTask`，带时间片，依赖 `preempt`。
-- `cfs`：`CFScheduler` + `CFSTask`，公平调度，同样依赖 `preempt`。
+- `sched-rr`：`RRScheduler` + `RRTask`，带时间片，依赖 `preempt`。
+- `sched-cfs`：`CFScheduler` + `CFSTask`，公平调度，同样依赖 `preempt`。
 
 这层设计的关键好处是：
 
@@ -146,7 +146,7 @@ ax-task = { workspace = true }
 常见 feature 组合：
 
 - `multitask`：启用完整任务管理。
-- `multitask` / `rr` / `cfs`：选择调度器。
+- `multitask` / `sched-rr` / `sched-cfs`：选择调度器。
 - `preempt`：允许基于 timer tick 的抢占。
 - `irq`：启用 sleep/timeout 等基于中断的时间能力。
 - `smp`：启用多核运行队列与任务迁移。

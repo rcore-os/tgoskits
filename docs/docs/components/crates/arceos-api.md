@@ -43,13 +43,13 @@
 - `lib.rs` 决定对外暴露什么。
 - `imp/*` 决定每个 API 实际调用哪个底层模块。
 
-### 1.4 `stubs` 的特殊语义
+### 1.4 `dummy-if-not-enabled` 的特殊语义
 这是 `ax-api` 非常重要的一个 feature：
 
 - 正常情况下，未打开某能力 feature 时，对应 API 根本不会被编译进 crate。
-- 如果同时打开 `stubs`，则未启用能力的 API 也会生成，但函数体会走 `unimplemented!()`，类型则可能退化为空占位 struct。
+- 如果同时打开 `dummy-if-not-enabled`，则未启用能力的 API 也会生成，但函数体会走 `unimplemented!()`，类型则可能退化为空占位 struct。
 
-这意味着 `stubs` 不是“开启某种退化实现”，而是“强行保留符号表形状，运行时再失败”。文档和调用方都必须清楚这一点，否则很容易把“编译通过”误判成“功能可用”。
+这意味着 `dummy-if-not-enabled` 不是“开启某种退化实现”，而是“强行保留符号表形状，运行时再失败”。文档和调用方都必须清楚这一点，否则很容易把“编译通过”误判成“功能可用”。
 
 ### 1.5 关键公开类型与句柄
 - `AxError` / `AxResult`：统一错误类型与返回值约定。
@@ -147,7 +147,7 @@ ax-api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] }
 1. 上层应优先使用 `ax-api` 暴露的稳定接口，不要一开始就直接依赖多个 `ax*` 内核模块。
 2. 新增 API 时，先在 `lib.rs` 中定义门面，再把具体实现落到 `imp/`，不要反过来让 `imp` 直接成为公开边界。
 3. 若某能力必须受 feature 控制，应同时更新 `Cargo.toml`、`lib.rs` 中的宏调用，以及 `imp/` 子模块实现。
-4. `stubs` 仅适用于需要保留符号形状的场景，不能把它当成真正的降级实现。
+4. `dummy-if-not-enabled` 仅适用于需要保留符号形状的场景，不能把它当成真正的降级实现。
 
 ### 4.3 关键开发建议
 - 把 `modules` 视为最后兜底手段，而不是常规入口。
@@ -160,13 +160,13 @@ ax-api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] }
 
 ### 单元测试
 - `define_api!` / `define_api_type!` 在不同 feature 组合下的符号生成行为。
-- `stubs` 路径是否按预期生成占位函数/类型。
+- `dummy-if-not-enabled` 路径是否按预期生成占位函数/类型。
 - 任务、DMA、文件系统和网络句柄等薄包装是否保持稳定语义。
 
 ### 集成测试
 - 通过 `ax-std` 或最小 ArceOS 应用验证时间、I/O、任务、文件系统、网络等门面 API 的实际可用性。
 - 覆盖不同 feature 组合下的编译与运行路径，尤其是 `multitask`、`fs`、`net`、`dma`。
-- 对 `stubs`，至少要验证调用方不会误把占位 API 当成可运行实现。
+- 对 `dummy-if-not-enabled`，至少要验证调用方不会误把占位 API 当成可运行实现。
 
 ### 覆盖率
 - 对 `ax-api`，比运行时覆盖率更重要的是“门面完整性覆盖率”。

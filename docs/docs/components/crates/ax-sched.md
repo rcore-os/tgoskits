@@ -109,7 +109,7 @@ ax-sched = { workspace = true }
 - CFS 的 vruntime 排序与 `nice` 映射。
 
 ### 集成测试
-- 在 `ax-task` 中分别打开 `multitask`、`rr`、`cfs`，验证系统级调度行为不回归。
+- 在 `ax-task` 中分别打开 `multitask`、`sched-rr`、`sched-cfs`，验证系统级调度行为不回归。
 - 检查 `set_priority()` 在上层 API 中的外显行为是否与所选调度器一致。
 
 ### 覆盖率

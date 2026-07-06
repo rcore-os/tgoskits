@@ -15,8 +15,8 @@ by cargo features.
 - `irq`: Enable timer-based APIs such as `sleep`, `sleep_until`, and `WaitQueue::wait_timeout`.
 - `preempt`: Enable preemptive scheduling.
 - FIFO cooperative scheduler is the default when no scheduler feature is selected.
-- `rr`: Use the Round-robin preemptive scheduler (enables `multitask` and `preempt`).
-- `cfs`: Use the Completely Fair Scheduler (enables `multitask` and `preempt`).
+- `sched-rr`: Use the Round-robin preemptive scheduler (enables `multitask` and `preempt`).
+- `sched-cfs`: Use the Completely Fair Scheduler (enables `multitask` and `preempt`).
 - `tls`: Enable kernel space thread-local storage support.
 - `smp`: Enable SMP (symmetric multiprocessing) support.
 

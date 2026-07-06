@@ -236,8 +236,8 @@ paging = ["alloc", "ax-hal/paging", "ax-runtime/paging"]
 # 任务
 multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask", "ax-runtime/multitask"]
 multitask = ["ax-task/multitask"]
-rr = ["ax-task/rr", "irq"]
-cfs = ["ax-task/cfs", "irq"]
+sched-rr = ["ax-task/sched-rr", "irq"]
+sched-cfs = ["ax-task/sched-cfs", "irq"]
 
 # 上层协议栈
 fs = ["alloc", "paging", "ax-driver/virtio-blk", "dep:ax-fs", "ax-runtime/fs"]

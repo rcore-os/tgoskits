@@ -201,7 +201,7 @@ sequenceDiagram
 
 ### 任务与调度模型
 
-`ax-task` 是 ArceOS 并发模型的核心。`multitask` 打开前后，模块会走完全不同的实现路径；调度算法由 `multitask`、`rr`、`cfs` 等 feature 选择。
+`ax-task` 是 ArceOS 并发模型的核心。`multitask` 打开前后，模块会走完全不同的实现路径；调度算法由 `multitask`、`sched-rr`、`sched-cfs` 等 feature 选择。
 
 ```mermaid
 stateDiagram-v2
