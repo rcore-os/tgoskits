@@ -152,9 +152,9 @@ pub mod public {
 // Linux reserves ioctl type 0xae for KVM.
 pub const KVMIO: u32 = 0xae;
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 pub const KVM_MAX_VCPUS: usize = 8;
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
 pub const KVM_MAX_VCPUS: usize = 1;
 pub const KVM_MAX_MEMORY_SLOTS: usize = 32;
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;

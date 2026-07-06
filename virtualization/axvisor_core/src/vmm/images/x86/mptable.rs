@@ -15,7 +15,7 @@ const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
 const IO_APIC_ADDR: u32 = 0xfec0_0000;
 
 const BSP_APIC_ID: u8 = 0;
-const IO_APIC_ID: u8 = 1;
+const IO_APIC_ID: u8 = 0x0f;
 const APIC_VERSION: u8 = 0x14;
 const IO_APIC_VERSION: u8 = 0x11;
 
@@ -28,9 +28,12 @@ pub const fn reserved_range() -> X86LinuxRange {
 }
 
 /// Builds a minimal MP floating pointer and MP config table.
-pub fn build() -> [u8; MP_TABLE_SIZE] {
+pub fn build(cpu_count: usize) -> [u8; MP_TABLE_SIZE] {
     let mut image = [0u8; MP_TABLE_SIZE];
-    let config = build_config_table();
+    let cpu_count = cpu_count.max(1);
+    assert!(cpu_count <= IO_APIC_ID as usize);
+
+    let config = build_config_table(cpu_count);
     image[..config.len()].copy_from_slice(&config);
 
     let floating = build_floating_pointer();
@@ -50,8 +53,8 @@ fn build_floating_pointer() -> [u8; 16] {
     data
 }
 
-fn build_config_table() -> Vec<u8> {
-    let entries = config_entries();
+fn build_config_table(cpu_count: usize) -> Vec<u8> {
+    let entries = config_entries(cpu_count);
     let entries_len: usize = entries.iter().map(Vec::len).sum();
 
     let mut table = Vec::with_capacity(44 + entries_len);
@@ -78,24 +81,28 @@ fn build_config_table() -> Vec<u8> {
     table
 }
 
-fn config_entries() -> Vec<Vec<u8>> {
-    let mut entries = vec![
-        processor_entry(),
+fn config_entries(cpu_count: usize) -> Vec<Vec<u8>> {
+    let mut entries = Vec::new();
+    for apic_id in 0..cpu_count {
+        entries.push(processor_entry(apic_id as u8));
+    }
+    entries.extend([
         bus_entry(BUS_ID_PCI, b"PCI   "),
         bus_entry(BUS_ID_ISA, b"ISA   "),
         io_apic_entry(),
-    ];
+    ]);
     push_isa_interrupt_entries(&mut entries);
     push_pci_interrupt_entries(&mut entries);
     entries
 }
 
-fn processor_entry() -> Vec<u8> {
+fn processor_entry(apic_id: u8) -> Vec<u8> {
     let mut entry = Vec::with_capacity(20);
     entry.push(0);
-    entry.push(BSP_APIC_ID);
+    entry.push(apic_id);
     entry.push(APIC_VERSION);
-    entry.push(0x03); // enabled + BSP
+    let flags = if apic_id == BSP_APIC_ID { 0x03 } else { 0x01 };
+    entry.push(flags); // enabled, plus BSP for CPU0
     entry.extend_from_slice(&0x0000_0600u32.to_le_bytes());
     entry.extend_from_slice(&0x0000_0201u32.to_le_bytes());
     entry.extend_from_slice(&[0; 8]);
@@ -179,7 +186,7 @@ mod tests {
 
     #[test]
     fn builds_valid_mp_table_checksums() {
-        let image = build();
+        let image = build(2);
         let config_len = u16::from_le_bytes([image[4], image[5]]) as usize;
         assert_eq!(&image[..4], b"PCMP");
         assert_eq!(
