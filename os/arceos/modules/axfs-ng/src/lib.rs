@@ -28,7 +28,10 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
-pub use block::{BlockRegion, runtime::BlockDeviceHandle};
+pub use block::{
+    BlockRegion,
+    runtime::{BlockDeviceHandle, block_io_stats},
+};
 #[cfg(feature = "vfs")]
 pub use highlevel::*;
 #[cfg(feature = "vfs")]
