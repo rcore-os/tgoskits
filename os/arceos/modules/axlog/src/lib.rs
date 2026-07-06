@@ -236,8 +236,8 @@ fn level_to_priority(level: Level) -> u8 {
 /// priority preserved rather than collapsed through the 5-level log macros.
 #[cfg(all(feature = "kmsg", not(feature = "std")))]
 pub fn kmsg_emit(priority: u8, msg: &str) {
-    let ts_us = call_interface!(LogIf::current_time).as_micros() as u64;
-    ring::push(priority, ts_us, msg);
+    let ts_nsec = call_interface!(LogIf::current_time).as_nanos() as u64;
+    ring::push(priority, ts_nsec, msg);
     call_interface!(LogIf::console_write_str, msg);
     call_interface!(LogIf::console_write_str, "\n");
 }
@@ -281,7 +281,7 @@ impl Log for Logger {
                 #[cfg(feature = "kmsg")]
                 ring::push_fmt(
                     level_to_priority(level),
-                    now.as_micros() as u64,
+                    now.as_nanos() as u64,
                     *record.args(),
                 );
                 if let Some(cpu_id) = cpu_id {

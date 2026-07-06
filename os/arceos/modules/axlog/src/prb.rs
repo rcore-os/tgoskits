@@ -1,31 +1,28 @@
-//! Lockless printk ring buffer — a faithful Rust port of Linux's
-//! `kernel/printk/printk_ringbuffer.c` (v6.12).
+//! Lockless printk ring buffer.
 //!
 //! Two rings: a descriptor ring (fixed records: a `state_var` state machine
 //! plus metadata) and a text data ring (variable-length, zero-copy, contiguous
 //! blocks with trailing dead-space when a block would wrap). Writers reserve via
-//! CAS on `head_id`/`head_lpos` and publish via the descriptor state machine;
-//! readers stay consistent by re-reading `state_var`.
+//! CAS on `head_id`/`head_lpos` and publish through the descriptor state
+//! machine; readers stay consistent by re-reading `state_var`.
 //!
-//! Memory-ordering map (Linux LKMM → Rust atomics):
-//! - `smp_rmb()`            → `fence(Acquire)`
-//! - `smp_wmb()`            → `fence(Release)`
-//! - `smp_mb()`             → `fence(SeqCst)`
-//! - `atomic_long_read`     → `load(Relaxed)`
-//! - `atomic_long_set`      → `store(Relaxed)`
-//! - full `cmpxchg`         → `compare_exchange(SeqCst, SeqCst)`
-//! - `cmpxchg_relaxed`      → `compare_exchange(Relaxed, Relaxed)`
-//! - `try_cmpxchg_release`  → `compare_exchange(Release, Relaxed)`
-//! - `read_acquire`         → `load(Acquire)`
+//! Memory-ordering model — the atomic ordering each operation relies on:
+//! - read barrier   → `fence(Acquire)`
+//! - write barrier  → `fence(Release)`
+//! - full barrier   → `fence(SeqCst)`
+//! - plain read     → `load(Relaxed)`
+//! - plain store    → `store(Relaxed)`
+//! - full CAS       → `compare_exchange(SeqCst, SeqCst)`
+//! - relaxed CAS    → `compare_exchange(Relaxed, Relaxed)`
+//! - release CAS    → `compare_exchange(Release, Relaxed)`
+//! - acquire read   → `load(Acquire)`
 //!
-//! This is a transcription, not a reimplementation; functions and `LMM(...)`
-//! barrier tags mirror the C so it can be diffed against the original. It uses
-//! `unsafe` for the zero-copy data buffer (plain memory ordered by the state
-//! machine + fences) and MUST be validated under SMP stress before use.
-//!
-//! Stage 1 of the port: data ring + descriptor ring + reserve/commit. The
-//! reader (`prb_read*`) and bootstrap (`prb_init`) are added in later stages,
-//! so this module is not yet wired into the crate.
+//! `unsafe` is used for the zero-copy data buffer and the per-record `Info`;
+//! both are plain memory whose visibility is ordered solely by the descriptor
+//! state machine plus the surrounding fences. The racy info fields are accessed
+//! with `read_volatile`/`write_volatile` and stay consistent only by virtue of
+//! the descriptor `state_var` re-read — so this MUST be validated under SMP
+//! stress before it is wired into the crate.
 #![allow(dead_code)]
 
 use core::{
@@ -45,7 +42,7 @@ const DESCS_COUNT_MASK: usize = DESCS_COUNT - 1;
 
 /// `size_bits` for the text data ring: `DATA_SIZE = 1 << DATA_SIZE_BITS`.
 const DATA_SIZE_BITS: u32 = 17; // 128 KiB
-const DATA_SIZE: usize = 1 << DATA_SIZE_BITS;
+pub(crate) const DATA_SIZE: usize = 1 << DATA_SIZE_BITS;
 const DATA_SIZE_MASK: usize = DATA_SIZE - 1;
 
 /// Maximum stored message length.
@@ -130,7 +127,7 @@ fn to_blk_size(size: usize) -> usize {
 // ---- rings ------------------------------------------------------------------
 
 /// One descriptor: the atomic state machine plus the data-block location.
-/// (`prb_desc`; the variable `text_blk_lpos` is split into `begin`/`next`.)
+/// The block location is stored as its `begin`/`next` logical positions.
 struct Desc {
     state_var: AtomicUsize,
     begin: AtomicUsize,
@@ -147,22 +144,42 @@ impl Desc {
     }
 }
 
-/// Per-record metadata (`printk_info`), valid once the descriptor is consistent.
+/// Per-record metadata, valid once the descriptor is consistent.
+///
+/// Plain fields (not atomics): they are writer-exclusive while the descriptor is
+/// `reserved` and read-only once finalized; their visibility is published by the
+/// `state_var` release/acquire and validated by the reader's `state_var`
+/// re-read. Accessed via volatile loads/stores through the enclosing
+/// `UnsafeCell`.
+#[derive(Clone, Copy)]
 struct Info {
-    seq: AtomicU64,
-    ts_us: AtomicU64,
-    /// `text_len` in bits 0..16, priority byte in bits 16..24.
-    meta: AtomicU64,
-    caller_id: AtomicU64,
+    /// Sequence number.
+    seq: u64,
+    /// Timestamp in nanoseconds.
+    ts_nsec: u64,
+    /// Length of the text message.
+    text_len: u16,
+    /// Syslog facility.
+    facility: u8,
+    /// Internal record flags (5 bits used).
+    flags: u8,
+    /// Syslog level (3 bits used).
+    level: u8,
+    /// Thread id or processor id.
+    caller_id: u32,
+    // Structured device metadata (SUBSYSTEM=/DEVICE= fields) is omitted for v1.
 }
 
 impl Info {
     const fn new() -> Self {
         Self {
-            seq: AtomicU64::new(0),
-            ts_us: AtomicU64::new(0),
-            meta: AtomicU64::new(0),
-            caller_id: AtomicU64::new(0),
+            seq: 0,
+            ts_nsec: 0,
+            text_len: 0,
+            facility: 0,
+            flags: 0,
+            level: 0,
+            caller_id: 0,
         }
     }
 }
@@ -177,7 +194,7 @@ struct DataRing {
 
 struct DescRing {
     descs: [Desc; DESCS_COUNT],
-    infos: [Info; DESCS_COUNT],
+    infos: [UnsafeCell<Info>; DESCS_COUNT],
     head_id: AtomicUsize,
     tail_id: AtomicUsize,
     last_finalized_seq: AtomicU64,
@@ -189,14 +206,14 @@ struct Prb {
     fail: AtomicU64,
 }
 
-// SAFETY: every field is either an atomic or the `data` buffer, whose raw
-// accesses are synchronized by the descriptor state machine + fences exactly as
-// in the C original.
+// SAFETY: every field is either an atomic, the `data` buffer, or the `infos`
+// array; the raw accesses to the latter two are synchronized by the descriptor
+// state machine + fences.
 unsafe impl Sync for Prb {}
 
-/// Bootstrap (see printk_ringbuffer.h "Bootstrap"): `head_id`/`tail_id` start at
-/// `DESC0_ID` and `descs[0]` starts finalized→reusable so the first real
-/// reservation (id 1) recycles slot 0 cleanly. `DESC0_ID = DESC_ID(-(COUNT+1))`.
+/// Bootstrap: `head_id`/`tail_id` start at `DESC0_ID` and `descs[0]` starts
+/// finalized→reusable so the first real reservation (id 1) recycles slot 0
+/// cleanly. `DESC0_ID = desc_id(-(COUNT+1))`.
 const DESC0_ID: usize = desc_id(0usize.wrapping_sub(DESCS_COUNT + 1));
 const DESC0_SV: usize = desc_sv(DESC0_ID, DESC_REUSABLE);
 /// `BLK0_LPOS = -DATA_SIZE`.
@@ -205,8 +222,8 @@ const BLK0_LPOS: usize = 0usize.wrapping_sub(DATA_SIZE);
 static PRB: Prb = Prb {
     desc_ring: DescRing {
         descs: {
-            // Bootstrap (matches prb_init): the last descriptor is the seed,
-            // set to DESC0_SV with a data-less (FAILED_LPOS) block; the rest 0.
+            // Bootstrap: the last descriptor is the seed, set to DESC0_SV with
+            // a data-less (FAILED_LPOS) block; the rest are 0.
             let mut a = [const { Desc::new() }; DESCS_COUNT];
             a[DESCS_COUNT - 1].state_var = AtomicUsize::new(DESC0_SV);
             a[DESCS_COUNT - 1].begin = AtomicUsize::new(FAILED_LPOS);
@@ -214,10 +231,18 @@ static PRB: Prb = Prb {
             a
         },
         infos: {
-            // Bootstrap (hack#2): infos[0].seq = -COUNT; infos[COUNT-1].seq = 0
-            // (the latter is the default).
-            let mut a = [const { Info::new() }; DESCS_COUNT];
-            a[0].seq = AtomicU64::new(0u64.wrapping_sub(DESCS_COUNT as u64));
+            // Bootstrap: infos[0].seq = -COUNT; infos[COUNT-1].seq = 0 (the
+            // latter is the default).
+            let mut a = [const { UnsafeCell::new(Info::new()) }; DESCS_COUNT];
+            a[0] = UnsafeCell::new(Info {
+                seq: 0u64.wrapping_sub(DESCS_COUNT as u64),
+                ts_nsec: 0,
+                text_len: 0,
+                facility: 0,
+                flags: 0,
+                level: 0,
+                caller_id: 0,
+            });
             a
         },
         head_id: AtomicUsize::new(DESC0_ID),
@@ -237,11 +262,29 @@ fn desc(id: usize) -> &'static Desc {
     &PRB.desc_ring.descs[desc_index(id)]
 }
 #[inline]
-fn info(id: usize) -> &'static Info {
-    &PRB.desc_ring.infos[desc_index(id)]
+fn info_ptr(id: usize) -> *mut Info {
+    PRB.desc_ring.infos[desc_index(id)].get()
 }
 
-/// `to_block`: raw pointer to the data block header at `begin_lpos`.
+/// Volatile load of an `Info` field, ordered by the surrounding state-machine
+/// fences (the field may be raced by a descriptor being reused, and is
+/// validated by the caller's `state_var` re-read).
+#[inline]
+fn info_read<T: Copy>(field: *const T) -> T {
+    // SAFETY: `field` points to a live, in-bounds field of an `Info` in `PRB`.
+    unsafe { field.read_volatile() }
+}
+
+/// Volatile store of an `Info` field. The caller owns the `reserved`
+/// descriptor, so the write is writer-exclusive.
+#[inline]
+fn info_write<T: Copy>(field: *mut T, val: T) {
+    // SAFETY: `field` points to a live, in-bounds field of an `Info` in `PRB`,
+    // and the caller holds the reserved descriptor exclusively.
+    unsafe { field.write_volatile(val) }
+}
+
+/// Raw pointer to the data block header at `begin_lpos`.
 #[inline]
 fn block_ptr(begin_lpos: usize) -> *mut u8 {
     // SAFETY: index is masked into the data array bounds.
@@ -289,7 +332,7 @@ struct DescCopy {
 /// `caller_id` are only valid if the returned state is consistent.
 fn desc_read(id: usize) -> (DescState, DescCopy) {
     let d = desc(id);
-    let nfo = info(id);
+    let nfo = info_ptr(id);
 
     // desc_read:A
     let mut state_val = d.state_var.load(Relaxed);
@@ -310,11 +353,12 @@ fn desc_read(id: usize) -> (DescState, DescCopy) {
     // desc_read:B — load state before copying content.
     fence(Acquire);
 
-    // desc_read:C — copy the descriptor content.
+    // desc_read:C — copy the descriptor content. Only `seq` and `caller_id` of
+    // the info are needed during traversal.
     let begin = d.begin.load(Relaxed);
     let next = d.next.load(Relaxed);
-    let seq = nfo.seq.load(Relaxed);
-    let caller_id = nfo.caller_id.load(Relaxed);
+    let seq = info_read(core::ptr::addr_of!((*nfo).seq));
+    let caller_id = info_read(core::ptr::addr_of!((*nfo).caller_id)) as u64;
 
     // desc_read:D — load content before re-checking state.
     fence(Acquire);
@@ -514,7 +558,7 @@ fn desc_reserve() -> Option<usize> {
         return None;
     }
 
-    // desc_reserve:G — data in @desc may now be modified.
+    // desc_reserve:G — data in the descriptor may now be modified.
     Some(id)
 }
 
@@ -701,20 +745,18 @@ pub fn prb_reserve(text_buf_size: usize) -> Option<(ReservedEntry, *mut u8, usiz
         }
     };
 
-    let nfo = info(id);
-    let seq = nfo.seq.load(Relaxed);
-    // memset(info, 0) — preserving the saved @seq for the computation below.
-    nfo.ts_us.store(0, Relaxed);
-    nfo.meta.store(0, Relaxed);
-    nfo.caller_id.store(0, Relaxed);
+    let nfo = info_ptr(id);
+    let seq = info_read(core::ptr::addr_of!((*nfo).seq));
+    // Zero the info, preserving the saved `seq` for the computation below.
+    info_write(nfo, Info::new());
 
-    // Bootstrap-aware sequence assignment (hack#2).
+    // Bootstrap-aware sequence assignment.
     let new_seq = if seq == 0 && desc_index(id) != 0 {
         desc_index(id) as u64
     } else {
         seq + DESCS_COUNT as u64
     };
-    nfo.seq.store(new_seq, Relaxed);
+    info_write(core::ptr::addr_of_mut!((*nfo).seq), new_seq);
 
     // Finalize the previous descriptor (if any) so it becomes readable.
     if new_seq > 0 {
@@ -747,11 +789,17 @@ pub fn prb_reserve(text_buf_size: usize) -> Option<(ReservedEntry, *mut u8, usiz
 }
 
 /// Set the writer-owned metadata of a reserved record before committing.
-pub fn set_info(e: &ReservedEntry, ts_us: u64, priority: u8, text_len: usize) {
-    let nfo = info(e.id);
-    nfo.ts_us.store(ts_us, Relaxed);
-    nfo.meta
-        .store((text_len as u64 & 0xffff) | ((priority as u64) << 16), Relaxed);
+///
+/// `priority` is the syslog priority (`facility << 3 | level`); it is split
+/// into the stored `facility`/`level` fields, matching how a `<pri>` prefix is
+/// decoded at the `/dev/kmsg` boundary.
+pub fn set_info(e: &ReservedEntry, ts_nsec: u64, priority: u8, flags: u8, text_len: usize) {
+    let nfo = info_ptr(e.id);
+    info_write(core::ptr::addr_of_mut!((*nfo).ts_nsec), ts_nsec);
+    info_write(core::ptr::addr_of_mut!((*nfo).text_len), text_len as u16);
+    info_write(core::ptr::addr_of_mut!((*nfo).facility), priority >> 3);
+    info_write(core::ptr::addr_of_mut!((*nfo).level), priority & 0x7);
+    info_write(core::ptr::addr_of_mut!((*nfo).flags), flags);
 }
 
 /// Full text space used by a reserved record (`prb_record_text_space`).
@@ -792,8 +840,11 @@ pub fn prb_final_commit(e: &ReservedEntry) {
 #[derive(Default, Clone, Copy)]
 pub struct ReadInfo {
     pub seq: u64,
-    pub ts_us: u64,
+    pub ts_nsec: u64,
+    pub caller_id: u32,
+    /// Syslog priority, reconstructed as `facility << 3 | level`.
     pub priority: u8,
+    pub flags: u8,
     pub text_len: usize,
 }
 
@@ -849,14 +900,19 @@ fn prb_read(seq: u64, rec: Option<&mut Rec>) -> i32 {
         return err;
     }
 
-    let nfo = info(idx);
-    let meta = nfo.meta.load(Relaxed);
-    let text_len = (meta & 0xffff) as usize;
+    // Copy the metadata (matches `memcpy(r->info, info, ...)`), field by field
+    // to avoid reading the struct's padding bytes.
+    let nfo = info_ptr(idx);
+    let text_len = info_read(core::ptr::addr_of!((*nfo).text_len)) as usize;
     if let Some(out) = rec.info.as_deref_mut() {
-        out.seq = nfo.seq.load(Relaxed);
-        out.ts_us = nfo.ts_us.load(Relaxed);
+        let facility = info_read(core::ptr::addr_of!((*nfo).facility));
+        let level = info_read(core::ptr::addr_of!((*nfo).level));
+        out.seq = info_read(core::ptr::addr_of!((*nfo).seq));
+        out.ts_nsec = info_read(core::ptr::addr_of!((*nfo).ts_nsec));
+        out.caller_id = info_read(core::ptr::addr_of!((*nfo).caller_id));
+        out.priority = (facility << 3) | (level & 0x7);
+        out.flags = info_read(core::ptr::addr_of!((*nfo).flags));
         out.text_len = text_len;
-        out.priority = ((meta >> 16) & 0xff) as u8;
     }
 
     match copy_data(copy.begin, copy.next, text_len, rec.buf.as_deref_mut()) {
