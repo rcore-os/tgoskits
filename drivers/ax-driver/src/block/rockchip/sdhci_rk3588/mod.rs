@@ -15,7 +15,6 @@
 use alloc::{format, vec::Vec};
 use core::{ptr::NonNull, time::Duration};
 
-use fdt_edit::Node;
 use log::{info, warn};
 use rdrive::{
     probe::{OnProbeError, fdt::ResetLine},
@@ -33,7 +32,7 @@ use sdmmc_protocol::{
 };
 
 use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
-use crate::{block::ProbeFdtBlock, mmio::iomap, soc::rk3588_enable_power_domain};
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
 // status is acknowledged in the hard IRQ and task context advances the RDIF
@@ -209,35 +208,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
     apply_assigned_clocks(info, "SDHCI")?;
-    enable_power_domains(parse_power_domains(info.node.as_node())?)?;
     let resets = info.reset_lines()?;
     enable_node_clocks(info, "SDHCI");
     Ok(resets)
-}
-
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
-fn enable_power_domains(domains: Vec<usize>) -> Result<(), OnProbeError> {
-    for domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable RK3588 SDHCI power domain {domain}: {err}"
-            ))
-        })?;
-    }
-    Ok(())
 }
 
 fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
@@ -474,13 +447,6 @@ mod tests {
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
         assert_eq!(limits.max_segments, 1);
-    }
-
-    #[test]
-    fn parse_power_domains_accepts_absent_sdhci_domain() {
-        let node = Node::new("mmc@fe2e0000");
-
-        assert_eq!(parse_power_domains(&node).unwrap(), Vec::<usize>::new());
     }
 
     #[test]

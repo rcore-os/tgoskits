@@ -1,5 +1,6 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::{
+    mem,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -22,13 +23,15 @@ use super::{
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
-    sync::IrqMutex as SpinNoIrq, task_wait_timeout, task_yield, wait_for_drain_notification,
-    wake_task,
+    sync::IrqMutex as SpinNoIrq, task_can_block, task_wait_timeout, task_yield,
+    wait_for_drain_notification, wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
+const IRQ_DRIVEN_MAX_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_SUBMIT_WINDOW: usize = 32;
 const IRQ_COMPLETION_REPOLL_TIMEOUT: Duration = Duration::from_millis(1);
+const IRQ_COMPLETION_FAST_POLL_ATTEMPTS: usize = 32;
 
 fn runtime_device_dma(domain: DmaDomainId, dma_mask: u64) -> Result<DeviceDma, BlkError> {
     let dma_op = dma_op().ok_or(BlkError::Io)?;
@@ -60,6 +63,12 @@ pub fn block_io_stats() -> (u64, u64, u64, u64) {
         BLOCK_WRITES.load(Ordering::Relaxed),
         BLOCK_SECTORS_WRITTEN.load(Ordering::Relaxed),
     )
+}
+
+pub fn release_block_irqs_for_passthrough() -> usize {
+    BLOCK_RUNTIME.get().map_or(0, |runtime| {
+        runtime.release_irq_registrations_for_passthrough()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -252,14 +261,14 @@ impl QueueRuntime {
 
 pub struct BlockRuntime {
     devices: Vec<Arc<BlockDeviceHandle>>,
-    irq_registrations: Vec<Box<dyn BlockIrqRegistration>>,
+    irq_registrations: SpinNoIrq<Vec<Box<dyn BlockIrqRegistration>>>,
 }
 
 impl BlockRuntime {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            irq_registrations: Vec::new(),
+            irq_registrations: SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -271,8 +280,27 @@ impl BlockRuntime {
         &self.devices
     }
 
-    pub fn push_irq_registration(&mut self, registration: Box<dyn BlockIrqRegistration>) {
-        self.irq_registrations.push(registration);
+    pub fn push_irq_registration(&self, registration: Box<dyn BlockIrqRegistration>) {
+        self.irq_registrations.lock().push(registration);
+    }
+
+    pub fn release_irq_registrations_for_passthrough(&self) -> usize {
+        for device in &self.devices {
+            device.set_completion_mode(BlockCompletionMode::Polling);
+        }
+
+        let (released, registrations) = {
+            let mut registrations = self.irq_registrations.lock();
+            let released = registrations.len();
+            (released, mem::take(&mut *registrations))
+        };
+        drop(registrations);
+        released
+    }
+
+    #[cfg(test)]
+    pub(crate) fn irq_registration_count(&self) -> usize {
+        self.irq_registrations.lock().len()
     }
 }
 
@@ -1003,6 +1031,25 @@ impl BlockDeviceHandle {
         CompletionDrain::new(&self.pending, &mut poller).poll_keys(keys)
     }
 
+    fn any_key_has_result(&self, keys: &[RequestKey]) -> bool {
+        keys.iter()
+            .any(|&key| self.pending.lock().result(key).is_some())
+    }
+
+    fn irq_fast_poll_any_key(&self, keys: &[RequestKey]) -> bool {
+        if self.completion_mode() != BlockCompletionMode::IrqDriven {
+            return false;
+        }
+        for _ in 0..IRQ_COMPLETION_FAST_POLL_ATTEMPTS {
+            core::hint::spin_loop();
+            let _ = self.poll_batch(keys);
+            if self.any_key_has_result(keys) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn harvest_active(
         &self,
         active: &mut Vec<WindowEntry>,
@@ -1058,17 +1105,14 @@ impl BlockDeviceHandle {
             return Ok(());
         }
         let keys = active.iter().map(|entry| entry.key).collect::<Vec<_>>();
-        if keys
-            .iter()
-            .any(|&key| self.pending.lock().result(key).is_some())
-        {
+        if self.any_key_has_result(&keys) {
             return Ok(());
         }
         let _ = self.poll_batch(&keys);
-        if keys
-            .iter()
-            .any(|&key| self.pending.lock().result(key).is_some())
-        {
+        if self.any_key_has_result(&keys) {
+            return Ok(());
+        }
+        if self.irq_fast_poll_any_key(&keys) {
             return Ok(());
         }
         if self.completion_mode() == BlockCompletionMode::Polling {
@@ -1141,7 +1185,8 @@ impl BlockDeviceHandle {
     }
 
     fn irq_wait_or_timeout(&self, task_id: u64) -> bool {
-        if task_id != 0 {
+        // Early root probing may issue block I/O while IRQs are still disabled.
+        if task_id != 0 && task_can_block() {
             task_wait_timeout(IRQ_COMPLETION_REPOLL_TIMEOUT)
         } else {
             core::hint::spin_loop();
@@ -1170,7 +1215,9 @@ impl BlockDeviceHandle {
         let observed = match observed {
             Some(result) => result,
             None => {
+                let keys = [key];
                 let _ = self.poll_one(key);
+                let _ = self.irq_fast_poll_any_key(&keys);
                 loop {
                     if let Some(result) = self
                         .pending
@@ -1237,6 +1284,7 @@ fn build_rdif_block_device(
     drain_wake: Arc<dyn BlockDrainWake>,
 ) -> Result<RegisteredRdifBlockDevice, AxError> {
     let name = String::from(block.name());
+    let config = rdif_block_runtime_config(&block, drain_wake);
     let mut queues = Vec::new();
     while let Some(queue) = block.interface_mut().create_owned_queue() {
         queues.push(RuntimeQueue::Owned(queue));
@@ -1251,13 +1299,8 @@ fn build_rdif_block_device(
     }
 
     let bridge = Arc::new(BlockIrqBridge::new());
-    let device = BlockDeviceHandle::new_runtime(
-        name.clone(),
-        queues,
-        bridge,
-        BlockRuntimeConfig::new(drain_wake),
-    )
-    .map_err(map_blk_err_to_ax_err)?;
+    let device = BlockDeviceHandle::new_runtime(name.clone(), queues, bridge, config)
+        .map_err(map_blk_err_to_ax_err)?;
 
     let registrations = match register_rdif_irq_handlers(&mut block, device.clone(), device_index)
         .and_then(|registrations| {
@@ -1286,6 +1329,17 @@ fn build_rdif_block_device(
     }
     info!("registered rdif filesystem block device {name}");
     Ok((device, registrations))
+}
+
+fn rdif_block_runtime_config(
+    block: &RdifBlockDevice,
+    drain_wake: Arc<dyn BlockDrainWake>,
+) -> BlockRuntimeConfig {
+    let mut config = BlockRuntimeConfig::new(drain_wake);
+    if block.irq().is_some() && !block.interface().irq_sources().is_empty() {
+        config.max_transfer_bytes = config.max_transfer_bytes.max(IRQ_DRIVEN_MAX_TRANSFER_BYTES);
+    }
+    config
 }
 
 fn register_rdif_irq_handlers(
@@ -1588,6 +1642,160 @@ pub fn map_blk_err_to_ax_err(err: BlkError) -> AxError {
         BlkError::NoMemory => AxError::NoMemory,
         BlkError::InvalidBlockIndex(_) | BlkError::InvalidRequest => AxError::InvalidInput,
         BlkError::Io | BlkError::Other(_) => AxError::Io,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+
+    use irq_framework::{HwIrq, IrqDomainId};
+    use rdif_block::{Event, IdList, IrqHandler, IrqSourceInfo, QueueLimits};
+
+    use super::*;
+
+    struct PlannerTestQueue {
+        info: QueueInfo,
+    }
+
+    impl PlannerTestQueue {
+        fn new() -> Self {
+            let block_size = 512;
+            let limits = QueueLimits {
+                max_inflight: 1,
+                max_blocks_per_request: (IRQ_DRIVEN_MAX_TRANSFER_BYTES / block_size) as u32,
+                max_segments: 1,
+                max_segment_size: IRQ_DRIVEN_MAX_TRANSFER_BYTES,
+                ..QueueLimits::simple(block_size, u64::MAX)
+            };
+            Self {
+                info: QueueInfo {
+                    id: 0,
+                    device: DeviceInfo::new(
+                        (IRQ_DRIVEN_MAX_TRANSFER_BYTES / block_size * 2) as u64,
+                        block_size,
+                    ),
+                    limits,
+                },
+            }
+        }
+    }
+
+    // SAFETY: This queue is used only to build a runtime planner; submitted
+    // requests are not retained.
+    unsafe impl IQueue for PlannerTestQueue {
+        fn id(&self) -> usize {
+            self.info.id
+        }
+
+        fn info(&self) -> QueueInfo {
+            self.info
+        }
+
+        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+            Ok(RequestId::new(1))
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
+            Ok(RequestStatus::Complete)
+        }
+    }
+
+    impl rdif_block::DriverGeneric for PlannerTestQueue {
+        fn name(&self) -> &str {
+            "planner-test-queue"
+        }
+    }
+
+    struct PlannerTestInterface {
+        info: QueueInfo,
+        expose_irq: bool,
+    }
+
+    impl PlannerTestInterface {
+        fn new(info: QueueInfo, expose_irq: bool) -> Self {
+            Self { info, expose_irq }
+        }
+    }
+
+    impl rdif_block::DriverGeneric for PlannerTestInterface {
+        fn name(&self) -> &str {
+            "planner-test-interface"
+        }
+    }
+
+    impl rdif_block::Interface for PlannerTestInterface {
+        fn device_info(&self) -> DeviceInfo {
+            self.info.device
+        }
+
+        fn queue_limits(&self) -> QueueLimits {
+            self.info.limits
+        }
+
+        fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
+            None
+        }
+
+        fn irq_sources(&self) -> rdif_block::IrqSourceList {
+            if !self.expose_irq {
+                return Vec::new();
+            }
+            let mut queues = IdList::none();
+            queues.insert(0);
+            vec![IrqSourceInfo::new(0, queues)]
+        }
+
+        fn take_irq_handler(&mut self, source_id: usize) -> Option<rdif_block::BIrqHandler> {
+            (self.expose_irq && source_id == 0).then(|| Box::new(NoopIrq) as _)
+        }
+    }
+
+    struct NoopIrq;
+
+    impl IrqHandler for NoopIrq {
+        fn handle_irq(&mut self) -> Event {
+            Event::none()
+        }
+    }
+
+    fn test_irq() -> IrqId {
+        IrqId::new(IrqDomainId(42), HwIrq(7))
+    }
+
+    fn planner_chunk_size(config: BlockRuntimeConfig) -> usize {
+        let device = BlockDeviceHandle::new_runtime(
+            "planner-test",
+            [RuntimeQueue::Legacy(Box::new(PlannerTestQueue::new()))],
+            Arc::new(BlockIrqBridge::new()),
+            config,
+        )
+        .unwrap();
+        device.queues[0].lock().planner.chunk_size()
+    }
+
+    #[test]
+    fn irq_capable_rdif_blocks_use_large_runtime_transfer_chunks() {
+        let info = PlannerTestQueue::new().info();
+        let irq_capable = RdifBlockDevice::new(
+            "irq-capable",
+            Some(test_irq()),
+            Box::new(PlannerTestInterface::new(info, true)),
+        );
+        let config = rdif_block_runtime_config(&irq_capable, Arc::new(NoopDrainWake));
+
+        assert_eq!(config.max_transfer_bytes, IRQ_DRIVEN_MAX_TRANSFER_BYTES);
+        assert_eq!(planner_chunk_size(config), IRQ_DRIVEN_MAX_TRANSFER_BYTES);
+
+        let polling_only = RdifBlockDevice::new(
+            "polling-only",
+            None,
+            Box::new(PlannerTestInterface::new(info, true)),
+        );
+        let config = rdif_block_runtime_config(&polling_only, Arc::new(NoopDrainWake));
+
+        assert_eq!(config.max_transfer_bytes, DEFAULT_MAX_TRANSFER_BYTES);
+        assert_eq!(planner_chunk_size(config), DEFAULT_MAX_TRANSFER_BYTES);
     }
 }
 

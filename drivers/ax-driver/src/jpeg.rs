@@ -1,7 +1,7 @@
 //! OS glue for the RK3588 hardware JPEG decoder (`jpegd@fdb90000`, VDPU720).
 //!
 //! Probes the device-tree node, maps its registers, brings the engine out of
-//! reset (power domain + clocks + soft reset), puts the per-block IOMMU into
+//! reset (clocks + soft reset), puts the per-block IOMMU into
 //! pass-through (bypass) so contiguous buffers reach the engine by physical
 //! address, and registers a [`RockchipJpeg`] device. An optional boot-time
 //! self-test (feature `jpu-selftest`) decodes an embedded JPEG to validate the
@@ -16,13 +16,8 @@ use rdrive::{
 };
 use rockchip_jpeg::RockchipJpeg;
 
-use crate::{
-    mmio::iomap,
-    soc::{rk3588_enable_clock, rk3588_enable_power_domain},
-};
+use crate::{mmio::iomap, soc::rk3588_enable_clock};
 
-// RK3588 jpegd (VDPU720) constants, from the OrangePi-5-Plus device tree.
-const PD_VDPU: usize = 21;
 // Synthetic `ClkId` keys into the rockchip-soc gate table — NOT the DT binding
 // numbers. The canonical `ACLK/HCLK_JPEG_DECODER` = 421/422 are already taken by
 // the USB3OTG1 entries in that crate, so 436/437 are used as unique keys instead.
@@ -68,7 +63,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let base = unsafe { iomap(start, size)?.add(offset) };
     let resets = info.reset_lines()?;
 
-    bring_up_power_and_clocks(&resets);
+    bring_up_clocks_and_resets(&resets);
     bypass_iommu(base);
 
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
@@ -96,10 +91,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 /// Bring the engine out of reset. All steps are best-effort and idempotent; the
 /// shared VDPU root clocks are left enabled by the bootloader (as for RGA2), so
 /// failures here are logged but not fatal.
-fn bring_up_power_and_clocks(resets: &[ResetLine]) {
-    if let Err(e) = rk3588_enable_power_domain(PD_VDPU) {
-        info!("JPEG: enable PD_VDPU failed (continuing): {e}");
-    }
+fn bring_up_clocks_and_resets(resets: &[ResetLine]) {
     for clk in [CLK_ACLK_JPEG_DECODER, CLK_HCLK_JPEG_DECODER] {
         if let Err(e) = rk3588_enable_clock(clk) {
             info!("JPEG: enable clock {clk} failed (continuing): {e:?}");

@@ -26,7 +26,7 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio", "pci"]
+virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
@@ -126,7 +126,7 @@ rockchip-soc = [
     "dep:rdif-reset",
     "dep:rockchip-soc",
 ]
-rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
+rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
@@ -164,6 +164,7 @@ rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
+rdif-power = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
@@ -186,6 +187,9 @@ simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
+
+[dev-dependencies]
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

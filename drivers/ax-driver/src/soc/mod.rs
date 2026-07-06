@@ -21,8 +21,7 @@ pub mod scmi;
 
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
-    RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain,
-    rk3588_set_clock_rate,
+    RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_set_clock_rate,
 };
 
 #[cfg(not(feature = "rockchip-soc"))]
@@ -37,13 +36,6 @@ pub fn rk3588_set_clock_rate(id: u32, rate_hz: u64) -> Result<(), rdrive::probe:
     Err(rdrive::probe::OnProbeError::other(alloc::format!(
         "RK3588 clock support is not enabled for clock {id:#x} rate {rate_hz}"
     )))
-}
-
-#[cfg(not(feature = "rockchip-soc"))]
-pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
-    Err(alloc::format!(
-        "RK3588 power-domain support is not enabled for power domain {domain}"
-    ))
 }
 
 #[cfg(not(feature = "rockchip-soc"))]

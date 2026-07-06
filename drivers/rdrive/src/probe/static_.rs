@@ -1,6 +1,6 @@
 use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
 use spin::Once;
 
 use crate::{
