@@ -725,6 +725,11 @@ pub fn zap_thread(tid: Pid) -> AxResult<()> {
     let task = get_task(tid)?;
     let thr = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
     thr.set_exit_request();
-    task.interrupt();
+    // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
+    // (pipe read, futex wait) — no interrupt waker is registered there — so a
+    // SIGKILLed sibling would linger until async GC, deferring `clear()` and
+    // its frame reclaim. `wake_task` force-unblocks the parked thread so it
+    // returns, observes the pending exit, and runs `do_exit` synchronously.
+    ax_task::wake_task(&task);
     Ok(())
 }
