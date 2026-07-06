@@ -26,7 +26,7 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio", "pci"]
+virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
@@ -186,6 +186,9 @@ simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 virtio-drivers = { workspace = true, optional = true }
+
+[dev-dependencies]
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"
