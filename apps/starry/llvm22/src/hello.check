@@ -1,0 +1,4 @@
+; FileCheck directives matched against `llvm-dis hello.bc`. Positive case: both
+; patterns must appear (in order) -> FileCheck exits 0.
+; CHECK: define i32 @main
+; CHECK: @puts

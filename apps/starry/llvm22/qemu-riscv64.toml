@@ -1,0 +1,15 @@
+# llvm22 riscv64 - musl-native LLVM 22 toolchain carpet. TCG emulation of the LLVM tools is
+# slow; the timeout is generous. -m 4096M for libLLVM + clang.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-llvm22.sh"
+success_regex = ['(?m)^LLVM22_OK=68/68\s*$', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000
