@@ -1,11 +1,15 @@
 # higress standalone gateway - static Envoy bootstrap (no xDS control plane).
 #
-# Exercises the data-plane feature set higress builds on top of Envoy: prefix/
-# host routing, weighted load balancing, request/response header mutation, path
-# rewrite, upstream retry, per-route local rate limiting, and downstream +
-# upstream TLS. All clusters are STATIC with hardcoded loopback endpoints so the
-# gateway never needs DNS. Listeners pin enable_reuse_port:false so this config
-# runs on kernels without SO_REUSEPORT; conf/bootstrap-reuseport.yaml flips it on.
+# Exercises the data-plane feature set higress builds on top of Envoy across the
+# documented surface: route matching (prefix / exact path / safe_regex /
+# query-parameter / header), weighted + round-robin / least-request / random load
+# balancing, request + response header mutation (add + remove), path rewrite
+# (prefix + regex with capture), host rewrite, redirect and direct-response
+# actions, per-route timeout, upstream retry, per-route local rate limiting, and
+# downstream + upstream TLS (including upstream certificate verification). All
+# clusters are STATIC with hardcoded loopback endpoints so the gateway never
+# needs DNS. Listeners pin enable_reuse_port:false so this config runs on kernels
+# without SO_REUSEPORT; conf/bootstrap-reuseport.yaml flips it on.
 node:
   id: higress-standalone
   cluster: higress-standalone
@@ -36,6 +40,96 @@ static_resources:
             - name: app_vhost
               domains: ["app.example.com", "*"]
               routes:
+              # --- route matching: exact path / safe_regex / query params ---
+              - match:
+                  path: "/exact"
+                route:
+                  cluster: backend_a
+                response_headers_to_add:
+                - header: { key: "x-route", value: "exact" }
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              - match:
+                  safe_regex:
+                    regex: "^/img/[^/]+\\.(png|jpg)$"
+                route:
+                  cluster: backend_b
+                response_headers_to_add:
+                - header: { key: "x-route", value: "regex" }
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              - match:
+                  prefix: "/qp"
+                  query_parameters:
+                  - name: ver
+                    string_match:
+                      exact: "v2"
+                route:
+                  cluster: backend_c
+                response_headers_to_add:
+                - header: { key: "x-route", value: "qp-v2" }
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              - match:
+                  prefix: "/qp"
+                route:
+                  cluster: backend_a
+                response_headers_to_add:
+                - header: { key: "x-route", value: "qp-default" }
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              # --- redirect / direct-response actions ---
+              - match:
+                  prefix: "/redir"
+                redirect:
+                  path_redirect: "/"
+                  response_code: MOVED_PERMANENTLY
+              - match:
+                  prefix: "/ping"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "PONG"
+              # --- rewrite actions: regex-with-capture / prefix / host ---
+              - match:
+                  prefix: "/rgx"
+                route:
+                  cluster: backend_a
+                  regex_rewrite:
+                    pattern:
+                      regex: "^/rgx/(.*)$"
+                    substitution: '/echo?orig=\1'
+              - match:
+                  prefix: "/hostrw"
+                route:
+                  cluster: backend_a
+                  prefix_rewrite: "/echo"
+                  host_rewrite_literal: "rewritten.example"
+              # --- response-header removal (compared against /leak which keeps it) ---
+              - match:
+                  prefix: "/leak"
+                route:
+                  cluster: backend_a
+                  prefix_rewrite: "/echo"
+              - match:
+                  prefix: "/nosecret"
+                route:
+                  cluster: backend_a
+                  prefix_rewrite: "/echo"
+                response_headers_to_remove: ["x-backend-secret"]
+              # --- load-balancing policies ---
+              - match:
+                  prefix: "/rr"
+                route:
+                  cluster: backend_rr
+                  prefix_rewrite: "/echo"
+              - match:
+                  prefix: "/lr"
+                route:
+                  cluster: backend_least
+                  prefix_rewrite: "/echo"
+              - match:
+                  prefix: "/rand"
+                route:
+                  cluster: backend_random
+                  prefix_rewrite: "/echo"
+              # --- per-route local rate limit ---
               - match:
                   prefix: "/limited"
                 route:
@@ -49,13 +143,10 @@ static_resources:
                       tokens_per_fill: 2
                       fill_interval: 300s
                     filter_enabled:
-                      default_value:
-                        numerator: 100
-                        denominator: HUNDRED
+                      default_value: { numerator: 100, denominator: HUNDRED }
                     filter_enforced:
-                      default_value:
-                        numerator: 100
-                        denominator: HUNDRED
+                      default_value: { numerator: 100, denominator: HUNDRED }
+              # --- upstream retry (503-backend, retried then surfaced) ---
               - match:
                   prefix: "/flaky"
                 route:
@@ -63,15 +154,33 @@ static_resources:
                   retry_policy:
                     retry_on: "5xx"
                     num_retries: 2
+              # --- exceptions: dead upstream (503) / per-route timeout (504) ---
+              - match:
+                  prefix: "/dead"
+                route:
+                  cluster: backend_dead
+              - match:
+                  prefix: "/slow"
+                route:
+                  cluster: backend_slow
+                  prefix_rewrite: "/echo"
+                  timeout: 1s
+              # --- upstream TLS (verify-off) and upstream-TLS-verify-fail (503) ---
+              - match:
+                  prefix: "/secure-verify"
+                route:
+                  cluster: backend_tls_badverify
+                  prefix_rewrite: "/"
               - match:
                   prefix: "/secure"
                 route:
                   cluster: backend_tls
-                  prefix_rewrite: "/cgi-bin/echo"
+                  prefix_rewrite: "/"
+              # --- integration: weighted LB + rewrite + req/resp header mutation ---
               - match:
                   prefix: "/api"
                 route:
-                  prefix_rewrite: "/cgi-bin/echo"
+                  prefix_rewrite: "/echo"
                   weighted_clusters:
                     clusters:
                     - name: backend_a
@@ -79,19 +188,17 @@ static_resources:
                     - name: backend_b
                       weight: 1
                 request_headers_to_add:
-                - header:
-                    key: "x-higress-added"
-                    value: "starry"
+                - header: { key: "x-higress-added", value: "starry" }
                   append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 response_headers_to_add:
-                - header:
-                    key: "x-higress-gateway"
-                    value: "envoy-standalone"
+                - header: { key: "x-higress-gateway", value: "envoy-standalone" }
                   append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              # --- catch-all ---
               - match:
                   prefix: "/"
                 route:
                   cluster: backend_a
+                  prefix_rewrite: "/echo"
           http_filters:
           - name: envoy.filters.http.local_ratelimit
             typed_config:
@@ -118,10 +225,39 @@ static_resources:
             - name: tls_vhost
               domains: ["*"]
               routes:
+              # header-match routing (driven by a client-supplied x-canary header)
+              - match:
+                  prefix: "/"
+                  headers:
+                  - name: x-canary
+                    string_match:
+                      exact: "on"
+                route:
+                  cluster: backend_a
+                  prefix_rewrite: "/echo"
+                response_headers_to_add:
+                - header: { key: "x-route", value: "canary" }
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+              # downstream-TLS + upstream-TLS in one hop
+              - match:
+                  prefix: "/secure"
+                route:
+                  cluster: backend_tls
+                  prefix_rewrite: "/"
+              # direct-response 404 (fetched over TLS so the body survives)
+              - match:
+                  prefix: "/nope"
+                direct_response:
+                  status: 404
+                  body:
+                    inline_string: "NO_ROUTE"
+              # default: strips an inbound header (request-header removal)
               - match:
                   prefix: "/"
                 route:
                   cluster: backend_a
+                  prefix_rewrite: "/echo"
+                request_headers_to_remove: ["x-strip-me"]
           http_filters:
           - name: envoy.filters.http.router
             typed_config:
@@ -131,6 +267,8 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
           common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_2
             tls_certificates:
             - certificate_chain:
                 filename: "/etc/higress/certs/server.crt"
@@ -145,11 +283,7 @@ static_resources:
       cluster_name: backend_a
       endpoints:
       - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 127.0.0.1
-                port_value: 8081
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8081 } } }
   - name: backend_b
     type: STATIC
     connect_timeout: 5s
@@ -158,11 +292,7 @@ static_resources:
       cluster_name: backend_b
       endpoints:
       - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 127.0.0.1
-                port_value: 8082
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8082 } } }
   - name: backend_c
     type: STATIC
     connect_timeout: 5s
@@ -171,11 +301,7 @@ static_resources:
       cluster_name: backend_c
       endpoints:
       - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 127.0.0.1
-                port_value: 8083
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8083 } } }
   - name: backend_fail
     type: STATIC
     connect_timeout: 5s
@@ -184,11 +310,55 @@ static_resources:
       cluster_name: backend_fail
       endpoints:
       - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 127.0.0.1
-                port_value: 8084
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8084 } } }
+  - name: backend_slow
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_slow
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8085 } } }
+  - name: backend_dead
+    type: STATIC
+    connect_timeout: 1s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_dead
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8099 } } }
+  - name: backend_rr
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_rr
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8081 } } }
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8082 } } }
+  - name: backend_least
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: LEAST_REQUEST
+    load_assignment:
+      cluster_name: backend_least
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8081 } } }
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8082 } } }
+  - name: backend_random
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: RANDOM
+    load_assignment:
+      cluster_name: backend_random
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8081 } } }
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8082 } } }
   - name: backend_tls
     type: STATIC
     connect_timeout: 5s
@@ -197,13 +367,26 @@ static_resources:
       cluster_name: backend_tls
       endpoints:
       - lb_endpoints:
-        - endpoint:
-            address:
-              socket_address:
-                address: 127.0.0.1
-                port_value: 8443
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8443 } } }
     transport_socket:
       name: envoy.transport_sockets.tls
       typed_config:
         "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
         common_tls_context: {}
+  - name: backend_tls_badverify
+    type: STATIC
+    connect_timeout: 5s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_tls_badverify
+      endpoints:
+      - lb_endpoints:
+        - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 8443 } } }
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca:
+              filename: "/etc/higress/certs/otherca.crt"
