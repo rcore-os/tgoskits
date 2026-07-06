@@ -136,7 +136,7 @@ ax-memory-set = { workspace = true }
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
 ax-percpu = { workspace = true }
-rand = { version = "0.10", default-features = false, features = ["alloc"] }
+rand = { version = "0.10", default-features = false, features = ["alloc", "chacha"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }

@@ -29,3 +29,7 @@ pub fn invalid_timespec_is_rejected() -> bool {
     };
     invalid.try_into_time_value().is_err()
 }
+
+pub fn random_write_mixes_entropy() -> bool {
+    super::pseudofs::dev::random_write_mixes_entropy_for_test()
+}

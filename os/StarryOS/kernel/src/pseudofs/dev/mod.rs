@@ -40,7 +40,10 @@ pub mod tty;
 mod cvi_usb_camera;
 
 use alloc::{format, sync::Arc};
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_errno::AxError;
 use ax_sync::Mutex;
@@ -52,11 +55,13 @@ use spin::Once;
 pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
-const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
+
+static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) struct IrqRegistration {
@@ -167,24 +172,67 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    rng: Mutex<SmallRng>,
+    state: Mutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
+            state: Mutex::new(RandomState::new(random_seed())),
         }
+    }
+
+    #[cfg(any(test, axtest))]
+    fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
+        Self {
+            state: Mutex::new(RandomState::new(seed)),
+        }
+    }
+}
+
+struct RandomState {
+    rng: ChaCha20Rng,
+    reseed_count: u64,
+}
+
+impl RandomState {
+    fn new(seed: [u8; 32]) -> Self {
+        Self {
+            rng: ChaCha20Rng::from_seed(seed),
+            reseed_count: 0,
+        }
+    }
+
+    fn fill_bytes(&mut self, buf: &mut [u8]) {
+        self.rng.fill_bytes(buf);
+    }
+
+    fn mix_entropy(&mut self, entropy: &[u8]) {
+        let mut seed = [0; 32];
+        self.rng.fill_bytes(&mut seed);
+
+        self.reseed_count = self.reseed_count.wrapping_add(1);
+        fold_seed_word(&mut seed, entropy.len() as u64);
+        fold_seed_word(&mut seed, self.reseed_count);
+        fold_seed_word(&mut seed, time_entropy());
+
+        for (idx, byte) in entropy.iter().copied().enumerate() {
+            let seed_idx = idx % seed.len();
+            seed[seed_idx] ^= byte.rotate_left((idx & 7) as u32);
+        }
+
+        self.rng = ChaCha20Rng::from_seed(seed);
     }
 }
 
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        self.rng.lock().fill_bytes(buf);
+        self.state.lock().fill_bytes(buf);
         Ok(buf.len())
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        self.state.lock().mix_entropy(buf);
         Ok(buf.len())
     }
 
@@ -195,6 +243,68 @@ impl DeviceOps for Random {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
+}
+
+fn random_seed() -> [u8; 32] {
+    // This counter only perturbs seeds created in the same timer tick; it does
+    // not publish state to other threads.
+    let counter = RANDOM_SEED_COUNTER.fetch_add(RANDOM_SEED_STEP, Ordering::Relaxed);
+    let stack_addr = &counter as *const u64 as usize as u64;
+    let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17);
+    let mut seed = [0; 32];
+
+    for chunk in seed.chunks_exact_mut(core::mem::size_of::<u64>()) {
+        state = splitmix64(state.wrapping_add(RANDOM_SEED_STEP));
+        chunk.copy_from_slice(&state.to_le_bytes());
+    }
+
+    seed
+}
+
+fn time_entropy() -> u64 {
+    ax_runtime::hal::time::monotonic_time_nanos()
+}
+
+fn fold_seed_word(seed: &mut [u8; 32], word: u64) {
+    let mixed = splitmix64(word);
+    for (idx, byte) in mixed.to_le_bytes().into_iter().enumerate() {
+        let seed_idx = idx * 4 % seed.len();
+        seed[seed_idx] ^= byte;
+    }
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[cfg(axtest)]
+pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
+    let seed = *b"0123456789abcdef0123456789abcdef";
+    let baseline = Random::new_with_seed_for_test(seed);
+    let mixed = Random::new_with_seed_for_test(seed);
+    let mut discarded = [0; 32];
+    let mut baseline_next = [0; 32];
+    let mut mixed_next = [0; 32];
+
+    if baseline.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.write_at(b"caller entropy", 0) != Ok(14) {
+        return false;
+    }
+    if baseline.read_at(&mut baseline_next, 0) != Ok(baseline_next.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut mixed_next, 0) != Ok(mixed_next.len()) {
+        return false;
+    }
+
+    baseline_next != mixed_next
 }
 
 struct Full;
@@ -599,4 +709,33 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         );
     }
     SimpleDir::new_maker(fs, Arc::new(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceOps, Random};
+
+    #[test]
+    fn random_write_mixes_entropy_into_stream() {
+        let seed = *b"0123456789abcdef0123456789abcdef";
+        let baseline = Random::new_with_seed_for_test(seed);
+        let mixed = Random::new_with_seed_for_test(seed);
+        let mut discarded = [0; 32];
+        let mut baseline_next = [0; 32];
+        let mut mixed_next = [0; 32];
+
+        assert_eq!(
+            baseline.read_at(&mut discarded, 0).unwrap(),
+            discarded.len()
+        );
+        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
+        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
+        assert_eq!(
+            baseline.read_at(&mut baseline_next, 0).unwrap(),
+            baseline_next.len()
+        );
+        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
+
+        assert_ne!(baseline_next, mixed_next);
+    }
 }
