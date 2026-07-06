@@ -19,10 +19,7 @@ use rdrive::{
 };
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{
-    mmio::iomap,
-    soc::{rk3588_enable_clock, rk3588_enable_power_domain},
-};
+use crate::{mmio::iomap, soc::rk3588_enable_clock};
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
 
@@ -46,7 +43,6 @@ struct ClockSpec {
 
 struct EhciResources {
     ctrl: RegFixed,
-    power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
     resets: Vec<ResetLine>,
 }
@@ -56,7 +52,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
     deassert_resets(&resources.resets);
 
@@ -100,7 +95,6 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<EhciResources, OnP
 
     Ok(EhciResources {
         ctrl,
-        power_domains: parse_power_domains(info.node.as_node())?,
         clocks,
         resets,
     })
@@ -125,35 +119,8 @@ fn collect_usb2_phys<'a>(node: &Node, fdt: &'a Fdt) -> Vec<Usb2PhyNode<'a>> {
         .collect()
 }
 
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
 fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
     reset_lines(node)
-}
-
-fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
-    for &domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable EHCI power domain {domain}: {err}"
-            ))
-        })?;
-        info!("EHCI power domain {domain} enabled");
-    }
-    Ok(())
 }
 
 fn enable_clocks(clocks: &[ClockSpec]) {

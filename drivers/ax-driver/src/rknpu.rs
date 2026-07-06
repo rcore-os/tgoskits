@@ -8,7 +8,6 @@ pub use rockchip_npu::{
     ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
-use rockchip_pm::{PowerDomain, RockchipPM};
 
 use crate::mmio::iomap;
 
@@ -53,28 +52,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         base_regs.push(unsafe { iomap(start, size)?.add(offset) });
     }
 
-    enable_pm();
-
-    info!("NPU power enabled");
-
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");
     Ok(())
-}
-
-fn enable_pm() {
-    let mut pm = rdrive::get_one::<RockchipPM>()
-        .expect("RockchipPM not found")
-        .lock()
-        .expect("RockchipPM lock failed");
-
-    // RK3588 NPU power domain IDs (from rockchip-pm rk3588 variant)
-    pm.power_domain_on(PowerDomain(9)).unwrap(); // NPUTOP
-    pm.power_domain_on(PowerDomain(8)).unwrap(); // NPU
-    pm.power_domain_on(PowerDomain(10)).unwrap(); // NPU1
-    pm.power_domain_on(PowerDomain(11)).unwrap(); // NPU2
 }
 
 pub fn is_available() -> bool {

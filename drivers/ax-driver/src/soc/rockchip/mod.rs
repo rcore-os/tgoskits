@@ -25,12 +25,3 @@ mod pinctrl;
 pub use cru::{rk3588_enable_clock, rk3588_set_clock_rate};
 #[cfg(feature = "rockchip-soc")]
 pub use pinctrl::{RockchipFdtPinctrlParser, RockchipPinCtrl};
-#[cfg(all(feature = "rockchip-soc", feature = "rockchip-pm"))]
-pub use pm::rk3588_enable_power_domain;
-
-#[cfg(all(feature = "rockchip-soc", not(feature = "rockchip-pm")))]
-pub fn rk3588_enable_power_domain(domain: usize) -> Result<(), alloc::string::String> {
-    Err(alloc::format!(
-        "rockchip-pm feature is not enabled for power domain {domain}"
-    ))
-}
