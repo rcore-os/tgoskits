@@ -1,0 +1,3 @@
+; Negative FileCheck case: this token never appears in the disassembled IR, so
+; FileCheck must FAIL (non-zero exit). Proves FileCheck actually discriminates.
+; CHECK: this_symbol_never_appears_zzq_9137
