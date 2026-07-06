@@ -198,9 +198,45 @@ impl api_vmm::VmmIf for VmmIfImpl {
         }
 
         #[cfg(not(target_arch = "riscv64"))]
-        let _ = with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
-            vcpu.inject_interrupt(vector as usize).unwrap();
-        });
+        {
+            if let Some(context) = crate::context::try_current_vcpu_context()
+                && context.vm_id == vm_id
+                && context.vcpu_id == vcpu_id
+                && let Some(()) = with_vm_and_vcpu(vm_id, vcpu_id, move |_, vcpu| {
+                    if let Err(err) = vcpu.inject_interrupt(vector as usize) {
+                        warn!(
+                            "Failed to inject interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: \
+                             {err:?}"
+                        );
+                    }
+                })
+            {
+                return;
+            }
+
+            if vcpus::queue_vcpu_interrupt(vm_id, vcpu_id, vector as usize).is_ok() {
+                return;
+            }
+
+            #[cfg(feature = "control")]
+            {
+                if let Err(err) =
+                    crate::kvm::queue_control_vcpu_interrupt(vm_id, vcpu_id, vector as usize)
+                {
+                    warn!(
+                        "Failed to queue interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: \
+                         {err:?}"
+                    );
+                }
+            }
+            #[cfg(not(feature = "control"))]
+            {
+                warn!(
+                    "Failed to queue interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: VM vCPU \
+                     resources not found"
+                );
+            }
+        }
     }
 
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {

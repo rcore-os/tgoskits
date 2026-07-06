@@ -52,8 +52,9 @@ use super::{
     },
 };
 use crate::{
-    X86VCpuSetupConfig, ept::GuestPageWalkInfo, msr::Msr, regs::GeneralRegisters,
-    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
+    X86RealModeEntryState, X86VCpuCreateConfig, X86VCpuSetupConfig, ept::GuestPageWalkInfo,
+    msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
+    x86_sipi_entry_state, xstate::XState,
 };
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
@@ -110,10 +111,18 @@ pub struct VmxVcpu {
     launched: bool,
     /// The guest entry point.
     entry: Option<GuestPhysAddr>,
+    /// Whether `entry` should be replayed to the VMCS before the next launch.
+    entry_dirty: bool,
     /// The EPT root address.
     ept_root: Option<HostPhysAddr>,
+    /// vCPU ID exposed as the local APIC ID in CPUID topology leaves.
+    vcpu_id: VCpuId,
+    /// Number of vCPUs exposed in CPUID topology leaves.
+    vcpu_count: usize,
     /// Whether this vCPU exposes KVM-compatible hypervisor CPUID leaves.
     expose_kvm_hypervisor: bool,
+    /// Low-volume AP startup trace counter used while debugging x86 SMP bring-up.
+    ap_run_trace_count: usize,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 
@@ -143,7 +152,7 @@ pub struct VmxVcpu {
 
 impl VmxVcpu {
     /// Create a new [`VmxVcpu`].
-    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> AxResult<Self> {
+    pub fn new(vm_id: VMId, vcpu_id: VCpuId, config: X86VCpuCreateConfig) -> AxResult<Self> {
         let vmcs_revision_id = super::read_vmcs_revision_id();
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
@@ -151,8 +160,12 @@ impl VmxVcpu {
             host_rflags: 0,
             launched: false,
             entry: None,
+            entry_dirty: false,
             ept_root: None,
+            vcpu_id,
+            vcpu_count: config.vcpu_count.max(1),
             expose_kvm_hypervisor: false,
+            ap_run_trace_count: 0,
             // is_host: false,
             vmcs: VmxRegion::new(vmcs_revision_id, false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
@@ -188,6 +201,17 @@ impl VmxVcpu {
             vmx::vmptrld(self.vmcs.phys_addr().as_usize() as u64).map_err(as_axerr)?;
         }
         self.setup_vmcs_host()?;
+        Ok(())
+    }
+
+    fn replay_dirty_entry_after_bind(&mut self) -> AxResult {
+        if self.entry_dirty {
+            let entry = self
+                .entry
+                .ok_or_else(|| ax_err_type!(InvalidInput, "VMX guest entry is not set"))?;
+            self.setup_vmcs_guest_state(x86_sipi_entry_state(entry))?;
+            self.entry_dirty = false;
+        }
         Ok(())
     }
 
@@ -564,6 +588,10 @@ impl VmxVcpu {
 
     fn setup_vmcs_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
         let entry_state = x86_real_mode_entry_state(entry);
+        self.setup_vmcs_guest_state(entry_state)
+    }
+
+    fn setup_vmcs_guest_state(&mut self, entry_state: X86RealModeEntryState) -> AxResult {
         let cr0_val: Cr0Flags =
             Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE | Cr0Flags::EXTENSION_TYPE;
         self.set_cr(0, cr0_val.bits());
@@ -1078,6 +1106,16 @@ impl VmxVcpu {
         Ok(())
     }
 
+    fn take_pending_cpu_up_exit(&self) -> Option<AxVCpuExitReason> {
+        self.vlapic
+            .take_pending_cpu_up()
+            .map(|cpu_up| AxVCpuExitReason::CpuUp {
+                target_cpu: cpu_up.target_cpu as u64,
+                entry_point: GuestPhysAddr::from(cpu_up.entry_point),
+                arg: 0,
+            })
+    }
+
     fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult {
         let apic_access_exit_info = self.apic_access_exit_info()?;
 
@@ -1194,7 +1232,10 @@ impl VmxVcpu {
                         self.guest_regs.get_reg_of_index(reg) as u32 as usize,
                     )
                     .ok()?;
-                    Some(AxVCpuExitReason::Nothing)
+                    Some(
+                        self.take_pending_cpu_up_exit()
+                            .unwrap_or(AxVCpuExitReason::Nothing),
+                    )
                 }
                 (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
                     let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex).ok()?;
@@ -1209,7 +1250,10 @@ impl VmxVcpu {
                         data as usize,
                     )
                     .ok()?;
-                    Some(AxVCpuExitReason::Nothing)
+                    Some(
+                        self.take_pending_cpu_up_exit()
+                            .unwrap_or(AxVCpuExitReason::Nothing),
+                    )
                 }
                 (false, 0x8b) => {
                     let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
@@ -1425,6 +1469,7 @@ impl VmxVcpu {
         const LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION: u32 = 0xd;
         const LEAF_FREQUENCY_INFO: u32 = 0x16;
         const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+        let virtual_logical_processors = self.vcpu_count.min(0xff) as u32;
 
         let regs_clone = *self.regs_mut();
         let function = regs_clone.rax as u32;
@@ -1446,7 +1491,8 @@ impl VmxVcpu {
                 res.edx &= !FEATURE_MCE;
                 res.edx |= FEATURE_APIC;
                 res.ebx &= !(MAX_LOGICAL_PROCESSORS_MASK | INITIAL_APIC_ID_MASK);
-                res.ebx |= 1 << 16;
+                res.ebx |= virtual_logical_processors << 16;
+                res.ebx |= (self.vcpu_id as u32 & 0xff) << 24;
                 res
             }
             0xb | 0x1f => CpuIdResult {
@@ -1616,16 +1662,25 @@ impl Debug for VmxVcpu {
 }
 
 impl AxArchVCpu for VmxVcpu {
-    type CreateConfig = ();
+    type CreateConfig = X86VCpuCreateConfig;
 
     type SetupConfig = X86VCpuSetupConfig;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
-        Self::new(vm_id, vcpu_id)
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+        Self::new(vm_id, vcpu_id, config)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        warn!(
+            "[x86-smp] VMX set_entry vcpu={} entry={:#x} ept_ready={}",
+            self.vcpu_id,
+            entry.as_usize(),
+            self.ept_root.is_some()
+        );
         self.entry = Some(entry);
+        if self.ept_root.is_some() {
+            self.entry_dirty = true;
+        }
         Ok(())
     }
 
@@ -1635,11 +1690,51 @@ impl AxArchVCpu for VmxVcpu {
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
-        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap(), config)
+        self.setup_vmcs(self.entry.unwrap(), self.ept_root.unwrap(), config)?;
+        self.entry_dirty = false;
+        Ok(())
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        match self.inner_run() {
+        if self.vcpu_id != 0 && self.ap_run_trace_count == 0 {
+            warn!(
+                "[x86-smp] VMX AP vcpu={} entering guest rip={:#x} cs.base={:#x} \
+                 cs.selector={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
+                self.vcpu_id,
+                VmcsGuestNW::RIP.read().unwrap_or_default(),
+                VmcsGuestNW::CS_BASE.read().unwrap_or_default(),
+                VmcsGuest16::CS_SELECTOR.read().unwrap_or_default(),
+                VmcsGuestNW::CR0.read().unwrap_or_default(),
+                VmcsGuestNW::CR3.read().unwrap_or_default(),
+                VmcsGuestNW::CR4.read().unwrap_or_default(),
+                VmcsGuest64::IA32_EFER.read().unwrap_or_default()
+            );
+        }
+
+        let inner_exit = self.inner_run();
+        if self.vcpu_id != 0 && self.ap_run_trace_count < 16 {
+            match &inner_exit {
+                Some(exit_info) => warn!(
+                    "[x86-smp] VMX AP vcpu={} exit={:?} rip={:#x} cs.base={:#x} cr0={:#x} \
+                     cr3={:#x} cr4={:#x} efer={:#x}",
+                    self.vcpu_id,
+                    exit_info.exit_reason,
+                    VmcsGuestNW::RIP.read().unwrap_or_default(),
+                    VmcsGuestNW::CS_BASE.read().unwrap_or_default(),
+                    VmcsGuestNW::CR0.read().unwrap_or_default(),
+                    VmcsGuestNW::CR3.read().unwrap_or_default(),
+                    VmcsGuestNW::CR4.read().unwrap_or_default(),
+                    VmcsGuest64::IA32_EFER.read().unwrap_or_default()
+                ),
+                None => warn!(
+                    "[x86-smp] VMX AP vcpu={} returned without VM exit",
+                    self.vcpu_id
+                ),
+            }
+            self.ap_run_trace_count += 1;
+        }
+
+        match inner_exit {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 AxVCpuExitReason::FailEntry {
                     // Todo: get `hardware_entry_failure_reason` somehow.
@@ -1723,6 +1818,21 @@ impl AxArchVCpu for VmxVcpu {
                         if offset == 0xb0 {
                             let vector = self.vlapic.handle_eoi();
                             AxVCpuExitReason::InterruptEnd { vector }
+                        } else if offset == 0x300 {
+                            let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + offset);
+                            let value = <EmulatedLocalApic as BaseDeviceOps<
+                                AddrRange<GuestPhysAddr>,
+                            >>::handle_read(
+                                &self.vlapic, addr, AccessWidth::Dword
+                            )?;
+                            <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+                                &self.vlapic,
+                                addr,
+                                AccessWidth::Dword,
+                                value,
+                            )?;
+                            self.take_pending_cpu_up_exit()
+                                .unwrap_or(AxVCpuExitReason::Nothing)
                         } else {
                             AxVCpuExitReason::Nothing
                         }
@@ -1769,12 +1879,15 @@ impl AxArchVCpu for VmxVcpu {
                     }
                 }
             }),
-            None => Ok(AxVCpuExitReason::Nothing),
+            None => Ok(self
+                .take_pending_cpu_up_exit()
+                .unwrap_or(AxVCpuExitReason::Nothing)),
         }
     }
 
     fn bind(&mut self) -> AxResult {
-        self.bind_to_current_processor()
+        self.bind_to_current_processor()?;
+        self.replay_dirty_entry_after_bind()
     }
 
     fn unbind(&mut self) -> AxResult {

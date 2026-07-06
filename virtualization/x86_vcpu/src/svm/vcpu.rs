@@ -30,8 +30,9 @@ use super::{
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{
-    X86VCpuSetupConfig, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
-    x86_real_mode_entry_state, xstate::XState,
+    X86RealModeEntryState, X86VCpuCreateConfig, X86VCpuSetupConfig, msr::Msr,
+    regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
+    x86_sipi_entry_state, xstate::XState,
 };
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -195,6 +196,10 @@ pub struct SvmVcpu {
     entry: Option<GuestPhysAddr>,
     /// The nested page table root address.
     npt_root: Option<HostPhysAddr>,
+    /// vCPU ID exposed as the local APIC ID in CPUID topology leaves.
+    vcpu_id: VCpuId,
+    /// Number of vCPUs exposed in CPUID topology leaves.
+    vcpu_count: usize,
     /// Whether this vCPU exposes KVM-compatible hypervisor CPUID leaves.
     expose_kvm_hypervisor: bool,
     /// The guest VMCB.
@@ -211,12 +216,14 @@ pub struct SvmVcpu {
     vlapic: EmulatedLocalApic,
     /// Whether HLT exits should be returned to the VMM instead of used as poll points.
     hlt_exiting: bool,
+    /// Low-volume AP startup trace counter used while debugging x86 SMP bring-up.
+    ap_run_trace_count: usize,
     /// The XState of the VCpu. Both host and guest.
     xstate: XState,
 }
 
 impl SvmVcpu {
-    fn create(vm_id: VMId, vcpu_id: VCpuId) -> AxResult<Self> {
+    fn create(vm_id: VMId, vcpu_id: VCpuId, config: X86VCpuCreateConfig) -> AxResult<Self> {
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
@@ -224,6 +231,8 @@ impl SvmVcpu {
             launched: false,
             entry: None,
             npt_root: None,
+            vcpu_id,
+            vcpu_count: config.vcpu_count.max(1),
             expose_kvm_hypervisor: false,
             vmcb: VmcbFrame::new()?,
             load_save_states: VmLoadSaveStates::new()?,
@@ -232,6 +241,7 @@ impl SvmVcpu {
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             hlt_exiting: false,
+            ap_run_trace_count: 0,
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -253,6 +263,10 @@ impl SvmVcpu {
 
     fn setup_vmcb_guest(&mut self, entry: GuestPhysAddr) -> AxResult {
         let entry_state = x86_real_mode_entry_state(entry);
+        self.setup_vmcb_guest_state(entry_state)
+    }
+
+    fn setup_vmcb_guest_state(&mut self, entry_state: X86RealModeEntryState) -> AxResult {
         let cr0_val =
             Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE | Cr0Flags::EXTENSION_TYPE;
         let vmcb = unsafe { self.vmcb.as_vmcb() };
@@ -549,7 +563,7 @@ impl SvmVcpu {
         self.xstate.switch_to_host();
     }
 
-    fn inner_run(&mut self) -> AxResult<super::vmcb::SvmExitInfo> {
+    fn inner_run(&mut self) -> AxResult<Result<super::vmcb::SvmExitInfo, AxVCpuExitReason>> {
         loop {
             self.inject_pending_events()?;
             unsafe {
@@ -567,10 +581,13 @@ impl SvmVcpu {
             // backend; only unresolved exits are forwarded to the VMM layer.
             if let Some(result) = self.builtin_vmexit_handler(&exit_info) {
                 result?;
+                if let Some(exit) = self.take_pending_cpu_up_exit() {
+                    return Ok(Err(exit));
+                }
                 continue;
             }
 
-            return Ok(exit_info);
+            return Ok(Ok(exit_info));
         }
     }
 
@@ -676,6 +693,16 @@ impl SvmVcpu {
         self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
     }
 
+    fn take_pending_cpu_up_exit(&self) -> Option<AxVCpuExitReason> {
+        self.vlapic
+            .take_pending_cpu_up()
+            .map(|cpu_up| AxVCpuExitReason::CpuUp {
+                target_cpu: cpu_up.target_cpu as u64,
+                entry_point: GuestPhysAddr::from(cpu_up.entry_point),
+                arg: 0,
+            })
+    }
+
     fn handle_ignored_msr_access(&mut self, exit_info: &super::vmcb::SvmExitInfo) -> AxResult {
         const VM_EXIT_INSTR_LEN_MSR: u8 = 2;
 
@@ -722,6 +749,7 @@ impl SvmVcpu {
         const LEAF_SVM_FEATURES: u32 = 0x8000_000a;
         const LEAF_FREQUENCY_INFO: u32 = 0x16;
         const FALLBACK_TSC_FREQUENCY_MHZ: u32 = 3_000;
+        let virtual_logical_processors = self.vcpu_count.min(0xff) as u32;
 
         let regs_clone = *self.regs();
         let function = regs_clone.rax as u32;
@@ -746,7 +774,8 @@ impl SvmVcpu {
                 res.edx &= !FEATURE_MCE;
                 res.edx |= FEATURE_APIC;
                 res.ebx &= !(MAX_LOGICAL_PROCESSORS_MASK | INITIAL_APIC_ID_MASK);
-                res.ebx |= 1 << 16;
+                res.ebx |= virtual_logical_processors << 16;
+                res.ebx |= (self.vcpu_id as u32 & 0xff) << 24;
                 res
             }
             0xb | 0x1f => CpuIdResult {
@@ -1089,7 +1118,19 @@ impl SvmVcpu {
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
             _ => {
-                debug!("unsupported SVM NPF MMIO opcode {opcode:#x}, write={write}");
+                if local_apic {
+                    warn!(
+                        "[x86-smp] SVM local APIC MMIO decode miss: vcpu={} rip={:#x} gpa={:#x} \
+                         opcode={:#x} write={}",
+                        self.vcpu_id,
+                        exit_info.guest_rip,
+                        addr.as_usize(),
+                        opcode,
+                        write
+                    );
+                } else {
+                    debug!("unsupported SVM NPF MMIO opcode {opcode:#x}, write={write}");
+                }
                 Ok(None)
             }
         }
@@ -1122,7 +1163,9 @@ impl SvmVcpu {
             AccessWidth::Dword,
             data as usize,
         )?;
-        Ok(AxVCpuExitReason::Nothing)
+        Ok(self
+            .take_pending_cpu_up_exit()
+            .unwrap_or(AxVCpuExitReason::Nothing))
     }
 
     fn skip_simple_prefixes(&self, rip: &mut GuestVirtAddr, rex: &mut u8) -> AxResult {
@@ -1387,15 +1430,24 @@ impl Debug for SvmVcpu {
 }
 
 impl AxArchVCpu for SvmVcpu {
-    type CreateConfig = ();
+    type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
-        Self::create(vm_id, vcpu_id)
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+        Self::create(vm_id, vcpu_id, config)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        warn!(
+            "[x86-smp] SVM set_entry vcpu={} entry={:#x} npt_ready={}",
+            self.vcpu_id,
+            entry.as_usize(),
+            self.npt_root.is_some()
+        );
         self.entry = Some(entry);
+        if self.npt_root.is_some() {
+            self.setup_vmcb_guest_state(x86_sipi_entry_state(entry))?;
+        }
         Ok(())
     }
 
@@ -1416,7 +1468,58 @@ impl AxArchVCpu for SvmVcpu {
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         {
-            let exit_info = self.inner_run()?;
+            if self.vcpu_id != 0 && self.ap_run_trace_count == 0 {
+                let state = unsafe { &self.vmcb.as_vmcb_ref().state };
+                warn!(
+                    "[x86-smp] SVM AP vcpu={} entering guest rip={:#x} cs.base={:#x} \
+                     cs.selector={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
+                    self.vcpu_id,
+                    state.rip.get(),
+                    state.cs.base.get(),
+                    state.cs.selector.get(),
+                    state.cr0.get(),
+                    state.cr3.get(),
+                    state.cr4.get(),
+                    state.efer.get()
+                );
+            }
+
+            let exit_result = self.inner_run()?;
+            if self.vcpu_id != 0 && self.ap_run_trace_count < 16 {
+                let state = unsafe { &self.vmcb.as_vmcb_ref().state };
+                match &exit_result {
+                    Ok(exit_info) => warn!(
+                        "[x86-smp] SVM AP vcpu={} exit={:?} rip={:#x} cs.base={:#x} cr0={:#x} \
+                         cr3={:#x} cr4={:#x} efer={:#x}",
+                        self.vcpu_id,
+                        exit_info.exit_code,
+                        state.rip.get(),
+                        state.cs.base.get(),
+                        state.cr0.get(),
+                        state.cr3.get(),
+                        state.cr4.get(),
+                        state.efer.get()
+                    ),
+                    Err(exit_reason) => warn!(
+                        "[x86-smp] SVM AP vcpu={} internal exit {:?} rip={:#x} cs.base={:#x} \
+                         cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
+                        self.vcpu_id,
+                        exit_reason,
+                        state.rip.get(),
+                        state.cs.base.get(),
+                        state.cr0.get(),
+                        state.cr3.get(),
+                        state.cr4.get(),
+                        state.efer.get()
+                    ),
+                }
+                self.ap_run_trace_count += 1;
+            }
+
+            let exit_info = match exit_result {
+                Ok(exit_info) => exit_info,
+                Err(exit_reason) => return Ok(exit_reason),
+            };
             let exit_code = match exit_info.exit_code {
                 Ok(code) => code,
                 Err(code) => {

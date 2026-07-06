@@ -82,7 +82,17 @@ pub struct VirtualApicRegs {
     /// Copies of some registers in the virtual APIC page,
     /// to maintain a coherent snapshot of the register (e.g. lvt_last)
     lvt_last: LocalVectorTable,
+    pending_cpu_up: Option<VlapicCpuUp>,
     apic_page: PhysFrame,
+}
+
+/// A startup IPI request decoded from the virtual local APIC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VlapicCpuUp {
+    /// Destination APIC ID. The current x86 vLAPIC model uses APIC ID == vCPU ID.
+    pub target_cpu: u32,
+    /// Startup vector converted to a guest physical entry address.
+    pub entry_point: usize,
 }
 
 impl VirtualApicRegs {
@@ -99,6 +109,7 @@ impl VirtualApicRegs {
             apic_page: apic_frame,
             svr_last: SpuriousInterruptVectorRegisterLocal::new(RESET_SPURIOUS_INTERRUPT_VECTOR),
             lvt_last: LocalVectorTable::default(),
+            pending_cpu_up: None,
             isrv: 0,
             apic_base: ApicBaseRegisterMsr::new(
                 DEFAULT_APIC_BASE as u64
@@ -112,6 +123,12 @@ impl VirtualApicRegs {
             .VERSION
             .set(APIC_VERSION_INTEGRATED | APIC_VERSION_MAX_LVT_ENTRIES);
         regs
+    }
+
+    fn active_vcpu_mask(&self) -> u64 {
+        vmm::active_vcpus(self.vm_id)
+            .map(|mask| mask as u64)
+            .unwrap_or(u64::MAX)
     }
 
     const fn regs(&self) -> &LocalAPICRegs {
@@ -314,7 +331,7 @@ impl VirtualApicRegs {
 
         if is_broadcast {
             // Broadcast in both logical and physical modes.
-            dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
+            dmask = self.active_vcpu_mask();
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
@@ -327,8 +344,8 @@ impl VirtualApicRegs {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = vmm::active_vcpus(self.vm_id).unwrap();
-            for i in 0..vmm::vm_vcpu_num(self.vm_id) {
+            let vcpu_mask = self.active_vcpu_mask();
+            for i in 0..u64::BITS as usize {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
                         continue;
@@ -358,10 +375,10 @@ impl VirtualApicRegs {
                 dmask.set_bit(self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
-                dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
+                dmask = self.active_vcpu_mask();
             }
             APICDestination::AllExcludingSelf => {
-                dmask = vmm::vm_active_vcpus(self.vm_id) as u64;
+                dmask = self.active_vcpu_mask();
                 dmask &= !(1 << self.vapic_id);
             }
         }
@@ -405,6 +422,11 @@ impl VirtualApicRegs {
         self.update_ppr();
     }
 
+    /// Takes the most recent startup IPI request, if any.
+    pub fn take_pending_cpu_up(&mut self) -> Option<VlapicCpuUp> {
+        self.pending_cpu_up.take()
+    }
+
     fn inject_nmi(&mut self, vcpu_id: u32) {
         warn!("[VLAPIC] ignoring NMI IPI to vcpu {vcpu_id}: NMI injection is not implemented yet");
     }
@@ -415,13 +437,30 @@ impl VirtualApicRegs {
         mode: APICDeliveryMode,
         icr_low: InterruptCommandRegisterLowLocal,
     ) {
-        debug!(
-            "[VLAPIC] ignoring {:?} IPI to vcpu {} in current single-vCPU bring-up path, icr_low: \
-             {:#010X}",
-            mode,
-            vcpu_id,
-            icr_low.get()
-        );
+        match mode {
+            APICDeliveryMode::INIT => {
+                warn!(
+                    "[x86-smp] VM[{}] vLAPIC[{}] INIT target_vcpu={} icr_low={:#010X}",
+                    self.vm_id,
+                    self.vapic_id,
+                    vcpu_id,
+                    icr_low.get()
+                );
+            }
+            APICDeliveryMode::StartUp => {
+                let vector = icr_low.read(INTERRUPT_COMMAND_LOW::Vector);
+                let entry_point = (vector as usize) << 12;
+                warn!(
+                    "[x86-smp] VM[{}] vLAPIC[{}] SIPI target_vcpu={} vector={:#x} entry={:#x}",
+                    self.vm_id, self.vapic_id, vcpu_id, vector, entry_point
+                );
+                self.pending_cpu_up = Some(VlapicCpuUp {
+                    target_cpu: vcpu_id,
+                    entry_point,
+                });
+            }
+            _ => unreachable!("process_init_sipi only handles INIT/SIPI"),
+        }
     }
 
     /// Figure 11-13. Logical Destination Register (LDR)
@@ -547,8 +586,7 @@ impl VirtualApicRegs {
             );
             let dmask = self.calculate_dest(shorthand, is_broadcast, dest, is_phys, false)?;
 
-            // TODO: we need to get the specific vcpu number somehow.
-            for i in 0..vmm::vm_vcpu_num(self.vm_id) as u32 {
+            for i in 0..u64::BITS {
                 if dmask & (1 << i) != 0 {
                     match mode {
                         APICDeliveryMode::Fixed => {
@@ -735,7 +773,11 @@ impl VirtualApicRegs {
         let mut value: usize = 0;
         match offset {
             ApicRegOffset::ID => {
-                value = self.regs().ID.get() as _;
+                value = if self.is_x2apic_enabled() && width == AccessWidth::Qword {
+                    self.vapic_id as _
+                } else {
+                    self.regs().ID.get() as _
+                };
             }
             ApicRegOffset::Version => {
                 value = self.regs().VERSION.get() as _;

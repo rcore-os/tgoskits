@@ -133,6 +133,9 @@ impl ApicTimer {
         self.shared
             .lvt_timer_register
             .store(value, Ordering::Release);
+        if self.is_masked() {
+            self.stop_timer()?;
+        }
         Ok(())
     }
 

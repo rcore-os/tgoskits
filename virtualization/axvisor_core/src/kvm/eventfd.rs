@@ -265,14 +265,13 @@ fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxRes
         (vm.vm.clone(), route)
     };
 
-    let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
-
     match route {
         #[cfg(target_arch = "x86_64")]
         GsiRoute::IrqChip { pin } => {
             let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(pin as usize) else {
                 return Ok(());
             };
+            let vcpu = vm.vcpu(irq.target_vcpu).ok_or(AxError::InvalidInput)?;
             vcpu.inject_interrupt_with_trigger(
                 irq.vector as usize,
                 if irq.level_triggered {
@@ -283,8 +282,14 @@ fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxRes
             )
         }
         #[cfg(not(target_arch = "x86_64"))]
-        GsiRoute::IrqChip { pin } => vcpu.inject_interrupt(legacy_gsi_vector(pin) as usize),
-        GsiRoute::Msi { vector } => vcpu.inject_interrupt(vector as usize),
+        GsiRoute::IrqChip { pin } => {
+            let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
+            vcpu.inject_interrupt(legacy_gsi_vector(pin) as usize)
+        }
+        GsiRoute::Msi { vector } => {
+            let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
+            vcpu.inject_interrupt(vector as usize)
+        }
     }
 }
 

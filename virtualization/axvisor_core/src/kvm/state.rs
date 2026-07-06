@@ -18,7 +18,11 @@
 //! AxVisor and host-control resources, so they intentionally remain in
 //! axvisor_core.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use core::sync::atomic::AtomicBool;
 
 use axaddrspace::device::AccessWidth;
@@ -64,6 +68,7 @@ pub(in crate::kvm) struct VcpuFileState {
     pub(in crate::kvm) vcpu_id: u32,
     pub(in crate::kvm) mmap_area: api_control::MmapAreaId,
     pub(in crate::kvm) mp_state: u32,
+    pub(in crate::kvm) pending_interrupts: VecDeque<usize>,
     pub(in crate::kvm) pending_mmio_read: Option<PendingMmioRead>,
     pub(in crate::kvm) pending_io_read: Option<PendingIoRead>,
     pub(in crate::kvm) cpuid: Vec<KvmCpuidEntry2>,

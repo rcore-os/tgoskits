@@ -22,7 +22,9 @@ const REDIRECTION_ENTRY_COUNT: usize = MAX_REDIRECTION_ENTRY + 1;
 const REDIRECTION_ENTRY_MASKED: u64 = 1 << 16;
 const REDIRECTION_ENTRY_TRIGGER_MODE: u64 = 1 << 15;
 const REDIRECTION_ENTRY_REMOTE_IRR: u64 = 1 << 14;
+const REDIRECTION_ENTRY_DESTINATION_MODE: u64 = 1 << 11;
 const REDIRECTION_ENTRY_DELIVERY_MODE_MASK: u64 = 0b111 << 8;
+const REDIRECTION_ENTRY_DESTINATION_SHIFT: u64 = 56;
 
 #[derive(Debug)]
 struct IoApicState {
@@ -42,6 +44,7 @@ impl IoApicState {
 
     fn interrupt_for_entry(&mut self, gsi: usize) -> Option<IoApicInterrupt> {
         let entry = self.redirection_table.get_mut(gsi)?;
+        let target_vcpu = target_vcpu_for_entry(*entry)?;
         if *entry & REDIRECTION_ENTRY_MASKED != 0 {
             return None;
         }
@@ -68,6 +71,7 @@ impl IoApicState {
         Some(IoApicInterrupt {
             vector,
             level_triggered,
+            target_vcpu,
         })
     }
 }
@@ -79,6 +83,8 @@ pub struct IoApicInterrupt {
     pub vector: u8,
     /// Whether the redirection entry is level-triggered.
     pub level_triggered: bool,
+    /// Target vCPU decoded from the redirection-entry destination field.
+    pub target_vcpu: usize,
 }
 
 /// A minimal emulated x86 IO APIC.
@@ -122,6 +128,13 @@ impl EmulatedIoApic {
         }
 
         Some(vector)
+    }
+
+    /// Return the vCPU targeted by a GSI redirection entry.
+    pub fn target_vcpu_for_gsi(&self, gsi: usize) -> Option<usize> {
+        let state = self.state.lock();
+        let entry = *state.redirection_table.get(gsi)?;
+        target_vcpu_for_entry(entry)
     }
 
     /// Assert an IO APIC input line and return the interrupt to inject.
@@ -206,6 +219,24 @@ impl EmulatedIoApic {
                 Ok(())
             }
         }
+    }
+}
+
+fn target_vcpu_for_entry(entry: u64) -> Option<usize> {
+    if entry & REDIRECTION_ENTRY_MASKED != 0 {
+        return None;
+    }
+
+    let destination = (entry >> REDIRECTION_ENTRY_DESTINATION_SHIFT) as u8;
+    if entry & REDIRECTION_ENTRY_DESTINATION_MODE == 0 {
+        // Physical destination mode: APIC ID maps directly to vCPU ID in the
+        // current x86 vLAPIC model.
+        Some(destination as usize)
+    } else {
+        // Logical destination mode in Linux's flat model uses a bit mask of
+        // logical APIC IDs. Pick the first selected vCPU; lowest-priority
+        // delivery is not implemented by this minimal IOAPIC model.
+        (destination != 0).then(|| destination.trailing_zeros() as usize)
     }
 }
 

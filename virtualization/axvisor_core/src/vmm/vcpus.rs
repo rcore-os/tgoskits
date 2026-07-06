@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(target_arch = "riscv64"))]
 use ax_cpumask::CpuMask;
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
@@ -25,7 +28,7 @@ use axvisor_api::{
     sync::WaitQueue,
     task::{TaskHandle, TaskOptions},
 };
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 use axvm::config::VMInterruptMode;
 
 use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
@@ -51,6 +54,10 @@ pub struct VMVCpus {
     // A map of tasks associated with the VCpus of this VM, keyed by vCPU ID.
     vcpu_task_list: Mutex<BTreeMap<usize, TaskHandle>>,
     vcpu_task_names: Mutex<BTreeMap<usize, alloc::string::String>>,
+    // Interrupts queued by another vCPU/task. They are drained by the target
+    // vCPU immediately before entering the guest, so architecture backends do
+    // not need to be mutated from a foreign execution context.
+    pending_interrupts: Mutex<BTreeMap<usize, VecDeque<usize>>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -75,6 +82,7 @@ impl VMVCpus {
             wait_queue: WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             vcpu_task_names: Mutex::new(BTreeMap::new()),
+            pending_interrupts: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
@@ -92,6 +100,22 @@ impl VMVCpus {
     ) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
         self.vcpu_task_names.lock().insert(vcpu_id, task_name);
+        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult {
+        let mut pending = self.pending_interrupts.lock();
+        let queue = pending.get_mut(&vcpu_id).ok_or(AxError::NotFound)?;
+        queue.push_back(vector);
+        Ok(())
+    }
+
+    fn drain_interrupts(&self, vcpu_id: usize, f: impl FnMut(usize)) {
+        let mut pending = self.pending_interrupts.lock();
+        let Some(queue) = pending.get_mut(&vcpu_id) else {
+            return;
+        };
+        queue.drain(..).for_each(f);
     }
 
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
@@ -197,6 +221,28 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = get_vm_vcpus(vm_id) {
         vm_vcpus.notify_all();
     }
+}
+
+pub(crate) fn queue_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+    let vm_vcpus = get_vm_vcpus(vm_id).ok_or(AxError::NotFound)?;
+    vm_vcpus.queue_interrupt(vcpu_id, vector)?;
+    vm_vcpus.notify_all();
+    Ok(())
+}
+
+pub(crate) fn drain_vcpu_interrupts(vm: &VMRef, vcpu: &VCpuRef) {
+    let Some(vm_vcpus) = get_vm_vcpus(vm.id()) else {
+        return;
+    };
+    vm_vcpus.drain_interrupts(vcpu.id(), |vector| {
+        if let Err(err) = vcpu.inject_interrupt(vector) {
+            warn!(
+                "Failed to inject queued interrupt {vector} to VM[{}] VCpu[{}]: {err:?}",
+                vm.id(),
+                vcpu.id()
+            );
+        }
+    });
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -465,9 +511,13 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
 
     loop {
         #[cfg(target_arch = "x86_64")]
+        drain_vcpu_interrupts(&vm, &vcpu);
+        #[cfg(target_arch = "x86_64")]
         super::devices::x86::drain_pending_ioapic_irqs(&vm, &vcpu);
         #[cfg(target_arch = "riscv64")]
         rearm_riscv_passthrough_poll_timer(&vm);
+        #[cfg(target_arch = "x86_64")]
+        rearm_x86_passthrough_poll_timer(&vm);
 
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => {
@@ -524,19 +574,41 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                              entry_point={entry_point:x} arg={arg:#x}"
                         );
 
-                        // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
-                        let vcpu_mappings = vm.get_vcpu_affinities_pcpu_ids();
+                        #[cfg(target_arch = "x86_64")]
+                        let target_vcpu_id = target_cpu as usize;
 
-                        // Find the vCPU ID corresponding to the physical ID
-                        let Some(target_vcpu_id) =
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let Some(target_vcpu_id) = ({
+                            // Get the mapping relationship between all vCPUs and physical CPUs
+                            // from the configuration. Non-x86 CPU-up exits currently report the
+                            // host physical CPU/hart identifier.
+                            let vcpu_mappings = vm.get_vcpu_affinities_pcpu_ids();
                             vcpu_mappings.iter().find_map(|(vcpu_id, _, phys_id)| {
                                 (*phys_id == target_cpu as usize).then_some(*vcpu_id)
                             })
-                        else {
+                        }) else {
                             warn!("Physical CPU ID {target_cpu} not found in VM configuration");
                             vcpu.set_return_value(usize::MAX);
                             continue;
                         };
+
+                        #[cfg(target_arch = "x86_64")]
+                        if let Some(target_vcpu) = vm.vcpu(target_vcpu_id)
+                            && target_vcpu.state() != VCpuState::Free
+                        {
+                            debug!(
+                                "Ignoring duplicate x86 CPU-up request for VM[{vm_id}] \
+                                 VCpu[{target_vcpu_id}] in state {:?}",
+                                target_vcpu.state()
+                            );
+                            continue;
+                        }
+
+                        #[cfg(target_arch = "x86_64")]
+                        warn!(
+                            "[x86-smp] static VM[{vm_id}] CpuUp from vcpu {vcpu_id} \
+                             target_vcpu={target_vcpu_id} entry={entry_point:x}"
+                        );
 
                         match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
                             Ok(()) => {
@@ -674,6 +746,17 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
 
 #[cfg(target_arch = "riscv64")]
 fn rearm_riscv_passthrough_poll_timer(vm: &VMRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+    const POLL_INTERVAL_NANOS: u64 = 1_000_000;
+    let deadline = axvisor_api::time::current_time()
+        .saturating_add(core::time::Duration::from_nanos(POLL_INTERVAL_NANOS));
+    axvisor_api::time::set_oneshot_timer(deadline);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn rearm_x86_passthrough_poll_timer(vm: &VMRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }

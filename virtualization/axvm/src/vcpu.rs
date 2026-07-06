@@ -18,10 +18,9 @@ cfg_if::cfg_if! {
     if #[cfg(all(target_arch = "x86_64", any(feature = "vmx", feature = "svm")))] {
         pub use x86_vcpu::X86ArchVCpu as AxArchVCpuImpl;
         pub use x86_vcpu::X86ArchPerCpuState as AxVMArchPerCpuImpl;
+        pub use x86_vcpu::X86VCpuCreateConfig as AxVCpuCreateConfig;
         pub use x86_vcpu::X86VCpuSetupConfig as AxVCpuSetupConfig;
         pub use x86_vcpu::has_hardware_support;
-        #[allow(dead_code)]
-        pub type AxVCpuCreateConfig = ();
 
         /// x86_64 EPT always uses 4-level page tables.
         pub fn max_guest_page_table_levels() -> usize { 4 }
@@ -62,7 +61,7 @@ cfg_if::cfg_if! {
             pub struct NoBackendVCpu;
 
             impl AxArchVCpu for NoBackendVCpu {
-                type CreateConfig = ();
+                type CreateConfig = x86_vcpu::X86VCpuCreateConfig;
                 type SetupConfig = x86_vcpu::X86VCpuSetupConfig;
 
                 fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
@@ -105,9 +104,8 @@ cfg_if::cfg_if! {
 
         pub use self::x86_no_backend::NoBackendPerCpu as AxVMArchPerCpuImpl;
         pub use self::x86_no_backend::NoBackendVCpu as AxArchVCpuImpl;
+        pub use x86_vcpu::X86VCpuCreateConfig as AxVCpuCreateConfig;
         pub use x86_vcpu::X86VCpuSetupConfig as AxVCpuSetupConfig;
-        #[allow(dead_code)]
-        pub type AxVCpuCreateConfig = ();
 
         pub fn has_hardware_support() -> bool { false }
 

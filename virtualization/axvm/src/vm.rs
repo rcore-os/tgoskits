@@ -30,15 +30,13 @@ use spin::Once;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 
-#[cfg(not(target_arch = "x86_64"))]
-use crate::vcpu::AxVCpuCreateConfig;
 #[cfg(target_arch = "aarch64")]
 use crate::vcpu::get_sysreg_device;
 use crate::{
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     hal::PagingHandlerImpl,
     has_hardware_support,
-    vcpu::AxArchVCpuImpl,
+    vcpu::{AxArchVCpuImpl, AxVCpuCreateConfig},
 };
 
 const VM_ASPACE_BASE: usize = 0x0;
@@ -240,6 +238,8 @@ impl AxVM {
 
         let dtb_addr = inner_mut.config.image_config().dtb_load_gpa;
         let vcpu_id_pcpu_sets = inner_mut.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+        #[cfg(target_arch = "x86_64")]
+        let vcpu_count = vcpu_id_pcpu_sets.len();
 
         info!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
@@ -261,6 +261,8 @@ impl AxVM {
                 cpu_id: vcpu_id,
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
             };
+            #[cfg(target_arch = "x86_64")]
+            let arch_config = AxVCpuCreateConfig { vcpu_count };
 
             // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
             // 1. we should make it `Send` and `Sync`, or
@@ -278,7 +280,7 @@ impl AxVM {
                 #[cfg(target_arch = "riscv64")]
                 arch_config,
                 #[cfg(target_arch = "x86_64")]
-                (),
+                arch_config,
             )?));
         }
 

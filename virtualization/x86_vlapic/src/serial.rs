@@ -34,7 +34,7 @@ const MSR_DCD: u8 = 1 << 7;
 const MSR_DSR: u8 = 1 << 5;
 const MSR_CTS: u8 = 1 << 4;
 
-const FIFO_CAPACITY: usize = 128;
+const FIFO_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
 struct SerialState {
@@ -94,6 +94,10 @@ impl SerialState {
         self.rx_len = 0;
     }
 
+    fn rx_free_capacity(&self) -> usize {
+        self.rx_fifo.len() - self.rx_len
+    }
+
     fn lsr(&self) -> u8 {
         let mut value = LSR_THR_EMPTY | LSR_TRANSMITTER_EMPTY;
         if self.rx_len != 0 {
@@ -127,10 +131,16 @@ impl EmulatedSerialPort {
     }
 
     fn poll_host_input(state: &mut SerialState) {
-        let mut buf = [0u8; 32];
-        let read = console::read_bytes(&mut buf);
-        for &byte in &buf[..read] {
-            state.push_rx(byte);
+        let mut buf = [0u8; 64];
+        while state.rx_free_capacity() != 0 {
+            let read_len = buf.len().min(state.rx_free_capacity());
+            let read = console::read_bytes(&mut buf[..read_len]);
+            if read == 0 {
+                break;
+            }
+            for &byte in &buf[..read] {
+                state.push_rx(byte);
+            }
         }
     }
 

@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{collections::BTreeMap, format, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    format, vec,
+    vec::Vec,
+};
 
 use ax_errno::{AxError, AxResult, ax_err};
 use axvisor_api::control as api_control;
@@ -90,6 +94,7 @@ pub(in crate::kvm) fn create_vcpu_file(
                 } else {
                     abi::KVM_MP_STATE_STOPPED
                 },
+                pending_interrupts: VecDeque::new(),
                 pending_mmio_read: None,
                 pending_io_read: None,
                 cpuid: Vec::new(),

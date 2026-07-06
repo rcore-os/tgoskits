@@ -14,6 +14,8 @@
 
 use ax_errno::AxResult;
 #[cfg(target_arch = "x86_64")]
+use ax_errno::{AxError, ax_err};
+#[cfg(target_arch = "x86_64")]
 use axaddrspace::GuestPhysAddr;
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::EmuDeviceType;
@@ -25,6 +27,8 @@ use axvm::AxVMRef;
 
 #[cfg(target_arch = "x86_64")]
 use crate::kvm::abi::raw as abi;
+#[cfg(target_arch = "x86_64")]
+use crate::kvm::{CONTROL_FILES, ControlFileState};
 #[cfg(target_arch = "x86_64")]
 use crate::kvm::{
     cpuid::default_tsc_khz,
@@ -51,6 +55,83 @@ pub(super) fn handle_kvm_msr_write(vm: &AxVMRef, msr: usize, value: u64) -> AxRe
         }
         _ => Ok(false),
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn handle_cpu_up(
+    control_file: api_control::ControlFileId,
+    vm: &AxVMRef,
+    target_cpu: usize,
+    entry_point: GuestPhysAddr,
+) -> AxResult {
+    warn!(
+        "[x86-smp] control VM[{}] CpuUp control_file={} target_vcpu={} entry={:#x}",
+        vm.id(),
+        control_file,
+        target_cpu,
+        entry_point.as_usize()
+    );
+    if vcpu_file_mp_state_by_id(control_file, target_cpu)? != abi::KVM_MP_STATE_STOPPED {
+        return Ok(());
+    }
+
+    let target_vcpu = vm.vcpu(target_cpu).ok_or(AxError::InvalidInput)?;
+    target_vcpu.set_entry(entry_point)?;
+    set_vcpu_file_mp_state_by_id(control_file, target_cpu, abi::KVM_MP_STATE_RUNNABLE)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn vcpu_file_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+) -> AxResult<api_control::ControlFileId> {
+    let vm_file = {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+            return ax_err!(NotFound);
+        };
+        vcpu.vm_file
+    };
+
+    let control_files = CONTROL_FILES.lock();
+    let target_file = {
+        let Some(ControlFileState::Vm(vm)) = control_files.get(&vm_file) else {
+            return ax_err!(NotFound);
+        };
+        vm.vcpu_files
+            .get(&(vcpu_id as u32))
+            .copied()
+            .ok_or(AxError::InvalidInput)?
+    };
+    Ok(target_file)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn vcpu_file_mp_state_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+) -> AxResult<u32> {
+    let target_file = vcpu_file_by_id(control_file, vcpu_id)?;
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&target_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vcpu.mp_state)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn set_vcpu_file_mp_state_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+    mp_state: u32,
+) -> AxResult {
+    let target_file = vcpu_file_by_id(control_file, vcpu_id)?;
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&target_file) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.mp_state = mp_state;
+    Ok(())
 }
 
 #[cfg(target_arch = "x86_64")]

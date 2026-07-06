@@ -29,6 +29,10 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
+    if !ioapic_gsi_targets_current_vcpu(vm, vcpu, PIT_TIMER_GSI) {
+        return;
+    }
+
     let now_ns = axvisor_api::time::current_time_nanos();
     if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
         return;
@@ -40,19 +44,15 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return;
+    }
+
+    if !ioapic_gsi_targets_current_vcpu(vm, vcpu, COM1_GSI) {
         return;
     }
 
@@ -66,15 +66,7 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -90,15 +82,7 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -115,10 +99,20 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
             break;
         }
 
+        let mut deferred = 0;
         for gsi in 0..IOAPIC_GSI_COUNT {
             if pending & (1usize << gsi) != 0 {
-                forward_passthrough_irq(vm, vcpu, IOAPIC_VECTOR_BASE + gsi);
+                if ioapic_gsi_targets_current_vcpu(vm, vcpu, gsi) {
+                    forward_passthrough_irq(vm, vcpu, IOAPIC_VECTOR_BASE + gsi);
+                } else {
+                    deferred |= 1usize << gsi;
+                }
             }
+        }
+
+        if deferred != 0 {
+            IOAPIC_IRQ_PENDING.fetch_or(deferred, Ordering::AcqRel);
+            break;
         }
     }
 }
@@ -201,9 +195,43 @@ fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
          {:#x}",
         guest_irq.vector
     );
+    inject_ioapic_interrupt(
+        vm,
+        vcpu,
+        guest_irq.vector,
+        guest_irq.level_triggered,
+        guest_irq.target_vcpu,
+    );
+}
+
+fn ioapic_gsi_targets_current_vcpu(vm: &VMRef, vcpu: &VCpuRef, gsi: usize) -> bool {
+    vm.get_devices()
+        .x86_ioapic_target_vcpu_for_gsi(gsi)
+        .is_some_and(|target_vcpu| target_vcpu == vcpu.id())
+}
+
+fn inject_ioapic_interrupt(
+    vm: &VMRef,
+    vcpu: &VCpuRef,
+    vector: u8,
+    level_triggered: bool,
+    target_vcpu: usize,
+) {
+    if target_vcpu != vcpu.id() {
+        trace!(
+            "Queueing x86 IOAPIC vector {:#x} for VM[{}] target vCPU {} from current vCPU {}",
+            vector,
+            vm.id(),
+            target_vcpu,
+            vcpu.id()
+        );
+        axvisor_api::vmm::inject_interrupt(vm.id(), target_vcpu, vector);
+        return;
+    }
+
     vcpu.inject_interrupt_with_trigger(
-        guest_irq.vector as _,
-        if guest_irq.level_triggered {
+        vector as _,
+        if level_triggered {
             InterruptTriggerMode::LevelTriggered
         } else {
             InterruptTriggerMode::EdgeTriggered

@@ -24,7 +24,7 @@ mod util;
 mod vcpu;
 mod vm;
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub use abi::public::*;
@@ -126,6 +126,42 @@ fn create_control_file(
         .lock()
         .insert(control_file, control_file_state);
     Ok(control_file)
+}
+
+pub(crate) fn queue_control_vcpu_interrupt(
+    vm_id: usize,
+    vcpu_id: usize,
+    vector: usize,
+) -> AxResult {
+    let mut control_files = CONTROL_FILES.lock();
+    let vm_file = control_files
+        .iter()
+        .find_map(|(control_file, state)| match state {
+            ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(*control_file),
+            _ => None,
+        })
+        .ok_or(AxError::NotFound)?;
+    let vcpu_file = match control_files.get(&vm_file) {
+        Some(ControlFileState::Vm(vm)) => vm.vcpu_files.get(&(vcpu_id as u32)).copied(),
+        _ => None,
+    }
+    .ok_or(AxError::NotFound)?;
+
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
+        return Err(AxError::NotFound);
+    };
+    vcpu.pending_interrupts.push_back(vector);
+    Ok(())
+}
+
+pub(in crate::kvm) fn take_control_vcpu_interrupts(
+    control_file: api_control::ControlFileId,
+) -> Vec<usize> {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
+        return Vec::new();
+    };
+    vcpu.pending_interrupts.drain(..).collect()
 }
 
 fn next_control_file_id() -> AxResult<api_control::ControlFileId> {

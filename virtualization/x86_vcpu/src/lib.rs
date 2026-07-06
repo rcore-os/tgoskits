@@ -38,6 +38,19 @@ pub struct X86VCpuSetupConfig {
     pub expose_kvm_hypervisor: bool,
 }
 
+/// x86 vCPU creation configuration.
+#[derive(Clone, Copy, Debug)]
+pub struct X86VCpuCreateConfig {
+    /// Number of vCPUs configured for the VM.
+    pub vcpu_count: usize,
+}
+
+impl Default for X86VCpuCreateConfig {
+    fn default() -> Self {
+        Self { vcpu_count: 1 }
+    }
+}
+
 #[cfg(any(feature = "vmx", feature = "svm"))]
 pub(crate) mod kvm;
 pub(crate) mod msr;
@@ -82,6 +95,20 @@ pub(crate) fn x86_real_mode_entry_state(
         cs_base: 0,
         rip: entry.as_usize(),
     }
+}
+
+#[cfg(any(feature = "vmx", feature = "svm", test))]
+pub(crate) fn x86_sipi_entry_state(entry: axaddrspace::GuestPhysAddr) -> X86RealModeEntryState {
+    let entry = entry.as_usize();
+    if entry <= 0x000f_f000 && entry & 0xfff == 0 {
+        return X86RealModeEntryState {
+            cs_selector: (entry >> 4) as u16,
+            cs_base: entry,
+            rip: 0,
+        };
+    }
+
+    x86_real_mode_entry_state(axaddrspace::GuestPhysAddr::from(entry))
 }
 
 cfg_if::cfg_if! {
@@ -157,6 +184,18 @@ mod tests {
                 cs_selector: 0xf000,
                 cs_base: 0xffff_0000,
                 rip: 0xfff0,
+            }
+        );
+    }
+
+    #[test]
+    fn sipi_entry_maps_vector_to_segment_base() {
+        assert_eq!(
+            x86_sipi_entry_state(GuestPhysAddr::from(0x99000)),
+            X86RealModeEntryState {
+                cs_selector: 0x9900,
+                cs_base: 0x99000,
+                rip: 0,
             }
         );
     }

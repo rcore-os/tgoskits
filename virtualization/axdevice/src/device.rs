@@ -459,6 +459,17 @@ impl AxVmDevices {
         })
     }
 
+    /// Returns the target vCPU programmed for an x86 IOAPIC GSI.
+    #[cfg(target_arch = "x86_64")]
+    pub fn x86_ioapic_target_vcpu_for_gsi(&self, gsi: usize) -> Option<usize> {
+        self.emu_mmio_devices.iter().find_map(|dev| {
+            map_device_of_type(dev, |ioapic: &EmulatedIoApic| {
+                ioapic.target_vcpu_for_gsi(gsi)
+            })
+            .flatten()
+        })
+    }
+
     /// Assert an x86 IOAPIC GSI and return the interrupt to inject.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {

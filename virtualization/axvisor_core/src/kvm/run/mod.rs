@@ -25,10 +25,10 @@ use exit::{complete_io_read, complete_mmio_read, kvm_exit_reason, prepare_usersp
 #[cfg(target_arch = "riscv64")]
 use riscv::{handle_cpu_up, handle_send_ipi};
 #[cfg(target_arch = "x86_64")]
-use x86::{handle_in_kernel_device_exit, handle_kvm_msr_write};
+use x86::{handle_cpu_up, handle_in_kernel_device_exit, handle_kvm_msr_write};
 use x86::{update_vcpu_run_interrupt_state, vcpu_run_irq_window_open};
 
-use super::{CONTROL_FILES, ControlFileState};
+use super::{CONTROL_FILES, ControlFileState, take_control_vcpu_interrupts};
 use crate::kvm::{
     abi::raw as abi,
     eventfd::signal_matching_ioeventfd,
@@ -86,13 +86,13 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
     let _context_guard = crate::context::bind_current_vcpu_context(vm.id(), vcpu_id);
 
     if mp_state == abi::KVM_MP_STATE_STOPPED {
-        write_vcpu_run_u32(
-            control_file,
-            abi::KVM_RUN_EXIT_REASON_OFFSET,
-            abi::KVM_EXIT_INTR,
-        )?;
-        axvisor_api::task::yield_now();
-        return Ok(0);
+        wait_until_vcpu_runnable(control_file)?;
+        #[cfg(target_arch = "x86_64")]
+        warn!(
+            "[x86-smp] control VM[{}] vcpu {} became runnable",
+            vm.id(),
+            vcpu_id
+        );
     }
 
     if !vm.running() {
@@ -112,6 +112,10 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
     }
 
     let exit_reason = loop {
+        #[cfg(target_arch = "x86_64")]
+        for vector in take_control_vcpu_interrupts(control_file) {
+            vcpu.inject_interrupt(vector)?;
+        }
         update_vcpu_run_interrupt_state(control_file, &vcpu)?;
         if read_vcpu_run_u8(control_file, abi::KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
             return Err(AxErrorKind::Interrupted.into());
@@ -139,6 +143,12 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
             | AxVCpuExitReason::ExternalInterrupt { .. }
             | AxVCpuExitReason::InterruptEnd { .. } => {
                 crate::vmm::vcpus::handle_internal_exit(&vm, &vcpu, &exit_reason);
+                axvisor_api::task::yield_now();
+            }
+            #[cfg(target_arch = "x86_64")]
+            AxVCpuExitReason::Halt if irqchip_created => {
+                crate::vmm::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
+                crate::vmm::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
                 axvisor_api::task::yield_now();
             }
             AxVCpuExitReason::MmioWrite { addr, width, data }
@@ -169,6 +179,15 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
                 ..
             } => {
                 vcpu.set_gpr(abi::X86_RAX_REG_INDEX, (-abi::KVM_ENOSYS) as usize);
+                axvisor_api::task::yield_now();
+            }
+            #[cfg(target_arch = "x86_64")]
+            AxVCpuExitReason::CpuUp {
+                target_cpu,
+                entry_point,
+                ..
+            } => {
+                handle_cpu_up(control_file, &vm, target_cpu as usize, entry_point)?;
                 axvisor_api::task::yield_now();
             }
             #[cfg(target_arch = "riscv64")]
@@ -215,4 +234,24 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
     };
     write_vcpu_run_u32(control_file, abi::KVM_RUN_EXIT_REASON_OFFSET, exit_reason)?;
     Ok(0)
+}
+
+fn wait_until_vcpu_runnable(control_file: api_control::ControlFileId) -> AxResult {
+    loop {
+        if read_vcpu_run_u8(control_file, abi::KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
+            return Err(AxErrorKind::Interrupted.into());
+        }
+        if current_vcpu_mp_state(control_file)? != abi::KVM_MP_STATE_STOPPED {
+            return Ok(());
+        }
+        axvisor_api::task::yield_now();
+    }
+}
+
+fn current_vcpu_mp_state(control_file: api_control::ControlFileId) -> AxResult<u32> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vcpu.mp_state)
 }
