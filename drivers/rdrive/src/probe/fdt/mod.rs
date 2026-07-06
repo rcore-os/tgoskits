@@ -1,6 +1,6 @@
 use alloc::{
     collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
-    string::String,
+    string::{String, ToString},
     vec::Vec,
 };
 use core::ptr::NonNull;
@@ -58,6 +58,81 @@ pub struct FdtInfo<'a> {
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResetRef {
+    pub name: Option<String>,
+    pub phandle: Phandle,
+    pub cells: u32,
+    pub specifier: Vec<u32>,
+}
+
+impl ResetRef {
+    pub fn select(&self) -> Option<u32> {
+        (self.cells > 0)
+            .then(|| self.specifier.first().copied())
+            .flatten()
+    }
+}
+
+pub fn reset_refs(node: NodeType<'_>) -> Result<Vec<ResetRef>, OnProbeError> {
+    let Some(prop) = node.as_node().get_property("resets") else {
+        return Ok(Vec::new());
+    };
+    let reset_names = node
+        .as_node()
+        .get_property("reset-names")
+        .map(|prop| {
+            prop.as_str_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    let mut index = 0;
+    while let Some(phandle_raw) = reader.read_u32() {
+        let phandle = Phandle::from(phandle_raw);
+        let provider = system().get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] reset provider phandle {phandle:?} not found",
+                node.name()
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#reset-cells")
+            .and_then(|prop| prop.get_u32())
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] reset provider {} has no #reset-cells",
+                    node.name(),
+                    provider.name()
+                ))
+            })?;
+
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated resets entry for phandle {phandle:?}",
+                    node.name()
+                ))
+            })?;
+            specifier.push(value);
+        }
+
+        refs.push(ResetRef {
+            name: reset_names.get(index).cloned(),
+            phandle,
+            cells,
+            specifier,
+        });
+        index += 1;
+    }
+    Ok(refs)
+}
+
 impl<'a> FdtInfo<'a> {
     pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'a>> {
         system().get_by_phandle(phandle)
@@ -76,6 +151,17 @@ impl<'a> FdtInfo<'a> {
             .clocks()
             .into_iter()
             .find(|clock| clock.name.as_deref() == Some(name))
+    }
+
+    pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {
+        reset_refs(self.node)
+    }
+
+    pub fn find_reset_by_name(&self, name: &str) -> Result<Option<ResetRef>, OnProbeError> {
+        Ok(self
+            .resets()?
+            .into_iter()
+            .find(|reset| reset.name.as_deref() == Some(name)))
     }
 
     pub fn interrupts(&self) -> Vec<InterruptRef> {

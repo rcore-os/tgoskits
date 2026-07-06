@@ -12,11 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, vec::Vec};
 use core::{ptr::NonNull, time::Duration};
 
 use fdt_edit::Node;
@@ -35,13 +31,12 @@ use sdmmc_protocol::{
         init::{CardInitPreference, SdioInitScratch},
     },
 };
-use spin::Once;
 
 use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
 use crate::{
     block::ProbeFdtBlock,
     mmio::iomap,
-    soc::{rk3588_enable_power_domain, rk3588_reset_assert, rk3588_reset_deassert},
+    soc::{RockchipResetOps, rk3588_enable_power_domain},
 };
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
@@ -95,20 +90,13 @@ const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
 const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
-static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
-static RESET_SPECS: Once<Vec<ResetSpec>> = Once::new();
-
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
     clock: RockchipClockOps,
 }
-struct RockchipSdhciResetHook;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ResetSpec {
-    name: Option<String>,
-    id: u64,
+struct RockchipSdhciResetHook {
+    resets: Vec<RockchipResetOps>,
 }
 
 impl HostClock for RockchipSdhciClock {
@@ -140,12 +128,9 @@ impl HostClock for RockchipSdhciClock {
 
 impl HostResetHook for RockchipSdhciResetHook {
     fn before_reset_all(&self, _host: &mut Sdhci) -> Result<(), Error> {
-        let Some(resets) = RESET_SPECS.get() else {
-            return Ok(());
-        };
-        assert_resets(resets).map_err(|_| reset_error())?;
+        assert_resets(&self.resets).map_err(|_| reset_error())?;
         axklib::time::busy_wait(Duration::from_micros(1));
-        deassert_resets(resets).map_err(|_| reset_error())?;
+        deassert_resets(&self.resets).map_err(|_| reset_error())?;
         Ok(())
     }
 
@@ -168,7 +153,7 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
-    apply_rockchip_sdhci_resources(info)?;
+    let resets = apply_rockchip_sdhci_resources(info)?;
     let base_reg = info
         .node
         .regs()
@@ -195,7 +180,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    host.set_reset_hook(&SDHCI_RESET_HOOK);
+    host.set_reset_hook(RockchipSdhciResetHook { resets });
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
@@ -226,15 +211,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+fn apply_rockchip_sdhci_resources(
+    info: &FdtInfo<'_>,
+) -> Result<Vec<RockchipResetOps>, OnProbeError> {
     apply_assigned_clocks(info, "SDHCI")?;
     enable_power_domains(parse_power_domains(info.node.as_node())?)?;
-    let resets = parse_resets(info.node.as_node())?;
-    if !resets.is_empty() {
-        RESET_SPECS.call_once(|| resets);
-    }
+    let resets = RockchipResetOps::from_info(info)?;
     enable_node_clocks(info, "SDHCI");
-    Ok(())
+    Ok(resets)
 }
 
 fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
@@ -262,55 +246,16 @@ fn enable_power_domains(domains: Vec<usize>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn parse_resets(node: &Node) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(prop) = node.get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-    let names = node
-        .get_property("reset-names")
-        .map(|prop| {
-            prop.as_str_iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(cells
-        .chunks(2)
-        .enumerate()
-        .map(|(index, chunk)| ResetSpec {
-            name: names.get(index).cloned(),
-            id: u64::from(chunk[1]),
-        })
-        .collect())
-}
-
-fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+fn assert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_assert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to assert RK3588 SDHCI reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.assert()?;
     }
     Ok(())
 }
 
-fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+fn deassert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_deassert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to deassert RK3588 SDHCI reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.deassert()?;
     }
     Ok(())
 }
@@ -502,7 +447,7 @@ fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<RockchipClockOps>, OnPr
             "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
             clk.phandle, clk.name, clk.cells
         );
-        if clk.name == Some("core".to_string()) {
+        if clk.name.as_deref() == Some("core") {
             return RockchipClockOps::from_node_clock(info, &clk);
         }
     }
@@ -515,8 +460,6 @@ fn clock_error() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
     use super::*;
 
     #[test]
@@ -537,35 +480,6 @@ mod tests {
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
         assert_eq!(limits.max_segments, 1);
-    }
-
-    #[test]
-    fn parse_resets_reads_rk3588_sdhci_reset_cells_and_names() {
-        let mut node = Node::new("mmc@fe2e0000");
-        let mut resets = Vec::new();
-        for id in [10_u32, 11] {
-            resets.extend_from_slice(&0x1000_u32.to_be_bytes());
-            resets.extend_from_slice(&id.to_be_bytes());
-        }
-        node.add_property(fdt_edit::Property::new("resets", resets));
-        node.add_property(fdt_edit::Property::new(
-            "reset-names",
-            b"core\0bus\0".to_vec(),
-        ));
-
-        assert_eq!(
-            parse_resets(&node).unwrap(),
-            vec![
-                ResetSpec {
-                    name: Some(String::from("core")),
-                    id: 10
-                },
-                ResetSpec {
-                    name: Some(String::from("bus")),
-                    id: 11
-                }
-            ]
-        );
     }
 
     #[test]

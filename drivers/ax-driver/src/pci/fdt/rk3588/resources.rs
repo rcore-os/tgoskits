@@ -32,7 +32,7 @@ use super::{
         log_resource_summary, program_memory_windows, prop_phandle, set_rk3588_bar_range,
     },
 };
-use crate::soc::{RockchipFdtPinctrlParser, rk3588_enable_power_domain};
+use crate::soc::{RockchipFdtPinctrlParser, RockchipResetOps, rk3588_enable_power_domain};
 
 pub(super) const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
@@ -176,12 +176,6 @@ pub(super) struct ClockSpec {
     pub(super) assigned_rate: Option<u32>,
 }
 
-#[derive(Clone)]
-pub(super) struct ResetSpec {
-    pub(super) name: Option<String>,
-    pub(super) id: u64,
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct GpioSpec {
     pub(super) bank: u8,
@@ -201,7 +195,7 @@ pub(super) struct HostResources<'a> {
     pub(super) logical_bus_end: u8,
     pub(super) power_domains: Vec<usize>,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<RockchipResetOps>,
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) reset_gpio: Option<GpioSpec>,
     pub(super) supply: Option<Phandle>,
@@ -222,7 +216,7 @@ pub(super) struct Pcie3PhyResources {
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) pcie30_phymode: u32,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<RockchipResetOps>,
 }
 
 pub(super) struct CombphyResources {
@@ -233,7 +227,7 @@ pub(super) struct CombphyResources {
     pub(super) pcie1ln_sel_bits: Option<[u32; 4]>,
     pub(super) refclk_rate: u32,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<RockchipResetOps>,
 }
 
 pub(super) fn probe_rk3588(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {

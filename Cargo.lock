@@ -686,6 +686,7 @@ dependencies = [
  "rdif-pcie",
  "rdif-pinctrl",
  "rdif-pwm",
+ "rdif-reset",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -6344,6 +6345,14 @@ dependencies = [
 
 [[package]]
 name = "rdif-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rdif-reset"
 version = "0.1.0"
 dependencies = [
  "rdif-base",

@@ -1,6 +1,6 @@
 use crate::{
     ClockError, ClockResult, Mmio, ResetRockchip, RstId,
-    clock::{ClkId, CruOp},
+    clock::{ClkId, ClockOp, ResetOp},
     variants::MHZ,
 };
 
@@ -227,7 +227,7 @@ impl Cru {
     }
 }
 
-impl CruOp for Cru {
+impl ResetOp for Cru {
     fn reset_assert(&mut self, id: RstId) {
         self.reset.reset_assert(id);
     }
@@ -235,7 +235,9 @@ impl CruOp for Cru {
     fn reset_deassert(&mut self, id: RstId) {
         self.reset.reset_deassert(id);
     }
+}
 
+impl ClockOp for Cru {
     fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
         self.clk_enable(id)
     }

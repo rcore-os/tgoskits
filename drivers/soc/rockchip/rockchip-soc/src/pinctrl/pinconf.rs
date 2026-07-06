@@ -13,7 +13,7 @@ use crate::PinId;
 /// # 示例
 ///
 /// ```
-/// use rockchip_soc::pinctrl::Pull;
+/// use rockchip_soc::Pull;
 ///
 /// // 配置为上拉
 /// let pull = Pull::PullUp;

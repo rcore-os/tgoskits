@@ -134,11 +134,20 @@ impl<T> DeviceGuard<T> {
     }
 }
 
-#[derive(Clone)]
 pub struct Device<T> {
     lock: Weak<LockInner>,
     descriptor: Descriptor,
     ptr: *mut T,
+}
+
+impl<T> Clone for Device<T> {
+    fn clone(&self) -> Self {
+        Self {
+            lock: self.lock.clone(),
+            descriptor: self.descriptor.clone(),
+            ptr: self.ptr,
+        }
+    }
 }
 
 unsafe impl<T> Send for Device<T> {}

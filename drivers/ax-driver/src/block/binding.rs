@@ -10,7 +10,10 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
+#[cfg(not(test))]
+use ax_kspin::SpinNoIrq as BlockQueueLock;
+#[cfg(test)]
+use ax_kspin::SpinRaw as BlockQueueLock;
 use dma_api::{ContiguousArray, CpuDmaBuffer, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
@@ -34,7 +37,7 @@ pub struct Block {
     #[cfg(feature = "irq")]
     irq_handler: Option<BlockIrqHandler>,
     interface: Box<dyn Interface>,
-    queues: SpinNoIrq<BlockQueues>,
+    queues: BlockQueueLock<BlockQueues>,
 }
 
 struct BlockQueues {
@@ -596,7 +599,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             #[cfg(feature = "irq")]
             irq_handler,
             interface,
-            queues: SpinNoIrq::new(queues),
+            queues: BlockQueueLock::new(queues),
         })
     }
 }
@@ -1199,7 +1202,7 @@ mod tests {
             #[cfg(feature = "irq")]
             irq_handler: None,
             interface: Box::new(TestInterface),
-            queues: SpinNoIrq::new(BlockQueues {
+            queues: BlockQueueLock::new(BlockQueues {
                 queue: RuntimeQueue::Legacy(queue),
                 pool: BlockBufferPool {
                     dma: DeviceDma::new_legacy(u64::MAX, dma),

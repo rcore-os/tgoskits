@@ -58,7 +58,7 @@ impl Debug for Cru {
     }
 }
 
-impl CruOp for Cru {
+impl ResetOp for Cru {
     fn reset_assert(&mut self, id: RstId) {
         self.reset.reset_assert(id);
     }
@@ -66,7 +66,9 @@ impl CruOp for Cru {
     fn reset_deassert(&mut self, id: RstId) {
         self.reset.reset_deassert(id);
     }
+}
 
+impl ClockOp for Cru {
     fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
         self.clk_enable(id)
     }
@@ -534,7 +536,7 @@ impl Cru {
     ///
     /// # 示例
     ///
-    /// ```rust
+    /// ```ignore
     /// // 清除 bit 5, 设置 bit 3
     /// self.clrsetreg(reg_offset, 0x20, 0x08);
     /// // 等价于: value = (current & ~0x20) | 0x08

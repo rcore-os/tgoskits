@@ -33,23 +33,35 @@ impl Manager {
 
 #[derive(Default)]
 pub(crate) struct DeviceContainer {
-    devices: BTreeMap<DeviceId, DeviceOwner>,
+    devices: BTreeMap<DeviceId, Vec<DeviceOwner>>,
 }
 
 impl DeviceContainer {
     pub fn insert<T: DriverGeneric>(&mut self, descriptor: Descriptor, device: T) {
-        self.devices
-            .insert(descriptor.device_id, DeviceOwner::new(descriptor, device));
+        let device_id = descriptor.device_id;
+        let devices = self.devices.entry(device_id).or_default();
+        if devices.iter().any(DeviceOwner::is::<T>) {
+            panic!(
+                "duplicate device interface {} for device {:?}",
+                core::any::type_name::<T>(),
+                device_id
+            );
+        }
+        devices.push(DeviceOwner::new(descriptor, device));
     }
 
     pub fn get_typed<T: DriverGeneric>(&self, id: DeviceId) -> Result<Device<T>, GetDeviceError> {
-        let dev = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
-
-        dev.weak()
+        let devices = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
+        for dev in devices {
+            if let Ok(device) = dev.weak() {
+                return Ok(device);
+            }
+        }
+        Err(GetDeviceError::TypeNotMatch)
     }
 
     pub fn get_one<T: DriverGeneric>(&self) -> Option<Device<T>> {
-        for dev in self.devices.values() {
+        for dev in self.devices.values().flatten() {
             if let Ok(val) = dev.weak::<T>() {
                 return Some(val);
             }
@@ -59,7 +71,7 @@ impl DeviceContainer {
 
     pub fn devices<T: DriverGeneric>(&self) -> Vec<Device<T>> {
         let mut result = Vec::new();
-        for dev in self.devices.values() {
+        for dev in self.devices.values().flatten() {
             if let Ok(val) = dev.weak::<T>() {
                 result.push(val);
             }
@@ -122,6 +134,29 @@ mod tests {
         container.insert(Descriptor::new(), DeviceTest);
         let devices = container.devices::<Empty>();
         assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn same_device_id_can_expose_multiple_outer_driver_types() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+        let id = desc.device_id;
+
+        container.insert(desc.clone(), Empty);
+        container.insert(desc, DeviceTest);
+
+        assert!(container.get_typed::<Empty>(id).is_ok());
+        assert!(container.get_typed::<DeviceTest>(id).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate device interface")]
+    fn same_device_id_rejects_duplicate_outer_driver_type() {
+        let mut container = DeviceContainer::default();
+        let desc = Descriptor::new();
+
+        container.insert(desc.clone(), Empty);
+        container.insert(desc, Empty);
     }
 
     #[test]

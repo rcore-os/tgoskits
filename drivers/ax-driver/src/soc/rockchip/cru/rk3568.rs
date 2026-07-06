@@ -1,8 +1,9 @@
+use ax_kspin::SpinRaw as Mutex;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};
 
-use super::ClkDrv;
+use super::{ClkDrv, ResetDrv};
 use crate::mmio::iomap;
 
 const RK3568_CRU_GRF_BASE: usize = 0xfdc6_0000;
@@ -59,7 +60,12 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     if let Cru::Rk3568(ref mut rk3568) = cru {
         rk3568.init_emmc();
     }
-    plat_dev.register(rdif_clk::Clk::new(ClkDrv::new("rk3568-cru", cru)));
-    info!("RK3568 CRU clock registered successfully");
+    let cru = alloc::sync::Arc::new(Mutex::new(cru));
+    plat_dev.register(rdif_reset::Reset::new(ResetDrv::new(
+        "rk3568-cru-reset",
+        cru.clone(),
+    )));
+    plat_dev.register(rdif_clk::Clk::new(ClkDrv::new("rk3568-cru-clock", cru)));
+    info!("RK3568 CRU clock/reset registered successfully");
     Ok(())
 }

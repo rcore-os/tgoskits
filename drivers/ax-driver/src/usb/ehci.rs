@@ -18,7 +18,7 @@ use rdrive::{
 use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{
     mmio::iomap,
-    soc::{rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_deassert},
+    soc::{RockchipResetOps, rk3588_enable_clock, rk3588_enable_power_domain},
 };
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
@@ -41,17 +41,11 @@ struct ClockSpec {
     id: u32,
 }
 
-#[derive(Clone)]
-struct ResetSpec {
-    name: String,
-    id: u64,
-}
-
 struct EhciResources {
     ctrl: RegFixed,
     power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
-    resets: Vec<ResetSpec>,
+    resets: Vec<RockchipResetOps>,
 }
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -143,43 +137,8 @@ fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
     Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
 }
 
-fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(resets_prop) = node.as_node().get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let reset_cells = resets_prop.get_u32_iter().collect::<Vec<_>>();
-    if reset_cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-
-    let reset_names = node
-        .as_node()
-        .get_property("reset-names")
-        .ok_or_else(|| {
-            OnProbeError::other(format!("[{}] has resets but no reset-names", node.name()))
-        })?
-        .as_str_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let reset_count = reset_cells.len() / 2;
-    if reset_names.len() < reset_count {
-        return Err(OnProbeError::other(format!(
-            "[{}] has fewer reset-names than resets",
-            node.name()
-        )));
-    }
-
-    Ok(reset_cells
-        .chunks(2)
-        .zip(reset_names.iter())
-        .map(|(cells, name)| ResetSpec {
-            name: name.clone(),
-            id: cells[1] as u64,
-        })
-        .collect())
+fn parse_resets(node: NodeType<'_>) -> Result<Vec<RockchipResetOps>, OnProbeError> {
+    RockchipResetOps::from_node(node)
 }
 
 fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
@@ -210,13 +169,18 @@ fn enable_clocks(clocks: &[ClockSpec]) {
     }
 }
 
-fn deassert_resets(resets: &[ResetSpec]) {
+fn deassert_resets(resets: &[RockchipResetOps]) {
     for reset in resets {
-        match rk3588_reset_deassert(reset.id) {
-            Ok(()) => debug!("EHCI reset {} ({:#x}) deasserted", reset.name, reset.id),
+        match reset.deassert() {
+            Ok(()) => debug!(
+                "EHCI reset {:?} ({:#x}) deasserted",
+                reset.name(),
+                reset.id().raw()
+            ),
             Err(err) => warn!(
-                "EHCI reset {} ({:#x}) deassert skipped: {err}",
-                reset.name, reset.id
+                "EHCI reset {:?} ({:#x}) deassert skipped: {err}",
+                reset.name(),
+                reset.id().raw()
             ),
         }
     }

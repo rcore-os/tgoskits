@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_kspin::SpinRaw as Mutex;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};
 
-use super::ClkDrv;
+use super::{ClkDrv, ResetDrv};
 use crate::mmio::iomap;
 
 const RK3588_CRU_GRF_BASE: usize = 0xfd5b_0000;
@@ -69,8 +70,12 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     )?;
     let grf_base = iomap(RK3588_CRU_GRF_BASE, RK3588_CRU_GRF_SIZE)?;
 
-    let cru = Cru::new(SocType::Rk3588, mmio_base, grf_base);
-    plat_dev.register(rdif_clk::Clk::new(ClkDrv::new("rk3588-cru", cru)));
-    info!("RK3588 CRU clock registered successfully");
+    let cru = alloc::sync::Arc::new(Mutex::new(Cru::new(SocType::Rk3588, mmio_base, grf_base)));
+    plat_dev.register(rdif_reset::Reset::new(ResetDrv::new(
+        "rk3588-cru-reset",
+        cru.clone(),
+    )));
+    plat_dev.register(rdif_clk::Clk::new(ClkDrv::new("rk3588-cru-clock", cru)));
+    info!("RK3588 CRU clock/reset registered successfully");
     Ok(())
 }
