@@ -126,7 +126,7 @@ rockchip-soc = [
     "dep:rdif-reset",
     "dep:rockchip-soc",
 ]
-rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
+rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
@@ -164,6 +164,7 @@ rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
+rdif-power = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }

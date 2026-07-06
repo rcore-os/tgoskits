@@ -20,13 +20,11 @@ use rdrive::{
     },
     register::{FdtInfo, ProbeFdt},
 };
-use rockchip_pm::{PowerDomain, RockchipPM};
 
 use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{mmio::iomap, soc::rk3588_enable_clock};
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
-const OPTIONAL_PHP_POWER_DOMAIN: usize = 32;
 
 crate::model_register!(
     name: "USB DWC xHCI",
@@ -92,7 +90,6 @@ struct UsbdpPhyResources {
 
 struct DwcResources {
     ctrl: RegFixed,
-    power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
     ctrl_resets: Vec<NamedResetLine>,
     usb2: Usb2PhyResources,
@@ -120,7 +117,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
 
     let ctrl = map_reg(resources.ctrl)?;
@@ -198,7 +194,6 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<DwcResources, OnPr
 
     Ok(DwcResources {
         ctrl,
-        power_domains: parse_power_domains(info.node.as_node())?,
         clocks,
         ctrl_resets: parse_resets(info.node)?,
         usb2,
@@ -280,21 +275,6 @@ fn parse_phys(node: &Node) -> Result<(Phandle, Phandle), OnProbeError> {
         )));
     }
     Ok((phys[0], phys[1]))
-}
-
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
 }
 
 fn parse_resets(node: NodeType<'_>) -> Result<Vec<NamedResetLine>, OnProbeError> {
@@ -379,30 +359,6 @@ fn parse_dwc_params(node: &Node) -> DwcParams {
     );
 
     params
-}
-
-fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
-    let pm = rdrive::get_one::<RockchipPM>()
-        .ok_or_else(|| OnProbeError::other("RockchipPM not found for DWC xHCI"))?;
-    let mut pm = pm
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPM: {err}")))?;
-
-    for &domain in domains {
-        pm.power_domain_on(PowerDomain(domain)).map_err(|err| {
-            OnProbeError::other(format!("failed to enable power domain {domain}: {err:?}"))
-        })?;
-        info!("DWC xHCI power domain {domain} enabled");
-    }
-
-    if !domains.contains(&OPTIONAL_PHP_POWER_DOMAIN) {
-        match pm.power_domain_on(PowerDomain(OPTIONAL_PHP_POWER_DOMAIN)) {
-            Ok(()) => info!("DWC xHCI optional PHP power domain enabled"),
-            Err(err) => warn!("DWC xHCI optional PHP power domain enable failed: {err:?}"),
-        }
-    }
-
-    Ok(())
 }
 
 fn enable_clocks(clocks: &[ClockSpec]) {

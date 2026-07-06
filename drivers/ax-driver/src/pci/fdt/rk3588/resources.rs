@@ -10,7 +10,7 @@ use core::{
     time::Duration,
 };
 
-use fdt_edit::{Node, PciRange, Phandle, RegFixed};
+use fdt_edit::{PciRange, Phandle, RegFixed};
 use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pcie::PcieController;
@@ -35,7 +35,7 @@ use super::{
         log_resource_summary, program_memory_windows, prop_phandle, set_rk3588_bar_range,
     },
 };
-use crate::soc::{RockchipFdtPinctrlParser, rk3588_enable_power_domain};
+use crate::soc::RockchipFdtPinctrlParser;
 
 pub(super) const RK3588_GPIO_BASES: [u64; 5] = [
     0xfd8a_0000,
@@ -196,7 +196,6 @@ pub(super) struct HostResources<'a> {
     pub(super) ranges: Vec<PciRange>,
     pub(super) bus_base: u8,
     pub(super) logical_bus_end: u8,
-    pub(super) power_domains: Vec<usize>,
     pub(super) clocks: Vec<ClockSpec>,
     pub(super) resets: Vec<ResetLine>,
     pub(super) pipe_grf: Option<Phandle>,
@@ -349,7 +348,6 @@ fn prepare_controller_resources(resources: &HostResources<'_>) -> Result<(), OnP
     }
 
     enable_vpcie3v3_supply(resources.supply)?;
-    enable_power_domains(&resources.power_domains)?;
     init_phys(resources.node, &resources.phys)?;
     assert_resets(&resources.resets)?;
     delay.delay_us(1);
@@ -357,35 +355,6 @@ fn prepare_controller_resources(resources: &HostResources<'_>) -> Result<(), OnP
     enable_clocks(&resources.clocks)?;
     axklib::time::busy_wait(Duration::from_millis(1));
     log_resource_summary(resources);
-    Ok(())
-}
-
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
-fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
-    if domains.is_empty() {
-        return Ok(());
-    }
-
-    for &domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable RK3588 PCIe power domain {domain}: {err}"
-            ))
-        })?;
-    }
     Ok(())
 }
 
@@ -446,7 +415,6 @@ fn parse_host_resources<'a>(
         ranges,
         bus_base,
         logical_bus_end,
-        power_domains: parse_power_domains(raw_node)?,
         clocks: clock_specs(node.clocks()),
         resets: parse_resets(node_type)?,
         pipe_grf: prop_phandle(raw_node, "rockchip,pipe-grf"),
