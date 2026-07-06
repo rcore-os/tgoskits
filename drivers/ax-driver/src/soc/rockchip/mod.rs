@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #[cfg(feature = "rockchip-soc")]
-mod clk;
+mod cru;
 
 #[cfg(feature = "rockchip-pm")]
 mod pm;
@@ -22,9 +22,7 @@ mod pm;
 mod pinctrl;
 
 #[cfg(feature = "rockchip-soc")]
-pub use clk::{
-    rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
-};
+pub use cru::{rk3588_enable_clock, rk3588_set_clock_rate};
 #[cfg(feature = "rockchip-soc")]
 pub use pinctrl::{RockchipFdtPinctrlParser, RockchipPinCtrl};
 #[cfg(all(feature = "rockchip-soc", feature = "rockchip-pm"))]

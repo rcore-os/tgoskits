@@ -16,7 +16,10 @@ use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pcie::PcieController;
 use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
-    probe::{OnProbeError, fdt::NodeType},
+    probe::{
+        OnProbeError,
+        fdt::{NodeType, ResetLine},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 use rk3588_pci::{Delay, HostConfig, IatuMode, ResetControl, Rk3588PcieHost};
@@ -176,12 +179,6 @@ pub(super) struct ClockSpec {
     pub(super) assigned_rate: Option<u32>,
 }
 
-#[derive(Clone)]
-pub(super) struct ResetSpec {
-    pub(super) name: Option<String>,
-    pub(super) id: u64,
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct GpioSpec {
     pub(super) bank: u8,
@@ -201,7 +198,7 @@ pub(super) struct HostResources<'a> {
     pub(super) logical_bus_end: u8,
     pub(super) power_domains: Vec<usize>,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<ResetLine>,
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) reset_gpio: Option<GpioSpec>,
     pub(super) supply: Option<Phandle>,
@@ -222,7 +219,7 @@ pub(super) struct Pcie3PhyResources {
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) pcie30_phymode: u32,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<ResetLine>,
 }
 
 pub(super) struct CombphyResources {
@@ -233,7 +230,7 @@ pub(super) struct CombphyResources {
     pub(super) pcie1ln_sel_bits: Option<[u32; 4]>,
     pub(super) refclk_rate: u32,
     pub(super) clocks: Vec<ClockSpec>,
-    pub(super) resets: Vec<ResetSpec>,
+    pub(super) resets: Vec<ResetLine>,
 }
 
 pub(super) fn probe_rk3588(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {

@@ -3,17 +3,18 @@ use alloc::{format, vec::Vec};
 use fdt_edit::{ClockRef, Node, Phandle};
 use log::warn;
 use rdrive::{
-    probe::{OnProbeError, fdt::NodeType},
+    probe::{
+        OnProbeError,
+        fdt::{NodeType, ResetLine, reset_lines},
+    },
     register::FdtInfo,
 };
 
 use super::{
-    resources::{ClockSpec, GpioSpec, RK3588_GPIO_BASES, ResetSpec},
-    windows::{live_fdt, prop_str_list, rk3588_pcie_reset_pin},
+    resources::{ClockSpec, GpioSpec, RK3588_GPIO_BASES},
+    windows::{live_fdt, rk3588_pcie_reset_pin},
 };
-use crate::soc::{
-    rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
-};
+use crate::soc::{rk3588_enable_clock, rk3588_set_clock_rate};
 
 pub(super) fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
     let assigned_clocks = node
@@ -94,48 +95,20 @@ pub(super) fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(prop) = node.as_node().get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-    let reset_names = prop_str_list(node.as_node(), "reset-names");
-    Ok(cells
-        .chunks(2)
-        .enumerate()
-        .map(|(idx, chunk)| ResetSpec {
-            name: reset_names.get(idx).cloned(),
-            id: u64::from(chunk[1]),
-        })
-        .collect())
+pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    reset_lines(node)
 }
 
-pub(super) fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_assert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to assert RK3588 PCIe reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.assert()?;
     }
     Ok(())
 }
 
-pub(super) fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn deassert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_deassert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to deassert RK3588 PCIe reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.deassert()?;
     }
     Ok(())
 }

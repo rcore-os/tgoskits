@@ -456,7 +456,7 @@ impl Cru {
 ///
 /// # 示例
 ///
-/// ```rust
+/// ```ignore
 /// let rate = pll_rate(1188_000_000, 2, 198, 1, 0);
 /// ```
 const fn pll_rate(rate: u64, p: u32, m: u32, s: u32, k: u32) -> PllRateTable {

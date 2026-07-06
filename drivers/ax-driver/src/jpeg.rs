@@ -10,14 +10,15 @@
 use core::ptr::NonNull;
 
 use log::info;
-use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use rdrive::{
+    probe::{OnProbeError, fdt::ResetLine},
+    register::ProbeFdt,
+};
 use rockchip_jpeg::RockchipJpeg;
 
 use crate::{
     mmio::iomap,
-    soc::{
-        rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_assert, rk3588_reset_deassert,
-    },
+    soc::{rk3588_enable_clock, rk3588_enable_power_domain},
 };
 
 // RK3588 jpegd (VDPU720) constants, from the OrangePi-5-Plus device tree.
@@ -28,8 +29,6 @@ const PD_VDPU: usize = 21;
 // The actual hardware gate is the verified `CLKGATE_CON(45)` bit 2/3 in gate.rs.
 const CLK_ACLK_JPEG_DECODER: u32 = 436;
 const CLK_HCLK_JPEG_DECODER: u32 = 437;
-const RST_VIDEO_A: u64 = 722;
-const RST_VIDEO_H: u64 = 723;
 
 // The per-block Rockchip IOMMU v2 sits 0x480 into the same register page.
 const IOMMU_OFFSET: usize = 0x480;
@@ -67,8 +66,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let size_raw = reg.size.unwrap_or(0x400) as usize;
     let (start, size, offset) = page_aligned_region(start_raw, size_raw);
     let base = unsafe { iomap(start, size)?.add(offset) };
+    let resets = info.reset_lines()?;
 
-    bring_up_power_and_clocks();
+    bring_up_power_and_clocks(&resets);
     bypass_iommu(base);
 
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
@@ -96,7 +96,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 /// Bring the engine out of reset. All steps are best-effort and idempotent; the
 /// shared VDPU root clocks are left enabled by the bootloader (as for RGA2), so
 /// failures here are logged but not fatal.
-fn bring_up_power_and_clocks() {
+fn bring_up_power_and_clocks(resets: &[ResetLine]) {
     if let Err(e) = rk3588_enable_power_domain(PD_VDPU) {
         info!("JPEG: enable PD_VDPU failed (continuing): {e}");
     }
@@ -105,12 +105,14 @@ fn bring_up_power_and_clocks() {
             info!("JPEG: enable clock {clk} failed (continuing): {e:?}");
         }
     }
-    // Pulse the video resets (assert then deassert) for a known starting state.
-    for rst in [RST_VIDEO_A, RST_VIDEO_H] {
-        let _ = rk3588_reset_assert(rst);
-    }
-    for rst in [RST_VIDEO_A, RST_VIDEO_H] {
-        let _ = rk3588_reset_deassert(rst);
+    for reset in resets {
+        if let Err(e) = reset.reset() {
+            info!(
+                "JPEG: pulse reset {:?} ({:#x}) failed (continuing): {e}",
+                reset.name(),
+                reset.id().raw()
+            );
+        }
     }
 }
 

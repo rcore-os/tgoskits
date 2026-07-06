@@ -119,7 +119,13 @@ rk3588-pcie = [
     "rockchip-pm",
     "dep:rk3588-pci",
 ]
-rockchip-soc = ["pinctrl", "dep:rdif-clk", "dep:rockchip-soc"]
+rockchip-soc = [
+    "pinctrl",
+    "dep:ax-kspin",
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:rockchip-soc",
+]
 rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
@@ -159,6 +165,7 @@ rdif-intc.workspace = true
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
+rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true

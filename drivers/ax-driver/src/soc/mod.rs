@@ -22,7 +22,7 @@ pub mod scmi;
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
     RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain,
-    rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
+    rk3588_set_clock_rate,
 };
 
 #[cfg(not(feature = "rockchip-soc"))]
@@ -69,18 +69,4 @@ impl RockchipPinCtrl {
             "RK3588 pinctrl support is not enabled for regulator phandle {phandle:?}"
         )))
     }
-}
-
-#[cfg(not(feature = "rockchip-soc"))]
-pub fn rk3588_reset_assert(id: u64) -> Result<(), rdrive::probe::OnProbeError> {
-    Err(rdrive::probe::OnProbeError::other(alloc::format!(
-        "RK3588 reset support is not enabled for reset {id:#x}"
-    )))
-}
-
-#[cfg(not(feature = "rockchip-soc"))]
-pub fn rk3588_reset_deassert(id: u64) -> Result<(), rdrive::probe::OnProbeError> {
-    Err(rdrive::probe::OnProbeError::other(alloc::format!(
-        "RK3588 reset support is not enabled for reset {id:#x}"
-    )))
 }
