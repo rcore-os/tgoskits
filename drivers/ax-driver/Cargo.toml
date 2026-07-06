@@ -45,7 +45,7 @@ cvsd = [
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
-aic8800-wifi = [
+aic8800 = [
     "net",
     "dep:aic8800",
     "dep:sdhci-cv1800",

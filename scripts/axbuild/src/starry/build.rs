@@ -556,11 +556,7 @@ fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
 fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     matches!(
         feature,
-        "plat-dyn"
-            | "ax-feat/plat-dyn"
-            | "ax-std/plat-dyn"
-            | "starry-kernel/plat-dyn"
-            | "ax-hal/plat-dyn"
+        "plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn" | "ax-hal/plat-dyn"
     )
 }
 

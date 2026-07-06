@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 公共 API/feature 聚合层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`display`、`dma`、`dummy-if-not-enabled`、`fs`、`ipi`、`irq`、`multitask`、`net`、`paging` 控制编译期能力装配。
+- feature 视角：主要通过 `alloc`、`display`、`dma`、`stubs`、`fs`、`ipi`、`irq`、`multitask`、`net`、`paging` 控制编译期能力装配。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `AxTimeValue`、`DMAInfo`、`AxTaskHandle`、`AxWaitQueueHandle`。
 
 ### 模块结构
@@ -37,7 +37,7 @@ graph LR
     current --> ax_dma["ax-dma"]
     current --> ax-driver["ax-driver"]
     current --> ax_errno["ax-errno"]
-    current --> ax-feat["ax-feat"]
+    current --> ax-runtime["ax-runtime"]
     current --> ax-fs["ax-fs"]
     ax_std["ax-std"] --> current
 ```
@@ -48,7 +48,7 @@ graph LR
 - `ax-dma`
 - `ax-driver`
 - `ax-errno`
-- `ax-feat`
+- `ax-runtime`
 - `ax-fs`
 - `ax-hal`
 - `axio`

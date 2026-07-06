@@ -10,7 +10,7 @@
     feature = "fs",
     feature = "net",
     feature = "multitask",
-    feature = "dummy-if-not-enabled"
+    feature = "stubs"
 ))]
 extern crate alloc;
 

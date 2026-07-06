@@ -90,9 +90,7 @@ impl Inode {
         ino: InodeNumber,
     ) -> VfsResult<()> {
         fs.modify_inode(dev, ino, |inode| {
-            if cfg!(feature = "times") {
-                inode.i_ctime = crate::os::wall_time().as_secs() as u32;
-            }
+            inode.i_ctime = crate::os::wall_time().as_secs() as u32;
         })
         .map_err(into_vfs_err)
     }
@@ -159,9 +157,7 @@ impl NodeOps for Inode {
                 if let Some(mtime) = update.mtime {
                     inode.i_mtime = mtime.as_secs() as u32;
                 }
-                if cfg!(feature = "times") {
-                    inode.i_ctime = crate::os::wall_time().as_secs() as u32;
-                }
+                inode.i_ctime = crate::os::wall_time().as_secs() as u32;
             })
             .map_err(into_vfs_err)?;
         }

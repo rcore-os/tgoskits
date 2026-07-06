@@ -37,8 +37,8 @@ flowchart LR
 ### 1.3 feature 条件为什么重要
 源码里有两个很关键的条件：
 
-- `#[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]`
-- `if cfg!(not(feature = "sched-cfs")) && available_parallelism() == 1`
+- `#[cfg(all(not(feature = "rr"), not(feature = "cfs")))]`
+- `if cfg!(not(feature = "cfs")) && available_parallelism() == 1`
 
 这意味着：
 

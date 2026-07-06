@@ -379,7 +379,7 @@ rg -n "access_user_memory|handle_page_fault|vm_read|vm_write|IoDst::write" \
 
 2026-07-02 在实现 MS-1、MS-2 Phase 1 和 MS-3 Phase A/B 时，以下 host 单元测试过滤项出现 SIGSEGV：
 
-- `cargo test -p ax-task --features "test sched-rr" test_fp_state_switch`
+- `cargo test -p ax-task --features "test rr" test_fp_state_switch`
 - `cargo test -p ax-lockdep dynamic_lock_instances_do_not_consume_class_slots`
 - `cargo test -p ax-lockdep subclass_tracks_same_base_class_nesting`
 

@@ -21,7 +21,7 @@ fn strings(items: &[&str]) -> Vec<String> {
 fn c_config_features_skips_nested_cargo_only_features() {
     let features = c_config_features(&strings(&[
         "ax-libc/net",
-        "ax-feat/paging",
+        "ax-runtime/paging",
         "ax-driver/virtio-net",
         "ax-hal/custom-board",
         "some-crate/feature",
@@ -29,7 +29,7 @@ fn c_config_features_skips_nested_cargo_only_features() {
 
     assert_eq!(
         features.into_iter().collect::<Vec<_>>(),
-        vec!["net".to_string(), "paging".to_string()]
+        vec!["net".to_string()]
     );
 }
 

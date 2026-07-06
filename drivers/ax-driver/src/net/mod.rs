@@ -1,6 +1,6 @@
 mod binding;
 
-#[cfg(feature = "aic8800-wifi")]
+#[cfg(feature = "aic8800")]
 pub mod aic8800;
 #[cfg(feature = "fxmac")]
 pub mod fxmac;

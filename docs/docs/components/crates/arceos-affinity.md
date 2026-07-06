@@ -42,8 +42,8 @@ flowchart LR
 ### 1.3 feature 与调度器关系
 `Cargo.toml` 中的：
 
-- `sched-rr`
-- `sched-cfs`
+- `rr`
+- `cfs`
 
 会透传到 `ax-std` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
 

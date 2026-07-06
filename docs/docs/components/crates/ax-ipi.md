@@ -66,7 +66,7 @@ flowchart TD
 ### 使用场景
 - `init()`：由 `ax-runtime/src/mp.rs` 在次核 bring-up 路径中调用，为当前 CPU 建立 IPI 队列。
 - `ipi_handler()`：由 `ax-runtime/src/lib.rs` 的 IRQ 处理路径调用。
-- `run_on_cpu()` / `run_on_each_cpu()`：是这个 crate 的核心公开 API，也是 `ax-api` / `ax-feat` 暴露 IPI 能力的底层基础。
+- `run_on_cpu()` / `run_on_each_cpu()`：是这个 crate 的核心公开 API，也是 `ax-api` / `ax-runtime` 暴露 IPI 能力的底层基础。
 
 ### 边界说明
 - 它不是 SMP 启动器；启动 CPU 的逻辑在 `ax_runtime::start_secondary_cpus()`。
@@ -78,7 +78,7 @@ flowchart TD
 graph LR
     ax-hal["ax-hal (ipi)"] --> ax-ipi["ax-ipi"]
 - `ax-runtime`：负责在启动链中初始化队列，并在 IRQ 处理里调用 `ipi_handler()`。
-- `ax-api` / `ax-feat`：把 IPI 能力向上层 feature 与 API 暴露。
+- `ax-api` / `ax-runtime`：把 IPI 能力向上层 feature 与 API 暴露。
 
 ## 开发指南
 ### 接入方式

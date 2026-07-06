@@ -288,7 +288,7 @@ Cocoa 抢占终端焦点。
 - Wayland SHM 所需的 `memfd_create` 和 Unix socket fd 传递。
 - 合成器事件循环使用的 `eventfd`。
 - libinput 设备发现所需的 `/run/udev/data/` udev seed。
-- app build config 中启用 `starry-kernel/input` 和 `ax-feat/display`。
+- app build config 中启用 `starry-kernel/input` 和 `ax-runtime/display`。
 
 如果复制出的 rootfs 中还没有这些用户态包，可选的手动安装包流程还需要启用了可用
 客体网络的内核/QEMU 启动方式。

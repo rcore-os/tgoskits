@@ -49,8 +49,8 @@ pub mod net;
 #[cfg(all(
     feature = "ax-std",
     any(
-        feature = "sched-cfs",
-        feature = "sched-rr",
+        feature = "cfs",
+        feature = "rr",
         feature = "task-affinity",
         feature = "task-ipi",
         feature = "task-irq",
@@ -111,8 +111,8 @@ test_runner!(
 test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
 test_runner!("memtest", run_memtest, mem::test::run);
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
-test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
-test_runner!("sched-rr", run_sched_rr, task::priority::run);
+test_runner!("cfs", run_sched_cfs, task::priority::run);
+test_runner!("rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
@@ -191,14 +191,10 @@ const SELECTED_TESTS: &[TestCase] = &[
         "finite network address smoke",
         run_net_loopback,
     ),
-    #[cfg(feature = "sched-cfs")]
-    TestCase::new("sched-cfs", "CFS scheduling priority smoke", run_sched_cfs),
-    #[cfg(feature = "sched-rr")]
-    TestCase::new(
-        "sched-rr",
-        "round-robin scheduling priority smoke",
-        run_sched_rr,
-    ),
+    #[cfg(feature = "cfs")]
+    TestCase::new("cfs", "CFS scheduling priority smoke", run_sched_cfs),
+    #[cfg(feature = "rr")]
+    TestCase::new("rr", "round-robin scheduling priority smoke", run_sched_rr),
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
     #[cfg(feature = "task-ipi")]
@@ -207,10 +203,7 @@ const SELECTED_TESTS: &[TestCase] = &[
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
-    #[cfg(all(
-        feature = "task-priority",
-        not(any(feature = "sched-cfs", feature = "sched-rr"))
-    ))]
+    #[cfg(all(feature = "task-priority", not(any(feature = "cfs", feature = "rr"))))]
     TestCase::new(
         "task-priority",
         "task priority scheduling smoke",

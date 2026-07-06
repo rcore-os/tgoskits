@@ -46,7 +46,7 @@ sidebar_label: "迁移与验收"
 
 ### Phase 7: feature 映射切换
 
-- `ax-feat` 中旧 `ax-driver/virtio-*`、`driver-*`、`bus-*` 映射到 rdrive probe feature。
+- `ax-runtime` 中旧 `ax-driver/virtio-*`、`driver-*`、`bus-*` 映射到 rdrive probe feature。
 - legacy `ax-driver` feature 只保留给未迁移代码，不作为新宿主路径入口。
 
 ## 验收标准

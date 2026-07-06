@@ -25,60 +25,62 @@ default = ["alloc", "tls", "fd"]
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-feat/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-feat/fp-simd"]
+fp-simd = ["ax-hal/fp-simd"]
 
 # User space support
-uspace = ["ax-feat/uspace"]
+uspace = ["ax-runtime/uspace"]
 
 # Hypervisor support
-hv = ["ax-feat/hv"]
+hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["ax-api/irq", "ax-feat/irq", "ax-posix-api/irq"]
-ipi = ["ax-api/ipi", "ax-feat/ipi"]
-wake-ipi = ["ax-feat/wake-ipi"]
+irq = ["ax-api/irq", "ax-posix-api/irq", "ax-runtime/irq"]
+ipi = ["ax-api/ipi", "ax-runtime/ipi"]
+wake-ipi = ["ax-runtime/wake-ipi"]
 
-ext-ld = ["ax-feat/ext-ld"]
+ext-ld = ["ax-runtime/ext-ld"]
 
 # Memory
-alloc = ["ax-api/alloc", "ax-feat/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
-paging = ["ax-feat/paging", "alloc"]
-dma = ["ax-api/dma", "ax-feat/dma"]
-tls = ["ax-feat/tls"]
+alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
+paging = ["alloc", "ax-runtime/paging"]
+dma = ["ax-api/dma", "ax-runtime/paging"]
+tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-feat/multitask", "ax-posix-api/multitask"]
-lockdep = ["ax-feat/lockdep", "ax-posix-api/lockdep"]
-task-ext = ["ax-feat/task-ext"]
-sched-fifo = ["ax-feat/sched-fifo"]
-sched-rr = ["ax-feat/sched-rr"]
-sched-cfs = ["ax-feat/sched-cfs"]
-stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
-stack-protector = ["ax-feat/stack-protector"]
+multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
+lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
+task-ext = ["ax-task/task-ext"]
+tracepoint-hooks = ["ax-task/tracepoint-hooks"]
+rr = ["irq", "multitask", "ax-task/rr"]
+cfs = ["irq", "multitask", "ax-task/cfs"]
+stack-guard-page = ["ax-runtime/stack-guard-page"]
+stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = [
     "ax-api/fs",
-    "ax-feat/fs",
     "ax-posix-api/fs",
+    "ax-runtime/fs",
     "ax-driver/virtio-blk",
     "fd",
 ]
-ext4fs = ["fs", "ax-feat/ext4fs"]
-fatfs = ["fs", "ax-feat/fatfs"]
+ext4 = ["fs", "ax-runtime/ext4"]
+fat = ["fs", "ax-runtime/fat"]
 
 # Networking
 net = [
     "ax-api/net",
-    "ax-feat/net",
     "ax-posix-api/net",
+    "ax-runtime/net",
     "ax-driver/virtio-net",
     "fd",
 ]
-dns = []
+vsock = ["ax-runtime/vsock"]
+aic8800 = ["ax-runtime/aic8800"]
+dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
@@ -91,30 +93,34 @@ virtio-input = ["ax-driver/virtio-input"]
 virtio-socket = ["ax-driver/virtio-socket"]
 
 # Display
-display = ["ax-api/display", "ax-feat/display"]
+display = ["ax-api/display", "ax-runtime/display"]
 
 # Input
-input = ["ax-feat/input"]
+input = ["ax-runtime/input"]
+
+# USB
+usb = ["irq", "ax-driver/usb"]
 
 # Real Time Clock (RTC) Driver.
-rtc = ["ax-feat/rtc"]
+rtc = ["ax-runtime/rtc"]
 
 # Backtrace
-backtrace = ["ax-feat/backtrace"]
-dwarf = ["ax-feat/dwarf"]
+backtrace = ["axbacktrace/alloc"]
+dwarf = ["axbacktrace/dwarf"]
 
 [dependencies]
 ax-api.workspace = true
 ax-alloc.workspace = true
+axbacktrace.workspace = true
 ax-driver.workspace = true
 ax-errno.workspace = true
-ax-feat.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
+ax-task.workspace = true
 libc.workspace = true
 lock_api.workspace = true
 spin.workspace = true

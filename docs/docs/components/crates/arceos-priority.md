@@ -38,7 +38,7 @@ flowchart LR
 ### 1.3 为什么顺序断言被限定得很窄
 源码只在下面这个条件下做完成顺序断言：
 
-- `cfg!(feature = "sched-cfs")`
+- `cfg!(feature = "cfs")`
 - `available_parallelism() == 1`
 
 这非常重要。它说明当前作者并没有声称“所有环境下优先级都会表现成固定顺序”，而只是说：
@@ -85,7 +85,7 @@ graph LR
 
 ### 直接依赖
 - `ax-std(alloc, multitask)`：需要堆对象、线程和 `join`。
-- `sched-rr` / `sched-cfs`：通过 feature 透传到底层调度器。
+- `rr` / `cfs`：通过 feature 透传到底层调度器。
 
 ### 间接依赖
 - `ax_api::task::ax_set_current_priority`
@@ -117,7 +117,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 如果你要真正验证“高优先级更早完成”的行为，建议额外准备：
 
 1. 单核 QEMU 配置
-2. 显式打开 `sched-cfs`
+2. 显式打开 `cfs`
 3. 保持当前工作负载规模稳定
 
 否则默认 4 核配置下，顺序本来就不应被写死。

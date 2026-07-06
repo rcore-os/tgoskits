@@ -283,7 +283,7 @@ stack=[0xffffffc080520000..0xffffffc080524000), expected magic=0x57acce1157acce1
 
 That is no longer a lockdep order report. It points at the 16 KiB primary idle
 task stack in `os/arceos/modules/axtask/src/run_queue.rs`. Further work should
-separate that stack-canary issue from the subclass implementation.
+separate that stack canary issue from the subclass implementation.
 
 ## Instance identity cleanup
 
@@ -325,7 +325,7 @@ The reproduced failure pattern is:
 - the test prints the first seven PASS lines through `clone shmget_thread`;
 - it does not print the final `no deadlock detected` PASS line;
 - it does not print a lockdep report;
-- it does not print a panic or stack-canary diagnostic;
+- it does not print a panic or stack canary diagnostic;
 - the QEMU harness eventually reports `QEMU timed out after 120s`.
 
 The relevant C test code is:

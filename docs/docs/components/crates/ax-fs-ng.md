@@ -40,7 +40,7 @@ graph LR
     current --> axio["ax-io"]
     current --> axpoll["axpoll"]
     current --> ax-sync["ax-sync"]
-    ax_feat["ax-feat"] --> current
+    arceos_feature["ax-runtime"] --> current
     ax_net["ax-net"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
@@ -70,7 +70,7 @@ graph LR
 - 另外还有 `37` 个同类项未在此展开
 
 ### 3.3 被依赖情况
-- `ax-feat`
+- `ax-runtime`
 - `ax-net`
 - `ax-runtime`
 - `starry-kernel`
@@ -100,7 +100,7 @@ graph LR
 - `lwext4_rust`
 - `slab`
 - `spin`
-- `starry-fatfs`
+- `starry-fat`
 
 ## 开发指南
 ### 接入方式

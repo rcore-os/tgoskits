@@ -30,10 +30,7 @@ pub(super) fn features_enable_stack_protector(features: &[String]) -> bool {
     features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "stack-protector"
-                | "ax-std/stack-protector"
-                | "ax-feat/stack-protector"
-                | "starry-kernel/stack-protector"
+            "stack-protector" | "ax-std/stack-protector" | "starry-kernel/stack-protector"
         )
     })
 }
@@ -80,16 +77,14 @@ pub(super) const STD_TARGET_DIR: &str = "std";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AxFeaturePrefixFamily {
+pub(super) enum StdFeaturePrefixFamily {
     AxStd,
-    AxFeat,
 }
 
-impl AxFeaturePrefixFamily {
+impl StdFeaturePrefixFamily {
     fn prefix(self) -> &'static str {
         match self {
             Self::AxStd => "ax-std/",
-            Self::AxFeat => "ax-feat/",
         }
     }
 }
@@ -269,7 +264,7 @@ impl BuildInfo {
         self.resolve_features_with_prefix_family(
             package,
             target,
-            detect_ax_feature_prefix_family(package, metadata),
+            detect_std_feature_prefix_family(package, metadata),
             Some(metadata),
         );
     }
@@ -278,18 +273,14 @@ impl BuildInfo {
         &mut self,
         package: &str,
         target: &str,
-        prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
+        prefix_family: anyhow::Result<StdFeaturePrefixFamily>,
         metadata: Option<&Metadata>,
     ) {
-        let prefix_family = self.resolve_ax_feature_prefix_family(package, prefix_family);
+        let prefix_family = self.resolve_std_feature_prefix_family(package, prefix_family);
         let _ = (target, metadata);
 
-        self.features.retain(|feature| {
-            !matches!(
-                feature.as_str(),
-                "plat-dyn" | "ax-std/plat-dyn" | "ax-feat/plat-dyn"
-            )
-        });
+        self.features
+            .retain(|feature| !matches!(feature.as_str(), "plat-dyn" | "ax-std/plat-dyn"));
 
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push(format!("{}smp", prefix_family.prefix()));
@@ -299,11 +290,11 @@ impl BuildInfo {
         self.features.dedup();
     }
 
-    fn resolve_ax_feature_prefix_family(
+    fn resolve_std_feature_prefix_family(
         &self,
         package: &str,
-        prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
-    ) -> AxFeaturePrefixFamily {
+        prefix_family: anyhow::Result<StdFeaturePrefixFamily>,
+    ) -> StdFeaturePrefixFamily {
         match prefix_family {
             Ok(prefix_family) => prefix_family,
             Err(err) => {
@@ -315,7 +306,7 @@ impl BuildInfo {
                      ax-std feature prefix",
                     package, err
                 );
-                AxFeaturePrefixFamily::AxStd
+                StdFeaturePrefixFamily::AxStd
             }
         }
     }

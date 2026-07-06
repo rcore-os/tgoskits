@@ -1,4 +1,4 @@
-use super::{info::AxFeaturePrefixFamily, *};
+use super::{info::StdFeaturePrefixFamily, *};
 
 #[cfg(test)]
 pub(super) fn supports_platform_dynamic(target: &str) -> bool {
@@ -17,10 +17,6 @@ pub(super) fn normalize_legacy_feature_alias(feature: &str) -> String {
         "ax-std".to_string()
     } else if let Some(rest) = feature.strip_prefix("axstd/") {
         format!("ax-std/{rest}")
-    } else if feature == "axfeat" {
-        "ax-feat".to_string()
-    } else if let Some(rest) = feature.strip_prefix("axfeat/") {
-        format!("ax-feat/{rest}")
     } else {
         feature.to_string()
     }
@@ -29,12 +25,16 @@ pub(super) fn normalize_legacy_feature_alias(feature: &str) -> String {
 pub(super) fn normalize_std_feature(feature: &str) -> String {
     let normalized = normalize_legacy_feature_alias(feature);
     match normalized.as_str() {
-        "ax-std" | "ax-feat" => normalized,
-        feature if feature.starts_with("ax-std/") || feature.starts_with("ax-feat/") => feature
+        "ax-std" => normalized,
+        feature if feature.starts_with("ax-std/") => feature
             .split_once('/')
             .map(|(_, feature)| feature.to_string())
             .unwrap_or_else(|| normalized.clone()),
-        feature if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") => {
+        feature
+            if feature.starts_with("ax-hal/")
+                || feature.starts_with("ax-driver/")
+                || feature.starts_with("ax-runtime/") =>
+        {
             normalized
         }
         feature => feature.to_string(),
@@ -44,14 +44,15 @@ pub(super) fn normalize_std_feature(feature: &str) -> String {
 pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     matches!(
         feature,
-        "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "ax-driver/plat-dyn"
+        "plat-dyn" | "ax-std/plat-dyn" | "ax-driver/plat-dyn"
     )
 }
 
 pub(super) fn is_axstd_std_check_feature(feature: &str) -> bool {
-    matches!(feature, "ax-std" | "ax-feat")
+    matches!(feature, "ax-std")
         || feature.starts_with("ax-hal/")
         || feature.starts_with("ax-driver/")
+        || feature.starts_with("ax-runtime/")
         || is_known_axstd_feature(feature)
 }
 
@@ -81,21 +82,26 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "multitask"
             | "lockdep"
             | "task-ext"
-            | "sched-fifo"
-            | "sched-rr"
-            | "sched-cfs"
+            | "tracepoint-hooks"
+            | "rr"
+            | "cfs"
             | "stack-guard-page"
             | "stack-protector"
             | "fs"
-            | "ext4fs"
-            | "fatfs"
+            | "ext4"
+            | "fat"
             | "net"
+            | "vsock"
+            | "aic8800"
             | "dns"
             | "display"
             | "input"
+            | "usb"
             | "rtc"
             | "backtrace"
             | "dwarf"
+            | "ext-ld"
+            | "wake-ipi"
             | "std-compat"
     )
 }
@@ -155,7 +161,7 @@ pub(super) fn apply_makefile_features_with_prefix_family(
     build_info: &mut BuildInfo,
     _package: &str,
     makefile_features: &[String],
-    _prefix_family: anyhow::Result<AxFeaturePrefixFamily>,
+    _prefix_family: anyhow::Result<StdFeaturePrefixFamily>,
 ) {
     if makefile_features.is_empty() {
         return;
@@ -196,18 +202,12 @@ pub(crate) fn default_build_info_path_in_workspace(
 
 pub(super) fn feature_family_from_existing_features(
     features: &[String],
-) -> Option<AxFeaturePrefixFamily> {
+) -> Option<StdFeaturePrefixFamily> {
     if features
         .iter()
         .any(|feature| feature.starts_with("ax-std/"))
     {
-        return Some(AxFeaturePrefixFamily::AxStd);
-    }
-    if features
-        .iter()
-        .any(|feature| feature.starts_with("ax-feat/"))
-    {
-        return Some(AxFeaturePrefixFamily::AxFeat);
+        return Some(StdFeaturePrefixFamily::AxStd);
     }
     None
 }
@@ -246,27 +246,23 @@ pub(super) fn metadata_package<'a>(metadata: &'a Metadata, package: &str) -> Opt
     metadata.packages.iter().find(|pkg| pkg.name == package)
 }
 
-pub(super) fn detect_ax_feature_prefix_family(
+pub(super) fn detect_std_feature_prefix_family(
     package: &str,
     metadata: &Metadata,
-) -> anyhow::Result<AxFeaturePrefixFamily> {
+) -> anyhow::Result<StdFeaturePrefixFamily> {
     let package_info = workspace_package(metadata, package)?;
 
     let has_axstd = package_info
         .dependencies
         .iter()
         .any(|dep| dep.name == "ax-std" || dep.rename.as_deref() == Some("ax-std"));
-    let has_axfeat = package_info
-        .dependencies
-        .iter()
-        .any(|dep| dep.name == "ax-feat" || dep.rename.as_deref() == Some("ax-feat"));
 
-    match (has_axstd, has_axfeat) {
-        (true, true) | (true, false) => Ok(AxFeaturePrefixFamily::AxStd),
-        (false, true) => Ok(AxFeaturePrefixFamily::AxFeat),
-        (false, false) => Err(anyhow::anyhow!(
-            "package `{package}` must directly depend on `ax-std` or `ax-feat`"
-        )),
+    if has_axstd {
+        Ok(StdFeaturePrefixFamily::AxStd)
+    } else {
+        Err(anyhow::anyhow!(
+            "package `{package}` must directly depend on `ax-std`"
+        ))
     }
 }
 

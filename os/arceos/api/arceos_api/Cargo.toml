@@ -10,27 +10,25 @@ license.workspace = true
 [features]
 default = []
 
-irq = ["ax-feat/irq"]
-ipi = ["dep:ax-ipi", "ax-feat/ipi"]
-alloc = ["dep:ax-alloc", "ax-feat/alloc"]
-paging = ["dep:ax-mm", "ax-feat/paging"]
-dma = ["dep:ax-dma", "ax-feat/dma"]
-multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-feat/multitask"]
-stack-guard-page = ["multitask", "paging", "ax-feat/stack-guard-page"]
-fs = ["dep:ax-fs-ng", "ax-feat/fs"]
-net = ["dep:ax-net", "ax-feat/net"]
-display = ["dep:ax-display", "ax-feat/display"]
+irq = ["ax-task?/irq"]
+ipi = ["dep:ax-ipi"]
+alloc = ["dep:ax-alloc"]
+paging = ["dep:ax-mm"]
+dma = ["dep:ax-dma"]
+multitask = ["ax-task/multitask", "ax-sync/multitask"]
+fs = ["dep:ax-fs-ng"]
+net = ["dep:ax-net"]
+display = ["dep:ax-display"]
 
 
-# Use dummy functions if the feature is not enabled
-dummy-if-not-enabled = []
+# Use stub functions if the feature is not enabled.
+stubs = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true
-ax-feat.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-io.workspace = true
