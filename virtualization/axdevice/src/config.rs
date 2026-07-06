@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
+use axdevice_base::VmInterruptSink;
 use axvmconfig::EmulatedDeviceConfig;
 
 /// The vector of DeviceConfig
 pub struct AxVmDeviceConfig {
+    /// Interrupt delivery endpoint for devices owned by this VM.
+    pub interrupt_sink: Option<Arc<dyn VmInterruptSink>>,
     /// The vector of EmulatedDeviceConfig
     pub emu_configs: Vec<EmulatedDeviceConfig>,
 }
@@ -26,6 +29,9 @@ pub struct AxVmDeviceConfig {
 impl AxVmDeviceConfig {
     /// The new function for AxVmDeviceConfig
     pub fn new(emu_configs: Vec<EmulatedDeviceConfig>) -> Self {
-        Self { emu_configs }
+        Self {
+            interrupt_sink: None,
+            emu_configs,
+        }
     }
 }

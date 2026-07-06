@@ -28,7 +28,9 @@ use axaddrspace::{
 };
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::map_device_of_type;
-use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
+use axdevice_base::{
+    BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, VmInterruptSink,
+};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
@@ -131,12 +133,20 @@ impl AxVmDevices {
             ivc_channel: None,
         };
 
-        Self::init(&mut this, &config.emu_configs);
+        Self::init(
+            &mut this,
+            config.interrupt_sink.clone(),
+            &config.emu_configs,
+        );
         this
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
+    fn init(
+        this: &mut Self,
+        _interrupt_sink: Option<Arc<dyn VmInterruptSink>>,
+        emu_configs: &Vec<EmulatedDeviceConfig>,
+    ) {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -264,10 +274,14 @@ impl AxVmDevices {
                             .first()
                             .copied()
                             .expect("expect 1 arg for pppt global (context_num)");
+                        let interrupt_sink = _interrupt_sink
+                            .clone()
+                            .expect("riscv vPLIC requires a VM interrupt sink");
                         this.add_mmio_dev(Arc::new(VPlicGlobal::new(
                             config.base_gpa.into(),
                             Some(config.length),
                             context_num, // Here only 1 core and should be cpu0
+                            interrupt_sink,
                         )));
                         // PLIC Partial Passthrough Global.
                         info!(

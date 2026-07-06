@@ -23,6 +23,7 @@ use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
+use axdevice_base::{InterruptLineLevel, VcpuInterrupt, VmInterruptSink};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
 use spin::Once;
@@ -49,6 +50,28 @@ type VCpu = AxVCpu<AxArchVCpuImpl>;
 pub type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+struct AxVmInterruptSink {
+    vm_id: usize,
+}
+
+impl VmInterruptSink for AxVmInterruptSink {
+    fn set_vcpu_interrupt(&self, interrupt: VcpuInterrupt, level: InterruptLineLevel) -> AxResult {
+        let vector = match level {
+            InterruptLineLevel::Assert => interrupt.vector,
+            // The current RISC-V vCPU backend treats vector 0 as VSEIP
+            // deassertion. Keeping that encoding here avoids leaking it into
+            // the interrupt-controller device model.
+            InterruptLineLevel::Deassert => 0,
+        };
+        axvisor_api::vmm::inject_interrupt(
+            self.vm_id,
+            interrupt.vcpu_id,
+            vector as InterruptVector,
+        );
+        Ok(())
+    }
+}
 
 fn width_mask(width: AccessWidth) -> usize {
     match width {
@@ -332,6 +355,7 @@ impl AxVM {
 
         #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
+            interrupt_sink: Some(Arc::new(AxVmInterruptSink { vm_id: self.id() })),
             emu_configs: inner_mut.config.emu_devices().to_vec(),
         });
 

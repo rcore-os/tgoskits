@@ -167,6 +167,33 @@ pub struct EmulatedDeviceConfig {
     pub cfg_list: Vec<usize>,
 }
 
+/// The desired level of a virtual interrupt line.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InterruptLineLevel {
+    /// Assert the interrupt line for the target vCPU.
+    Assert,
+    /// Deassert the interrupt line for the target vCPU.
+    Deassert,
+}
+
+/// A virtual interrupt targeted at one vCPU in the owning VM.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct VcpuInterrupt {
+    /// Target vCPU ID, local to the VM that owns the device.
+    pub vcpu_id: usize,
+    /// Architecture-specific virtual interrupt vector or cause.
+    pub vector: usize,
+}
+
+/// Delivers device interrupts to vCPUs of the VM that owns the device.
+///
+/// Device models use this trait to report guest-local interrupt events without
+/// depending on a global VM registry or knowing the owner VM ID themselves.
+pub trait VmInterruptSink: Send + Sync {
+    /// Assert or deassert one interrupt line for the target vCPU.
+    fn set_vcpu_interrupt(&self, interrupt: VcpuInterrupt, level: InterruptLineLevel) -> AxResult;
+}
+
 /// The core trait that all emulated devices must implement.
 ///
 /// This trait defines the common interface for all virtual devices in the hypervisor.

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ax_errno::{AxError, AxErrorKind, AxResult};
 use axaddrspace::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, MappingFlags, device::AccessWidth};
 use axvcpu::AxVCpuExitReason;
@@ -56,6 +58,10 @@ const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
+const HVIP_VSSIP: usize = 1 << 2;
+const HVIP_VSEIP: usize = 1 << 10;
+const S_SOFT_CAUSE: usize = 1;
+const S_EXT_CAUSE: usize = 9;
 #[cfg(feature = "sstc")]
 const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
@@ -71,6 +77,7 @@ fn instr_is_pseudo(ins: u32) -> bool {
 pub struct RISCVVCpu {
     regs: VmCpuRegisters,
     sbi: RISCVVCpuSbi,
+    queued_hvip: AtomicUsize,
 }
 
 #[derive(RustSBI)]
@@ -120,6 +127,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
         Ok(Self {
             regs,
             sbi: RISCVVCpuSbi::default(),
+            queued_hvip: AtomicUsize::new(0),
         })
     }
 
@@ -184,10 +192,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             sstatus::clear_sie();
             sie::set_sext();
             sie::set_ssoft();
-            // Keep the current HS timer enable state instead of forcing it on
-            // for every VM entry. Guest timer re-arming and host timer users
-            // must manage `stimer` explicitly, otherwise a pending HS timer can
-            // preempt the guest on every re-entry and starve VS interrupt work.
+            sie::set_stimer();
         }
         unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
@@ -229,6 +234,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
             hie.write();
             // Restore latched virtual pending interrupts as part of the vCPU
             // context so VM exits do not silently drop timer or external IRQs.
+            self.regs.virtual_hs_csrs.hvip |= self.take_queued_hvip();
             let hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
             hvip.write();
             hgeie::write(self.regs.virtual_hs_csrs.hgeie);
@@ -263,7 +269,7 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
                 self.regs.vs_csrs.vstimecmp = vstimecmp::read();
             }
             self.regs.virtual_hs_csrs.hie = hie::read().bits();
-            self.regs.virtual_hs_csrs.hvip = hvip::read().bits();
+            self.regs.virtual_hs_csrs.hvip = hvip::read().bits() | self.take_queued_hvip();
             self.regs.virtual_hs_csrs.hgeie = hgeie::read();
             core::arch::asm!(
                 "csrr {hgatp}, hgatp",
@@ -320,27 +326,21 @@ impl axvcpu::AxArchVCpu for RISCVVCpu {
                 let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
                 hvip.set_vseip(false);
                 self.regs.virtual_hs_csrs.hvip = hvip.bits();
-                unsafe {
-                    hvip::clear_vseip();
-                }
+                self.clear_queued_hvip(HVIP_VSEIP);
                 Ok(())
             }
-            S_SOFT => {
+            S_SOFT | S_SOFT_CAUSE => {
                 let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
                 hvip.set_vssip(true);
                 self.regs.virtual_hs_csrs.hvip = hvip.bits();
-                unsafe {
-                    hvip::set_vssip();
-                }
+                self.queue_hvip(HVIP_VSSIP);
                 Ok(())
             }
-            S_EXT => {
+            S_EXT | S_EXT_CAUSE => {
                 let mut hvip = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
                 hvip.set_vseip(true);
                 self.regs.virtual_hs_csrs.hvip = hvip.bits();
-                unsafe {
-                    hvip::set_vseip();
-                }
+                self.queue_hvip(HVIP_VSEIP);
                 Ok(())
             }
             _ => Err(AxErrorKind::Unsupported.into()),
@@ -357,11 +357,49 @@ impl RISCVVCpu {
     /// last `unbind()` so the next `bind()` does not overwrite them with stale
     /// saved state.
     pub fn latch_hvip_from_hw(&mut self) {
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
+        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits() | self.take_queued_hvip();
+    }
+
+    /// Applies an interrupt update to the currently bound hart immediately.
+    ///
+    /// AxVM may handle MMIO exits while the vCPU remains bound but is no longer
+    /// marked as `axvcpu`'s current vCPU. In that window, updating only the
+    /// saved/queued HVIP state would not affect the next immediate guest entry.
+    pub fn apply_interrupt_to_bound_hart(&mut self, vector: usize) -> AxResult {
+        match vector {
+            0 => unsafe {
+                hvip::clear_vseip();
+                Ok(())
+            },
+            S_SOFT | S_SOFT_CAUSE => unsafe {
+                hvip::set_vssip();
+                Ok(())
+            },
+            S_EXT | S_EXT_CAUSE => unsafe {
+                hvip::set_vseip();
+                Ok(())
+            },
+            _ => Err(AxErrorKind::Unsupported.into()),
+        }
     }
 }
 
 impl RISCVVCpu {
+    #[inline]
+    fn queue_hvip(&self, bits: usize) {
+        self.queued_hvip.fetch_or(bits, Ordering::AcqRel);
+    }
+
+    #[inline]
+    fn clear_queued_hvip(&self, bits: usize) {
+        self.queued_hvip.fetch_and(!bits, Ordering::AcqRel);
+    }
+
+    #[inline]
+    fn take_queued_hvip(&self) -> usize {
+        self.queued_hvip.swap(0, Ordering::AcqRel)
+    }
+
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) {
         #[cfg(not(feature = "sstc"))]
@@ -373,8 +411,8 @@ impl RISCVVCpu {
         unsafe {
             // The guest has consumed the current VS timer event and programmed
             // a new deadline, so clear the injected VS timer pending bit and
-            // update the VS timer comparator. The host runtime owns the
-            // physical timer.
+            // update the VS timer comparator. The host runtime owns the HS
+            // physical timer enable state.
             hvip::clear_vstip();
             #[cfg(feature = "sstc")]
             vstimecmp::write(deadline);
@@ -756,8 +794,7 @@ impl RISCVVCpu {
                 unsafe {
                     hvip::set_vstip();
                 }
-
-                Ok(AxVCpuExitReason::Nothing)
+                Ok(AxVCpuExitReason::PreemptionTimer)
             }
             Trap::Interrupt(Interrupt::SupervisorSoft) => Ok(AxVCpuExitReason::ExternalInterrupt {
                 vector: S_SOFT as _,

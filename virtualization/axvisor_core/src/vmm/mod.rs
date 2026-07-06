@@ -170,6 +170,34 @@ impl api_vmm::VmmIf for VmmIfImpl {
     }
 
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector) {
+        #[cfg(target_arch = "riscv64")]
+        {
+            if let Some(()) = with_vm_and_vcpu(vm_id, vcpu_id, move |_, vcpu| {
+                if let Err(err) = vcpu.inject_interrupt(vector as usize) {
+                    warn!(
+                        "Failed to inject interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: \
+                         {err:?}"
+                    );
+                }
+                if let Some(context) = crate::context::try_current_vcpu_context()
+                    && context.vm_id == vm_id
+                    && context.vcpu_id == vcpu_id
+                    && let Err(err) = vcpu
+                        .get_arch_vcpu()
+                        .apply_interrupt_to_bound_hart(vector as usize)
+                {
+                    warn!(
+                        "Failed to apply interrupt {vector} to bound VM[{vm_id}] VCpu[{vcpu_id}]: \
+                         {err:?}"
+                    );
+                }
+            }) {
+                vcpus::notify_all_vcpus(vm_id);
+            }
+            return;
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
         let _ = with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
             vcpu.inject_interrupt(vector as usize).unwrap();
         });

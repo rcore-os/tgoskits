@@ -14,6 +14,7 @@
 
 use ax_page_table_multiarch::riscv::SvVirtAddr;
 use axaddrspace::{GuestPhysAddr, device::AccessWidth};
+use axdevice_base::map_device_of_type;
 
 use crate::vmm::vm_list::get_vm_by_id;
 
@@ -54,4 +55,25 @@ pub fn inject_interrupt(vm_id: usize, irq_id: usize) -> bool {
         return false;
     }
     true
+}
+
+pub fn poll_host_plic(vm_id: usize) -> bool {
+    let Some(vm) = get_vm_by_id(vm_id) else {
+        return false;
+    };
+    let Some(vplic) = vm
+        .get_devices()
+        .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))
+    else {
+        return false;
+    };
+
+    map_device_of_type(&vplic, |vplic: &riscv_vplic::VPlicGlobal| {
+        if let Err(err) = vplic.poll_host_irqs() {
+            warn!("failed to poll host PLIC for VM[{vm_id}]: {err:?}");
+            return false;
+        }
+        true
+    })
+    .unwrap_or(false)
 }

@@ -2,10 +2,12 @@
 //!
 //! This module implements the core data structure for managing a virtual PLIC device.
 
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::option::Option;
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
+use axdevice_base::VmInterruptSink;
 use bitmaps::Bitmap;
 
 use crate::consts::*;
@@ -23,12 +25,20 @@ pub struct VPlicGlobal {
     pub contexts_num: usize,
     /// IRQs assigned to this VPlicGlobal.
     pub assigned_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    /// Guest-visible interrupt priorities.
+    pub priorities: Mutex<[u32; PLIC_NUM_SOURCES]>,
+    /// Guest-visible enable masks, indexed by context and source-word.
+    pub enable_masks: Mutex<Vec<[u32; PLIC_SOURCE_WORDS]>>,
+    /// Guest-visible priority thresholds, indexed by context.
+    pub thresholds: Mutex<Vec<u32>>,
     /// Pending IRQs for this VPlicGlobal.
     pub pending_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Active IRQs for this VPlicGlobal.
     pub active_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// The host physical address of the PLIC.
     pub host_plic_addr: HostPhysAddr,
+    /// VM-local interrupt delivery endpoint for VSEIP updates.
+    pub interrupt_sink: Arc<dyn VmInterruptSink>,
 }
 
 impl VPlicGlobal {
@@ -41,7 +51,12 @@ impl VPlicGlobal {
     ///
     /// # Panics
     /// Panics if the provided size is insufficient to hold all PLIC registers.
-    pub fn new(addr: GuestPhysAddr, size: Option<usize>, contexts_num: usize) -> Self {
+    pub fn new(
+        addr: GuestPhysAddr,
+        size: Option<usize>,
+        contexts_num: usize,
+        interrupt_sink: Arc<dyn VmInterruptSink>,
+    ) -> Self {
         let addr_end = addr.as_usize()
             + contexts_num * PLIC_CONTEXT_STRIDE
             + PLIC_CONTEXT_CTRL_OFFSET
@@ -58,10 +73,14 @@ impl VPlicGlobal {
             addr,
             size,
             assigned_irqs: Mutex::new(Bitmap::new()),
+            priorities: Mutex::new([0; PLIC_NUM_SOURCES]),
+            enable_masks: Mutex::new(vec![[0; PLIC_SOURCE_WORDS]; contexts_num]),
+            thresholds: Mutex::new(vec![0; contexts_num]),
             pending_irqs: Mutex::new(Bitmap::new()),
             active_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
             host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
+            interrupt_sink,
         }
     }
 

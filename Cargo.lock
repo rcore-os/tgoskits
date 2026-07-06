@@ -7043,7 +7043,6 @@ dependencies = [
  "axvisor_api",
  "bitmaps",
  "log",
- "riscv-h",
 ]
 
 [[package]]
