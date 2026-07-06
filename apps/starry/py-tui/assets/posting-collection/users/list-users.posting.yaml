@@ -1,0 +1,12 @@
+name: list-users
+url: http://api.local/users
+headers:
+- name: Accept
+  value: application/json
+- name: X-Trace-Id
+  value: carpet-0001
+params:
+- name: page
+  value: '1'
+- name: limit
+  value: '20'
