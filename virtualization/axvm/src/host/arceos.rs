@@ -293,7 +293,12 @@ pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::V
     any(target_arch = "x86_64", target_arch = "loongarch64")
 ))]
 pub(crate) fn shutdown_host_filesystems() -> AxResult {
-    modules::ax_fs_ng::shutdown_filesystems()
+    modules::ax_fs_ng::shutdown_filesystems()?;
+    let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
+    if released != 0 {
+        info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "x86_64")]
