@@ -10,12 +10,15 @@
 use core::ptr::NonNull;
 
 use log::info;
-use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use rdrive::{
+    probe::{OnProbeError, fdt::ResetLine},
+    register::ProbeFdt,
+};
 use rockchip_jpeg::RockchipJpeg;
 
 use crate::{
     mmio::iomap,
-    soc::{RockchipResetOps, rk3588_enable_clock, rk3588_enable_power_domain},
+    soc::{rk3588_enable_clock, rk3588_enable_power_domain},
 };
 
 // RK3588 jpegd (VDPU720) constants, from the OrangePi-5-Plus device tree.
@@ -63,7 +66,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let size_raw = reg.size.unwrap_or(0x400) as usize;
     let (start, size, offset) = page_aligned_region(start_raw, size_raw);
     let base = unsafe { iomap(start, size)?.add(offset) };
-    let resets = RockchipResetOps::from_info(&info)?;
+    let resets = info.reset_lines()?;
 
     bring_up_power_and_clocks(&resets);
     bypass_iommu(base);
@@ -93,7 +96,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 /// Bring the engine out of reset. All steps are best-effort and idempotent; the
 /// shared VDPU root clocks are left enabled by the bootloader (as for RGA2), so
 /// failures here are logged but not fatal.
-fn bring_up_power_and_clocks(resets: &[RockchipResetOps]) {
+fn bring_up_power_and_clocks(resets: &[ResetLine]) {
     if let Err(e) = rk3588_enable_power_domain(PD_VDPU) {
         info!("JPEG: enable PD_VDPU failed (continuing): {e}");
     }
@@ -103,7 +106,7 @@ fn bring_up_power_and_clocks(resets: &[RockchipResetOps]) {
         }
     }
     for reset in resets {
-        if let Err(e) = reset.pulse() {
+        if let Err(e) = reset.reset() {
             info!(
                 "JPEG: pulse reset {:?} ({:#x}) failed (continuing): {e}",
                 reset.name(),

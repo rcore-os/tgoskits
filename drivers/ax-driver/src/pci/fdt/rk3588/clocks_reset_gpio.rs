@@ -3,7 +3,10 @@ use alloc::{format, vec::Vec};
 use fdt_edit::{ClockRef, Node, Phandle};
 use log::warn;
 use rdrive::{
-    probe::{OnProbeError, fdt::NodeType},
+    probe::{
+        OnProbeError,
+        fdt::{NodeType, ResetLine, reset_lines},
+    },
     register::FdtInfo,
 };
 
@@ -11,7 +14,7 @@ use super::{
     resources::{ClockSpec, GpioSpec, RK3588_GPIO_BASES},
     windows::{live_fdt, rk3588_pcie_reset_pin},
 };
-use crate::soc::{RockchipResetOps, rk3588_enable_clock, rk3588_set_clock_rate};
+use crate::soc::{rk3588_enable_clock, rk3588_set_clock_rate};
 
 pub(super) fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
     let assigned_clocks = node
@@ -92,18 +95,18 @@ pub(super) fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<RockchipResetOps>, OnProbeError> {
-    RockchipResetOps::from_node(node)
+pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    reset_lines(node)
 }
 
-pub(super) fn assert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
+pub(super) fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
         reset.assert()?;
     }
     Ok(())
 }
 
-pub(super) fn deassert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
+pub(super) fn deassert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
         reset.deassert()?;
     }

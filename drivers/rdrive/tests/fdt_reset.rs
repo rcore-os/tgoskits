@@ -15,6 +15,7 @@ use rdrive::{
 };
 
 static CAPTURED_RESET: Mutex<Option<CapturedReset>> = Mutex::new(None);
+static RESET_CALLS: Mutex<Vec<ResetCall>> = Mutex::new(Vec::new());
 
 #[derive(Debug, PartialEq, Eq)]
 struct CapturedReset {
@@ -24,6 +25,12 @@ struct CapturedReset {
     specifier: Vec<u32>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ResetCall {
+    operation: &'static str,
+    id: u64,
+}
+
 struct ResetProviderDevice;
 struct ResetProviderAuxDevice;
 struct ResetConsumerDevice;
@@ -31,6 +38,24 @@ struct ResetConsumerDevice;
 impl DriverGeneric for ResetProviderDevice {
     fn name(&self) -> &str {
         "reset-provider"
+    }
+}
+
+impl rdif_reset::Interface for ResetProviderDevice {
+    fn assert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
+        RESET_CALLS.lock().unwrap().push(ResetCall {
+            operation: "assert",
+            id: id.raw(),
+        });
+        Ok(())
+    }
+
+    fn deassert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
+        RESET_CALLS.lock().unwrap().push(ResetCall {
+            operation: "deassert",
+            id: id.raw(),
+        });
+        Ok(())
     }
 }
 
@@ -48,7 +73,7 @@ impl DriverGeneric for ResetConsumerDevice {
 
 fn probe_reset_provider(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dev = probe.into_platform_device();
-    dev.register(ResetProviderDevice);
+    dev.register(rdif_reset::Reset::new(ResetProviderDevice));
     dev.register(ResetProviderAuxDevice);
     Ok(())
 }
@@ -62,10 +87,15 @@ fn probe_reset_consumer(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .phandle_to_device_id(reset.phandle)
         .ok_or_else(|| OnProbeError::other("reset provider has no device id"))?;
 
-    get::<ResetProviderDevice>(provider_id)
+    get::<rdif_reset::Reset>(provider_id)
         .map_err(|err| OnProbeError::other(format!("missing reset provider: {err}")))?;
     get::<ResetProviderAuxDevice>(provider_id)
         .map_err(|err| OnProbeError::other(format!("missing reset provider aux: {err}")))?;
+    let reset_line = info
+        .find_reset_line_by_name("bus")?
+        .ok_or_else(|| OnProbeError::other("bus reset line not found"))?;
+    reset_line.deassert()?;
+    reset_line.reset()?;
 
     *CAPTURED_RESET.lock().unwrap() = Some(CapturedReset {
         name: reset.name,
@@ -100,6 +130,7 @@ static RESET_CONSUMER_REGISTER: DriverRegister = DriverRegister {
 #[test]
 fn fdt_reset_refs_preserve_provider_phandle_names_and_specifiers() {
     *CAPTURED_RESET.lock().unwrap() = None;
+    RESET_CALLS.lock().unwrap().clear();
 
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
@@ -145,6 +176,23 @@ fn fdt_reset_refs_preserve_provider_phandle_names_and_specifiers() {
             cells: 1,
             specifier: vec![11],
         })
+    );
+    assert_eq!(
+        *RESET_CALLS.lock().unwrap(),
+        vec![
+            ResetCall {
+                operation: "deassert",
+                id: 11,
+            },
+            ResetCall {
+                operation: "assert",
+                id: 11,
+            },
+            ResetCall {
+                operation: "deassert",
+                id: 11,
+            },
+        ]
     );
 }
 

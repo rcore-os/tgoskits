@@ -18,7 +18,7 @@ use core::{ptr::NonNull, time::Duration};
 use fdt_edit::Node;
 use log::{info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{OnProbeError, fdt::ResetLine},
     register::{FdtInfo, ProbeFdt},
 };
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
@@ -33,11 +33,7 @@ use sdmmc_protocol::{
 };
 
 use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
-use crate::{
-    block::ProbeFdtBlock,
-    mmio::iomap,
-    soc::{RockchipResetOps, rk3588_enable_power_domain},
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, soc::rk3588_enable_power_domain};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
 // status is acknowledged in the hard IRQ and task context advances the RDIF
@@ -96,7 +92,7 @@ struct RockchipSdhciClock {
     clock: RockchipClockOps,
 }
 struct RockchipSdhciResetHook {
-    resets: Vec<RockchipResetOps>,
+    resets: Vec<ResetLine>,
 }
 
 impl HostClock for RockchipSdhciClock {
@@ -211,12 +207,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn apply_rockchip_sdhci_resources(
-    info: &FdtInfo<'_>,
-) -> Result<Vec<RockchipResetOps>, OnProbeError> {
+fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
     apply_assigned_clocks(info, "SDHCI")?;
     enable_power_domains(parse_power_domains(info.node.as_node())?)?;
-    let resets = RockchipResetOps::from_info(info)?;
+    let resets = info.reset_lines()?;
     enable_node_clocks(info, "SDHCI");
     Ok(resets)
 }
@@ -246,14 +240,14 @@ fn enable_power_domains(domains: Vec<usize>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn assert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
+fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
         reset.assert()?;
     }
     Ok(())
 }
 
-fn deassert_resets(resets: &[RockchipResetOps]) -> Result<(), OnProbeError> {
+fn deassert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
         reset.deassert()?;
     }

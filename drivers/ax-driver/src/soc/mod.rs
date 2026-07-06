@@ -19,14 +19,6 @@ mod rockchip;
 #[cfg(feature = "rockchip-dwmmc")]
 pub mod scmi;
 
-#[cfg(any(
-    feature = "jpeg",
-    feature = "rk3588-pcie",
-    feature = "rockchip-dwc-xhci",
-    feature = "rockchip-ehci",
-    feature = "rockchip-sdhci"
-))]
-pub(crate) use rockchip::RockchipResetOps;
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{
     RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_enable_power_domain,

@@ -11,14 +11,17 @@ use crab_usb::{EhciNewParams, usb_if::Speed};
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{
+        OnProbeError,
+        fdt::{ResetLine, reset_lines},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 
 use super::{ProbeFdtUsbHost, usb_kernel};
 use crate::{
     mmio::iomap,
-    soc::{RockchipResetOps, rk3588_enable_clock, rk3588_enable_power_domain},
+    soc::{rk3588_enable_clock, rk3588_enable_power_domain},
 };
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
@@ -45,7 +48,7 @@ struct EhciResources {
     ctrl: RegFixed,
     power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
-    resets: Vec<RockchipResetOps>,
+    resets: Vec<ResetLine>,
 }
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -137,8 +140,8 @@ fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
     Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
 }
 
-fn parse_resets(node: NodeType<'_>) -> Result<Vec<RockchipResetOps>, OnProbeError> {
-    RockchipResetOps::from_node(node)
+fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    reset_lines(node)
 }
 
 fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
@@ -169,7 +172,7 @@ fn enable_clocks(clocks: &[ClockSpec]) {
     }
 }
 
-fn deassert_resets(resets: &[RockchipResetOps]) {
+fn deassert_resets(resets: &[ResetLine]) {
     for reset in resets {
         match reset.deassert() {
             Ok(()) => debug!(

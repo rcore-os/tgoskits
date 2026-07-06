@@ -14,16 +14,16 @@ use crab_usb::{
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{
+        OnProbeError,
+        fdt::{ResetLine as RdriveResetLine, reset_lines},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 use rockchip_pm::{PowerDomain, RockchipPM};
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{
-    mmio::iomap,
-    soc::{RockchipResetOps, rk3588_enable_clock},
-};
+use crate::{mmio::iomap, soc::rk3588_enable_clock};
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
 const OPTIONAL_PHP_POWER_DOMAIN: usize = 32;
@@ -40,23 +40,25 @@ crate::model_register!(
     ],
 );
 
-impl crab_usb::ResetLine for RockchipResetOps {
+struct UsbResetLine(RdriveResetLine);
+
+impl crab_usb::ResetLine for UsbResetLine {
     fn assert(&self) {
-        if let Err(err) = self.assert() {
+        if let Err(err) = self.0.assert() {
             warn!(
                 "failed to assert RK3588 reset {:?} ({:#x}): {err}",
-                self.name(),
-                self.id().raw()
+                self.0.name(),
+                self.0.id().raw()
             );
         }
     }
 
     fn deassert(&self) {
-        if let Err(err) = self.deassert() {
+        if let Err(err) = self.0.deassert() {
             warn!(
                 "failed to deassert RK3588 reset {:?} ({:#x}): {err}",
-                self.name(),
-                self.id().raw()
+                self.0.name(),
+                self.0.id().raw()
             );
         }
     }
@@ -296,13 +298,13 @@ fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
 }
 
 fn parse_resets(node: NodeType<'_>) -> Result<Vec<NamedResetLine>, OnProbeError> {
-    RockchipResetOps::from_node(node)?
+    reset_lines(node)?
         .into_iter()
         .map(|reset| {
             let name = reset.name().ok_or_else(|| {
                 OnProbeError::other(format!("[{}] has reset without reset-names", node.name()))
             })?;
-            Ok(NamedResetLine::new(name.to_string(), reset))
+            Ok(NamedResetLine::new(name.to_string(), UsbResetLine(reset)))
         })
         .collect()
 }

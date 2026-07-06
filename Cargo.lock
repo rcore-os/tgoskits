@@ -6407,6 +6407,7 @@ dependencies = [
  "rdif-base",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-reset",
  "rdrive-macros",
  "spin",
  "thiserror 2.0.18",
