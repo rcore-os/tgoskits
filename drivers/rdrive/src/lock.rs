@@ -167,6 +167,12 @@ impl<T: Any> Device<T> {
         })
     }
 
+    /// Locks the device for exclusive mutable access.
+    ///
+    /// Not hard-IRQ safe: this may spin until the current owner drops the
+    /// device and it queries OS ownership state. Hard IRQ handlers must use a
+    /// pre-registered IRQ endpoint or other IRQ-side state instead of locking a
+    /// rdrive device.
     pub fn lock(&self) -> Result<DeviceGuard<T>, GetDeviceError> {
         let lock = self.lock.upgrade().ok_or(GetDeviceError::DeviceReleased)?;
         lock.lock()?;
@@ -194,10 +200,15 @@ impl<T: Any> Device<T> {
         core::any::type_name::<T>()
     }
 
-    /// 强制获取设备
+    /// Returns the raw device pointer without taking the rdrive device lock.
     ///
     /// # Safety
-    /// 一般用于中断处理中
+    ///
+    /// Not hard-IRQ safe: this is not an interrupt-context escape hatch. The
+    /// caller must prove that the device is still alive and that no concurrent
+    /// mutable or shared access can race with the returned pointer. Hard IRQ
+    /// handlers must use pre-registered IRQ-side state instead of reaching back
+    /// into rdrive devices.
     pub unsafe fn force_use(&self) -> *mut T {
         self.ptr
     }

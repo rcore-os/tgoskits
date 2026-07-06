@@ -7,6 +7,8 @@ extern crate log;
 
 use core::ptr::NonNull;
 
+// The registry is not hard-IRQ safe, but it is also used by runtime discovery
+// paths that must not trigger task preemption hooks on lock release.
 use ax_kspin::SpinRaw as Mutex;
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel};
@@ -178,14 +180,29 @@ pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError> {
     Ok(())
 }
 
+/// Returns all registered devices that implement `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and allocates
+/// the returned `Vec`. Hard IRQ handlers must use pre-published IRQ-side state
+/// instead of looking devices up through rdrive.
 pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>> {
     read(|manager| manager.dev_container.devices())
 }
 
+/// Returns a registered device by id and expected interface type.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock. Hard IRQ
+/// handlers must use pre-published IRQ-side state instead of looking devices up
+/// through rdrive.
 pub fn get<T: DriverGeneric>(id: DeviceId) -> Result<Device<T>, GetDeviceError> {
     read(|manager| manager.dev_container.get_typed(id))
 }
 
+/// Returns one registered device that implements `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and scans the
+/// registry. Hard IRQ handlers must use pre-published IRQ-side state instead of
+/// looking devices up through rdrive.
 pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
     read(|manager| manager.dev_container.get_one())
 }
