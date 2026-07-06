@@ -32,6 +32,7 @@ irq = ["ax-posix-api/irq", "ax-runtime/irq"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
+paging = ["ax-runtime/paging"]
 tls = ["alloc", "ax-runtime/tls"]
 
 # Multi-task

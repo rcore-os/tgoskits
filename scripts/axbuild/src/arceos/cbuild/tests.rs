@@ -166,6 +166,13 @@ fn map_c_app_features_forwards_multitask_to_runtime_features() {
 }
 
 #[test]
+fn map_c_app_features_preserves_paging_facade_feature() {
+    let features = map_c_app_features(&strings(&["paging"]), &[]);
+
+    assert_eq!(features, vec!["paging".to_string()]);
+}
+
+#[test]
 fn pthread_mutex_header_matches_lockdep_smp_layout() {
     let header = pthread_mutex_header_contents(&strings(&["multitask", "lockdep", "smp"]));
 
