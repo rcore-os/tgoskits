@@ -1,0 +1,14 @@
+name: create-user
+method: POST
+url: http://api.local/users
+body:
+  content: |-
+    {
+      "name": "Ada Lovelace",
+      "age": 36,
+      "roles": ["admin", "user"],
+      "active": true
+    }
+headers:
+- name: Content-Type
+  value: application/json

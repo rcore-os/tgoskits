@@ -15,6 +15,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 #[cfg(target_arch = "aarch64")]
@@ -355,14 +356,55 @@ fn render_proc_net_dev() -> String {
                    Transmit\nface |bytes    packets errs drop fifo frame compressed \
                    multicast|bytes    packets errs drop fifo colls carrier compressed\n"
         .to_string();
-    for iface in ax_net::interfaces() {
+    // Per interface: 8 receive columns (bytes packets errs drop fifo frame
+    // compressed multicast) then 8 transmit columns (bytes packets errs drop
+    // fifo colls carrier compressed). Only bytes/packets have a source; the
+    // error/drop/fifo columns have no accounting yet and stay zero.
+    for st in ax_net::net_dev_stats() {
         let _ = writeln!(
             buf,
-            "{:>8}:       0       0    0    0    0     0          0         0        0       0    \
-             0    0    0     0       0          0",
-            iface.name
+            "{:>8}: {} {} 0 0 0 0 0 0 {} {} 0 0 0 0 0 0",
+            st.name, st.rx_bytes, st.rx_packets, st.tx_bytes, st.tx_packets
         );
     }
+    buf
+}
+
+/// Block-device major reported for the root virtio-blk disk (`vda`) in
+/// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
+/// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
+/// consistently observes.
+const VIRTBLK_MAJOR: u32 = 254;
+
+fn render_diskstats() -> String {
+    // 14-field Linux /proc/diskstats layout, one line per block device. Only the
+    // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
+    // only its request/sector counters are real; the timing and in-flight fields
+    // have no source and stay zero.
+    let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
+    format!(
+        "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
+         0 0\n"
+    )
+}
+
+fn render_mounts() -> String {
+    // Root filesystem plus the pseudo-filesystems mounted unconditionally by
+    // `pseudofs::mount_all()` at boot. The root fs type is read live from the
+    // mount table; the pseudo mounts are fixed. Dynamic user mounts are not
+    // enumerated here because the VFS does not expose a public mount-tree
+    // walker, so third-party mounts made via mount(2) are absent.
+    let root_fstype = {
+        let ctx = FS_CONTEXT.lock();
+        ctx.root_dir().filesystem().name().to_string()
+    };
+    let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
+    buf.push_str("devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n");
+    buf.push_str("tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
+    buf.push_str("tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
+    buf.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
+    buf.push_str("sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n");
+    buf.push_str("debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0\n");
     buf
 }
 
@@ -1055,10 +1097,7 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mounts" => SimpleFile::new_regular(fs, move || {
-                Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
-            })
-            .into(),
+            "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1322,9 +1361,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
-        SimpleFile::new_regular(fs.clone(), || {
-            Ok("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n")
-        }),
+        SimpleFile::new_regular(fs.clone(), || Ok(render_mounts())),
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
@@ -1338,6 +1375,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "stat",
         SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
+    );
+    root.add(
+        "diskstats",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_diskstats())),
     );
     root.add(
         "meminfo",

@@ -1,0 +1,60 @@
+LINE 000 START-OF-FILE plaintext top marker alpha
+LINE 001 INFO service initialising component alpha
+LINE 002 INFO config loaded from etc-app-config-yaml
+LINE 003 DEBUG cache warmup begin region eu-west
+LINE 004 INFO worker pool started size eight threads
+LINE 005 INFO listening on port 8080 backlog 128
+LINE 006 DEBUG request accepted id req-0006 path root
+LINE 007 INFO user login accepted userid 4711 ok true
+LINE 008 DEBUG session token minted ttl 3600 seconds
+LINE 009 INFO metrics flushed 42 counters exported ok
+LINE 010 WARNING disk usage at 82 percent on volume var
+LINE 011 INFO steady state heartbeat tick number 11
+LINE 012 INFO steady state heartbeat tick number 12
+LINE 013 INFO steady state heartbeat tick number 13
+LINE 014 INFO steady state heartbeat tick number 14
+LINE 015 INFO steady state heartbeat tick number 15
+LINE 016 INFO steady state heartbeat tick number 16
+LINE 017 INFO steady state heartbeat tick number 17
+LINE 018 INFO steady state heartbeat tick number 18
+LINE 019 INFO steady state heartbeat tick number 19
+LINE 020 INFO steady state heartbeat tick number 20
+LINE 021 INFO steady state heartbeat tick number 21
+LINE 022 INFO steady state heartbeat tick number 22
+LINE 023 INFO steady state heartbeat tick number 23
+LINE 024 INFO steady state heartbeat tick number 24
+LINE 025 INFO steady state heartbeat tick number 25
+LINE 026 INFO steady state heartbeat tick number 26
+LINE 027 INFO steady state heartbeat tick number 27
+LINE 028 INFO steady state heartbeat tick number 28
+LINE 029 WARNING retry budget low remaining two attempts
+{"line": 30, "level": "error", "code": 42, "msg": "json log entry", "svc": "db"}
+LINE 031 INFO steady state heartbeat tick number 31
+LINE 032 INFO steady state heartbeat tick number 32
+LINE 033 INFO steady state heartbeat tick number 33
+LINE 034 INFO steady state heartbeat tick number 34
+LINE 035 INFO steady state heartbeat tick number 35
+LINE 036 INFO steady state heartbeat tick number 36
+LINE 037 INFO steady state heartbeat tick number 37
+LINE 038 INFO steady state heartbeat tick number 38
+LINE 039 INFO steady state heartbeat tick number 39
+LINE 040 INFO steady state heartbeat tick number 40
+LINE 041 INFO steady state heartbeat tick number 41
+LINE 042 INFO steady state heartbeat tick number 42
+LINE 043 INFO steady state heartbeat tick number 43
+LINE 044 INFO steady state heartbeat tick number 44
+LINE 045 INFO steady state heartbeat tick number 45
+LINE 046 INFO steady state heartbeat tick number 46
+LINE 047 INFO steady state heartbeat tick number 47
+LINE 048 INFO steady state heartbeat tick number 48
+LINE 049 INFO steady state heartbeat tick number 49
+LINE 050 ERROR failed to connect upstream host db-primary
+LINE 051 ERROR retry 1 of 3 upstream host db-primary timeout
+LINE 052 ERROR retry 2 of 3 upstream host db-primary timeout
+LINE 053 ERROR giving up upstream host db-primary unreachable
+LINE 054 INFO failover to replica host db-replica accepted
+LINE 055 INFO connection reestablished latency 12 millis
+LINE 056 DEBUG backlog drained pending zero queue empty
+LINE 057 INFO shutdown signal received draining connections
+LINE 058 INFO flush complete all buffers written to disk
+LINE 059 END-OF-FILE plaintext bottom marker omega

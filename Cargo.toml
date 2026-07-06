@@ -231,6 +231,7 @@ rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.1.1", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.1.0", path = "drivers/interface/rdif-pwm" }
 rdif-power = { version = "0.7.3", path = "drivers/interface/rdif-power" }
+rdif-reset = { version = "0.1.0", path = "drivers/interface/rdif-reset" }
 rdif-serial = { version = "0.9.0", path = "drivers/interface/rdif-serial" }
 rdif-systick = { version = "0.6.3", path = "drivers/interface/rdif-systick" }
 rdif-timer = { version = "0.6.3", path = "drivers/interface/rdif-timer" }

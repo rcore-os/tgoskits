@@ -213,6 +213,30 @@ Review the PR against its stated intent, the current base branch, existing proje
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
 
+### Review Lenses And Finding Discipline
+
+Review is recall-first: prefer finding every real defect in the changed surface over producing a short or polished review. Do not invent issues, but do not dismiss a plausible in-scope defect with "looks fine"; construct the concrete input, interleaving, device state, guest config, or test-run path that would trigger it, or explain why that scenario is impossible.
+
+Apply these TGOSKits review lenses. A lens runs unless the changed paths and semantics provably contain nothing in its remit:
+
+- **Maintainability:** process and change shape, commit hygiene, focused PR scope, crate/module boundaries, naming, visibility, comments, and whether the next maintainer can understand the code without archaeology.
+- **Correctness:** runtime behavior under normal, error, concurrent, and hot paths; edge cases such as off-by-one errors, reachable `unwrap`/`expect`/panic, integer overflow, wrong predicates, dropped guards, lost wakeups, resource leaks, and tests that prove the behavior.
+- **Security/Soundness:** `unsafe` contracts, pointer provenance, aliasing, user-memory access, trust-boundary validation, privilege checks, TOCTOU, use-after-free, and invariants relied on by untouched `unsafe` blocks or unsafe trait impls.
+- **Hardware/ABI:** assembly, target JSONs, trap/context layout, SMP/boot handoff, MMIO/DMA/IRQ ownership, cache/coherency assumptions, VirtIO/PCI contracts, device-tree/config layout, and architecture-specific calling or alignment rules.
+- **Documentation/User-Facing Compatibility:** user-facing docs, runbooks, app workflows, test-suit guides, compatibility notes, syscall/kernel parameter descriptions, and whether documentation changes stay current with behavior visible to StarryOS, ArceOS, Axvisor, or users.
+
+For each candidate finding, identify the natural owning lens and avoid duplicating the same investigation under every lens. If several symptoms share one root cause or one fix, keep each symptom at its own actionable location but explain the shared fix once and refer the related comments to it.
+
+Every submitted finding, inline comment, or body-only blocker must include:
+
+- **grounding:** the project rule, external standard, observed failure, or plain-language defect class, such as "Off by one", "Use after free", or "wrong errno";
+- **severity:** whether it is blocking, major but non-blocking, minor, or nit-level;
+- **problem:** the concrete behavior or maintainability failure and the scenario that exposes it;
+- **fix direction:** the expected repair, not just a complaint;
+- **evidence:** changed line, code path, validation output, CI log, external reference, or reasoning proof.
+
+Before submitting, verify the load-bearing premises of every finding. Re-read the cited code and, when the finding depends on outside behavior, check an authoritative source such as Linux/POSIX/RFC/VirtIO specs, Rust reference/docs, hardware manuals, or existing TGOSKits runner semantics. Keep uncertain but plausible findings only when the uncertainty is explicit; retract findings whose premise is confidently false instead of posting stale or speculative feedback.
+
 For bug fixes (修复 bug), require a regression or reproduction test that fails on the unfixed behavior and passes only after the fix unless concrete evidence shows the environment makes such a test impossible. The reviewer must verify this from the test code, author-provided red/green evidence, or local red/green validation when practical. If the PR fixes a bug but lacks a post-fix-only regression test and no concrete impossibility is documented, treat that as blocking. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
 
 For any PR that adds behavior, changes semantics, fixes a bug, or claims coverage for a newly exposed path, require tests at the correct project layer unless the PR is clearly documentation-only or the review records a concrete reason tests are impossible. Verify that the tests are not merely present in the diff: they must be in the expected suite or wrapper, discovered by the project runner, built or installed into the runtime image when applicable, selected by the documented command, and capable of failing when the behavior regresses. Treat misplaced tests, orphan assets, tests hidden behind opt-in/manual-only paths, or tests that CI/runner silently skips as missing coverage.
@@ -413,7 +437,7 @@ Treat these as blocking unless clearly non-blocking:
 - the PR duplicates existing base-branch behavior, weakens an existing implementation, conflicts with a related open PR, or is superseded by a newer base-branch or open-PR fix;
 - the review cannot explain how this PR differs from a plausible related open PR after duplicate and overlap analysis.
 
-All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the concrete problem, the relevant standard/project rule/observed failure, and a suggested fix.
+All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the grounding, severity, concrete problem, evidence, and suggested fix direction required by the review-lens discipline above.
 
 Prefer changed lines on the PR diff. Before submitting, verify every inline `line` exists on the current right side of the diff; if GitHub cannot resolve a line, move to the nearest changed line that demonstrates the issue or put the finding in the review body. Context or unchanged lines may be rejected by the review API.
 

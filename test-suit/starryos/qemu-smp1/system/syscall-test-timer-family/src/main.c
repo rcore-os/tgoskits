@@ -929,6 +929,73 @@ static void test_posix_timer_signal_delivery(void) {
 }
 
 /* ============================================================
+ * nanosleep / clock_nanosleep interruption semantics
+ * ============================================================ */
+
+static void test_clock_nanosleep_abstime_eintr_keeps_rem(void) {
+    struct sigaction sa, old_sa;
+    struct itimerval alarm;
+    struct timespec deadline;
+    struct timespec rem;
+    const struct timespec rem_sentinel = {
+        .tv_sec = 0x12345678,
+        .tv_nsec = 987654321,
+    };
+    int ret;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigalrm_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGALRM, &sa, &old_sa) != 0) {
+        printf("  FAIL | %s:%d | sigaction failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        return;
+    }
+
+    sig_received = 0;
+
+    errno = 0;
+    ret = clock_gettime(CLOCK_MONOTONIC, &deadline);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | clock_gettime failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        sigaction(SIGALRM, &old_sa, NULL);
+        return;
+    }
+    deadline.tv_sec += 2;
+
+    memset(&alarm, 0, sizeof(alarm));
+    alarm.it_value.tv_usec = 50000; /* 50 ms, before the absolute deadline */
+    errno = 0;
+    ret = setitimer(ITIMER_REAL, &alarm, NULL);
+    if (ret != 0) {
+        printf("  FAIL | %s:%d | setitimer failed | errno=%d (%s)\n",
+               __FILE__, __LINE__, errno, strerror(errno));
+        __fail++;
+        sigaction(SIGALRM, &old_sa, NULL);
+        return;
+    }
+
+    rem = rem_sentinel;
+    errno = 0;
+    ret = syscall(SYS_clock_nanosleep, CLOCK_MONOTONIC, TIMER_ABSTIME,
+                  &deadline, &rem);
+    CHECK(ret == -1 && errno == EINTR,
+          "TIMER_ABSTIME clock_nanosleep should fail with EINTR when interrupted");
+    CHECK(sig_received == 1,
+          "SIGALRM should interrupt absolute clock_nanosleep before deadline");
+    CHECK(memcmp(&rem, &rem_sentinel, sizeof(rem)) == 0,
+          "TIMER_ABSTIME clock_nanosleep must leave rem unchanged on EINTR");
+
+    memset(&alarm, 0, sizeof(alarm));
+    setitimer(ITIMER_REAL, &alarm, NULL);
+    sigaction(SIGALRM, &old_sa, NULL);
+}
+
+/* ============================================================
  * timer_delete then use tests
  * ============================================================ */
 
@@ -1550,6 +1617,9 @@ int main(int argc, char *argv[]) {
     test_posix_timer_signal_delivery();
     test_timer_abstime_past_signal_delivery();
     test_posix_timer_periodic_signal();
+
+    printf("\n--- sleep interruption tests ---\n");
+    test_clock_nanosleep_abstime_eintr_keeps_rem();
 
     printf("\n--- timer lifecycle tests ---\n");
     test_timer_delete_then_gettime();

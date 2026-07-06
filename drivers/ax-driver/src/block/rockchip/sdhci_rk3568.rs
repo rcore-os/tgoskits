@@ -82,8 +82,6 @@ const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 
-static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
-
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
@@ -148,7 +146,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    host.set_reset_hook(&SDHCI_RESET_HOOK);
+    host.set_reset_hook(RockchipSdhciResetHook);
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 

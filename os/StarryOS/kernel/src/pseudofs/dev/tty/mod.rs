@@ -166,11 +166,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 (arg as *mut Termios2).vm_write(termios)?;
             }
             TCSETS | TCSETSF | TCSETSW => {
-                // TODO: drain output?
                 // Note: vm_read() must complete before acquiring the terminal lock.
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
+                if matches!(cmd, TCSETSF | TCSETSW) {
+                    self.writer.drain()?;
+                }
                 let old = {
                     let mut guard = self.terminal.termios.lock();
                     let old = guard.clone();
@@ -183,8 +185,10 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                // TODO: drain output?
                 let termios = Arc::new((arg as *const Termios2).vm_read()?);
+                if matches!(cmd, TCSETSF2 | TCSETSW2) {
+                    self.writer.drain()?;
+                }
                 let old = {
                     let mut guard = self.terminal.termios.lock();
                     let old = guard.clone();
@@ -231,6 +235,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
                     );
                 }
+            }
+            TCSBRK => {
+                self.writer.drain()?;
+                if arg == 0 {
+                    return Err(AxError::Unsupported);
+                }
+            }
+            TCSBRKP => {
+                self.writer.drain()?;
+                return Err(AxError::Unsupported);
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {

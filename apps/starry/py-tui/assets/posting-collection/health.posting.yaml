@@ -1,0 +1,3 @@
+name: health
+description: Liveness probe endpoint.
+url: http://api.local/health

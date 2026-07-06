@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, vec::Vec};
+use alloc::format;
 use core::time::Duration;
 
 use dwmmc_host::{CardDetect, DwMmc, HostClock, rdif as dwmmc_rdif};
@@ -36,11 +36,7 @@ use sdmmc_protocol::{
 use super::clock::{
     RockchipClockOps, ScmiClockOps, apply_assigned_clocks, enable_node_clocks, scmi_named_clock,
 };
-use crate::{
-    block::ProbeFdtBlock,
-    mmio::iomap,
-    soc::{RockchipFdtPinctrlParser, rk3588_enable_power_domain},
-};
+use crate::{block::ProbeFdtBlock, mmio::iomap, soc::RockchipFdtPinctrlParser};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 const ROCKCHIP_DWMMC_CLKGEN_DIV: u32 = 2;
@@ -228,7 +224,6 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
             );
         }
     }
-    enable_power_domains(parse_power_domains(info.node.as_node())?)?;
     enable_node_clocks(info, "SDMMC");
     Ok(())
 }
@@ -295,31 +290,6 @@ fn regulator_has_fixed_gpio_enable(node: &Node) -> bool {
         && (node.get_property("gpios").is_some()
             || node.get_property("gpio").is_some()
             || node.get_property("pinctrl-0").is_some())
-}
-
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
-fn enable_power_domains(domains: Vec<usize>) -> Result<(), OnProbeError> {
-    for domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable RK3588 SDMMC power domain {domain}: {err}"
-            ))
-        })?;
-    }
-    Ok(())
 }
 
 fn poll_card_init(sd: &mut RockchipDwMmc) -> Result<CardInfo, Error> {
@@ -509,27 +479,5 @@ mod tests {
         ));
 
         assert!(!regulator_has_fixed_gpio_enable(&node));
-    }
-
-    #[test]
-    fn parse_power_domains_reads_rockchip_provider_cells() {
-        let mut node = Node::new("mmc@fe2c0000");
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&0x1111_u32.to_be_bytes());
-        raw.extend_from_slice(&30_u32.to_be_bytes());
-        node.add_property(fdt_edit::Property::new("power-domains", raw));
-
-        assert_eq!(parse_power_domains(&node).unwrap(), vec![30]);
-    }
-
-    #[test]
-    fn parse_power_domains_rejects_malformed_cells() {
-        let mut node = Node::new("mmc@fe2c0000");
-        node.add_property(fdt_edit::Property::new(
-            "power-domains",
-            0x1111_u32.to_be_bytes().to_vec(),
-        ));
-
-        assert!(parse_power_domains(&node).is_err());
     }
 }

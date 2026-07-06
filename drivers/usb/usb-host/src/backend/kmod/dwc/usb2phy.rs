@@ -7,7 +7,7 @@ use alloc::{collections::BTreeMap, string::String, sync::Arc};
 
 use super::{
     super::osal::Kernel,
-    CruOp,
+    NamedResetLine, ResetLine,
     consts::genmask,
     udphy::{config::UdphyGrfReg, regmap::Regmap},
 };
@@ -90,7 +90,7 @@ pub struct Usb2PhyParam<'a> {
     pub port_kind: Usb2PhyPortId,
     pub usb_grf: Mmio,
     /// 复位列表
-    pub rst_list: &'a [(&'a str, u64)],
+    pub rst_list: &'a [NamedResetLine],
 }
 
 /// RK3588 USB2 PHY 驱动
@@ -99,10 +99,8 @@ pub struct Usb2Phy {
     port_kind: Usb2PhyPortId,
     /// 配置数据（共享引用）
     cfg: &'static Usb2PhyCfg,
-    /// CRU 接口（用于复位控制）
-    cru: Arc<dyn CruOp>,
     /// 复位信号映射表
-    rsts: BTreeMap<String, u64>,
+    rsts: BTreeMap<String, Arc<dyn ResetLine>>,
     kernel: Kernel,
 }
 
@@ -112,21 +110,19 @@ impl Usb2Phy {
     /// # Arguments
     ///
     /// * `base` - PHY 寄存器基址
-    /// * `cru` - CRU 接口
     /// * `param` - 初始化参数
-    pub fn new(cru: Arc<dyn CruOp>, param: Usb2PhyParam<'_>, kernel: Kernel) -> Self {
+    pub fn new(param: Usb2PhyParam<'_>, kernel: Kernel) -> Self {
         // 根据 ID 选择对应的配置
         let cfg = find_usb2phy_cfg(param.reg);
         // 构建复位映射表
         let mut rsts = BTreeMap::new();
-        for &(name, id) in param.rst_list.iter() {
-            rsts.insert(String::from(name), id);
+        for reset in param.rst_list.iter() {
+            rsts.insert(String::from(reset.name()), reset.line());
         }
 
         Usb2Phy {
             grf: Regmap::new(param.usb_grf),
             cfg,
-            cru,
             rsts,
             port_kind: param.port_kind,
             kernel,
@@ -188,12 +184,12 @@ impl Usb2Phy {
     /// 复位时序：assert 20μs → deassert 100μs
     fn reset(&self) {
         // Assert reset
-        if let Some(&rst_id) = self.rsts.get("phy") {
-            self.cru.reset_assert(rst_id);
+        if let Some(reset) = self.rsts.get("phy") {
+            reset.assert();
             self.kernel.delay(core::time::Duration::from_micros(20));
 
             // Deassert reset
-            self.cru.reset_deassert(rst_id);
+            reset.deassert();
             self.kernel.delay(core::time::Duration::from_micros(100));
         }
     }

@@ -685,7 +685,9 @@ dependencies = [
  "rdif-intc",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-power",
  "rdif-pwm",
+ "rdif-reset",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -6340,10 +6342,19 @@ name = "rdif-power"
 version = "0.7.3"
 dependencies = [
  "rdif-base",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rdif-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rdif-reset"
 version = "0.1.0"
 dependencies = [
  "rdif-base",
@@ -6398,6 +6409,8 @@ dependencies = [
  "rdif-base",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-power",
+ "rdif-reset",
  "rdrive-macros",
  "spin",
  "thiserror 2.0.18",

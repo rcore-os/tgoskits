@@ -51,6 +51,10 @@ impl BlockTaskOps for RuntimeTaskOps {
         ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
     }
 
+    fn can_block(&self) -> bool {
+        ax_task::current_may_uninit().is_some() && !ax_task::in_atomic_context()
+    }
+
     fn task_yield(&self) {
         ax_task::yield_now();
     }

@@ -1,0 +1,33 @@
+# py-tui leg B — pinned, hash-locked closure for the REAL app `toolong` (the `tl` log viewer).
+# Pure-Python (py3-none-any) wheels ONLY; installed into its OWN pip --target dir so toolong's
+# textual==0.58.1 pin cannot collide with leg A (textual 8.2.8) or frogmouth (textual 0.43.2):
+#
+#   pip install --require-hashes --no-deps -r assets/requirements-toolong.txt --target /opt/pytui-toolong
+#
+# NO wheels are committed. Every entry pins an exact version + its PyPI sha256, and all eleven
+# wheels are py3-none-any (pure Python), so the resulting site-packages tree is architecture-
+# independent and identical for x86_64 / aarch64 / riscv64 / loongarch64. Closure = toolong plus
+# its full transitive runtime deps; zero C-extensions.
+
+toolong==1.5.0 \
+    --hash=sha256:bc8e12b1937b3e6fd6b0e8ff924c0a9b1c3ad6171951655571f17d8ac2ca48ce
+textual==0.58.1 \
+    --hash=sha256:9902ebb4b00481f6fdb0e7db821c007afa45797d81e1d0651735a07de25ece87
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+click==8.4.2 \
+    --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdit-py-plugins==0.6.1 \
+    --hash=sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+linkify-it-py==2.1.0 \
+    --hash=sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e
+uc-micro-py==2.0.0 \
+    --hash=sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c
+pygments==2.20.0 \
+    --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

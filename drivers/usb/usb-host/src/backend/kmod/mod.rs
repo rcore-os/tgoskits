@@ -16,8 +16,8 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap};
 
 use dwc::Dwc;
 pub use dwc::{
-    CruOp, DwcNewParams, DwcParams, UdphyParam, Usb2PhyParam, UsbPhyInterfaceMode,
-    usb2phy::Usb2PhyPortId,
+    DwcNewParams, DwcParams, NamedResetLine, ResetLine, UdphyParam, Usb2PhyParam,
+    UsbPhyInterfaceMode, usb2phy::Usb2PhyPortId,
 };
 use ehci::Ehci;
 pub use ehci::EhciNewParams;
@@ -34,7 +34,7 @@ impl USBHost {
         Ok(USBHost::new(Xhci::new(mmio, kernel)?))
     }
 
-    pub fn new_dwc(params: DwcNewParams<'_, impl CruOp>) -> Result<USBHost> {
+    pub fn new_dwc(params: DwcNewParams<'_>) -> Result<USBHost> {
         Ok(USBHost::new(Dwc::new(params)?))
     }
 

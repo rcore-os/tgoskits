@@ -11,3 +11,4 @@ categories = ["embedded", "no-std"]
 
 [dependencies]
 rdif-base = { workspace = true }
+thiserror = { version = "2", default-features = false }

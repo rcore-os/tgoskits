@@ -17,7 +17,6 @@ use super::{
     },
     windows::{is_compatible, live_fdt, phy_cells, prop_phandle, prop_str_list, prop_u32},
 };
-use crate::soc::{rk3588_reset_assert, rk3588_reset_deassert};
 
 pub(super) fn parse_phys(node_type: NodeType<'_>) -> Result<Vec<PhyRef>, OnProbeError> {
     let node = node_type.as_node();
@@ -137,14 +136,7 @@ fn init_pcie3_phy(phy: &Pcie3PhyResources) -> Result<(), OnProbeError> {
         .transpose()?;
 
     enable_clocks(&phy.clocks)?;
-    for reset in &phy.resets {
-        rk3588_reset_assert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to assert RK3588 PCIe3 PHY reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
-    }
+    assert_resets(&phy.resets)?;
     axklib::time::busy_wait(Duration::from_micros(1));
 
     phy_grf.write32(
@@ -159,14 +151,7 @@ fn init_pcie3_phy(phy: &Pcie3PhyResources) -> Result<(), OnProbeError> {
     }
     phy_grf.write32(RK3588_PCIE3PHY_CMN_CON0, (1 << 24) | (1 << 8));
 
-    for reset in &phy.resets {
-        rk3588_reset_deassert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to deassert RK3588 PCIe3 PHY reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
-    }
+    deassert_resets(&phy.resets)?;
     poll_pcie3_sram_ready(&phy_grf, RK3588_PCIE3PHY_PHY0_STATUS1, &phy.name)?;
     poll_pcie3_sram_ready(&phy_grf, RK3588_PCIE3PHY_PHY1_STATUS1, &phy.name)?;
     info!(
