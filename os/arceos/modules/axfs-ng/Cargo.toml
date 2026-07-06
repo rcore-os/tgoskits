@@ -8,8 +8,8 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
-fat = ["dep:fatfs"]
-ext4 = ["dep:rsext4"]
+fatfs = ["dep:fatfs"]
+ext4fs = ["dep:rsext4"]
 vfs = []
 lockdep = ["axfs-ng-vfs/lockdep"]
 

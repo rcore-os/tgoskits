@@ -15,9 +15,9 @@
 //! - `preempt`: Enable preemptive scheduling.
 //! - FIFO cooperative scheduler is the default when no scheduler feature is
 //!   selected.
-//! - `rr`: Use the [Round-robin preemptive scheduler][2]. It also enables
+//! - `sched-rr`: Use the [Round-robin preemptive scheduler][2]. It also enables
 //!   the `multitask` and `preempt` features if it is enabled.
-//! - `cfs`: Use the [Completely Fair Scheduler][3]. It also enables the
+//! - `sched-cfs`: Use the [Completely Fair Scheduler][3]. It also enables the
 //!   the `multitask` and `preempt` features if it is enabled.
 //! - `host-test`: Use host-safe fallbacks for unit tests.
 //!

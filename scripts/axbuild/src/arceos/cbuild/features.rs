@@ -85,8 +85,8 @@ pub(super) fn map_c_app_features(
         "select",
         "poll",
         "epoll",
-        "ext4",
-        "fat",
+        "ext4fs",
+        "fatfs",
     ];
 
     let mut features = BTreeSet::new();

@@ -42,8 +42,8 @@ stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = ["ax-posix-api/fs", "ax-runtime/fs", "fd"]
-ext4 = ["fs", "ax-runtime/ext4"]
-fat = ["fs", "ax-runtime/fat"]
+ext4fs = ["fs", "ax-runtime/ext4fs"]
+fatfs = ["fs", "ax-runtime/fatfs"]
 
 # Networking
 net = ["ax-posix-api/net", "ax-runtime/net", "fd"]

@@ -198,7 +198,7 @@ pub fn sys_mount(
                 mp.set_readonly(true);
             }
         }
-        #[cfg(feature = "ext4")]
+        #[cfg(feature = "ext4fs")]
         "ext4" => {
             mount_ext4(&source, &target, (flags & MS_RDONLY) != 0)?;
         }
@@ -229,7 +229,7 @@ pub fn sys_mount(
     Ok(0)
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 

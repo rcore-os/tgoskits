@@ -54,8 +54,8 @@ multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask
 lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-rr = ["irq", "multitask", "ax-task/rr"]
-cfs = ["irq", "multitask", "ax-task/cfs"]
+sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
+sched-cfs = ["irq", "multitask", "ax-task/sched-cfs"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -67,8 +67,8 @@ fs = [
     "ax-driver/virtio-blk",
     "fd",
 ]
-ext4 = ["fs", "ax-runtime/ext4"]
-fat = ["fs", "ax-runtime/fat"]
+ext4fs = ["fs", "ax-runtime/ext4fs"]
+fatfs = ["fs", "ax-runtime/fatfs"]
 
 # Networking
 net = [
@@ -79,7 +79,7 @@ net = [
     "fd",
 ]
 vsock = ["ax-runtime/vsock"]
-aic8800 = ["ax-runtime/aic8800"]
+aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.

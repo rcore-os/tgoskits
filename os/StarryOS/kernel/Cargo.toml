@@ -16,7 +16,7 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-ext4 = ["ax-fs-ng/ext4"]
+ext4fs = ["ax-fs-ng/ext4fs"]
 input = ["dep:ax-input", "ax-runtime/input"]
 ipi = ["ax-runtime/ipi"]
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
@@ -39,13 +39,6 @@ sg2002 = [
     "dep:some-serial",
     "dep:sg200x-bsp",
     "dep:tock-registers",
-]
-# SG2002 AIC8800 SoftAP Wi-Fi. The whole bring-up (FDT probe + SoftAP + stack
-# registration) now lives in ax-driver / ax-runtime; the kernel just turns the
-# feature on. No direct chip-crate deps needed here anymore.
-sg2002-wifi = [
-    "sg2002",
-    "ax-runtime/aic8800",
 ]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
@@ -71,7 +64,7 @@ ax-runtime = { workspace = true, features = [
     "uspace",
     "multitask",
     "rtc",
-    "ext4",
+    "ext4fs",
     "net",
 ] }
 ax-sync = { workspace = true, features = ["multitask"] }
@@ -79,7 +72,7 @@ ax-task = { workspace = true, features = [
     "multitask",
     "task-ext",
     "tracepoint-hooks",
-    "rr",
+    "sched-rr",
 ] }
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }

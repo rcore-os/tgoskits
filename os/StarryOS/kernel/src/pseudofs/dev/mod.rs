@@ -17,11 +17,11 @@ mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
 pub mod ion;

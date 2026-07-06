@@ -44,8 +44,8 @@ tls = ["ax-hal/tls"]
 tracepoint-hooks = ["multitask"]
 uspace = ["ax-hal/uspace"]
 
-cfs = ["multitask", "preempt"]
-rr = ["multitask", "preempt"]
+sched-cfs = ["multitask", "preempt"]
+sched-rr = ["multitask", "preempt"]
 
 host-test = [
   "ax-hal/host-test",

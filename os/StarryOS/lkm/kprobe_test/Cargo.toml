@@ -14,7 +14,7 @@ ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
 axplat-dyn = { workspace = true, optional = true }
-starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
+starry-kernel = { workspace = true, features = ["dev-log", "ext4fs"] }
 ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
 ax-log.workspace = true
 

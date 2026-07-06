@@ -61,7 +61,7 @@ mod registers;
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
 
-#[cfg(feature = "aic8800")]
+#[cfg(feature = "aic8800-wifi")]
 mod wifi_glue;
 
 pub use ax_hal as hal;
@@ -291,7 +291,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     // brings the chip up and that needs timing/task capabilities. The cores
     // declare no ArceOS dependency themselves; this is the adapter layer (see
     // `wifi_glue`).
-    #[cfg(feature = "aic8800")]
+    #[cfg(feature = "aic8800-wifi")]
     wifi_glue::install_runtime();
 
     devices::probe_all_devices();

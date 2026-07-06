@@ -22,7 +22,7 @@ display = ["dep:ax-display"]
 
 
 # Use stub functions if the feature is not enabled.
-stubs = []
+dummy-if-not-enabled = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }

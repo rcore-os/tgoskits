@@ -17,12 +17,12 @@
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
 //!     - `multitask`: Enable multi-threading support.
-//!     - `rr`: Use the Round-robin preemptive scheduler.
-//!     - `cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
+//!     - `sched-rr`: Use the Round-robin preemptive scheduler.
+//!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
 //! - Upperlayer stacks
 //!     - `fs`: Enable file system support.
-//!     - `ext4`: Enable the ext4 filesystem.
-//!     - `fat`: Enable the FAT filesystem.
+//!     - `ext4fs`: Enable the ext4 filesystem.
+//!     - `fatfs`: Enable the FAT filesystem.
 //!     - `net`: Enable networking support.
 //!     - `dns`: Enable DNS lookup support.
 //!     - `display`: Enable graphics support.

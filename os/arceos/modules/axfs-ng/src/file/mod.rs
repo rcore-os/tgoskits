@@ -4,7 +4,7 @@ mod open;
 mod page;
 
 pub use cache::CachedFile;
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 pub(crate) use cache::forget_cached_file_key;
 #[cfg(feature = "vfs")]
 pub use cache::{page_cache_reclaim, sync_all_cached_files};

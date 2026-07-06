@@ -49,8 +49,8 @@ fs = [
   "dep:rdif-block",
   "ax-driver/block",
 ]
-ext4 = ["fs", "ax-fs-ng/ext4"]
-fat = ["fs", "ax-fs-ng/fat"]
+ext4fs = ["fs", "ax-fs-ng/ext4fs"]
+fatfs = ["fs", "ax-fs-ng/fatfs"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]
 net = [
   "irq",
@@ -63,9 +63,9 @@ net = [
 ]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
 # the ArceOS runtime glue (the driver cores are OS-independent) before probing.
-aic8800 = [
+aic8800-wifi = [
   "net",
-  "ax-driver/aic8800",
+  "ax-driver/aic8800-wifi",
   "dep:aic8800",
   "dep:sdhci-cv1800",
 ]

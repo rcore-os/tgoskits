@@ -72,7 +72,7 @@ pub fn run() -> crate::TestResult {
         tasks.into_iter().map(|task| task.join().unwrap()).unzip();
     let actual = results.iter().sum::<u64>();
 
-    if cfg!(feature = "cfs") && thread::available_parallelism().unwrap().get() == 1 {
+    if cfg!(feature = "sched-cfs") && thread::available_parallelism().unwrap().get() == 1 {
         assert!(
             leave_times[0] > leave_times[1]
                 && leave_times[1] > leave_times[2]

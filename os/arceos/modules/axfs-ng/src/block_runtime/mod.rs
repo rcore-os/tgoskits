@@ -1780,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ext4")]
+    #[cfg(feature = "ext4fs")]
     fn block_device_flush_retries_without_returning_wouldblock() {
         let _guard = test_task_guard();
         let mut queue = MockQueue::with_retry_submits(1);

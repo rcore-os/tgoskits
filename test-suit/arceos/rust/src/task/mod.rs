@@ -6,7 +6,7 @@ pub mod ipi;
 pub mod irq;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
-#[cfg(any(feature = "task-priority", feature = "cfs", feature = "rr"))]
+#[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;

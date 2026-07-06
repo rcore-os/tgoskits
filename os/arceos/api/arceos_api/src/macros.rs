@@ -12,7 +12,7 @@ macro_rules! define_api_type {
             $(#[$attr])*
             $vis use $crate::imp::$name;
 
-            #[cfg(all(feature = "stubs", not(feature = $feature)))]
+            #[cfg(all(feature = "dummy-if-not-enabled", not(feature = $feature)))]
             $(#[$attr])*
             $vis struct $name;
         )+
@@ -48,7 +48,7 @@ macro_rules! define_api {
             }
 
             #[allow(unused_variables)]
-            #[cfg(all(feature = "stubs", not(feature = $feature)))]
+            #[cfg(all(feature = "dummy-if-not-enabled", not(feature = $feature)))]
             $(#[$attr])*
             $vis fn $name( $($arg : $type),* ) $( -> $ret )? {
                 unimplemented!(stringify!($name))
@@ -67,7 +67,7 @@ macro_rules! define_api {
             }
 
             #[allow(unused_variables)]
-            #[cfg(all(feature = "stubs", not(feature = $feature)))]
+            #[cfg(all(feature = "dummy-if-not-enabled", not(feature = $feature)))]
             $(#[$attr])*
             $vis unsafe fn $name( $($arg : $type),* ) $( -> $ret )? {
                 unimplemented!(stringify!($name))

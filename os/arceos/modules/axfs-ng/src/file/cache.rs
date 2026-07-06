@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 use alloc::{collections::BTreeMap, sync::Weak};
 #[cfg(feature = "vfs")]
 use core::sync::atomic::AtomicBool;
@@ -9,7 +9,7 @@ use core::{
 };
 
 use ax_io::prelude::*;
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 use axfs_ng_vfs::FilesystemOps;
 use axfs_ng_vfs::{FileNode, Location, VfsError, VfsResult};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
@@ -20,12 +20,12 @@ use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 type CachedFileKey = (usize, u64);
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
     spin::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
@@ -525,12 +525,12 @@ impl CachedFile {
         }
 
         let len = location.len()?;
-        #[cfg(feature = "ext4")]
+        #[cfg(feature = "ext4fs")]
         let inode_key =
             should_share_cached_file_by_inode(&location).then(|| cached_file_key(&location));
-        #[cfg(feature = "ext4")]
+        #[cfg(feature = "ext4fs")]
         let inode_shared = inode_key.and_then(lookup_inode_cached_file);
-        #[cfg(not(feature = "ext4"))]
+        #[cfg(not(feature = "ext4fs"))]
         let inode_shared: Option<Arc<CachedFileShared>> = None;
         let (created, user_data) = if let Some(shared) = inode_shared {
             (shared.clone(), FileUserData::Strong(shared))
@@ -565,7 +565,7 @@ impl CachedFile {
         }
         #[cfg(not(feature = "vfs"))]
         let _ = is_new;
-        #[cfg(feature = "ext4")]
+        #[cfg(feature = "ext4fs")]
         if is_new && let Some(key) = inode_key {
             insert_inode_cached_file(key, &shared);
         }
@@ -938,22 +938,22 @@ impl CachedFile {
     }
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn should_share_cached_file_by_inode(location: &Location) -> bool {
     location.filesystem().name() == "ext4"
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn filesystem_key(filesystem: &dyn FilesystemOps) -> usize {
     filesystem as *const dyn FilesystemOps as *const () as usize
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn cached_file_key(location: &Location) -> CachedFileKey {
     (filesystem_key(location.filesystem()), location.inode())
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn lookup_inode_cached_file(key: CachedFileKey) -> Option<Arc<CachedFileShared>> {
     let mut cache = CACHED_FILE_BY_INODE.lock();
     match cache.get(&key).and_then(Weak::upgrade) {
@@ -965,14 +965,14 @@ fn lookup_inode_cached_file(key: CachedFileKey) -> Option<Arc<CachedFileShared>>
     }
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 fn insert_inode_cached_file(key: CachedFileKey, shared: &Arc<CachedFileShared>) {
     CACHED_FILE_BY_INODE
         .lock()
         .insert(key, Arc::downgrade(shared));
 }
 
-#[cfg(feature = "ext4")]
+#[cfg(feature = "ext4fs")]
 pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
     if filesystem.name() == "ext4" {
         CACHED_FILE_BY_INODE
