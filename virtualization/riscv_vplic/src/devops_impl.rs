@@ -13,14 +13,6 @@ const SUPERVISOR_EXTERNAL_INTERRUPT: usize = 9;
 const VIRTIO_MMIO_IRQ: usize = 8;
 const VIRTIO_MMIO_BASE: usize = 0x1000_8000;
 const VIRTIO_MMIO_INTERRUPT_STATUS: usize = VIRTIO_MMIO_BASE + 0x60;
-const UART_IRQ: usize = 10;
-const UART_BASE: usize = 0x1000_0000;
-const UART_IER_OFFSET: usize = 1;
-const UART_LSR_OFFSET: usize = 5;
-const UART_IER_RX_AVAILABLE: u8 = 1 << 0;
-const UART_IER_THR_EMPTY: u8 = 1 << 1;
-const UART_LSR_DATA_READY: u8 = 1 << 0;
-const UART_LSR_THR_EMPTY: u8 = 1 << 5;
 
 impl VPlicGlobal {
     /// Reads the guest-visible priority of an interrupt source.
@@ -39,23 +31,47 @@ impl VPlicGlobal {
     }
 
     /// Updates the guest-visible priority for one interrupt source.
-    fn set_irq_priority(&self, irq_id: usize, priority: u32) {
+    fn set_irq_priority(&self, irq_id: usize, priority: u32) -> AxResult {
         self.priorities.lock()[irq_id] = priority;
+        let host_addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize() + PLIC_PRIORITY_OFFSET + irq_id * 4,
+        );
+        perform_mmio_write(host_addr, AccessWidth::Dword, priority as usize)
     }
 
     /// Updates one guest-visible enable register word.
-    fn set_context_enable_mask(&self, context_id: usize, reg_index: usize, val: u32) {
+    fn set_context_enable_mask(&self, context_id: usize, reg_index: usize, val: u32) -> AxResult {
         let mut enable_masks = self.enable_masks.lock();
         let mut val = val;
         if reg_index == 0 {
             val &= !1;
         }
         enable_masks[context_id][reg_index] = val;
+
+        let host_addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize()
+                + PLIC_ENABLE_OFFSET
+                + context_id * PLIC_ENABLE_STRIDE
+                + reg_index * 4,
+        );
+        let host_val = perform_mmio_read(host_addr, AccessWidth::Dword)? as u32;
+        // Keep host PLIC enables permissive for passthrough sources. Guest
+        // writes still update the virtual enable mask exactly, but a guest
+        // disable/probe write should not mask the physical IRQ line that the
+        // hypervisor depends on to inject the interrupt later.
+        perform_mmio_write(host_addr, AccessWidth::Dword, (host_val | val) as usize)
     }
 
     /// Updates the guest-visible priority threshold for one context.
-    fn set_context_threshold(&self, context_id: usize, threshold: u32) {
+    fn set_context_threshold(&self, context_id: usize, threshold: u32) -> AxResult {
         self.thresholds.lock()[context_id] = threshold;
+        let host_addr = HostPhysAddr::from_usize(
+            self.host_plic_addr.as_usize()
+                + PLIC_CONTEXT_CTRL_OFFSET
+                + context_id * PLIC_CONTEXT_STRIDE
+                + PLIC_CONTEXT_THRESHOLD_OFFSET,
+        );
+        perform_mmio_write(host_addr, AccessWidth::Dword, threshold as usize)
     }
 
     /// Returns pending interrupts that are not currently in service.
@@ -152,26 +168,6 @@ impl VPlicGlobal {
         true
     }
 
-    /// Polls a passthrough ns16550 UART for interrupt conditions that may not
-    /// surface through the host IRQ callback path in static mode.
-    fn poll_uart_irq(&self) -> AxResult<bool> {
-        let ier = perform_mmio_read(
-            HostPhysAddr::from_usize(UART_BASE + UART_IER_OFFSET),
-            AccessWidth::Byte,
-        )? as u8;
-        if ier & (UART_IER_RX_AVAILABLE | UART_IER_THR_EMPTY) == 0 {
-            return Ok(false);
-        }
-
-        let lsr = perform_mmio_read(
-            HostPhysAddr::from_usize(UART_BASE + UART_LSR_OFFSET),
-            AccessWidth::Byte,
-        )? as u8;
-        let rx_pending = (lsr & UART_LSR_DATA_READY) != 0;
-        let tx_pending = (ier & UART_IER_THR_EMPTY) != 0 && (lsr & UART_LSR_THR_EMPTY) != 0;
-        Ok((rx_pending || tx_pending) && self.queue_irq_if_inactive(UART_IRQ))
-    }
-
     /// Recomputes whether VSEIP should remain asserted for one context.
     fn sync_vseip(&self, context_id: usize) -> AxResult<()> {
         let Some(vcpu_id) = guest_supervisor_context_vcpu_id(context_id) else {
@@ -232,10 +228,6 @@ impl VPlicGlobal {
         )?;
         if !claimed_any && virtio_isr != 0 {
             claimed_any = self.queue_irq_if_inactive(VIRTIO_MMIO_IRQ);
-        }
-
-        if self.poll_uart_irq()? {
-            claimed_any = true;
         }
 
         if claimed_any {
@@ -369,7 +361,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             // priority
             PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
                 let irq_id = (reg - PLIC_PRIORITY_OFFSET) / 4;
-                self.set_irq_priority(irq_id, val as u32);
+                self.set_irq_priority(irq_id, val as u32)?;
                 self.sync_all_guest_contexts_vseip()
             }
             // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
@@ -405,7 +397,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     "Invalid context id {context_id}"
                 );
                 assert!(word < PLIC_SOURCE_WORDS, "Invalid enable word {word}");
-                self.set_context_enable_mask(context_id, word, val as u32);
+                self.set_context_enable_mask(context_id, word, val as u32)?;
                 // A mask update can instantly expose or hide already-pending IRQs.
                 self.sync_vseip(context_id)
             }
@@ -419,7 +411,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     context_id < self.contexts_num,
                     "Invalid context id {context_id}"
                 );
-                self.set_context_threshold(context_id, val as u32);
+                self.set_context_threshold(context_id, val as u32)?;
                 // Threshold changes must be reflected on the hart line immediately.
                 self.sync_vseip(context_id)
             }
