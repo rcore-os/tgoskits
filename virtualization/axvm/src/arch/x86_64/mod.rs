@@ -8,7 +8,10 @@ use axvm_types::{InterruptVector, VCpuId, VMId};
 use x86_vcpu::host::X86VcpuHostIf;
 use x86_vlapic::host::X86VlapicHostIf;
 
-use super::{ArchOps, VcpuCreateContext, VcpuRunAction, VcpuSetupContext};
+use super::{
+    ArchOps, BoundVcpuExit, LegacyDeferredRunWork, VcpuCreateContext, VcpuRunAction,
+    VcpuSetupContext,
+};
 use crate::{
     host::{HostConsole, HostMemory, HostTime, default_host},
     manager,
@@ -25,6 +28,7 @@ impl ArchOps for X86_64Arch {
     type VCpu = x86_vcpu::X86ArchVCpu;
     type PerCpu = x86_vcpu::X86ArchPerCpuState;
     type VcpuCreateState = X86VcpuCreateState;
+    type DeferredRunWork = LegacyDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
@@ -61,28 +65,36 @@ impl ArchOps for X86_64Arch {
         npt::NestedPageTable::new(levels)
     }
 
-    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::runtime::x86_irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
-    fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+    fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::runtime::x86_irq::drain_pending_ioapic_irqs(vm, vcpu);
         crate::runtime::x86_irq::activate_ready_ioapic_forwarding_routes(vm);
     }
 
-    fn after_external_interrupt(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef, vector: usize) {
+    fn after_external_interrupt(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vector: usize,
+    ) {
         crate::host::arceos::dispatch_host_irq(vector);
         crate::check_timer_events();
         crate::runtime::x86_irq::inject_pending_serial_irq(vm, vcpu);
     }
 
-    fn after_preemption_timer(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+    fn after_preemption_timer(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::timer::check_events();
         crate::runtime::x86_irq::inject_due_pit_irq0(vm, vcpu);
         crate::runtime::x86_irq::inject_pending_serial_irq(vm, vcpu);
     }
 
-    fn after_interrupt_end(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef, vector: Option<u8>) {
+    fn after_interrupt_end(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vector: Option<u8>,
+    ) {
         if let Some(vector) = vector {
             crate::runtime::x86_irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
         }
@@ -96,12 +108,20 @@ impl ArchOps for X86_64Arch {
         crate::runtime::x86_irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
     }
 
-    fn handle_vcpu_exit(
+    fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
         super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
+    }
+
+    fn finish_deferred_run_work(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        work: Self::DeferredRunWork,
+    ) -> AxResult<VcpuRunAction> {
+        super::finish_legacy_deferred_run_work::<Self>(vm, vcpu, work)
     }
 }
 

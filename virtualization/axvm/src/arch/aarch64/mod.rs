@@ -21,8 +21,9 @@ use axvm_types::{
 };
 
 use super::{
-    ArchOps, CpuUpExit, HypercallExit, MmioReadExit, MmioWriteExit, SendIpiExit, SysRegReadExit,
-    SysRegWriteExit, VcpuCreateContext, VcpuRunAction, VcpuSetupContext, target_phys_cpu_ids,
+    ArchOps, BoundVcpuExit, CpuUpExit, HypercallExit, MmioReadExit, MmioWriteExit, SendIpiExit,
+    SysRegReadExit, SysRegWriteExit, VcpuCreateContext, VcpuRunAction, VcpuSetupContext,
+    target_phys_cpu_ids,
 };
 use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
 
@@ -30,10 +31,16 @@ mod npt;
 
 pub(crate) struct Aarch64Arch;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Aarch64DeferredRunWork {
+    ExternalInterrupt { vector: usize },
+}
+
 impl ArchOps for Aarch64Arch {
     type VCpu = AxvmArmVcpu;
     type PerCpu = AxvmArmPerCpu;
     type VcpuCreateState = ();
+    type DeferredRunWork = Aarch64DeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
@@ -159,11 +166,11 @@ impl ArchOps for Aarch64Arch {
         targets
     }
 
-    fn handle_vcpu_exit(
+    fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -185,7 +192,7 @@ impl ArchOps for Aarch64Arch {
                     signed_ext,
                 },
             ),
-            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
+            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
                 MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
@@ -210,8 +217,11 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::ExternalInterrupt { vector } => {
                 debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Self::after_external_interrupt(vm, vcpu, vector as usize);
-                Ok(VcpuRunAction::Yield)
+                Ok(BoundVcpuExit::Defer(
+                    Aarch64DeferredRunWork::ExternalInterrupt {
+                        vector: vector as usize,
+                    },
+                ))
             }
             ArmVmExit::CpuDown { state } => {
                 warn!(
@@ -219,7 +229,7 @@ impl ArchOps for Aarch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(VcpuRunAction::Wait)
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::Wait))
             }
             ArmVmExit::CpuUp {
                 target_cpu,
@@ -236,7 +246,9 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(VcpuRunAction::Stop(crate::StopReason::SystemDown))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::Stop(
+                    crate::StopReason::SystemDown,
+                )))
             }
             ArmVmExit::SendIPI {
                 target_cpu,
@@ -255,9 +267,22 @@ impl ArchOps for Aarch64Arch {
                     vector,
                 },
             ),
-            ArmVmExit::Nothing => Ok(VcpuRunAction::Yield),
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
+    }
+
+    fn finish_deferred_run_work(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        work: Self::DeferredRunWork,
+    ) -> AxResult<VcpuRunAction> {
+        match work {
+            Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
+                Self::after_external_interrupt(vm, vcpu, vector);
+            }
+        }
+        Ok(VcpuRunAction::Yield)
     }
 }
 

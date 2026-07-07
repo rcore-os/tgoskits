@@ -30,7 +30,7 @@ use axvm_types::{
 };
 
 use crate::{
-    arch::{ArchNestedPageTable, ArchOps, CurrentArch, VcpuRunAction},
+    arch::ArchNestedPageTable,
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
@@ -51,7 +51,7 @@ const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 /// A vCPU with architecture-independent interface.
 type VCpu = AxVCpu<crate::arch::ArchVCpu>;
 /// A reference to a vCPU.
-pub(crate) type AxVCpuRef = Arc<VCpu>;
+pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
 
@@ -260,14 +260,14 @@ impl VmRuntimeHandle {
 impl AxVMResources {
     fn new(config: AxVMConfig) -> AxResult<Self> {
         let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-        let page_table_levels = CurrentArch::guest_page_table_levels(&vcpu_mappings)?;
-        let page_table = CurrentArch::new_nested_page_table(page_table_levels)?;
+        let page_table_levels = crate::arch::guest_page_table_levels(&vcpu_mappings)?;
+        let page_table = crate::arch::new_nested_page_table(page_table_levels)?;
         let address_space = AddrSpace::new_empty(
             page_table,
             GuestPhysAddr::from(VM_ASPACE_BASE),
             VM_ASPACE_SIZE,
         )?;
-        let nested_paging = CurrentArch::nested_paging_config(
+        let nested_paging = crate::arch::nested_paging_config(
             address_space.page_table_root(),
             page_table_levels,
             &vcpu_mappings,
@@ -769,21 +769,6 @@ impl AxVM {
             .unwrap_or(0)
     }
 
-    /// Assert a routed LoongArch platform IRQ in the guest interrupt model.
-    #[cfg(target_arch = "loongarch64")]
-    pub(crate) fn loongarch_external_irq_vector(
-        &self,
-        fallback_vector: usize,
-        _physical_irq: usize,
-    ) -> Option<usize> {
-        let devices = self.get_devices().ok()?;
-        match devices.loongarch_pch_pic_assert_irq(fallback_vector) {
-            Some(Some(vector)) => Some(vector),
-            Some(None) => None,
-            None => Some(fallback_vector),
-        }
-    }
-
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
     pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxResult {
         let mut pending = self.pending_fw_cfg.lock();
@@ -834,62 +819,6 @@ impl AxVM {
         Ok(())
     }
 
-    /// Runs a vCPU according to the given `vcpu_id` until the current
-    /// architecture reports a runtime action.
-    ///
-    /// ## Arguments
-    /// * `vcpu_id` - the id of the vCPU to run.
-    ///
-    /// ## Returns
-    /// * `VcpuRunAction` - the post-exit action selected by the current architecture.
-    pub(crate) fn run_vcpu(self: &Arc<Self>, vcpu_id: usize) -> AxResult<VcpuRunAction> {
-        let vm_id = self.id();
-        let vcpu = self
-            .vcpu(vcpu_id)
-            .ok_or_else(|| ax_err_type!(InvalidInput, "Invalid vcpu_id"))?;
-
-        match vcpu.state() {
-            VmVcpuState::Free => vcpu.bind()?,
-            VmVcpuState::Ready => {}
-            state => {
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not Free or Ready, but {state:?}")
-                );
-            }
-        }
-
-        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<VcpuRunAction> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
-
-                let exit = vcpu.run()?;
-                trace!("{exit:#x?}");
-                let action = CurrentArch::handle_vcpu_exit(self, &vcpu, exit)?;
-                if matches!(action, VcpuRunAction::Continue) {
-                    continue;
-                }
-                break Ok(action);
-            }
-        });
-
-        let unbind_result = vcpu.unbind();
-        match run_result {
-            Ok(exit_reason) => {
-                unbind_result?;
-                Ok(exit_reason)
-            }
-            Err(err) => {
-                if let Err(unbind_err) = unbind_result {
-                    warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}"
-                    );
-                }
-                Err(err)
-            }
-        }
-    }
-
     pub(crate) fn handle_mmio_write(
         &self,
         addr: GuestPhysAddr,
@@ -909,32 +838,7 @@ impl AxVM {
         }
 
         devices.handle_mmio_write(addr, width, data)?;
-        CurrentArch::after_mmio_write(self);
         Ok(())
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    pub(crate) fn drain_loongarch_pch_pic_events(&self) {
-        let Ok(devices) = self.get_devices() else {
-            return;
-        };
-        devices.drain_loongarch_pch_pic_events(|event| {
-            if !event.asserted {
-                trace!(
-                    "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
-                    self.id(),
-                    event.vector
-                );
-                return;
-            }
-            if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(self.id(), 0, event.vector) {
-                warn!(
-                    "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
-                    self.id(),
-                    event.vector
-                );
-            }
-        });
     }
 
     #[cfg(not(target_arch = "aarch64"))]

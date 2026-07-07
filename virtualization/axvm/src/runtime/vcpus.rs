@@ -129,7 +129,11 @@ pub(crate) fn queue_external_interrupt(
     Ok(())
 }
 
-pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCpuRef) {
+pub(crate) fn inject_pending_interrupts<A: ArchOps>(
+    vm_id: usize,
+    vcpu_id: usize,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+) {
     let Some(vm) = crate::get_vm_by_id(vm_id) else {
         warn!("VM[{vm_id}] not found, cannot drain VCpu[{vcpu_id}] interrupts");
         return;
@@ -141,7 +145,7 @@ pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCp
     };
 
     for interrupt in interrupts {
-        CurrentArch::inject_pending_interrupt(&vm, vcpu, interrupt);
+        A::inject_pending_interrupt(&vm, vcpu, interrupt);
     }
 }
 
@@ -299,11 +303,7 @@ fn vcpu_run() {
     loop {
         CurrentArch::before_vcpu_run(&vm, &vcpu);
 
-        match vm.run_vcpu(vcpu_id) {
-            Ok(VcpuRunAction::Continue) => continue,
-            Ok(VcpuRunAction::HostInterrupt(vector)) => {
-                CurrentArch::after_external_interrupt(&vm, &vcpu, vector);
-            }
+        match CurrentArch::run_vcpu(&vm, &vcpu) {
             Ok(VcpuRunAction::Yield) => {}
             Ok(VcpuRunAction::Wait) => wait(&runtime),
             Ok(VcpuRunAction::Stop(reason)) => {
