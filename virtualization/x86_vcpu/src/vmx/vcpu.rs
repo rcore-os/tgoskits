@@ -1630,6 +1630,7 @@ impl VmArchVcpuOps for VmxVcpu {
     type CreateConfig = X86VCpuCreateConfig;
 
     type SetupConfig = X86VCpuSetupConfig;
+    type Exit = VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
         Self::new(vm_id, vcpu_id)
@@ -1653,7 +1654,7 @@ impl VmArchVcpuOps for VmxVcpu {
         )
     }
 
-    fn run(&mut self) -> AxResult<VmExit> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 VmExit::FailEntry {

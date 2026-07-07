@@ -102,6 +102,7 @@ impl axvm_types::VmArchVcpuOps for RISCVVCpu {
     type CreateConfig = RISCVVCpuCreateConfig;
 
     type SetupConfig = ();
+    type Exit = VmExit;
 
     fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut regs = VmCpuRegisters::default();
@@ -180,7 +181,7 @@ impl axvm_types::VmArchVcpuOps for RISCVVCpu {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<VmExit> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         unsafe {
             sstatus::clear_sie();
             sie::set_sext();

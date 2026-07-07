@@ -285,7 +285,12 @@ pub struct NestedPageFaultInfo {
     pub fault_guest_paddr: GuestPhysAddr,
 }
 
-/// VM-exit reason returned by architecture vCPU implementations to AxVM.
+/// Legacy/common normalized VM event.
+///
+/// New AxVM architecture backends should expose their raw VM-exit type through
+/// [`VmArchVcpuOps::Exit`] and handle it inside their `axvm::arch` module.
+/// This enum remains for compatibility and as a transitional normalized event
+/// shape for backends that have not split out an architecture-owned exit enum.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum VmExit {
@@ -415,6 +420,8 @@ pub trait VmArchVcpuOps: Sized {
     type CreateConfig;
     /// Architecture-specific setup configuration.
     type SetupConfig;
+    /// Architecture-specific VM-exit type returned by [`Self::run`].
+    type Exit: Debug;
 
     /// Creates a new architecture-specific vCPU.
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxVmResult<Self>;
@@ -424,15 +431,20 @@ pub trait VmArchVcpuOps: Sized {
     fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxVmResult;
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> AxVmResult;
-    /// Runs the vCPU until a VM exit.
-    fn run(&mut self) -> AxVmResult<VmExit>;
+    /// Runs the vCPU until an architecture-specific VM exit.
+    fn run(&mut self) -> AxVmResult<Self::Exit>;
     /// Binds the vCPU to the current physical CPU.
     fn bind(&mut self) -> AxVmResult;
     /// Unbinds the vCPU from the current physical CPU.
     fn unbind(&mut self) -> AxVmResult;
     /// Sets a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
-    /// Decodes an architecture-specific memory fault as MMIO when possible.
+    /// Decodes an architecture-specific memory fault as a legacy normalized
+    /// MMIO event when possible.
+    ///
+    /// This is kept as a transition helper for backends that still route
+    /// device faults through [`VmExit`]. New raw vCPU exits should use
+    /// [`Self::Exit`] and be handled in the architecture-local AxVM adapter.
     fn decode_mmio_fault(
         &mut self,
         _fault_addr: GuestPhysAddr,
@@ -754,11 +766,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum MockExit {
+        SysRegRead { reg: usize },
+    }
+
     struct MockVcpu;
 
     impl VmArchVcpuOps for MockVcpu {
         type CreateConfig = ();
         type SetupConfig = ();
+        type Exit = MockExit;
 
         fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxVmResult<Self> {
             Ok(Self)
@@ -776,11 +794,8 @@ mod tests {
             Ok(())
         }
 
-        fn run(&mut self) -> AxVmResult<VmExit> {
-            Ok(VmExit::SysRegRead {
-                addr: SysRegAddr::from(0x10),
-                reg: 2,
-            })
+        fn run(&mut self) -> AxVmResult<Self::Exit> {
+            Ok(MockExit::SysRegRead { reg: 2 })
         }
 
         fn bind(&mut self) -> AxVmResult {
@@ -819,7 +834,7 @@ mod tests {
         vcpu.setup(()).unwrap();
         assert!(matches!(
             vcpu.run().unwrap(),
-            VmExit::SysRegRead { reg: 2, .. }
+            MockExit::SysRegRead { reg: 2 }
         ));
     }
 

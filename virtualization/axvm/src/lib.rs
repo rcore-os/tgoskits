@@ -42,9 +42,15 @@ use crate::arch::ArchOps;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
+/// Compatibility export for legacy/common normalized VM events.
+///
+/// Architecture-local raw exits are handled by `arch::CurrentArch` through
+/// `VmArchVcpuOps::Exit`; new code should not treat this as the universal raw
+/// vCPU exit type.
+pub use axvm_types::VmExit;
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
-    VMId, VmExit, VmVcpuState,
+    VMId, VmVcpuState,
 };
 pub(crate) use host::{
     paging::HostPagingHandler,

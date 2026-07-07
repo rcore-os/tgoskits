@@ -26,12 +26,11 @@ use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmArchVcpuOps,
-    VmExit, VmVcpuState,
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
 
 use crate::{
-    arch::{ArchNestedPageTable, ArchOps, CurrentArch},
+    arch::{ArchNestedPageTable, ArchOps, CurrentArch, VcpuRunAction},
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
@@ -67,7 +66,7 @@ pub struct VcpuSnapshot {
     pub phys_cpu_set: Option<usize>,
 }
 
-fn width_mask(width: AccessWidth) -> usize {
+pub(crate) fn width_mask(width: AccessWidth) -> usize {
     match width {
         AccessWidth::Byte => 0xff,
         AccessWidth::Word => 0xffff,
@@ -76,7 +75,7 @@ fn width_mask(width: AccessWidth) -> usize {
     }
 }
 
-fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
+pub(crate) fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
     match width {
         AccessWidth::Byte => (value as i8) as isize as usize,
         AccessWidth::Word => (value as i16) as isize as usize,
@@ -835,14 +834,15 @@ impl AxVM {
         Ok(())
     }
 
-    /// Run a vCPU according to the given vcpu_id.
+    /// Runs a vCPU according to the given `vcpu_id` until the current
+    /// architecture reports a runtime action.
     ///
     /// ## Arguments
     /// * `vcpu_id` - the id of the vCPU to run.
     ///
     /// ## Returns
-    /// * `VmExit` - the exit reason of the vCPU, wrapped in an `AxResult`.
-    pub fn run_vcpu(&self, vcpu_id: usize) -> AxResult<VmExit> {
+    /// * `VcpuRunAction` - the post-exit action selected by the current architecture.
+    pub(crate) fn run_vcpu(self: &Arc<Self>, vcpu_id: usize) -> AxResult<VcpuRunAction> {
         let vm_id = self.id();
         let vcpu = self
             .vcpu(vcpu_id)
@@ -859,88 +859,17 @@ impl AxVM {
             }
         }
 
-        let devices = self.get_devices()?;
-        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<VmExit> {
+        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<VcpuRunAction> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
 
-                let exit_reason = vcpu.run()?;
-                trace!("{exit_reason:#x?}");
-                match exit_reason {
-                    VmExit::MmioRead {
-                        addr,
-                        width,
-                        reg,
-                        reg_width,
-                        signed_ext,
-                    } => {
-                        let raw = devices.handle_mmio_read(addr, width)?;
-                        let masked = raw & width_mask(width);
-                        let val = if signed_ext {
-                            sign_extend_value(masked, width)
-                        } else {
-                            masked & width_mask(reg_width)
-                        };
-                        vcpu.set_gpr(reg, val);
-                    }
-                    VmExit::MmioWrite { addr, width, data } => {
-                        self.handle_mmio_write(addr, width, data as usize)?;
-                    }
-                    VmExit::IoRead { port, width } => {
-                        let val = devices.handle_port_read(port, width)?;
-                        CurrentArch::set_io_read_result(&vcpu, val);
-                    }
-                    VmExit::IoWrite { port, width, data } => {
-                        devices.handle_port_write(port, width, data as usize)?;
-                    }
-                    VmExit::SysRegRead { addr, reg } => {
-                        let val = devices.handle_sys_reg_read(
-                            addr,
-                            // Generally speaking, the width of system register is fixed and needless to be specified.
-                            // AccessWidth::Qword here is just a placeholder, may be changed in the future.
-                            AccessWidth::Qword,
-                        )?;
-                        vcpu.set_gpr(reg, val);
-                    }
-                    VmExit::SysRegWrite { addr, value } => {
-                        devices.handle_sys_reg_write(addr, AccessWidth::Qword, value as usize)?;
-                    }
-                    VmExit::NestedPageFault { addr, access_flags } => {
-                        if devices.find_mmio_dev(addr).is_some() {
-                            if let Some(mmio_exit) =
-                                vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags)
-                            {
-                                match mmio_exit {
-                                    VmExit::MmioRead {
-                                        addr,
-                                        width,
-                                        reg,
-                                        reg_width,
-                                        signed_ext,
-                                    } => {
-                                        let raw = devices.handle_mmio_read(addr, width)?;
-                                        let masked = raw & width_mask(width);
-                                        let val = if signed_ext {
-                                            sign_extend_value(masked, width)
-                                        } else {
-                                            masked & width_mask(reg_width)
-                                        };
-                                        vcpu.set_gpr(reg, val);
-                                    }
-                                    VmExit::MmioWrite { addr, width, data } => {
-                                        self.handle_mmio_write(addr, width, data as usize)?;
-                                    }
-                                    exit_reason => break Ok(exit_reason),
-                                }
-                            } else {
-                                break Ok(VmExit::NestedPageFault { addr, access_flags });
-                            }
-                        } else if !self.handle_nested_page_fault(addr, access_flags) {
-                            break Ok(VmExit::NestedPageFault { addr, access_flags });
-                        }
-                    }
-                    exit_reason => break Ok(exit_reason),
+                let exit = vcpu.run()?;
+                trace!("{exit:#x?}");
+                let action = CurrentArch::handle_vcpu_exit(self, &vcpu, exit)?;
+                if matches!(action, VcpuRunAction::Continue) {
+                    continue;
                 }
+                break Ok(action);
             }
         });
 
@@ -961,7 +890,12 @@ impl AxVM {
         }
     }
 
-    fn handle_mmio_write(&self, addr: GuestPhysAddr, width: AccessWidth, data: usize) -> AxResult {
+    pub(crate) fn handle_mmio_write(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        data: usize,
+    ) -> AxResult {
         let devices = self.get_devices()?;
         if let Some(fw_cfg) = devices.fw_cfg_for_dma_addr(addr) {
             if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
@@ -1003,7 +937,12 @@ impl AxVM {
         });
     }
 
-    fn handle_nested_page_fault(&self, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {
+    #[cfg(not(target_arch = "aarch64"))]
+    pub(crate) fn handle_nested_page_fault(
+        &self,
+        addr: GuestPhysAddr,
+        access_flags: MappingFlags,
+    ) -> bool {
         self.with_resources_mut(|resources| {
             let handled = resources
                 .address_space
@@ -1014,6 +953,7 @@ impl AxVM {
         .unwrap_or(false)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn debug_nested_page_fault(
         vm_id: usize,
         resources: &AxVMResources,

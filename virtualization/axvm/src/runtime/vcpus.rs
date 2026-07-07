@@ -17,8 +17,8 @@ use alloc::format;
 use ax_errno::{AxResult, ax_err_type};
 
 use crate::{
-    AsVCpuTask, GuestPhysAddr, StopReason, VCpuTask, VmExit, VmStatus, VmVcpuState,
-    arch::{ArchOps, CurrentArch},
+    AsVCpuTask, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
+    arch::{ArchOps, CurrentArch, VcpuRunAction},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
 };
@@ -184,7 +184,12 @@ fn mark_vcpu_running(vm: &VMRef) {
 /// * `vcpu_id` - The ID of the VCpu to be booted.
 /// * `entry_point` - The entry point of the VCpu.
 /// * `arg` - The argument to be passed to the VCpu.
-fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) -> AxResult {
+pub(crate) fn vcpu_on(
+    vm: VMRef,
+    vcpu_id: usize,
+    entry_point: GuestPhysAddr,
+    arg: usize,
+) -> AxResult {
     let vcpu = vm
         .vcpu_list()
         .get(vcpu_id)
@@ -292,152 +297,21 @@ fn vcpu_run() {
     mark_vcpu_running(&vm);
 
     loop {
-        inject_pending_interrupts(vm_id, vcpu_id, &vcpu);
         CurrentArch::before_vcpu_run(&vm, &vcpu);
 
         match vm.run_vcpu(vcpu_id) {
-            Ok(exit_reason) => match exit_reason {
-                VmExit::Hypercall { nr, args } => {
-                    debug!("Hypercall [{nr}] args {args:x?}");
-                    use crate::runtime::hvc::HyperCall;
-
-                    match HyperCall::new(vm.clone(), nr, args) {
-                        Ok(hypercall) => {
-                            let ret_val = match hypercall.execute() {
-                                Ok(ret_val) => ret_val as isize,
-                                Err(err) => {
-                                    warn!("Hypercall [{nr:#x}] failed: {err:?}");
-                                    -1
-                                }
-                            };
-                            vcpu.set_return_value(ret_val as usize);
-                        }
-                        Err(err) => {
-                            warn!("Hypercall [{nr:#x}] failed: {err:?}");
-                        }
-                    }
+            Ok(VcpuRunAction::Continue) => continue,
+            Ok(VcpuRunAction::HostInterrupt(vector)) => {
+                CurrentArch::after_external_interrupt(&vm, &vcpu, vector);
+            }
+            Ok(VcpuRunAction::Yield) => {}
+            Ok(VcpuRunAction::Wait) => wait(&runtime),
+            Ok(VcpuRunAction::Stop(reason)) => {
+                if let Err(err) = vm.stop(reason) {
+                    warn!("VM[{vm_id}] shutdown failed: {err:?}");
                 }
-                VmExit::FailEntry {
-                    hardware_entry_failure_reason,
-                } => {
-                    warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] run failed with exit code \
-                         {hardware_entry_failure_reason}"
-                    );
-                }
-                VmExit::ExternalInterrupt { vector } => {
-                    debug!("VM[{vm_id}] run VCpu[{vcpu_id}] get irq {vector}");
-                    CurrentArch::after_external_interrupt(&vm, &vcpu, vector as usize);
-                }
-                VmExit::PreemptionTimer => {
-                    CurrentArch::after_preemption_timer(&vm, &vcpu);
-                }
-                VmExit::InterruptEnd { vector } => {
-                    CurrentArch::after_interrupt_end(&vm, &vcpu, vector);
-                }
-                VmExit::Halt => {
-                    debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
-                    if CurrentArch::handle_halt(&runtime) {
-                        continue;
-                    }
-                }
-                VmExit::Idle => {
-                    trace!("VM[{vm_id}] run VCpu[{vcpu_id}] Idle");
-                    CurrentArch::handle_idle(&vm, &vcpu);
-                }
-                VmExit::Nothing => {}
-                VmExit::CpuDown { _state } => {
-                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] CpuDown state {_state:#x}");
-                    wait(&runtime)
-                }
-                VmExit::CpuUp {
-                    target_cpu,
-                    entry_point,
-                    arg,
-                } => {
-                    info!(
-                        "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{target_cpu}] \
-                         entry_point={entry_point:x} arg={arg:#x}"
-                    );
-
-                    // Get the mapping relationship between all vCPUs and physical CPUs from the configuration
-                    let vcpu_mappings = vm.get_vcpu_affinities_pcpu_ids();
-
-                    // Find the vCPU ID corresponding to the physical ID
-                    let Some(target_vcpu_id) =
-                        vcpu_mappings.iter().find_map(|(vcpu_id, _, phys_id)| {
-                            (*phys_id == target_cpu as usize).then_some(*vcpu_id)
-                        })
-                    else {
-                        warn!("Physical CPU ID {target_cpu} not found in VM configuration");
-                        vcpu.set_return_value(usize::MAX);
-                        continue;
-                    };
-
-                    match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
-                        Ok(()) => {
-                            CurrentArch::set_cpu_up_success(&vcpu);
-                        }
-                        Err(err) => {
-                            warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
-                            vcpu.set_return_value(usize::MAX);
-                        }
-                    }
-                }
-                VmExit::SystemDown => {
-                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] SystemDown");
-                    if let Err(err) = vm.stop(StopReason::SystemDown) {
-                        warn!("VM[{vm_id}] shutdown failed: {err:?}");
-                    }
-                    // Notify all vCPUs to wake up to check the shutdown flag
-                    notify_all_vcpus(vm_id);
-                }
-                VmExit::SendIPI {
-                    target_cpu,
-                    target_cpu_aux,
-                    send_to_all,
-                    send_to_self,
-                    vector,
-                } => {
-                    debug!(
-                        "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
-                         target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
-                    );
-                    let targets = CurrentArch::ipi_targets(
-                        &vm,
-                        vcpu_id,
-                        target_cpu,
-                        target_cpu_aux,
-                        send_to_all,
-                        send_to_self,
-                    );
-                    if targets.is_empty() {
-                        warn!(
-                            "VM[{vm_id}] SendIPI has no target: target_cpu={target_cpu:#x}, \
-                             target_cpu_aux={target_cpu_aux:#x}"
-                        );
-                        continue;
-                    }
-
-                    if targets.get(vcpu_id) {
-                        crate::inject_current_vcpu_interrupt(vector as _)
-                            .expect("failed to inject self IPI into current vCPU");
-                    }
-                    let mut remote_targets = targets;
-                    remote_targets.set(vcpu_id, false);
-                    if !remote_targets.is_empty()
-                        && let Err(err) = vm.inject_interrupt_to_vcpu(remote_targets, vector as _)
-                    {
-                        warn!(
-                            "Failed to inject interrupt {vector} to VM[{vm_id}] targets \
-                             {remote_targets:?}: {err:?}"
-                        );
-                    }
-                }
-                e => {
-                    warn!("VM[{vm_id}] run VCpu[{vcpu_id}] unhandled vmexit: {e:?}");
-                }
-            },
+                notify_all_vcpus(vm_id);
+            }
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {

@@ -8,7 +8,7 @@ use axvm_types::{InterruptVector, VCpuId, VMId};
 use x86_vcpu::host::X86VcpuHostIf;
 use x86_vlapic::host::X86VlapicHostIf;
 
-use super::{ArchOps, VcpuCreateContext, VcpuSetupContext};
+use super::{ArchOps, VcpuCreateContext, VcpuRunAction, VcpuSetupContext};
 use crate::{
     host::{HostConsole, HostMemory, HostTime, default_host},
     manager,
@@ -88,12 +88,20 @@ impl ArchOps for X86_64Arch {
         }
     }
 
-    fn handle_halt(_runtime: &crate::vm::VmRuntimeHandle) -> bool {
-        true
+    fn handle_halt() -> VcpuRunAction {
+        VcpuRunAction::Yield
     }
 
     fn on_last_vcpu_exit(vm_id: usize) {
         crate::runtime::x86_irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
+    }
+
+    fn handle_vcpu_exit(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef,
+        exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
+    ) -> AxResult<VcpuRunAction> {
+        super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
     }
 }
 

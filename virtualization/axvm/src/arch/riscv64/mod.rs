@@ -8,7 +8,8 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, host::RiscvVcpuHostIf};
 use riscv_vplic::host::RiscvVplicHostIf;
 
 use super::{
-    ArchOps, VcpuCreateContext, VcpuSetupContext, default_vcpu_affinities, target_phys_cpu_ids,
+    ArchOps, VcpuCreateContext, VcpuRunAction, VcpuSetupContext, default_vcpu_affinities,
+    target_phys_cpu_ids,
 };
 use crate::host::{HostMemory, default_host};
 
@@ -131,6 +132,14 @@ impl ArchOps for Riscv64Arch {
             vcpu.get_arch_vcpu().latch_hvip_from_hw();
         });
         crate::check_timer_events();
+    }
+
+    fn handle_vcpu_exit(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef,
+        exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
+    ) -> AxResult<VcpuRunAction> {
+        super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
     }
 }
 

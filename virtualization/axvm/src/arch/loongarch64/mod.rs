@@ -6,7 +6,7 @@ use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use loongarch_vcpu::host::LoongArchVcpuHostIf;
 
-use super::{ArchOps, VcpuCreateContext, VcpuSetupContext};
+use super::{ArchOps, VcpuCreateContext, VcpuRunAction, VcpuSetupContext};
 use crate::host::{HostMemory, HostTime, default_host};
 
 mod npt;
@@ -148,6 +148,14 @@ impl ArchOps for LoongArch64Arch {
         ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
         ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
         ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
+    }
+
+    fn handle_vcpu_exit(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef,
+        exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
+    ) -> AxResult<VcpuRunAction> {
+        super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
