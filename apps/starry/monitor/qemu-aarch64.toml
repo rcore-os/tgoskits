@@ -1,0 +1,16 @@
+# monitor aarch64 -- Prometheus stack + glances carpet.
+# -cpu max exposes the full AArch64 feature set (LSE atomics etc.); the arm64 Go runtime cpu probe
+# reads EL0 MRS ID_AA64* (kernel-emulated). uefi=false / to_bin=true is the aarch64 raw-binary boot.
+args = [
+    "-nographic", "-cpu", "max", "-m", "2048M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-monitor.sh"
+success_regex = ['(?m)^MONITOR_OK=8/8', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000
