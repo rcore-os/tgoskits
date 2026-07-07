@@ -35,7 +35,7 @@ mod fdt;
 pub mod msi;
 pub(crate) use acpi::acpi_irq_for_endpoint;
 pub(crate) use fdt::fdt_irq_for_endpoint;
-pub use msi::{PciMsiTarget, PciMsixAllocation};
+pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]

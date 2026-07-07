@@ -163,6 +163,12 @@ pub fn irq_set_affinity(
     if irq.hwirq.0 < 32 {
         return Err(crate::irq::IrqError::Unsupported);
     }
+    if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
+        return match affinity {
+            crate::irq::IrqAffinity::Any => Ok(()),
+            crate::irq::IrqAffinity::Fixed { .. } => Err(crate::irq::IrqError::Unsupported),
+        };
+    }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
         crate::irq::IrqAffinity::Fixed { cpu_id } => {

@@ -45,16 +45,26 @@ pub enum IrqDomainKind {
     LoongArchEioIntc,
     LoongArchPchPic,
     LoongArchLioIntc,
+    MsiParent,
+    PciMsix,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IrqDomain {
     pub id: IrqDomainId,
     pub owner: DeviceId,
+    pub parent: Option<IrqDomainId>,
     pub kind: IrqDomainKind,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IrqRoute {
+    parent: IrqId,
+    leaf: IrqId,
+}
+
 static IRQ_DOMAINS: Mutex<Vec<IrqDomain>> = Mutex::new(Vec::new());
+static IRQ_ROUTES: Mutex<Vec<IrqRoute>> = Mutex::new(Vec::new());
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -71,17 +81,73 @@ pub fn register_irq_domain(
     preferred: Option<IrqDomainId>,
     kind: IrqDomainKind,
 ) -> Result<IrqDomainId, IrqError> {
-    let mut domains = IRQ_DOMAINS.lock();
-    if let Some(domain) = domains.iter().find(|domain| domain.owner == owner) {
-        return if domain.kind == kind {
-            Ok(domain.id)
-        } else {
-            Err(IrqError::Busy)
-        };
-    }
+    register_domain(owner, preferred, None, kind)
+}
 
-    if domains.iter().any(|domain| domain.kind == kind) {
-        return Err(IrqError::Unsupported);
+pub fn alloc_child_irq_domain(
+    owner: DeviceId,
+    parent: IrqDomainId,
+    kind: IrqDomainKind,
+) -> Result<IrqDomainId, IrqError> {
+    register_child_irq_domain(owner, None, parent, kind)
+}
+
+pub fn register_child_irq_domain(
+    owner: DeviceId,
+    preferred: Option<IrqDomainId>,
+    parent: IrqDomainId,
+    kind: IrqDomainKind,
+) -> Result<IrqDomainId, IrqError> {
+    register_domain(owner, preferred, Some(parent), kind)
+}
+
+fn register_domain(
+    owner: DeviceId,
+    preferred: Option<IrqDomainId>,
+    parent: Option<IrqDomainId>,
+    kind: IrqDomainKind,
+) -> Result<IrqDomainId, IrqError> {
+    let mut domains = IRQ_DOMAINS.lock();
+
+    match parent {
+        Some(parent) => {
+            if domain_slot(kind).is_some() {
+                return Err(IrqError::Unsupported);
+            }
+            if !domains.iter().any(|domain| domain.id == parent) {
+                return Err(IrqError::InvalidIrq);
+            }
+            if let Some(domain) = domains.iter().find(|domain| {
+                domain.owner == owner && domain.parent == Some(parent) && domain.kind == kind
+            }) {
+                return match preferred {
+                    Some(preferred) if preferred != domain.id => Err(IrqError::Busy),
+                    _ => Ok(domain.id),
+                };
+            }
+        }
+        None => {
+            if domain_slot(kind).is_none() {
+                return Err(IrqError::Unsupported);
+            }
+            if let Some(domain) = domains
+                .iter()
+                .find(|domain| domain.owner == owner && domain.parent.is_none())
+            {
+                return if domain.kind == kind {
+                    Ok(domain.id)
+                } else {
+                    Err(IrqError::Busy)
+                };
+            }
+
+            if domains
+                .iter()
+                .any(|domain| domain.parent.is_none() && domain.kind == kind)
+            {
+                return Err(IrqError::Unsupported);
+            }
+        }
     }
 
     let id = match preferred {
@@ -97,19 +163,27 @@ pub fn register_irq_domain(
         None => next_dynamic_domain(&domains)?,
     };
 
-    domains.push(IrqDomain { id, owner, kind });
-    domain_slot(kind).store(id.0, Ordering::Release);
+    domains.push(IrqDomain {
+        id,
+        owner,
+        parent,
+        kind,
+    });
+    if let Some(slot) = domain_slot(kind) {
+        slot.store(id.0, Ordering::Release);
+    }
     Ok(id)
 }
 
-fn domain_slot(kind: IrqDomainKind) -> &'static AtomicU16 {
+fn domain_slot(kind: IrqDomainKind) -> Option<&'static AtomicU16> {
     match kind {
-        IrqDomainKind::X86IoApic => &X86_IOAPIC_DOMAIN_SLOT,
-        IrqDomainKind::AArch64Gic => &AARCH64_GIC_DOMAIN_SLOT,
-        IrqDomainKind::RiscvPlic => &RISCV_PLIC_DOMAIN_SLOT,
-        IrqDomainKind::LoongArchEioIntc => &LOONGARCH_EIOINTC_DOMAIN_SLOT,
-        IrqDomainKind::LoongArchPchPic => &LOONGARCH_PCH_PIC_DOMAIN_SLOT,
-        IrqDomainKind::LoongArchLioIntc => &LOONGARCH_LIOINTC_DOMAIN_SLOT,
+        IrqDomainKind::X86IoApic => Some(&X86_IOAPIC_DOMAIN_SLOT),
+        IrqDomainKind::AArch64Gic => Some(&AARCH64_GIC_DOMAIN_SLOT),
+        IrqDomainKind::RiscvPlic => Some(&RISCV_PLIC_DOMAIN_SLOT),
+        IrqDomainKind::LoongArchEioIntc => Some(&LOONGARCH_EIOINTC_DOMAIN_SLOT),
+        IrqDomainKind::LoongArchPchPic => Some(&LOONGARCH_PCH_PIC_DOMAIN_SLOT),
+        IrqDomainKind::LoongArchLioIntc => Some(&LOONGARCH_LIOINTC_DOMAIN_SLOT),
+        IrqDomainKind::MsiParent | IrqDomainKind::PciMsix => None,
     }
 }
 
@@ -136,10 +210,11 @@ pub fn domain_by_id(id: IrqDomainId) -> Option<IrqDomain> {
 }
 
 pub fn domain_by_owner(owner: DeviceId) -> Option<IrqDomain> {
-    IRQ_DOMAINS
-        .lock()
+    let domains = IRQ_DOMAINS.lock();
+    domains
         .iter()
-        .find(|domain| domain.owner == owner)
+        .find(|domain| domain.owner == owner && domain.parent.is_none())
+        .or_else(|| domains.iter().find(|domain| domain.owner == owner))
         .copied()
 }
 
@@ -148,14 +223,18 @@ pub fn domain_by_kind(kind: IrqDomainKind) -> Option<IrqDomain> {
 }
 
 pub fn domain_by_kind_fast(kind: IrqDomainKind) -> Option<IrqDomainId> {
-    match domain_slot(kind).load(Ordering::Acquire) {
+    let slot = domain_slot(kind)?;
+    match slot.load(Ordering::Acquire) {
         INVALID_IRQ_DOMAIN => None,
         id => Some(IrqDomainId(id)),
     }
 }
 
 pub fn domain_is_kind(id: IrqDomainId, kind: IrqDomainKind) -> bool {
-    domain_by_kind_fast(kind) == Some(id)
+    if domain_slot(kind).is_some() {
+        return domain_by_kind_fast(kind) == Some(id);
+    }
+    domain_by_id(id).is_some_and(|domain| domain.kind == kind)
 }
 
 pub fn intc_by_domain(domain: IrqDomainId) -> Result<Device<Intc>, IrqError> {
@@ -176,8 +255,93 @@ pub struct ActiveIrq {
 
 impl ActiveIrq {
     pub fn id(&self) -> IrqId {
-        Plat::active_irq_id(&self.inner)
+        resolve_irq_route(Plat::active_irq_id(&self.inner))
     }
+}
+
+pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
+    if parent == leaf {
+        return Err(IrqError::InvalidIrq);
+    }
+
+    let domains = IRQ_DOMAINS.lock();
+    if !domains.iter().any(|domain| domain.id == parent.domain)
+        || !domain_has_strict_ancestor(&domains, leaf.domain, parent.domain)
+    {
+        return Err(IrqError::InvalidIrq);
+    }
+    drop(domains);
+
+    let mut routes = IRQ_ROUTES.lock();
+    if let Some(route) = routes.iter().find(|route| route.parent == parent) {
+        return if route.leaf == leaf {
+            Ok(())
+        } else {
+            Err(IrqError::Busy)
+        };
+    }
+    if routes.iter().any(|route| route.leaf == leaf) {
+        return Err(IrqError::Busy);
+    }
+    routes.push(IrqRoute { parent, leaf });
+    Ok(())
+}
+
+fn domain_has_strict_ancestor(
+    domains: &[IrqDomain],
+    child: IrqDomainId,
+    ancestor: IrqDomainId,
+) -> bool {
+    let mut next = domains
+        .iter()
+        .find(|domain| domain.id == child)
+        .and_then(|domain| domain.parent);
+    for _ in 0..domains.len() {
+        let Some(id) = next else {
+            return false;
+        };
+        if id == ancestor {
+            return true;
+        }
+        next = domains
+            .iter()
+            .find(|domain| domain.id == id)
+            .and_then(|domain| domain.parent);
+    }
+    false
+}
+
+pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
+    let mut routes = IRQ_ROUTES.lock();
+    let Some(index) = routes
+        .iter()
+        .position(|route| route.parent == parent && route.leaf == leaf)
+    else {
+        return Err(IrqError::InvalidIrq);
+    };
+    routes.swap_remove(index);
+    Ok(())
+}
+
+/// Resolves a controller IRQ claimed in hard-IRQ context to its leaf IRQ.
+///
+/// Route mutation is a control-plane operation performed while the source is
+/// masked or before it is enabled. The interrupt path only reads the stable
+/// mapping and never performs rdrive lookup, allocation, or free.
+pub fn resolve_irq_route(parent: IrqId) -> IrqId {
+    IRQ_ROUTES
+        .lock()
+        .iter()
+        .find(|route| route.parent == parent)
+        .map_or(parent, |route| route.leaf)
+}
+
+pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
+    IRQ_ROUTES
+        .lock()
+        .iter()
+        .find(|route| route.leaf == leaf)
+        .map(|route| route.parent)
 }
 
 /// Target specification for inter-processor interrupts.
@@ -248,11 +412,11 @@ pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> Result<IrqId,
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
     debug!("Setting IRQ {:?} enable to {}", irq, enable);
-    Plat::irq_set_enable(irq, enable)
+    Plat::irq_set_enable(parent_irq_for_leaf(irq).unwrap_or(irq), enable)
 }
 
 pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
-    Plat::irq_set_affinity(irq, affinity)
+    Plat::irq_set_affinity(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
 }
 
 pub fn send_ipi(irq: IrqId, target: IpiTarget) {
@@ -297,6 +461,7 @@ mod tests {
 
     fn reset_domains() {
         IRQ_DOMAINS.lock().clear();
+        IRQ_ROUTES.lock().clear();
         for kind in [
             IrqDomainKind::X86IoApic,
             IrqDomainKind::AArch64Gic,
@@ -305,7 +470,9 @@ mod tests {
             IrqDomainKind::LoongArchPchPic,
             IrqDomainKind::LoongArchLioIntc,
         ] {
-            domain_slot(kind).store(INVALID_IRQ_DOMAIN, Ordering::Release);
+            domain_slot(kind)
+                .unwrap()
+                .store(INVALID_IRQ_DOMAIN, Ordering::Release);
         }
     }
 
@@ -385,5 +552,103 @@ mod tests {
                 Err(IrqError::InvalidIrq)
             );
         }
+    }
+
+    #[test]
+    fn child_domains_allow_multiple_instances_of_same_kind() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let root_owner = DeviceId::new();
+        let parent = alloc_irq_domain(root_owner, IrqDomainKind::AArch64Gic).unwrap();
+        let child_a =
+            alloc_child_irq_domain(DeviceId::new(), parent, IrqDomainKind::PciMsix).unwrap();
+        let child_b =
+            alloc_child_irq_domain(DeviceId::new(), parent, IrqDomainKind::PciMsix).unwrap();
+
+        assert_ne!(child_a, child_b);
+        assert_eq!(domain_by_id(child_a).unwrap().parent, Some(parent));
+        assert_eq!(domain_by_id(child_b).unwrap().parent, Some(parent));
+        assert_eq!(domain_by_id(parent).unwrap().parent, None);
+    }
+
+    #[test]
+    fn child_domain_allocation_is_idempotent_for_owner_parent_and_kind() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let root_owner = DeviceId::new();
+        let child_owner = DeviceId::new();
+        let parent = alloc_irq_domain(root_owner, IrqDomainKind::AArch64Gic).unwrap();
+        let child = alloc_child_irq_domain(child_owner, parent, IrqDomainKind::PciMsix).unwrap();
+
+        assert_eq!(
+            alloc_child_irq_domain(child_owner, parent, IrqDomainKind::PciMsix),
+            Ok(child)
+        );
+        assert_eq!(
+            register_child_irq_domain(
+                child_owner,
+                Some(IrqDomainId(42)),
+                parent,
+                IrqDomainKind::PciMsix
+            ),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(domain_by_kind(IrqDomainKind::PciMsix), None);
+    }
+
+    #[test]
+    fn irq_routes_resolve_parent_lpi_to_leaf_irq_and_can_be_removed() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let parent_domain = alloc_irq_domain(DeviceId::new(), IrqDomainKind::AArch64Gic).unwrap();
+        let leaf_domain =
+            alloc_child_irq_domain(DeviceId::new(), parent_domain, IrqDomainKind::PciMsix).unwrap();
+        let parent_irq = IrqId::new(parent_domain, HwIrq(8192));
+        let leaf_irq = IrqId::new(leaf_domain, HwIrq(0));
+
+        assert_eq!(resolve_irq_route(parent_irq), parent_irq);
+        map_irq_route(parent_irq, leaf_irq).unwrap();
+        assert_eq!(resolve_irq_route(parent_irq), leaf_irq);
+        assert_eq!(parent_irq_for_leaf(leaf_irq), Some(parent_irq));
+        assert_eq!(map_irq_route(parent_irq, leaf_irq), Ok(()));
+        assert_eq!(
+            map_irq_route(parent_irq, IrqId::new(leaf_domain, HwIrq(1))),
+            Err(IrqError::Busy)
+        );
+
+        assert_eq!(unmap_irq_route(parent_irq, leaf_irq), Ok(()));
+        assert_eq!(resolve_irq_route(parent_irq), parent_irq);
+        assert_eq!(parent_irq_for_leaf(leaf_irq), None);
+        assert_eq!(
+            unmap_irq_route(parent_irq, leaf_irq),
+            Err(IrqError::InvalidIrq)
+        );
+    }
+
+    #[test]
+    fn irq_route_rejects_leaf_outside_parent_domain_chain() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let gic_domain = alloc_irq_domain(DeviceId::new(), IrqDomainKind::AArch64Gic).unwrap();
+        let plic_domain = register_irq_domain(
+            DeviceId::new(),
+            Some(IrqDomainId(42)),
+            IrqDomainKind::RiscvPlic,
+        )
+        .unwrap();
+        let leaf_domain =
+            alloc_child_irq_domain(DeviceId::new(), plic_domain, IrqDomainKind::PciMsix).unwrap();
+
+        assert_eq!(
+            map_irq_route(
+                IrqId::new(gic_domain, HwIrq(8192)),
+                IrqId::new(leaf_domain, HwIrq(0))
+            ),
+            Err(IrqError::InvalidIrq)
+        );
     }
 }
