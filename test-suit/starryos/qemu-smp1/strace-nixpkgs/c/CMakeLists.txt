@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(strace-nixpkgs C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-strace-nix src/main.c)
+target_compile_options(test-strace-nix PRIVATE -Wall -Wextra -Werror)
+target_link_options(test-strace-nix PRIVATE -static)
+install(TARGETS test-strace-nix RUNTIME DESTINATION usr/bin/starry-test-suit)
+# Also install the test script
+install(PROGRAMS strace-nixpkgs.sh DESTINATION usr/bin/starry-test-suit)

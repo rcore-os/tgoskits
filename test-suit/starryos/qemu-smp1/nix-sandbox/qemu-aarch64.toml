@@ -1,0 +1,204 @@
+# Standalone QEMU config for StarryOS sandboxed Nix build test (aarch64).
+#
+# Same diagnostic script as qemu-x86_64.toml but for aarch64.
+#
+# Run:
+#   cargo xtask starry test qemu --arch aarch64 -c qemu-smp1/nix-sandbox
+#
+# Memory: 2G minimum for nix + sandbox builder overhead.
+# Timeout: 600s to allow apk download and nix build.
+
+args = [
+    "-nographic",
+    "-machine",
+    "virt,gic-version=3,its=on",
+    "-cpu",
+    "cortex-a53",
+    "-m",
+    "2048",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+fail() { echo "NIX_SANDBOX_ERROR: $1"; echo "NIX_SANDBOX_TEST_FAILED"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Phase 1: install nix via apk
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_PHASE_APK_BEGIN'
+for mirror in \
+    https://mirrors.cernet.edu.cn/alpine \
+    https://dl-cdn.alpinelinux.org/alpine; do
+    cat > /etc/apk/repositories <<EOF
+$mirror/v3.22/main
+$mirror/v3.22/community
+EOF
+    break
+done
+apk update || fail 'apk update failed'
+apk add --no-cache nix || fail 'apk add nix failed'
+command -v nix >/dev/null 2>&1 || fail 'nix binary missing after apk add'
+echo 'NIX_SANDBOX_PHASE_APK_DONE'
+
+# ---------------------------------------------------------------------------
+# Phase 2: configure nix with sandbox=true
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_PHASE_CONFIG_BEGIN'
+for cmd in build channel collect-garbage copy-closure env hash \
+           instantiate prefetch-url shell store; do
+    ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true
+done
+mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
+if [ -f /nix/.reginfo ] && [ ! -e /nix/var/nix/db/db.sqlite ]; then
+    nix-store --load-db < /nix/.reginfo 2>/dev/null || true
+fi
+cat > /etc/nix/nix.conf <<NIXCONF
+sandbox = true
+build-users-group =
+substituters = https://cache.nixos.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+NIXCONF
+echo 'NIX_SANDBOX_PHASE_CONFIG_DONE'
+nix --version || fail 'nix --version failed'
+
+# ---------------------------------------------------------------------------
+# Phase 2.5: diagnostic — namespace probe + nix verbose build
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_PHASE_DIAG_BEGIN'
+echo '=== unshare -m test ==='
+unshare -m /bin/sh -c 'echo UNSHARE_M_OK' 2>&1 || echo 'UNSHARE_M_FAILED'
+echo '=== unshare -mU test ==='
+unshare -mU /bin/sh -c 'echo UNSHARE_MU_OK' 2>&1 || echo 'UNSHARE_MU_FAILED'
+echo '=== unshare -mUpf test ==='
+unshare -mUpf /bin/sh -c 'echo UNSHARE_MUPF_OK' 2>&1 || echo 'UNSHARE_MUPF_FAILED'
+echo 'NIX_SANDBOX_PHASE_DIAG_DONE'
+
+# ---------------------------------------------------------------------------
+# Phase 3: build with sandbox=true
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_PHASE_BUILD_BEGIN'
+rm -f ./result-sandbox
+cat > /tmp/nix-sandbox/default.nix <<'NIXEOF'
+derivation {
+  name = "nix-sandbox";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [
+    "-c"
+    "echo BUILDER_STARTED > /tmp/nix-sandbox/builder.log; echo OUT=\$out >> /tmp/nix-sandbox/builder.log; echo NIX_SANDBOX_BUILD_OK > \$out"
+  ];
+}
+NIXEOF
+
+echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 180s'
+
+trap 'echo "NIX_SANDBOX_TRAP: caught signal"' TERM HUP INT QUIT USR1 USR2
+trap 'echo "NIX_SANDBOX_SCRIPT_EXIT: rc=$?"' EXIT
+
+dump_procs() {
+    echo "NIX_SANDBOX_PROC_SAMPLE_BEGIN t=$(date +%s 2>/dev/null || echo -n) sample=$1"
+    free 2>/dev/null | awk '/^Mem:/{printf "  MEM: total=%s used=%s free=%s\n", $2, $3, $4}' || true
+    for pid_dir in /proc/[0-9]*; do
+        pid=${pid_dir#/proc/}
+        comm=$(cat "$pid_dir/comm" 2>/dev/null || echo "?")
+        state=$(awk '/^State:/{print $2}' "$pid_dir/status" 2>/dev/null || echo "?")
+        wchan=$(cat "$pid_dir/wchan" 2>/dev/null || echo "?")
+        vmrss=$(awk '/^VmRSS:/{print $2}' "$pid_dir/status" 2>/dev/null || echo "?")
+        echo "  pid=$pid comm=$comm state=$state wchan=$wchan vmrss=${vmrss}kB"
+    done
+    echo "NIX_SANDBOX_PROC_SAMPLE_END"
+}
+
+set +e
+NIX_DEBUG=1 nix-build -v --no-substitute --option sandbox true \
+    /tmp/nix-sandbox/default.nix -o ./result-sandbox \
+    > /tmp/nix-sandbox/build.log 2>&1 &
+build_pid=$!
+echo "NIX_SANDBOX_INFO: nix-build started pid=$build_pid"
+
+i=0
+while kill -0 "$build_pid" 2>/dev/null && [ "$i" -lt 180 ]; do
+    if [ $((i % 15)) -eq 0 ]; then
+        dump_procs "$((i / 15))"
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+if kill -0 "$build_pid" 2>/dev/null; then
+    echo "NIX_SANDBOX_INFO: 180s timeout, killing nix-build pid=$build_pid"
+    kill "$build_pid" 2>/dev/null || true
+    wait "$build_pid" 2>/dev/null || true
+    build_rc=124
+else
+    wait "$build_pid" 2>/dev/null
+    build_rc=$?
+fi
+set -e
+
+echo "NIX_SANDBOX_BUILD_EXIT=$build_rc"
+if [ "$build_rc" -gt 128 ] 2>/dev/null; then
+    sig=$((build_rc - 128))
+    echo "NIX_SANDBOX_BUILD_KILLED_BY_SIGNAL=$sig"
+fi
+
+echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
+cat /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
+echo 'NIX_SANDBOX_BUILD_LOG_END'
+
+if [ "$build_rc" -ne 0 ]; then
+    echo 'NIX_SANDBOX_DIAG_FAILURE_BEGIN'
+    echo "NIX_SANDBOX_DIAG_EXIT=$build_rc"
+    if [ "$build_rc" -gt 128 ] 2>/dev/null; then
+        echo "NIX_SANDBOX_DIAG_SIGNAL=$((build_rc - 128))"
+    fi
+    echo '=== dmesg (last 30 lines) ==='
+    dmesg 2>/dev/null | tail -30 || echo '(dmesg failed)'
+    echo '=== nix daemon log ==='
+    cat /nix/var/nix/log/nix-daemon/*.log 2>/dev/null | tail -30 || echo '(no daemon log)'
+    echo 'NIX_SANDBOX_DIAG_FAILURE_END'
+    fail "nix-build sandbox=true failed with exit $build_rc"
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 4: verify sandbox was active and output is correct
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_PHASE_VERIFY_BEGIN'
+if grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' /tmp/nix-sandbox/build.log; then
+    echo 'NIX_SANDBOX_INFO: sandbox was disabled by Nix (namespace isolation missing)'
+    fail 'nix-build sandbox was disabled unexpectedly — mount namespace isolation missing'
+fi
+[ -f ./result-sandbox ] || fail 'result-sandbox symlink not found'
+cat ./result-sandbox || fail 'could not read result-sandbox'
+grep -q 'NIX_SANDBOX_BUILD_OK' ./result-sandbox || fail 'nix-sandbox build output marker missing'
+echo 'NIX_SANDBOX_PHASE_VERIFY_DONE'
+
+# ---------------------------------------------------------------------------
+# Builder log for diagnostics
+# ---------------------------------------------------------------------------
+echo 'NIX_SANDBOX_BUILDER_LOG_BEGIN'
+cat /tmp/nix-sandbox/builder.log 2>/dev/null || echo '(no builder log)'
+echo 'NIX_SANDBOX_BUILDER_LOG_END'
+
+echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
+echo 'NIX_SANDBOX_TEST_PASSED'
+''',
+]
+success_regex = ["(?m)^NIX_SANDBOX_TEST_PASSED\\s*$"]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    "(?m)^lockdep fatal violation\\s*$",
+    "(?m)^NIX_SANDBOX_TEST_FAILED\\s*$",
+    "(?m)^NIX_SANDBOX_ERROR:",
+]
+timeout = 600

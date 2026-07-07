@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.20)
+project(starry-nix-debug C)
+
+file(GLOB STARRY_NIX_DEBUG_SUBCASES
+    RELATIVE "${CMAKE_CURRENT_LIST_DIR}"
+    CONFIGURE_DEPENDS "*"
+)
+list(SORT STARRY_NIX_DEBUG_SUBCASES)
+
+if(DEFINED STARRY_GROUPED_C_SUBCASES)
+    set(STARRY_NIX_DEBUG_SELECTED ${STARRY_GROUPED_C_SUBCASES})
+else()
+    set(STARRY_NIX_DEBUG_SELECTED ${STARRY_NIX_DEBUG_SUBCASES})
+endif()
+
+foreach(SUBCASE IN LISTS STARRY_NIX_DEBUG_SELECTED)
+    set(SUBCASE_DIR "${CMAKE_CURRENT_LIST_DIR}/${SUBCASE}")
+    if(IS_DIRECTORY "${SUBCASE_DIR}"
+        AND EXISTS "${SUBCASE_DIR}/CMakeLists.txt")
+        add_subdirectory("${SUBCASE}")
+    elseif(DEFINED STARRY_GROUPED_C_SUBCASES)
+        message(FATAL_ERROR "unknown nix-debug subcase: ${SUBCASE}")
+    endif()
+endforeach()

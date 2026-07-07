@@ -1,0 +1,59 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "Haswell,+avx",
+    "-m",
+    "512M",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+found=0
+failed=0
+fail_marker=NIX_DEBUG_TEST_FAILED
+for bin in /usr/bin/starry-test-suit/test-fork-cow-child-exit \
+           /usr/bin/starry-test-suit/test-mmap-private-fork-exit \
+           /usr/bin/starry-test-suit/test-rapid-fork-exit-cow \
+           /usr/bin/starry-test-suit/test-malloc-fork-stress \
+           /usr/bin/starry-test-suit/test-madvise-dontneed-heap \
+           /usr/bin/starry-test-suit/test-mprotect-guard-page \
+           /usr/bin/starry-test-suit/test-pthread-atfork \
+           /usr/bin/starry-test-suit/test-tls-after-fork \
+           /usr/bin/starry-test-suit/test-futex-arena-lock \
+           /usr/bin/starry-test-suit/test-mremap-realloc \
+           /usr/bin/starry-test-suit/test-pty-fork-echo; do
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    found=1
+    echo "NIX_DEBUG_TEST_BEGIN: $bin"
+    if "$bin"; then
+        echo "NIX_DEBUG_TEST_PASSED: $bin"
+    else
+        status=$?
+        echo "$fail_marker: $bin status=$status"
+        failed=1
+    fi
+done
+if [ "$found" -ne 1 ]; then
+    echo "$fail_marker: no nix-debug tests found"
+    exit 1
+fi
+if [ "$failed" -ne 0 ]; then
+    echo "$fail_marker: one or more nix-debug tests failed"
+    exit 1
+fi
+echo "NIX_DEBUG_TESTS_PASSED"
+''',
+]
+success_regex = ["(?m)^NIX_DEBUG_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^NIX_DEBUG_TEST_FAILED:']
+timeout = 300
