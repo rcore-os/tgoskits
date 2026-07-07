@@ -70,7 +70,7 @@ fail() {
 
 echo "[bootstrap] apk update + install build toolchain..."
 apk update || fail "apk update failed"
-apk add --no-cache \
+apk add --no-cache --no-scripts \
     build-base clang clang-dev cmake pkgconf git curl python3 \
     linux-headers openssl-dev perl bash tar xz musl-dev \
     || true
