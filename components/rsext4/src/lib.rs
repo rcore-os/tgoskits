@@ -32,9 +32,10 @@ pub use disknode::{Ext4TimeSpec, Ext4Timestamp};
 pub use error::{Errno, Ext4Error, Ext4Result};
 pub use ext4::{Ext4FileSystem, MountOptions, find_file, mkfs, mount, mount_with_options, umount};
 pub use file::{
-    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, is_dir_empty, link,
-    mkfile, mkfile_with_owner, mv, read_file, read_inode_data_into, rename, truncate, unlink,
-    write_file, write_inode_data,
+    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
+    is_dir_empty, link, mkfile, mkfile_with_owner, mv, read_file, read_inode_data_into,
+    remove_inodeentry_from_parentdir, rename, truncate, truncate_inode, unlink, write_file,
+    write_inode_data,
 };
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 

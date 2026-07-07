@@ -207,15 +207,23 @@ impl<B: BlockDevice> BlockDev<B> {
         self.entries[self.active].buffer.as_mut_slice()
     }
 
-    /// Invalidates the cache without flushing.
-    /// Used after journal commit to prevent stale cached data
-    /// from shadowing newly-committed blocks.
-    pub fn invalidate_cache(&mut self) {
+    /// Flushes dirty cached blocks, then invalidates all entries.
+    ///
+    /// Dirty entries are flushed first so metadata modifications made
+    /// via [`buffer_mut`] are never silently discarded.
+    pub fn invalidate_cache(&mut self) -> Ext4Result<()> {
         for entry in self.entries.iter_mut() {
+            if entry.dirty && !entry.is_empty() {
+                let bid = entry.block_id.unwrap();
+                self.dev.write(entry.buffer.as_slice(), bid, 1)?;
+                entry.dirty = false;
+            }
             entry.block_id = None;
-            entry.dirty = false;
             entry.referenced = false;
         }
+        self.active = 0;
+        self.clock = 0;
+        Ok(())
     }
 
     /// Replaces cached block contents without writing to the device.

@@ -132,7 +132,6 @@ struct WaitingLock {
     end: i64,
     kind: LockKind,
 }
-
 type PosixLockWaitTable = BTreeMap<Pid, Vec<WaitingLock>>;
 
 struct PosixLockWaitGuard {
@@ -179,12 +178,15 @@ impl Drop for PosixLockWaitGuard {
         }
     }
 }
-
 #[derive(Debug)]
 struct FlockEntry {
     addr: OfdAddr,
     weak: Weak<dyn FileLike>,
     kind: LockKind,
+    /// pid that created this entry. Used to detect and prune stale
+    /// same-pid entries whose OFD is dead (weak.strong_count() <= 1)
+    /// but a residual fd-table reference masks the release.
+    owner_pid: Pid,
 }
 
 /// flock(2) entries: at most one entry per (inode, OFD).
@@ -452,9 +454,6 @@ fn posix_lock_deadlock_would_occur(
 
     false
 }
-
-// ─── per-inode wait queue (F_SETLKW backbone) ──────────────────────────
-
 /// Get-or-create the wait queue for a single inode. We never garbage
 /// collect entries from `LOCK_WAITERS`: a wait queue carries no per-task
 /// state once it is empty, and waiters always re-check conflict after
@@ -819,6 +818,12 @@ enum FlockAttempt {
 /// downgraded — including the conflict path, because Linux's non-atomic
 /// conversion drops the caller's prior entry before checking peers, which
 /// on its own may unblock a peer parked waiting for that entry to go away.
+///
+/// Before checking conflicts, stale entries owned by the current pid whose
+/// OFD is dead (weak.strong_count() <= 1) are pruned.  This matches Linux
+/// `fs/locks.c` `locks_flock_remove_dead()` — the entry cannot be considered
+/// held if the only remaining `Arc` reference to the file is the one backing
+/// the `Weak` inside the entry itself.
 fn try_flock_once(
     key: InodeKey,
     addr: OfdAddr,
@@ -830,6 +835,14 @@ fn try_flock_once(
     let before = entries.len();
     entries.retain(|e| e.weak.strong_count() != 0);
 
+    // Prune stale same-pid entries whose OFD is dead.  A dead OFD
+    // (weak.strong_count() <= 1) means no live fd references the file;
+    // the only Arc is the one backing the Weak inside this FlockEntry.
+    // Cross-pid entries are NOT pruned — only the owning pid can declare
+    // its own entry stale, to avoid a racy process freeing another
+    // process's still-valid lock.
+    let pid = current_pid();
+    entries.retain(|e| !(e.owner_pid == pid && e.weak.strong_count() < 1));
     let outcome = match kind {
         None => {
             // LOCK_UN: drop any entry held by this OFD.
@@ -851,6 +864,7 @@ fn try_flock_once(
                     addr,
                     weak: Arc::downgrade(file),
                     kind: want,
+                    owner_pid: current_pid(),
                 });
                 FlockAttempt::Done
             }
@@ -861,6 +875,55 @@ fn try_flock_once(
         table.remove(&key);
     }
     (outcome, mutated)
+}
+
+/// Release the flock(2) entry held by `file` on `key`. Called from the
+/// close/fd-release path when the last file descriptor referring to this
+/// open file description is dropping its reference — at that point the OFD
+/// is gone, so any flock it held must be released and waiters woken.
+/// POSIX fcntl locks are handled by [`release_inode_posix_locks`] (pid-scoped,
+/// not OFD-scoped).
+pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
+    let addr = ofd_addr(file);
+    let mutated = {
+        let mut table = FLOCK_LOCKS.write();
+        let Some(entries) = table.get_mut(&key) else {
+            return;
+        };
+        let before = entries.len();
+        entries.retain(|e| e.addr != addr);
+        let changed = entries.len() != before;
+        if entries.is_empty() {
+            table.remove(&key);
+        }
+        changed
+    };
+    if mutated {
+        wake_flock_waiters(key);
+    }
+}
+
+/// Release every `flock(2)` entry owned by `pid`. Called from the
+/// process-exit hook, analogous to [`release_pid_locks`] for POSIX locks.
+/// A process that exits without explicit `LOCK_UN` must not leave its flock
+/// entries pinned in [`FLOCK_LOCKS`], because those entries would block
+/// future lock attempts by other processes (or by the same pid reused).
+pub fn release_pid_flock_locks(pid: Pid) {
+    let mut affected: Vec<InodeKey> = Vec::new();
+    {
+        let mut table = FLOCK_LOCKS.write();
+        table.retain(|inode, entries| {
+            let before = entries.len();
+            entries.retain(|e| e.owner_pid != pid);
+            if entries.len() != before {
+                affected.push(*inode);
+            }
+            !entries.is_empty()
+        });
+    }
+    for key in affected {
+        wake_flock_waiters(key);
+    }
 }
 
 /// Implementation of `sys_flock`. Supports `LOCK_SH`, `LOCK_EX`, `LOCK_UN`,

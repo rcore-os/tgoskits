@@ -8,6 +8,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeSet,
     rc::Rc,
 };
 
@@ -135,6 +136,22 @@ fn build_filesystem_with_written_file() -> (SharedCrcDevice, Vec<u8>) {
     umount(fs, &mut jbd2_dev).expect("umount failed");
 
     (device, payload)
+}
+
+fn sync_with_axfs_ng_order(
+    dev: &mut Jbd2Dev<SharedCrcDevice>,
+    fs: &mut Ext4FileSystem,
+) -> Ext4Result<()> {
+    fs.datablock_cache.flush_all(dev)?;
+    fs.bitmap_cache.flush_all(dev)?;
+    fs.inodetable_cache.flush_all(dev)?;
+    fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
+    fs.sync_superblock(dev)?;
+    fs.sync_group_descriptors(dev)?;
+    if dev.is_use_journal() {
+        dev.umount_commit();
+    }
+    dev.cantflush()
 }
 
 fn read_superblock(device: &SharedCrcDevice) -> Ext4Superblock {
@@ -333,6 +350,55 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
     let mut fs = mount(&mut remount_dev).expect("mount after intact checksum data failed");
     let read_back = read_file(&mut remount_dev, &mut fs, "/crc.txt").expect("read_file failed");
     assert_eq!(read_back, payload);
+    umount(fs, &mut remount_dev).expect("umount failed");
+}
+
+#[test]
+fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
+    // Test idea: mirror axfs-ng's sync_to_disk ordering, then remount and keep
+    // creating files. Inodes allocated before the sync must remain marked in
+    // the persisted inode bitmap and must not be reused after remount.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let mut fs = mount(&mut first_dev).expect("mount failed");
+
+    let mut seen = BTreeSet::new();
+    for idx in 0..256 {
+        let path = format!("/before-{idx}");
+        mkfile(&mut first_dev, &mut fs, &path, Some(b"x"), None).expect("mkfile before failed");
+        let file = open(&mut first_dev, &mut fs, &path, false).expect("open before failed");
+        assert!(
+            seen.insert(file.inode_num.raw()),
+            "duplicate inode before sync"
+        );
+    }
+
+    sync_with_axfs_ng_order(&mut first_dev, &mut fs).expect("axfs-ng order sync failed");
+    drop(fs);
+    drop(first_dev);
+
+    let sb = read_superblock(&device);
+    let desc = read_group_desc0(&device, &sb);
+    let inode_bitmap = device.read_block_bytes(desc.inode_bitmap());
+    assert_eq!(
+        desc.inode_bitmap_csum(&sb),
+        ext4_inode_bitmap_csum32(&sb, &inode_bitmap)
+    );
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut remount_dev).expect("mount after axfs-ng order sync failed");
+
+    for idx in 0..256 {
+        let path = format!("/after-{idx}");
+        mkfile(&mut remount_dev, &mut fs, &path, Some(b"y"), None).expect("mkfile after failed");
+        let file = open(&mut remount_dev, &mut fs, &path, false).expect("open after failed");
+        assert!(
+            seen.insert(file.inode_num.raw()),
+            "inode reused after axfs-ng order sync/remount"
+        );
+    }
+
     umount(fs, &mut remount_dev).expect("umount failed");
 }
 

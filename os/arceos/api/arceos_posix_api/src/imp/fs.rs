@@ -260,7 +260,7 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
 /// Reference: Starry OS implementation
 /// Return number of bytes written on success.
 pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssize_t {
-    debug!("sys_getdents64 (Linux) <= {fd} {:#x} {len}", buf as usize);
+    debug!("sys_getdents64 <= {fd} {:#x} {len}", buf as usize);
     syscall_body!(sys_getdents64, {
         if buf.is_null() || len == 0 {
             return Err(LinuxError::EINVAL);

@@ -1,16 +1,27 @@
+use alloc::sync::Arc;
+use core::mem;
+
 use ax_errno::{AxError, AxResult};
+use ax_fs_ng::FS_CONTEXT;
+use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
+use scope_local::ActiveScope;
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
     task::AsThread,
 };
 
-const SUPPORTED_NS_FLAGS: u32 =
-    CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUSER;
+const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
+    | CLONE_NEWPID
+    | CLONE_NEWNS
+    | CLONE_NEWNET
+    | CLONE_NEWIPC
+    | CLONE_NEWUSER
+    | CLONE_FS;
 
 /// unshare(2) — disassociate parts of the process execution context.
 pub fn sys_unshare(flags: u32) -> AxResult<isize> {
@@ -21,25 +32,60 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let proc_data = &curr.as_thread().proc_data;
-    let mut nsproxy = proc_data.nsproxy.lock();
+    let want_ns = flags & CLONE_NEWNS != 0;
+    let want_fs = flags & CLONE_FS != 0;
 
-    if flags & CLONE_NEWUTS != 0 {
-        nsproxy.unshare_uts();
+    // Phase 1: spinlock-protected nsproxy ops (SpinNoIrq — no sleeping).
+    {
+        let mut nsproxy = proc_data.nsproxy.lock();
+        if flags & CLONE_NEWUTS != 0 {
+            nsproxy.unshare_uts();
+        }
+        if flags & CLONE_NEWPID != 0 {
+            nsproxy.prepare_child_pid_ns();
+        }
+        if flags & CLONE_NEWNET != 0 {
+            nsproxy.unshare_net();
+        }
+        if flags & CLONE_NEWIPC != 0 {
+            nsproxy.unshare_ipc();
+        }
+        if flags & CLONE_NEWUSER != 0 {
+            nsproxy.unshare_user();
+        }
     }
-    if flags & CLONE_NEWPID != 0 {
-        nsproxy.prepare_child_pid_ns();
+
+    // Phase 2: FsContext ops (mount-ns + CLONE_FS) require a Mutex
+    // (blocking), which must not be held inside SpinNoIrq.
+    //
+    // Both CLONE_NEWNS and CLONE_FS require the caller's task-local
+    // FS_CONTEXT to be rebound to a private copy before any mutation.
+    // clone(CLONE_FS) shares the same Arc<Mutex<FsContext>> between parent
+    // and child, so operating directly on the shared Arc (e.g. unshare
+    // mount namespace or chdir) would leak to the other sharer.
+    if want_ns || want_fs {
+        let cloned_inner = FS_CONTEXT.lock().clone();
+        let new_fs = Arc::new(Mutex::new(cloned_inner));
+
+        // scope.write() would self-deadlock because on_enter holds a
+        // leaked scope.read() guard for the task's lifetime.  Temporarily
+        // release it, do the rebind, then re-acquire.
+        // SAFETY: the scope is task-private.  The brief window with
+        // ActiveScope pointing to global contains no FS_CONTEXT access.
+        unsafe { curr.as_thread().proc_data.scope.force_read_decrement() };
+        ActiveScope::set_global();
+
+        let mut scope = curr.as_thread().proc_data.scope.write();
+        *FS_CONTEXT.scope_mut(&mut scope) = new_fs;
+        drop(scope);
+
+        let read_guard = curr.as_thread().proc_data.scope.read();
+        unsafe { ActiveScope::set(&read_guard) };
+        mem::forget(read_guard);
     }
-    if flags & CLONE_NEWNS != 0 {
-        nsproxy.unshare_mnt();
-    }
-    if flags & CLONE_NEWNET != 0 {
-        nsproxy.unshare_net();
-    }
-    if flags & CLONE_NEWIPC != 0 {
-        nsproxy.unshare_ipc();
-    }
-    if flags & CLONE_NEWUSER != 0 {
-        nsproxy.unshare_user();
+    if want_ns {
+        FS_CONTEXT.lock().unshare_mount_namespace()?;
+        proc_data.nsproxy.lock().unshare_mnt();
     }
 
     Ok(0)
@@ -116,7 +162,11 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
     match nsfd {
         NsFd::Uts(ns) => nsproxy.set_ns_uts(ns.clone()),
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
-        NsFd::Mnt(ns) => nsproxy.set_ns_mnt(ns.clone()),
+        NsFd::Mnt { ns, fs_ns } => {
+            drop(nsproxy);
+            FS_CONTEXT.lock().set_mount_namespace(fs_ns.clone())?;
+            proc_data.nsproxy.lock().set_ns_mnt(ns.clone());
+        }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
         NsFd::User(ns) => {
@@ -157,7 +207,15 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
 
     let target_proc = pidfd.process_data()?;
-    let target_nsproxy = target_proc.nsproxy.lock();
+    let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
+        let scope = target_proc.scope.read();
+        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        drop(scope);
+        Some(fs_context.lock().mount_namespace().clone())
+    } else {
+        None
+    };
+    let target_nsproxy = target_proc.nsproxy.lock().clone_all();
 
     let curr = current();
     let thread = curr.as_thread();
@@ -183,22 +241,27 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let mut nsproxy = proc_data.nsproxy.lock();
 
     if nstype & CLONE_NEWUTS != 0 {
-        nsproxy.set_ns_uts(target_nsproxy.uts_ns.clone());
+        nsproxy.set_ns_uts(target_nsproxy.uts_ns);
     }
     if nstype & CLONE_NEWIPC != 0 {
-        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns.clone());
+        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns);
     }
     if nstype & CLONE_NEWNS != 0 {
-        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns.clone());
+        drop(nsproxy);
+        FS_CONTEXT
+            .lock()
+            .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
+        nsproxy = proc_data.nsproxy.lock();
+        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns);
     }
     if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_nsproxy.pid_ns.clone());
+        nsproxy.set_ns_pid(target_nsproxy.pid_ns);
     }
     if nstype & CLONE_NEWNET != 0 {
-        nsproxy.set_ns_net(target_nsproxy.net_ns.clone());
+        nsproxy.set_ns_net(target_nsproxy.net_ns);
     }
     if nstype & CLONE_NEWUSER != 0 {
-        nsproxy.set_ns_user(target_nsproxy.user_ns.clone());
+        nsproxy.set_ns_user(target_nsproxy.user_ns);
     }
 
     debug!(
