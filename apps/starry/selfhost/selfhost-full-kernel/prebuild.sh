@@ -77,8 +77,12 @@ gen_inner_script() {
     esac
 
     cat > "$out" << INNER_EOF
-#!/usr/bin/bash
+#!/bin/sh
 set -euo pipefail
+# NOTE: shebang is /bin/sh (busybox) not /usr/bin/bash.  The rebased kernel
+# cannot load dynamically-linked bash as a shebang interpreter (same root
+# cause as the /bin/sh fix in bootstrap prebuild.sh:1af27f75b).  Busybox ash
+# handles set -euo pipefail, POSIX $(...), and inline env vars correctly.
 
 export CARGO_TARGET_DIR=/tmp/build
 mkdir -p /tmp/build 2>/dev/null || true
