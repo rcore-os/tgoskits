@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.3...nvme-driver-v0.7.0) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.2...nvme-driver-v0.6.3) - 2026-07-02
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.13...ax-kspin-v0.3.14) - 2026-07-07
+
+### Other
+
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
 ## [0.3.13](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.12...ax-kspin-v0.3.13) - 2026-07-02
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/rdif-power-v0.7.3...rdif-power-v0.8.0) - 2026-07-07
+
+### Added
+
+- *(rdrive)* add FDT power-domain probing ([#1515](https://github.com/rcore-os/tgoskits/pull/1515))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/rdif-power-v0.7.2...rdif-power-v0.7.3) - 2026-06-12
 
 ### Other

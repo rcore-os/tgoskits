@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdrive"
 repository.workspace = true
-version = "0.23.3"
+version = "0.23.4"
 
 [dependencies]
 acpi = "6.1.1"

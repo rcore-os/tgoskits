@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.4...somehal-v0.7.5) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
+### Other
+
+- *(somehal)* cache IRQ routes in CPU interfaces ([#1494](https://github.com/rcore-os/tgoskits/pull/1494))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.3...somehal-v0.7.4) - 2026-07-02
 
 ### Added

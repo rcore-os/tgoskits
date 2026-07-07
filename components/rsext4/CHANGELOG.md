@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.3...rsext4-v0.7.4) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.2...rsext4-v0.7.3) - 2026-07-02
 
 ### Other

@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "aic8800"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes",
  "atomic-waker",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.17.7"
+version = "0.17.8"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "bitflags 2.13.0",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "arm-scmi-rs"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aarch64-cpu-ext",
  "ax-kspin",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vcpu"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "log",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "arm_vgic"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-kspin",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "ax-alloc",
  "ax-display",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aic8800",
  "anyhow",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-io",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "ax-hal",
  "ax-kspin",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "ax-kspin"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "ax-kernel-guard",
  "ax-lockdep",
@@ -833,7 +833,7 @@ version = "0.4.8"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.1",
@@ -851,7 +851,7 @@ version = "0.5.6"
 
 [[package]]
 name = "ax-lockdep"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "ax-crate-interface",
  "ax-kernel-guard",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "ax-log"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "ax-crate-interface",
  "ax-kspin",
@@ -877,7 +877,7 @@ version = "0.6.9"
 
 [[package]]
 name = "ax-memory-set"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-memory-addr",
@@ -885,7 +885,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "ax-percpu"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
  "ax-kernel-guard",
  "ax-percpu-macros",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ax-crate-interface",
  "ax-kernel-guard",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-macros"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1078,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.24"
+version = "0.6.0"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "axaddrspace"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "assert_matches",
  "ax-errno 0.6.1",
@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "axbacktrace"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "addr2line 0.26.1",
  "axpanic",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.4.16"
+version = "0.4.17"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "arm_vgic",
  "ax-errno 0.6.1",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice_base"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-memory-addr",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-kspin",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "axklib"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "axnsproxy"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-kspin",
@@ -1336,7 +1336,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "axpoll"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "ax-kspin",
  "bitflags 2.13.0",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "anyhow",
  "ax-crate-interface",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "aarch64-cpu-ext",
  "arm-gic-driver",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "axvm-types"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ax-cpumask",
  "ax-errno 0.6.1",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "axvmconfig"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ax-errno 0.6.1",
  "axvm-types",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-slab-allocator"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "ax-kspin",
  "divan",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "crab-usb"
-version = "0.9.10"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "ax-kspin",
@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "cv181x-sdhci"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dma-api",
  "mmio-api",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "dma-api"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "aarch64-cpu-ext",
  "ax-kspin",
@@ -2969,7 +2969,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dwmmc-host"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
@@ -3153,7 +3153,7 @@ dependencies = [
 
 [[package]]
 name = "eth-intel"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "dma-api",
  "log",
@@ -4788,7 +4788,7 @@ dependencies = [
 
 [[package]]
 name = "loongarch_vcpu"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
@@ -5249,7 +5249,7 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
 name = "nvme-driver"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "dma-api",
  "log",
@@ -5396,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "page-table-generic"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "bitflags 2.13.0",
  "env_logger",
@@ -5487,7 +5487,7 @@ dependencies = [
 
 [[package]]
 name = "pcie"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "bit_field",
  "bitflags 2.13.0",
@@ -5604,7 +5604,7 @@ dependencies = [
 
 [[package]]
 name = "phytium-mci-host"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
@@ -5979,7 +5979,7 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "ramdisk"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ax-kspin",
  "rdif-block",
@@ -6222,7 +6222,7 @@ dependencies = [
 
 [[package]]
 name = "rd-net"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dma-api",
  "futures",
@@ -6243,7 +6243,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-block"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "ax-kspin",
  "dma-api",
@@ -6275,7 +6275,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-eth"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "dma-api",
  "rdif-base",
@@ -6319,7 +6319,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-pinctrl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fdt-edit",
  "rdif-base",
@@ -6328,7 +6328,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-power"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "rdif-base",
  "thiserror 2.0.18",
@@ -6385,7 +6385,7 @@ dependencies = [
 
 [[package]]
 name = "rdrive"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "acpi",
  "ax-kspin",
@@ -6418,7 +6418,7 @@ dependencies = [
 
 [[package]]
 name = "realtek-rtl8125"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "ax-kspin",
  "dma-api",
@@ -6621,7 +6621,7 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 
 [[package]]
 name = "riscv_vcpu"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
@@ -6643,7 +6643,7 @@ dependencies = [
 
 [[package]]
 name = "riscv_vplic"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
@@ -6710,7 +6710,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-jpeg"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dma-api",
  "rdif-base",
@@ -6718,7 +6718,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-npu"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.13.0",
@@ -6734,7 +6734,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-pm"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "log",
  "mbarrier",
@@ -6752,7 +6752,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-rga"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dma-api",
  "rdif-base",
@@ -6760,7 +6760,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-soc"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "bitflags 2.13.0",
  "dma-api",
@@ -6774,7 +6774,7 @@ dependencies = [
 
 [[package]]
 name = "rsext4"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "ax-kspin",
  "bitflags 2.13.0",
@@ -7047,7 +7047,7 @@ dependencies = [
 
 [[package]]
 name = "scope-local"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "ax-percpu",
  "ctor 0.6.3",
@@ -7090,7 +7090,7 @@ dependencies = [
 
 [[package]]
 name = "sdhci-host"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dma-api",
  "embedded-hal",
@@ -7107,14 +7107,14 @@ version = "0.1.0"
 
 [[package]]
 name = "sdio-host2"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dma-api",
 ]
 
 [[package]]
 name = "sdmmc-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitflags 2.13.0",
  "dma-api",
@@ -7281,7 +7281,7 @@ dependencies = [
 
 [[package]]
 name = "sg2002-tpu"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "ax-dma",
  "ax-errno 0.6.1",
@@ -7499,7 +7499,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7542,7 +7542,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7571,7 +7571,7 @@ dependencies = [
 
 [[package]]
 name = "somehal-macros"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -7614,7 +7614,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfive-jh7110-dwmmc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dma-api",
  "dwmmc-host",
@@ -7636,7 +7636,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.6.6"
+version = "0.7.0"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -7730,7 +7730,7 @@ dependencies = [
 
 [[package]]
 name = "starry-process"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "ax-kspin",
  "ax-lazyinit",
@@ -7740,7 +7740,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "ax-cpu",
  "ax-errno 0.6.1",
@@ -7767,7 +7767,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "anyhow",
  "ax-driver",
@@ -8823,7 +8823,7 @@ dependencies = [
 
 [[package]]
 name = "usb-if"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "futures",
@@ -8848,7 +8848,7 @@ dependencies = [
 
 [[package]]
 name = "usb-serial"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "usb-if",
 ]
@@ -9636,7 +9636,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vcpu"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
@@ -9659,7 +9659,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vlapic"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",

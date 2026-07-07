@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.7...ax-dma-v0.6.8) - 2026-07-07
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.6...ax-dma-v0.6.7) - 2026-07-02
 
 ### Added
