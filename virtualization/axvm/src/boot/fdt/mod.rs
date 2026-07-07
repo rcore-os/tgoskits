@@ -19,11 +19,11 @@
 
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 mod create;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 mod device;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) mod loongarch64;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 mod parser;
 mod print;
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
@@ -54,7 +54,7 @@ use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 // pub use print::print_fdt;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use create::update_fdt;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 pub use parser::*;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -191,7 +191,7 @@ pub fn handle_fdt_operations(
     if let Some(dtb) = guest_dtb.as_ref().map(GuestDtbImage::as_bytes) {
         parse_reserved_memory_regions(vm_create_config, dtb)?;
         parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         parse_vm_interrupt(vm_config, dtb)?;
     } else {
         error!(

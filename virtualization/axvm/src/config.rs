@@ -89,8 +89,8 @@ pub struct AxVMConfig {
     address_space_policy: AddressSpacePolicy,
     memory_regions: Vec<VmMemConfig>,
     boot_policy: GuestBootPolicy,
-    // TODO: improve interrupt passthrough
-    spi_list: Vec<u32>,
+    // Physical interrupt sources forwarded to the guest in passthrough mode.
+    passthrough_irq_list: Vec<u32>,
     interrupt_mode: VMInterruptMode,
 }
 
@@ -133,7 +133,7 @@ impl AxVMConfig {
             address_space_policy: params.address_space_policy,
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
-            spi_list: Vec::new(),
+            passthrough_irq_list: Vec::new(),
             interrupt_mode: params.interrupt_mode,
         }
     }
@@ -272,12 +272,24 @@ impl AxVMConfig {
 
     /// Adds a passthrough SPI to the VM configuration.
     pub fn add_pass_through_spi(&mut self, spi: u32) {
-        self.spi_list.push(spi);
+        self.add_pass_through_irq(spi);
+    }
+
+    /// Adds a physical interrupt source forwarded to the guest.
+    pub fn add_pass_through_irq(&mut self, irq: u32) {
+        if !self.passthrough_irq_list.contains(&irq) {
+            self.passthrough_irq_list.push(irq);
+        }
     }
 
     /// Returns the list of passthrough SPIs.
     pub fn pass_through_spis(&self) -> &Vec<u32> {
-        &self.spi_list
+        &self.passthrough_irq_list
+    }
+
+    /// Returns the physical interrupt sources forwarded to the guest.
+    pub fn pass_through_irqs(&self) -> &Vec<u32> {
+        &self.passthrough_irq_list
     }
 
     /// Returns the interrupt mode of the VM.
