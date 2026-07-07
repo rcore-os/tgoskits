@@ -52,7 +52,9 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn can_block(&self) -> bool {
-        ax_task::current_may_uninit().is_some() && !ax_task::in_atomic_context()
+        crate::is_init_ok()
+            && ax_task::current_may_uninit().is_some()
+            && !ax_task::in_atomic_context()
     }
 
     fn task_yield(&self) {

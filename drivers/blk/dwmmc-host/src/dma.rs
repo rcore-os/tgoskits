@@ -137,11 +137,11 @@ enum BlockRequestKind {
         id: RequestId,
         buffer: NonNull<u8>,
         len: usize,
-        block_size: usize,
         offset: usize,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
+        transfer_done: bool,
         stop_after_complete: bool,
         response: Option<Response>,
     },
@@ -149,11 +149,11 @@ enum BlockRequestKind {
         id: RequestId,
         buffer: NonNull<u8>,
         len: usize,
-        block_size: usize,
         offset: usize,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
+        transfer_done: bool,
         stop_after_complete: bool,
         response: Option<Response>,
     },
@@ -852,11 +852,11 @@ impl DwMmc {
                 id,
                 buffer,
                 len,
-                block_size: block_size_usize,
                 offset: 0,
                 cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
+                transfer_done: false,
                 stop_after_complete,
                 response: None,
             },
@@ -864,11 +864,11 @@ impl DwMmc {
                 id,
                 buffer,
                 len,
-                block_size: block_size_usize,
                 offset: 0,
                 cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
+                transfer_done: false,
                 stop_after_complete,
                 response: None,
             },
@@ -1184,17 +1184,17 @@ impl DwMmc {
             BlockRequestKind::FifoRead {
                 buffer,
                 len,
-                block_size,
                 offset,
+                transfer_done,
                 ..
-            } => poll_fifo_read_step(self, *buffer, *len, *block_size, offset, cmd_index, phase),
+            } => poll_fifo_read_step(self, *buffer, *len, offset, transfer_done, cmd_index, phase),
             BlockRequestKind::FifoWrite {
                 buffer,
                 len,
-                block_size,
                 offset,
+                transfer_done,
                 ..
-            } => poll_fifo_write_step(self, *buffer, *len, *block_size, offset, cmd_index, phase),
+            } => poll_fifo_write_step(self, *buffer, *len, offset, transfer_done, cmd_index, phase),
             _ => Err(Error::InvalidArgument),
         }
     }
@@ -1344,22 +1344,7 @@ impl DwMmc {
             | crate::DWMMC_INT_RXDR
             | crate::DWMMC_INT_TXDR
             | crate::DWMMC_INT_ERROR_MASK;
-        if self.completion_irq_enabled() {
-            return self.irq.state.take(consume);
-        }
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let clear = raw_status
-            & (crate::DWMMC_INT_DATA_TRANSFER_OVER
-                | crate::DWMMC_INT_COMMAND_DONE
-                | crate::DWMMC_INT_RXDR
-                | crate::DWMMC_INT_TXDR
-                | crate::DWMMC_INT_ERROR_MASK);
-        if clear != 0 {
-            self.regs
-                .rintsts()
-                .write(crate::regs::RIntSts::from_bits(clear));
-        }
-        raw_status
+        self.take_task_irq_status(consume)
     }
 }
 
@@ -1383,8 +1368,8 @@ fn poll_fifo_read_step(
     host: &mut DwMmc,
     buffer: NonNull<u8>,
     len: usize,
-    _block_size: usize,
     offset: &mut usize,
+    transfer_done: &mut bool,
     cmd_index: u8,
     phase: Phase,
 ) -> Result<BlockPoll, Error> {
@@ -1395,12 +1380,13 @@ fn poll_fifo_read_step(
         let _ = host.reset_fifo();
         return Err(err);
     }
+    *transfer_done |= rintsts.data_transfer_over();
 
     let fifo = host.fifo_ptr();
     let mut status = host.regs.status().read();
-    while *offset < len && status.fifo_count() >= 2 {
+    while *offset < len && status.fifo_count() != 0 {
         let value = unsafe { fifo.read_volatile() };
-        let end = (*offset + 8).min(len);
+        let end = (*offset + 4).min(len);
         let block =
             unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr().add(*offset), end - *offset) };
         block.copy_from_slice(&value.to_le_bytes()[..block.len()]);
@@ -1408,9 +1394,10 @@ fn poll_fifo_read_step(
         status = host.regs.status().read();
     }
 
-    if *offset >= len && rintsts.data_transfer_over() {
+    if *offset >= len && *transfer_done {
         return Ok(BlockPoll::Complete);
     }
+    host.program_fifo_interrupt_mask();
     Ok(BlockPoll::Pending)
 }
 
@@ -1418,8 +1405,8 @@ fn poll_fifo_write_step(
     host: &mut DwMmc,
     buffer: NonNull<u8>,
     len: usize,
-    _block_size: usize,
     offset: &mut usize,
+    transfer_done: &mut bool,
     cmd_index: u8,
     phase: Phase,
 ) -> Result<BlockPoll, Error> {
@@ -1430,21 +1417,23 @@ fn poll_fifo_write_step(
         let _ = host.reset_fifo();
         return Err(err);
     }
+    *transfer_done |= rintsts.data_transfer_over();
 
     let fifo = host.fifo_ptr();
     while *offset < len && !host.regs.status().read().fifo_full() {
-        let end = (*offset + 8).min(len);
+        let end = (*offset + 4).min(len);
         let block =
             unsafe { core::slice::from_raw_parts(buffer.as_ptr().add(*offset), end - *offset) };
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 4];
         bytes[..block.len()].copy_from_slice(block);
-        unsafe { fifo.write_volatile(u64::from_le_bytes(bytes)) };
+        unsafe { fifo.write_volatile(u32::from_le_bytes(bytes)) };
         *offset = end;
     }
 
-    if *offset >= len && rintsts.data_transfer_over() {
+    if *offset >= len && *transfer_done {
         return Ok(BlockPoll::Complete);
     }
+    host.program_fifo_interrupt_mask();
     Ok(BlockPoll::Pending)
 }
 
@@ -1605,11 +1594,11 @@ mod tests {
                 id,
                 buffer: NonNull::new(buffer.as_mut_ptr()).unwrap(),
                 len: buffer.len(),
-                block_size: BLOCK_SIZE,
                 offset: buffer.len(),
                 cmd_index: cmd.index,
                 phase: Phase::DataRead,
                 stage: BlockRequestStage::Command,
+                transfer_done: false,
                 stop_after_complete: false,
                 response: None,
             },
@@ -1621,5 +1610,89 @@ mod tests {
         ));
         assert!(request.is_none());
         assert_eq!(host.irq.state.pending(), 0);
+    }
+
+    #[test]
+    fn irq_enabled_task_poll_can_consume_raw_status_before_top_half_runs() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const RINTSTS_WORD: usize = 17;
+        let raw = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .with_receive_fifo_data_request(true)
+            .into_bits();
+
+        host.enable_completion_irq();
+        host.irq.state.begin_request();
+        unsafe {
+            mmio.as_mut_ptr().add(RINTSTS_WORD).write_volatile(raw);
+        }
+
+        assert_eq!(host.take_data_irq_status(), raw);
+        assert_eq!(host.irq.state.pending(), 0);
+
+        let cleared = unsafe { mmio.as_ptr().add(RINTSTS_WORD).read_volatile() };
+        assert_eq!(cleared, raw);
+    }
+
+    #[test]
+    fn fifo_read_latches_dto_until_buffer_is_drained() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const RINTSTS_WORD: usize = 17;
+        const STATUS_WORD: usize = 18;
+        const FIFO_WORD: usize = 128;
+        let mut buffer = [0u8; 4];
+        let mut offset = 0;
+        let mut transfer_done = false;
+        let dto = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .into_bits();
+
+        unsafe {
+            mmio.as_mut_ptr().add(RINTSTS_WORD).write_volatile(dto);
+            mmio.as_mut_ptr()
+                .add(STATUS_WORD)
+                .write_volatile(crate::regs::Status::new().with_fifo_count(0).into_bits());
+        }
+
+        assert!(matches!(
+            poll_fifo_read_step(
+                &mut host,
+                NonNull::new(buffer.as_mut_ptr()).unwrap(),
+                buffer.len(),
+                &mut offset,
+                &mut transfer_done,
+                17,
+                Phase::DataRead,
+            ),
+            Ok(BlockPoll::Pending)
+        ));
+        assert_eq!(offset, 0);
+        assert!(transfer_done);
+
+        unsafe {
+            mmio.as_mut_ptr().add(RINTSTS_WORD).write_volatile(0);
+            mmio.as_mut_ptr()
+                .add(STATUS_WORD)
+                .write_volatile(crate::regs::Status::new().with_fifo_count(1).into_bits());
+            mmio.as_mut_ptr().add(FIFO_WORD).write_volatile(0x0403_0201);
+        }
+
+        assert!(matches!(
+            poll_fifo_read_step(
+                &mut host,
+                NonNull::new(buffer.as_mut_ptr()).unwrap(),
+                buffer.len(),
+                &mut offset,
+                &mut transfer_done,
+                17,
+                Phase::DataRead,
+            ),
+            Ok(BlockPoll::Complete)
+        ));
+        assert_eq!(buffer, [1, 2, 3, 4]);
     }
 }

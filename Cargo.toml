@@ -264,6 +264,7 @@ phytium-mci-host = { version = "0.3.0", path = "drivers/blk/phytium-mci-host", d
 cv181x-sdhci = { version = "0.1.0", path = "drivers/blk/cv181x-sdhci", default-features = false }
 sdhci-host = { version = "0.3.0", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.3.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
+starfive-jh7110-dwmmc = { version = "0.1.0", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.2.5", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.6.6", path = "os/StarryOS/kernel" }

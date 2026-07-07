@@ -541,6 +541,21 @@ impl DwMmc {
         self.regs.rintsts().write(RIntSts::from_bits(ALL_INT_CLR));
     }
 
+    pub(crate) fn take_task_irq_status(&mut self, mask: u32) -> u32 {
+        if self.completion_irq_enabled() {
+            let cached = self.irq.state.take(mask);
+            if cached != 0 {
+                return cached;
+            }
+        }
+        let raw_status = self.regs.rintsts().read().into_bits();
+        let clear = raw_status & mask;
+        if clear != 0 {
+            self.regs.rintsts().write(RIntSts::from_bits(clear));
+        }
+        raw_status
+    }
+
     pub(crate) fn program_linux_init_baseline(&self) {
         self.regs.tmout().write(DEFAULT_TMOUT);
         self.regs.fifoth().write(DEFAULT_FIFOTH);
@@ -666,8 +681,8 @@ impl DwMmc {
     }
 
     /// Raw pointer at `base + fifo_offset`, used for FIFO data accesses.
-    pub(crate) fn fifo_ptr(&self) -> *mut u64 {
-        (self.base_addr + self.fifo_offset) as *mut u64
+    pub(crate) fn fifo_ptr(&self) -> *mut u32 {
+        (self.base_addr + self.fifo_offset) as *mut u32
     }
 }
 
