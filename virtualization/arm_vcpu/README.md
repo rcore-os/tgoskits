@@ -1,6 +1,6 @@
 <h1 align="center">arm_vcpu</h1>
 
-<p align="center">AArch64 vCPU implementation for ArceOS Hypervisor</p>
+<p align="center">OS-neutral AArch64 vCPU core</p>
 
 <div align="center">
 
@@ -15,7 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`arm_vcpu` provides AArch64 vCPU implementation for ArceOS Hypervisor. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`arm_vcpu` provides an OS-neutral AArch64 vCPU core. It owns EL2 guest entry/exit, guest register state, trap decode, and hardware virtualization register semantics. Host OS and VMM policy is supplied through `ArmHostOps`; AxVM integration lives in `virtualization/axvm/src/arch/aarch64`.
 
 ## Quick Start
 
@@ -37,11 +37,11 @@ cd virtualization/arm_vcpu
 # Format code
 cargo fmt --all
 
-# Run clippy
-cargo clippy --all-targets --all-features
+# Run the workspace clippy flow
+cargo xtask clippy --package arm_vcpu
 
-# Run tests
-cargo test --all-features
+# Run host-runnable contract tests
+cargo test -p arm_vcpu --test dependency_contract_test
 
 # Build documentation
 cargo doc --no-deps
@@ -52,10 +52,24 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use arm_vcpu as _;
+use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
 
-fn main() {
-    // Integrate `arm_vcpu` into your project here.
+struct MyHost;
+
+impl ArmHostOps for MyHost {
+    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
+        Ok(())
+    }
+
+    fn fetch_pending_host_irq() -> Option<usize> {
+        None
+    }
+
+    fn handle_current_host_irq() {}
+}
+
+fn build_vcpu() -> ArmVcpuResult<ArmVcpu<MyHost>> {
+    ArmVcpu::<MyHost>::new(0, 0, ArmVcpuCreateConfig::default())
 }
 ```
 
