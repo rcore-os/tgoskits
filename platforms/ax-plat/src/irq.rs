@@ -108,7 +108,7 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn in_irq_context(&self) -> bool {
-        IN_IRQ_CONTEXT.with_current(|in_irq| *in_irq)
+        in_irq_context_on(self.current_cpu())
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -166,9 +166,7 @@ impl IrqOps for PlatIrqOps {
 
 static IRQ_REGISTRY: Once<Registry<PlatIrqOps>> = Once::new();
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
-
-#[ax_percpu::def_percpu]
-static IN_IRQ_CONTEXT: bool = false;
+static IRQ_CONTEXT_CPUS: AtomicUsize = AtomicUsize::new(0);
 
 fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
@@ -176,7 +174,7 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    IN_IRQ_CONTEXT.with_current(|in_irq| *in_irq)
+    in_irq_context_on(PlatIrqOps.current_cpu())
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -246,16 +244,39 @@ pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     registry().cpu_online(CpuId(cpu))
 }
 
+/// Prepares CPU-local runtime state before the common IRQ guard is entered.
+pub fn prepare_irq_context(vector: TrapVector) {
+    ax_crate_interface::call_interface!(IrqIf::prepare, vector)
+}
+
+/// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
+pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
+    let context_bit = irq_context_bit(cpu);
+    let was_in_irq = context_bit
+        .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)
+        .unwrap_or(false);
+    let outcome = registry().dispatch(irq, cpu);
+    if let Some(bit) = context_bit
+        && !was_in_irq
+    {
+        IRQ_CONTEXT_CPUS.fetch_and(!bit, Ordering::AcqRel);
+    }
+    outcome
+}
+
 /// Dispatches actions registered in the dynamic IRQ framework.
 pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
-    let cpu = CpuId(crate::percpu::this_cpu_id());
-    IN_IRQ_CONTEXT.with_current(|in_irq| {
-        let was_in_irq = *in_irq;
-        *in_irq = true;
-        let outcome = registry().dispatch(irq, cpu);
-        *in_irq = was_in_irq;
-        outcome
-    })
+    dispatch_irq_on(irq, PlatIrqOps.current_cpu())
+}
+
+fn in_irq_context_on(cpu: CpuId) -> bool {
+    irq_context_bit(cpu)
+        .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
+        .unwrap_or(false)
+}
+
+fn irq_context_bit(cpu: CpuId) -> Option<usize> {
+    (cpu.0 < usize::BITS as usize).then_some(1usize << cpu.0)
 }
 
 /// Resolves a firmware/controller interrupt source to a framework IRQ id.
@@ -293,6 +314,10 @@ pub enum IpiTarget {
 /// IRQ management interface.
 #[def_plat_interface]
 pub trait IrqIf {
+    /// Prepares CPU-local runtime state before the common IRQ handler touches
+    /// per-CPU runtime data.
+    fn prepare(vector: TrapVector);
+
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
 
@@ -338,6 +363,8 @@ mod tests {
 
     #[impl_plat_interface]
     impl IrqIf for TestIrqIf {
+        fn prepare(_vector: TrapVector) {}
+
         fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
             ENABLE_CALLS.fetch_add(1, Ordering::Relaxed);
             if FAIL_ENABLE.load(Ordering::Relaxed) != 0 {

@@ -59,6 +59,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - On x86 QEMU, do not trust CPUID timing leaves unless the reported TSC frequency is plausible; some virtual CPU combinations expose invalid zero or tiny values. Prefer a trusted hypervisor timing leaf, then CPUID timing data, then PIT-based TSC calibration before falling back to processor base frequency.
 - On x86 QEMU, initialize LAPIC/x2APIC once and keep APIC IDs as firmware IDs, not logical CPU indices. Use x2APIC MSRs when x2APIC is enabled, bound IPI delivery waits, reject xAPIC AP startup/IPI destinations above 255, and keep external IOAPIC INTx programming in the runtime `X86IoApicIntc` path instead of someboot or HAL bypass helpers.
 - On AArch64, keep the someboot `hv` feature scoped to the EL2 kernel path. For non-`hv` EL1 boot, choose the EL1 arch timer at runtime from the boot EL: use CNTP when EL2 is available and CNTV when EL2 is unavailable, and keep the FDT timer interrupt index consistent with the selected mode.
+- On AArch64 secondary entry, preserve the CPU metadata pointer explicitly across MMU-enable and EL-transition helpers. Naked asm should consume the helper return register instead of assuming scratch registers survive Rust calls.
 - Build page tables for identity/firmware access, direct map, kernel high map, MMIO, and per-CPU data as the arch requires.
 - Flush TLB/cache and use architecture barriers around page table writes, boot argument writes, and secondary CPU release.
 - Treat hardware MMU enablement, direct-map/kernel-space addressability, and final kernel relocation as separate states. Generic relocation detection should use the final `VM_LOAD_ADDRESS`, not the broader arch kernel/direct-map range; for example AArch64 `hv` builds can use `PAGE_OFFSET = 0`, and LoongArch DMW can make RAM addressable before execution reaches the final high mapping.
@@ -73,7 +74,8 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, per-CPU base, and logical ID.
 4. Flush boot arguments and page tables before `cpu_on`.
 5. In the secondary path, initialize arch address windows, stack, per-CPU register, page table state, trap vectors, timer, and interrupt state before entering generic secondary code.
-6. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
+6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
+7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 
 ## Validation Ladder
 

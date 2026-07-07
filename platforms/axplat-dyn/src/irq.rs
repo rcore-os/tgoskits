@@ -3,7 +3,9 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 use ax_plat::irq::IrqOutcome;
-use ax_plat::irq::{IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, TrapVector, dispatch_irq};
+use ax_plat::irq::{
+    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, TrapVector, dispatch_irq_on,
+};
 
 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
 mod loongarch64_hv;
@@ -38,6 +40,8 @@ struct IrqIfImpl;
 
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
+    fn prepare(_vector: TrapVector) {}
+
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
         somehal::irq::irq_set_enable(irq, enabled)
@@ -64,7 +68,8 @@ impl IrqIf for IrqIfImpl {
                 return Some(irq);
             }
 
-            let outcome = dispatch_irq(irq);
+            let cpu = current_irq_cpu();
+            let outcome = dispatch_irq_on(irq, cpu);
             if !outcome.handled {
                 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
                 if is_loongarch_guest_forwardable(irq)
@@ -74,7 +79,7 @@ impl IrqIf for IrqIfImpl {
                 }
 
                 if outcome.called == 0 {
-                    warn!("Unhandled IRQ {irq:?}");
+                    warn!("Unhandled IRQ {irq:?} on CPU {}", cpu.0);
                 } else {
                     debug!("Spurious IRQ {irq:?}");
                 }
@@ -119,6 +124,10 @@ impl IrqIf for IrqIfImpl {
             Ok(IrqId::new(somehal::irq::CPU_LOCAL_IRQ_DOMAIN, hwirq))
         }
     }
+}
+
+fn current_irq_cpu() -> CpuId {
+    CpuId(ax_plat::percpu::this_cpu_id())
 }
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]

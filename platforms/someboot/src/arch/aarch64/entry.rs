@@ -104,6 +104,7 @@ pub(crate) unsafe extern "C" fn _secondary_entry(_arg: usize) -> ! {
 pub(crate) unsafe extern "C" fn secondary_el_entry(_cpu_meta_paddr: usize) -> ! {
     naked_asm!(
         "bl {init_mmu}",
+        "mov x20, x0",
         "ldr x8, [x20, {stack_top_virt_offset}]",
         "mov sp, x8",
         "ldr x8, [x20, {entry_offset}]",

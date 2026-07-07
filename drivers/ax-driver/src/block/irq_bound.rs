@@ -49,13 +49,13 @@ impl<T: Interface, L: IrqBindingLease> Interface for IrqBoundBlock<T, L> {
     }
 
     fn enable_irq(&self) {
-        self.irq_lease.enable_binding_irq();
         self.inner.enable_irq();
+        self.irq_lease.enable_binding_irq();
     }
 
     fn disable_irq(&self) {
-        self.inner.disable_irq();
         self.irq_lease.disable_binding_irq();
+        self.inner.disable_irq();
     }
 
     fn is_irq_enabled(&self) -> bool {
@@ -172,10 +172,10 @@ mod tests {
         assert_eq!(
             *log.lock().unwrap(),
             vec![
-                "lease-enable",
                 "block-enable",
-                "block-disable",
-                "lease-disable"
+                "lease-enable",
+                "lease-disable",
+                "block-disable"
             ]
         );
     }

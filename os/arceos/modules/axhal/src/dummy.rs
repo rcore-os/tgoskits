@@ -149,6 +149,8 @@ impl PowerIf for DummyPower {
 #[cfg(feature = "irq")]
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
+    fn prepare(_vector: TrapVector) {}
+
     fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
         Ok(())
     }
