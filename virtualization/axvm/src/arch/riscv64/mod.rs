@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use ax_crate_interface::impl_interface;
 use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use axvm_types::NestedPagingConfig;
+use axvm_types::{NestedPagingConfig, VMInterruptMode};
 use riscv_vcpu::{GprIndex as RiscvGprIndex, host::RiscvVcpuHostIf};
 use riscv_vplic::host::RiscvVplicHostIf;
 
@@ -82,6 +82,22 @@ impl ArchOps for Riscv64Arch {
         register_platform_irq_injector();
     }
 
+    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+        if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+            return;
+        }
+        let Some(cpu_id) = vcpu.phys_cpu_set().and_then(first_cpu_in_mask) else {
+            warn!(
+                "skip RISC-V virtual IRQ affinity for VM[{}] VCpu[{}]: no fixed host CPU",
+                vm.id(),
+                vcpu.id()
+            );
+            return;
+        };
+        let irq_sources = vm.with_config(|config| config.pass_through_irqs().to_vec());
+        crate::irq::set_riscv_virtual_irq_targets(cpu_id, &irq_sources);
+    }
+
     fn vcpu_affinities(
         cpu_num: usize,
         phys_cpu_ids: Option<&[usize]>,
@@ -140,13 +156,17 @@ fn register_platform_irq_injector() {
     crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
 }
 
-fn inject_virtual_irq(irq_id: usize) -> bool {
-    debug!("injecting RISC-V virtual IRQ id: {irq_id}");
+fn first_cpu_in_mask(mask: usize) -> Option<usize> {
+    (mask != 0).then_some(mask.trailing_zeros() as usize)
+}
 
+fn inject_virtual_irq(irq_id: usize) -> bool {
     let Some(vm_id) = crate::current_vm_id() else {
-        warn!("cannot inject RISC-V virtual IRQ without current VM context");
+        trace!("skip RISC-V virtual IRQ {irq_id}: no current VM context");
         return false;
     };
+
+    debug!("injecting RISC-V virtual IRQ id: {irq_id}");
 
     let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
         if let Err(err) = vm.pulse_interrupt(irq_id) {
