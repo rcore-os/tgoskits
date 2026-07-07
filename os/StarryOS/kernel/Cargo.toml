@@ -41,6 +41,14 @@ sg2002 = [
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
+# SG2002 AIC8800 SoftAP Wi-Fi. The whole bring-up (FDT probe + SoftAP + stack
+# registration) now lives in ax-driver / ax-runtime; the kernel just turns the
+# feature on. No direct chip-crate deps needed here anymore.
+sg2002-wifi = [
+    "sg2002",
+    "ax-runtime/aic8800-wifi",
+]
+sg2002-cvi-usb-camera = ["sg2002"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     task::Context,
     time::Duration,
 };
@@ -34,9 +34,10 @@ use crate::{
 
 const DWC2_DMA_MASK_32: u64 = u32::MAX as u64;
 const DWC2_WAIT_ITERS: usize = 3_000_000;
-const DWC2_CHANNEL_WAIT_ITERS: usize = 8_000_000;
 const DWC2_MAX_CHANNELS: u8 = 16;
 const DWC2_DMA_ALIGN: usize = 64;
+const DWC2_NAK_RETRIES: u32 = 64;
+const DWC2_XACT_RETRIES: u32 = 8;
 
 const GOTGCTL: usize = 0x000;
 const GAHBCFG: usize = 0x008;
@@ -51,6 +52,7 @@ const GHWCFG4: usize = 0x050;
 const HPTXFSIZ: usize = 0x100;
 const HCFG: usize = 0x400;
 const HFNUM: usize = 0x408;
+const HAINT: usize = 0x414;
 const HAINTMSK: usize = 0x418;
 const HPRT0: usize = 0x440;
 const HC_BASE: usize = 0x500;
@@ -81,6 +83,7 @@ const GINTSTS_CURMODE_HOST: u32 = 1 << 0;
 const GINTSTS_PRTINT: u32 = 1 << 24;
 const GINTSTS_HCHINT: u32 = 1 << 25;
 const GINTSTS_DISCONNINT: u32 = 1 << 29;
+const DWC2_RUNTIME_GINTMSK: u32 = GINTSTS_HCHINT;
 
 const GOTGCTL_VBVALOEN: u32 = 1 << 2;
 const GOTGCTL_VBVALOVAL: u32 = 1 << 3;
@@ -118,6 +121,13 @@ const HCINT_TRANSFER_MASK: u32 = HCINT_XFERCOMPL
     | HCINT_AHBERR
     | HCINT_STALL
     | HCINT_NAK
+    | HCINT_XACTERR
+    | HCINT_BBLERR
+    | HCINT_FRMOVRN
+    | HCINT_DATATGLERR;
+const HCINT_DMA_IRQ_MASK: u32 = HCINT_CHHLTD
+    | HCINT_AHBERR
+    | HCINT_STALL
     | HCINT_XACTERR
     | HCINT_BBLERR
     | HCINT_FRMOVRN
@@ -256,25 +266,275 @@ impl Dwc2Registers {
     }
 }
 
-#[derive(Clone)]
-struct TransferWakeups {
-    count: Arc<AtomicUsize>,
+struct Dwc2ChannelCompletionSlot {
+    hcint: AtomicU32,
+    deferred_hcint: AtomicU32,
+    busy: AtomicBool,
+    waker: AtomicWaker,
 }
 
-impl TransferWakeups {
+impl Dwc2ChannelCompletionSlot {
     fn new() -> Self {
         Self {
-            count: Arc::new(AtomicUsize::new(0)),
+            hcint: AtomicU32::new(0),
+            deferred_hcint: AtomicU32::new(0),
+            busy: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
         }
     }
 
-    fn notify(&self) {
-        self.count.fetch_add(1, Ordering::AcqRel);
+    fn try_begin_request(&self) -> bool {
+        self.busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
-    fn take(&self) -> usize {
-        self.count.swap(0, Ordering::AcqRel)
+    fn end_request(&self) {
+        self.busy.store(false, Ordering::Release);
+        self.clear();
     }
+
+    fn clear(&self) {
+        self.hcint.store(0, Ordering::Release);
+        self.deferred_hcint.store(0, Ordering::Release);
+    }
+
+    fn publish(&self, hcint: u32) {
+        let deferred = self.deferred_hcint.swap(0, Ordering::AcqRel);
+        self.hcint.fetch_or(hcint | deferred, Ordering::AcqRel);
+        self.waker.wake();
+    }
+
+    fn defer(&self, hcint: u32) {
+        self.deferred_hcint.fetch_or(hcint, Ordering::AcqRel);
+    }
+
+    fn take(&self) -> Option<u32> {
+        let hcint = self.hcint.swap(0, Ordering::AcqRel);
+        (hcint != 0).then_some(hcint)
+    }
+
+    fn register_waker(&self, cx: &mut Context<'_>) {
+        self.waker.register(cx.waker());
+    }
+}
+
+#[derive(Clone)]
+struct Dwc2ChannelCompletions {
+    slots: Arc<Vec<Dwc2ChannelCompletionSlot>>,
+}
+
+impl Dwc2ChannelCompletions {
+    fn new() -> Self {
+        Self {
+            slots: Arc::new(
+                (0..usize::from(DWC2_MAX_CHANNELS))
+                    .map(|_| Dwc2ChannelCompletionSlot::new())
+                    .collect(),
+            ),
+        }
+    }
+
+    fn slot(&self, channel: u8) -> &Dwc2ChannelCompletionSlot {
+        self.slots
+            .get(usize::from(channel))
+            .unwrap_or_else(|| &self.slots[0])
+    }
+
+    fn try_begin_request(&self, channel: u8) -> bool {
+        self.slot(channel).try_begin_request()
+    }
+
+    fn end_request(&self, channel: u8) {
+        self.slot(channel).end_request();
+    }
+
+    fn clear(&self, channel: u8) {
+        self.slot(channel).clear();
+    }
+
+    fn publish(&self, channel: u8, hcint: u32) {
+        self.slot(channel).publish(hcint);
+    }
+
+    fn defer(&self, channel: u8, hcint: u32) {
+        self.slot(channel).defer(hcint);
+    }
+
+    fn take(&self, channel: u8) -> Option<u32> {
+        self.slot(channel).take()
+    }
+
+    fn register_waker(&self, channel: u8, cx: &mut Context<'_>) {
+        self.slot(channel).register_waker(cx);
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Dwc2TransferStats {
+    pub transfers: usize,
+    pub stages: usize,
+    pub dma_allocs: usize,
+    pub bounce_to_device_bytes: usize,
+    pub bounce_from_device_bytes: usize,
+    pub naks: usize,
+    pub xact_errors: usize,
+    pub timeouts: usize,
+    pub wait_iters: usize,
+    pub init_wait_iters: usize,
+    pub transfer_busy_wait_iters: usize,
+    pub irq_events: usize,
+    pub channel_completions: usize,
+}
+
+#[derive(Default)]
+struct Dwc2StatsInner {
+    transfers: AtomicUsize,
+    stages: AtomicUsize,
+    dma_allocs: AtomicUsize,
+    bounce_to_device_bytes: AtomicUsize,
+    bounce_from_device_bytes: AtomicUsize,
+    naks: AtomicUsize,
+    xact_errors: AtomicUsize,
+    timeouts: AtomicUsize,
+    init_wait_iters: AtomicUsize,
+    transfer_busy_wait_iters: AtomicUsize,
+    irq_events: AtomicUsize,
+    channel_completions: AtomicUsize,
+}
+
+#[derive(Clone, Default)]
+struct Dwc2Stats {
+    inner: Arc<Dwc2StatsInner>,
+}
+
+impl Dwc2Stats {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn reset(&self) {
+        self.inner.transfers.store(0, Ordering::Relaxed);
+        self.inner.stages.store(0, Ordering::Relaxed);
+        self.inner.dma_allocs.store(0, Ordering::Relaxed);
+        self.inner
+            .bounce_to_device_bytes
+            .store(0, Ordering::Relaxed);
+        self.inner
+            .bounce_from_device_bytes
+            .store(0, Ordering::Relaxed);
+        self.inner.naks.store(0, Ordering::Relaxed);
+        self.inner.xact_errors.store(0, Ordering::Relaxed);
+        self.inner.timeouts.store(0, Ordering::Relaxed);
+        self.inner.init_wait_iters.store(0, Ordering::Relaxed);
+        self.inner
+            .transfer_busy_wait_iters
+            .store(0, Ordering::Relaxed);
+        self.inner.irq_events.store(0, Ordering::Relaxed);
+        self.inner.channel_completions.store(0, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> Dwc2TransferStats {
+        let init_wait_iters = self.inner.init_wait_iters.load(Ordering::Relaxed);
+        let transfer_busy_wait_iters = self.inner.transfer_busy_wait_iters.load(Ordering::Relaxed);
+        Dwc2TransferStats {
+            transfers: self.inner.transfers.load(Ordering::Relaxed),
+            stages: self.inner.stages.load(Ordering::Relaxed),
+            dma_allocs: self.inner.dma_allocs.load(Ordering::Relaxed),
+            bounce_to_device_bytes: self.inner.bounce_to_device_bytes.load(Ordering::Relaxed),
+            bounce_from_device_bytes: self.inner.bounce_from_device_bytes.load(Ordering::Relaxed),
+            naks: self.inner.naks.load(Ordering::Relaxed),
+            xact_errors: self.inner.xact_errors.load(Ordering::Relaxed),
+            timeouts: self.inner.timeouts.load(Ordering::Relaxed),
+            wait_iters: init_wait_iters + transfer_busy_wait_iters,
+            init_wait_iters,
+            transfer_busy_wait_iters,
+            irq_events: self.inner.irq_events.load(Ordering::Relaxed),
+            channel_completions: self.inner.channel_completions.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_transfer(&self) {
+        self.inner.transfers.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_stage(&self) {
+        self.inner.stages.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_dma_alloc(&self) {
+        self.inner.dma_allocs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_bounce_to_device(&self, bytes: usize) {
+        self.inner
+            .bounce_to_device_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn record_bounce_from_device(&self, bytes: usize) {
+        self.inner
+            .bounce_from_device_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn record_fault(&self, fault: Dwc2TransferFault) {
+        match fault {
+            Dwc2TransferFault::Nak => {
+                self.inner.naks.fetch_add(1, Ordering::Relaxed);
+            }
+            Dwc2TransferFault::Xact => {
+                self.inner.xact_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            Dwc2TransferFault::Stall
+            | Dwc2TransferFault::Ahb
+            | Dwc2TransferFault::Babble
+            | Dwc2TransferFault::FrameOverrun
+            | Dwc2TransferFault::DataToggle
+            | Dwc2TransferFault::HaltedWithoutComplete => {}
+        }
+    }
+
+    fn record_timeout(&self) {
+        self.inner.timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_init_wait_iters(&self, iters: usize) {
+        self.inner
+            .init_wait_iters
+            .fetch_add(iters, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn record_transfer_busy_wait_iters(&self, iters: usize) {
+        self.inner
+            .transfer_busy_wait_iters
+            .fetch_add(iters, Ordering::Relaxed);
+    }
+
+    fn record_irq_event(&self) {
+        self.inner.irq_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_channel_completion(&self) {
+        self.inner
+            .channel_completions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn build_channel_gates(channel_count: u8) -> Vec<Arc<Mutex<()>>> {
+    (0..usize::from(channel_count.max(1)))
+        .map(|_| Arc::new(Mutex::new(())))
+        .collect()
+}
+
+fn channel_gate(gates: &[Arc<Mutex<()>>], channel: u8) -> Arc<Mutex<()>> {
+    gates
+        .get(usize::from(channel))
+        .or_else(|| gates.first())
+        .expect("DWC2 channel gates must not be empty")
+        .clone()
 }
 
 pub struct Dwc2 {
@@ -285,7 +545,9 @@ pub struct Dwc2 {
     event_handler: Option<Dwc2EventHandler>,
     next_addr: u8,
     channel_count: u8,
-    transfer_gate: Arc<Mutex<()>>,
+    channel_gates: Vec<Arc<Mutex<()>>>,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
 }
 
 unsafe impl Send for Dwc2 {}
@@ -299,9 +561,11 @@ impl Dwc2 {
 
         let regs = Dwc2Registers::new(params.mmio);
         let kernel = Kernel::new(params.params.dma_mask, params.kernel);
-        let wakeups = TransferWakeups::new();
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());
-        let event_handler = Dwc2EventHandler::new(regs, wakeups);
+        let channel_completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let event_handler = Dwc2EventHandler::new(regs, channel_completions.clone(), stats.clone());
+        let channel_count = regs.host_channel_count();
 
         Ok(Self {
             regs,
@@ -310,8 +574,10 @@ impl Dwc2 {
             root_hub: Some(root_hub),
             event_handler: Some(event_handler),
             next_addr: 1,
-            channel_count: regs.host_channel_count(),
-            transfer_gate: Arc::new(Mutex::new(())),
+            channel_count,
+            channel_gates: build_channel_gates(channel_count),
+            channel_completions,
+            stats,
         })
     }
 
@@ -351,16 +617,16 @@ impl Dwc2 {
         self.flush_rx_fifo()?;
 
         self.channel_count = self.regs.host_channel_count();
+        if self.channel_gates.len() != usize::from(self.channel_count) {
+            self.channel_gates = build_channel_gates(self.channel_count);
+        }
         let channel_mask = if self.channel_count >= 16 {
             u16::MAX as u32
         } else {
             (1u32 << self.channel_count) - 1
         };
         self.regs.write32(HAINTMSK, channel_mask);
-        self.regs.write32(
-            GINTMSK,
-            GINTSTS_PRTINT | GINTSTS_HCHINT | GINTSTS_DISCONNINT,
-        );
+        self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
         self.regs.write32(GINTSTS, u32::MAX);
         self.port_power_on();
         self.kernel.delay(Duration::from_millis(20));
@@ -388,12 +654,15 @@ impl Dwc2 {
     }
 
     fn wait_until(&self, ready: impl Fn() -> bool) -> Result<()> {
-        for _ in 0..DWC2_WAIT_ITERS {
+        for iter in 0..DWC2_WAIT_ITERS {
             if ready() {
+                self.stats.record_init_wait_iters(iter + 1);
                 return Ok(());
             }
             core::hint::spin_loop();
         }
+        self.stats.record_init_wait_iters(DWC2_WAIT_ITERS);
+        self.stats.record_timeout();
         Err(USBError::Timeout)
     }
 
@@ -451,14 +720,16 @@ impl Dwc2 {
 
     async fn new_device(&mut self, info: DeviceAddressInfo) -> Result<Box<dyn DeviceOp>> {
         let addr = self.allocate_address()?;
-        let mut device = Dwc2Device::new(
-            addr,
-            self.regs,
-            self.kernel.clone(),
-            info.port_speed,
-            self.channel_count,
-            self.transfer_gate.clone(),
-        )?;
+        let mut device = Dwc2Device::new(Dwc2DeviceParams {
+            address: addr,
+            regs: self.regs,
+            kernel: self.kernel.clone(),
+            port_speed: info.port_speed,
+            channel_count: self.channel_count,
+            channel_gates: self.channel_gates.clone(),
+            channel_completions: self.channel_completions.clone(),
+            stats: self.stats.clone(),
+        })?;
         device.init().await?;
         Ok(Box::new(device))
     }
@@ -493,16 +764,21 @@ impl CoreOp for Dwc2 {
     }
 
     fn enable_irq(&mut self) -> Result<()> {
-        self.regs.write32(
-            GINTMSK,
-            GINTSTS_PRTINT | GINTSTS_HCHINT | GINTSTS_DISCONNINT,
-        );
+        self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
         Ok(())
     }
 
     fn disable_irq(&mut self) -> Result<()> {
         self.regs.write32(GINTMSK, 0);
         Ok(())
+    }
+
+    fn dwc2_transfer_stats(&self) -> Option<Dwc2TransferStats> {
+        Some(self.stats.snapshot())
+    }
+
+    fn reset_dwc2_transfer_stats(&self) {
+        self.stats.reset();
     }
 
     fn kernel(&self) -> &Kernel {
@@ -608,15 +884,24 @@ impl HubOp for Dwc2RootHub {
 
 struct Dwc2EventHandler {
     regs: Dwc2Registers,
-    wakeups: TransferWakeups,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
 }
 
 unsafe impl Send for Dwc2EventHandler {}
 unsafe impl Sync for Dwc2EventHandler {}
 
 impl Dwc2EventHandler {
-    fn new(regs: Dwc2Registers, wakeups: TransferWakeups) -> Self {
-        Self { regs, wakeups }
+    fn new(
+        regs: Dwc2Registers,
+        channel_completions: Dwc2ChannelCompletions,
+        stats: Dwc2Stats,
+    ) -> Self {
+        Self {
+            regs,
+            channel_completions,
+            stats,
+        }
     }
 }
 
@@ -629,17 +914,59 @@ impl EventHandlerOp for Dwc2EventHandler {
             return Event::Nothing;
         }
 
-        self.regs.write32(GINTSTS, pending);
         if pending & GINTSTS_PRTINT != 0 {
+            self.regs.write32(GINTSTS, GINTSTS_PRTINT);
             return Event::PortChange { port: 1 };
         }
         if pending & GINTSTS_HCHINT != 0 {
-            self.wakeups.notify();
+            self.stats.record_irq_event();
+            let count = self.handle_channel_interrupts();
+            self.regs.write32(GINTSTS, GINTSTS_HCHINT);
             return Event::TransferActivity {
-                count: self.wakeups.take().max(1),
+                count: count.max(1),
             };
         }
+        self.regs.write32(GINTSTS, pending);
         Event::Stopped
+    }
+}
+
+impl Dwc2EventHandler {
+    fn handle_channel_interrupts(&self) -> usize {
+        let pending = self.regs.read32(HAINT) & self.regs.read32(HAINTMSK);
+        let mut count = 0usize;
+        for channel in 0..DWC2_MAX_CHANNELS {
+            if pending & (1u32 << channel) == 0 {
+                continue;
+            }
+            let hcint_raw = self.regs.channel_read32(channel, HCINT) & HCINT_TRANSFER_MASK;
+            let hcint_masked = hcint_raw & self.regs.channel_read32(channel, HCINTMSK);
+            if hcint_masked == 0 {
+                continue;
+            }
+            self.regs.channel_write32(channel, HCINT, hcint_raw);
+            let hcint = if hcint_masked & HCINT_CHHLTD != 0 {
+                hcint_raw
+            } else {
+                hcint_masked
+            };
+            if hcint & HCINT_CHHLTD == 0 {
+                let hcchar = self.regs.channel_read32(channel, HCCHAR);
+                if hcchar & HCCHAR_CHENA != 0 {
+                    self.channel_completions.defer(channel, hcint);
+                    self.regs.channel_write32(
+                        channel,
+                        HCCHAR,
+                        hcchar | HCCHAR_CHENA | HCCHAR_CHDIS,
+                    );
+                    continue;
+                }
+            }
+            self.channel_completions.publish(channel, hcint);
+            self.stats.record_channel_completion();
+            count += 1;
+        }
+        count
     }
 }
 
@@ -707,6 +1034,19 @@ impl Dwc2EpType {
             Self::Bulk => 2,
             Self::Interrupt => 3,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DataStageRetryPolicy {
+    nak_retries: u32,
+}
+
+fn data_stage_retry_policy(ep_type: Dwc2EpType) -> DataStageRetryPolicy {
+    match ep_type {
+        Dwc2EpType::Control | Dwc2EpType::Bulk | Dwc2EpType::Interrupt => DataStageRetryPolicy {
+            nak_retries: DWC2_NAK_RETRIES,
+        },
     }
 }
 
@@ -978,17 +1318,6 @@ fn fault_to_transfer_error(fault: Dwc2TransferFault, hcint: u32) -> TransferErro
     }
 }
 
-fn usb_to_transfer_error(err: USBError) -> TransferError {
-    match err {
-        USBError::Timeout => TransferError::Timeout,
-        USBError::TransferError(err) => err,
-        USBError::NotSupported => TransferError::NotSupported,
-        USBError::NoMemory => TransferError::Other(anyhow!("DWC2 DMA allocation failed")),
-        USBError::NotFound | USBError::InvalidParameter => TransferError::InvalidEndpoint,
-        err => TransferError::Other(anyhow!("DWC2 transfer failed: {err}")),
-    }
-}
-
 fn endpoint_number(address: u8) -> u8 {
     address & 0x0f
 }
@@ -1024,15 +1353,57 @@ fn setup_packet_bytes(setup: &ControlSetup, direction: Direction, len: usize) ->
     ]
 }
 
+#[derive(Default)]
+struct Dwc2DmaBufferPool {
+    cached: Option<CoherentArray<u8>>,
+}
+
+impl Dwc2DmaBufferPool {
+    fn take(
+        &mut self,
+        kernel: &Kernel,
+        len: usize,
+        stats: &Dwc2Stats,
+    ) -> core::result::Result<Option<CoherentArray<u8>>, TransferError> {
+        if len == 0 {
+            return Ok(None);
+        }
+        if self
+            .cached
+            .as_ref()
+            .is_some_and(|buffer| buffer.len() >= len)
+        {
+            return Ok(self.cached.take());
+        }
+
+        let buffer = kernel
+            .coherent_array_zero_with_align::<u8>(len, DWC2_DMA_ALIGN)
+            .map_err(|err| {
+                TransferError::Other(anyhow!("DWC2 coherent DMA allocation failed: {err}"))
+            })?;
+        stats.record_dma_alloc();
+        Ok(Some(buffer))
+    }
+
+    fn reclaim(&mut self, buffer: Dwc2DmaBuffer) {
+        if let Some(coherent) = buffer.coherent {
+            self.cached = Some(coherent);
+        }
+    }
+}
+
 struct Dwc2DmaBuffer {
     direction: Direction,
     request_buffer: Option<(NonNull<u8>, usize)>,
     coherent: Option<CoherentArray<u8>>,
+    len: usize,
 }
 
 impl Dwc2DmaBuffer {
     fn new(
         kernel: &Kernel,
+        pool: &mut Dwc2DmaBufferPool,
+        stats: &Dwc2Stats,
         request: &TransferRequest,
     ) -> core::result::Result<Self, TransferError> {
         let direction = request.direction();
@@ -1040,15 +1411,18 @@ impl Dwc2DmaBuffer {
             .buffer()
             .filter(|buffer| buffer.len > 0)
             .map(|buffer| (buffer.ptr, buffer.len));
+        let len = request_buffer.map_or(0, |(_, len)| len);
         let coherent = if let Some((ptr, len)) = request_buffer {
-            let mut coherent = kernel
-                .coherent_array_zero_with_align::<u8>(len, DWC2_DMA_ALIGN)
-                .map_err(|err| {
-                    TransferError::Other(anyhow!("DWC2 coherent DMA allocation failed: {err}"))
-                })?;
+            let mut coherent = pool.take(kernel, len, stats)?.ok_or_else(|| {
+                TransferError::Other(anyhow!("DWC2 DMA buffer pool returned no buffer"))
+            })?;
             if matches!(direction, Direction::Out) {
                 let data = unsafe { core::slice::from_raw_parts(ptr.as_ptr().cast_const(), len) };
-                coherent.copy_from_slice_cpu(data);
+                coherent.write_with_cpu(len, |dst| dst.copy_from_slice(data));
+                stats.record_bounce_to_device(len);
+            } else {
+                coherent.write_with_cpu(len, |dst| dst.fill(0));
+                stats.record_bounce_from_device(len);
             }
             Some(coherent)
         } else {
@@ -1059,11 +1433,12 @@ impl Dwc2DmaBuffer {
             direction,
             request_buffer,
             coherent,
+            len,
         })
     }
 
     fn buffer_len(&self) -> usize {
-        self.coherent.as_ref().map_or(0, CoherentArray::len)
+        self.len
     }
 
     fn dma_addr(&self) -> u64 {
@@ -1083,7 +1458,7 @@ impl Dwc2DmaBuffer {
         };
         let Some(coherent) = self.coherent.as_ref() else {
             return Err(TransferError::Other(anyhow!(
-                "DWC2 IN transfer completed without a coherent buffer"
+                "DWC2 IN transfer completed without a DMA buffer"
             )));
         };
         if actual > len || actual > coherent.len() {
@@ -1093,7 +1468,7 @@ impl Dwc2DmaBuffer {
         }
 
         let dst = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), actual) };
-        dst.copy_from_slice(&coherent.as_slice_cpu()[..actual]);
+        coherent.read_with_cpu(actual, |src| dst.copy_from_slice(src));
         Ok(())
     }
 }
@@ -1104,7 +1479,9 @@ struct Dwc2Device {
     kernel: Kernel,
     port_speed: Speed,
     channel_count: u8,
-    transfer_gate: Arc<Mutex<()>>,
+    channel_gates: Vec<Arc<Mutex<()>>>,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
     desc: DeviceDescriptor,
     ctrl_ep: Endpoint,
     config_desc: Vec<ConfigurationDescriptor>,
@@ -1113,33 +1490,51 @@ struct Dwc2Device {
     ep_interfaces: BTreeMap<u8, u8>,
 }
 
+struct Dwc2DeviceParams {
+    address: u8,
+    regs: Dwc2Registers,
+    kernel: Kernel,
+    port_speed: Speed,
+    channel_count: u8,
+    channel_gates: Vec<Arc<Mutex<()>>>,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
+}
+
 unsafe impl Send for Dwc2Device {}
 
 impl Dwc2Device {
-    fn new(
-        address: u8,
-        regs: Dwc2Registers,
-        kernel: Kernel,
-        port_speed: Speed,
-        channel_count: u8,
-        transfer_gate: Arc<Mutex<()>>,
-    ) -> Result<Self> {
-        let raw = Dwc2Endpoint::new(
+    fn new(params: Dwc2DeviceParams) -> Result<Self> {
+        let Dwc2DeviceParams {
+            address,
             regs,
-            kernel.clone(),
-            0,
+            kernel,
             port_speed,
-            0,
-            EndpointInfo::control(),
-            transfer_gate.clone(),
-        )?;
+            channel_count,
+            channel_gates,
+            channel_completions,
+            stats,
+        } = params;
+        let raw = Dwc2Endpoint::new(Dwc2EndpointParams {
+            regs,
+            kernel: kernel.clone(),
+            device_address: 0,
+            port_speed,
+            channel: 0,
+            info: EndpointInfo::control(),
+            channel_gate: channel_gate(&channel_gates, 0),
+            channel_completions: channel_completions.clone(),
+            stats: stats.clone(),
+        })?;
         Ok(Self {
             address,
             regs,
             kernel,
             port_speed,
             channel_count,
-            transfer_gate,
+            channel_gates,
+            channel_completions,
+            stats,
             desc: unsafe { core::mem::zeroed() },
             ctrl_ep: Endpoint::new(EndpointInfo::control(), raw),
             config_desc: Vec::new(),
@@ -1234,15 +1629,17 @@ impl Dwc2Device {
             }
             let info = EndpointInfo::from(&desc);
             let channel = self.channel_for_endpoint(info);
-            let raw = Dwc2Endpoint::new(
-                self.regs,
-                self.kernel.clone(),
-                self.address,
-                self.port_speed,
+            let raw = Dwc2Endpoint::new(Dwc2EndpointParams {
+                regs: self.regs,
+                kernel: self.kernel.clone(),
+                device_address: self.address,
+                port_speed: self.port_speed,
                 channel,
                 info,
-                self.transfer_gate.clone(),
-            )?;
+                channel_gate: channel_gate(&self.channel_gates, channel),
+                channel_completions: self.channel_completions.clone(),
+                stats: self.stats.clone(),
+            })?;
             self.eps.insert(desc.address, Endpoint::new(info, raw));
             self.ep_interfaces.insert(desc.address, interface);
         }
@@ -1324,6 +1721,46 @@ impl DeviceOp for Dwc2Device {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Dwc2StageRole {
+    ControlSetup,
+    ControlData,
+    ControlStatus,
+    Data {
+        direction: Direction,
+        max_packet_size: u16,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Dwc2QueuedStage {
+    stage: Dwc2TransferStage,
+    role: Dwc2StageRole,
+    nak_retries: u32,
+}
+
+#[derive(Clone, Copy)]
+struct Dwc2InFlightStage {
+    queued: Dwc2QueuedStage,
+    nak_left: u32,
+    xact_left: u32,
+}
+
+struct Dwc2ActiveRequest {
+    id: RequestId,
+    transfer: Dwc2DmaBuffer,
+    _setup_dma: Option<CoherentArray<u8>>,
+    stages: Vec<Dwc2QueuedStage>,
+    next_stage: usize,
+    in_flight: Option<Dwc2InFlightStage>,
+    actual_length: usize,
+}
+
+struct Dwc2PreparedStages {
+    stages: Vec<Dwc2QueuedStage>,
+    setup_dma: Option<CoherentArray<u8>>,
+}
+
 struct Dwc2Endpoint {
     regs: Dwc2Registers,
     kernel: Kernel,
@@ -1331,28 +1768,46 @@ struct Dwc2Endpoint {
     port_speed: Speed,
     channel: u8,
     info: EndpointInfo,
-    transfer_gate: Arc<Mutex<()>>,
+    channel_gate: Arc<Mutex<()>>,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
+    dma_pool: Dwc2DmaBufferPool,
     data_toggle: DataToggle,
     next_request_id: u64,
+    active: Option<Dwc2ActiveRequest>,
     completed: Option<(
         RequestId,
         core::result::Result<TransferCompletion, TransferError>,
     )>,
-    waker: AtomicWaker,
 }
 
 unsafe impl Send for Dwc2Endpoint {}
 
+struct Dwc2EndpointParams {
+    regs: Dwc2Registers,
+    kernel: Kernel,
+    device_address: u8,
+    port_speed: Speed,
+    channel: u8,
+    info: EndpointInfo,
+    channel_gate: Arc<Mutex<()>>,
+    channel_completions: Dwc2ChannelCompletions,
+    stats: Dwc2Stats,
+}
+
 impl Dwc2Endpoint {
-    fn new(
-        regs: Dwc2Registers,
-        kernel: Kernel,
-        device_address: u8,
-        port_speed: Speed,
-        channel: u8,
-        info: EndpointInfo,
-        transfer_gate: Arc<Mutex<()>>,
-    ) -> Result<Self> {
+    fn new(params: Dwc2EndpointParams) -> Result<Self> {
+        let Dwc2EndpointParams {
+            regs,
+            kernel,
+            device_address,
+            port_speed,
+            channel,
+            info,
+            channel_gate,
+            channel_completions,
+            stats,
+        } = params;
         endpoint_type_to_dwc2(info.transfer_type)?;
         Ok(Self {
             regs,
@@ -1361,11 +1816,14 @@ impl Dwc2Endpoint {
             port_speed,
             channel,
             info,
-            transfer_gate,
+            channel_gate,
+            channel_completions,
+            stats,
+            dma_pool: Dwc2DmaBufferPool::default(),
             data_toggle: DataToggle::data0(),
             next_request_id: 1,
+            active: None,
             completed: None,
-            waker: AtomicWaker::new(),
         })
     }
 
@@ -1383,42 +1841,44 @@ impl Dwc2Endpoint {
         RequestId::new(id)
     }
 
-    fn execute_request(
+    fn prepare_request(
         &mut self,
         id: RequestId,
         request: TransferRequest,
-    ) -> core::result::Result<TransferCompletion, TransferError> {
+    ) -> core::result::Result<Dwc2ActiveRequest, TransferError> {
         if matches!(request, TransferRequest::Isochronous { .. }) {
             return Err(TransferError::NotSupported);
         }
 
-        let transfer = Dwc2DmaBuffer::new(&self.kernel, &request)?;
-
-        let transfer_gate = self.transfer_gate.clone();
-        let _guard = transfer_gate.lock();
-        let actual_length = match &request {
-            TransferRequest::Control { .. } => self.execute_control(&request, &transfer)?,
+        self.stats.record_transfer();
+        let transfer = Dwc2DmaBuffer::new(&self.kernel, &mut self.dma_pool, &self.stats, &request)?;
+        let prepared = match &request {
+            TransferRequest::Control { .. } => self.control_stages(&request, &transfer)?,
             TransferRequest::Bulk { .. } | TransferRequest::Interrupt { .. } => {
-                self.execute_data(&request, &transfer)?
+                Dwc2PreparedStages {
+                    stages: self.data_stages(&request, &transfer)?,
+                    setup_dma: None,
+                }
             }
             TransferRequest::Isochronous { .. } => return Err(TransferError::NotSupported),
         };
 
-        transfer.copy_in_to_request(actual_length)?;
-
-        Ok(TransferCompletion {
-            request_id: id,
-            status: TransferStatus::Completed,
-            actual_length,
-            iso_packets: Vec::new(),
+        Ok(Dwc2ActiveRequest {
+            id,
+            transfer,
+            _setup_dma: prepared.setup_dma,
+            stages: prepared.stages,
+            next_stage: 0,
+            in_flight: None,
+            actual_length: 0,
         })
     }
 
-    fn execute_control(
+    fn control_stages(
         &self,
         request: &TransferRequest,
         transfer: &Dwc2DmaBuffer,
-    ) -> core::result::Result<usize, TransferError> {
+    ) -> core::result::Result<Dwc2PreparedStages, TransferError> {
         let TransferRequest::Control {
             setup, direction, ..
         } = request
@@ -1428,11 +1888,13 @@ impl Dwc2Endpoint {
 
         let mut setup_dma = self
             .kernel
-            .coherent_box_zero_with_align::<[u8; 8]>(8)
+            .coherent_array_zero_with_align::<u8>(8, DWC2_DMA_ALIGN)
             .map_err(|err| {
                 TransferError::Other(anyhow!("DWC2 setup DMA allocation failed: {err}"))
             })?;
-        setup_dma.write_cpu(setup_packet_bytes(setup, *direction, transfer.buffer_len()));
+        self.stats.record_dma_alloc();
+        let setup_bytes = setup_packet_bytes(setup, *direction, transfer.buffer_len());
+        setup_dma.write_with_cpu(8, |dst| dst.copy_from_slice(&setup_bytes));
         let setup_addr = dma_addr32(setup_dma.dma_addr().as_u64())?;
         let data_addr = dma_addr32(transfer.dma_addr())?;
         let plan = build_control_plan(
@@ -1443,20 +1905,35 @@ impl Dwc2Endpoint {
             data_addr,
         )?;
 
-        self.execute_stage(self.channel, plan.setup, true)?;
-        let mut actual_length = 0usize;
+        let mut stages = Vec::with_capacity(plan.data.len() + 2);
+        stages.push(Dwc2QueuedStage {
+            stage: plan.setup,
+            role: Dwc2StageRole::ControlSetup,
+            nak_retries: DWC2_NAK_RETRIES,
+        });
         for stage in plan.data {
-            actual_length += self.execute_stage(self.channel, stage, true)?;
+            stages.push(Dwc2QueuedStage {
+                stage,
+                role: Dwc2StageRole::ControlData,
+                nak_retries: DWC2_NAK_RETRIES,
+            });
         }
-        self.execute_stage(self.channel, plan.status, true)?;
-        Ok(actual_length)
+        stages.push(Dwc2QueuedStage {
+            stage: plan.status,
+            role: Dwc2StageRole::ControlStatus,
+            nak_retries: DWC2_NAK_RETRIES,
+        });
+        Ok(Dwc2PreparedStages {
+            stages,
+            setup_dma: Some(setup_dma),
+        })
     }
 
-    fn execute_data(
-        &mut self,
+    fn data_stages(
+        &self,
         request: &TransferRequest,
         transfer: &Dwc2DmaBuffer,
-    ) -> core::result::Result<usize, TransferError> {
+    ) -> core::result::Result<Vec<Dwc2QueuedStage>, TransferError> {
         let (direction, ep_type) = match request {
             TransferRequest::Bulk { direction, .. } => (*direction, Dwc2EpType::Bulk),
             TransferRequest::Interrupt { direction, .. } => (*direction, Dwc2EpType::Interrupt),
@@ -1465,7 +1942,9 @@ impl Dwc2Endpoint {
 
         let mps = self.info.max_packet_size.max(1);
         let endpoint = endpoint_number(self.info.address.raw());
-        let mut actual_length = 0usize;
+        let retry_policy = data_stage_retry_policy(ep_type);
+        let mut stages = Vec::new();
+        let mut toggle = self.data_toggle;
         let mut offset = 0u64;
         for len in split_dma_lengths(transfer.buffer_len(), mps) {
             let packets = packet_count(len, mps);
@@ -1478,110 +1957,191 @@ impl Dwc2Endpoint {
                     mps,
                     matches!(self.port_speed, Speed::Low),
                 ),
-                hctsiz: hctsiz(self.data_toggle.pid(), packets, len as u32),
+                hctsiz: hctsiz(toggle.pid(), packets, len as u32),
                 dma_addr: dma_addr32(transfer.dma_addr() + offset)?,
                 len,
             };
             if matches!(ep_type, Dwc2EpType::Interrupt) {
                 stage.hcchar |= self.regs.periodic_odd_frame_bit();
             }
-            let actual = self.execute_stage(self.channel, stage, false)?;
-            actual_length += actual;
-            self.data_toggle
-                .advance(successful_packet_count(actual, len, mps));
+            stages.push(Dwc2QueuedStage {
+                stage,
+                role: Dwc2StageRole::Data {
+                    direction,
+                    max_packet_size: mps,
+                },
+                nak_retries: retry_policy.nak_retries,
+            });
+            toggle.advance(packets);
             offset += len as u64;
-            if matches!(direction, Direction::In) && actual < len {
-                break;
-            }
         }
-        Ok(actual_length)
+        Ok(stages)
     }
 
-    fn execute_stage(
+    fn start_active_request(
+        &mut self,
+        mut active: Dwc2ActiveRequest,
+    ) -> core::result::Result<Dwc2ActiveRequest, TransferError> {
+        self.start_next_stage(&mut active)?;
+        Ok(active)
+    }
+
+    fn start_next_stage(
         &self,
-        channel: u8,
-        stage: Dwc2TransferStage,
-        retry_nak: bool,
-    ) -> core::result::Result<usize, TransferError> {
-        const NAK_RETRIES: u32 = 64;
-        const XACT_RETRIES: u32 = 8;
+        active: &mut Dwc2ActiveRequest,
+    ) -> core::result::Result<bool, TransferError> {
+        let Some(queued) = active.stages.get(active.next_stage).copied() else {
+            return Ok(false);
+        };
+        active.next_stage += 1;
+        self.start_stage(queued.stage)?;
+        active.in_flight = Some(Dwc2InFlightStage {
+            queued,
+            nak_left: queued.nak_retries,
+            xact_left: DWC2_XACT_RETRIES,
+        });
+        Ok(true)
+    }
 
-        let mut nak_left = if retry_nak { NAK_RETRIES } else { 0 };
-        let mut xact_left = XACT_RETRIES;
-        loop {
-            self.wait_channel_disabled(channel)
-                .map_err(usb_to_transfer_error)?;
-            self.halt_channel(channel);
-            self.regs.channel_write32(channel, HCSPLT, 0);
-            self.regs.channel_write32(channel, HCINT, HCINT_ALL_W1C);
-            self.regs
-                .channel_write32(channel, HCINTMSK, HCINT_TRANSFER_MASK);
-            self.regs.channel_write32(channel, HCTSIZ, stage.hctsiz);
-            mb();
-            self.regs.channel_write32(channel, HCDMA, stage.dma_addr);
-            mb();
-            self.regs
-                .channel_write32(channel, HCCHAR, stage.hcchar | HCCHAR_CHENA);
+    fn restart_stage(
+        &self,
+        active: &mut Dwc2ActiveRequest,
+        in_flight: Dwc2InFlightStage,
+    ) -> core::result::Result<(), TransferError> {
+        self.start_stage(in_flight.queued.stage)?;
+        active.in_flight = Some(in_flight);
+        Ok(())
+    }
 
-            let hcint = self
-                .wait_channel_halted(channel)
-                .map_err(usb_to_transfer_error)?;
-            if let Some(fault) = hcint_fault(hcint) {
-                match fault {
-                    Dwc2TransferFault::Nak if nak_left > 0 => {
-                        nak_left -= 1;
-                        self.kernel.delay(Duration::from_millis(1));
-                        continue;
+    fn start_stage(&self, stage: Dwc2TransferStage) -> core::result::Result<(), TransferError> {
+        if self.regs.channel_read32(self.channel, HCCHAR) & HCCHAR_CHENA != 0 {
+            return Err(TransferError::QueueFull);
+        }
+
+        self.stats.record_stage();
+        self.channel_completions.clear(self.channel);
+        let _guard = self.channel_gate.lock();
+        self.regs.channel_write32(self.channel, HCSPLT, 0);
+        self.regs
+            .channel_write32(self.channel, HCINT, HCINT_ALL_W1C);
+        self.regs
+            .channel_write32(self.channel, HCINTMSK, HCINT_DMA_IRQ_MASK);
+        self.regs
+            .channel_write32(self.channel, HCTSIZ, stage.hctsiz);
+        mb();
+        self.regs
+            .channel_write32(self.channel, HCDMA, stage.dma_addr);
+        mb();
+        self.regs
+            .channel_write32(self.channel, HCCHAR, stage.hcchar | HCCHAR_CHENA);
+        Ok(())
+    }
+
+    fn poll_active_request(
+        &mut self,
+        mut active: Dwc2ActiveRequest,
+    ) -> Option<core::result::Result<TransferCompletion, TransferError>> {
+        let Some(hcint) = self.channel_completions.take(self.channel) else {
+            self.active = Some(active);
+            return None;
+        };
+        let Some(mut in_flight) = active.in_flight.take() else {
+            return Some(self.complete_active_request(
+                active,
+                Err(TransferError::Other(anyhow!(
+                    "DWC2 completion arrived without an in-flight stage"
+                ))),
+            ));
+        };
+
+        if let Some(fault) = hcint_fault(hcint) {
+            self.stats.record_fault(fault);
+            match fault {
+                Dwc2TransferFault::Nak if in_flight.nak_left > 0 => {
+                    in_flight.nak_left -= 1;
+                    if let Err(err) = self.restart_stage(&mut active, in_flight) {
+                        return Some(self.complete_active_request(active, Err(err)));
                     }
-                    Dwc2TransferFault::Xact if xact_left > 0 => {
-                        xact_left -= 1;
-                        self.kernel.delay(Duration::from_millis(1));
-                        continue;
+                    self.active = Some(active);
+                    return None;
+                }
+                Dwc2TransferFault::Xact if in_flight.xact_left > 0 => {
+                    in_flight.xact_left -= 1;
+                    if let Err(err) = self.restart_stage(&mut active, in_flight) {
+                        return Some(self.complete_active_request(active, Err(err)));
                     }
-                    _ => return Err(fault_to_transfer_error(fault, hcint)),
+                    self.active = Some(active);
+                    return None;
+                }
+                _ => {
+                    warn!(
+                        "dwc2: transfer fault channel={} role={:?} hcint={:#x} nak_left={} \
+                         xact_left={}",
+                        self.channel,
+                        in_flight.queued.role,
+                        hcint,
+                        in_flight.nak_left,
+                        in_flight.xact_left
+                    );
+                    return Some(self.complete_active_request(
+                        active,
+                        Err(fault_to_transfer_error(fault, hcint)),
+                    ));
                 }
             }
+        }
 
-            let hctsiz_after = self.regs.channel_read32(channel, HCTSIZ);
-            return Ok(stage_actual_length(stage, hctsiz_after));
+        let hctsiz_after = self.regs.channel_read32(self.channel, HCTSIZ);
+        let actual = stage_actual_length(in_flight.queued.stage, hctsiz_after);
+        match in_flight.queued.role {
+            Dwc2StageRole::ControlSetup | Dwc2StageRole::ControlStatus => {}
+            Dwc2StageRole::ControlData => {
+                active.actual_length = active.actual_length.saturating_add(actual);
+            }
+            Dwc2StageRole::Data {
+                direction,
+                max_packet_size,
+            } => {
+                active.actual_length = active.actual_length.saturating_add(actual);
+                self.data_toggle.advance(successful_packet_count(
+                    actual,
+                    in_flight.queued.stage.len,
+                    max_packet_size,
+                ));
+                if matches!(direction, Direction::In) && actual < in_flight.queued.stage.len {
+                    return Some(self.complete_active_request(active, Ok(())));
+                }
+            }
+        }
+
+        match self.start_next_stage(&mut active) {
+            Ok(true) => {
+                self.active = Some(active);
+                None
+            }
+            Ok(false) => Some(self.complete_active_request(active, Ok(()))),
+            Err(err) => Some(self.complete_active_request(active, Err(err))),
         }
     }
 
-    fn wait_channel_disabled(&self, channel: u8) -> Result<()> {
-        for _ in 0..DWC2_CHANNEL_WAIT_ITERS {
-            if self.regs.channel_read32(channel, HCCHAR) & HCCHAR_CHENA == 0 {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(USBError::Timeout)
-    }
-
-    fn halt_channel(&self, channel: u8) {
-        let value = self.regs.channel_read32(channel, HCCHAR);
-        if value & HCCHAR_CHENA == 0 {
-            return;
-        }
-        self.regs
-            .channel_write32(channel, HCCHAR, value | HCCHAR_CHENA | HCCHAR_CHDIS);
-        for _ in 0..DWC2_WAIT_ITERS {
-            if self.regs.channel_read32(channel, HCCHAR) & HCCHAR_CHENA == 0 {
-                return;
-            }
-            core::hint::spin_loop();
-        }
-    }
-
-    fn wait_channel_halted(&self, channel: u8) -> Result<u32> {
-        for _ in 0..DWC2_CHANNEL_WAIT_ITERS {
-            let hcint = self.regs.channel_read32(channel, HCINT);
-            if hcint & HCINT_CHHLTD != 0 {
-                self.regs.channel_write32(channel, HCINT, hcint);
-                return Ok(hcint);
-            }
-            core::hint::spin_loop();
-        }
-        Err(USBError::Timeout)
+    fn complete_active_request(
+        &mut self,
+        active: Dwc2ActiveRequest,
+        result: core::result::Result<(), TransferError>,
+    ) -> core::result::Result<TransferCompletion, TransferError> {
+        let id = active.id;
+        let completion = result.and_then(|()| {
+            active.transfer.copy_in_to_request(active.actual_length)?;
+            Ok(TransferCompletion {
+                request_id: id,
+                status: TransferStatus::Completed,
+                actual_length: active.actual_length,
+                iso_packets: Vec::new(),
+            })
+        });
+        self.dma_pool.reclaim(active.transfer);
+        self.channel_completions.end_request(self.channel);
+        completion
     }
 }
 
@@ -1590,13 +2150,29 @@ impl crate::backend::ty::ep::EndpointOp for Dwc2Endpoint {
         &mut self,
         request: TransferRequest,
     ) -> core::result::Result<RequestId, TransferError> {
-        if self.completed.is_some() {
+        if self.active.is_some() || self.completed.is_some() {
             return Err(TransferError::QueueFull);
         }
         let id = self.allocate_request_id();
-        let result = self.execute_request(id, request);
-        self.completed = Some((id, result));
-        self.waker.wake();
+        if !self.channel_completions.try_begin_request(self.channel) {
+            return Err(TransferError::QueueFull);
+        }
+        self.channel_completions.clear(self.channel);
+        let active = match self.prepare_request(id, request) {
+            Ok(active) => active,
+            Err(err) => {
+                self.channel_completions.end_request(self.channel);
+                return Err(err);
+            }
+        };
+        let active = match self.start_active_request(active) {
+            Ok(active) => active,
+            Err(err) => {
+                self.channel_completions.end_request(self.channel);
+                return Err(err);
+            }
+        };
+        self.active = Some(active);
         Ok(id)
     }
 
@@ -1604,27 +2180,52 @@ impl crate::backend::ty::ep::EndpointOp for Dwc2Endpoint {
         &mut self,
         id: RequestId,
     ) -> Option<core::result::Result<TransferCompletion, TransferError>> {
-        let (completed_id, _) = self.completed.as_ref()?;
-        if *completed_id != id {
+        if let Some((completed_id, _)) = self.completed.as_ref() {
+            if *completed_id != id {
+                return Some(Err(TransferError::InvalidEndpoint));
+            }
+            return self.completed.take().map(|(_, result)| result);
+        }
+
+        let active = self.active.take()?;
+        if active.id != id {
+            self.active = Some(active);
             return Some(Err(TransferError::InvalidEndpoint));
         }
-        self.completed.take().map(|(_, result)| result)
+        self.poll_active_request(active)
     }
 
-    fn register_waker(&self, _id: RequestId, cx: &mut Context<'_>) {
-        self.waker.register(cx.waker());
-        cx.waker().wake_by_ref();
+    fn register_waker(&self, id: RequestId, cx: &mut Context<'_>) {
+        if self.active.as_ref().is_some_and(|active| active.id == id) {
+            self.channel_completions.register_waker(self.channel, cx);
+        }
     }
 
     fn cancel_request(&mut self, id: RequestId) -> core::result::Result<(), TransferError> {
-        let Some((completed_id, _)) = self.completed.as_ref() else {
+        if self
+            .completed
+            .as_ref()
+            .is_some_and(|(done_id, _)| *done_id == id)
+        {
+            self.completed = Some((id, Err(TransferError::Cancelled)));
+            return Ok(());
+        }
+        let Some(active) = self.active.take() else {
             return Err(TransferError::InvalidEndpoint);
         };
-        if *completed_id != id {
+        if active.id != id {
+            self.active = Some(active);
             return Err(TransferError::InvalidEndpoint);
         }
+        let value = self.regs.channel_read32(self.channel, HCCHAR);
+        if value & HCCHAR_CHENA != 0 {
+            self.regs
+                .channel_write32(self.channel, HCCHAR, value | HCCHAR_CHENA | HCCHAR_CHDIS);
+        }
+        self.dma_pool.reclaim(active.transfer);
+        self.channel_completions.end_request(self.channel);
         self.completed = Some((id, Err(TransferError::Cancelled)));
-        self.waker.wake();
+        self.channel_completions.publish(self.channel, HCINT_CHHLTD);
         Ok(())
     }
 }
@@ -1639,26 +2240,46 @@ fn successful_packet_count(actual: usize, requested: usize, max_packet_size: u16
 
 #[cfg(test)]
 mod tests {
-    use alloc::alloc::{alloc_zeroed, dealloc};
-    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+    use alloc::{
+        alloc::{alloc_zeroed, dealloc},
+        vec,
+        vec::Vec,
+    };
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    };
 
     use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
     use usb_if::{
-        endpoint::TransferRequest,
+        descriptor::EndpointType,
+        endpoint::{EndpointAddress, EndpointInfo, TransferRequest},
         host::{ControlSetup, hub::Speed},
         transfer::{Direction, Recipient, Request, RequestType},
     };
 
     use super::{
-        DataToggle, Dwc2DmaBuffer, Dwc2EpType, Dwc2FifoSizes, Dwc2Pid, Dwc2PortStatus,
-        Dwc2TransferFault, Dwc2TransferStage, HCINT_AHBERR, HCINT_BBLERR, HCINT_NAK, HCINT_STALL,
-        HCINT_XACTERR, HPRT_CONN_DET, HPRT_CONN_STS, HPRT_ENA, HPRT_ENA_CHG, HPRT_OVRCUR_CHG,
-        build_control_plan, build_gahbcfg_internal_dma, fifo_register_plan, hcchar, hcint_fault,
-        hctsiz, packet_count, split_dma_lengths, stage_actual_length, successful_packet_count,
+        DataStageRetryPolicy, DataToggle, Dwc2ChannelCompletions, Dwc2DmaBuffer, Dwc2DmaBufferPool,
+        Dwc2Endpoint, Dwc2EndpointParams, Dwc2EpType, Dwc2EventHandler, Dwc2FifoSizes,
+        Dwc2HostParams, Dwc2NewParams, Dwc2Pid, Dwc2PortStatus, Dwc2Stats, Dwc2TransferFault,
+        Dwc2TransferStage, GINTMSK, GINTSTS, GINTSTS_HCHINT, HAINT, HAINTMSK, HCCHAR, HCCHAR_CHDIS,
+        HCCHAR_CHENA, HCINT, HCINT_AHBERR, HCINT_BBLERR, HCINT_CHHLTD, HCINT_DMA_IRQ_MASK,
+        HCINT_NAK, HCINT_STALL, HCINT_XACTERR, HCINT_XFERCOMPL, HCINTMSK, HPRT_CONN_DET,
+        HPRT_CONN_STS, HPRT_ENA, HPRT_ENA_CHG, HPRT_OVRCUR_CHG, build_channel_gates,
+        build_control_plan, build_gahbcfg_internal_dma, data_stage_retry_policy,
+        fifo_register_plan, hcchar, hcint_fault, hctsiz, packet_count, split_dma_lengths,
+        stage_actual_length, successful_packet_count,
     };
-    use crate::backend::kmod::osal::Kernel;
+    use crate::backend::{
+        kmod::osal::Kernel,
+        ty::{Event, EventHandlerOp, ep::EndpointOp},
+    };
 
     struct TestKernel;
+
+    static TEST_DMA_ADDR: AtomicU64 = AtomicU64::new(0x1000);
 
     impl DmaOp for TestKernel {
         fn page_size(&self) -> usize {
@@ -1679,12 +2300,16 @@ mod tests {
 
         unsafe fn alloc_coherent(
             &self,
-            _constraints: DmaConstraints,
+            constraints: DmaConstraints,
             layout: Layout,
         ) -> Option<DmaAllocHandle> {
             let ptr = unsafe { alloc_zeroed(layout) };
             let ptr = NonNull::new(ptr)?;
-            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+            let align = constraints.align.max(layout.align()).max(1) as u64;
+            let size = layout.size().max(1) as u64;
+            let current = TEST_DMA_ADDR.fetch_add(size + align, AtomicOrdering::Relaxed);
+            let dma_addr = (current + align - 1) & !(align - 1);
+            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
@@ -1715,6 +2340,12 @@ mod tests {
     const GAHBCFG_HBSTLEN_INCR16: u32 = 7 << 1;
     const GAHBCFG_DMA_EN: u32 = 1 << 5;
 
+    fn test_regs() -> (Vec<u32>, super::Dwc2Registers) {
+        let mut regs = vec![0u32; 1024];
+        let base = NonNull::new(regs.as_mut_ptr().cast::<u8>()).unwrap();
+        (regs, super::Dwc2Registers { base })
+    }
+
     #[test]
     fn gahbcfg_requires_internal_dma_and_enables_incr16() {
         let value = build_gahbcfg_internal_dma(2).expect("internal DMA architecture is supported");
@@ -1733,6 +2364,21 @@ mod tests {
         assert_eq!(plan.grxfsiz, 536);
         assert_eq!(plan.gnptxfsiz, (32 << 16) | 536);
         assert_eq!(plan.hptxfsiz, (768 << 16) | (536 + 32));
+    }
+
+    #[test]
+    fn runtime_irq_mask_only_enables_host_channel_completion() {
+        let (_backing, regs) = test_regs();
+        let mut host = super::Dwc2::new(Dwc2NewParams {
+            mmio: regs.base,
+            kernel: &TEST_KERNEL,
+            params: Dwc2HostParams::sg2002(),
+        })
+        .unwrap();
+
+        crate::backend::kmod::kcore::CoreOp::enable_irq(&mut host).unwrap();
+
+        assert_eq!(regs.read32(GINTMSK), GINTSTS_HCHINT);
     }
 
     #[test]
@@ -1792,21 +2438,225 @@ mod tests {
     }
 
     #[test]
-    fn dma_buffer_bounces_in_data_through_coherent_memory() {
+    fn dma_buffer_bounces_in_data_through_coherent_dma_memory() {
         let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let mut pool = Dwc2DmaBufferPool::default();
+        let stats = Dwc2Stats::new();
         let mut data = [0u8; 4];
         let request = TransferRequest::bulk_in(&mut data);
-        let mut dma = Dwc2DmaBuffer::new(&kernel, &request).unwrap();
+        let mut dma = Dwc2DmaBuffer::new(&kernel, &mut pool, &stats, &request).unwrap();
 
         assert_eq!(dma.buffer_len(), 4);
         assert_ne!(dma.dma_addr(), data.as_ptr() as u64);
         dma.coherent
             .as_mut()
             .unwrap()
-            .copy_from_slice_cpu(&[1, 2, 3, 4]);
+            .write_with_cpu(4, |dst| dst.copy_from_slice(&[1, 2, 3, 4]));
         dma.copy_in_to_request(3).unwrap();
 
         assert_eq!(data, [1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn dma_buffer_pool_reuses_existing_dma_allocation() {
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let stats = Dwc2Stats::new();
+        let mut pool = Dwc2DmaBufferPool::default();
+        let mut first = [0u8; 64];
+        let first_request = TransferRequest::bulk_in(&mut first);
+        let first_dma = Dwc2DmaBuffer::new(&kernel, &mut pool, &stats, &first_request).unwrap();
+        let first_addr = first_dma.dma_addr();
+        pool.reclaim(first_dma);
+
+        let mut smaller = [0u8; 32];
+        let smaller_request = TransferRequest::bulk_in(&mut smaller);
+        let smaller_dma = Dwc2DmaBuffer::new(&kernel, &mut pool, &stats, &smaller_request).unwrap();
+        assert_eq!(smaller_dma.dma_addr(), first_addr);
+        pool.reclaim(smaller_dma);
+
+        let mut larger = [0u8; 128];
+        let larger_request = TransferRequest::bulk_in(&mut larger);
+        let larger_dma = Dwc2DmaBuffer::new(&kernel, &mut pool, &stats, &larger_request).unwrap();
+        assert_eq!(larger_dma.buffer_len(), 128);
+        pool.reclaim(larger_dma);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.dma_allocs, 2);
+        assert_eq!(snapshot.bounce_from_device_bytes, 64 + 32 + 128);
+    }
+
+    #[test]
+    fn stats_records_transfer_faults_and_wait_iterations() {
+        let stats = Dwc2Stats::new();
+
+        stats.record_transfer();
+        stats.record_stage();
+        stats.record_fault(Dwc2TransferFault::Nak);
+        stats.record_fault(Dwc2TransferFault::Xact);
+        stats.record_timeout();
+        stats.record_transfer_busy_wait_iters(17);
+        stats.record_init_wait_iters(3);
+        stats.record_irq_event();
+        stats.record_channel_completion();
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.transfers, 1);
+        assert_eq!(snapshot.stages, 1);
+        assert_eq!(snapshot.naks, 1);
+        assert_eq!(snapshot.xact_errors, 1);
+        assert_eq!(snapshot.timeouts, 1);
+        assert_eq!(snapshot.transfer_busy_wait_iters, 17);
+        assert_eq!(snapshot.init_wait_iters, 3);
+        assert_eq!(snapshot.wait_iters, 20);
+        assert_eq!(snapshot.irq_events, 1);
+        assert_eq!(snapshot.channel_completions, 1);
+    }
+
+    #[test]
+    fn hchint_event_publishes_channel_completion_without_endpoint_polling_hcint() {
+        let (_backing, regs) = test_regs();
+        let completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+        let hcint = HCINT_CHHLTD | HCINT_XFERCOMPL;
+
+        regs.write32(GINTMSK, GINTSTS_HCHINT);
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        regs.write32(HAINTMSK, 1);
+        regs.write32(HAINT, 1);
+        regs.channel_write32(0, HCINTMSK, hcint);
+        regs.channel_write32(0, HCINT, hcint);
+
+        match handler.handle_event() {
+            Event::TransferActivity { count } => assert_eq!(count, 1),
+            event => panic!("expected transfer activity, got {event:?}"),
+        }
+        assert_eq!(completions.take(0), Some(hcint));
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.irq_events, 1);
+        assert_eq!(snapshot.channel_completions, 1);
+    }
+
+    #[test]
+    fn chhltd_completion_preserves_unmasked_raw_hcint_reason() {
+        let (_backing, regs) = test_regs();
+        let completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+
+        regs.write32(GINTMSK, GINTSTS_HCHINT);
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        regs.write32(HAINTMSK, 1);
+        regs.write32(HAINT, 1);
+        regs.channel_write32(0, HCINTMSK, HCINT_CHHLTD);
+        regs.channel_write32(0, HCINT, HCINT_CHHLTD | HCINT_XFERCOMPL);
+
+        match handler.handle_event() {
+            Event::TransferActivity { count } => assert_eq!(count, 1),
+            event => panic!("expected transfer activity, got {event:?}"),
+        }
+        assert_eq!(completions.take(0), Some(HCINT_CHHLTD | HCINT_XFERCOMPL));
+    }
+
+    #[test]
+    fn xfercomplete_without_channel_halt_requests_halt_before_publish() {
+        let (_backing, regs) = test_regs();
+        let completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+
+        regs.write32(GINTMSK, GINTSTS_HCHINT);
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        regs.write32(HAINTMSK, 1);
+        regs.write32(HAINT, 1);
+        regs.channel_write32(0, HCCHAR, HCCHAR_CHENA);
+        regs.channel_write32(0, HCINTMSK, HCINT_CHHLTD | HCINT_XFERCOMPL);
+        regs.channel_write32(0, HCINT, HCINT_XFERCOMPL);
+
+        match handler.handle_event() {
+            Event::TransferActivity { .. } => {}
+            event => panic!("expected transfer activity, got {event:?}"),
+        }
+
+        assert_eq!(completions.take(0), None);
+        assert_eq!(regs.channel_read32(0, HCCHAR) & HCCHAR_CHDIS, HCCHAR_CHDIS);
+        assert_eq!(stats.snapshot().channel_completions, 0);
+
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        regs.write32(HAINT, 1);
+        regs.channel_write32(0, HCCHAR, 0);
+        regs.channel_write32(0, HCINT, HCINT_CHHLTD);
+
+        match handler.handle_event() {
+            Event::TransferActivity { count } => assert_eq!(count, 1),
+            event => panic!("expected transfer activity, got {event:?}"),
+        }
+
+        assert_eq!(completions.take(0), Some(HCINT_CHHLTD | HCINT_XFERCOMPL));
+        assert_eq!(stats.snapshot().channel_completions, 1);
+    }
+
+    #[test]
+    fn endpoint_submit_waits_for_irq_completion_before_reclaiming() {
+        let (_backing, regs) = test_regs();
+        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let mut endpoint = Dwc2Endpoint::new(Dwc2EndpointParams {
+            regs,
+            kernel,
+            device_address: 2,
+            port_speed: Speed::High,
+            channel: 1,
+            info: EndpointInfo {
+                address: EndpointAddress::new(0x81),
+                transfer_type: EndpointType::Bulk,
+                direction: Direction::In,
+                max_packet_size: 512,
+                packets_per_microframe: 1,
+                interval: 0,
+            },
+            channel_gate: build_channel_gates(2)[1].clone(),
+            channel_completions: completions.clone(),
+            stats: stats.clone(),
+        })
+        .unwrap();
+        let mut data = [0u8; 512];
+        let id = endpoint
+            .submit_request(TransferRequest::bulk_in(&mut data))
+            .unwrap();
+
+        let hcintmsk = regs.channel_read32(1, HCINTMSK);
+        assert_eq!(hcintmsk, HCINT_DMA_IRQ_MASK);
+        assert_eq!(hcintmsk & HCINT_NAK, 0);
+        assert_eq!(hcintmsk & HCINT_XFERCOMPL, 0);
+        assert!(endpoint.reclaim_request(id).is_none());
+
+        completions.publish(1, HCINT_CHHLTD | HCINT_XFERCOMPL);
+        assert!(endpoint.reclaim_request(id).is_some());
+        assert_eq!(stats.snapshot().transfer_busy_wait_iters, 0);
+    }
+
+    #[test]
+    fn bulk_and_interrupt_data_stages_retry_nak_like_linux_hcd_flow_control() {
+        assert_eq!(
+            data_stage_retry_policy(Dwc2EpType::Bulk),
+            DataStageRetryPolicy { nak_retries: 64 }
+        );
+        assert_eq!(
+            data_stage_retry_policy(Dwc2EpType::Interrupt),
+            DataStageRetryPolicy { nak_retries: 64 }
+        );
+    }
+
+    #[test]
+    fn channel_gates_are_per_channel_instead_of_one_global_gate() {
+        let gates = build_channel_gates(4);
+
+        assert_eq!(gates.len(), 4);
+        assert!(alloc::sync::Arc::ptr_eq(&gates[1], &gates[1]));
+        assert!(!alloc::sync::Arc::ptr_eq(&gates[1], &gates[2]));
     }
 
     #[test]

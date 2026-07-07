@@ -1,0 +1,20 @@
+board_type = "AKA-00-SG2002"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+shell_prefix = "root@starry:"
+shell_init_cmd = "sleep 5; echo STARRY_AKA_USB2_LSUSB_BEGIN; lsusb > /tmp/starry-aka-usb2-lsusb.out; cat /tmp/starry-aka-usb2-lsusb.out; if ! grep -Eq 'ID 1d6b:0002' /tmp/starry-aka-usb2-lsusb.out; then echo STARRY_AKA_USB2_ROOT_HUB_MISSING; elif ! grep -Eq 'ID 05e3:06(10|20)' /tmp/starry-aka-usb2-lsusb.out; then echo STARRY_AKA_USB2_DEVICE_MISSING; else echo STARRY_AKA_USB2_LSUSB_OK; fi"
+success_regex = ["(?m)^STARRY_AKA_USB2_LSUSB_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "failed to determine root device",
+  "(?m)^unable to initialize libusb: .*$",
+  "(?i)(lsusb|tee|grep|sh): .*not found",
+  "(?m)^lsusb: .*",
+  "(?m)^STARRY_AKA_USB2_ROOT_HUB_MISSING\\s*$",
+  "(?m)^STARRY_AKA_USB2_DEVICE_MISSING\\s*$",
+]
+timeout = 600

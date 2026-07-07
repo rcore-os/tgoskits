@@ -36,7 +36,7 @@ mod rtc;
 pub mod tpu;
 pub mod tty;
 
-#[cfg(feature = "sg2002")]
+#[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
 
 use alloc::{format, sync::Arc};
@@ -698,6 +698,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 Arc::new(pinmux::PinmuxDev),
             ),
         );
+        #[cfg(feature = "sg2002-cvi-usb-camera")]
         root.add(
             "cvi-usb-camera0",
             Device::new(

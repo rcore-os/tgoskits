@@ -12,3 +12,6 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 1
+
+[env]
+CARGO_ENCODED_RUSTFLAGS = "--cfg\u001faxtest\u001f--check-cfg\u001fcfg(axtest)"

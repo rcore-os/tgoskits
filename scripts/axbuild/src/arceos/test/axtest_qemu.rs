@@ -84,4 +84,26 @@ mod tests {
             Some("-Cdebuginfo=2\u{1f}--cfg\u{1f}axtest")
         );
     }
+
+    #[test]
+    fn append_encoded_rustflags_skips_existing_sequence() {
+        let mut cargo = Cargo {
+            env: [(
+                "CARGO_ENCODED_RUSTFLAGS".to_string(),
+                "--cfg\u{1f}axtest\u{1f}--check-cfg\u{1f}cfg(axtest)".to_string(),
+            )]
+            .into(),
+            ..Cargo::default()
+        };
+
+        append_encoded_rustflags(
+            &mut cargo,
+            &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"],
+        );
+
+        assert_eq!(
+            cargo.env.get("CARGO_ENCODED_RUSTFLAGS").map(String::as_str),
+            Some("--cfg\u{1f}axtest\u{1f}--check-cfg\u{1f}cfg(axtest)")
+        );
+    }
 }

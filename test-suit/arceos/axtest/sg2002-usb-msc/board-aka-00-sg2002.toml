@@ -4,8 +4,7 @@ kernel_load_addr = "0x80200000"
 fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
 success_regex = [
-  "(?m)^SG2002_DWC2_MSC_READ_OK .*$",
-  "(?m)^AXTEST_SUITE_OK\\s*$",
+  "(?s)SG2002_DWC2_MSC_READ_PERF size=262144 .*SG2002_DWC2_BUSYWAIT_CHECK transfer_busy_wait_iters=0 .*SG2002_DWC2_MSC_BENCH_SUMMARY .*AXTEST_SUITE_OK",
 ]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
@@ -13,8 +12,8 @@ fail_regex = [
   "(?i)SIGSEGV",
   "exit with code: 139",
   "(?m)^SG2002_DWC2_MSC_FAIL .*$",
+  "(?m)^SG2002_DWC2_MSC_WRITE_PERF .*$",
   "AXTEST_SUITE_FAIL",
   "AXTEST_CASE status=fail",
 ]
 timeout = 600
-

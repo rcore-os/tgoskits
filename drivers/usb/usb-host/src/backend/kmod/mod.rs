@@ -21,7 +21,9 @@ pub use dwc::{
     UsbPhyInterfaceMode, usb2phy::Usb2PhyPortId,
 };
 use dwc2::Dwc2;
-pub use dwc2::{Dwc2FifoSizes, Dwc2HostParams, Dwc2NewParams, Dwc2Quirks, Dwc2UtmiWidth};
+pub use dwc2::{
+    Dwc2FifoSizes, Dwc2HostParams, Dwc2NewParams, Dwc2Quirks, Dwc2TransferStats, Dwc2UtmiWidth,
+};
 use ehci::Ehci;
 pub use ehci::EhciNewParams;
 use id_arena::Id;

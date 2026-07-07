@@ -298,6 +298,7 @@ version = "0.1.0"
 dependencies = [
  "ax-driver",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "ax-task",
  "axplat-dyn",

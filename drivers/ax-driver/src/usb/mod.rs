@@ -207,6 +207,12 @@ impl PlatformUsbHost {
         Some((irq, handler))
     }
 
+    pub fn take_binding_irq_handler(&mut self) -> Option<(BindingIrq, UsbHostIrqHandler)> {
+        let irq = self.info.irq_cloned()?;
+        let handler = self.take_event_handler()?;
+        Some((irq, handler))
+    }
+
     pub fn take_event_handler(&mut self) -> Option<UsbHostIrqHandler> {
         if self.irq_handler_taken {
             return None;
@@ -399,4 +405,92 @@ pub(crate) fn align_up_4k(size: usize) -> usize {
 
 pub fn usb_host_device() -> Option<UsbHostDevice> {
     rdrive::get_one()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, vec};
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+
+    use crab_usb::{Dwc2HostParams, Dwc2NewParams, USBHost, usb_if::Speed};
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+
+    use super::*;
+
+    struct TestUsbKernel;
+
+    impl DmaOp for TestUsbKernel {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    impl crab_usb::KernelOp for TestUsbKernel {
+        fn delay(&self, _duration: core::time::Duration) {}
+    }
+
+    static TEST_USB_KERNEL: TestUsbKernel = TestUsbKernel;
+
+    fn test_usb_host() -> USBHost {
+        let regs = Box::leak(vec![0u32; 1024].into_boxed_slice());
+        let mmio = NonNull::new(regs.as_mut_ptr().cast::<u8>()).unwrap();
+        USBHost::new_dwc2(Dwc2NewParams {
+            mmio,
+            kernel: &TEST_USB_KERNEL,
+            params: Dwc2HostParams::sg2002(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn binding_irq_handler_preserves_fdt_interrupt_binding() {
+        let binding =
+            BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 30, 4]);
+        let info = BindingInfo::with_binding_irq(Some(binding.clone()));
+        let mut host = PlatformUsbHost::new_with_root_hub_speed(
+            "test-usb",
+            test_usb_host(),
+            info,
+            Speed::High,
+        );
+
+        assert_eq!(host.irq_num(), None);
+        let (actual, _handler) = host
+            .take_binding_irq_handler()
+            .expect("binding IRQ handler should be available");
+        assert_eq!(actual, binding);
+        assert!(host.take_binding_irq_handler().is_none());
+    }
 }

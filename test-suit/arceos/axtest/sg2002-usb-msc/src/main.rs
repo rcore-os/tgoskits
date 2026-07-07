@@ -6,18 +6,136 @@ extern crate alloc;
 #[cfg(feature = "ax-std")]
 extern crate ax_std as std;
 
+const DEFAULT_READ_BENCH_SIZES: [usize; 5] = [512, 4096, 16 * 1024, 64 * 1024, 256 * 1024];
+const MIN_READ_BENCH_BYTES: usize = 4 * 1024 * 1024;
+const MIN_READ_BENCH_ITERS: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BenchConfig {
+    pub read_sizes: [usize; 5],
+}
+
+impl Default for BenchConfig {
+    fn default() -> Self {
+        Self {
+            read_sizes: DEFAULT_READ_BENCH_SIZES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteBenchConfig {
+    pub start_lba: u32,
+    pub blocks: u16,
+}
+
+pub fn build_read10_command(lba: u32, blocks: u16) -> [u8; 10] {
+    build_rw10_command(0x28, lba, blocks)
+}
+
+pub fn build_write10_command(lba: u32, blocks: u16) -> [u8; 10] {
+    build_rw10_command(0x2a, lba, blocks)
+}
+
+fn build_rw10_command(opcode: u8, lba: u32, blocks: u16) -> [u8; 10] {
+    let lba = lba.to_be_bytes();
+    let blocks = blocks.to_be_bytes();
+    [
+        opcode, 0, lba[0], lba[1], lba[2], lba[3], 0, blocks[0], blocks[1], 0,
+    ]
+}
+
+pub fn blocks_per_transfer(bytes: usize, block_size: usize) -> u16 {
+    if bytes == 0 || block_size == 0 {
+        return 0;
+    }
+    let blocks = bytes.div_ceil(block_size);
+    blocks.min(u16::MAX as usize) as u16
+}
+
+pub fn bench_iterations(transfer_bytes: usize) -> usize {
+    if transfer_bytes == 0 {
+        return 0;
+    }
+    let min_bytes_iters = MIN_READ_BENCH_BYTES.div_ceil(transfer_bytes);
+    min_bytes_iters.max(MIN_READ_BENCH_ITERS)
+}
+
+pub fn parse_write_bench_config(
+    get: impl Fn(&str) -> Option<&'static str>,
+) -> Option<WriteBenchConfig> {
+    if get("SG2002_DWC2_WRITE_BENCH") != Some("1") {
+        return None;
+    }
+    let start_lba = parse_u32_env(get("SG2002_DWC2_WRITE_LBA")?)?;
+    let blocks = parse_u16_env(get("SG2002_DWC2_WRITE_BLOCKS")?)?;
+    if blocks == 0 {
+        return None;
+    }
+    Some(WriteBenchConfig { start_lba, blocks })
+}
+
+#[cfg(any(test, all(feature = "ax-std", axtest)))]
+fn compile_time_write_bench_config() -> Option<WriteBenchConfig> {
+    parse_write_bench_config(|name| match name {
+        "SG2002_DWC2_WRITE_BENCH" => option_env!("SG2002_DWC2_WRITE_BENCH"),
+        "SG2002_DWC2_WRITE_LBA" => option_env!("SG2002_DWC2_WRITE_LBA"),
+        "SG2002_DWC2_WRITE_BLOCKS" => option_env!("SG2002_DWC2_WRITE_BLOCKS"),
+        _ => None,
+    })
+}
+
+fn parse_u32_env(value: &str) -> Option<u32> {
+    parse_u64_env(value).and_then(|value| u32::try_from(value).ok())
+}
+
+fn parse_u16_env(value: &str) -> Option<u16> {
+    parse_u64_env(value).and_then(|value| u16::try_from(value).ok())
+}
+
+fn parse_u64_env(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        trimmed.parse().ok()
+    }
+}
+
+#[cfg(any(test, all(feature = "ax-std", axtest)))]
+fn mib_per_sec_x100(bytes: usize, nanos: u64) -> u64 {
+    if nanos == 0 {
+        return 0;
+    }
+    let value = (bytes as u128) * 100 * 1_000_000_000u128 / (nanos as u128) / 1_048_576u128;
+    value.min(u64::MAX as u128) as u64
+}
+
 #[cfg(all(feature = "ax-std", axtest))]
 mod sg2002_usb_msc {
     use alloc::{string::String, vec};
     use core::{fmt, time::Duration};
 
     use ax_driver::usb::PlatformUsbHost;
+    use ax_hal::time::monotonic_time_nanos;
+    use ax_runtime::{
+        hal::irq::{IrqError, IrqId, IrqReturn},
+        irq::{Registration, resolve_binding_irq},
+    };
     use crab_usb::{
-        DeviceInfo, Endpoint,
+        DeviceInfo, Endpoint, Event,
         err::{TransferError, USBError},
         usb_if::{descriptor::EndpointType, endpoint::TransferRequest, transfer::Direction},
     };
     use rdrive::{DeviceGuard, DriverGeneric, GetDeviceError};
+
+    use super::{
+        BenchConfig, WriteBenchConfig, bench_iterations, blocks_per_transfer, build_read10_command,
+        build_write10_command, compile_time_write_bench_config, mib_per_sec_x100,
+    };
 
     const DRIVER_NAME: &str = "usb-sg2002-dwc2";
     const MSC_CLASS: u8 = 0x08;
@@ -46,6 +164,9 @@ mod sg2002_usb_msc {
         HostLock(GetDeviceError),
         Usb(USBError),
         Transfer(TransferError),
+        MissingIrqBinding,
+        IrqResolve(IrqError),
+        IrqRegister(IrqError),
         NoMassStorageDevice,
         MissingBulkEndpoint,
         ShortTransfer {
@@ -67,6 +188,18 @@ mod sg2002_usb_msc {
             blocks: u64,
             block_size: u32,
         },
+        InvalidWriteBench {
+            start_lba: u32,
+            blocks: u16,
+            capacity_blocks: u64,
+        },
+        WriteVerifyMismatch {
+            expected: u32,
+            actual: u32,
+        },
+        TransferBusyWait {
+            iters: usize,
+        },
     }
 
     impl fmt::Display for SmokeError {
@@ -76,6 +209,9 @@ mod sg2002_usb_msc {
                 Self::HostLock(err) => write!(f, "host lock failed: {err:?}"),
                 Self::Usb(err) => write!(f, "USB error: {err:?}"),
                 Self::Transfer(err) => write!(f, "transfer error: {err:?}"),
+                Self::MissingIrqBinding => write!(f, "SG2002 DWC2 host has no binding IRQ"),
+                Self::IrqResolve(err) => write!(f, "failed to resolve USB binding IRQ: {err:?}"),
+                Self::IrqRegister(err) => write!(f, "failed to register USB IRQ: {err:?}"),
                 Self::NoMassStorageDevice => write!(f, "USB mass-storage device not found"),
                 Self::MissingBulkEndpoint => write!(f, "mass-storage bulk endpoint missing"),
                 Self::ShortTransfer {
@@ -106,6 +242,23 @@ mod sg2002_usb_msc {
                         f,
                         "invalid capacity: blocks={blocks} block_size={block_size}"
                     )
+                }
+                Self::InvalidWriteBench {
+                    start_lba,
+                    blocks,
+                    capacity_blocks,
+                } => write!(
+                    f,
+                    "invalid write bench range: lba={start_lba} blocks={blocks} \
+                     capacity_blocks={capacity_blocks}"
+                ),
+                Self::WriteVerifyMismatch { expected, actual } => write!(
+                    f,
+                    "write bench readback checksum mismatch: expected=0x{expected:08x} \
+                     actual=0x{actual:08x}"
+                ),
+                Self::TransferBusyWait { iters } => {
+                    write!(f, "DWC2 transfer path still busy-waited: iters={iters}")
                 }
             }
         }
@@ -163,8 +316,14 @@ mod sg2002_usb_msc {
     async fn run_on_host(
         host: &mut DeviceGuard<PlatformUsbHost>,
     ) -> Result<MscSmokeReport, SmokeError> {
+        let _irq = install_usb_irq(host)?;
+        axtest::axtest_println!("SG2002_DWC2_INIT_START");
         host.host_mut().init().await?;
+        host.enable_irq()?;
+        axtest::axtest_println!("SG2002_DWC2_INIT_DONE");
+        axtest::axtest_println!("SG2002_DWC2_PROBE_START");
         let devices = host.host_mut().probe_devices().await?;
+        axtest::axtest_println!("SG2002_DWC2_PROBE_DONE devices={}", devices.len());
         for probed in devices {
             let Some(info) = probed.as_device_info() else {
                 continue;
@@ -239,11 +398,69 @@ mod sg2002_usb_msc {
         }
 
         let mut block = vec![0u8; capacity.block_size as usize];
-        bot_read10(&mut bulk_out, &mut bulk_in, &mut tag, 0, &mut block).await?;
+        bot_read10(&mut bulk_out, &mut bulk_in, &mut tag, 0, 1, &mut block).await?;
         let read_checksum = checksum32(&block);
         axtest::axtest_println!(
             "SG2002_DWC2_MSC_READ_OK lba=0 bytes={} checksum=0x{read_checksum:08x}",
             block.len()
+        );
+
+        host.host().reset_dwc2_transfer_stats();
+        let read_summary = run_read_bench(
+            &mut bulk_out,
+            &mut bulk_in,
+            &mut tag,
+            capacity,
+            BenchConfig::default(),
+        )
+        .await?;
+        let write_summary = if let Some(config) = compile_time_write_bench_config() {
+            Some(run_write_bench(&mut bulk_out, &mut bulk_in, &mut tag, capacity, config).await?)
+        } else {
+            None
+        };
+        if let Some(stats) = host.host().dwc2_transfer_stats() {
+            axtest::axtest_println!(
+                "SG2002_DWC2_STATS transfers={} stages={} dma_allocs={} bounce_to_device_bytes={} \
+                 bounce_from_device_bytes={} naks={} xact_errors={} timeouts={} wait_iters={} \
+                 init_wait_iters={} transfer_busy_wait_iters={} irq_events={} \
+                 channel_completions={}",
+                stats.transfers,
+                stats.stages,
+                stats.dma_allocs,
+                stats.bounce_to_device_bytes,
+                stats.bounce_from_device_bytes,
+                stats.naks,
+                stats.xact_errors,
+                stats.timeouts,
+                stats.wait_iters,
+                stats.init_wait_iters,
+                stats.transfer_busy_wait_iters,
+                stats.irq_events,
+                stats.channel_completions
+            );
+            if stats.transfer_busy_wait_iters != 0 {
+                return Err(SmokeError::TransferBusyWait {
+                    iters: stats.transfer_busy_wait_iters,
+                });
+            }
+            axtest::axtest_println!(
+                "SG2002_DWC2_BUSYWAIT_CHECK transfer_busy_wait_iters={} irq_events={} \
+                 channel_completions={}",
+                stats.transfer_busy_wait_iters,
+                stats.irq_events,
+                stats.channel_completions
+            );
+        }
+        axtest::axtest_println!(
+            "SG2002_DWC2_MSC_BENCH_SUMMARY read_bytes={} read_ns={} read_checksum=0x{:08x} \
+             write_bytes={} write_ns={} write_checksum=0x{:08x}",
+            read_summary.bytes,
+            read_summary.nanos,
+            read_summary.checksum,
+            write_summary.map_or(0, |summary| summary.bytes),
+            write_summary.map_or(0, |summary| summary.nanos),
+            write_summary.map_or(0, |summary| summary.checksum)
         );
 
         Ok(MscSmokeReport {
@@ -254,6 +471,174 @@ mod sg2002_usb_msc {
             blocks: capacity.blocks,
             block_size: capacity.block_size,
             read_checksum,
+        })
+    }
+
+    struct UsbIrqRegistration {
+        _irq: IrqId,
+        _registration: Registration,
+    }
+
+    fn install_usb_irq(
+        host: &mut DeviceGuard<PlatformUsbHost>,
+    ) -> Result<UsbIrqRegistration, SmokeError> {
+        let (binding, handler) = host
+            .take_binding_irq_handler()
+            .ok_or(SmokeError::MissingIrqBinding)?;
+        let irq = resolve_binding_irq(binding).map_err(SmokeError::IrqResolve)?;
+        let registration =
+            Registration::register_shared(DRIVER_NAME, irq, move |_ctx| match handler.handle() {
+                Event::Nothing => IrqReturn::Unhandled,
+                Event::TransferActivity { .. } | Event::PortChange { .. } => IrqReturn::Wake,
+                Event::Stopped => IrqReturn::Handled,
+            })
+            .map_err(SmokeError::IrqRegister)?;
+        axtest::axtest_println!("SG2002_DWC2_IRQ_MODE mode=irq irq={irq:?}");
+        Ok(UsbIrqRegistration {
+            _irq: irq,
+            _registration: registration,
+        })
+    }
+
+    #[derive(Clone, Copy)]
+    struct BenchSummary {
+        bytes: usize,
+        nanos: u64,
+        checksum: u32,
+    }
+
+    async fn run_read_bench(
+        bulk_out: &mut Endpoint,
+        bulk_in: &mut Endpoint,
+        tag: &mut BotTag,
+        capacity: Capacity,
+        config: BenchConfig,
+    ) -> Result<BenchSummary, SmokeError> {
+        let mut total_bytes = 0usize;
+        let mut total_nanos = 0u64;
+        let mut total_checksum = 0u32;
+
+        for size in config.read_sizes {
+            let block_size = capacity.block_size as usize;
+            let transfer_blocks = blocks_per_transfer(size, block_size);
+            if transfer_blocks == 0 {
+                continue;
+            }
+            let transfer_blocks = u64::from(transfer_blocks).min(capacity.blocks);
+            if transfer_blocks == 0 {
+                continue;
+            }
+            let transfer_bytes = transfer_blocks as usize * block_size;
+            let max_iters = (capacity.blocks / transfer_blocks).max(1) as usize;
+            let iters = bench_iterations(transfer_bytes).min(max_iters);
+            let mut buffer = vec![0u8; transfer_bytes];
+            let mut lba = 0u32;
+            let start = monotonic_time_nanos();
+            let mut bytes = 0usize;
+            let mut checksum = 0u32;
+            for _ in 0..iters {
+                bot_read10(
+                    bulk_out,
+                    bulk_in,
+                    tag,
+                    lba,
+                    transfer_blocks as u16,
+                    &mut buffer,
+                )
+                .await?;
+                checksum = checksum.wrapping_add(checksum32(&buffer));
+                bytes = bytes.saturating_add(buffer.len());
+                lba = lba.saturating_add(transfer_blocks as u32);
+            }
+            let nanos = monotonic_time_nanos().saturating_sub(start).max(1);
+            total_bytes = total_bytes.saturating_add(bytes);
+            total_nanos = total_nanos.saturating_add(nanos);
+            total_checksum = total_checksum.wrapping_add(checksum);
+            axtest::axtest_println!(
+                "SG2002_DWC2_MSC_READ_PERF size={} blocks={} iters={} bytes={} ns={} \
+                 mib_s_x100={} checksum=0x{checksum:08x}",
+                transfer_bytes,
+                transfer_blocks,
+                iters,
+                bytes,
+                nanos,
+                mib_per_sec_x100(bytes, nanos)
+            );
+        }
+
+        Ok(BenchSummary {
+            bytes: total_bytes,
+            nanos: total_nanos,
+            checksum: total_checksum,
+        })
+    }
+
+    async fn run_write_bench(
+        bulk_out: &mut Endpoint,
+        bulk_in: &mut Endpoint,
+        tag: &mut BotTag,
+        capacity: Capacity,
+        config: WriteBenchConfig,
+    ) -> Result<BenchSummary, SmokeError> {
+        let end_lba = u64::from(config.start_lba) + u64::from(config.blocks);
+        if end_lba > capacity.blocks {
+            return Err(SmokeError::InvalidWriteBench {
+                start_lba: config.start_lba,
+                blocks: config.blocks,
+                capacity_blocks: capacity.blocks,
+            });
+        }
+
+        let bytes = usize::from(config.blocks) * capacity.block_size as usize;
+        let mut pattern = vec![0u8; bytes];
+        fill_write_pattern(config.start_lba, &mut pattern);
+        let expected_checksum = checksum32(&pattern);
+
+        let start = monotonic_time_nanos();
+        bot_write10(
+            bulk_out,
+            bulk_in,
+            tag,
+            config.start_lba,
+            config.blocks,
+            &pattern,
+        )
+        .await?;
+        let nanos = monotonic_time_nanos().saturating_sub(start).max(1);
+
+        let mut readback = vec![0u8; bytes];
+        bot_read10(
+            bulk_out,
+            bulk_in,
+            tag,
+            config.start_lba,
+            config.blocks,
+            &mut readback,
+        )
+        .await?;
+        let actual_checksum = checksum32(&readback);
+        if actual_checksum != expected_checksum || readback != pattern {
+            return Err(SmokeError::WriteVerifyMismatch {
+                expected: expected_checksum,
+                actual: actual_checksum,
+            });
+        }
+
+        axtest::axtest_println!(
+            "SG2002_DWC2_MSC_WRITE_PERF lba={} blocks={} size={} bytes={} ns={} mib_s_x100={} \
+             checksum=0x{expected_checksum:08x}",
+            config.start_lba,
+            config.blocks,
+            bytes,
+            bytes,
+            nanos,
+            mib_per_sec_x100(bytes, nanos)
+        );
+
+        Ok(BenchSummary {
+            bytes,
+            nanos,
+            checksum: expected_checksum,
         })
     }
 
@@ -367,11 +752,24 @@ mod sg2002_usb_msc {
         bulk_in: &mut Endpoint,
         tag: &mut BotTag,
         lba: u32,
+        blocks: u16,
         data: &mut [u8],
     ) -> Result<(), SmokeError> {
-        let lba = lba.to_be_bytes();
-        let command = [0x28, 0, lba[0], lba[1], lba[2], lba[3], 0, 0, 1, 0];
+        let command = build_read10_command(lba, blocks);
         bot_command_in(bulk_out, bulk_in, tag, &command, data).await?;
+        Ok(())
+    }
+
+    async fn bot_write10(
+        bulk_out: &mut Endpoint,
+        bulk_in: &mut Endpoint,
+        tag: &mut BotTag,
+        lba: u32,
+        blocks: u16,
+        data: &[u8],
+    ) -> Result<(), SmokeError> {
+        let command = build_write10_command(lba, blocks);
+        bot_command_out(bulk_out, bulk_in, tag, &command, data).await?;
         Ok(())
     }
 
@@ -401,6 +799,22 @@ mod sg2002_usb_msc {
         let cbw = build_cbw(tag, data.len() as u32, Direction::In, command);
         transfer_exact_out(bulk_out, &cbw, "cbw").await?;
         transfer_exact_in(bulk_in, data, "data").await?;
+        read_csw(bulk_in, tag, opcode).await?;
+        Ok(())
+    }
+
+    async fn bot_command_out(
+        bulk_out: &mut Endpoint,
+        bulk_in: &mut Endpoint,
+        tag: &mut BotTag,
+        command: &[u8],
+        data: &[u8],
+    ) -> Result<(), SmokeError> {
+        let opcode = command.first().copied().unwrap_or(0);
+        let tag = tag.next();
+        let cbw = build_cbw(tag, data.len() as u32, Direction::Out, command);
+        transfer_exact_out(bulk_out, &cbw, "cbw").await?;
+        transfer_exact_out(bulk_out, data, "data").await?;
         read_csw(bulk_in, tag, opcode).await?;
         Ok(())
     }
@@ -508,6 +922,15 @@ mod sg2002_usb_msc {
         data.iter()
             .fold(0u32, |acc, byte| acc.wrapping_add(u32::from(*byte)))
     }
+
+    fn fill_write_pattern(start_lba: u32, data: &mut [u8]) {
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index as u8)
+                .wrapping_add((start_lba & 0xff) as u8)
+                .wrapping_mul(31)
+                ^ 0xa5;
+        }
+    }
 }
 
 #[cfg(all(feature = "ax-std", axtest))]
@@ -537,6 +960,66 @@ mod tests {
                 axtest::AxTestResult::Failed
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod host_unit_tests {
+    use super::{
+        BenchConfig, WriteBenchConfig, bench_iterations, blocks_per_transfer, build_read10_command,
+        build_write10_command, compile_time_write_bench_config, mib_per_sec_x100,
+        parse_write_bench_config,
+    };
+
+    #[test]
+    fn read_and_write10_commands_encode_lba_and_block_count() {
+        assert_eq!(
+            build_read10_command(0x0102_0304, 0x0020),
+            [0x28, 0, 0x01, 0x02, 0x03, 0x04, 0, 0x00, 0x20, 0]
+        );
+        assert_eq!(
+            build_write10_command(0x0a0b_0c0d, 0x0100),
+            [0x2a, 0, 0x0a, 0x0b, 0x0c, 0x0d, 0, 0x01, 0x00, 0]
+        );
+    }
+
+    #[test]
+    fn bench_sizes_map_to_whole_blocks_and_minimum_iterations() {
+        assert_eq!(
+            BenchConfig::default().read_sizes,
+            [512, 4096, 16 * 1024, 64 * 1024, 256 * 1024]
+        );
+        assert_eq!(blocks_per_transfer(4096, 512), 8);
+        assert_eq!(blocks_per_transfer(4097, 512), 9);
+        assert_eq!(bench_iterations(512), 8192);
+        assert_eq!(bench_iterations(1024 * 1024), 8);
+        assert_eq!(mib_per_sec_x100(1024 * 1024, 1_000_000_000), 100);
+    }
+
+    #[test]
+    fn write_bench_requires_opt_in_lba_and_block_count() {
+        assert_eq!(compile_time_write_bench_config(), None);
+        assert_eq!(parse_write_bench_config(|_| None), None);
+        assert_eq!(
+            parse_write_bench_config(|name| match name {
+                "SG2002_DWC2_WRITE_BENCH" => Some("1"),
+                "SG2002_DWC2_WRITE_LBA" => Some("4096"),
+                "SG2002_DWC2_WRITE_BLOCKS" => Some("128"),
+                _ => None,
+            }),
+            Some(WriteBenchConfig {
+                start_lba: 4096,
+                blocks: 128,
+            })
+        );
+        assert_eq!(
+            parse_write_bench_config(|name| match name {
+                "SG2002_DWC2_WRITE_BENCH" => Some("1"),
+                "SG2002_DWC2_WRITE_LBA" => Some("4096"),
+                _ => None,
+            }),
+            None
+        );
     }
 }
 

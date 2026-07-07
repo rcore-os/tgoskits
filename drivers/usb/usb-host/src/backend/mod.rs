@@ -57,4 +57,12 @@ pub(crate) trait BackendOp: Send + Any + 'static {
     fn disable_irq(&mut self) -> Result<(), USBError> {
         Err(USBError::NotSupported)
     }
+
+    #[cfg(kmod)]
+    fn dwc2_transfer_stats(&self) -> Option<crate::Dwc2TransferStats> {
+        None
+    }
+
+    #[cfg(kmod)]
+    fn reset_dwc2_transfer_stats(&self) {}
 }
