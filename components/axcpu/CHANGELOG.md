@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.1...ax-cpu-v0.8.2) - 2026-07-07
+
+### Other
+
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.0...ax-cpu-v0.8.1) - 2026-07-02
 
 ### Added

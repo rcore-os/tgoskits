@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.10.0...ax-driver-v0.11.0) - 2026-07-07
+
+### Added
+
+- *(rdrive)* apply assigned clocks before FDT probe ([#1527](https://github.com/rcore-os/tgoskits/pull/1527))
+- *(starfive-jh7110-dwmmc)* add IRQ-driven host ([#1524](https://github.com/rcore-os/tgoskits/pull/1524))
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+- *(rdrive)* add FDT power-domain probing ([#1515](https://github.com/rcore-os/tgoskits/pull/1515))
+- *(starry)* support rtnetlink IPv4 configuration ([#1497](https://github.com/rcore-os/tgoskits/pull/1497))
+- *(cv181x-sdhci)* add SG2002 SD driver ([#1482](https://github.com/rcore-os/tgoskits/pull/1482))
+- *(crab-usb)* add RK3588 EHCI USB2 host ([#1481](https://github.com/rcore-os/tgoskits/pull/1481))
+- *(starry-kernel)* add RK3588 PWM sysfs support ([#1468](https://github.com/rcore-os/tgoskits/pull/1468))
+
+### Fixed
+
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+- *(starry)* apply termios serial format and handle tty drain ioctls ([#1484](https://github.com/rcore-os/tgoskits/pull/1484))
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- *(sdmmc-protocol)* split SDIO and RDIF capability modules ([#1486](https://github.com/rcore-os/tgoskits/pull/1486))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.9.0...ax-driver-v0.10.0) - 2026-07-02
 
 ### Added

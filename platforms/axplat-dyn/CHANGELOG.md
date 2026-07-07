@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.7...axplat-dyn-v0.7.8) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.6...axplat-dyn-v0.7.7) - 2026-07-02
 
 ### Added

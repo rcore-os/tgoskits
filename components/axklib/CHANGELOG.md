@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.0...axklib-v0.7.1) - 2026-07-07
+
+### Other
+
+- updated the following local packages: dma-api, ax-alloc
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axklib-v0.6.6...axklib-v0.7.0) - 2026-07-02
 
 ### Added

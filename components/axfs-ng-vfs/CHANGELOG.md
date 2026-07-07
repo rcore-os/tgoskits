@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.3...axfs-ng-vfs-v0.5.4) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
+### Fixed
+
+- *(starry)* harden path, random, and icmp behavior ([#1517](https://github.com/rcore-os/tgoskits/pull/1517))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.2...axfs-ng-vfs-v0.5.3) - 2026-07-02
 
 ### Other

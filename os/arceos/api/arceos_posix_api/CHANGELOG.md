@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.24...ax-posix-api-v0.5.25) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.23...ax-posix-api-v0.5.24) - 2026-07-02
 
 ### Added

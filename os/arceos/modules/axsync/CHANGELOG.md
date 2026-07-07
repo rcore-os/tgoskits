@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.23...ax-sync-v0.5.24) - 2026-07-07
+
+### Other
+
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.22...ax-sync-v0.5.23) - 2026-07-02
 
 ### Other

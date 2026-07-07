@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.16...axbuild-v0.4.17) - 2026-07-07
+
+### Fixed
+
+- *(axbuild)* relativize absolute symlinks in extracted qemu-user staging sysroot ([#1503](https://github.com/rcore-os/tgoskits/pull/1503))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- *(repo)* remove vendored spin crate ([#1421](https://github.com/rcore-os/tgoskits/pull/1421))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.4.16](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.15...axbuild-v0.4.16) - 2026-07-02
 
 ### Added

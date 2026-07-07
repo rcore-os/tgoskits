@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.20...starryos-v0.5.21) - 2026-07-07
+
+### Added
+
+- *(starry-kernel)* add RK3588 PWM sysfs support ([#1468](https://github.com/rcore-os/tgoskits/pull/1468))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.19...starryos-v0.5.20) - 2026-07-02
 
 ### Added

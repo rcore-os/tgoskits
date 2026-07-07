@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.3.0...sdhci-host-v0.4.0) - 2026-07-07
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+- *(sdmmc-protocol)* split SDIO and RDIF capability modules ([#1486](https://github.com/rcore-os/tgoskits/pull/1486))
+
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.2.0...sdhci-host-v0.3.0) - 2026-07-02
 
 ### Other

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.15...arm_vcpu-v0.5.16) - 2026-07-07
+
+### Other
+
+- *(arm_vcpu)* decouple host interface ([#1523](https://github.com/rcore-os/tgoskits/pull/1523))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.14...arm_vcpu-v0.5.15) - 2026-07-02
 
 ### Other

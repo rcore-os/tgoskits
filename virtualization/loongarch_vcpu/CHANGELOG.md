@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.10](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.9...loongarch_vcpu-v0.5.10) - 2026-07-07
+
+### Other
+
+- *(axvm)* handle vCPU exits in arch adapters ([#1528](https://github.com/rcore-os/tgoskits/pull/1528))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+
 ## [0.5.9](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.8...loongarch_vcpu-v0.5.9) - 2026-07-02
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.8](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.7...arm-gic-driver-v0.17.8) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
 ## [0.17.7](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.6...arm-gic-driver-v0.17.7) - 2026-07-02
 
 ### Fixed
