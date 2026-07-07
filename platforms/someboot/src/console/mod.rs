@@ -504,7 +504,7 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
     unsafe {
         DEBUG_BASE = config
             .base_addr
-            .map(crate::mem::firmware_addr_to_phys)
+            .map(<crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr)
             .unwrap_or(0);
         DEBUG_IS_MMIO = debug_is_mmio;
     }
@@ -546,5 +546,7 @@ fn earlycon_base_addr(
     missing: &'static str,
 ) -> Result<usize, &'static str> {
     let addr = config.base_addr.ok_or(missing)?;
-    Ok(crate::mem::firmware_addr_to_phys(addr))
+    Ok(<crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(
+        addr,
+    ))
 }

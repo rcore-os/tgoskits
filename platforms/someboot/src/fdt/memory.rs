@@ -83,5 +83,5 @@ fn normalize_region(address: u64, size: u64) -> Option<Range<usize>> {
 }
 
 fn normalize_fdt_address(address: usize) -> usize {
-    crate::mem::firmware_addr_to_phys(address)
+    <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(address)
 }

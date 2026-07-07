@@ -86,6 +86,10 @@ pub trait ArchTrait {
 
     fn virt_to_phys(vaddr: *const u8) -> usize;
 
+    fn canonicalize_paddr(addr: usize) -> usize {
+        addr
+    }
+
     fn kernel_space() -> core::ops::Range<usize>;
     fn is_kernel_relocated_at(addr: usize) -> bool {
         (crate::consts::VM_LOAD_ADDRESS..usize::MAX).contains(&addr)

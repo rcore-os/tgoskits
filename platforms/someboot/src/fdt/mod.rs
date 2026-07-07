@@ -170,6 +170,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn arch_default_canonicalize_paddr_keeps_identity() {
+        assert_eq!(
+            <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(0x1234_5678),
+            0x1234_5678
+        );
+    }
+
+    #[test]
     fn set_fdt_addr_phys_rejects_zero() {
         assert!(!set_fdt_addr_phys_if_valid(0));
     }

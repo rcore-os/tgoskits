@@ -108,18 +108,6 @@ pub fn virt_to_phys(vaddr: *const u8) -> usize {
     crate::arch::Arch::virt_to_phys(vaddr)
 }
 
-pub(crate) fn firmware_addr_to_phys(addr: usize) -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        crate::arch::direct_map_to_phys(addr)
-    }
-
-    #[cfg(not(target_arch = "loongarch64"))]
-    {
-        addr
-    }
-}
-
 pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
     if mmu::is_kernel_relocated() || cfg!(target_arch = "loongarch64") {
         __io(paddr)

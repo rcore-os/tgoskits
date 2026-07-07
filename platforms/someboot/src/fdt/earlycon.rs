@@ -33,8 +33,9 @@ fn set_by_stdout() -> Option<()> {
     let stdout = split_stdout_options(chosen.stdout_path()?);
     let node = fdt.find_by_path(stdout)?;
     let reg = node.reg()?.next()?;
-    let address =
-        crate::mem::firmware_addr_to_phys(fdt.translate_address(stdout, reg.address) as _);
+    let address = <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(
+        fdt.translate_address(stdout, reg.address) as _,
+    );
 
     let addr = NonNull::new(_fixmap_io(address))?;
     let clock = node
