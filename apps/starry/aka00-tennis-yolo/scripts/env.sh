@@ -10,6 +10,12 @@ AKARS_TENNIS_TOOLCHAIN_SHA256="10306ce30f98c8168d47f59487da83ba869d5d191193654a2
 AKARS_TENNIS_TOOLCHAIN_ARCHIVE="Xuantie-900-gcc-linux-6.6.36-musl64-x86_64-V3.4.0-20260323.tar.gz"
 AKARS_TENNIS_TOOLCHAIN_EXTRACTED="Xuantie-900-gcc-linux-6.6.36-musl64-x86_64-V3.4.0"
 
+AKARS_TPU_SDK_COMMIT="6fa0d80a635db13b6b9dc061d68b8da0593b79f3"
+AKARS_TPU_SDK_URL="https://github.com/milkv-duo/tpu-sdk-sg200x/archive/$AKARS_TPU_SDK_COMMIT.tar.gz"
+AKARS_TPU_SDK_SHA256="08fa6715fdd48db370b6b945c58410c608101292deee710200b85501085bde8b"
+AKARS_TPU_SDK_ARCHIVE="tpu-sdk-sg200x-$AKARS_TPU_SDK_COMMIT.tar.gz"
+AKARS_TPU_SDK_EXTRACTED="tpu-sdk-sg200x-$AKARS_TPU_SDK_COMMIT"
+
 AKARS_TENNIS_TOOLCHAINS_DIR="${AKARS_TENNIS_TOOLCHAINS_DIR:-$AKARS_TENNIS_ROOT/toolchains}"
 AKARS_TENNIS_TOOLCHAIN_DIR="${AKARS_TENNIS_TOOLCHAIN_DIR:-$AKARS_TENNIS_TOOLCHAINS_DIR/xuantie-v3.4.0}"
 AKARS_TPU_SDK_DIR="${AKARS_TPU_SDK_DIR:-$AKARS_TENNIS_ROOT/thirdparty/tpu-sdk-sg200x}"
@@ -23,5 +29,10 @@ akars_tennis_toolchain_ready() {
 }
 
 akars_tennis_tpu_sdk_ready() {
-  [[ -f "$AKARS_TPU_SDK_DIR/lib/libcviruntime.so" && -f "$AKARS_TPU_SDK_DIR/lib/libcvikernel.so" ]]
+  [[ -f "$AKARS_TPU_SDK_DIR/include/cviruntime.h" \
+    && -f "$AKARS_TPU_SDK_DIR/include/cviruntime_context.h" \
+    && -f "$AKARS_TPU_SDK_DIR/lib/libcviruntime.so" \
+    && -f "$AKARS_TPU_SDK_DIR/lib/libcvikernel.so" \
+    && -f "$AKARS_TPU_SDK_DIR/lib/libcvimath.so" \
+    && -f "$AKARS_TPU_SDK_DIR/lib/libcnpy.so" ]]
 }

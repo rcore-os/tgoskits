@@ -2,8 +2,3 @@
 9acae9866cff94c79bd3b644531657b33d33114005500f17a934599b0eeaa250  validation/tennis-ball-black-box.jpg
 73060d738a991c8a93d04a43ff228b7c200472e58605575ff9adce224af66507  validation/tennis-ball-close.jpg
 6a3e4bb91eb93fd85b66a6d0e16dbba1185287e777a5ec93becdbb8ae8bb4614  validation/tennis-ball-plant.jpg
-1f4751d347594dee59977c77c590f394be0bde185b86c9dbe3c254090c436348  thirdparty/tpu-sdk-sg200x/lib/libcviruntime.so
-20875a75140a0198d69c305bf03b48e3c1b7ac0ec6b8156f5a400df2e16eed04  thirdparty/tpu-sdk-sg200x/lib/libcvikernel.so
-242d12a28c6c7a5b94a00d1f2edc863d9c203b35c9eb42a76700fa1a5775c2dd  thirdparty/tpu-sdk-sg200x/lib/libcvimath.so
-3a4b3e801300dfff001ca7909a1f592c721a92294de20620cd1f2c4ece100f5e  thirdparty/tpu-sdk-sg200x/lib/libcnpy.so
-6606625c32b99ec85273622aec45b19a216da1a74dc84d67a683637d6db50907  thirdparty/tpu-sdk-sg200x/lib/libz.so.1.2.11

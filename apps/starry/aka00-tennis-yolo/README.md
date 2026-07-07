@@ -20,25 +20,39 @@
 - `validation/images.txt`：固定图片清单。
 - `validation/*.jpg`：3 张固定测试图片，复用 RK3588 YOLO 测试里的网球图片。
 - `validation/expected.txt`：SG2002 Linux 上生成并确认可用的预期检测结果。
-- `thirdparty/tpu-sdk-sg200x/`：构建和运行所需的 CVI runtime 头文件与动态库。
-- `scripts/`：Xuantie musl 工具链准备和 linker 包装脚本。
+- `thirdparty/tpu-sdk-sg200x/`：`scripts/setup.sh` 下载生成的 CVI runtime SDK 目录，仓库不直接保存其二进制内容。
+- `scripts/`：Xuantie musl 工具链、TPU SDK 准备和 linker 包装脚本。
 - `build-validator.sh`：构建用户态程序，并生成可部署目录。
 - `init.sh`：测试入口，假定板端部署路径为 `/akars_tennis`。
 - `board-aka-00-sg2002.toml`：后续接入 Starry board test 的配置入口。
-- `SHA256SUMS`：模型、图片和 runtime 动态库的哈希记录。
+- `SHA256SUMS`：模型和图片的哈希记录；工具链和 TPU SDK 压缩包哈希记录在 `scripts/env.sh` 中。
 
 ## 构建
 
-第一次构建前准备 Xuantie musl 工具链：
+第一次构建前准备 Xuantie musl 工具链和 Milk-V/Cvitek SG200x TPU SDK：
 
 ```bash
 apps/starry/aka00-tennis-yolo/scripts/setup.sh
 ```
 
-如果工具链已存在，可以通过环境变量指定：
+`setup.sh` 会从固定 URL 下载并校验：
+
+- Xuantie V3.4.0 RISC-V musl 工具链。
+- `milkv-duo/tpu-sdk-sg200x` 固定提交 `6fa0d80a635db13b6b9dc061d68b8da0593b79f3` 的源码归档。
+
+如果构建环境无法直接联网，可以先准备本地压缩包，然后通过参数指定：
+
+```bash
+apps/starry/aka00-tennis-yolo/scripts/setup.sh \
+  --toolchain-archive /path/to/Xuantie-900-gcc-linux-6.6.36-musl64-x86_64-V3.4.0-20260323.tar.gz \
+  --sdk-archive /path/to/tpu-sdk-sg200x-6fa0d80a635db13b6b9dc061d68b8da0593b79f3.tar.gz
+```
+
+如果工具链或 TPU SDK 已存在，也可以通过环境变量指定：
 
 ```bash
 AKARS_TENNIS_TOOLCHAIN_DIR=/path/to/xuantie-v3.4.0 \
+AKARS_TPU_SDK_DIR=/path/to/tpu-sdk-sg200x \
   apps/starry/aka00-tennis-yolo/build-validator.sh
 ```
 
