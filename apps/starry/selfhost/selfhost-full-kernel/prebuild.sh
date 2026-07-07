@@ -145,7 +145,7 @@ BINARY=""
 BUILD_RC=1
 
 if [ "${arch}" = "x86_64" ]; then
-    # x86_64 is a plat_dyn (EFI/PIE) build: the bootable kernel can ONLY be produced
+    # x86_64 is a dynamic-platform (EFI/PIE) build: the bootable kernel can ONLY be produced
     # by the canonical xtask flow (musl-PIE std target + -Zbuild-std + the rust-lld
     # linker wrapper that groups archives via --start-group/--end-group and forces
     # -pie).  A hand-rolled bare-metal cargo build cannot link someboot's _head/kernel_entry.
@@ -203,7 +203,7 @@ if [ "${arch}" = "x86_64" ]; then
         fi
     fi
 else
-    # riscv64/others: static (plat_dyn=false) bare-metal build matches the seed.
+    # riscv64/others: bare-metal build matches the seed (non-dynamic-platform arch).
     /usr/bin/filter-workspace.sh "${arch}" Cargo.toml
     export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
     export AX_CONFIG_PATH=/opt/starryos/.axconfig.toml
