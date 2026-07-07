@@ -160,39 +160,14 @@ for _ in 1 2 3; do
 done || fail "rustup target add failed after 3 attempts"
 echo "[bootstrap] $(rustc --version)"
 
-# After remount, the rsext4 VFS cannot resolve relative symlinks
-# during execve (e.g. cargo -> rustup).  Rewrite all relative
-# symlinks in /root/.cargo/bin/ to absolute paths so the self-compile
-# inner script can find cargo/rustc after reboot.
-echo "[bootstrap] Fixing relative symlinks in /root/.cargo/bin/..."
-for link in /root/.cargo/bin/*; do
-    if [ -L "$link" ]; then
-        target=$(readlink "$link")
-        case "$target" in
-            /*) ;; # already absolute
-            *)
-                link_dir=$(dirname "$link")
-                abs_target="$link_dir/$target"
-                if [ -f "$abs_target" ] || [ -L "$abs_target" ]; then
-                    ln -sf "$abs_target" "$link"
-                    echo "[bootstrap]   $link -> $abs_target"
-                fi
-                ;;
-        esac
-    fi
-done
 
 # kallsyms tools: rust-nm / rust-objcopy (cargo-binutils) + gen_ksym (ksym).
 # Guarded so re-runs skip the (slow) rebuild when the tools already persist.
 echo "[bootstrap] Installing kallsyms tools..."
-if ! command -v rust-nm >/dev/null 2>&1 || ! command -v rust-objcopy >/dev/null 2>&1; then
-    cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
-        || fail "cargo install cargo-binutils failed"
-fi
-if ! command -v gen_ksym >/dev/null 2>&1; then
-    cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
-        || fail "cargo install ksym failed"
-fi
+cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
+    || fail "cargo install cargo-binutils failed"
+cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
+    || fail "cargo install ksym failed"
 command -v gen_ksym >/dev/null 2>&1 || fail "gen_ksym missing after install"
 command -v rust-nm >/dev/null 2>&1 || fail "rust-nm missing after install"
 command -v rust-objcopy >/dev/null 2>&1 || fail "rust-objcopy missing after install"
