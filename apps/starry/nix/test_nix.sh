@@ -15,4 +15,12 @@ else
     exit 1
 fi
 
+echo "=== nix-nixpkgs ==="
+if /usr/bin/nix-nixpkgs; then
+    echo "NIX_NIXPKGS_TEST_PASSED"
+else
+    echo "NIX_NIXPKGS_TEST_FAILED"
+    exit 1
+fi
+
 echo "NIX_NOSANDBOX_COMPLETE"

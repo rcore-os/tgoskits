@@ -1,11 +1,15 @@
 #!/bin/sh
 set -eu
 
-# Create Nix subcommand symlinks (overlay doesn't support symlinks).
+# Create the legacy Nix command aliases expected by the test scripts.
 for cmd in build channel collect-garbage copy-closure env hash \
            instantiate prefetch-url shell store; do
     ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true
 done
+
+if [ ! -e /nix/var/nix/db/db.sqlite ]; then
+    nix-store --load-db < /nix/.reginfo
+fi
 
 fail() {
     echo "NIX_NOSANDBOX_ERROR: $1"
