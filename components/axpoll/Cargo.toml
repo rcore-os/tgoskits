@@ -9,8 +9,7 @@ documentation = "https://docs.rs/axpoll"
 license = "Apache-2.0"
 
 [features]
-alloc = []          # Deprecated
-default = ["alloc"]
+default = []
 
 [dependencies]
 ax-kspin = { workspace = true }

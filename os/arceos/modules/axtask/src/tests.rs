@@ -218,7 +218,7 @@ fn test_sched_fifo() {
         for i in 0..NUM_TASKS {
             tasks.push(ax_task::spawn_raw(
                 move || {
-                    println!("sched-fifo: Hello, task {}! ({})", i, current().id_name());
+                    println!("multitask: Hello, task {}! ({})", i, current().id_name());
                     ax_task::yield_now();
                     let order = FINISHED_TASKS.fetch_add(1, Ordering::Release);
                     assert_eq!(order, i); // FIFO scheduler

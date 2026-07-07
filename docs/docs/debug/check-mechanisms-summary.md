@@ -99,11 +99,11 @@ cargo xtask sync-lint
 
 task stack canary 用来发现任务栈溢出或栈底被破坏。
 
-启用 `stack-canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
+启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
 
-当前 `ax-task` 的 `multitask` feature 会启用 `stack-canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+当前 `ax-task` 的 `multitask` feature 会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
 
-`stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-feat/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
+`stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
 
 canary 覆盖范围包括：
 
@@ -118,7 +118,7 @@ boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception
 或 overflow stack。这个边界与动态平台无直接绑定：动态任务栈覆盖，borrowed 栈暂不覆盖。
 
 Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任务栈底是否
-被覆盖，作用与当前 `stack-canary` 接近；`CONFIG_STACKPROTECTOR` /
+被覆盖，作用与当前 `stack canary` 接近；`CONFIG_STACKPROTECTOR` /
 `CONFIG_STACKPROTECTOR_STRONG` 则依赖编译器在函数栈帧中插入 canary，
 函数返回前比较保存值和运行时 guard，失败时调用 `__stack_chk_fail()`。
 后者可以发现尚未一路覆盖到任务栈底的函数局部栈溢出，是当前机制尚未覆盖

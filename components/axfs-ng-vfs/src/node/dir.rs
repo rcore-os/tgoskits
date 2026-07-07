@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use super::DirEntry;
 use crate::{
     Mountpoint, Mutex, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
-    path::{DOT, DOTDOT, MAX_NAME_LEN, verify_entry_name},
+    path::{DOT, DOTDOT, verify_entry_name},
 };
 
 /// A trait for a sink that can receive directory entries.
@@ -224,9 +224,7 @@ impl DirNode {
 
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        if name.len() > MAX_NAME_LEN {
-            return Err(VfsError::NameTooLong);
-        }
+        verify_entry_name(name)?;
         self.lookup_and_cache(name)
     }
 

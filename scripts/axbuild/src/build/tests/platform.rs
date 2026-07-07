@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn std_build_platform_feature_stays_on_arceos_rust_dependency() {
     let mut info = BuildInfo {
-        features: vec!["ax-feat/plat-dyn".to_string(), "alloc".to_string()],
+        features: vec!["ax-std/plat-dyn".to_string(), "alloc".to_string()],
         ..BuildInfo::default()
     };
 

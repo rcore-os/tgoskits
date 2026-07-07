@@ -12,7 +12,7 @@ sidebar_label: "Task Stack Guard Page"
 
 ## 背景
 
-当前 `ax-task` 已经有 task stack canary 检查。启用 `stack-canary` 后，
+当前 `ax-task` 已经有 task stack canary 检查。启用 `stack canary` 后，
 `TaskStack` 会在栈底写入固定 magic 值，调度器在任务切换时检查上一个
 任务的 canary 是否仍然完整。这个机制可以发现栈底被覆盖或栈溢出导致的
 内存破坏，但它本质上是事后检查：只有在后续检查点运行时，破坏才会被发现。
@@ -85,10 +85,10 @@ guard page。
 常见启用方式包括：
 
 - ArceOS Rust 应用通过 `ax-std/stack-guard-page` 启用。
-- ArceOS 底层或非 `ax-std` 场景通过 `ax-feat/stack-guard-page` 启用。
+- ArceOS 底层或非 `ax-std` 场景通过 `ax-runtime/stack-guard-page` 启用。
 - StarryOS 通过 `starry-kernel/stack-guard-page` 启用；这个 feature 会同时
   打开 Starry fault handler 中的 guard page 诊断路径，并向下启用
-  `ax-feat/stack-guard-page`。
+  `ax-runtime/stack-guard-page`。
 
 项目的 xtask/axbuild 流程也支持通过环境变量注入额外 feature，例如：
 
@@ -132,7 +132,7 @@ guard page 和 canary 覆盖的问题不同：
 - canary 用于在调度切换等检查点发现栈底被覆盖或破坏。
 
 小范围栈底破坏、未覆盖到 guard page 的破坏，以及暂不支持 guard page 的
-borrowed stack，仍需要 canary 兜底。因此第一阶段不应移除 `stack-canary`。
+borrowed stack，仍需要 canary 兜底。因此第一阶段不应移除 `stack canary`。
 
 ## 当前覆盖边界
 
@@ -270,7 +270,7 @@ FEATURES=ax-std/stack-guard-page cargo xtask arceos test qemu --arch riscv64 \
 
 StarryOS 可以加 `starry-kernel/stack-guard-page`。不要只写裸
 `stack-guard-page`：裸 feature 会按当前包的 ax feature 前缀推导，可能只打开
-底层 `ax-feat/stack-guard-page`，而不会打开 `starry-kernel` 中
+底层 `ax-runtime/stack-guard-page`，而不会打开 `starry-kernel` 中
 `#[cfg(feature = "stack-guard-page")]` 保护的 fault 诊断分支。
 
 推荐手动抽样：

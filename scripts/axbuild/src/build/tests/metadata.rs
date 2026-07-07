@@ -1,14 +1,14 @@
 use super::*;
-use crate::build::info::AxFeaturePrefixFamily;
+use crate::build::info::StdFeaturePrefixFamily;
 
 #[test]
-fn detects_axfeat_direct_dependency_via_metadata() {
-    let workspace = temp_workspace("ax-feat-app", "ax-feat = \"0.1.0\"\n").unwrap();
+fn rejects_packages_without_ax_std_dependency() {
+    let workspace = temp_workspace("plain-app", "ax-api = \"0.1.0\"\n").unwrap();
 
     let metadata = metadata_for_manifest(&workspace.join("Cargo.toml"));
-    let family = detect_ax_feature_prefix_family("ax-feat-app", &metadata).unwrap();
+    let err = detect_std_feature_prefix_family("plain-app", &metadata).unwrap_err();
 
-    assert_eq!(family, AxFeaturePrefixFamily::AxFeat);
+    assert!(err.to_string().contains("must directly depend on `ax-std`"));
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn default_platform_feature_uses_dynamic_platform() {
     info.resolve_features_with_prefix_family(
         "arceos-helloworld",
         "loongarch64-unknown-none-softfloat",
-        Ok(AxFeaturePrefixFamily::AxStd),
+        Ok(StdFeaturePrefixFamily::AxStd),
         None,
     );
 

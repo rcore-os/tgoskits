@@ -307,7 +307,7 @@ This app requires:
 - `memfd_create` and file-descriptor passing over Unix sockets for Wayland SHM.
 - `eventfd` for the compositor event loop.
 - udev seed data under `/run/udev/data/` for libinput device discovery.
-- `starry-kernel/input` and `ax-feat/display` in the app build config.
+- `starry-kernel/input` and `ax-runtime/display` in the app build config.
 
 The optional manual package-install flow additionally needs a kernel/QEMU launch
 with working guest networking if the packages are not already present in the

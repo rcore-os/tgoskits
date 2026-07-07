@@ -34,7 +34,7 @@ graph LR
     current --> ax-driver["ax-driver"]
     current --> ax-sync["ax-sync"]
     current --> ax_lazyinit["ax-lazyinit"]
-    ax_feat["ax-feat"] --> current
+    arceos_feature["ax-runtime"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -56,7 +56,7 @@ graph LR
 - 另外还有 `41` 个同类项未在此展开
 
 ### 3.3 被依赖情况
-- `ax-feat`
+- `ax-runtime`
 - `ax-runtime`
 - `starry-kernel`
 

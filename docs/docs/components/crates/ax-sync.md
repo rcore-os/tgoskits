@@ -179,7 +179,7 @@ ax-sync = { workspace = true, features = ["multitask"] }
 
 ## 跨项目定位
 ### ArceOS
-`ax-sync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `ax-task`、`ax-runtime`、`ax-feat` 联动，确保“调度器语义”和“锁语义”一起切换。
+`ax-sync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `ax-task`、`ax-runtime`、`ax-runtime` 联动，确保“调度器语义”和“锁语义”一起切换。
 
 ### StarryOS
 StarryOS 大量复用 `ax-sync::Mutex` 作为内核内部同步原语之一。因此在 StarryOS 中，`ax-sync` 扮演的是“兼容内核与 ArceOS 模块共享的基础锁层”。

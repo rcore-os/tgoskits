@@ -41,7 +41,7 @@ graph LR
     current --> axfs_ng["ax-fs-ng"]
     current --> ax-hal["ax-hal"]
     ax_api["ax-api"] --> current
-    ax_feat["ax-feat"] --> current
+    arceos_feature["ax-runtime"] --> current
     ax_posix_api["ax-posix-api"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -74,7 +74,7 @@ graph LR
 
 ### 3.3 被依赖情况
 - `ax-api`
-- `ax-feat`
+- `ax-runtime`
 - `ax-posix-api`
 - `starry-kernel`
 

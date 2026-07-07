@@ -261,7 +261,7 @@ pub(super) fn pass_std_build_nested_features(
         if is_removed_dynamic_platform_feature(&feature) {
             continue;
         }
-        if matches!(feature.as_str(), "ax-std" | "ax-feat") {
+        if matches!(feature.as_str(), "ax-std") {
             continue;
         }
         if is_log_level_feature(&feature) {

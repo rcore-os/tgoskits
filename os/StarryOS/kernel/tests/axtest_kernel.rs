@@ -29,4 +29,9 @@ mod tests {
     fn timespec_rejects_invalid_nsec() {
         ax_assert!(axtest_exports::invalid_timespec_is_rejected());
     }
+
+    #[test]
+    fn random_write_mixes_entropy() {
+        ax_assert!(axtest_exports::random_write_mixes_entropy());
+    }
 }

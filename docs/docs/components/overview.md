@@ -118,7 +118,7 @@ flowchart TB
 | `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
 | `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](../architecture/driver/overview) |
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
-| `ax-feat` | ArceOS 层 | `os/arceos/api/axfeat` | 16 | 7 | [查看](crates/ax-feat) |
+| `ax-runtime` | ArceOS 层 | `os/arceos/api/feature` | 16 | 7 | [查看](crates/ax-runtime) |
 | `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](crates/ax-fs) |
 | `ax-fs-devfs` | 组件层 | `components/axfs_crates/axfs_devfs` | 1 | 1 | [查看](crates/ax-fs-devfs) |
 | `ax-fs-ng` | ArceOS 层 | `os/arceos/modules/axfs-ng` | 10 | 4 | [查看](crates/ax-fs-ng) |

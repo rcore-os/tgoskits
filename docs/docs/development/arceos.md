@@ -66,7 +66,7 @@ os/arceos/
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()
 ├── api/              # 对外 API 层
-│   ├── axfeat/       # 顶层 feature 聚合（单一真相源）
+│   ├── feature/       # 顶层 feature 聚合（单一真相源）
 │   ├── arceos_api/   # 公共 API 和类型
 │   └── arceos_posix_api/  # POSIX 兼容 API
 ├── ulib/             # 用户侧库
@@ -156,7 +156,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ax-feat = { path = "../../api/axfeat" }
+ax-runtime = { path = "../../api/feature" }
 log = "0.4"
 
 [features]
@@ -199,9 +199,9 @@ pub fn do_something() -> i32 {
 ax_mymod::init();
 ```
 
-**6) 在 `axfeat` 中注册 feature**
+**6) 在 `feature` 中注册 feature**
 
-在 `os/arceos/api/axfeat/Cargo.toml` 中添加：
+在 `os/arceos/api/feature/Cargo.toml` 中添加：
 
 ```toml
 [features]
@@ -219,9 +219,9 @@ cargo xtask arceos qemu --package arceos-helloworld --arch aarch64 --features my
 
 ### 3.3 Feature 驱动编译
 
-ArceOS 的核心设计是 **feature 聚合**：应用在 `Cargo.toml` 中声明需要的 feature，`axfeat` 将它们传播到对应模块。
+ArceOS 的核心设计是 **feature 聚合**：应用在 `Cargo.toml` 中声明需要的 feature，`feature` 将它们传播到对应模块。
 
-`axfeat` 中的 feature 定义示例（简化）：
+`feature` 中的 feature 定义示例（简化）：
 
 ```toml
 [features]
@@ -235,7 +235,7 @@ paging = ["alloc", "ax-hal/paging", "ax-runtime/paging"]
 
 # 任务
 multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask", "ax-runtime/multitask"]
-sched-fifo = ["ax-task/sched-fifo"]
+multitask = ["ax-task/multitask"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]
 

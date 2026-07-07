@@ -68,7 +68,6 @@ fn stack_protector_feature_detection_accepts_supported_surfaces() {
     for feature in [
         "stack-protector",
         "ax-std/stack-protector",
-        "ax-feat/stack-protector",
         "starry-kernel/stack-protector",
     ] {
         assert!(features_enable_stack_protector(&[feature.to_string()]));

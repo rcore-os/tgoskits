@@ -115,7 +115,7 @@ starry_kernel::syscall::handle_syscall(&mut uctx);
 ## 依赖关系
 ```mermaid
 graph LR
-    ax-feat["ax-feat"] --> starry["starry-kernel"]
+    ax-runtime["ax-runtime"] --> starry["starry-kernel"]
     ax-hal["ax-hal"] --> starry
     ax-task["ax-task"] --> starry
     ax-mm["ax-mm"] --> starry
@@ -130,7 +130,7 @@ graph LR
 ```
 
 ### 直接依赖
-- `ax-feat`：把 `uspace`、`multitask`、`sched-rr`、`fs-ng-ext4`、`net` 等能力一次性装配到内核。
+- `ax-runtime`：把 `uspace`、`multitask`、`sched-rr`、`ext4`、`net` 等能力一次性装配到内核。
 - `ax-hal`：用户态上下文、页表、trap、时间与控制台基础能力。
 - `ax-task`：底层线程调度、`TaskExt` 和阻塞/唤醒机制。
 - `ax-fs-ng`、`axfs-ng-vfs`：文件系统与路径解析。

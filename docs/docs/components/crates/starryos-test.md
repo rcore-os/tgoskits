@@ -103,12 +103,12 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ## 依赖关系
 ```mermaid
 graph LR
-    ax-feat["ax-feat"] --> test["starryos-test"]
+    ax-runtime["ax-runtime"] --> test["starryos-test"]
     kernel["starry-kernel"] --> test
 ```
 
 ### 直接依赖
-- `ax-feat`：提供底层平台、驱动和运行时装配。
+- `ax-runtime`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
 
 ### 3.2 关键外部驱动者
