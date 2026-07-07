@@ -148,12 +148,12 @@ fi
 . "$HOME/.cargo/env"
 # QEMU user-mode networking is slow; rustup downloads may time out.
 # Retry component/target installs a few times before giving up.
-for _ in 1 2 3; do
+for _ in 1 2 3 4 5; do
     rustup component add rust-src llvm-tools-preview && break
     echo "[bootstrap] rustup component add failed, retrying..."
     sleep 5
 done || fail "rustup component add failed after 3 attempts"
-for _ in 1 2 3; do
+for _ in 1 2 3 4 5; do
     rustup target add x86_64-unknown-none && break
     echo "[bootstrap] rustup target add failed, retrying..."
     sleep 5
