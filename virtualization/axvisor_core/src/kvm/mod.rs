@@ -24,9 +24,7 @@ mod util;
 mod vcpu;
 mod vm;
 
-use alloc::collections::BTreeMap;
-#[cfg(target_arch = "x86_64")]
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub use abi::public::*;
@@ -130,7 +128,6 @@ fn create_control_file(
     Ok(control_file)
 }
 
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn queue_control_vcpu_interrupt(
     vm_id: usize,
     vcpu_id: usize,
@@ -227,7 +224,6 @@ pub(in crate::kvm) fn set_vcpu_file_mp_state_by_id(
     Ok(())
 }
 
-#[cfg(target_arch = "x86_64")]
 pub(in crate::kvm) fn take_control_vcpu_interrupts(
     control_file: api_control::ControlFileId,
 ) -> Vec<usize> {

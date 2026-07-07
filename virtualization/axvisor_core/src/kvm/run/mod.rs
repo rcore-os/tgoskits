@@ -30,9 +30,7 @@ use x86::{
 };
 use x86::{update_vcpu_run_interrupt_state, vcpu_run_irq_window_open};
 
-#[cfg(target_arch = "x86_64")]
-use super::take_control_vcpu_interrupts;
-use super::{CONTROL_FILES, ControlFileState};
+use super::{CONTROL_FILES, ControlFileState, take_control_vcpu_interrupts};
 use crate::kvm::{
     abi::raw as abi,
     eventfd::signal_matching_ioeventfd,
@@ -110,7 +108,6 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
     }
 
     let exit_reason = loop {
-        #[cfg(target_arch = "x86_64")]
         for vector in take_control_vcpu_interrupts(control_file) {
             vcpu.inject_interrupt(vector)?;
         }
