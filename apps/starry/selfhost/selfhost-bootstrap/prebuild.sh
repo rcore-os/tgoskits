@@ -146,8 +146,18 @@ if ! command -v rustup >/dev/null 2>&1; then
         || fail "rustup install failed"
 fi
 . "$HOME/.cargo/env"
-rustup component add rust-src llvm-tools-preview || fail "rustup component add failed"
-rustup target add x86_64-unknown-none || fail "rustup target add failed"
+# QEMU user-mode networking is slow; rustup downloads may time out.
+# Retry component/target installs a few times before giving up.
+for _ in 1 2 3; do
+    rustup component add rust-src llvm-tools-preview && break
+    echo "[bootstrap] rustup component add failed, retrying..."
+    sleep 5
+done || fail "rustup component add failed after 3 attempts"
+for _ in 1 2 3; do
+    rustup target add x86_64-unknown-none && break
+    echo "[bootstrap] rustup target add failed, retrying..."
+    sleep 5
+done || fail "rustup target add failed after 3 attempts"
 echo "[bootstrap] $(rustc --version)"
 
 # After remount, the rsext4 VFS cannot resolve relative symlinks
