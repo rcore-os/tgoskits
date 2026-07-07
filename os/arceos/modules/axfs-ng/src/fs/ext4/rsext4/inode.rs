@@ -4,7 +4,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::any::Any;
+use core::{any::Any, cell::Cell};
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
@@ -533,7 +533,7 @@ impl DirNodeOps for Inode {
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
-        let forget_file_ino: Option<InodeNumber> = None;
+        let forget_file_ino: Cell<Option<InodeNumber>> = Cell::new(None);
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
@@ -571,6 +571,10 @@ impl DirNodeOps for Inode {
                     .map_err(into_vfs_err)?;
                 deferred_zero_link = Some(ino);
             }
+            // Capture the inode number for page-cache key cleanup.
+            // This must be set before the fs/dev borrow ends because
+            // deferred_zero_link is bound inside this scope.
+            forget_file_ino.set(deferred_zero_link);
             // fs/dev borrow ends here (last use in all branches).
             // `state` is accessible again.
             if let Some(ino) = deferred_zero_link
@@ -583,7 +587,7 @@ impl DirNodeOps for Inode {
                 }
             }
         }
-        if let Some(ino) = forget_file_ino {
+        if let Some(ino) = forget_file_ino.get() {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()

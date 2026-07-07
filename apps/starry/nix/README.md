@@ -89,3 +89,24 @@ apps/starry/nix/
   libsodium, libsqlite3, libssh2, etc.)
 - Guest network access during prebuild only (Nix is injected into rootfs; no
   network required at QEMU runtime)
+
+## aarch64 Verification
+
+`prebuild.sh` selects the correct `qemu-*-static` binary by `STARRY_ARCH`.
+Both architectures have been verified end-to-end in the CI container:
+
+```bash
+# x86_64
+podman run --rm \
+  -v "$(pwd)":/workspace -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest \
+  cargo xtask starry app qemu -t nix --arch x86_64
+# → NIX_NOSANDBOX_COMPLETE
+
+# aarch64
+podman run --rm \
+  -v "$(pwd)":/workspace -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest \
+  cargo xtask starry app qemu -t nix --arch aarch64
+# → NIX_NOSANDBOX_COMPLETE
+```

@@ -16,13 +16,29 @@ require_env() {
     fi
 }
 
+# Map STARRY_ARCH to the correct qemu-user-static binary.
+# Defaults to qemu-x86_64-static when STARRY_ARCH is unset or empty
+# (the prebuild runs on the host, and x86_64 is the most common host).
+qemu_user_static_binary() {
+    case "${STARRY_ARCH:-x86_64}" in
+        x86_64)      echo "qemu-x86_64-static" ;;
+        aarch64)     echo "qemu-aarch64-static" ;;
+        riscv64)     echo "qemu-riscv64-static" ;;
+        loongarch64) echo "qemu-loongarch64-static" ;;
+        *)
+            echo "error: unsupported STARRY_ARCH '${STARRY_ARCH}' for nix prebuild" >&2
+            exit 1
+            ;;
+    esac
+}
+
 ensure_host_packages() {
     local missing=()
 
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
-    command -v qemu-x86_64-static >/dev/null 2>&1 || missing+=(qemu-user-static)
+    command -v "$(qemu_user_static_binary)" >/dev/null 2>&1 || missing+=(qemu-user-static)
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
@@ -50,7 +66,7 @@ install_nix_package() {
     mkdir -p "$apk_cache"
     QEMU_LD_PREFIX="$staging_root" \
     LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
-        qemu-x86_64-static -L "$staging_root" \
+        $(qemu_user_static_binary) -L "$staging_root" \
             "$staging_root/sbin/apk" \
             --root "$staging_root" \
             --repositories-file "$staging_root/etc/apk/repositories" \
