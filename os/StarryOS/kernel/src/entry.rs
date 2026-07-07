@@ -83,6 +83,8 @@ pub fn init(args: &[String], envs: &[String]) {
         false,
     );
 
+    crate::cgroup::attach_initial_process(pid).expect("Failed to attach init to cgroup");
+
     {
         let mut scope = proc.scope.write();
         crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())

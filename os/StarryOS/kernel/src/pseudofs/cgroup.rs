@@ -1,4 +1,8 @@
-use alloc::{string::ToString, sync::Arc, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use core::any::Any;
 
 use ax_errno::LinuxError;
@@ -20,6 +24,7 @@ enum CgroupFileKind {
     Controllers,
     Procs,
     SubtreeControl,
+    Type,
 }
 
 impl CgroupFileKind {
@@ -28,6 +33,7 @@ impl CgroupFileKind {
             "cgroup.controllers" => Some(Self::Controllers),
             "cgroup.procs" => Some(Self::Procs),
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
+            "cgroup.type" => Some(Self::Type),
             _ => None,
         }
     }
@@ -37,22 +43,24 @@ impl CgroupFileKind {
             Self::Controllers => "cgroup.controllers",
             Self::Procs => "cgroup.procs",
             Self::SubtreeControl => "cgroup.subtree_control",
+            Self::Type => "cgroup.type",
         }
     }
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers => 0o444,
+            Self::Controllers | Self::Type => 0o444,
             Self::Procs | Self::SubtreeControl => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 3] = [
+const CGROUP_FILES: [CgroupFileKind; 4] = [
     CgroupFileKind::Controllers,
     CgroupFileKind::Procs,
     CgroupFileKind::SubtreeControl,
+    CgroupFileKind::Type,
 ];
 
 struct CgroupFile {
@@ -63,13 +71,18 @@ struct CgroupFile {
 impl CgroupFile {
     fn read_content(&self) -> VfsResult<Vec<u8>> {
         Ok(match self.kind {
-            CgroupFileKind::Controllers => crate::cgroup::controllers_text(self.id)?
+            CgroupFileKind::Controllers => crate::cgroup::controllers_text(self.id)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?
                 .as_bytes()
                 .to_vec(),
-            CgroupFileKind::Procs => crate::cgroup::procs_text(self.id)?.into_bytes(),
-            CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(self.id)?
+            CgroupFileKind::Procs => crate::cgroup::procs_text(self.id)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?
+                .into_bytes(),
+            CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(self.id)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?
                 .as_bytes()
                 .to_vec(),
+            CgroupFileKind::Type => b"domain\n".to_vec(),
         })
     }
 }
@@ -90,14 +103,34 @@ impl DirectRwFsFileOps for CgroupFile {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         match self.kind {
-            CgroupFileKind::Controllers => {
-                crate::cgroup::ensure_node_exists(self.id)?;
+            CgroupFileKind::Controllers | CgroupFileKind::Type => {
+                crate::cgroup::ensure_node_exists(self.id)
+                    .map_err(crate::cgroup::cgroup_err_to_vfs)?;
                 return Err(VfsError::from(LinuxError::EACCES));
             }
-            CgroupFileKind::Procs => crate::cgroup::write_procs(self.id, buf)?,
-            CgroupFileKind::SubtreeControl => crate::cgroup::write_subtree_control(self.id, buf)?,
+            CgroupFileKind::Procs => crate::cgroup::write_procs(self.id, buf)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?,
+            CgroupFileKind::SubtreeControl => crate::cgroup::write_subtree_control(self.id, buf)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)?,
         }
         Ok(buf.len())
+    }
+}
+
+struct ControllerAttrFile {
+    id: CgroupId,
+    name: String,
+}
+
+impl DirectRwFsFileOps for ControllerAttrFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        crate::cgroup::read_attr_at(self.id, &self.name, offset as usize, buf)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)
+    }
+
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        crate::cgroup::write_attr(self.id, &self.name, buf)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)
     }
 }
 
@@ -110,7 +143,11 @@ struct CgroupDir {
 
 impl CgroupDir {
     fn new(fs: Arc<SimpleFs>, id: CgroupId, this: WeakDirEntry) -> Arc<Self> {
-        debug_assert!(crate::cgroup::path(id).is_ok());
+        debug_assert!(
+            crate::cgroup::path(id)
+                .map_err(crate::cgroup::cgroup_err_to_vfs)
+                .is_ok()
+        );
         Arc::new(Self {
             node: SimpleFsNode::new(
                 fs.clone(),
@@ -138,6 +175,27 @@ impl CgroupDir {
             kind.permission(),
         );
         let reference = Reference::new(self.this.upgrade(), kind.name().to_string());
+        Ok(DirEntry::new_file(
+            FileNode::new(file),
+            NodeType::RegularFile,
+            reference,
+        ))
+    }
+
+    fn controller_attr_entry(&self, name: &str) -> VfsResult<DirEntry> {
+        let read_only = crate::cgroup::attr_is_read_only(self.id, name)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)?
+            .unwrap_or(false);
+        let mode = if read_only { 0o444 } else { 0o644 };
+        let file = SpecialFsFile::new_regular_with_perm(
+            self.fs.clone(),
+            ControllerAttrFile {
+                id: self.id,
+                name: name.to_string(),
+            },
+            NodePermission::from_bits_truncate(mode),
+        );
+        let reference = Reference::new(self.this.upgrade(), name.to_string());
         Ok(DirEntry::new_file(
             FileNode::new(file),
             NodeType::RegularFile,
@@ -177,7 +235,15 @@ impl DirNodeOps for CgroupDir {
         for kind in CGROUP_FILES {
             names.push(kind.name().to_string());
         }
-        names.extend(crate::cgroup::child_names(self.id)?);
+        for attr in
+            crate::cgroup::all_attr_names(self.id).map_err(crate::cgroup::cgroup_err_to_vfs)?
+        {
+            if !CGROUP_FILES.iter().any(|kind| kind.name() == attr) {
+                names.push(attr);
+            }
+        }
+        names
+            .extend(crate::cgroup::child_names(self.id).map_err(crate::cgroup::cgroup_err_to_vfs)?);
 
         let this_entry = self.this_entry()?;
         let this_dir = this_entry.as_dir()?;
@@ -203,7 +269,14 @@ impl DirNodeOps for CgroupDir {
             return self.file_entry(kind);
         }
 
-        let child_id = crate::cgroup::lookup_child(self.id, name)?;
+        if crate::cgroup::is_controller_attr(self.id, name)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)?
+        {
+            return self.controller_attr_entry(name);
+        }
+
+        let child_id =
+            crate::cgroup::lookup_child(self.id, name).map_err(crate::cgroup::cgroup_err_to_vfs)?;
         Ok(self.child_dir_entry(name, child_id))
     }
 
@@ -212,7 +285,9 @@ impl DirNodeOps for CgroupDir {
     }
 
     fn has_children(&self) -> VfsResult<bool> {
-        Ok(!crate::cgroup::child_names(self.id)?.is_empty())
+        Ok(!crate::cgroup::child_names(self.id)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)?
+            .is_empty())
     }
 
     fn create(
@@ -226,11 +301,17 @@ impl DirNodeOps for CgroupDir {
         if crate::cgroup::is_interface_file_name(name) {
             return Err(VfsError::AlreadyExists);
         }
+        if crate::cgroup::is_controller_attr(self.id, name)
+            .map_err(crate::cgroup::cgroup_err_to_vfs)?
+        {
+            return Err(VfsError::AlreadyExists);
+        }
         if node_type != NodeType::Directory {
             return Err(VfsError::OperationNotPermitted);
         }
 
-        let child_id = crate::cgroup::create_child(self.id, name)?;
+        let child_id =
+            crate::cgroup::create_child(self.id, name).map_err(crate::cgroup::cgroup_err_to_vfs)?;
         Ok(self.child_dir_entry(name, child_id))
     }
 
@@ -242,7 +323,7 @@ impl DirNodeOps for CgroupDir {
         if crate::cgroup::is_interface_file_name(name) {
             return Err(VfsError::OperationNotPermitted);
         }
-        crate::cgroup::remove_child(self.id, name)
+        crate::cgroup::remove_child(self.id, name).map_err(crate::cgroup::cgroup_err_to_vfs)
     }
 
     fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {

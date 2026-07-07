@@ -1,225 +1,80 @@
-use alloc::{
-    collections::BTreeMap,
-    string::{String, ToString},
-    vec::Vec,
+//! cgroup v2 subsystem — kernel integration layer.
+//!
+//! Core logic lives in `ax-cgroup`. This module provides:
+//! - Kernel-side `CgroupProvider` implementation
+//! - `bandwidth_tick` hook (needs `ax_task` / `ax_hal`)
+//! - Re-exports for backward compatibility
+
+use alloc::sync::Arc;
+
+pub use ax_cgroup::{
+    CgroupError, CgroupId, CgroupNode, GLOBAL_CGROUP_ROOT, all_attr_names, attach_initial_process,
+    attr_is_read_only, begin_fork, child_names, controllers_text, create_child, ensure_node_exists,
+    exit_process, is_controller_attr, is_interface_file_name, lookup_child, path, procs_text,
+    read_attr_at, register_provider, remove_child, root_id, subtree_control_text, write_attr,
+    write_procs, write_subtree_control,
 };
-use core::fmt::Write;
+use ax_errno::LinuxError;
 
-use ax_errno::{AxError, AxResult, LinuxError};
-use ax_kspin::SpinNoIrq;
-use spin::LazyLock;
-
-pub type CgroupId = u64;
-
-const ROOT_ID: CgroupId = 1;
-const INTERFACE_FILES: [&str; 3] = [
-    "cgroup.procs",
-    "cgroup.controllers",
-    "cgroup.subtree_control",
-];
-
-struct CgroupNode {
-    id: CgroupId,
-    name: String,
-    parent: Option<CgroupId>,
-    children: BTreeMap<String, CgroupId>,
-    live_processes: usize,
-}
-
-impl CgroupNode {
-    fn root() -> Self {
-        Self {
-            id: ROOT_ID,
-            name: String::new(),
-            parent: None,
-            children: BTreeMap::new(),
-            live_processes: 0,
-        }
-    }
-
-    fn child(id: CgroupId, parent: CgroupId, name: &str) -> Self {
-        Self {
-            id,
-            name: name.to_string(),
-            parent: Some(parent),
-            children: BTreeMap::new(),
-            live_processes: 0,
-        }
-    }
-}
-
-struct CgroupTree {
-    nodes: BTreeMap<CgroupId, CgroupNode>,
-    next_id: CgroupId,
-}
-
-impl CgroupTree {
-    fn new() -> Self {
-        let mut nodes = BTreeMap::new();
-        nodes.insert(ROOT_ID, CgroupNode::root());
-        Self {
-            nodes,
-            next_id: ROOT_ID + 1,
-        }
-    }
-}
-
-static CGROUP_TREE: LazyLock<SpinNoIrq<CgroupTree>> =
-    LazyLock::new(|| SpinNoIrq::new(CgroupTree::new()));
-
-pub fn root_id() -> CgroupId {
-    ROOT_ID
-}
-
-pub fn is_interface_file_name(name: &str) -> bool {
-    INTERFACE_FILES.contains(&name)
-}
-
-pub fn child_names(parent: CgroupId) -> AxResult<Vec<String>> {
-    let tree = CGROUP_TREE.lock();
-    let node = tree.nodes.get(&parent).ok_or(AxError::NotFound)?;
-    debug_assert_eq!(node.id, parent);
-    Ok(node.children.keys().cloned().collect())
-}
-
-pub fn lookup_child(parent: CgroupId, name: &str) -> AxResult<CgroupId> {
-    let tree = CGROUP_TREE.lock();
-    let node = tree.nodes.get(&parent).ok_or(AxError::NotFound)?;
-    debug_assert_eq!(node.id, parent);
-    node.children.get(name).copied().ok_or(AxError::NotFound)
-}
-
-pub fn create_child(parent: CgroupId, name: &str) -> AxResult<CgroupId> {
-    if name.is_empty() {
-        return Err(AxError::InvalidInput);
-    }
-    if is_interface_file_name(name) {
-        return Err(AxError::AlreadyExists);
-    }
-
-    let mut tree = CGROUP_TREE.lock();
-    {
-        let parent_node = tree.nodes.get(&parent).ok_or(AxError::NotFound)?;
-        debug_assert_eq!(parent_node.id, parent);
-        if parent_node.children.contains_key(name) {
-            return Err(AxError::AlreadyExists);
-        }
-    }
-
-    let id = tree.next_id;
-    tree.next_id = id.checked_add(1).ok_or(AxError::NoMemory)?;
-    tree.nodes.insert(id, CgroupNode::child(id, parent, name));
-    tree.nodes
-        .get_mut(&parent)
-        .expect("parent was checked above")
-        .children
-        .insert(name.to_string(), id);
-    Ok(id)
-}
-
-pub fn remove_child(parent: CgroupId, name: &str) -> AxResult<()> {
-    if name.is_empty() {
-        return Err(AxError::InvalidInput);
-    }
-
-    let mut tree = CGROUP_TREE.lock();
-    let child_id = {
-        let parent_node = tree.nodes.get(&parent).ok_or(AxError::NotFound)?;
-        debug_assert_eq!(parent_node.id, parent);
-        parent_node
-            .children
-            .get(name)
-            .copied()
-            .ok_or(AxError::NotFound)?
+/// Convert cgroup core error to VFS error.
+/// Free function to satisfy Rust orphan rule: neither `CgroupError` nor
+/// `VfsError` (= `AxError`) is defined in this crate.
+pub(crate) fn cgroup_err_to_vfs(e: CgroupError) -> axfs_ng_vfs::VfsError {
+    // Map to a Linux errno, then canonicalize to the Ax-native `AxErrorKind`
+    // representation. Other pseudo-filesystems (proc/sysfs/overlay) return
+    // Ax-native errors directly; VFS fast-paths compare against Ax-native
+    // variants by value (e.g. `open(O_CREAT)`'s pre-resolve in fd_ops matches
+    // `Err(AxError::NotFound)`). A Linux-tagged ENOENT is a distinct i32 from
+    // the Ax-native NotFound, so without canonicalize() those matches miss and
+    // a create on cgroupfs leaks ENOENT instead of reaching create() (EPERM).
+    // The mapping is bijective for these codes, so the user-visible errno at
+    // the syscall boundary is unchanged.
+    let err: axfs_ng_vfs::VfsError = match e {
+        CgroupError::NotInitialized => LinuxError::EINVAL.into(),
+        CgroupError::NotFound => LinuxError::ENOENT.into(),
+        CgroupError::AlreadyExists => LinuxError::EEXIST.into(),
+        CgroupError::ResourceBusy => LinuxError::EBUSY.into(),
+        CgroupError::InvalidInput => LinuxError::EINVAL.into(),
+        CgroupError::NoSuchProcess => LinuxError::ESRCH.into(),
+        CgroupError::OperationNotPermitted => LinuxError::EPERM.into(),
+        CgroupError::DirectoryNotEmpty => LinuxError::ENOTEMPTY.into(),
+        CgroupError::LimitExceeded => LinuxError::EAGAIN.into(),
     };
-    let child = tree.nodes.get(&child_id).ok_or(AxError::NotFound)?;
-    debug_assert_eq!(child.id, child_id);
-    if !child.children.is_empty() {
-        return Err(AxError::DirectoryNotEmpty);
-    }
-    if child.live_processes != 0 {
-        return Err(AxError::ResourceBusy);
-    }
-
-    tree.nodes
-        .get_mut(&parent)
-        .expect("parent was checked above")
-        .children
-        .remove(name);
-    tree.nodes.remove(&child_id);
-    Ok(())
+    err.canonicalize()
 }
 
-pub fn path(id: CgroupId) -> AxResult<String> {
-    let tree = CGROUP_TREE.lock();
-    let mut current = id;
-    let mut names = Vec::new();
-    loop {
-        let node = tree.nodes.get(&current).ok_or(AxError::NotFound)?;
-        debug_assert_eq!(node.id, current);
-        if let Some(parent) = node.parent {
-            names.push(node.name.clone());
-            current = parent;
-        } else {
-            break;
+mod cpu;
+
+struct KernelCgroupProvider;
+
+impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
+    fn is_zombie(&self, pid: u32) -> bool {
+        crate::task::get_process_data(pid as _)
+            .map(|pd| pd.proc.is_zombie())
+            .unwrap_or(true)
+    }
+
+    fn get_cgroup(&self, pid: u32) -> Option<Arc<CgroupNode>> {
+        crate::task::get_process_data(pid as _)
+            .ok()
+            .map(|pd| pd.cgroup.read().clone())
+    }
+
+    fn set_cgroup(&self, pid: u32, cgroup: Arc<CgroupNode>) {
+        if let Ok(pd) = crate::task::get_process_data(pid as _) {
+            *pd.cgroup.write() = cgroup;
         }
     }
-
-    if names.is_empty() {
-        return Ok("/".to_string());
-    }
-
-    names.reverse();
-    let mut path = String::new();
-    for name in names {
-        path.push('/');
-        path.push_str(&name);
-    }
-    Ok(path)
 }
 
-pub fn procs_text(id: CgroupId) -> AxResult<String> {
-    ensure_node_exists(id)?;
-    if id != ROOT_ID {
-        return Ok(String::new());
-    }
+/// Initialize the cgroup subsystem. Called once during boot.
+pub fn init() {
+    ax_cgroup::init();
+    register_provider(&KernelCgroupProvider as &'static dyn ax_cgroup::CgroupProvider);
 
-    let mut pids: Vec<_> = crate::task::processes()
-        .into_iter()
-        .map(|proc_data| proc_data.proc.pid())
-        .collect();
-    pids.sort_unstable();
+    // NOTE: CPU bandwidth tick hook deferred — ax_task::set_tick_hook and
+    // set_throttled APIs are not yet available on dev branch.
+    // ax_task::set_tick_hook(bandwidth_tick);
 
-    let mut text = String::new();
-    for pid in pids {
-        let _ = writeln!(text, "{pid}");
-    }
-    Ok(text)
-}
-
-pub fn controllers_text(id: CgroupId) -> AxResult<&'static str> {
-    ensure_node_exists(id)?;
-    Ok("")
-}
-
-pub fn subtree_control_text(id: CgroupId) -> AxResult<&'static str> {
-    ensure_node_exists(id)?;
-    Ok("")
-}
-
-pub fn write_procs(id: CgroupId, _data: &[u8]) -> AxResult<()> {
-    ensure_node_exists(id)?;
-    Err(AxError::from(LinuxError::EOPNOTSUPP))
-}
-
-pub fn write_subtree_control(id: CgroupId, _data: &[u8]) -> AxResult<()> {
-    ensure_node_exists(id)?;
-    Err(AxError::from(LinuxError::EINVAL))
-}
-
-pub fn ensure_node_exists(id: CgroupId) -> AxResult<()> {
-    let tree = CGROUP_TREE.lock();
-    let node = tree.nodes.get(&id).ok_or(AxError::NotFound)?;
-    debug_assert_eq!(node.id, id);
-    Ok(())
+    info!("cgroup: initialized");
 }
