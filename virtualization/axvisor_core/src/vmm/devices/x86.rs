@@ -24,65 +24,65 @@ pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: u
     }
 }
 
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
+pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) -> bool {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return false;
     }
 
     if !ioapic_gsi_targets_current_vcpu(vm, vcpu, PIT_TIMER_GSI) {
-        return;
+        return false;
     }
 
     let now_ns = axvisor_api::time::current_time_nanos();
     if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
-        return;
+        return false;
     }
 
     let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
         trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
+        return false;
     };
 
     trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
-    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
-pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
+pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) -> bool {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return false;
     }
 
     if !ioapic_gsi_targets_current_vcpu(vm, vcpu, COM1_GSI) {
-        return;
+        return false;
     }
 
     if !vm.get_devices().x86_serial_poll_irq() {
-        return;
+        return false;
     }
 
     let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(COM1_GSI) else {
         trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
-        return;
+        return false;
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
-pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
+pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) -> bool {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return false;
     }
 
     let Some(irq) = vm.get_devices().x86_ioapic_end_of_interrupt(vector) else {
-        return;
+        return false;
     };
 
     trace!(
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu);
+    inject_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -216,7 +216,7 @@ fn inject_ioapic_interrupt(
     vector: u8,
     level_triggered: bool,
     target_vcpu: usize,
-) {
+) -> bool {
     if target_vcpu != vcpu.id() {
         trace!(
             "Queueing x86 IOAPIC vector {:#x} for VM[{}] target vCPU {} from current vCPU {}",
@@ -226,7 +226,7 @@ fn inject_ioapic_interrupt(
             vcpu.id()
         );
         axvisor_api::vmm::inject_interrupt(vm.id(), target_vcpu, vector);
-        return;
+        return true;
     }
 
     vcpu.inject_interrupt_with_trigger(
@@ -238,6 +238,7 @@ fn inject_ioapic_interrupt(
         },
     )
     .unwrap();
+    true
 }
 
 fn ioapic_irq_forwarding_handler(vector: usize) {

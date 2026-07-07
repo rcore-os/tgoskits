@@ -131,6 +131,9 @@ fn set_vcpu_file_mp_state_by_id(
         return ax_err!(NotFound);
     };
     vcpu.mp_state = mp_state;
+    if mp_state == abi::KVM_MP_STATE_RUNNABLE {
+        vcpu.halted = false;
+    }
     Ok(())
 }
 
@@ -181,6 +184,24 @@ pub(super) fn handle_in_kernel_device_exit(
         }
         _ => Ok(false),
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(super) fn inject_in_kernel_device_irqs(
+    vm: &AxVMRef,
+    vcpu: &axvm::AxVCpuRef,
+    irqchip_created: bool,
+    pit2_created: bool,
+) -> bool {
+    if !irqchip_created {
+        return false;
+    }
+    let mut injected = false;
+    if pit2_created {
+        injected |= crate::vmm::devices::x86::inject_due_pit_irq0(vm, vcpu);
+    }
+    injected |= crate::vmm::devices::x86::inject_pending_serial_irq(vm, vcpu);
+    injected
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -127,6 +127,9 @@ pub(in crate::kvm) fn set_mp_state(
         return ax_err!(NotFound);
     };
     vcpu.mp_state = mp_state;
+    if mp_state == abi::KVM_MP_STATE_RUNNABLE {
+        vcpu.halted = false;
+    }
     Ok(0)
 }
 
@@ -323,6 +326,11 @@ pub(in crate::kvm) fn kvm_interrupt(
         _ => return ax_err!(Unsupported),
     };
     get_vcpu(control_file)?.inject_interrupt(vector)?;
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.halted = false;
     Ok(0)
 }
 

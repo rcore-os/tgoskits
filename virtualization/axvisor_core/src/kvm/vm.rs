@@ -94,6 +94,7 @@ pub(in crate::kvm) fn create_vcpu_file(
                 } else {
                     abi::KVM_MP_STATE_STOPPED
                 },
+                halted: false,
                 pending_interrupts: VecDeque::new(),
                 pending_mmio_read: None,
                 pending_io_read: None,

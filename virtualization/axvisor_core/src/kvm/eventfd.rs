@@ -279,7 +279,8 @@ fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxRes
                 } else {
                     InterruptTriggerMode::EdgeTriggered
                 },
-            )
+            )?;
+            super::wake_control_vcpu(vm.id(), irq.target_vcpu)
         }
         #[cfg(not(target_arch = "x86_64"))]
         GsiRoute::IrqChip { pin } => {
@@ -288,7 +289,8 @@ fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxRes
         }
         GsiRoute::Msi { vector } => {
             let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
-            vcpu.inject_interrupt(vector as usize)
+            vcpu.inject_interrupt(vector as usize)?;
+            super::wake_control_vcpu(vm.id(), 0)
         }
     }
 }

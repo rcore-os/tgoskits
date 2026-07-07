@@ -150,7 +150,30 @@ pub(crate) fn queue_control_vcpu_interrupt(
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
         return Err(AxError::NotFound);
     };
+    vcpu.halted = false;
     vcpu.pending_interrupts.push_back(vector);
+    Ok(())
+}
+
+pub(crate) fn wake_control_vcpu(vm_id: usize, vcpu_id: usize) -> AxResult {
+    let mut control_files = CONTROL_FILES.lock();
+    let vm_file = control_files
+        .iter()
+        .find_map(|(control_file, state)| match state {
+            ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(*control_file),
+            _ => None,
+        })
+        .ok_or(AxError::NotFound)?;
+    let vcpu_file = match control_files.get(&vm_file) {
+        Some(ControlFileState::Vm(vm)) => vm.vcpu_files.get(&(vcpu_id as u32)).copied(),
+        _ => None,
+    }
+    .ok_or(AxError::NotFound)?;
+
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
+        return Err(AxError::NotFound);
+    };
+    vcpu.halted = false;
     Ok(())
 }
 
@@ -161,6 +184,9 @@ pub(in crate::kvm) fn take_control_vcpu_interrupts(
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
         return Vec::new();
     };
+    if !vcpu.pending_interrupts.is_empty() {
+        vcpu.halted = false;
+    }
     vcpu.pending_interrupts.drain(..).collect()
 }
 

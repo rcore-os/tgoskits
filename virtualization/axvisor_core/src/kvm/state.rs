@@ -68,6 +68,7 @@ pub(in crate::kvm) struct VcpuFileState {
     pub(in crate::kvm) vcpu_id: u32,
     pub(in crate::kvm) mmap_area: api_control::MmapAreaId,
     pub(in crate::kvm) mp_state: u32,
+    pub(in crate::kvm) halted: bool,
     pub(in crate::kvm) pending_interrupts: VecDeque<usize>,
     pub(in crate::kvm) pending_mmio_read: Option<PendingMmioRead>,
     pub(in crate::kvm) pending_io_read: Option<PendingIoRead>,

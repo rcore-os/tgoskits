@@ -25,7 +25,9 @@ use exit::{complete_io_read, complete_mmio_read, kvm_exit_reason, prepare_usersp
 #[cfg(target_arch = "riscv64")]
 use riscv::{handle_cpu_up, handle_send_ipi};
 #[cfg(target_arch = "x86_64")]
-use x86::{handle_cpu_up, handle_in_kernel_device_exit, handle_kvm_msr_write};
+use x86::{
+    handle_cpu_up, handle_in_kernel_device_exit, handle_kvm_msr_write, inject_in_kernel_device_irqs,
+};
 use x86::{update_vcpu_run_interrupt_state, vcpu_run_irq_window_open};
 
 use super::{CONTROL_FILES, ControlFileState, take_control_vcpu_interrupts};
@@ -146,11 +148,13 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
                 axvisor_api::task::yield_now();
             }
             #[cfg(target_arch = "x86_64")]
-            AxVCpuExitReason::Halt if irqchip_created => {
-                crate::vmm::devices::x86::inject_due_pit_irq0(&vm, &vcpu);
-                crate::vmm::devices::x86::inject_pending_serial_irq(&vm, &vcpu);
-                axvisor_api::task::yield_now();
-            }
+            AxVCpuExitReason::Halt if irqchip_created => wait_for_halted_vcpu_wakeup(
+                control_file,
+                &vm,
+                &vcpu,
+                irqchip_created,
+                pit2_created,
+            )?,
             AxVCpuExitReason::MmioWrite { addr, width, data }
                 if signal_matching_ioeventfd(
                     control_file,
@@ -248,10 +252,67 @@ fn wait_until_vcpu_runnable(control_file: api_control::ControlFileId) -> AxResul
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn wait_for_halted_vcpu_wakeup(
+    control_file: api_control::ControlFileId,
+    vm: &axvm::AxVMRef,
+    vcpu: &axvm::AxVCpuRef,
+    irqchip_created: bool,
+    pit2_created: bool,
+) -> AxResult {
+    set_current_vcpu_halted(control_file, true)?;
+    loop {
+        if read_vcpu_run_u8(control_file, abi::KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {
+            set_current_vcpu_halted(control_file, false)?;
+            return Err(AxErrorKind::Interrupted.into());
+        }
+        if current_vcpu_has_pending_interrupt(control_file)? {
+            set_current_vcpu_halted(control_file, false)?;
+            return Ok(());
+        }
+        if !current_vcpu_halted(control_file)? {
+            return Ok(());
+        }
+        if inject_in_kernel_device_irqs(vm, vcpu, irqchip_created, pit2_created) {
+            set_current_vcpu_halted(control_file, false)?;
+            return Ok(());
+        }
+        axvisor_api::task::yield_now();
+    }
+}
+
 fn current_vcpu_mp_state(control_file: api_control::ControlFileId) -> AxResult<u32> {
     let control_files = CONTROL_FILES.lock();
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
         return ax_err!(NotFound);
     };
     Ok(vcpu.mp_state)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn set_current_vcpu_halted(control_file: api_control::ControlFileId, halted: bool) -> AxResult {
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.halted = halted;
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_vcpu_halted(control_file: api_control::ControlFileId) -> AxResult<bool> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vcpu.halted)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_vcpu_has_pending_interrupt(control_file: api_control::ControlFileId) -> AxResult<bool> {
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(!vcpu.pending_interrupts.is_empty())
 }
