@@ -17,12 +17,8 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 
-#[cfg(target_arch = "loongarch64")]
-use crate::mmio::loongarch_uncached_addr;
 use crate::{
-    BindingInfo, DriverGeneric, binding_info_from_fdt,
-    mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg},
-    net::PlatformDeviceNet,
+    BindingInfo, DriverGeneric, binding_info_from_fdt, mmio::iomap, net::PlatformDeviceNet,
 };
 
 const DEVICE_NAME: &str = "ls2k1000-gmac0";
@@ -509,14 +505,18 @@ struct GmacNet {
 }
 
 impl GmacNet {
-    fn new(mmio: NonNull<u8>, paddr: usize, mac_address: [u8; 6]) -> Result<Self, GmacError> {
+    fn new(
+        mmio: NonNull<u8>,
+        resource_addr: usize,
+        mac_address: [u8; 6],
+    ) -> Result<Self, GmacError> {
         let regs = GmacRegs::new(mmio);
         let version = regs.mac.read(GMAC_VERSION);
         let config = regs.mac.read(GMAC_CONFIG);
 
         debug!(
-            "{DEVICE_NAME}: probe paddr={:#x}, vaddr={:#x}, version={:#x}, config={:#x}",
-            paddr,
+            "{DEVICE_NAME}: probe resource={:#x}, vaddr={:#x}, version={:#x}, config={:#x}",
+            resource_addr,
             mmio.as_ptr() as usize,
             version,
             config
@@ -1080,29 +1080,28 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let fw_addr = reg.address as usize;
-    let paddr = firmware_reg_paddr(reg.address);
-    if paddr != GMAC0_PADDR {
+    let resource_addr = reg.address as usize;
+    if resource_addr != GMAC0_PADDR {
         warn!(
-            "{DEVICE_NAME}: skip unsupported GMAC node {} at paddr={paddr:#x}",
+            "{DEVICE_NAME}: skip unsupported GMAC node {} at reg={resource_addr:#x}",
             info.node.name()
         );
         return Err(OnProbeError::NotMatch);
     }
-    let size = firmware_reg_size(reg.size, DEFAULT_MMIO_SIZE);
-    let mmio = iomap_firmware_reg(DEVICE_NAME, reg.address, reg.size, DEFAULT_MMIO_SIZE)?;
+    let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
+    let mmio = iomap(resource_addr, size)?;
     let vaddr = mmio.as_ptr() as usize;
     let mac_address = mac_address_from_fdt(&info);
     let phy_mode = phy_mode_from_fdt(&info);
     let phy_mode = phy_mode.as_deref().unwrap_or("<unknown>");
 
     debug!(
-        "probing {DEVICE_NAME}: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, vaddr={vaddr:#x}, \
+        "probing {DEVICE_NAME}: node={}, reg={resource_addr:#x}, vaddr={vaddr:#x}, \
          size={size:#x}, phy_mode={phy_mode}",
         info.node.name(),
     );
 
-    let dev = GmacNet::new(mmio, paddr, mac_address).map_err(|err| {
+    let dev = GmacNet::new(mmio, resource_addr, mac_address).map_err(|err| {
         OnProbeError::other(format!("failed to init {DEVICE_NAME} from FDT: {err}"))
     })?;
     let binding_info = gmac_binding_info(&info);
@@ -1177,8 +1176,8 @@ fn ring_ptrs() -> RingPtrs {
         let tx_cached = addr_of_mut!((*ring).tx).cast::<DmaDesc>();
         let rx_cached = addr_of_mut!((*ring).rx).cast::<DmaDesc>();
         RingPtrs {
-            tx: uncached_alias(tx_cached),
-            rx: uncached_alias(rx_cached),
+            tx: tx_cached,
+            rx: rx_cached,
         }
     }
 }
@@ -1189,8 +1188,8 @@ fn buffer_ptrs() -> BufferPtrs {
         let tx_cached = addr_of_mut!((*buffers).tx).cast::<u8>();
         let rx_cached = addr_of_mut!((*buffers).rx).cast::<u8>();
         BufferPtrs {
-            tx: uncached_alias(tx_cached),
-            rx: uncached_alias(rx_cached),
+            tx: tx_cached,
+            rx: rx_cached,
         }
     }
 }
@@ -1243,17 +1242,6 @@ unsafe fn set_desc_status(desc: *mut DmaDesc, status: u32) {
         let status_ptr = addr_of_mut!((*desc).status);
         status_ptr.write_volatile(status);
     }
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn uncached_alias<T>(ptr: *mut T) -> *mut T {
-    let paddr = axklib::mem::virt_to_phys((ptr as usize).into()).as_usize();
-    loongarch_uncached_addr(paddr) as *mut T
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-fn uncached_alias<T>(ptr: *mut T) -> *mut T {
-    ptr
 }
 
 fn dma_addr32(ptr: *const u8, name: &'static str) -> Result<u32, GmacError> {

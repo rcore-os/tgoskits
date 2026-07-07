@@ -13,8 +13,6 @@ use rdrive::register::ProbeFdt;
 use simple_ahci::{AhciDriver as SimpleAhciDriver, Hal as AhciHal};
 
 use super::{SyncBlockOps, register_sync_block};
-#[cfg(feature = "ls2k1000-ahci")]
-use crate::mmio::{firmware_reg_paddr, firmware_reg_size, iomap_firmware_reg};
 
 pub const DEVICE_NAME: &str = "ahci";
 #[cfg(feature = "ls2k1000-ahci")]
@@ -140,7 +138,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         cmd
     });
 
-    let mmio = axklib::mmio::ioremap_raw(bar.start.into(), bar.count().max(1))
+    let mmio = crate::mmio::iomap(bar.start, bar.count().max(1))
         .map_err(|err| OnProbeError::other(format!("failed to map AHCI BAR: {err:?}")))?;
     let Some(driver) = (unsafe { AhciBlock::try_new(DEVICE_NAME, mmio.as_ptr() as usize) }) else {
         return Err(OnProbeError::other("failed to initialize AHCI controller"));
@@ -158,20 +156,14 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let fw_addr = reg.address as usize;
-    let paddr = firmware_reg_paddr(reg.address);
-    let size = firmware_reg_size(reg.size, LS2K1000_DEFAULT_MMIO_SIZE);
-    let mmio = iomap_firmware_reg(
-        LS2K1000_DEVICE_NAME,
-        reg.address,
-        reg.size,
-        LS2K1000_DEFAULT_MMIO_SIZE,
-    )?;
+    let resource_addr = reg.address as usize;
+    let size = reg.size.unwrap_or(LS2K1000_DEFAULT_MMIO_SIZE as u64) as usize;
+    let mmio = crate::mmio::iomap(resource_addr, size)?;
     let vaddr = mmio.as_ptr() as usize;
 
     log::debug!(
-        "probing {LS2K1000_DEVICE_NAME}: node={}, reg={fw_addr:#x}, paddr={paddr:#x}, \
-         vaddr={vaddr:#x}, size={size:#x}",
+        "probing {LS2K1000_DEVICE_NAME}: node={}, reg={resource_addr:#x}, vaddr={vaddr:#x}, \
+         size={size:#x}",
         info.node.name(),
     );
 

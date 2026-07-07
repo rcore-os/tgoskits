@@ -174,7 +174,7 @@ fn serial_device_info(
     SerialDeviceInfo {
         fdt_path,
         alias_index,
-        paddr: crate::mmio::firmware_addr_to_phys(base_reg.address as usize),
+        paddr: base_reg.address as usize,
         mapped_base,
         baudrate,
         irq,
