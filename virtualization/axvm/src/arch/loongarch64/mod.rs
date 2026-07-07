@@ -6,7 +6,10 @@ use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use loongarch_vcpu::host::LoongArchVcpuHostIf;
 
-use super::{ArchOps, VcpuCreateContext, VcpuSetupContext};
+use super::{
+    ArchOps, BoundVcpuExit, LegacyDeferredRunWork, VcpuCreateContext, VcpuRunAction,
+    VcpuSetupContext,
+};
 use crate::host::{HostMemory, HostTime, default_host};
 
 mod npt;
@@ -17,6 +20,7 @@ impl ArchOps for LoongArch64Arch {
     type VCpu = loongarch_vcpu::LoongArchVCpu;
     type PerCpu = loongarch_vcpu::LoongArchPerCpu;
     type VcpuCreateState = loongarch_vcpu::LoongArchIocsrStateRef;
+    type DeferredRunWork = LegacyDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
@@ -71,7 +75,7 @@ impl ArchOps for LoongArch64Arch {
 
     fn inject_pending_interrupt(
         vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         interrupt: crate::vm::PendingInterrupt,
     ) {
         match interrupt {
@@ -94,7 +98,7 @@ impl ArchOps for LoongArch64Arch {
                 vector,
                 physical_irq,
             } => {
-                let Some(vector) = vm.loongarch_external_irq_vector(vector, physical_irq) else {
+                let Some(vector) = loongarch_external_irq_vector(vm, vector, physical_irq) else {
                     trace!(
                         "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is \
                          masked in VM[{}]",
@@ -123,11 +127,11 @@ impl ArchOps for LoongArch64Arch {
         }
     }
 
-    fn after_mmio_write(vm: &crate::AxVM) {
-        vm.drain_loongarch_pch_pic_events();
+    fn after_mmio_write(vm: &crate::AxVMRef) {
+        drain_loongarch_pch_pic_events(vm);
     }
 
-    fn handle_idle(_vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+    fn handle_idle(_vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::check_timer_events();
         if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
             trace!(
@@ -150,12 +154,64 @@ impl ArchOps for LoongArch64Arch {
         ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
     }
 
+    fn handle_vcpu_exit_bound(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
+    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
+    }
+
+    fn finish_deferred_run_work(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        work: Self::DeferredRunWork,
+    ) -> AxResult<VcpuRunAction> {
+        super::finish_legacy_deferred_run_work::<Self>(vm, vcpu, work)
+    }
+
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
         unsafe {
             cache_range::<DCACHE_WB>(addr, size);
             core::arch::asm!("dbar 0");
         }
     }
+}
+
+fn loongarch_external_irq_vector(
+    vm: &crate::AxVMRef,
+    fallback_vector: usize,
+    _physical_irq: usize,
+) -> Option<usize> {
+    let devices = vm.get_devices().ok()?;
+    match devices.loongarch_pch_pic_assert_irq(fallback_vector) {
+        Some(Some(vector)) => Some(vector),
+        Some(None) => None,
+        None => Some(fallback_vector),
+    }
+}
+
+fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    devices.drain_loongarch_pch_pic_events(|event| {
+        if !event.asserted {
+            trace!(
+                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                vm.id(),
+                event.vector
+            );
+            return;
+        }
+        if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
+            warn!(
+                "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
+                vm.id(),
+                event.vector
+            );
+        }
+    });
 }
 
 struct LoongArchVcpuHostIfImpl;

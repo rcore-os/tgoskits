@@ -8,7 +8,8 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, host::RiscvVcpuHostIf};
 use riscv_vplic::host::RiscvVplicHostIf;
 
 use super::{
-    ArchOps, VcpuCreateContext, VcpuSetupContext, default_vcpu_affinities, target_phys_cpu_ids,
+    ArchOps, BoundVcpuExit, LegacyDeferredRunWork, VcpuCreateContext, VcpuRunAction,
+    VcpuSetupContext, default_vcpu_affinities, target_phys_cpu_ids,
 };
 use crate::host::{HostMemory, default_host};
 
@@ -20,6 +21,7 @@ impl ArchOps for Riscv64Arch {
     type VCpu = riscv_vcpu::RISCVVCpu;
     type PerCpu = riscv_vcpu::RISCVPerCpu;
     type VcpuCreateState = ();
+    type DeferredRunWork = LegacyDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
@@ -82,7 +84,7 @@ impl ArchOps for Riscv64Arch {
         register_platform_irq_injector();
     }
 
-    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef) {
+    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         if vm.interrupt_mode() != VMInterruptMode::Passthrough {
             return;
         }
@@ -112,25 +114,45 @@ impl ArchOps for Riscv64Arch {
         vcpus
     }
 
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef, vcpu_id: usize, arg: usize) {
+    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }
 
-    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef) {
+    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
     }
 
-    fn set_io_read_result(vcpu: &crate::vm::AxVCpuRef, val: usize) {
+    fn set_io_read_result(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, val: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, val);
     }
 
-    fn after_external_interrupt(_vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef, vector: usize) {
+    fn after_external_interrupt(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vector: usize,
+    ) {
         vcpu.with_current_cpu_set(|| {
             crate::host::arceos::dispatch_host_irq(vector);
             vcpu.get_arch_vcpu().latch_hvip_from_hw();
         });
         crate::check_timer_events();
+    }
+
+    fn handle_vcpu_exit_bound(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        exit: <Self::VCpu as axvm_types::VmArchVcpuOps>::Exit,
+    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        super::handle_transitional_vm_exit::<Self>(vm, vcpu, exit)
+    }
+
+    fn finish_deferred_run_work(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        work: Self::DeferredRunWork,
+    ) -> AxResult<VcpuRunAction> {
+        super::finish_legacy_deferred_run_work::<Self>(vm, vcpu, work)
     }
 }
 

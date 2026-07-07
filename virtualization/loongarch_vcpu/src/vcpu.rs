@@ -141,6 +141,7 @@ pub struct LoongArchVCpuSetupConfig {
 impl VmArchVcpuOps for LoongArchVCpu {
     type CreateConfig = LoongArchVCpuCreateConfig;
     type SetupConfig = LoongArchVCpuSetupConfig;
+    type Exit = VmExit;
 
     fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
         let mut ctx = LoongArchContextFrame::default();
@@ -198,7 +199,7 @@ impl VmArchVcpuOps for LoongArchVCpu {
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<VmExit> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         #[cfg(target_arch = "loongarch64")]
         {
             unsafe {

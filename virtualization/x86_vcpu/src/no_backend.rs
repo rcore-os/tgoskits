@@ -41,6 +41,7 @@ pub struct X86ArchVCpu;
 impl VmArchVcpuOps for X86ArchVCpu {
     type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
+    type Exit = VmExit;
 
     fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: X86VCpuCreateConfig) -> AxResult<Self> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
@@ -58,7 +59,7 @@ impl VmArchVcpuOps for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn run(&mut self) -> AxResult<VmExit> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 

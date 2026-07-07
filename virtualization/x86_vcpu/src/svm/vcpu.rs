@@ -1480,6 +1480,7 @@ impl Debug for SvmVcpu {
 impl VmArchVcpuOps for SvmVcpu {
     type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
+    type Exit = VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxResult<Self> {
         Self::create(vm_id, vcpu_id)
@@ -1505,7 +1506,7 @@ impl VmArchVcpuOps for SvmVcpu {
         self.setup_vmcb(entry, npt_root, config)
     }
 
-    fn run(&mut self) -> AxResult<VmExit> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         {
             let exit_info = self.inner_run()?;
             let exit_code = match exit_info.exit_code {
