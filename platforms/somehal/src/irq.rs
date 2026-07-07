@@ -1,7 +1,11 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 
+#[cfg(not(test))]
+use ax_kspin::SpinNoIrq as IrqRouteMutex;
 use ax_kspin::SpinRaw as Mutex;
+#[cfg(test)]
+use ax_kspin::SpinRaw as IrqRouteMutex;
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
@@ -64,7 +68,12 @@ struct IrqRoute {
 }
 
 static IRQ_DOMAINS: Mutex<Vec<IrqDomain>> = Mutex::new(Vec::new());
-static IRQ_ROUTES: Mutex<Vec<IrqRoute>> = Mutex::new(Vec::new());
+static IRQ_ROUTES: IrqRouteMutex<Vec<IrqRoute>> = IrqRouteMutex::new(Vec::new());
+
+#[cfg(not(test))]
+const _: fn(&IrqRouteMutex<Vec<IrqRoute>>) = |lock| {
+    let _: &ax_kspin::SpinNoIrq<Vec<IrqRoute>> = lock;
+};
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
