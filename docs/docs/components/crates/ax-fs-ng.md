@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 内核模块
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `ext4fs`、`fatfs`、`vfs`、`lockdep` 控制编译期能力装配。
+- feature 视角：主要通过 `ext4`、`fat`、`vfs`、`lockdep` 控制编译期能力装配。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `DefaultFilesystem`、`Initialize`。
 
 ### 模块结构

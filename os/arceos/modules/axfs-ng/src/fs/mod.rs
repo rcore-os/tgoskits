@@ -1,28 +1,28 @@
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 use crate::FilesystemKind;
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 use crate::block::FsBlockDevice;
 use crate::{BlockDeviceHandle, block::BlockRegion};
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 mod ext4;
-#[cfg(feature = "fatfs")]
+#[cfg(feature = "fat")]
 mod fat;
 
 /// Create a filesystem instance from a block device.
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub fn new_default(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
     new_ext4(dev, region)
 }
 
 /// Create a filesystem instance from a detected filesystem kind.
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) fn new_by_kind(
     dev: Box<dyn FsBlockDevice>,
     region: BlockRegion,
@@ -38,12 +38,12 @@ pub(crate) fn new_by_kind(
 ///
 /// Use this for loop devices and other block backends created outside the
 /// platform probe path.
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsResult<Filesystem> {
     new_default(crate::block::boxed_native_handle_block_device(dev), region)
 }
 
-#[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) fn new_from_handle_with_kind(
     dev: Arc<BlockDeviceHandle>,
     region: BlockRegion,
@@ -56,7 +56,7 @@ pub(crate) fn new_from_handle_with_kind(
     )
 }
 
-#[cfg(not(any(feature = "ext4fs", feature = "fatfs")))]
+#[cfg(not(any(feature = "ext4", feature = "fat")))]
 pub fn new_from_handle(
     _dev: Arc<BlockDeviceHandle>,
     _region: BlockRegion,
@@ -64,7 +64,7 @@ pub fn new_from_handle(
     panic!("No filesystem feature enabled");
 }
 
-#[cfg(not(any(feature = "ext4fs", feature = "fatfs")))]
+#[cfg(not(any(feature = "ext4", feature = "fat")))]
 pub(crate) fn new_from_handle_with_kind(
     _dev: Arc<BlockDeviceHandle>,
     _region: BlockRegion,
@@ -73,22 +73,22 @@ pub(crate) fn new_from_handle_with_kind(
     panic!("No filesystem feature enabled");
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 fn new_ext4(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
     ext4::Ext4Filesystem::new(dev, region)
 }
 
-#[cfg(all(any(feature = "ext4fs", feature = "fatfs"), not(feature = "ext4fs")))]
+#[cfg(all(any(feature = "ext4", feature = "fat"), not(feature = "ext4")))]
 fn new_ext4(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
     Err(ax_errno::AxError::Unsupported)
 }
 
-#[cfg(feature = "fatfs")]
+#[cfg(feature = "fat")]
 fn new_fat(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
     fat::FatFilesystem::new(dev, region)
 }
 
-#[cfg(all(any(feature = "ext4fs", feature = "fatfs"), not(feature = "fatfs")))]
+#[cfg(all(any(feature = "ext4", feature = "fat"), not(feature = "fat")))]
 fn new_fat(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
     Err(ax_errno::AxError::Unsupported)
 }

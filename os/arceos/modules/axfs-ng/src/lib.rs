@@ -37,7 +37,7 @@ pub use highlevel::*;
 #[cfg(feature = "vfs")]
 pub mod vfs {
     /// Create a filesystem from a native block runtime handle.
-    #[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;
     pub use crate::highlevel::*;
 }
@@ -106,15 +106,15 @@ pub(crate) fn detect_filesystem(
     dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,
 ) -> Option<FilesystemKind> {
-    #[cfg(not(any(feature = "ext4fs", feature = "fatfs")))]
+    #[cfg(not(any(feature = "ext4", feature = "fat")))]
     let _ = (&mut *dev, region);
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     if region_has_ext4(dev, region) {
         return Some(FilesystemKind::Ext4);
     }
 
-    #[cfg(feature = "fatfs")]
+    #[cfg(feature = "fat")]
     if region_has_fat(dev, region) {
         return Some(FilesystemKind::Fat);
     }
@@ -122,7 +122,7 @@ pub(crate) fn detect_filesystem(
     None
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
@@ -135,7 +135,7 @@ fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegio
     )
 }
 
-#[cfg(feature = "fatfs")]
+#[cfg(feature = "fat")]
 fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
@@ -160,7 +160,7 @@ fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion
             || buf.get(82..87) == Some(FAT32_MAGIC.as_slice()))
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 fn region_has_magic_u16(
     dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,

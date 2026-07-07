@@ -125,12 +125,12 @@ impl Drop for DataIoGuard<'_> {
     }
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 struct FlushBarrierGuard<'a> {
     device: &'a BlockDeviceHandle,
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 impl Drop for FlushBarrierGuard<'_> {
     fn drop(&mut self) {
         self.device.flush_active.store(false, Ordering::Release);
@@ -587,7 +587,7 @@ impl BlockDeviceHandle {
         }
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn poll_one(&self, key: RequestKey) -> bool {
         let mut poller = DeviceRequestPoller { device: self };
         CompletionDrain::new(&self.pending, &mut poller).poll_one(key)
@@ -636,14 +636,14 @@ impl BlockDeviceHandle {
         self.submit_io(RequestOp::Read, block_id, buf, None)
     }
 
-    #[cfg(any(feature = "ext4fs", feature = "fatfs"))]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> AxResult {
         self.check_not_poisoned()?;
         let mut no_dst = [];
         self.submit_io(RequestOp::Write, block_id, &mut no_dst, Some(buf))
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     pub(crate) fn flush_blocks(&self) -> AxResult {
         self.check_not_poisoned()?;
         let _barrier = self.acquire_flush_barrier()?;
@@ -676,7 +676,7 @@ impl BlockDeviceHandle {
         }
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn flush_queue_index(&self) -> Option<usize> {
         self.queues
             .iter()
@@ -684,7 +684,7 @@ impl BlockDeviceHandle {
             .find_map(|(idx, queue)| queue.lock().info.limits.supports_flush.then_some(idx))
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn wait_for_all_pending(&self) -> AxResult {
         loop {
             let queues =
@@ -830,7 +830,7 @@ impl BlockDeviceHandle {
         }
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn acquire_flush_barrier(&self) -> AxResult<FlushBarrierGuard<'_>> {
         loop {
             if self
@@ -866,7 +866,7 @@ impl BlockDeviceHandle {
         Ok(())
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn wait_for_active_data_drain(&self) -> AxResult {
         let task_id = current_task_id().unwrap_or(0);
         if self.active_data_ops.load(Ordering::Acquire) == 0 {
@@ -1208,7 +1208,7 @@ impl BlockDeviceHandle {
         }
     }
 
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     fn wait_for_completion(&self, key: RequestKey, dst: Option<&mut [u8]>) -> AxResult {
         let task_id = current_task_id().unwrap_or(0);
         let observed = self.pending.lock().register_waiter_task(key, task_id);
@@ -1541,7 +1541,7 @@ impl RequestPoller for DeviceRequestPoller<'_> {
     }
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 fn submit_flush_request(queue: &mut QueueRuntime, info: QueueInfo) -> Result<RequestId, BlkError> {
     match &mut queue.queue {
         RuntimeQueue::Legacy(legacy) => {
@@ -1799,7 +1799,7 @@ mod tests {
     }
 }
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 fn queue_ids_from_bits(bits: u64) -> impl Iterator<Item = usize> {
     (0..u64::BITS as usize).filter(move |queue_id| bits & (1 << queue_id) != 0)
 }

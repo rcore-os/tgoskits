@@ -49,8 +49,8 @@ fs = [
   "dep:rdif-block",
   "ax-driver/block",
 ]
-ext4fs = ["fs", "ax-fs-ng/ext4fs"]
-fatfs = ["fs", "ax-fs-ng/fatfs"]
+ext4fs = ["fs", "ax-fs-ng/ext4"]
+fatfs = ["fs", "ax-fs-ng/fat"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]
 net = [
   "irq",
