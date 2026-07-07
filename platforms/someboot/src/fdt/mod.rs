@@ -29,14 +29,15 @@ pub fn fdt_addr_phys() -> Option<usize> {
     Some(fdt_addr)
 }
 
-#[cfg(target_arch = "loongarch64")]
 pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
     if fdt_addr == 0 {
         return false;
     }
 
     let ptr = phys_to_virt(fdt_addr);
-    if fdt_total_size(ptr).is_none() {
+    // SAFETY: the candidate physical address is converted through the current
+    // early mapping and is only borrowed for validation here.
+    if unsafe { validated_fdt_slice(ptr) }.is_none() {
         return false;
     }
 
@@ -48,13 +49,19 @@ pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
 
 fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
     let fdt_addr = fdt_addr()?;
-    let fdt = unsafe { fdt_raw::Fdt::from_ptr(fdt_addr).ok()? };
+    // SAFETY: the global FDT address points to firmware memory or the saved
+    // early RAM copy, both of which stay valid for the boot lifetime.
+    let slice = unsafe { validated_fdt_slice(fdt_addr)? };
+    let fdt = fdt_raw::Fdt::from_bytes(slice).ok()?;
     Some(fdt)
 }
 
 pub(crate) fn init_with_alloc() -> Option<()> {
     let fdt_addr = fdt_addr()?;
-    let fdt = unsafe { fdt_edit::Fdt::from_ptr(fdt_addr).ok()? };
+    // SAFETY: the global FDT address points to firmware memory or the saved
+    // early RAM copy, both of which stay valid for the boot lifetime.
+    let slice = unsafe { validated_fdt_slice(fdt_addr)? };
+    let fdt = fdt_edit::Fdt::from_bytes(slice).ok()?;
     FDT.init(fdt);
     Some(())
 }
@@ -76,10 +83,12 @@ pub(crate) fn save_fdt() {
     let Some(src) = fdt_addr() else {
         return;
     };
-    let Some(size) = fdt_total_size(src) else {
+    // SAFETY: the current FDT address is expected to reference firmware memory
+    // that is readable until we copy it into early RAM below.
+    let Some(slice) = (unsafe { validated_fdt_slice(src) }) else {
         return;
     };
-    let slice = unsafe { core::slice::from_raw_parts(src as *const u8, size) };
+    let size = slice.len();
 
     let fdt_buff = unsafe {
         crate::mem::ram::alloc(core::alloc::Layout::from_size_align(size, 8).unwrap()).unwrap()
@@ -91,7 +100,11 @@ pub(crate) fn save_fdt() {
     }
 }
 
-fn fdt_total_size(ptr: *mut u8) -> Option<usize> {
+/// # Safety
+///
+/// `ptr` must reference a readable FDT blob that remains valid for the returned
+/// slice lifetime.
+unsafe fn validated_fdt_slice<'a>(ptr: *mut u8) -> Option<&'a [u8]> {
     if ptr.is_null() {
         return None;
     }
@@ -101,9 +114,15 @@ fn fdt_total_size(ptr: *mut u8) -> Option<usize> {
     // only reads the fixed-size header and validates its FDT magic.
     let header = unsafe { fdt_raw::Header::from_ptr(ptr).ok()? };
     let total_size = header.totalsize as usize;
-    (core::mem::size_of::<fdt_raw::Header>()..=MAX_FDT_SIZE)
-        .contains(&total_size)
-        .then_some(total_size)
+    if !(core::mem::size_of::<fdt_raw::Header>()..=MAX_FDT_SIZE).contains(&total_size) {
+        return None;
+    }
+
+    // SAFETY: the header totalsize is bounded above before constructing the
+    // slice. `Fdt::from_bytes` below then validates the whole blob structure.
+    let slice = unsafe { core::slice::from_raw_parts(ptr.cast_const(), total_size) };
+    fdt_raw::Fdt::from_bytes(slice).ok()?;
+    Some(slice)
 }
 
 fn cpu_nodes_from_fdt<'a>(fdt: fdt_raw::Fdt<'a>) -> impl Iterator<Item = fdt_raw::Node<'a>> + 'a {
@@ -149,6 +168,67 @@ mod tests {
     use fdt_edit::{Fdt, Node, NodeId, Property};
 
     use super::*;
+
+    #[test]
+    fn set_fdt_addr_phys_rejects_zero() {
+        assert!(!set_fdt_addr_phys_if_valid(0));
+    }
+
+    #[test]
+    fn validated_fdt_slice_accepts_valid_tree() {
+        let fdt = minimal_cpu_fdt();
+        let fdt_data = fdt.encode();
+
+        let slice = unsafe { validated_fdt_slice(fdt_data.as_ref().as_ptr().cast_mut()) }
+            .expect("validate test fdt");
+
+        assert_eq!(slice, fdt_data.as_ref());
+    }
+
+    #[test]
+    fn validated_fdt_slice_rejects_bad_magic() {
+        let fdt = minimal_cpu_fdt();
+        let mut fdt_data = fdt.encode().as_ref().to_vec();
+        fdt_data[0] ^= 0xff;
+
+        assert!(unsafe { validated_fdt_slice(fdt_data.as_mut_ptr()) }.is_none());
+    }
+
+    #[test]
+    fn validated_fdt_slice_rejects_oversized_total_size() {
+        let fdt = minimal_cpu_fdt();
+        let mut fdt_data = fdt.encode().as_ref().to_vec();
+        let oversized = (MAX_FDT_SIZE as u32 + 1).to_be_bytes();
+        fdt_data[4..8].copy_from_slice(&oversized);
+
+        assert!(unsafe { validated_fdt_slice(fdt_data.as_mut_ptr()) }.is_none());
+    }
+
+    #[test]
+    fn save_fdt_copies_validated_slice_length() {
+        let fdt = minimal_cpu_fdt();
+        let mut fdt_data = fdt.encode().as_ref().to_vec();
+        let fdt_size = fdt_data.len();
+        fdt_data.extend_from_slice(&[0xcc; 16]);
+
+        let sentinel = 0xa5;
+        let mut saved_memory = Vec::new();
+        saved_memory.resize(fdt_size + 64, sentinel);
+        let saved_start = saved_memory.as_mut_ptr() as usize;
+        crate::mem::ram::init(saved_start..saved_start + saved_memory.len());
+
+        assert!(set_fdt_addr_phys_if_valid(fdt_data.as_mut_ptr() as usize));
+        save_fdt();
+
+        let saved_ptr = fdt_addr().expect("saved fdt address");
+        let saved_slice = unsafe { core::slice::from_raw_parts(saved_ptr.cast_const(), fdt_size) };
+        assert_eq!(saved_slice, &fdt_data[..fdt_size]);
+        assert_eq!(unsafe { saved_ptr.add(fdt_size).read() }, sentinel);
+
+        unsafe {
+            FDT_ADDR = 0;
+        }
+    }
 
     #[test]
     fn cpu_id_list_skips_disabled_cpu_nodes() {
