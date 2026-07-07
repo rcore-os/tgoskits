@@ -372,8 +372,8 @@ fn fdt_resource_prepare_applies_clocks_resets_and_power_domains() {
     assert_eq!(
         *RESOURCE_CALLS.lock().unwrap(),
         vec![
-            "power-on:6".to_string(),
             "clock-set:4:50000000".to_string(),
+            "power-on:6".to_string(),
             "pinctrl-config".to_string(),
             "pinctrl-config".to_string(),
             "pinctrl-config".to_string(),

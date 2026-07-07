@@ -1,25 +1,21 @@
 extern crate alloc;
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::ToString, vec::Vec};
 use core::ptr::NonNull;
 
 use crab_usb::{EhciNewParams, usb_if::Speed};
-use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
+use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
     probe::{
         OnProbeError,
-        fdt::{ResetLine, reset_lines},
+        fdt::{ClockLine, ResetLine, apply_assigned_clocks, clock_lines, reset_lines},
     },
     register::{FdtInfo, ProbeFdt},
 };
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{mmio::iomap, soc::rk3588_enable_clock};
+use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
 
@@ -35,15 +31,9 @@ crate::model_register!(
     ],
 );
 
-#[derive(Clone)]
-struct ClockSpec {
-    name: Option<String>,
-    id: u32,
-}
-
 struct EhciResources {
     ctrl: RegFixed,
-    clocks: Vec<ClockSpec>,
+    clocks: Vec<ClockLine>,
     resets: Vec<ResetLine>,
 }
 
@@ -52,7 +42,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_clocks(&resources.clocks);
+    enable_clocks(&resources.clocks)?;
     deassert_resets(&resources.resets);
 
     let mmio = map_reg(resources.ctrl)?;
@@ -84,12 +74,14 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<EhciResources, OnP
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
 
-    let mut clocks = clock_specs(info.node.clocks());
+    let mut clocks = info.clock_lines()?;
     let mut resets = parse_resets(info.node)?;
 
     for phy in collect_usb2_phys(info.node.as_node(), fdt) {
-        clocks.extend(clock_specs(phy.port.clocks()));
-        clocks.extend(clock_specs(phy.parent.clocks()));
+        apply_assigned_clocks(phy.port)?;
+        clocks.extend(clock_lines(phy.port)?);
+        apply_assigned_clocks(phy.parent)?;
+        clocks.extend(clock_lines(phy.parent)?);
         resets.extend(parse_resets(phy.parent)?);
     }
 
@@ -123,20 +115,17 @@ fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
     reset_lines(node)
 }
 
-fn enable_clocks(clocks: &[ClockSpec]) {
+fn enable_clocks(clocks: &[ClockLine]) -> Result<(), OnProbeError> {
     for clock in clocks {
-        if clock.id == 0 {
+        let id = clock.id().raw();
+        if id == 0 {
             continue;
         }
 
-        match rk3588_enable_clock(clock.id) {
-            Ok(()) => debug!("EHCI clock {:?} ({:#x}) enabled", clock.name, clock.id),
-            Err(err) => warn!(
-                "EHCI clock {:?} ({:#x}) enable skipped: {err}",
-                clock.name, clock.id
-            ),
-        }
+        clock.enable()?;
+        debug!("EHCI clock {:?} ({id:#x}) enabled", clock.name());
     }
+    Ok(())
 }
 
 fn deassert_resets(resets: &[ResetLine]) {
@@ -154,19 +143,6 @@ fn deassert_resets(resets: &[ResetLine]) {
             ),
         }
     }
-}
-
-fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
-    clocks
-        .into_iter()
-        .filter_map(|clock| {
-            let id = *clock.specifier.first()?;
-            Some(ClockSpec {
-                name: clock.name,
-                id,
-            })
-        })
-        .collect()
 }
 
 fn live_fdt() -> Result<Fdt, OnProbeError> {

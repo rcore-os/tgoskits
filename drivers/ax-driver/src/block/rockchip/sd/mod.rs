@@ -20,7 +20,7 @@ use fdt_edit::{Node, Phandle};
 use log::{info, warn};
 use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{OnProbeError, fdt::ClockLine},
     register::{FdtInfo, ProbeFdt},
 };
 use sdmmc_protocol::{
@@ -33,9 +33,7 @@ use sdmmc_protocol::{
     },
 };
 
-use super::clock::{
-    RockchipClockOps, ScmiClockOps, apply_assigned_clocks, enable_node_clocks, scmi_named_clock,
-};
+use super::clock::{ScmiClockOps, enable_node_clocks, rdrive_named_clock, scmi_named_clock};
 use crate::{block::ProbeFdtBlock, mmio::iomap, soc::RockchipFdtPinctrlParser};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
@@ -55,7 +53,7 @@ const SDMMC_INIT_RETRY_DELAY: Duration = Duration::from_millis(10);
 type RockchipDwMmc = SdioSdmmc<SdioHost2Adapter<DwMmc>>;
 
 enum RockchipDwMmcClock {
-    Rdrive(RockchipClockOps),
+    Rdrive(ClockLine),
     Scmi(ScmiClockOps),
 }
 
@@ -202,7 +200,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 }
 
 fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
-    apply_assigned_clocks(info, "SDMMC")?;
     let Some(pinctrl) = rdrive::get_one::<PinctrlDevice>() else {
         warn!(
             "[{}] PinctrlDevice not found; skip SDMMC pinctrl and fixed regulators",
@@ -224,7 +221,7 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
             );
         }
     }
-    enable_node_clocks(info, "SDMMC");
+    enable_node_clocks(info, "SDMMC")?;
     Ok(())
 }
 
@@ -345,7 +342,7 @@ fn is_absent_card_init_error(err: Error) -> bool {
 }
 
 fn dwmmc_clock_setup(info: &FdtInfo<'_>) -> Option<DwMmcClockSetup> {
-    match RockchipClockOps::named(info, "ciu") {
+    match rdrive_named_clock(info, "ciu") {
         Ok(Some(clock)) => {
             if let Err(err) = clock.set_rate(DWMMC_STABLE_REFERENCE_CLOCK as u64) {
                 warn!(
