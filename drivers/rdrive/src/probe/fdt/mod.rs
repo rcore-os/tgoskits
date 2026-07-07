@@ -6,8 +6,9 @@ use alloc::{
 use core::ptr::NonNull;
 
 use ax_kspin::SpinNoPreempt as Mutex;
+use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
-use rdif_pinctrl::PinctrlDevice;
+use rdif_pinctrl::{PinctrlDevice, PinctrlError};
 use spin::Once;
 
 use super::ProbeError;
@@ -56,6 +57,170 @@ pub(crate) fn try_system() -> Option<&'static System> {
 pub struct FdtInfo<'a> {
     pub node: NodeType<'a>,
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResourcePrepareConfig {
+    apply_assigned_clocks: bool,
+    enable_clocks: bool,
+    deassert_resets: bool,
+    enable_power_domains: bool,
+    supply_names: Vec<String>,
+    clock_rates: Vec<String>,
+}
+
+impl Default for ResourcePrepareConfig {
+    fn default() -> Self {
+        Self {
+            apply_assigned_clocks: true,
+            enable_clocks: true,
+            deassert_resets: true,
+            enable_power_domains: false,
+            supply_names: Vec::from([String::from("vmmc-supply"), String::from("vqmmc-supply")]),
+            clock_rates: Vec::new(),
+        }
+    }
+}
+
+impl ResourcePrepareConfig {
+    pub fn without_assigned_clocks(mut self) -> Self {
+        self.apply_assigned_clocks = false;
+        self
+    }
+
+    pub fn without_clock_enable(mut self) -> Self {
+        self.enable_clocks = false;
+        self
+    }
+
+    pub fn without_reset_deassert(mut self) -> Self {
+        self.deassert_resets = false;
+        self
+    }
+
+    pub fn without_power_domains(mut self) -> Self {
+        self.enable_power_domains = false;
+        self
+    }
+
+    pub fn with_power_domains(mut self) -> Self {
+        self.enable_power_domains = true;
+        self
+    }
+
+    pub fn with_supply(mut self, name: impl Into<String>) -> Self {
+        self.supply_names.push(name.into());
+        self
+    }
+
+    pub fn with_named_clock_rate(mut self, name: impl Into<String>) -> Self {
+        self.clock_rates.push(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ResourcePrepareReport {
+    clock_rates: BTreeMap<String, u64>,
+}
+
+impl ResourcePrepareReport {
+    pub fn clock_rate(&self, name: &str) -> Option<u64> {
+        self.clock_rates.get(name).copied()
+    }
+
+    fn insert_clock_rate(&mut self, name: String, rate: u64) {
+        self.clock_rates.insert(name, rate);
+    }
+}
+
+#[derive(Clone)]
+struct ClockLine {
+    node_name: String,
+    clock_name: Option<String>,
+    device: Device<rdif_clk::Clk>,
+    id: rdif_clk::ClockId,
+}
+
+impl ClockLine {
+    fn from_ref(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<Self, OnProbeError> {
+        let clock_id = clock_selector(info, clock)?;
+        let device_id = info.phandle_to_device_id(clock.phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] clock {:?} phandle {:?} has no device id",
+                info.node.name(),
+                clock.name,
+                clock.phandle
+            ))
+        })?;
+        let device = crate::get::<rdif_clk::Clk>(device_id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] clock {:?} provider {:?} has no rdif-clk interface: {err}",
+                info.node.name(),
+                clock.name,
+                clock.phandle
+            ))
+        })?;
+        Ok(Self {
+            node_name: info.node.name().to_string(),
+            clock_name: clock.name.clone(),
+            device,
+            id: rdif_clk::ClockId::from(clock_id as usize),
+        })
+    }
+
+    fn enable(&self) -> Result<(), OnProbeError> {
+        let mut clock = self.lock()?;
+        clock.enable(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to enable clock {:?} ({:?}): {err:?}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+
+    fn set_rate(&self, rate: u64) -> Result<(), OnProbeError> {
+        let mut clock = self.lock()?;
+        clock.set_rate(self.id, rate).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to set clock {:?} ({:?}) to {} Hz: {err:?}",
+                self.node_name, self.clock_name, self.id, rate
+            ))
+        })
+    }
+
+    fn rate(&self) -> Result<u64, OnProbeError> {
+        let clock = self.lock()?;
+        clock.get_rate(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to read clock {:?} ({:?}): {err:?}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+
+    fn lock(&self) -> Result<crate::DeviceGuard<rdif_clk::Clk>, OnProbeError> {
+        self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock clock {:?} ({:?}): {err}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+}
+
+fn clock_selector(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<u32, OnProbeError> {
+    if clock.cells == 0 {
+        return Ok(0);
+    }
+    clock.select().ok_or_else(|| {
+        OnProbeError::other(format!(
+            "[{}] clock {:?} provider {:?} has no selector",
+            info.node.name(),
+            clock.name,
+            clock.phandle
+        ))
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -502,6 +667,41 @@ impl<'a> FdtInfo<'a> {
             .find(|clock| clock.name.as_deref() == Some(name))
     }
 
+    pub fn prepare_resources(
+        &self,
+        config: ResourcePrepareConfig,
+    ) -> Result<ResourcePrepareReport, OnProbeError> {
+        if config.apply_assigned_clocks {
+            apply_assigned_clocks(self)?;
+        }
+        apply_supply_regulators(self, &config.supply_names)?;
+        if config.enable_power_domains {
+            for domain in self.power_domain_lines()? {
+                domain.power_on()?;
+            }
+        }
+        if config.enable_clocks {
+            for clock in self.node.clocks() {
+                ClockLine::from_ref(self, &clock)?.enable()?;
+            }
+        }
+        if config.deassert_resets {
+            for reset in self.reset_lines()? {
+                reset.deassert()?;
+            }
+        }
+
+        let mut report = ResourcePrepareReport::default();
+        for name in config.clock_rates {
+            let Some(clock) = self.find_clk_by_name(&name) else {
+                continue;
+            };
+            let clock = ClockLine::from_ref(self, &clock)?;
+            report.insert_clock_rate(name, clock.rate()?);
+        }
+        Ok(report)
+    }
+
     pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {
         reset_refs(self.node)
     }
@@ -554,6 +754,125 @@ impl<'a> FdtInfo<'a> {
 
     pub fn interrupts(&self) -> Vec<InterruptRef> {
         self.node.interrupts()
+    }
+}
+
+fn apply_assigned_clocks(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    let clocks = clock_refs_from_property(info, "assigned-clocks")?;
+    let rates = info
+        .node
+        .as_node()
+        .get_property("assigned-clock-rates")
+        .map(|prop| prop.get_u32_iter().map(u64::from).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for (index, clock) in clocks.into_iter().enumerate() {
+        let Some(rate) = rates.get(index).copied() else {
+            continue;
+        };
+        if rate == 0 {
+            continue;
+        }
+        ClockLine::from_ref(info, &clock)?.set_rate(rate)?;
+    }
+    Ok(())
+}
+
+fn clock_refs_from_property(
+    info: &FdtInfo<'_>,
+    property_name: &'static str,
+) -> Result<Vec<ClockRef>, OnProbeError> {
+    let Some(prop) = info.node.as_node().get_property(property_name) else {
+        return Ok(Vec::new());
+    };
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    while let Some(phandle_raw) = reader.read_u32() {
+        let phandle = Phandle::from(phandle_raw);
+        let provider = info.get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] {property_name} provider phandle {:?} not found",
+                info.node.name(),
+                phandle
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#clock-cells")
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(1);
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated {property_name} entry for phandle {:?}",
+                    info.node.name(),
+                    phandle
+                ))
+            })?;
+            specifier.push(value);
+        }
+        refs.push(ClockRef::new(phandle, cells, specifier));
+    }
+    Ok(refs)
+}
+
+fn apply_supply_regulators(
+    info: &FdtInfo<'_>,
+    supply_names: &[String],
+) -> Result<(), OnProbeError> {
+    for name in supply_names {
+        let Some(phandle) = supply_phandle(info.node.as_node(), name) else {
+            continue;
+        };
+        let Some(node) = info.get_by_phandle(phandle) else {
+            return Err(OnProbeError::other(format!(
+                "[{}] supply {name} phandle {:?} not found",
+                info.node.name(),
+                phandle
+            )));
+        };
+        if !fixed_regulator_has_control(node.as_node()) {
+            continue;
+        }
+        apply_fixed_regulator(info, node.as_node(), name)?;
+    }
+    Ok(())
+}
+
+fn supply_phandle(node: &Node, name: &str) -> Option<Phandle> {
+    node.get_property(name)
+        .and_then(|prop| prop.get_u32())
+        .map(Phandle::from)
+}
+
+fn fixed_regulator_has_control(node: &Node) -> bool {
+    node.compatibles()
+        .any(|compatible| compatible == "regulator-fixed")
+        && (node.get_property("gpios").is_some()
+            || node.get_property("gpio").is_some()
+            || node.get_property("pinctrl-0").is_some())
+}
+
+fn apply_fixed_regulator(
+    info: &FdtInfo<'_>,
+    regulator: &Node,
+    supply_name: &str,
+) -> Result<(), OnProbeError> {
+    let pinctrl = crate::get_one::<PinctrlDevice>().ok_or_else(|| {
+        OnProbeError::other(format!(
+            "[{}] PinctrlDevice not found for controlled supply {supply_name}",
+            info.node.name()
+        ))
+    })?;
+    let mut pinctrl = pinctrl
+        .lock()
+        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+    match pinctrl.apply_fdt_fixed_regulator(system().fdt(), regulator, "rdrive-resource") {
+        Ok(()) | Err(PinctrlError::NotAvailable) => Ok(()),
+        Err(err) => Err(OnProbeError::other(format!(
+            "[{}] failed to enable supply {supply_name}: {err}",
+            info.node.name()
+        ))),
     }
 }
 

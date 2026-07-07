@@ -104,9 +104,16 @@ rockchip-dwmmc = [
 ]
 starfive-jh7110-dwmmc = [
     "block",
-    "dep:dwmmc-host",
+    "starfive-soc",
     "dep:sdmmc-protocol",
+    "dep:starfive-jh7110-dwmmc",
+    "sdmmc-protocol/rdif",
     "sdmmc-protocol/sdio",
+]
+starfive-soc = [
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:tock-registers",
 ]
 rk3588-pwm = [
     "rockchip-soc",
@@ -183,9 +190,11 @@ sdhci-host = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
+starfive-jh7110-dwmmc = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
+tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
 
 [dev-dependencies]
