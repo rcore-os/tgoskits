@@ -50,7 +50,6 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
-#[cfg(any(feature = "irq", feature = "paging"))]
 mod klib;
 
 mod devices;

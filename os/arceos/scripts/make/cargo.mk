@@ -41,7 +41,7 @@ endef
 
 all_packages := \
   $(filter-out axplat-dyn,$(shell ls $(CURDIR)/modules)) \
-  ax-feat ax-api ax-std ax-libc
+  ax-api ax-std ax-libc
 
 define cargo_doc
   $(call run_cmd,cargo doc,--no-deps --all-features --workspace --exclude "arceos-*" --exclude axplat-dyn $(verbose))

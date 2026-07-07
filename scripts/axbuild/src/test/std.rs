@@ -146,7 +146,7 @@ mod tests {
 
     fn known_packages() -> HashSet<String> {
         HashSet::from([
-            "ax-feat".to_string(),
+            "ax-api".to_string(),
             "ax-hal".to_string(),
             "starry-process".to_string(),
         ])
@@ -180,17 +180,17 @@ mod tests {
     #[test]
     fn parses_valid_std_csv() {
         let packages =
-            parse_std_crates_csv("package\nax-feat\nax-hal\n", &known_packages()).unwrap();
+            parse_std_crates_csv("package\nax-api\nax-hal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
+        assert_eq!(packages, vec!["ax-api".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
     fn parses_std_csv_with_blank_lines() {
         let packages =
-            parse_std_crates_csv("\npackage\n\nax-feat\n\nax-hal\n", &known_packages()).unwrap();
+            parse_std_crates_csv("\npackage\n\nax-api\n\nax-hal\n", &known_packages()).unwrap();
 
-        assert_eq!(packages, vec!["ax-feat".to_string(), "ax-hal".to_string()]);
+        assert_eq!(packages, vec!["ax-api".to_string(), "ax-hal".to_string()]);
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_header() {
-        let err = parse_std_crates_csv("crate\nax-feat\n", &known_packages()).unwrap_err();
+        let err = parse_std_crates_csv("crate\nax-api\n", &known_packages()).unwrap_err();
 
         assert!(err.to_string().contains("invalid header"));
     }
@@ -219,10 +219,9 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_package() {
-        let err =
-            parse_std_crates_csv("package\nax-feat\nax-feat\n", &known_packages()).unwrap_err();
+        let err = parse_std_crates_csv("package\nax-api\nax-api\n", &known_packages()).unwrap_err();
 
-        assert!(err.to_string().contains("duplicate package `ax-feat`"));
+        assert!(err.to_string().contains("duplicate package `ax-api`"));
     }
 
     #[test]
@@ -241,12 +240,12 @@ mod tests {
     fn std_test_runner_collects_all_failures() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec![
-            "ax-feat".to_string(),
+            "ax-api".to_string(),
             "ax-hal".to_string(),
             "starry-process".to_string(),
         ];
         let mut runner = FakeCargoRunner::new(&[
-            ("ax-feat", true),
+            ("ax-api", true),
             ("ax-hal", false),
             ("starry-process", false),
         ]);
@@ -260,7 +259,7 @@ mod tests {
         assert_eq!(
             runner.invocations,
             vec![
-                (root.clone(), "ax-feat".to_string()),
+                (root.clone(), "ax-api".to_string()),
                 (root.clone(), "ax-hal".to_string()),
                 (root, "starry-process".to_string()),
             ]
@@ -270,8 +269,8 @@ mod tests {
     #[test]
     fn std_test_runner_returns_empty_failures_when_all_pass() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-feat".to_string(), "ax-hal".to_string()];
-        let mut runner = FakeCargoRunner::new(&[("ax-feat", true), ("ax-hal", true)]);
+        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
+        let mut runner = FakeCargoRunner::new(&[("ax-api", true), ("ax-hal", true)]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 

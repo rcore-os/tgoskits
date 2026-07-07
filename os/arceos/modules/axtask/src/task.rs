@@ -28,9 +28,9 @@ use futures_util::task::AtomicWaker;
 use crate::lockdep::HeldLockStack;
 use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
 
-#[cfg(all(feature = "stack-canary", target_pointer_width = "64"))]
+#[cfg(target_pointer_width = "64")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
-#[cfg(all(feature = "stack-canary", target_pointer_width = "32"))]
+#[cfg(target_pointer_width = "32")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11usize;
 
 /// Required alignment for task kernel stacks. x86_64 task context setup relies
@@ -582,7 +582,6 @@ impl TaskInner {
         self.ctx.get()
     }
 
-    #[cfg(feature = "stack-canary")]
     #[inline]
     pub(crate) fn check_stack_canary(&self) {
         if self.kstack.is_canary_intact() {
@@ -683,10 +682,7 @@ impl TaskStack {
             align,
             kind: TaskStackKind::Alloc,
         };
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
@@ -708,10 +704,7 @@ impl TaskStack {
             kind: TaskStackKind::GuardedAlloc,
         };
         stack.unmap_guard_page();
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
@@ -728,14 +721,10 @@ impl TaskStack {
             alloc_pages: 0,
             kind: TaskStackKind::Borrowed,
         };
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
-    #[cfg(feature = "stack-canary")]
     #[inline]
     pub fn bottom(&self) -> VirtAddr {
         VirtAddr::from(self.ptr)
@@ -793,24 +782,21 @@ impl TaskStack {
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     fn canary_ptr(&self) -> *mut usize {
         self.ptr as *mut usize
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     unsafe fn write_canary(&self) {
         unsafe { self.canary_ptr().write(STACK_END_MAGIC) };
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     pub fn is_canary_intact(&self) -> bool {
         unsafe { self.canary_ptr().read() == STACK_END_MAGIC }
     }
 
-    #[cfg(all(test, feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(all(test, not(feature = "stack-guard-page")))]
     fn corrupt_canary_for_test(&self) {
         unsafe { self.canary_ptr().write(0) };
     }
@@ -913,7 +899,7 @@ impl Drop for TaskStack {
 mod stack_tests {
     use super::{TASK_STACK_ALIGN, TaskStack};
 
-    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(not(feature = "stack-guard-page"))]
     #[test]
     fn task_stack_canary_detects_corruption() {
         let stack = TaskStack::alloc(0x1000);
@@ -924,7 +910,7 @@ mod stack_tests {
         assert!(!stack.is_canary_intact());
     }
 
-    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(not(feature = "stack-guard-page"))]
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn task_stack_top_stays_16_byte_aligned() {

@@ -13,9 +13,8 @@
 //!   APIs can be used, such as [`sleep`], [`sleep_until`], and
 //!   [`WaitQueue::wait_timeout`].
 //! - `preempt`: Enable preemptive scheduling.
-//! - `sched-fifo`: Use the [FIFO cooperative scheduler][1]. It also enables the
-//!   `multitask` feature if it is enabled. This feature is enabled by default,
-//!   and it can be overridden by other scheduler features.
+//! - FIFO cooperative scheduler is the default when no scheduler feature is
+//!   selected.
 //! - `sched-rr`: Use the [Round-robin preemptive scheduler][2]. It also enables
 //!   the `multitask` and `preempt` features if it is enabled.
 //! - `sched-cfs`: Use the [Completely Fair Scheduler][3]. It also enables the

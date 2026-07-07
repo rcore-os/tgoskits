@@ -10,10 +10,9 @@ version = "0.9.0"
 [features]
 default = []
 
-dma = ["paging"]
 ext-ld = []
 std-compat = []
-ipi = ["dep:ax-ipi"]
+ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
@@ -23,42 +22,49 @@ irq = [
   "ax-task?/irq",
   "dep:ax-kspin",
   "dep:ax-percpu",
-  "dep:axklib",
   "dep:rdif-intc",
   "ax-driver/irq",
 ]
 multitask = ["ax-task/multitask"]
-paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
+paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task?/smp"]
-stack-guard-page = ["multitask", "paging", "ax-task/stack-guard-page"]
+uspace = ["ax-hal/uspace", "ax-task?/uspace"]
+lockdep = ["ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "multitask", "paging", "ax-task?/stack-guard-page"]
 stack-protector = []
 tls = ["ax-hal/tls", "ax-task?/tls"]
 
-display = ["dep:ax-display", "ax-driver/display"]
+display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
   "irq",
   "multitask",
-  "dma",
+  "paging",
   "dep:ax-errno",
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
-  "dep:axklib",
   "dep:dma-api",
   "dep:rdif-block",
   "ax-driver/block",
 ]
-fs-ext4 = ["fs", "ax-fs-ng/ext4"]
-fs-fat = ["fs", "ax-fs-ng/fat"]
-input = ["dep:ax-input", "ax-driver/input"]
-net = ["dep:ax-net", "dep:rd-net", "dep:spin", "dep:axklib", "ax-driver/net"]
+ext4fs = ["fs", "ax-fs-ng/ext4"]
+fatfs = ["fs", "ax-fs-ng/fat"]
+input = ["paging", "dep:ax-input", "ax-driver/input"]
+net = [
+  "irq",
+  "multitask",
+  "paging",
+  "dep:ax-net",
+  "dep:rd-net",
+  "dep:spin",
+  "ax-driver/net",
+]
 # SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
 # the ArceOS runtime glue (the driver cores are OS-independent) before probing.
 aic8800-wifi = [
   "net",
-  "multitask",
   "ax-driver/aic8800-wifi",
   "dep:aic8800",
   "dep:sdhci-cv1800",
@@ -89,7 +95,7 @@ ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}
 axbacktrace = {workspace = true}
-axklib = {workspace = true, optional = true}
+axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}

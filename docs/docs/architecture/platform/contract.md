@@ -197,7 +197,7 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 | 使用层 | 示例 feature |
 | --- | --- |
 | 直接 HAL | `ax-hal/axplat-myplat` |
-| ArceOS feature 聚合 | `ax-feat/axplat-myplat` |
+| ArceOS feature 聚合 | `ax-runtime/axplat-myplat` |
 | Rust std 应用 | `ax-std/axplat-myplat` |
 | C / libc 应用 | `ax-libc/axplat-myplat` |
 

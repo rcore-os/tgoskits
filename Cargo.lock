@@ -550,7 +550,6 @@ dependencies = [
  "ax-display",
  "ax-dma",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
@@ -733,26 +732,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ax-feat"
-version = "0.5.24"
-dependencies = [
- "ax-alloc",
- "ax-display",
- "ax-driver",
- "ax-fs-ng",
- "ax-hal",
- "ax-input",
- "ax-ipi",
- "ax-kspin",
- "ax-log",
- "ax-net",
- "ax-runtime",
- "ax-sync",
- "ax-task",
- "axbacktrace",
-]
-
-[[package]]
 name = "ax-fs-ng"
 version = "0.7.0"
 dependencies = [
@@ -859,10 +838,11 @@ version = "0.5.23"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-hal",
  "ax-io",
+ "ax-kspin",
  "ax-posix-api",
+ "ax-runtime",
  "bindgen 0.72.1",
 ]
 
@@ -1025,7 +1005,6 @@ version = "0.5.24"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
@@ -1106,13 +1085,14 @@ dependencies = [
  "ax-api",
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-lazyinit",
  "ax-posix-api",
  "ax-runtime",
+ "ax-task",
+ "axbacktrace",
  "libc",
  "lock_api",
  "spin",
@@ -3778,8 +3758,8 @@ name = "hello"
 version = "0.5.12"
 dependencies = [
  "ax-driver",
- "ax-feat",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "axplat-dyn",
  "kmod-tools",
@@ -4600,9 +4580,9 @@ name = "kprobe_test"
 version = "0.5.12"
 dependencies = [
  "ax-driver",
- "ax-feat",
  "ax-hal",
  "ax-log",
+ "ax-runtime",
  "ax-std",
  "axplat-dyn",
  "kmod-tools",
@@ -7642,7 +7622,6 @@ dependencies = [
  "ax-dma",
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-input",
@@ -7769,8 +7748,8 @@ version = "0.5.20"
 dependencies = [
  "anyhow",
  "ax-driver",
- "ax-feat",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "axbuild",
  "axplat-dyn",

@@ -60,7 +60,7 @@ from the same crate graph:
 [dependencies]
 kmod-tools.workspace = true
 starry-kernel = { workspace = true, features = [...] }
-ax-feat = { workspace = true, features = [...] }
+ax-runtime = { workspace = true, features = [...] }
 ax-std = { workspace = true, features = [...] }
 ```
 
@@ -68,7 +68,7 @@ Add lower-level ArceOS crates such as `ax-hal`, `ax-driver`, or `axplat-dyn`
 only when the module directly uses their APIs. Do not use module features to
 select a platform path; the kernel build always provides `axplat-dyn`.
 
-Do not depend on a different version of `starry-kernel`, `ax-std`, `ax-feat`,
+Do not depend on a different version of `starry-kernel`, `ax-std`, `ax-runtime`,
 or platform crates. A Rust kmod may contain undefined Rust `core`/`alloc` and
 kernel symbols that must match the kernel ELF exactly.
 
@@ -87,7 +87,7 @@ example SMP:
 ```toml
 [features]
 default = []
-smp = ["ax-feat/smp", "ax-hal/smp"]
+smp = ["ax-runtime/smp", "ax-hal/smp"]
 ```
 
 The same applies to board and device features. If a module needs a symbol or

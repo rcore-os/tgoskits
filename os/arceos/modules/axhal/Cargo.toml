@@ -37,8 +37,6 @@ hv = [
     "ax-percpu/arm-el2",
     "axplat-dyn/hv",
 ]
-axvisor-linker = []
-
 host-test = []
 
 default = []

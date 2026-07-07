@@ -117,7 +117,7 @@ StarryOS 专用组件（位于 `components/`）：
 | `rknpu` | Rockchip NPU 驱动 |
 | `vsock` | VSOCK 支持 |
 
-内核默认启用：`fp-simd`, `irq`, `uspace`, `page-alloc-4g`, `alloc-slab`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `fs-ng-ext4`, `net`。
+内核默认启用：`fp-simd`, `irq`, `uspace`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `ext4`, `net`。
 
 ### 3.3 KCOV 暂不引入
 
@@ -432,7 +432,7 @@ StarryOS 测试配置与 ArceOS 类似，但增加了 shell 交互：
 # build config
 env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-feat/rtc",
+  "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
