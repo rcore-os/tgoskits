@@ -80,8 +80,16 @@ REPO
 }
 
 build_doomgeneric() {
-    local doom_src_tar="$app_dir/doomgeneric-master.tar.gz"
-    [[ -f "$doom_src_tar" ]] || { echo "error: $doom_src_tar not found" >&2; exit 1; }
+    local doom_src_url="https://github.com/ozkl/doomgeneric/archive/refs/heads/master.tar.gz"
+    local doom_src_cache="$workspace/target/doomgeneric-source.tar.gz"
+    mkdir -p "$(dirname "$doom_src_cache")"
+
+    echo "[doom] downloading doomgeneric source..."
+    if [[ ! -f "$doom_src_cache" ]]; then
+        wget -q --timeout=30 -O "$doom_src_cache" "$doom_src_url" || \
+            curl -fsSL --max-time 30 -o "$doom_src_cache" "$doom_src_url"
+    fi
+    [[ -f "$doom_src_cache" ]] || { echo "error: failed to download doomgeneric from $doom_src_url" >&2; exit 1; }
 
     echo "[doom] extracting doomgeneric source..."
     local src_dir="$staging_root/tmp/doomgeneric-src"
@@ -90,7 +98,7 @@ build_doomgeneric() {
     # 清旧产物，防止静默沿用失败构建
     rm -rf "$src_dir" "$host_src" "$doom_bin_out"
     mkdir -p "$src_dir" "$host_src" "$(dirname "$doom_bin_out")" /tmp/doom-extract
-    tar xzf "$doom_src_tar" -C /tmp/doom-extract
+    tar xzf "$doom_src_cache" -C /tmp/doom-extract
     cp -r /tmp/doom-extract/doomgeneric-master/doomgeneric/* "$src_dir/"
     # 也要复制到 host /tmp，因为 qemu-user 走 host 文件系统
     cp -r /tmp/doom-extract/doomgeneric-master/doomgeneric/* "$host_src/"
