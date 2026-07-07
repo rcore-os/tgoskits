@@ -1357,6 +1357,34 @@ pub fn ptrace_restore_singlestep_insn(
     restored && synced
 }
 
+/// Completes a software single-step when the saved breakpoint is already at the
+/// current user PC.
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
+pub fn ptrace_complete_singlestep_breakpoint_if_at_ip(
+    tracee: &ProcessData,
+    tid: Pid,
+    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+) -> bool {
+    let Some((addr, insn)) = tracee.take_ptrace_ss_saved_insn_for(tid) else {
+        return false;
+    };
+
+    if addr != uctx.ip() {
+        tracee.set_ptrace_ss_saved_insn_for(tid, Some((addr, insn)));
+        return false;
+    }
+
+    let restored = ptrace_restore_singlestep_insn(tracee, tid, addr, insn);
+    if restored {
+        tracee.set_ptrace_singlestep_for(tid, false);
+    }
+    true
+}
+
 #[cfg(target_arch = "riscv64")]
 fn riscv_insn_len(first_half: u16) -> usize {
     if first_half & 0x3 != 0x3 { 2 } else { 4 }
