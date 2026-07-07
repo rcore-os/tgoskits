@@ -73,7 +73,13 @@ apk update || fail "apk update failed"
 apk add --no-cache \
     build-base clang clang-dev cmake pkgconf git curl python3 \
     linux-headers openssl-dev perl bash tar xz musl-dev \
-    || fail "apk add failed"
+    || true
+# Verify the packages that matter actually installed (apk may return non-zero
+# when a post-install trigger such as busybox-suid segfaults, but the packages
+# themselves are installed).  Only fail if a critical binary is missing.
+[ -x /bin/bash ] || fail "bash missing after apk"
+[ -x /usr/bin/gcc ] || fail "gcc missing after apk"
+[ -x /usr/bin/git ] || fail "git missing after apk"
 
 # Inner scripts carry '#!/usr/bin/bash' shebangs and are invoked via
 # shell_init_cmd; they do NOT depend on /bin/sh.  The kernel init process
