@@ -1,0 +1,14 @@
+# py-sci2 riscv64 - SciPy / SymPy scientific-computing carpet on musl-native CPython3.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "2048M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-pysci2.sh"
+success_regex = ['(?m)^PYSCI2_OK=2/2\s*$', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000
