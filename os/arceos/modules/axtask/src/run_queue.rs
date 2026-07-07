@@ -378,6 +378,51 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "sched-rr", feature = "host-test"))]
+mod rr_tests {
+    use alloc::{string::String, sync::Arc};
+    use core::marker::PhantomData;
+
+    use ax_sched::BaseScheduler;
+
+    use super::{AxRunQueue, AxRunQueueRef, Scheduler, SpinRaw, TaskInner};
+    use crate::task::TaskState;
+
+    fn new_test_task(name: &str, state: TaskState) -> crate::AxTaskRef {
+        let task =
+            TaskInner::new(|| {}, String::from(name), crate::default_task_stack_size()).into_arc();
+        task.set_state(state);
+        task
+    }
+
+    #[test]
+    fn unblock_resched_does_not_front_insert_rr_task() {
+        let mut run_queue = AxRunQueue {
+            cpu_id: 1,
+            scheduler: SpinRaw::new(Scheduler::new()),
+        };
+        let queued = new_test_task("queued", TaskState::Ready);
+        let blocked = new_test_task("blocked", TaskState::Blocked);
+
+        run_queue.scheduler.lock().add_task(queued.clone());
+        {
+            let mut run_queue_ref = AxRunQueueRef::<ax_kernel_guard::NoOp> {
+                inner: &mut run_queue,
+                state: (),
+                _phantom: PhantomData,
+            };
+            run_queue_ref.unblock_task(blocked, true);
+        }
+
+        let next = run_queue.scheduler.lock().pick_next_task().unwrap();
+        assert!(
+            Arc::ptr_eq(&next, &queued),
+            "waking a blocked task with resched=true must not move it ahead of already queued RR \
+             tasks",
+        );
+    }
+}
+
 /// Selects the appropriate run queue for the provided task.
 ///
 /// * In a single-core system, this function always returns a reference to the global run queue.
@@ -544,7 +589,8 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
         // target task can not be insert into the run queue until it finishes its scheduling process.
         if self
             .inner
-            .put_task_with_state(task, TaskState::Blocked, resched)
+            // A wakeup is not a time-slice preemption of the woken task.
+            .put_task_with_state(task, TaskState::Blocked, false)
         {
             // Since now, the task to be unblocked is in the `Ready` state.
             let cpu_id = self.inner.cpu_id;
@@ -577,7 +623,8 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         };
         if self
             .inner
-            .put_task_with_state(task, TaskState::Blocked, resched)
+            // A wakeup is not a time-slice preemption of the woken task.
+            .put_task_with_state(task, TaskState::Blocked, false)
         {
             let cpu_id = self.inner.cpu_id;
             if let Some(task_id_name) = task_id_name {
