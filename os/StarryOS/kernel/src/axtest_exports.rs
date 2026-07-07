@@ -45,3 +45,7 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
+
+pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
+    super::mm::private_mmap_eof_check_for_test()
+}
