@@ -49,7 +49,7 @@ pub fn bandwidth_tick() {
     }
 
     // Charge this tick; throttle if the quota is now exhausted.
-    let tick_usec = period.max(1).min(1000) as i64;
+    let tick_usec = period.clamp(1, 1000);
     if bw.consume(tick_usec) {
         curr.set_throttled(true);
     }
