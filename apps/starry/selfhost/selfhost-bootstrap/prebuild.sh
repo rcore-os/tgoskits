@@ -144,6 +144,28 @@ rustup component add rust-src llvm-tools-preview || fail "rustup component add f
 rustup target add x86_64-unknown-none || fail "rustup target add failed"
 echo "[bootstrap] $(rustc --version)"
 
+# After remount, the rsext4 VFS cannot resolve relative symlinks
+# during execve (e.g. cargo -> rustup).  Rewrite all relative
+# symlinks in /root/.cargo/bin/ to absolute paths so the self-compile
+# inner script can find cargo/rustc after reboot.
+echo "[bootstrap] Fixing relative symlinks in /root/.cargo/bin/..."
+for link in /root/.cargo/bin/*; do
+    if [ -L "$link" ]; then
+        target=$(readlink "$link")
+        case "$target" in
+            /*) ;; # already absolute
+            *)
+                link_dir=$(dirname "$link")
+                abs_target="$link_dir/$target"
+                if [ -f "$abs_target" ] || [ -L "$abs_target" ]; then
+                    ln -sf "$abs_target" "$link"
+                    echo "[bootstrap]   $link -> $abs_target"
+                fi
+                ;;
+        esac
+    fi
+done
+
 # kallsyms tools: rust-nm / rust-objcopy (cargo-binutils) + gen_ksym (ksym).
 # Guarded so re-runs skip the (slow) rebuild when the tools already persist.
 echo "[bootstrap] Installing kallsyms tools..."
