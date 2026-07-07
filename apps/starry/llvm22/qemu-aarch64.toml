@@ -11,6 +11,6 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "sh /usr/bin/run-llvm22.sh"
-success_regex = ['(?m)^LLVM22_OK=68/68\s*$', '(?m)^TEST PASSED\s*$']
+success_regex = ['(?m)^LLVM22_OK=874/874\s*$', '(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 18000
