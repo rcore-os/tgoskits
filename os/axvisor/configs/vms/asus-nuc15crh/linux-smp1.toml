@@ -23,13 +23,13 @@ entry_point = 0x8000
 # The ASUS NUC15CRH HTTP Boot flow embeds the Linux guest images into AxVisor.
 image_location = "memory"
 # The file path of the kernel image.
-kernel_path = "../../tmp/qemu_x86_64_linux/linux/linux-qemu"
+kernel_path = "../../../../../tmp/qemu-x86_64/linux/linux-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
 # The file path of the initramfs image.
-ramdisk_path = "../../tmp/asus-nuc15crh-linux-minimal/initramfs.cpio"
+ramdisk_path = "../../../../../tmp/initramfs-x86_64-busybox.cpio"
 # The load address of the initramfs image.
 ramdisk_load_addr = 0x0600_0000
 # Linux kernel command line.

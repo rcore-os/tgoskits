@@ -1,0 +1,12 @@
+board_type = "Asus-nuc15-x86_64-vmx"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+shell_prefix = "~ #"
+success_regex = [
+  "(?m)^test pass\\s*$",
+]
+timeout = 300

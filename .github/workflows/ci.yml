@@ -699,6 +699,33 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor self-hosted board asus-nuc15crh-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 20
+            command: |
+              mkdir -p tmp
+              if [ ! -f tmp/qemu-x86_64/linux/linux-qemu ]; then
+                curl -4 --retry 5 --retry-delay 2 -fL \
+                  https://github.com/rcore-os/tgosimages/releases/download/v0.0.8/qemu-x86_64.tar.xz \
+                  -o tmp/qemu-x86_64.tar.xz
+                mkdir -p tmp/qemu-x86_64
+                tar -xJf tmp/qemu-x86_64.tar.xz -C tmp/qemu-x86_64
+              fi
+              if [ ! -f tmp/initramfs-x86_64-busybox.cpio ]; then
+                curl -4 --retry 5 --retry-delay 2 -fL \
+                  https://github.com/rcore-os/tgosimages/releases/download/v0.0.8/initramfs-x86_64-busybox.cpio.gz.tar.xz \
+                  -o tmp/initramfs-x86_64-busybox.cpio.gz.tar.xz
+                tar -xJf tmp/initramfs-x86_64-busybox.cpio.gz.tar.xz -C tmp
+                if [ -f tmp/initramfs-x86_64-busybox.cpio.gz ]; then
+                  gzip -df tmp/initramfs-x86_64-busybox.cpio.gz
+                fi
+              fi
+              cargo xtask axvisor test board --board asus-nuc15crh-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
