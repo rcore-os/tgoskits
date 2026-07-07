@@ -1121,8 +1121,26 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
             .scheduler
             .lock()
             .put_prev_task(task, false);
-        #[cfg(feature = "ipi")]
-        kick_remote_cpu(target);
+        if target != this_cpu_id() {
+            // Remote target: ask that CPU to reschedule so it picks the task up
+            // (and wakes if it is idle in `wait_for_irqs`).
+            #[cfg(feature = "ipi")]
+            kick_remote_cpu(target);
+        } else {
+            // Local target: `kick_remote_cpu(self)` is a no-op, so the reschedule
+            // the remote waker's IPI used to deliver here would be lost — the
+            // task could sit un-run until the next tick, or indefinitely if this
+            // CPU just switched to `idle` and is about to `wait_for_irqs()`.
+            // `target == this_cpu_id()` arises when `select_wake_run_queue()`
+            // falls back to the task's `last_cpu`, which is this owning CPU.
+            // Request a reschedule on THIS CPU instead: the current task
+            // (`next_task`, possibly `idle`) is forced to reschedule when the
+            // switch chain unwinds and its preempt guard is released
+            // (`current_check_preempt_pending` consumes the flag), mirroring the
+            // reschedule the IPI path (`request_current_reschedule`) performed.
+            #[cfg(feature = "preempt")]
+            crate::current().set_force_resched_pending(true);
+        }
     }
 }
 pub(crate) fn init() {
