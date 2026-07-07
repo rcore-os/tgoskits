@@ -4,8 +4,9 @@
 
 use ax_errno::AxResult;
 use axaddrspace::{GuestPhysAddrRange, HostPhysAddr, device::AccessWidth};
-use axdevice_base::{BaseDeviceOps, EmuDeviceType, InterruptLineLevel, VcpuInterrupt};
+use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 use bitmaps::Bitmap;
+use vm_interrupt::{InterruptControllerRoute, InterruptLineLevel, VirtualInterrupt};
 
 use crate::{consts::*, utils::*, vplic::VPlicGlobal};
 
@@ -157,11 +158,10 @@ impl VPlicGlobal {
         }
     }
 
-    /// Queues one IRQ if it is not already pending or in service.
+    /// Queues one IRQ if it is not already pending.
     fn queue_irq_if_inactive(&self, irq_id: usize) -> bool {
         let mut pending_irqs = self.pending_irqs.lock();
-        let active_irqs = self.active_irqs.lock();
-        if pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
+        if pending_irqs.get(irq_id) {
             return false;
         }
         pending_irqs.set(irq_id, true);
@@ -170,7 +170,7 @@ impl VPlicGlobal {
 
     /// Recomputes whether VSEIP should remain asserted for one context.
     fn sync_vseip(&self, context_id: usize) -> AxResult<()> {
-        let Some(vcpu_id) = guest_supervisor_context_vcpu_id(context_id) else {
+        let Some(vcpu_id) = self.context_routes.get(context_id).copied().flatten() else {
             return Ok(());
         };
         // VSEIP should track whether this context still has a deliverable
@@ -181,13 +181,18 @@ impl VPlicGlobal {
             InterruptLineLevel::Deassert
         };
 
-        self.interrupt_sink.set_vcpu_interrupt(
-            VcpuInterrupt {
+        self.interrupt_router
+            .route_interrupt(InterruptControllerRoute {
                 vcpu_id,
-                vector: SUPERVISOR_EXTERNAL_INTERRUPT,
-            },
-            level,
-        )
+                interrupt: match level {
+                    InterruptLineLevel::Assert => {
+                        VirtualInterrupt::edge(SUPERVISOR_EXTERNAL_INTERRUPT)
+                    }
+                    InterruptLineLevel::Deassert => {
+                        VirtualInterrupt::deassert(SUPERVISOR_EXTERNAL_INTERRUPT)
+                    }
+                },
+            })
     }
 
     /// Recomputes VSEIP for all guest supervisor contexts.
@@ -236,13 +241,20 @@ impl VPlicGlobal {
 
         Ok(claimed_any)
     }
-}
 
-#[inline]
-fn guest_supervisor_context_vcpu_id(context_id: usize) -> Option<usize> {
-    // The guest PLIC exposes M-mode and S-mode contexts per hart. Linux uses
-    // the odd S-mode contexts: hart0/context1, hart1/context3, ...
-    (context_id % 2 == 1).then_some(context_id / 2)
+    /// Queue one virtual PLIC source and update VSEIP on every affected guest
+    /// supervisor context.
+    pub fn inject_irq(&self, irq_id: usize) -> AxResult<bool> {
+        if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
+            return Ok(false);
+        }
+
+        let queued = self.queue_irq_if_inactive(irq_id);
+        if queued {
+            self.sync_all_guest_contexts_vseip()?;
+        }
+        Ok(queued)
+    }
 }
 
 /// Implementation of device emulation operations for virtual PLIC.
@@ -372,21 +384,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     return Ok(());
                 }
                 let val = val as u32;
-                let mut bit_mask: u32 = 1;
-                let mut pending_irqs = self.pending_irqs.lock();
                 for i in 0..32 {
-                    if (val & bit_mask) != 0 {
-                        let irq_id = reg_index * 32 + i;
-                        if irq_id != 0 {
-                            // Set the pending bit.
-                            pending_irqs.set(irq_id, true);
-                        }
+                    if (val & (1u32 << i)) != 0 {
+                        self.inject_irq(reg_index * 32 + i)?;
                     }
-                    bit_mask <<= 1;
                 }
-
-                drop(pending_irqs);
-                self.sync_all_guest_contexts_vseip()
+                Ok(())
             }
             // enable
             PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => {
@@ -454,28 +457,32 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
+    use alloc::{sync::Arc, vec};
 
     use ax_errno::AxResult;
     use axaddrspace::GuestPhysAddr;
-    use axdevice_base::{InterruptLineLevel, VcpuInterrupt, VmInterruptSink};
+    use vm_interrupt::{InterruptControllerRoute, VmInterruptRouter};
 
     use super::*;
 
-    struct TestInterruptSink;
+    struct TestInterruptRouter;
 
-    impl VmInterruptSink for TestInterruptSink {
-        fn set_vcpu_interrupt(
-            &self,
-            _interrupt: VcpuInterrupt,
-            _level: InterruptLineLevel,
-        ) -> AxResult {
+    impl VmInterruptRouter for TestInterruptRouter {
+        fn route_interrupt(&self, _route: InterruptControllerRoute) -> AxResult {
             Ok(())
         }
     }
 
-    fn test_interrupt_sink() -> Arc<dyn VmInterruptSink> {
-        Arc::new(TestInterruptSink)
+    fn test_interrupt_router() -> Arc<dyn VmInterruptRouter> {
+        Arc::new(TestInterruptRouter)
+    }
+
+    fn test_context_routes(contexts_num: usize) -> Vec<Option<usize>> {
+        let mut routes = vec![None; contexts_num];
+        for vcpu_id in 0..contexts_num / 2 {
+            routes[vcpu_id * 2 + 1] = Some(vcpu_id);
+        }
+        routes
     }
 
     #[test]
@@ -484,7 +491,8 @@ mod tests {
             GuestPhysAddr::from(0x0c00_0000),
             Some(0x400000),
             2,
-            test_interrupt_sink(),
+            test_context_routes(2),
+            test_interrupt_router(),
         );
 
         {

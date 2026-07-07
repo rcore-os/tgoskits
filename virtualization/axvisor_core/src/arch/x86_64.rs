@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axvisor_api::vmm::inject_interrupt as inject_vcpu_interrupt;
+use crate::vmm::{
+    interrupt::{VirtualInterrupt, deliver_vcpu_interrupt},
+    vm_list::get_vm_by_id,
+};
 
 pub fn hardware_check() {}
 
@@ -25,5 +28,12 @@ pub fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
     debug!(
         "Injecting x86_64 virtual interrupt: vm_id={vm_id}, vcpu_id={vcpu_id}, vector={vector:#x}"
     );
-    inject_vcpu_interrupt(vm_id, vcpu_id, vector);
+    let Some(vm) = get_vm_by_id(vm_id) else {
+        warn!("Failed to inject x86_64 interrupt: VM[{vm_id}] not found");
+        return;
+    };
+    if let Err(err) = deliver_vcpu_interrupt(&vm, vcpu_id, VirtualInterrupt::edge(vector as usize))
+    {
+        warn!("Failed to inject x86_64 interrupt to VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}");
+    }
 }

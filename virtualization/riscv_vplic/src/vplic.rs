@@ -7,8 +7,8 @@ use core::option::Option;
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::{GuestPhysAddr, HostPhysAddr};
-use axdevice_base::VmInterruptSink;
 use bitmaps::Bitmap;
+use vm_interrupt::VmInterruptRouter;
 
 use crate::consts::*;
 
@@ -37,8 +37,10 @@ pub struct VPlicGlobal {
     pub active_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// The host physical address of the PLIC.
     pub host_plic_addr: HostPhysAddr,
-    /// VM-local interrupt delivery endpoint for VSEIP updates.
-    pub interrupt_sink: Arc<dyn VmInterruptSink>,
+    /// Route table from guest PLIC context ID to VM-local vCPU ID.
+    pub context_routes: Vec<Option<usize>>,
+    /// VM-local interrupt routing endpoint for VSEIP updates.
+    pub interrupt_router: Arc<dyn VmInterruptRouter>,
 }
 
 impl VPlicGlobal {
@@ -55,7 +57,8 @@ impl VPlicGlobal {
         addr: GuestPhysAddr,
         size: Option<usize>,
         contexts_num: usize,
-        interrupt_sink: Arc<dyn VmInterruptSink>,
+        context_routes: Vec<Option<usize>>,
+        interrupt_router: Arc<dyn VmInterruptRouter>,
     ) -> Self {
         let addr_end = addr.as_usize()
             + contexts_num * PLIC_CONTEXT_STRIDE
@@ -69,6 +72,9 @@ impl VPlicGlobal {
             addr.as_usize(),
             addr.as_usize() + size,
         );
+        let mut context_routes = context_routes;
+        context_routes.resize(contexts_num, None);
+
         Self {
             addr,
             size,
@@ -80,7 +86,8 @@ impl VPlicGlobal {
             active_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
             host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
-            interrupt_sink,
+            context_routes,
+            interrupt_router,
         }
     }
 

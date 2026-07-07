@@ -38,6 +38,8 @@ use crate::kvm::{
     },
     vcpu_file_mp_state_by_id,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::vmm::vcpus::guest_cpu_id_to_vcpu_id;
 
 #[cfg(target_arch = "x86_64")]
 pub(super) fn handle_kvm_msr_write(vm: &AxVMRef, msr: usize, value: u64) -> AxResult<bool> {
@@ -64,13 +66,14 @@ pub(super) fn handle_cpu_up(
     target_cpu: usize,
     entry_point: GuestPhysAddr,
 ) -> AxResult {
-    if vcpu_file_mp_state_by_id(control_file, target_cpu)? != abi::KVM_MP_STATE_STOPPED {
+    let target_vcpu_id = guest_cpu_id_to_vcpu_id(vm, target_cpu).ok_or(AxError::InvalidInput)?;
+    if vcpu_file_mp_state_by_id(control_file, target_vcpu_id)? != abi::KVM_MP_STATE_STOPPED {
         return Ok(());
     }
 
-    let target_vcpu = vm.vcpu(target_cpu).ok_or(AxError::InvalidInput)?;
+    let target_vcpu = vm.vcpu(target_vcpu_id).ok_or(AxError::InvalidInput)?;
     target_vcpu.set_entry(entry_point)?;
-    set_vcpu_file_mp_state_by_id(control_file, target_cpu, abi::KVM_MP_STATE_RUNNABLE)
+    set_vcpu_file_mp_state_by_id(control_file, target_vcpu_id, abi::KVM_MP_STATE_RUNNABLE)
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -17,23 +17,26 @@
 //!
 //! use ax_errno::AxResult;
 //! use axaddrspace::GuestPhysAddr;
-//! use axdevice_base::{InterruptLineLevel, VcpuInterrupt, VmInterruptSink};
 //! use riscv_vplic::VPlicGlobal;
+//! use vm_interrupt::{InterruptControllerRoute, VmInterruptRouter};
 //!
-//! struct InterruptSink;
-//! impl VmInterruptSink for InterruptSink {
-//!     fn set_vcpu_interrupt(
-//!         &self,
-//!         _interrupt: VcpuInterrupt,
-//!         _level: InterruptLineLevel,
-//!     ) -> AxResult {
+//! struct InterruptRouter;
+//! impl VmInterruptRouter for InterruptRouter {
+//!     fn route_interrupt(&self, _route: InterruptControllerRoute) -> AxResult {
 //!         Ok(())
 //!     }
 //! }
 //!
 //! // Create a virtual PLIC with 2 contexts
-//! let sink: Arc<dyn VmInterruptSink> = Arc::new(InterruptSink);
-//! let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c000000), Some(0x4000), 2, sink);
+//! let router: Arc<dyn VmInterruptRouter> = Arc::new(InterruptRouter);
+//! let context_routes = alloc::vec![None, Some(0)];
+//! let vplic = VPlicGlobal::new(
+//!     GuestPhysAddr::from(0x0c000000),
+//!     Some(0x4000),
+//!     2,
+//!     context_routes,
+//!     router,
+//! );
 //! ```
 
 #![cfg_attr(not(test), no_std)]

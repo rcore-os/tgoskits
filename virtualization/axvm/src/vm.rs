@@ -23,10 +23,10 @@ use axaddrspace::{
     AddrSpace, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, device::AccessWidth,
 };
 use axdevice::{AxVmDeviceConfig, AxVmDevices};
-use axdevice_base::{InterruptLineLevel, VcpuInterrupt, VmInterruptSink};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 use axvisor_api::vmm::InterruptVector;
 use spin::Once;
+use vm_interrupt::{InterruptControllerRoute, InterruptLineLevel, VmInterruptRouter};
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
 
@@ -49,26 +49,42 @@ pub type AxVCpuRef = Arc<VCpu>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
 
-struct AxVmInterruptSink {
+struct AxVmInterruptRouter {
     vm_id: usize,
 }
 
-impl VmInterruptSink for AxVmInterruptSink {
-    fn set_vcpu_interrupt(&self, interrupt: VcpuInterrupt, level: InterruptLineLevel) -> AxResult {
-        let vector = match level {
-            InterruptLineLevel::Assert => interrupt.vector,
-            // The current RISC-V vCPU backend treats vector 0 as VSEIP
-            // deassertion. Keeping that encoding here avoids leaking it into
-            // the interrupt-controller device model.
-            InterruptLineLevel::Deassert => 0,
-        };
-        axvisor_api::vmm::inject_interrupt(
-            self.vm_id,
-            interrupt.vcpu_id,
-            vector as InterruptVector,
-        );
-        Ok(())
+impl VmInterruptRouter for AxVmInterruptRouter {
+    fn route_interrupt(&self, route: InterruptControllerRoute) -> AxResult {
+        match route.interrupt.level {
+            InterruptLineLevel::Assert => {
+                axvisor_api::vmm::inject_interrupt(
+                    self.vm_id,
+                    route.vcpu_id,
+                    route.interrupt.vector as InterruptVector,
+                );
+                Ok(())
+            }
+            InterruptLineLevel::Deassert => {
+                deassert_vm_interrupt(self.vm_id, route.vcpu_id, route.interrupt.vector)
+            }
+        }
     }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn deassert_vm_interrupt(vm_id: usize, vcpu_id: usize, _vector: usize) -> AxResult {
+    // The current RISC-V vCPU backend treats vector 0 as VSEIP deassertion.
+    // Keep this legacy axvisor-api encoding at the VM/API boundary.
+    axvisor_api::vmm::inject_interrupt(vm_id, vcpu_id, 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn deassert_vm_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) -> AxResult {
+    // The historical axvisor-api interrupt hook only carries an asserted
+    // vector. Non-RISC-V backends should not receive a synthetic vector 0 for
+    // line deassertion.
+    Ok(())
 }
 
 fn width_mask(width: AccessWidth) -> usize {
@@ -245,15 +261,15 @@ impl AxVM {
         debug!("id: {}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}", self.id());
 
         let mut vcpu_list = Vec::with_capacity(vcpu_id_pcpu_sets.len());
-        for (vcpu_id, phys_cpu_set, _pcpu_id) in vcpu_id_pcpu_sets {
+        for (vcpu_id, phys_cpu_set, _guest_cpu_id) in vcpu_id_pcpu_sets {
             #[cfg(target_arch = "aarch64")]
             let arch_config = AxVCpuCreateConfig {
-                mpidr_el1: _pcpu_id as _,
+                mpidr_el1: _guest_cpu_id as _,
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
             };
             #[cfg(target_arch = "riscv64")]
             let arch_config = AxVCpuCreateConfig {
-                hart_id: vcpu_id as _,
+                hart_id: _guest_cpu_id as _,
                 dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
             };
             #[cfg(target_arch = "loongarch64")]
@@ -357,7 +373,13 @@ impl AxVM {
 
         #[cfg_attr(not(target_arch = "aarch64"), expect(unused_mut))]
         let mut devices = axdevice::AxVmDevices::new(AxVmDeviceConfig {
-            interrupt_sink: Some(Arc::new(AxVmInterruptSink { vm_id: self.id() })),
+            interrupt_router: Some(Arc::new(AxVmInterruptRouter { vm_id: self.id() })),
+            guest_cpu_topology: inner_mut
+                .config
+                .vcpu_topology()
+                .iter()
+                .map(|(vcpu_id, _, guest_cpu_id)| (*vcpu_id, *guest_cpu_id))
+                .collect(),
             emu_configs: inner_mut.config.emu_devices().to_vec(),
         });
 
@@ -847,7 +869,7 @@ impl AxVM {
 
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
     /// If the pCpu affinity is None, it means the vCpu will be allocated to any available pCpu randomly.
-    /// if the pCPU id is not provided, the vCpu's physical id will be set as vCpu id.
+    /// If the guest physical CPU ID is not provided, it will be set to the vCPU ID.
     ///
     /// Returns a vector of tuples, each tuple contains:
     /// - The vCpu id.

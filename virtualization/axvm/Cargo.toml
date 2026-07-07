@@ -34,6 +34,7 @@ axaddrspace = { workspace = true }
 axvisor_api = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+vm-interrupt = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_vcpu = { workspace = true }

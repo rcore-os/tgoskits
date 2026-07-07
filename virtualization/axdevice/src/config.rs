@@ -14,13 +14,15 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::VmInterruptSink;
 use axvmconfig::EmulatedDeviceConfig;
+use vm_interrupt::VmInterruptRouter;
 
 /// The vector of DeviceConfig
 pub struct AxVmDeviceConfig {
-    /// Interrupt delivery endpoint for devices owned by this VM.
-    pub interrupt_sink: Option<Arc<dyn VmInterruptSink>>,
+    /// Interrupt routing endpoint for devices owned by this VM.
+    pub interrupt_router: Option<Arc<dyn VmInterruptRouter>>,
+    /// Guest topology map: `(vCPU ID, guest CPU/hart ID)`.
+    pub guest_cpu_topology: Vec<(usize, usize)>,
     /// The vector of EmulatedDeviceConfig
     pub emu_configs: Vec<EmulatedDeviceConfig>,
 }
@@ -30,7 +32,8 @@ impl AxVmDeviceConfig {
     /// The new function for AxVmDeviceConfig
     pub fn new(emu_configs: Vec<EmulatedDeviceConfig>) -> Self {
         Self {
-            interrupt_sink: None,
+            interrupt_router: None,
+            guest_cpu_topology: Vec::new(),
             emu_configs,
         }
     }

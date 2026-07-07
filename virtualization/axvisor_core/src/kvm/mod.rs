@@ -42,6 +42,8 @@ use state::*;
 use vcpu::*;
 use vm::*;
 
+use crate::vmm::interrupt::{InterruptRoute, VirtualInterrupt};
+
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static NEXT_CONTROL_FILE_ID: AtomicU64 = AtomicU64::new(1);
 pub(in crate::kvm) static CONTROL_FILES: Mutex<
@@ -128,28 +130,14 @@ fn create_control_file(
     Ok(control_file)
 }
 
-pub(crate) fn queue_control_vcpu_interrupt(
-    vm_id: usize,
-    vcpu_id: usize,
-    vector: usize,
-) -> AxResult {
+pub(crate) fn queue_control_vcpu_interrupt(route: InterruptRoute) -> AxResult {
     let mut control_files = CONTROL_FILES.lock();
-    let vcpu_file = control_vcpu_file_by_vm_id(&control_files, vm_id, vcpu_id)?;
+    let vcpu_file = control_vcpu_file_by_vm_id(&control_files, route.vm_id, route.vcpu_id)?;
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
         return Err(AxError::NotFound);
     };
     vcpu.halted = false;
-    vcpu.pending_interrupts.push_back(vector);
-    Ok(())
-}
-
-pub(crate) fn wake_control_vcpu(vm_id: usize, vcpu_id: usize) -> AxResult {
-    let mut control_files = CONTROL_FILES.lock();
-    let vcpu_file = control_vcpu_file_by_vm_id(&control_files, vm_id, vcpu_id)?;
-    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
-        return Err(AxError::NotFound);
-    };
-    vcpu.halted = false;
+    vcpu.pending_interrupts.push_back(route.interrupt);
     Ok(())
 }
 
@@ -226,7 +214,7 @@ pub(in crate::kvm) fn set_vcpu_file_mp_state_by_id(
 
 pub(in crate::kvm) fn take_control_vcpu_interrupts(
     control_file: api_control::ControlFileId,
-) -> Vec<usize> {
+) -> Vec<VirtualInterrupt> {
     let mut control_files = CONTROL_FILES.lock();
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
         return Vec::new();

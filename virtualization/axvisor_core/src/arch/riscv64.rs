@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use ax_page_table_multiarch::riscv::SvVirtAddr;
-use axaddrspace::{GuestPhysAddr, device::AccessWidth};
+use axaddrspace::GuestPhysAddr;
 use axdevice_base::map_device_of_type;
 
 use crate::vmm::vm_list::get_vm_by_id;
@@ -45,16 +45,21 @@ pub fn inject_interrupt(vm_id: usize, irq_id: usize) -> bool {
         .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))
         .unwrap();
 
-    let reg_offset = riscv_vplic::PLIC_PENDING_OFFSET + (irq_id / 32) * 4;
-    let addr = GuestPhysAddr::from_usize(GUEST_PLIC_PADDR + reg_offset);
-    let width = AccessWidth::Dword;
-    let val: u32 = 1 << (irq_id % 32);
-
-    if let Err(err) = vplic.handle_write(addr, width, val as _) {
-        warn!("failed to inject interrupt id {irq_id} into guest vPLIC: {err:?}");
-        return false;
-    }
-    true
+    map_device_of_type(&vplic, |vplic: &riscv_vplic::VPlicGlobal| {
+        match vplic.inject_irq(irq_id) {
+            // The platform IRQ injector return value means "this host IRQ was
+            // consumed by a guest", not "a new virtual pending bit was set".
+            // Repeated level IRQs may already be pending/active in the vPLIC,
+            // but they still belong to the guest and must not fall through to
+            // the host unhandled-IRQ path.
+            Ok(_) => true,
+            Err(err) => {
+                warn!("failed to inject interrupt id {irq_id} into guest vPLIC: {err:?}");
+                false
+            }
+        }
+    })
+    .unwrap_or(false)
 }
 
 pub fn poll_host_plic(vm_id: usize) -> bool {

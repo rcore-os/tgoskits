@@ -39,6 +39,7 @@ axvm = { workspace = true }
 axvisor_api = { workspace = true }
 fdt-parser = "0.4"
 kvm-uapi = { workspace = true }
+vm-interrupt = { workspace = true }
 
 [build-dependencies]
 prettyplease = "0.2"

@@ -18,9 +18,12 @@ use ax_errno::{AxError, AxResult, ax_err};
 use axvisor_api::control as api_control;
 
 use super::{CONTROL_FILES, ControlFileState, OneReg, VcpuFileState};
-use crate::kvm::{
-    abi::raw as abi,
-    util::{checked_add, read_u32_user, read_u64_user, write_u32_user, write_u64_user},
+use crate::{
+    kvm::{
+        abi::raw as abi,
+        util::{checked_add, read_u32_user, read_u64_user, write_u32_user, write_u64_user},
+    },
+    vmm::interrupt::VirtualInterrupt,
 };
 
 pub(in crate::kvm) fn get_msr_index_list(arg: usize) -> AxResult<isize> {
@@ -317,15 +320,18 @@ pub(in crate::kvm) fn kvm_interrupt(
     arg: usize,
 ) -> AxResult<isize> {
     let irq = read_u32_user(arg)?;
-    let vector = match irq {
+    let interrupt = match irq {
         #[cfg(target_arch = "riscv64")]
-        abi::KVM_INTERRUPT_SET => abi::RISCV_S_EXT_VECTOR,
+        abi::KVM_INTERRUPT_SET => VirtualInterrupt::edge(abi::RISCV_S_EXT_VECTOR),
         #[cfg(not(target_arch = "riscv64"))]
-        abi::KVM_INTERRUPT_SET => 1,
-        abi::KVM_INTERRUPT_UNSET => 0,
+        abi::KVM_INTERRUPT_SET => VirtualInterrupt::edge(1),
+        #[cfg(target_arch = "riscv64")]
+        abi::KVM_INTERRUPT_UNSET => VirtualInterrupt::deassert(abi::RISCV_S_EXT_VECTOR),
+        #[cfg(not(target_arch = "riscv64"))]
+        abi::KVM_INTERRUPT_UNSET => VirtualInterrupt::deassert(1),
         _ => return ax_err!(Unsupported),
     };
-    get_vcpu(control_file)?.inject_interrupt(vector)?;
+    crate::vmm::interrupt::inject_virtual_interrupt(interrupt, &get_vcpu(control_file)?)?;
     let mut control_files = CONTROL_FILES.lock();
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&control_file) else {
         return ax_err!(NotFound);

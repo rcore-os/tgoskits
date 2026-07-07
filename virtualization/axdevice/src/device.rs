@@ -28,12 +28,11 @@ use axaddrspace::{
 };
 #[cfg(target_arch = "x86_64")]
 use axdevice_base::map_device_of_type;
-use axdevice_base::{
-    BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, VmInterruptSink,
-};
+use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
+use vm_interrupt::VmInterruptRouter;
 #[cfg(target_arch = "x86_64")]
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
@@ -135,7 +134,8 @@ impl AxVmDevices {
 
         Self::init(
             &mut this,
-            config.interrupt_sink.clone(),
+            config.interrupt_router.clone(),
+            &config.guest_cpu_topology,
             &config.emu_configs,
         );
         this
@@ -144,9 +144,13 @@ impl AxVmDevices {
     /// According the emu_configs to init every  specific device
     fn init(
         this: &mut Self,
-        _interrupt_sink: Option<Arc<dyn VmInterruptSink>>,
+        _interrupt_router: Option<Arc<dyn VmInterruptRouter>>,
+        guest_cpu_topology: &[(usize, usize)],
         emu_configs: &Vec<EmulatedDeviceConfig>,
     ) {
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = guest_cpu_topology;
+
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -274,14 +278,17 @@ impl AxVmDevices {
                             .first()
                             .copied()
                             .expect("expect 1 arg for pppt global (context_num)");
-                        let interrupt_sink = _interrupt_sink
+                        let interrupt_router = _interrupt_router
                             .clone()
-                            .expect("riscv vPLIC requires a VM interrupt sink");
+                            .expect("riscv vPLIC requires a VM interrupt router");
+                        let context_routes =
+                            riscv_plic_context_routes(context_num, guest_cpu_topology);
                         this.add_mmio_dev(Arc::new(VPlicGlobal::new(
                             config.base_gpa.into(),
                             Some(config.length),
-                            context_num, // Here only 1 core and should be cpu0
-                            interrupt_sink,
+                            context_num,
+                            context_routes,
+                            interrupt_router,
                         )));
                         // PLIC Partial Passthrough Global.
                         info!(
@@ -611,4 +618,19 @@ impl AxVmDevices {
         }
         panic_device_not_found("port", port, false, width);
     }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn riscv_plic_context_routes(
+    context_num: usize,
+    guest_cpu_topology: &[(usize, usize)],
+) -> Vec<Option<usize>> {
+    let mut routes = alloc::vec![None; context_num];
+    for &(vcpu_id, guest_hart_id) in guest_cpu_topology {
+        let supervisor_context = guest_hart_id.saturating_mul(2).saturating_add(1);
+        if supervisor_context < context_num {
+            routes[supervisor_context] = Some(vcpu_id);
+        }
+    }
+    routes
 }

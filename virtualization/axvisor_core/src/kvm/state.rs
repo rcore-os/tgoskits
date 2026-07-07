@@ -34,6 +34,8 @@ pub(in crate::kvm) use kvm_uapi::{
     KvmCpuidEntry2, KvmEnableCap, KvmIoEventFd, KvmIrqFd, OneReg, UserspaceMemoryRegion,
 };
 
+use crate::vmm::interrupt::VirtualInterrupt;
+
 #[derive(Clone)]
 pub(in crate::kvm) enum ControlFileState {
     System,
@@ -69,7 +71,7 @@ pub(in crate::kvm) struct VcpuFileState {
     pub(in crate::kvm) mmap_area: api_control::MmapAreaId,
     pub(in crate::kvm) mp_state: u32,
     pub(in crate::kvm) halted: bool,
-    pub(in crate::kvm) pending_interrupts: VecDeque<usize>,
+    pub(in crate::kvm) pending_interrupts: VecDeque<VirtualInterrupt>,
     pub(in crate::kvm) pending_mmio_read: Option<PendingMmioRead>,
     pub(in crate::kvm) pending_io_read: Option<PendingIoRead>,
     pub(in crate::kvm) cpuid: Vec<KvmCpuidEntry2>,

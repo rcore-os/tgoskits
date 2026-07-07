@@ -31,10 +31,13 @@ use x86::{
 use x86::{update_vcpu_run_interrupt_state, vcpu_run_irq_window_open};
 
 use super::{CONTROL_FILES, ControlFileState, take_control_vcpu_interrupts};
-use crate::kvm::{
-    abi::raw as abi,
-    eventfd::signal_matching_ioeventfd,
-    util::{read_vcpu_run_u8, write_vcpu_run_u32},
+use crate::{
+    kvm::{
+        abi::raw as abi,
+        eventfd::signal_matching_ioeventfd,
+        util::{read_vcpu_run_u8, write_vcpu_run_u32},
+    },
+    vmm::interrupt::inject_virtual_interrupt,
 };
 
 pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) -> AxResult<isize> {
@@ -108,8 +111,8 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
     }
 
     let exit_reason = loop {
-        for vector in take_control_vcpu_interrupts(control_file) {
-            vcpu.inject_interrupt(vector)?;
+        for interrupt in take_control_vcpu_interrupts(control_file) {
+            inject_virtual_interrupt(interrupt, &vcpu)?;
         }
         update_vcpu_run_interrupt_state(control_file, &vcpu)?;
         if read_vcpu_run_u8(control_file, abi::KVM_RUN_IMMEDIATE_EXIT_OFFSET)? != 0 {

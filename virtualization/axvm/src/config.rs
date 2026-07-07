@@ -227,6 +227,11 @@ impl AxVMConfig {
         &mut self.phys_cpu_ls
     }
 
+    /// Returns the guest CPU topology and optional host affinity mapping.
+    pub fn vcpu_topology(&self) -> Vec<(usize, Option<usize>, usize)> {
+        self.phys_cpu_ls.get_vcpu_affinities_pcpu_ids()
+    }
+
     /// Returns the list of excluded devices.
     pub fn excluded_devices(&self) -> &Vec<Vec<String>> {
         &self.excluded_devices
@@ -370,7 +375,11 @@ pub struct PhysCpuList {
 impl PhysCpuList {
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
     /// If the pCpu affinity is None, it means the vCpu will be allocated to any available pCpu randomly.
-    /// if the pCPU id is not provided, the vCpu's physical id will be set as vCpu id.
+    /// If the guest physical CPU ID is not provided, it will be set to the vCPU ID.
+    ///
+    /// The guest physical CPU ID is part of the guest-visible topology. It is
+    /// intentionally independent from host pCPU affinity so a VM can expose
+    /// more vCPUs than the host has physical CPUs.
     ///
     /// Returns a vector of tuples, each tuple contains:
     /// - The vCpu id.
@@ -378,8 +387,6 @@ impl PhysCpuList {
     /// - The physical id of the vCpu, equal to vCpu id if not provided.
     pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
         let mut vcpu_pcpu_tuples = Vec::new();
-        #[cfg(target_arch = "riscv64")]
-        let mut pcpu_mask_flag = false;
 
         if let Some(phys_cpu_ids) = &self.phys_cpu_ids
             && self.cpu_num != phys_cpu_ids.len()
@@ -394,15 +401,6 @@ impl PhysCpuList {
             vcpu_pcpu_tuples.push((vcpu_id, None, vcpu_id));
         }
 
-        #[cfg(target_arch = "riscv64")]
-        if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
-            pcpu_mask_flag = true;
-            for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-                vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-
-        #[cfg(not(target_arch = "riscv64"))]
         if let Some(phys_cpu_sets) = &self.phys_cpu_sets {
             for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
                 vcpu_pcpu_tuples[vcpu_id].1 = Some(*pcpu_mask_bitmap);
@@ -412,13 +410,6 @@ impl PhysCpuList {
         if let Some(phys_cpu_ids) = &self.phys_cpu_ids {
             for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
                 vcpu_pcpu_tuples[vcpu_id].2 = *phys_id;
-                #[cfg(target_arch = "riscv64")]
-                {
-                    if !pcpu_mask_flag {
-                        // if don't assign pcpu mask yet, assign it manually
-                        vcpu_pcpu_tuples[vcpu_id].1 = Some(1 << (*phys_id));
-                    }
-                }
             }
         }
         vcpu_pcpu_tuples

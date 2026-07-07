@@ -17,18 +17,21 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxErrorKind, AxResult, ax_err};
 use axaddrspace::device::AccessWidth;
-#[cfg(target_arch = "x86_64")]
-use axvcpu::InterruptTriggerMode;
 use axvisor_api::{
     control as api_control,
     task::{self as api_task, TaskHandle, TaskOptions},
 };
+#[cfg(target_arch = "x86_64")]
+use vm_interrupt::InterruptTriggerMode;
 
 use super::{CONTROL_FILES, ControlFileState};
-use crate::kvm::{
-    abi::raw as abi,
-    state::{GsiRoute, IoEventFd, IoEventFdKey, IrqFd, IrqFdKey, KvmIoEventFd, KvmIrqFd},
-    util::{access_width_bytes, access_width_mask, checked_add, read_u32_user},
+use crate::{
+    kvm::{
+        abi::raw as abi,
+        state::{GsiRoute, IoEventFd, IoEventFdKey, IrqFd, IrqFdKey, KvmIoEventFd, KvmIrqFd},
+        util::{access_width_bytes, access_width_mask, checked_add, read_u32_user},
+    },
+    vmm::interrupt::{InterruptRoute, VirtualInterrupt, deliver_interrupt},
 };
 
 // KVM IRQFD/IOEVENTFD payloads are plain UAPI data. The registered listeners and
@@ -271,26 +274,36 @@ fn inject_irqfd_gsi(control_file: api_control::ControlFileId, gsi: u32) -> AxRes
             let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(pin as usize) else {
                 return Ok(());
             };
-            let vcpu = vm.vcpu(irq.target_vcpu).ok_or(AxError::InvalidInput)?;
-            vcpu.inject_interrupt_with_trigger(
-                irq.vector as usize,
-                if irq.level_triggered {
-                    InterruptTriggerMode::LevelTriggered
-                } else {
-                    InterruptTriggerMode::EdgeTriggered
-                },
-            )?;
-            super::wake_control_vcpu(vm.id(), irq.target_vcpu)
+            deliver_interrupt(InterruptRoute::new(
+                vm.id(),
+                irq.target_vcpu,
+                VirtualInterrupt::with_trigger(
+                    irq.vector as usize,
+                    if irq.level_triggered {
+                        InterruptTriggerMode::LevelTriggered
+                    } else {
+                        InterruptTriggerMode::EdgeTriggered
+                    },
+                ),
+            ));
+            Ok(())
         }
         #[cfg(not(target_arch = "x86_64"))]
         GsiRoute::IrqChip { pin } => {
-            let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
-            vcpu.inject_interrupt(legacy_gsi_vector(pin) as usize)
+            deliver_interrupt(InterruptRoute::new(
+                vm.id(),
+                0,
+                VirtualInterrupt::edge(legacy_gsi_vector(pin) as usize),
+            ));
+            Ok(())
         }
         GsiRoute::Msi { vector } => {
-            let vcpu = vm.vcpu(0).ok_or(AxError::InvalidInput)?;
-            vcpu.inject_interrupt(vector as usize)?;
-            super::wake_control_vcpu(vm.id(), 0)
+            deliver_interrupt(InterruptRoute::new(
+                vm.id(),
+                0,
+                VirtualInterrupt::edge(vector as usize),
+            ));
+            Ok(())
         }
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "vm-interrupt"
+version = "0.1.0"
+edition.workspace = true
+authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
+description = "Shared virtual-machine interrupt routing model."
+license = "Apache-2.0"
+repository = "https://github.com/rcore-os/tgoskits"
+
+[dependencies]
+ax-errno = { workspace = true }

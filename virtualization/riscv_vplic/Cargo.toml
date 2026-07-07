@@ -18,6 +18,7 @@ default = []
 ax-kspin.workspace = true
 axaddrspace = { workspace = true }
 axdevice_base = { workspace = true }
+vm-interrupt = { workspace = true }
 axvisor_api = { workspace = true }
 ax-errno = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }

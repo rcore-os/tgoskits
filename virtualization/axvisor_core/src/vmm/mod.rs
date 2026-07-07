@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod hvc;
+pub(crate) mod interrupt;
 mod ivc;
 
 pub mod config;
@@ -39,6 +40,7 @@ use axvisor_api::{
     vmm as api_vmm,
     vmm::{InterruptVector, VCpuId, VCpuSet, VMId},
 };
+use interrupt::{InterruptRoute, deliver_interrupt, interrupt_from_api_vector};
 pub use timer::init_percpu as init_timer_percpu;
 
 /// The instantiated VM type.
@@ -170,60 +172,11 @@ impl api_vmm::VmmIf for VmmIfImpl {
     }
 
     fn inject_interrupt(vm_id: VMId, vcpu_id: VCpuId, vector: InterruptVector) {
-        if let Some(context) = crate::context::try_current_vcpu_context()
-            && context.vm_id == vm_id
-            && context.vcpu_id == vcpu_id
-            && let Some(()) = with_vm_and_vcpu(vm_id, vcpu_id, move |_, vcpu| {
-                if let Err(err) = vcpu.inject_interrupt(vector as usize) {
-                    warn!(
-                        "Failed to inject interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: \
-                         {err:?}"
-                    );
-                }
-
-                #[cfg(target_arch = "riscv64")]
-                if let Err(err) = vcpu
-                    .get_arch_vcpu()
-                    .apply_interrupt_to_bound_hart(vector as usize)
-                {
-                    warn!(
-                        "Failed to apply interrupt {vector} to bound VM[{vm_id}] VCpu[{vcpu_id}]: \
-                         {err:?}"
-                    );
-                }
-            })
-        {
-            return;
-        }
-
-        if vcpus::queue_vcpu_interrupt(vm_id, vcpu_id, vector as usize).is_ok() {
-            return;
-        }
-
-        #[cfg(feature = "control")]
-        {
-            match crate::kvm::queue_control_vcpu_interrupt(vm_id, vcpu_id, vector as usize) {
-                Ok(()) => return,
-                Err(err) => {
-                    warn!(
-                        "Failed to queue interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: \
-                         {err:?}"
-                    );
-                }
-            }
-        }
-        #[cfg(not(feature = "control"))]
-        {
-            warn!(
-                "Failed to queue interrupt {vector} to VM[{vm_id}] VCpu[{vcpu_id}]: VM vCPU \
-                 resources not found"
-            );
-        }
-
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-        let _ = with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
-            vcpu.inject_interrupt(vector as usize).unwrap();
-        });
+        deliver_interrupt(InterruptRoute::new(
+            vm_id,
+            vcpu_id,
+            interrupt_from_api_vector(vector as usize),
+        ));
     }
 
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {

@@ -1718,6 +1718,7 @@ dependencies = [
  "cfg-if",
  "log",
  "riscv_vplic",
+ "vm-interrupt",
  "x86_vlapic",
 ]
 
@@ -1999,6 +2000,7 @@ dependencies = [
  "spin 0.12.0",
  "syn 2.0.117",
  "toml 0.9.12+spec-1.1.0",
+ "vm-interrupt",
 ]
 
 [[package]]
@@ -2025,6 +2027,7 @@ dependencies = [
  "loongarch_vcpu",
  "riscv_vcpu",
  "spin 0.12.0",
+ "vm-interrupt",
  "x86_vcpu",
 ]
 
@@ -7043,6 +7046,7 @@ dependencies = [
  "axvisor_api",
  "bitmaps",
  "log",
+ "vm-interrupt",
 ]
 
 [[package]]
@@ -9378,6 +9382,13 @@ name = "vm-fdt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
+
+[[package]]
+name = "vm-interrupt"
+version = "0.1.0"
+dependencies = [
+ "ax-errno 0.6.0",
+]
 
 [[package]]
 name = "volatile"

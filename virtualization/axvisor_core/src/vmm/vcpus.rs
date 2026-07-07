@@ -18,8 +18,6 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(not(target_arch = "riscv64"))]
-use ax_cpumask::CpuMask;
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
@@ -31,7 +29,14 @@ use axvisor_api::{
 #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 use axvm::config::VMInterruptMode;
 
-use crate::vmm::{VCpuRef, VMRef, sub_running_vm_count};
+use crate::vmm::{
+    VCpuRef, VMRef,
+    interrupt::{
+        InterruptRoute, VcpuInterruptTarget, VirtualInterrupt, deliver_targeted_interrupt,
+        inject_virtual_interrupt,
+    },
+    sub_running_vm_count,
+};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 #[cfg(target_arch = "riscv64")]
@@ -57,7 +62,7 @@ pub struct VMVCpus {
     // Interrupts queued by another vCPU/task. They are drained by the target
     // vCPU immediately before entering the guest, so architecture backends do
     // not need to be mutated from a foreign execution context.
-    pending_interrupts: Mutex<BTreeMap<usize, VecDeque<usize>>>,
+    pending_interrupts: Mutex<BTreeMap<usize, VecDeque<InterruptRoute>>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
     ///
@@ -103,14 +108,14 @@ impl VMVCpus {
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
 
-    fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult {
+    fn queue_interrupt(&self, route: InterruptRoute) -> AxResult {
         let mut pending = self.pending_interrupts.lock();
-        let queue = pending.get_mut(&vcpu_id).ok_or(AxError::NotFound)?;
-        queue.push_back(vector);
+        let queue = pending.get_mut(&route.vcpu_id).ok_or(AxError::NotFound)?;
+        queue.push_back(route);
         Ok(())
     }
 
-    fn drain_interrupts(&self, vcpu_id: usize, f: impl FnMut(usize)) {
+    fn drain_interrupts(&self, vcpu_id: usize, f: impl FnMut(InterruptRoute)) {
         let mut pending = self.pending_interrupts.lock();
         let Some(queue) = pending.get_mut(&vcpu_id) else {
             return;
@@ -223,9 +228,9 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     }
 }
 
-pub(crate) fn queue_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
-    let vm_vcpus = get_vm_vcpus(vm_id).ok_or(AxError::NotFound)?;
-    vm_vcpus.queue_interrupt(vcpu_id, vector)?;
+pub(crate) fn queue_vcpu_interrupt(route: InterruptRoute) -> AxResult {
+    let vm_vcpus = get_vm_vcpus(route.vm_id).ok_or(AxError::NotFound)?;
+    vm_vcpus.queue_interrupt(route)?;
     vm_vcpus.notify_all();
     Ok(())
 }
@@ -234,10 +239,11 @@ pub(crate) fn drain_vcpu_interrupts(vm: &VMRef, vcpu: &VCpuRef) {
     let Some(vm_vcpus) = get_vm_vcpus(vm.id()) else {
         return;
     };
-    vm_vcpus.drain_interrupts(vcpu.id(), |vector| {
-        if let Err(err) = vcpu.inject_interrupt(vector) {
+    vm_vcpus.drain_interrupts(vcpu.id(), |route| {
+        if let Err(err) = inject_virtual_interrupt(route.interrupt, vcpu) {
             warn!(
-                "Failed to inject queued interrupt {vector} to VM[{}] VCpu[{}]: {err:?}",
+                "Failed to inject queued interrupt {:?} to VM[{}] VCpu[{}]: {err:?}",
+                route.interrupt,
                 vm.id(),
                 vcpu.id()
             );
@@ -245,55 +251,45 @@ pub(crate) fn drain_vcpu_interrupts(vm: &VMRef, vcpu: &VCpuRef) {
     });
 }
 
-#[cfg(target_arch = "riscv64")]
-fn inject_riscv_ipi(
-    vm: &VMRef,
+fn ipi_target_from_exit(
     current_vcpu_id: usize,
-    hart_mask: usize,
-    hart_mask_base: usize,
+    target_cpu: u64,
+    target_cpu_aux: u64,
     send_to_all: bool,
     send_to_self: bool,
-    vector: usize,
-) -> AxResult {
-    if !send_to_all && !send_to_self {
-        for target_vcpu_id in 0..vm.vcpu_num() {
-            let selected = if hart_mask_base == usize::MAX {
-                true
-            } else {
-                target_vcpu_id
-                    .checked_sub(hart_mask_base)
-                    .filter(|bit| *bit < usize::BITS as usize)
-                    .is_some_and(|bit| (hart_mask & (1usize << bit)) != 0)
-            };
-
-            if selected {
-                vm.vcpu(target_vcpu_id)
-                    .ok_or_else(|| ax_err_type!(InvalidInput, "invalid RISC-V IPI target"))?
-                    .inject_interrupt(vector)?;
-            }
-        }
-        return Ok(());
-    }
-
+) -> VcpuInterruptTarget {
     if send_to_all {
-        for target_vcpu_id in 0..vm.vcpu_num() {
-            if target_vcpu_id != current_vcpu_id || send_to_self {
-                vm.vcpu(target_vcpu_id)
-                    .ok_or_else(|| ax_err_type!(InvalidInput, "invalid RISC-V IPI target"))?
-                    .inject_interrupt(vector)?;
-            }
-        }
-        return Ok(());
+        return VcpuInterruptTarget::All {
+            current_vcpu_id,
+            include_current: send_to_self,
+        };
     }
 
-    let target_vcpu_id = if send_to_self {
-        current_vcpu_id
-    } else {
-        hart_mask
-    };
-    vm.vcpu(target_vcpu_id)
-        .ok_or_else(|| ax_err_type!(InvalidInput, "invalid RISC-V IPI target"))?
-        .inject_interrupt(vector)
+    if send_to_self {
+        return VcpuInterruptTarget::Vcpu(current_vcpu_id);
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        VcpuInterruptTarget::GuestCpuMask {
+            mask: target_cpu as usize,
+            base: target_cpu_aux as usize,
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        VcpuInterruptTarget::GuestCpuMask {
+            mask: target_cpu_aux as usize,
+            base: target_cpu as usize,
+        }
+    }
+
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    {
+        let _ = target_cpu_aux;
+        VcpuInterruptTarget::GuestCpu(target_cpu as usize)
+    }
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.
@@ -383,19 +379,8 @@ fn vcpu_on(vm: VMRef, vcpu_id: usize, entry_point: GuestPhysAddr, arg: usize) ->
         ));
     }
 
-    vcpu.set_entry(entry_point)?;
-    #[cfg(not(target_arch = "riscv64"))]
-    vcpu.set_gpr(0, arg);
-
-    #[cfg(target_arch = "riscv64")]
-    {
-        info!(
-            "vcpu_on: vcpu[{}] entry={:x} opaque={:x}",
-            vcpu_id, entry_point, arg
-        );
-        vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, vcpu_id);
-        vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg);
-    }
+    let guest_cpu_id = guest_cpu_id_for_vcpu(&vm, vcpu_id);
+    set_vcpu_boot_state(&vcpu, vcpu_id, guest_cpu_id, entry_point, arg)?;
 
     let (vcpu_task, task_name) = alloc_vcpu_task(&vm, vcpu);
 
@@ -614,53 +599,26 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                         send_to_self,
                         vector,
                     } => {
-                        #[cfg(target_arch = "riscv64")]
-                        {
-                            if let Err(err) = inject_riscv_ipi(
-                                &vm,
-                                vcpu_id,
-                                target_cpu as usize,
-                                target_cpu_aux as usize,
-                                send_to_all,
-                                send_to_self,
-                                vector as usize,
-                            ) {
-                                warn!(
-                                    "Failed to inject interrupt {vector} for VM[{vm_id}] RISC-V \
-                                     IPI: {err:?}"
-                                );
-                            }
-                            continue;
-                        }
-
-                        #[cfg(not(target_arch = "riscv64"))]
-                        {
-                            debug!(
-                                "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, \
-                                 target_cpu={target_cpu:#x}, target_cpu_aux={target_cpu_aux:#x}, \
-                                 vector={vector}",
+                        debug!(
+                            "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={target_cpu:#x}, \
+                             target_cpu_aux={target_cpu_aux:#x}, vector={vector}",
+                        );
+                        let target = ipi_target_from_exit(
+                            vcpu_id,
+                            target_cpu,
+                            target_cpu_aux,
+                            send_to_all,
+                            send_to_self,
+                        );
+                        if let Err(err) = deliver_targeted_interrupt(
+                            &vm,
+                            target,
+                            VirtualInterrupt::edge(vector as usize),
+                        ) {
+                            warn!(
+                                "Failed to deliver interrupt {vector} to target {target:?} for \
+                                 VM[{vm_id}]: {err:?}"
                             );
-                            if send_to_all {
-                                warn!("Send IPI to all CPUs is not implemented yet");
-                                continue;
-                            }
-
-                            if target_cpu == vcpu_id as u64 || send_to_self {
-                                if let Err(err) = vcpu.inject_interrupt(vector as _) {
-                                    warn!(
-                                        "Failed to inject interrupt {vector} to current \
-                                         VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"
-                                    );
-                                }
-                            } else if let Err(err) = vm.inject_interrupt_to_vcpu(
-                                CpuMask::one_shot(target_cpu as _),
-                                vector as _,
-                            ) {
-                                warn!(
-                                    "Failed to inject interrupt {vector} to VM[{vm_id}] CPU \
-                                     {target_cpu}: {err:?}"
-                                );
-                            }
                         }
                     }
                     e => {
@@ -730,20 +688,51 @@ fn rearm_passthrough_poll_timer(vm: &VMRef) {
 }
 
 fn cpu_up_target_vcpu_id(vm: &VMRef, target_cpu: u64) -> Option<usize> {
-    #[cfg(target_arch = "x86_64")]
+    // CPU-up exits report guest-visible CPU IDs (hart IDs on RISC-V, APIC IDs
+    // on x86), so translate through guest topology instead of assuming they
+    // match VM-local vCPU IDs.
+    guest_cpu_id_to_vcpu_id(vm, target_cpu as usize)
+}
+
+pub(crate) fn guest_cpu_id_for_vcpu(vm: &VMRef, vcpu_id: usize) -> usize {
+    vm.get_vcpu_affinities_pcpu_ids()
+        .iter()
+        .find_map(|(id, _, phys_id)| (*id == vcpu_id).then_some(*phys_id))
+        .unwrap_or(vcpu_id)
+}
+
+pub(crate) fn guest_cpu_id_to_vcpu_id(vm: &VMRef, guest_cpu_id: usize) -> Option<usize> {
+    vm.get_vcpu_affinities_pcpu_ids()
+        .iter()
+        .find_map(|(vcpu_id, _, phys_id)| (*phys_id == guest_cpu_id).then_some(*vcpu_id))
+}
+
+fn set_vcpu_boot_state(
+    vcpu: &VCpuRef,
+    vcpu_id: usize,
+    guest_cpu_id: usize,
+    entry_point: GuestPhysAddr,
+    arg: usize,
+) -> AxResult {
+    vcpu.set_entry(entry_point)?;
+
+    #[cfg(target_arch = "riscv64")]
     {
-        let _ = vm;
-        Some(target_cpu as usize)
+        info!(
+            "vcpu_on: vcpu[{}] guest_cpu={} entry={:x} opaque={:x}",
+            vcpu_id, guest_cpu_id, entry_point, arg
+        );
+        vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, guest_cpu_id);
+        vcpu.set_gpr(riscv_vcpu::GprIndex::A1 as usize, arg);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(target_arch = "riscv64"))]
     {
-        // Non-x86 CPU-up exits currently report the host physical CPU/hart
-        // identifier, so translate it through the configured affinity map.
-        vm.get_vcpu_affinities_pcpu_ids()
-            .iter()
-            .find_map(|(vcpu_id, _, phys_id)| (*phys_id == target_cpu as usize).then_some(*vcpu_id))
+        let _ = (vcpu_id, guest_cpu_id);
+        vcpu.set_gpr(0, arg);
     }
+
+    Ok(())
 }
 
 pub(crate) fn handle_internal_exit(
