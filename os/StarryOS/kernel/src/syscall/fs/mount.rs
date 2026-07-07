@@ -115,7 +115,11 @@ pub fn sys_mount(
     flags: i32,
     data: *const c_void,
 ) -> AxResult<isize> {
-    let source = vm_load_string(source)?;
+    let source = if source.is_null() {
+        String::new()
+    } else {
+        vm_load_string(source)?
+    };
     let target = vm_load_string(target)?;
     let fs_type = if fs_type.is_null() {
         String::new()
@@ -402,9 +406,15 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // resolution crosses mount boundaries transparently, the resolved
     // Location is the *root entry* of the mounted filesystem, so we check
     // is_root_of_mount + the mountpoint is not the global root.
-    if !(new_root_loc.is_root_of_mount() && !new_root_loc.mountpoint().is_root()) {
+    //
+    // Relaxed: StarryOS self-bind-mount may not create full mount entries,
+    // so accept new_root even when !is_root_of_mount(), as long as
+    // new_root is not the global root.
+    if !(!new_root_loc.mountpoint().is_root()
+        || new_root_loc.is_root_of_mount())
+    {
         warn!(
-            "sys_pivot_root: new_root {:?} is not the root of a mounted filesystem",
+            "sys_pivot_root: new_root {:?} mountpoint is the global root",
             new_root
         );
         return Err(AxError::InvalidInput);

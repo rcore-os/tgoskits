@@ -6,7 +6,8 @@ use ax_fs_ng::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
+    CLONE_NEWUSER, CLONE_NEWUTS,
 };
 use scope_local::ActiveScope;
 
@@ -21,6 +22,7 @@ const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
     | CLONE_NEWNET
     | CLONE_NEWIPC
     | CLONE_NEWUSER
+    | CLONE_NEWCGROUP
     | CLONE_FS;
 
 /// unshare(2) — disassociate parts of the process execution context.
@@ -52,6 +54,9 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         }
         if flags & CLONE_NEWUSER != 0 {
             nsproxy.unshare_user();
+        }
+        if flags & CLONE_NEWCGROUP != 0 {
+            // cgroup namespace support is limited; accept as no-op.
         }
     }
 

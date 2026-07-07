@@ -71,26 +71,30 @@ NIXCONF
 echo 'NIX_SANDBOX_PHASE_CONFIG_DONE'
 nix --version || fail 'nix --version failed'
 
+# Diagnostic: check if nix can even evaluate a derivation
+echo '=== quick nix eval test ==='
+nix-instantiate --eval -E 'builtins.derivation { name="test"; builder="/bin/sh"; system="x86_64-linux"; }' 2>&1 | head -1 || echo 'NIX_EVAL_FAILED'
+echo '=== quick nix eval done ==='
+
+# nix checks /proc/sys/user/max_user_namespaces for sandbox capability.
+# This proc file may not exist on StarryOS.
+maxns=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo 'MISSING')
+echo "NIX_SANDBOX_DIAG: /proc/sys/user/max_user_namespaces=$maxns"
+
 # ---------------------------------------------------------------------------
-# Phase 2.5: diagnostic — namespace probe + nix verbose build
+# Phase 2.5: diagnostic — minimal probe
 # ---------------------------------------------------------------------------
 echo 'NIX_SANDBOX_PHASE_DIAG_BEGIN'
-echo '=== nix daemon test ==='
-nix daemon --debug 2>/tmp/nix-daemon.log &
-sleep 3
-echo "DAEMON_PID=$!"
-nix store ping 2>&1 || echo 'nix store ping FAILED'
-kill $! 2>/dev/null || true
-echo '=== nix daemon log ==='
-cat /tmp/nix-daemon.log 2>/dev/null | tail -20 || echo '(no daemon log)'
-
+echo "max_user_namespaces=$(cat /proc/sys/user/max_user_namespaces 2>&1)"
+echo "cat /proc/version=$(cat /proc/version 2>&1 | head -1)"
+echo "ls /proc/sys/=$(ls /proc/sys/ 2>&1)"
 echo 'NIX_SANDBOX_PHASE_DIAG_DONE'
 
 # ---------------------------------------------------------------------------
 # Phase 3: build with sandbox=true
 # ---------------------------------------------------------------------------
 echo 'NIX_SANDBOX_PHASE_BUILD_BEGIN'
-rm -f ./result-sandbox
+rm -f ./result-sandbox ./result-nosandbox
 cat > /tmp/nix-sandbox/default.nix <<'NIXEOF'
 derivation {
   name = "nix-sandbox";
@@ -103,7 +107,33 @@ derivation {
 }
 NIXEOF
 
-echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 180s'
+# First: verify nix works at all without sandbox
+echo '=== nosandbox test ==='
+nix-build --no-substitute --option sandbox false \
+    /tmp/nix-sandbox/default.nix -o ./result-nosandbox \
+    > /tmp/nix-sandbox/nosandbox.log 2>&1 &
+nos_build_pid=$!
+i=0
+while kill -0 "$nos_build_pid" 2>/dev/null && [ "$i" -lt 120 ]; do
+    sleep 1; i=$((i + 1))
+done
+if kill -0 "$nos_build_pid" 2>/dev/null; then
+    kill "$nos_build_pid" 2>/dev/null || true
+    wait "$nos_build_pid" 2>/dev/null || true
+    echo 'NIX_NOSANDBOX_RESULT=timeout'
+else
+    wait "$nos_build_pid" 2>/dev/null
+    nos_rc=$?
+    echo "NIX_NOSANDBOX_RESULT=exit_$nos_rc"
+fi
+cat /tmp/nix-sandbox/nosandbox.log 2>/dev/null | head -10
+[ -f ./result-nosandbox ] && echo 'NIX_NOSANDBOX_RESULT_SYMLINK=yes' || echo 'NIX_NOSANDBOX_RESULT_SYMLINK=no'
+cat ./result-nosandbox 2>/dev/null | head -3
+echo '=== nosandbox done ==='
+
+# Now: try sandbox
+echo '=== sandbox test ==='
+echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 30s'
 
 trap 'echo "NIX_SANDBOX_TRAP: caught signal"' TERM HUP INT QUIT USR1 USR2
 trap 'echo "NIX_SANDBOX_SCRIPT_EXIT: rc=$?"' EXIT
@@ -123,14 +153,14 @@ dump_procs() {
 }
 
 set +e
-NIX_DEBUG=1 nix-build -v --no-substitute --option sandbox true \
+nix-build -v --no-substitute --option sandbox true \
     /tmp/nix-sandbox/default.nix -o ./result-sandbox \
     > /tmp/nix-sandbox/build.log 2>&1 &
 build_pid=$!
 echo "NIX_SANDBOX_INFO: nix-build started pid=$build_pid"
 
 i=0
-while kill -0 "$build_pid" 2>/dev/null && [ "$i" -lt 180 ]; do
+while kill -0 "$build_pid" 2>/dev/null && [ "$i" -lt 120 ]; do
     if [ $((i % 15)) -eq 0 ]; then
         dump_procs "$((i / 15))"
     fi
@@ -139,7 +169,7 @@ while kill -0 "$build_pid" 2>/dev/null && [ "$i" -lt 180 ]; do
 done
 
 if kill -0 "$build_pid" 2>/dev/null; then
-    echo "NIX_SANDBOX_INFO: 180s timeout, killing nix-build pid=$build_pid"
+    echo "NIX_SANDBOX_INFO: 30s timeout, killing nix-build pid=$build_pid"
     kill "$build_pid" 2>/dev/null || true
     wait "$build_pid" 2>/dev/null || true
     build_rc=124

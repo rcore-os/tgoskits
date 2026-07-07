@@ -31,7 +31,8 @@ for bin in /usr/bin/starry-test-suit/test-fork-cow-child-exit \
            /usr/bin/starry-test-suit/test-tls-after-fork \
            /usr/bin/starry-test-suit/test-futex-arena-lock \
            /usr/bin/starry-test-suit/test-mremap-realloc \
-           /usr/bin/starry-test-suit/test-pty-fork-echo; do
+            /usr/bin/starry-test-suit/test-pty-fork-echo \
+            /usr/bin/starry-test-suit/test-nix-sandbox-probe; do
     [ -f "$bin" ] && [ -x "$bin" ] || continue
     found=1
     echo "NIX_DEBUG_TEST_BEGIN: $bin"

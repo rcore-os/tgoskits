@@ -1565,6 +1565,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             SimpleDir::new_maker(fs.clone(), Arc::new(net))
         });
 
+        // /proc/sys/user/max_user_namespaces — nix checks this to decide
+        // whether user namespaces are available for sandboxed builds.
+        sys.add("user", {
+            let mut user = DirMapping::new();
+            user.add(
+                "max_user_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(user))
+        });
+
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
     });
 
