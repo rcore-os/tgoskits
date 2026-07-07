@@ -24,7 +24,9 @@ mod util;
 mod vcpu;
 mod vm;
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
+#[cfg(target_arch = "x86_64")]
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub use abi::public::*;
@@ -128,25 +130,14 @@ fn create_control_file(
     Ok(control_file)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn queue_control_vcpu_interrupt(
     vm_id: usize,
     vcpu_id: usize,
     vector: usize,
 ) -> AxResult {
     let mut control_files = CONTROL_FILES.lock();
-    let vm_file = control_files
-        .iter()
-        .find_map(|(control_file, state)| match state {
-            ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(*control_file),
-            _ => None,
-        })
-        .ok_or(AxError::NotFound)?;
-    let vcpu_file = match control_files.get(&vm_file) {
-        Some(ControlFileState::Vm(vm)) => vm.vcpu_files.get(&(vcpu_id as u32)).copied(),
-        _ => None,
-    }
-    .ok_or(AxError::NotFound)?;
-
+    let vcpu_file = control_vcpu_file_by_vm_id(&control_files, vm_id, vcpu_id)?;
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
         return Err(AxError::NotFound);
     };
@@ -157,19 +148,7 @@ pub(crate) fn queue_control_vcpu_interrupt(
 
 pub(crate) fn wake_control_vcpu(vm_id: usize, vcpu_id: usize) -> AxResult {
     let mut control_files = CONTROL_FILES.lock();
-    let vm_file = control_files
-        .iter()
-        .find_map(|(control_file, state)| match state {
-            ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(*control_file),
-            _ => None,
-        })
-        .ok_or(AxError::NotFound)?;
-    let vcpu_file = match control_files.get(&vm_file) {
-        Some(ControlFileState::Vm(vm)) => vm.vcpu_files.get(&(vcpu_id as u32)).copied(),
-        _ => None,
-    }
-    .ok_or(AxError::NotFound)?;
-
+    let vcpu_file = control_vcpu_file_by_vm_id(&control_files, vm_id, vcpu_id)?;
     let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&vcpu_file) else {
         return Err(AxError::NotFound);
     };
@@ -177,6 +156,78 @@ pub(crate) fn wake_control_vcpu(vm_id: usize, vcpu_id: usize) -> AxResult {
     Ok(())
 }
 
+fn control_vcpu_file_by_vm_id(
+    control_files: &BTreeMap<api_control::ControlFileId, ControlFileState>,
+    vm_id: usize,
+    vcpu_id: usize,
+) -> AxResult<api_control::ControlFileId> {
+    let vm_file = control_files
+        .iter()
+        .find_map(|(control_file, state)| match state {
+            ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(*control_file),
+            _ => None,
+        })
+        .ok_or(AxError::NotFound)?;
+    match control_files.get(&vm_file) {
+        Some(ControlFileState::Vm(vm)) => vm.vcpu_files.get(&(vcpu_id as u32)).copied(),
+        _ => None,
+    }
+    .ok_or(AxError::NotFound)
+}
+
+pub(in crate::kvm) fn vcpu_file_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+) -> AxResult<api_control::ControlFileId> {
+    let vm_file = {
+        let control_files = CONTROL_FILES.lock();
+        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
+            return ax_err!(NotFound);
+        };
+        vcpu.vm_file
+    };
+
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vm(vm)) = control_files.get(&vm_file) else {
+        return ax_err!(NotFound);
+    };
+    vm.vcpu_files
+        .get(&(vcpu_id as u32))
+        .copied()
+        .ok_or(AxError::InvalidInput)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(in crate::kvm) fn vcpu_file_mp_state_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+) -> AxResult<u32> {
+    let target_file = vcpu_file_by_id(control_file, vcpu_id)?;
+    let control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&target_file) else {
+        return ax_err!(NotFound);
+    };
+    Ok(vcpu.mp_state)
+}
+
+pub(in crate::kvm) fn set_vcpu_file_mp_state_by_id(
+    control_file: api_control::ControlFileId,
+    vcpu_id: usize,
+    mp_state: u32,
+) -> AxResult {
+    let target_file = vcpu_file_by_id(control_file, vcpu_id)?;
+    let mut control_files = CONTROL_FILES.lock();
+    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&target_file) else {
+        return ax_err!(NotFound);
+    };
+    vcpu.mp_state = mp_state;
+    if mp_state == KVM_MP_STATE_RUNNABLE {
+        vcpu.halted = false;
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
 pub(in crate::kvm) fn take_control_vcpu_interrupts(
     control_file: api_control::ControlFileId,
 ) -> Vec<usize> {

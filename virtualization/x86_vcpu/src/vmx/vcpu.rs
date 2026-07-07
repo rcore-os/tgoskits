@@ -121,8 +121,6 @@ pub struct VmxVcpu {
     vcpu_count: usize,
     /// Whether this vCPU exposes KVM-compatible hypervisor CPUID leaves.
     expose_kvm_hypervisor: bool,
-    /// Low-volume AP startup trace counter used while debugging x86 SMP bring-up.
-    ap_run_trace_count: usize,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
     // is_host: bool, temporary removed because we don't care about type 1.5 now
 
@@ -165,7 +163,6 @@ impl VmxVcpu {
             vcpu_id,
             vcpu_count: config.vcpu_count.max(1),
             expose_kvm_hypervisor: false,
-            ap_run_trace_count: 0,
             // is_host: false,
             vmcs: VmxRegion::new(vmcs_revision_id, false)?,
             io_bitmap: IOBitmap::passthrough_all()?,
@@ -1671,12 +1668,6 @@ impl AxArchVCpu for VmxVcpu {
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
-        warn!(
-            "[x86-smp] VMX set_entry vcpu={} entry={:#x} ept_ready={}",
-            self.vcpu_id,
-            entry.as_usize(),
-            self.ept_root.is_some()
-        );
         self.entry = Some(entry);
         if self.ept_root.is_some() {
             self.entry_dirty = true;
@@ -1696,44 +1687,7 @@ impl AxArchVCpu for VmxVcpu {
     }
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
-        if self.vcpu_id != 0 && self.ap_run_trace_count == 0 {
-            warn!(
-                "[x86-smp] VMX AP vcpu={} entering guest rip={:#x} cs.base={:#x} \
-                 cs.selector={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
-                self.vcpu_id,
-                VmcsGuestNW::RIP.read().unwrap_or_default(),
-                VmcsGuestNW::CS_BASE.read().unwrap_or_default(),
-                VmcsGuest16::CS_SELECTOR.read().unwrap_or_default(),
-                VmcsGuestNW::CR0.read().unwrap_or_default(),
-                VmcsGuestNW::CR3.read().unwrap_or_default(),
-                VmcsGuestNW::CR4.read().unwrap_or_default(),
-                VmcsGuest64::IA32_EFER.read().unwrap_or_default()
-            );
-        }
-
         let inner_exit = self.inner_run();
-        if self.vcpu_id != 0 && self.ap_run_trace_count < 16 {
-            match &inner_exit {
-                Some(exit_info) => warn!(
-                    "[x86-smp] VMX AP vcpu={} exit={:?} rip={:#x} cs.base={:#x} cr0={:#x} \
-                     cr3={:#x} cr4={:#x} efer={:#x}",
-                    self.vcpu_id,
-                    exit_info.exit_reason,
-                    VmcsGuestNW::RIP.read().unwrap_or_default(),
-                    VmcsGuestNW::CS_BASE.read().unwrap_or_default(),
-                    VmcsGuestNW::CR0.read().unwrap_or_default(),
-                    VmcsGuestNW::CR3.read().unwrap_or_default(),
-                    VmcsGuestNW::CR4.read().unwrap_or_default(),
-                    VmcsGuest64::IA32_EFER.read().unwrap_or_default()
-                ),
-                None => warn!(
-                    "[x86-smp] VMX AP vcpu={} returned without VM exit",
-                    self.vcpu_id
-                ),
-            }
-            self.ap_run_trace_count += 1;
-        }
-
         match inner_exit {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 AxVCpuExitReason::FailEntry {

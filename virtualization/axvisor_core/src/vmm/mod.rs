@@ -197,7 +197,7 @@ impl api_vmm::VmmIf for VmmIfImpl {
             return;
         }
 
-        #[cfg(not(target_arch = "riscv64"))]
+        #[cfg(target_arch = "x86_64")]
         {
             if let Some(context) = crate::context::try_current_vcpu_context()
                 && context.vm_id == vm_id
@@ -237,6 +237,11 @@ impl api_vmm::VmmIf for VmmIfImpl {
                 );
             }
         }
+
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
+        let _ = with_vm_and_vcpu_on_pcpu(vm_id, vcpu_id, move |_, vcpu| {
+            vcpu.inject_interrupt(vector as usize).unwrap();
+        });
     }
 
     fn inject_interrupt_to_cpus(vm_id: VMId, vcpu_set: VCpuSet, vector: InterruptVector) {

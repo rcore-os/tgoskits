@@ -216,8 +216,6 @@ pub struct SvmVcpu {
     vlapic: EmulatedLocalApic,
     /// Whether HLT exits should be returned to the VMM instead of used as poll points.
     hlt_exiting: bool,
-    /// Low-volume AP startup trace counter used while debugging x86 SMP bring-up.
-    ap_run_trace_count: usize,
     /// The XState of the VCpu. Both host and guest.
     xstate: XState,
 }
@@ -241,7 +239,6 @@ impl SvmVcpu {
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             hlt_exiting: false,
-            ap_run_trace_count: 0,
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -1118,19 +1115,7 @@ impl SvmVcpu {
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
             _ => {
-                if local_apic {
-                    warn!(
-                        "[x86-smp] SVM local APIC MMIO decode miss: vcpu={} rip={:#x} gpa={:#x} \
-                         opcode={:#x} write={}",
-                        self.vcpu_id,
-                        exit_info.guest_rip,
-                        addr.as_usize(),
-                        opcode,
-                        write
-                    );
-                } else {
-                    debug!("unsupported SVM NPF MMIO opcode {opcode:#x}, write={write}");
-                }
+                debug!("unsupported SVM NPF MMIO opcode {opcode:#x}, write={write}");
                 Ok(None)
             }
         }
@@ -1438,12 +1423,6 @@ impl AxArchVCpu for SvmVcpu {
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
-        warn!(
-            "[x86-smp] SVM set_entry vcpu={} entry={:#x} npt_ready={}",
-            self.vcpu_id,
-            entry.as_usize(),
-            self.npt_root.is_some()
-        );
         self.entry = Some(entry);
         if self.npt_root.is_some() {
             self.setup_vmcb_guest_state(x86_sipi_entry_state(entry))?;
@@ -1468,54 +1447,7 @@ impl AxArchVCpu for SvmVcpu {
 
     fn run(&mut self) -> AxResult<AxVCpuExitReason> {
         {
-            if self.vcpu_id != 0 && self.ap_run_trace_count == 0 {
-                let state = unsafe { &self.vmcb.as_vmcb_ref().state };
-                warn!(
-                    "[x86-smp] SVM AP vcpu={} entering guest rip={:#x} cs.base={:#x} \
-                     cs.selector={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
-                    self.vcpu_id,
-                    state.rip.get(),
-                    state.cs.base.get(),
-                    state.cs.selector.get(),
-                    state.cr0.get(),
-                    state.cr3.get(),
-                    state.cr4.get(),
-                    state.efer.get()
-                );
-            }
-
             let exit_result = self.inner_run()?;
-            if self.vcpu_id != 0 && self.ap_run_trace_count < 16 {
-                let state = unsafe { &self.vmcb.as_vmcb_ref().state };
-                match &exit_result {
-                    Ok(exit_info) => warn!(
-                        "[x86-smp] SVM AP vcpu={} exit={:?} rip={:#x} cs.base={:#x} cr0={:#x} \
-                         cr3={:#x} cr4={:#x} efer={:#x}",
-                        self.vcpu_id,
-                        exit_info.exit_code,
-                        state.rip.get(),
-                        state.cs.base.get(),
-                        state.cr0.get(),
-                        state.cr3.get(),
-                        state.cr4.get(),
-                        state.efer.get()
-                    ),
-                    Err(exit_reason) => warn!(
-                        "[x86-smp] SVM AP vcpu={} internal exit {:?} rip={:#x} cs.base={:#x} \
-                         cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
-                        self.vcpu_id,
-                        exit_reason,
-                        state.rip.get(),
-                        state.cs.base.get(),
-                        state.cr0.get(),
-                        state.cr3.get(),
-                        state.cr4.get(),
-                        state.efer.get()
-                    ),
-                }
-                self.ap_run_trace_count += 1;
-            }
-
             let exit_info = match exit_result {
                 Ok(exit_info) => exit_info,
                 Err(exit_reason) => return Ok(exit_reason),

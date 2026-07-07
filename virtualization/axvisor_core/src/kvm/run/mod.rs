@@ -30,7 +30,9 @@ use x86::{
 };
 use x86::{update_vcpu_run_interrupt_state, vcpu_run_irq_window_open};
 
-use super::{CONTROL_FILES, ControlFileState, take_control_vcpu_interrupts};
+#[cfg(target_arch = "x86_64")]
+use super::take_control_vcpu_interrupts;
+use super::{CONTROL_FILES, ControlFileState};
 use crate::kvm::{
     abi::raw as abi,
     eventfd::signal_matching_ioeventfd,
@@ -89,12 +91,6 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
 
     if mp_state == abi::KVM_MP_STATE_STOPPED {
         wait_until_vcpu_runnable(control_file)?;
-        #[cfg(target_arch = "x86_64")]
-        warn!(
-            "[x86-smp] control VM[{}] vcpu {} became runnable",
-            vm.id(),
-            vcpu_id
-        );
     }
 
     if !vm.running() {

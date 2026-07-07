@@ -438,22 +438,10 @@ impl VirtualApicRegs {
         icr_low: InterruptCommandRegisterLowLocal,
     ) {
         match mode {
-            APICDeliveryMode::INIT => {
-                warn!(
-                    "[x86-smp] VM[{}] vLAPIC[{}] INIT target_vcpu={} icr_low={:#010X}",
-                    self.vm_id,
-                    self.vapic_id,
-                    vcpu_id,
-                    icr_low.get()
-                );
-            }
+            APICDeliveryMode::INIT => {}
             APICDeliveryMode::StartUp => {
                 let vector = icr_low.read(INTERRUPT_COMMAND_LOW::Vector);
                 let entry_point = (vector as usize) << 12;
-                warn!(
-                    "[x86-smp] VM[{}] vLAPIC[{}] SIPI target_vcpu={} vector={:#x} entry={:#x}",
-                    self.vm_id, self.vapic_id, vcpu_id, vector, entry_point
-                );
                 self.pending_cpu_up = Some(VlapicCpuUp {
                     target_cpu: vcpu_id,
                     entry_point,

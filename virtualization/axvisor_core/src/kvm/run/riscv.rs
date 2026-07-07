@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxError, AxResult, ax_err};
+use ax_errno::{AxError, AxResult};
 use axaddrspace::GuestPhysAddr;
 use axvisor_api::control as api_control;
 use axvm::AxVMRef;
 
-use super::super::{CONTROL_FILES, ControlFileState, KVM_MP_STATE_RUNNABLE};
+use super::super::{KVM_MP_STATE_RUNNABLE, set_vcpu_file_mp_state_by_id};
 
 pub(super) fn handle_cpu_up(
     control_file: api_control::ControlFileId,
@@ -98,35 +98,5 @@ fn inject_riscv_ipi_mask(
         }
     }
 
-    Ok(())
-}
-
-fn set_vcpu_file_mp_state_by_id(
-    control_file: api_control::ControlFileId,
-    vcpu_id: usize,
-    mp_state: u32,
-) -> AxResult {
-    let vm_file = {
-        let control_files = CONTROL_FILES.lock();
-        let Some(ControlFileState::Vcpu(vcpu)) = control_files.get(&control_file) else {
-            return ax_err!(NotFound);
-        };
-        vcpu.vm_file
-    };
-
-    let mut control_files = CONTROL_FILES.lock();
-    let target_file = {
-        let Some(ControlFileState::Vm(vm)) = control_files.get(&vm_file) else {
-            return ax_err!(NotFound);
-        };
-        vm.vcpu_files
-            .get(&(vcpu_id as u32))
-            .copied()
-            .ok_or(AxError::InvalidInput)?
-    };
-    let Some(ControlFileState::Vcpu(vcpu)) = control_files.get_mut(&target_file) else {
-        return ax_err!(NotFound);
-    };
-    vcpu.mp_state = mp_state;
     Ok(())
 }

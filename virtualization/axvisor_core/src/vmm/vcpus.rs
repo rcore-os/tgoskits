@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+#[cfg(target_arch = "x86_64")]
+use alloc::collections::VecDeque;
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(target_arch = "riscv64"))]
 use ax_cpumask::CpuMask;
-use ax_errno::{AxError, AxResult, ax_err_type};
+#[cfg(target_arch = "x86_64")]
+use ax_errno::AxError;
+use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestPhysAddr;
 use axvcpu::{AxVCpuExitReason, VCpuState};
@@ -57,6 +58,7 @@ pub struct VMVCpus {
     // Interrupts queued by another vCPU/task. They are drained by the target
     // vCPU immediately before entering the guest, so architecture backends do
     // not need to be mutated from a foreign execution context.
+    #[cfg(target_arch = "x86_64")]
     pending_interrupts: Mutex<BTreeMap<usize, VecDeque<usize>>>,
     /// The number of currently running or halting VCpus. Used to track when the VM is fully
     /// shutdown.
@@ -82,6 +84,7 @@ impl VMVCpus {
             wait_queue: WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             vcpu_task_names: Mutex::new(BTreeMap::new()),
+            #[cfg(target_arch = "x86_64")]
             pending_interrupts: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
@@ -100,9 +103,11 @@ impl VMVCpus {
     ) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
         self.vcpu_task_names.lock().insert(vcpu_id, task_name);
+        #[cfg(target_arch = "x86_64")]
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult {
         let mut pending = self.pending_interrupts.lock();
         let queue = pending.get_mut(&vcpu_id).ok_or(AxError::NotFound)?;
@@ -110,6 +115,7 @@ impl VMVCpus {
         Ok(())
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn drain_interrupts(&self, vcpu_id: usize, f: impl FnMut(usize)) {
         let mut pending = self.pending_interrupts.lock();
         let Some(queue) = pending.get_mut(&vcpu_id) else {
@@ -223,6 +229,7 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn queue_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
     let vm_vcpus = get_vm_vcpus(vm_id).ok_or(AxError::NotFound)?;
     vm_vcpus.queue_interrupt(vcpu_id, vector)?;
@@ -230,6 +237,7 @@ pub(crate) fn queue_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) 
     Ok(())
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn drain_vcpu_interrupts(vm: &VMRef, vcpu: &VCpuRef) {
     let Some(vm_vcpus) = get_vm_vcpus(vm.id()) else {
         return;
@@ -603,12 +611,6 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                             );
                             continue;
                         }
-
-                        #[cfg(target_arch = "x86_64")]
-                        warn!(
-                            "[x86-smp] static VM[{vm_id}] CpuUp from vcpu {vcpu_id} \
-                             target_vcpu={target_vcpu_id} entry={entry_point:x}"
-                        );
 
                         match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
                             Ok(()) => {
