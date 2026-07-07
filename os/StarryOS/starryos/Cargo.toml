@@ -49,7 +49,7 @@ ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
 axplat-dyn.workspace = true
-starry-kernel = { workspace = true, features = ["dev-log", "ext4fs"] }
+starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = "1.0"

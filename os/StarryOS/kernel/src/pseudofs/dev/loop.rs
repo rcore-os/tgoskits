@@ -20,7 +20,7 @@ use linux_raw_sys::{
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
-#[cfg(feature = "ext4fs")]
+#[cfg(feature = "ext4")]
 use super::loop_block::BlockCache;
 use crate::{
     file::{FileLike, get_file_like},
@@ -49,7 +49,7 @@ pub struct LoopDevice {
     exclusive: AtomicBool,
     /// Block-device data cache.  Populated by `as_dyn_block_device()`,
     /// written back and cleared by `LOOP_CLR_FD`.
-    #[cfg(feature = "ext4fs")]
+    #[cfg(feature = "ext4")]
     pub(super) block_cache: Mutex<BlockCache>,
 }
 
@@ -64,7 +64,7 @@ impl LoopDevice {
             file_name: Mutex::new([0u8; 64]),
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
-            #[cfg(feature = "ext4fs")]
+            #[cfg(feature = "ext4")]
             block_cache: Mutex::new(BlockCache::new()),
         }
     }
@@ -190,7 +190,7 @@ impl DeviceOps for LoopDevice {
                 // This runs in normal syscall context so CachedFile VFS I/O
                 // (page cache updates) is safe. The cache lock ensures no
                 // concurrent write_block() can race.
-                #[cfg(feature = "ext4fs")]
+                #[cfg(feature = "ext4")]
                 self.detach_block_cache(guard.as_ref())?;
 
                 *guard = None;
@@ -305,7 +305,7 @@ impl DeviceOps for LoopDevice {
                 // Atomically claim the dirty flag so that a concurrent
                 // write_block() will re-set dirty=true after our snapshot,
                 // guaranteeing its data is flushed on the next attempt.
-                #[cfg(feature = "ext4fs")]
+                #[cfg(feature = "ext4")]
                 self.flush_block_cache_ioctl()?;
             }
             BLKIOMIN => {
