@@ -70,7 +70,7 @@ use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
 use core::{
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicBool, Ordering},
     task::Waker,
     time::Duration,
@@ -107,6 +107,7 @@ pub use self::{
         NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
         set_ethernet_irq_registrar,
     },
+    router::NetDevStats,
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
         SocketAddrEx, SocketOps,
@@ -512,6 +513,11 @@ pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
 }
 
+/// Returns per-interface RX/TX byte and packet counters for `/proc/net/dev`.
+pub fn net_dev_stats() -> Vec<NetDevStats> {
+    get_service().net_dev_stats()
+}
+
 /// Returns a snapshot of all configured network interfaces.
 pub fn interfaces() -> Vec<InterfaceInfo> {
     get_control().interfaces()
@@ -530,6 +536,26 @@ pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
 /// Returns the IPv4 configuration for an interface by name.
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
     get_control().ipv4_config(name)
+}
+
+/// Assigns a static IPv4 address to an interface at runtime.
+pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+    {
+        let mut service = get_service();
+        service.configure_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Removes a configured IPv4 address from an interface at runtime.
+pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+    {
+        let mut service = get_service();
+        service.remove_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
+    }
+    request_poll();
+    Ok(())
 }
 
 /// Returns public snapshots of configured IPv4 default routes.

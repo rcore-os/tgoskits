@@ -11,10 +11,7 @@ mod irq_common;
 mod liointc;
 mod pch_pic;
 
-use crate::irq_routing::{
-    ExternalVectorResolveFailure, RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq,
-    external_vector_failure_policy,
-};
+use crate::irq_routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};
 
 pub struct Plat;
 
@@ -208,19 +205,8 @@ impl PlatOp for Plat {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = match pch_pic::irq_for_external_vector(external) {
-                    Ok(Some(irq)) => irq,
-                    Ok(None) => eiointc_irq(external),
-                    Err(err) => {
-                        warn!("failed to resolve LoongArch external vector {external}: {err:?}");
-                        if external_vector_failure_policy(err)
-                            == ExternalVectorResolveFailure::Complete
-                        {
-                            eiointc::complete_irq(external);
-                        }
-                        return None;
-                    }
-                };
+                let irq = pch_pic::irq_for_external_vector(external)
+                    .unwrap_or_else(|| eiointc_irq(external));
                 Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
             }
             RawIrq::Unknown => {

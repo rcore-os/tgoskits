@@ -15,18 +15,19 @@ pub(super) fn c_config_features(features: &[String]) -> BTreeSet<String> {
             if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
                 return None;
             }
-            if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            if feature.starts_with("ax-hal/")
+                || feature.starts_with("ax-driver/")
+                || feature.starts_with("ax-runtime/")
+            {
                 return None;
             }
             feature
                 .strip_prefix("ax-libc/")
-                .or_else(|| feature.strip_prefix("ax-feat/"))
                 .or_else(|| feature.strip_prefix("ax-std/"))
                 .or(Some(feature.as_str()))
         })
         .filter(|feature| {
-            !matches!(*feature, "ax-libc" | "ax-feat" | "ax-std" | "plat-dyn")
-                && !feature.contains('/')
+            !matches!(*feature, "ax-libc" | "ax-std" | "plat-dyn") && !feature.contains('/')
         })
         .map(str::to_string)
         .collect();
@@ -59,7 +60,6 @@ pub(super) fn has_feature(features: &[String], name: &str) -> bool {
     features.iter().any(|feature| {
         feature == name
             || feature.strip_prefix("ax-libc/") == Some(name)
-            || feature.strip_prefix("ax-feat/") == Some(name)
             || feature.strip_prefix("ax-std/") == Some(name)
     })
 }
@@ -83,7 +83,10 @@ pub(super) fn map_c_app_features(
         "fd",
         "pipe",
         "select",
+        "poll",
         "epoll",
+        "ext4fs",
+        "fatfs",
     ];
 
     let mut features = BTreeSet::new();
@@ -92,16 +95,18 @@ pub(super) fn map_c_app_features(
             continue;
         }
         let normalized = feature
-            .strip_prefix("ax-feat/")
-            .or_else(|| feature.strip_prefix("ax-std/"))
+            .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+        if feature.starts_with("ax-hal/")
+            || feature.starts_with("ax-driver/")
+            || feature.starts_with("ax-runtime/")
+        {
             features.insert(feature.clone());
             continue;
         }
         match normalized {
-            "ax-std" | "ax-feat" | "ax-libc" => {}
+            "ax-std" | "ax-libc" => {}
             "plat-dyn" => {}
             "smp" => {
                 features.insert("smp".to_string());
@@ -110,7 +115,7 @@ pub(super) fn map_c_app_features(
                 features.insert(feature.to_string());
             }
             feature => {
-                features.insert(format!("ax-feat/{feature}"));
+                features.insert(feature.to_string());
             }
         }
     }
@@ -119,22 +124,20 @@ pub(super) fn map_c_app_features(
             continue;
         }
         let normalized = feature
-            .strip_prefix("ax-feat/")
-            .or_else(|| feature.strip_prefix("ax-std/"))
+            .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+        if feature.starts_with("ax-hal/")
+            || feature.starts_with("ax-driver/")
+            || feature.starts_with("ax-runtime/")
+        {
             features.insert(feature.clone());
             continue;
         }
         if normalized == "plat-dyn" {
             continue;
         }
-        if LIB_FEATURES.contains(&normalized) || normalized == "smp" {
-            features.insert(normalized.to_string());
-        } else {
-            features.insert(format!("ax-feat/{normalized}"));
-        }
+        features.insert(normalized.to_string());
     }
     if features
         .iter()

@@ -3,7 +3,7 @@ use core::ops::{Deref, DerefMut};
 
 use ::pcie::*;
 pub use ::pcie::{Endpoint, PciCapability, PciIntxRoute, PcieGeneric};
-use ax_kspin::SpinRaw as Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
 use mmio_api::{MapError, MmioOp};
 pub use rdif_pcie::{DriverGeneric, PciAddress, PciMem32, PciMem64, PcieController};
 use spin::Once;

@@ -8,25 +8,23 @@ use alloc::{
 use core::ptr::NonNull;
 
 use crab_usb::{
-    DwcNewParams, DwcParams, UdphyParam, Usb2PhyParam, Usb2PhyPortId, UsbPhyInterfaceMode,
-    usb_if::DrMode,
+    DwcNewParams, DwcParams, NamedResetLine, UdphyParam, Usb2PhyParam, Usb2PhyPortId,
+    UsbPhyInterfaceMode, usb_if::DrMode,
 };
 use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{
+        OnProbeError,
+        fdt::{ResetLine as RdriveResetLine, reset_lines},
+    },
     register::{FdtInfo, ProbeFdt},
 };
-use rockchip_pm::{PowerDomain, RockchipPM};
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{
-    mmio::iomap,
-    soc::{rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert},
-};
+use crate::{mmio::iomap, soc::rk3588_enable_clock};
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
-const OPTIONAL_PHP_POWER_DOMAIN: usize = 32;
 
 crate::model_register!(
     name: "USB DWC xHCI",
@@ -40,25 +38,28 @@ crate::model_register!(
     ],
 );
 
-struct RockchipCru;
+struct UsbResetLine(RdriveResetLine);
 
-impl crab_usb::CruOp for RockchipCru {
-    fn reset_assert(&self, id: u64) {
-        if let Err(err) = rk3588_reset_assert(id) {
-            warn!("failed to assert RK3588 reset {id:#x}: {err}");
+impl crab_usb::ResetLine for UsbResetLine {
+    fn assert(&self) {
+        if let Err(err) = self.0.assert() {
+            warn!(
+                "failed to assert RK3588 reset {:?} ({:#x}): {err}",
+                self.0.name(),
+                self.0.id().raw()
+            );
         }
     }
 
-    fn reset_deassert(&self, id: u64) {
-        if let Err(err) = rk3588_reset_deassert(id) {
-            warn!("failed to deassert RK3588 reset {id:#x}: {err}");
+    fn deassert(&self) {
+        if let Err(err) = self.0.deassert() {
+            warn!(
+                "failed to deassert RK3588 reset {:?} ({:#x}): {err}",
+                self.0.name(),
+                self.0.id().raw()
+            );
         }
     }
-}
-
-struct ResetSpec {
-    name: String,
-    id: u64,
 }
 
 #[derive(Clone)]
@@ -71,7 +72,7 @@ struct Usb2PhyResources {
     port_name: String,
     reg: usize,
     grf: Phandle,
-    resets: Vec<ResetSpec>,
+    resets: Vec<NamedResetLine>,
     clocks: Vec<ClockSpec>,
 }
 
@@ -83,15 +84,14 @@ struct UsbdpPhyResources {
     usbdpphy_grf: Phandle,
     vo_grf: Phandle,
     dp_lane_mux: Vec<u32>,
-    resets: Vec<ResetSpec>,
+    resets: Vec<NamedResetLine>,
     clocks: Vec<ClockSpec>,
 }
 
 struct DwcResources {
     ctrl: RegFixed,
-    power_domains: Vec<usize>,
     clocks: Vec<ClockSpec>,
-    ctrl_resets: Vec<ResetSpec>,
+    ctrl_resets: Vec<NamedResetLine>,
     usb2: Usb2PhyResources,
     usbdp: UsbdpPhyResources,
     params: DwcParams,
@@ -117,7 +117,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_power_domains(&resources.power_domains)?;
     enable_clocks(&resources.clocks);
 
     let ctrl = map_reg(resources.ctrl)?;
@@ -129,9 +128,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let vo_grf = map_phandle_reg(&fdt, resources.usbdp.vo_grf, "rockchip,vo-grf")?;
     let usb2phy_grf = map_phandle_reg(&fdt, resources.usb2.grf, "usb2phy-grf")?;
 
-    let ctrl_resets = reset_refs(&resources.ctrl_resets);
-    let usbdp_resets = reset_refs(&resources.usbdp.resets);
-    let usb2_resets = reset_refs(&resources.usb2.resets);
     let usb2_port = Usb2PhyPortId::from_node_name(&resources.usb2.port_name).ok_or_else(|| {
         OnProbeError::other(format!(
             "unsupported USB2 PHY port name {}",
@@ -149,16 +145,15 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             usbdpphy_grf,
             vo_grf,
             dp_lane_mux: &resources.usbdp.dp_lane_mux,
-            rst_list: &usbdp_resets,
+            rst_list: &resources.usbdp.resets,
         },
         usb2_phy_param: Usb2PhyParam {
             reg: resources.usb2.reg,
             port_kind: usb2_port,
             usb_grf: usb2phy_grf,
-            rst_list: &usb2_resets,
+            rst_list: &resources.usb2.resets,
         },
-        cru: RockchipCru,
-        rst_list: &ctrl_resets,
+        rst_list: &resources.ctrl_resets,
         params: resources.params,
         kernel: usb_kernel(),
     })
@@ -199,7 +194,6 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<DwcResources, OnPr
 
     Ok(DwcResources {
         ctrl,
-        power_domains: parse_power_domains(info.node.as_node())?,
         clocks,
         ctrl_resets: parse_resets(info.node)?,
         usb2,
@@ -283,58 +277,16 @@ fn parse_phys(node: &Node) -> Result<(Phandle, Phandle), OnProbeError> {
     Ok((phys[0], phys[1]))
 }
 
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
-fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(resets_prop) = node.as_node().get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let reset_cells = resets_prop.get_u32_iter().collect::<Vec<_>>();
-    if reset_cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-
-    let reset_names = node
-        .as_node()
-        .get_property("reset-names")
-        .ok_or_else(|| {
-            OnProbeError::other(format!("[{}] has resets but no reset-names", node.name()))
-        })?
-        .as_str_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let reset_count = reset_cells.len() / 2;
-    if reset_names.len() < reset_count {
-        return Err(OnProbeError::other(format!(
-            "[{}] has fewer reset-names than resets",
-            node.name()
-        )));
-    }
-
-    Ok(reset_cells
-        .chunks(2)
-        .zip(reset_names.iter())
-        .map(|(cells, name)| ResetSpec {
-            name: name.clone(),
-            id: cells[1] as u64,
+fn parse_resets(node: NodeType<'_>) -> Result<Vec<NamedResetLine>, OnProbeError> {
+    reset_lines(node)?
+        .into_iter()
+        .map(|reset| {
+            let name = reset.name().ok_or_else(|| {
+                OnProbeError::other(format!("[{}] has reset without reset-names", node.name()))
+            })?;
+            Ok(NamedResetLine::new(name.to_string(), UsbResetLine(reset)))
         })
-        .collect())
+        .collect()
 }
 
 fn parse_dwc_params(node: &Node) -> DwcParams {
@@ -409,30 +361,6 @@ fn parse_dwc_params(node: &Node) -> DwcParams {
     params
 }
 
-fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
-    let pm = rdrive::get_one::<RockchipPM>()
-        .ok_or_else(|| OnProbeError::other("RockchipPM not found for DWC xHCI"))?;
-    let mut pm = pm
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPM: {err}")))?;
-
-    for &domain in domains {
-        pm.power_domain_on(PowerDomain(domain)).map_err(|err| {
-            OnProbeError::other(format!("failed to enable power domain {domain}: {err:?}"))
-        })?;
-        info!("DWC xHCI power domain {domain} enabled");
-    }
-
-    if !domains.contains(&OPTIONAL_PHP_POWER_DOMAIN) {
-        match pm.power_domain_on(PowerDomain(OPTIONAL_PHP_POWER_DOMAIN)) {
-            Ok(()) => info!("DWC xHCI optional PHP power domain enabled"),
-            Err(err) => warn!("DWC xHCI optional PHP power domain enable failed: {err:?}"),
-        }
-    }
-
-    Ok(())
-}
-
 fn enable_clocks(clocks: &[ClockSpec]) {
     for clock in clocks {
         if clock.id == 0 {
@@ -459,13 +387,6 @@ fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
                 id,
             })
         })
-        .collect()
-}
-
-fn reset_refs(resets: &[ResetSpec]) -> Vec<(&str, u64)> {
-    resets
-        .iter()
-        .map(|reset| (reset.name.as_str(), reset.id))
         .collect()
 }
 

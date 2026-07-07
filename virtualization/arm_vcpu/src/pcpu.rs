@@ -15,13 +15,13 @@
 use core::mem;
 
 use aarch64_cpu::registers::*;
-use ax_errno::AxResult;
-use axvm_types::VmArchPerCpuOps;
 
-/// Per-CPU data. A pointer to this struct is loaded into TP when a CPU starts. This structure
+use crate::{ArmHostOps, ArmVcpuResult};
+
+/// Per-CPU AArch64 virtualization state.
 #[repr(C)]
 #[repr(align(4096))]
-pub struct Aarch64PerCpu {
+pub struct ArmPerCpu {
     /// per cpu id
     pub cpu_id: usize,
     /// The original value of `VBAR_EL2` (exception vector base) before enabling
@@ -33,19 +33,22 @@ unsafe extern "C" {
     fn exception_vector_base_vcpu();
 }
 
-impl VmArchPerCpuOps for Aarch64PerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+impl ArmPerCpu {
+    /// Creates per-CPU virtualization state.
+    pub fn new(cpu_id: usize) -> ArmVcpuResult<Self> {
         Ok(Self {
             cpu_id,
             original_vbar_el2: 0,
         })
     }
 
-    fn is_enabled(&self) -> bool {
+    /// Returns whether AArch64 virtualization is enabled on the current CPU.
+    pub fn is_enabled(&self) -> bool {
         HCR_EL2.is_set(HCR_EL2::VM)
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    /// Enables AArch64 virtualization on the current CPU.
+    pub fn hardware_enable<H: ArmHostOps>(&mut self) -> ArmVcpuResult {
         // First we save origin `exception_vector_base`.
         // Safety:
         // Todo: take care of `preemption`
@@ -58,6 +61,8 @@ impl VmArchPerCpuOps for Aarch64PerCpu {
         HCR_EL2.modify(
             HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
         );
+
+        crate::host::install_current_el_irq_handler::<H>();
 
         // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
         //
@@ -75,21 +80,25 @@ impl VmArchPerCpuOps for Aarch64PerCpu {
         Ok(())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    /// Disables AArch64 virtualization on the current CPU.
+    pub fn hardware_disable(&mut self) -> ArmVcpuResult {
         // Reset `VBAR_EL2` into previous value.
         // Safety:
         // Todo: take care of `preemption`
         VBAR_EL2.set(mem::take(&mut self.original_vbar_el2));
 
         HCR_EL2.set(HCR_EL2::VM::Disable.into());
+        crate::host::clear_current_el_irq_handler();
         Ok(())
     }
 
-    fn max_guest_page_table_levels(&self) -> usize {
+    /// Returns the maximum guest page table levels supported by this CPU.
+    pub fn max_guest_page_table_levels(&self) -> usize {
         crate::vcpu::max_gpt_level(crate::vcpu::pa_bits())
     }
 
-    fn guest_phys_addr_bits(&self) -> usize {
+    /// Returns the guest physical address width supported by this CPU.
+    pub fn guest_phys_addr_bits(&self) -> usize {
         crate::vcpu::pa_bits()
     }
 }

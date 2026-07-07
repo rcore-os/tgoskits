@@ -30,12 +30,23 @@ pub(crate) mod riscv;
 pub trait RiscvPlatformIrqInjectorIf {
     /// Registers a callback that forwards a physical IRQ line into the current guest.
     fn register_virtual_irq_injector(injector: fn(usize) -> bool);
+
+    /// Routes physical PLIC IRQs that may be forwarded to a guest toward the vCPU CPU.
+    fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]);
 }
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn register_riscv_virtual_irq_injector(injector: fn(usize) -> bool) {
     ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(
         injector
+    ));
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn set_riscv_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
+    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::set_virtual_irq_targets(
+        cpu_id,
+        irq_sources
     ));
 }
 

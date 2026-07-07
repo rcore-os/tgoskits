@@ -97,8 +97,8 @@ The NNCase runtime case reuses the operator-facing app under
 demo binaries under the app-local ignored `c/assets/bin/` directory. The full
 asset preparation flow, including how to obtain `yolov8n_320.kmodel`, `bus.jpg`,
 SDK NNCase libraries, and the prebuilt guest binaries, is documented in
-`docs/k230-kpu-nncase-runtime.md` and
-`docs/k230-kpu-nncase-runtime.zh.md`. Build those binaries with:
+`docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` and
+`docs/docs/architecture/driver/k230-kpu-nncase-runtime.zh.md`. Build those binaries with:
 
 ```sh
 bash apps/starry/k230-kpu-nncase/c/tools/build-nncase-runtime-binaries.sh

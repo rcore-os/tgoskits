@@ -1,0 +1,12 @@
+name: create-post
+method: POST
+url: http://api.local/posts
+body:
+  content: |-
+    {
+      "title": "On Computing",
+      "tags": ["math", "cs"]
+    }
+headers:
+- name: Content-Type
+  value: application/json

@@ -4,7 +4,7 @@
 > 类型：库 + 演示二进制 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ext4_backend/ext4.rs`、`src/ext4_backend/api.rs`、`src/ext4_backend/blockdev.rs`、`src/ext4_backend/jbd2/jbd2.rs`、`src/ext4_backend/datablock_cache.rs`、`src/ext4_backend/inodetable_cache.rs`、`src/ext4_backend/bitmap_cache.rs`、`src/testfs/test_example.rs`、`src/main.rs`、`os/arceos/modules/axfs/src/fs/ext4fs.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ext4_backend/ext4.rs`、`src/ext4_backend/api.rs`、`src/ext4_backend/blockdev.rs`、`src/ext4_backend/jbd2/jbd2.rs`、`src/ext4_backend/datablock_cache.rs`、`src/ext4_backend/inodetable_cache.rs`、`src/ext4_backend/bitmap_cache.rs`、`src/testfs/test_example.rs`、`src/main.rs`、`os/arceos/modules/axfs/src/fs/ext4.rs`
 
 `rsext4` 是当前仓库里的独立 ext4 引擎。它自己定义块设备接口、挂载与卸载流程、目录/文件 API、JBD2 日志代理、多级缓存和若干 host 侧验证程序；在这棵代码树里，它主要作为旧 `ax-fs` 的 ext4 叶子后端被消费，而不是作为系统的 VFS 层或名字空间层存在。
 
@@ -14,7 +14,7 @@
 
 - 它直接面向 ext4 语义和块设备，而不是面向统一 VFS trait。
 - 它对外导出的接口既有高层 API（`mount`、`open`、`read_at`、`mkdir` 等），也有大量后端内部模块，属于“引擎 + 宽导出 API”的风格。
-- 在当前仓库里，旧 `ax_fs::fs::ext4fs` 通过适配层把它包装成 `ax_fs_vfs::VfsOps`；新 `ax-fs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
+- 在当前仓库里，旧 `ax_fs::fs::ext4` 通过适配层把它包装成 `ax_fs_vfs::VfsOps`；新 `ax-fs-ng` 的 ext4 路径则改用了 `lwext4_rust`，不再依赖它。
 
 ### 模块结构
 - `src/ext4_backend/blockdev.rs`：定义 `BlockDevice` trait、`BlockDev` 缓冲封装以及 `Jbd2Dev`。
@@ -36,12 +36,12 @@ flowchart TD
     D --> E["bitmap/inode/data caches"]
     D --> F["dir.rs / file.rs 操作"]
     F --> G["api.rs 高层封装"]
-    G --> H["旧 ax_fs::fs::ext4fs 适配层"]
+    G --> H["旧 ax_fs::fs::ext4 适配层"]
 ```
 
 ### 1.4 关键机制
 #### 固定 4 KiB ext4 block
-`config.rs` 把 ext4 block size 固定为 `4096`，而 `BlockDevice::block_size()` 默认值是 `512`。因此像旧 `ax_fs::fs::ext4fs` 这种外层适配器必须负责把 512B block 设备转换成 `rsext4` 眼中的 4 KiB block 设备。
+`config.rs` 把 ext4 block size 固定为 `4096`，而 `BlockDevice::block_size()` 默认值是 `512`。因此像旧 `ax_fs::fs::ext4` 这种外层适配器必须负责把 512B block 设备转换成 `rsext4` 眼中的 4 KiB block 设备。
 
 #### 多级缓存
 默认 feature `USE_MULTILEVEL_CACHE` 开启时：
@@ -114,7 +114,7 @@ graph LR
     lazy_static["lazy_static(spin_no_std)"] --> current
     log["log"] --> current
 
-    current --> axfs_ext4["ax_fs::fs::ext4fs 适配层"]
+    current --> axfs_ext4["ax_fs::fs::ext4 适配层"]
     current --> host_demo["src/main.rs / testfs host 回归"]
 ```
 
@@ -124,12 +124,12 @@ graph LR
 - `log`：调试与事务日志输出。
 
 ### 主要消费者
-- 旧 `ax_fs::fs::ext4fs`：当前仓库里的主要生产消费者。
+- 旧 `ax_fs::fs::ext4`：当前仓库里的主要生产消费者。
 - `src/main.rs`：host 侧文件镜像驱动的演示与回归程序。
 
 ### 3.3 与相邻 crate 的关系
 - `rsext4` 只解决 ext4，不解决统一文件系统接口。
-- `ax_fs::fs::ext4fs` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
+- `ax_fs::fs::ext4` 负责把它翻译成旧 `axfs_vfs` 所需的节点语义。
 - 新 `ax-fs-ng` ext4 路径已转向 `lwext4_rust`。
 
 ## 开发指南
@@ -167,7 +167,7 @@ rsext4 = { workspace = true }
 - JBD2 descriptor / commit / replay 的结构与顺序。
 
 ### 集成测试
-- 旧 `ax_fs::fs::ext4fs` 适配层与 `rsext4` 的联调。
+- 旧 `ax_fs::fs::ext4` 适配层与 `rsext4` 的联调。
 - 512B 底层块设备经过 4 KiB block 适配后的读写正确性。
 - journal 打开后的断电回放。
 
@@ -179,7 +179,7 @@ rsext4 = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `ax_fs::fs::ext4fs` 间接进入系统，而不是直接成为统一文件 API。
+在 ArceOS 旧文件系统栈里，`rsext4` 是 ext4 叶子格式引擎。它通过 `ax_fs::fs::ext4` 间接进入系统，而不是直接成为统一文件 API。
 
 ### StarryOS
 当前仓库里的 StarryOS 主线已经转向 `ax-fs-ng` + `lwext4_rust` 组合，没有直接依赖 `rsext4`。因此它对 StarryOS 更像历史并行路线，而不是当前主干依赖。

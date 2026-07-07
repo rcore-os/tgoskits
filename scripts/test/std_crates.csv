@@ -43,7 +43,6 @@ ax-ipi
 ax-log
 ax-net
 ax-runtime
-ax-feat
 ax-api
 rockchip-jpeg
 rockchip-npu

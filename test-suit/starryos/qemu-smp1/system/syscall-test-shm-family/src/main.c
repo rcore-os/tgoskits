@@ -225,6 +225,64 @@ int main(void)
         shmctl(seg, IPC_RMID, NULL);
     }
 
+    /* ---- Section 5b: same-process multiple attaches ---- */
+    {
+        int seg = shmget(IPC_PRIVATE, SEG_SIZE, IPC_CREAT | 0666);
+        CHECK(seg >= 0, "shmget for repeated same-process shmat test");
+
+        void *first = shmat(seg, NULL, 0);
+        CHECK(first != (void *)-1, "first shmat of a segment succeeds");
+
+        void *second = shmat(seg, NULL, 0);
+        CHECK(second != (void *)-1,
+              "second shmat of the same shmid in one process succeeds");
+
+        if (first != (void *)-1 && second != (void *)-1)
+        {
+            *(volatile unsigned int *)first = 0x13572468u;
+            CHECK(*(volatile unsigned int *)second == 0x13572468u,
+                  "second attach observes data written through first attach");
+
+            *(volatile unsigned int *)second = 0x24681357u;
+            CHECK(*(volatile unsigned int *)first == 0x24681357u,
+                  "first attach observes data written through second attach");
+        }
+
+        struct shmid_ds info;
+        memset(&info, 0, sizeof(info));
+        CHECK_RET(shmctl(seg, IPC_STAT, &info), 0,
+                  "IPC_STAT after two same-process attaches");
+        CHECK((info.shm_nattch & 0xffffUL) == 2UL,
+              "IPC_STAT reports two same-process attaches");
+
+        if (first != (void *)-1)
+        {
+            CHECK_RET(shmdt(first), 0, "shmdt first same-process attach");
+
+            memset(&info, 0, sizeof(info));
+            CHECK_RET(shmctl(seg, IPC_STAT, &info), 0,
+                      "IPC_STAT after detaching first same-process attach");
+            CHECK((info.shm_nattch & 0xffffUL) == 1UL,
+                  "IPC_STAT reports one remaining same-process attach");
+        }
+
+        if (second != (void *)-1)
+        {
+            *(volatile unsigned int *)second = 0x55aa33ccu;
+            CHECK(*(volatile unsigned int *)second == 0x55aa33ccu,
+                  "second same-process attach remains usable after first detach");
+            CHECK_RET(shmdt(second), 0, "shmdt second same-process attach");
+        }
+
+        memset(&info, 0, sizeof(info));
+        CHECK_RET(shmctl(seg, IPC_STAT, &info), 0,
+                  "IPC_STAT after detaching both same-process attaches");
+        CHECK((info.shm_nattch & 0xffffUL) == 0UL,
+              "IPC_STAT reports zero same-process attaches after both shmdt");
+
+        shmctl(seg, IPC_RMID, NULL);
+    }
+
     /* ---- Section 6: shmctl error cases ---- */
     {
         int seg = shmget(IPC_PRIVATE, SEG_SIZE, IPC_CREAT | 0666);

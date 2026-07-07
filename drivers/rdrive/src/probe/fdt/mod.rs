@@ -1,18 +1,19 @@
 use alloc::{
     collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
-    string::String,
+    string::{String, ToString},
     vec::Vec,
 };
 use core::ptr::NonNull;
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
+use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
-use rdif_pinctrl::PinctrlDevice;
+use rdif_pinctrl::{PinctrlDevice, PinctrlError};
 use spin::Once;
 
 use super::ProbeError;
 use crate::{
-    Descriptor, DeviceId, PlatformDevice,
+    Descriptor, Device, DeviceId, PlatformDevice,
     error::DriverError,
     probe::OnProbeError,
     register::{DriverRegister, ProbeKind},
@@ -58,6 +59,594 @@ pub struct FdtInfo<'a> {
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResourcePrepareConfig {
+    apply_assigned_clocks: bool,
+    enable_clocks: bool,
+    deassert_resets: bool,
+    enable_power_domains: bool,
+    supply_names: Vec<String>,
+    clock_rates: Vec<String>,
+}
+
+impl Default for ResourcePrepareConfig {
+    fn default() -> Self {
+        Self {
+            apply_assigned_clocks: true,
+            enable_clocks: true,
+            deassert_resets: true,
+            enable_power_domains: false,
+            supply_names: Vec::from([String::from("vmmc-supply"), String::from("vqmmc-supply")]),
+            clock_rates: Vec::new(),
+        }
+    }
+}
+
+impl ResourcePrepareConfig {
+    pub fn without_assigned_clocks(mut self) -> Self {
+        self.apply_assigned_clocks = false;
+        self
+    }
+
+    pub fn without_clock_enable(mut self) -> Self {
+        self.enable_clocks = false;
+        self
+    }
+
+    pub fn without_reset_deassert(mut self) -> Self {
+        self.deassert_resets = false;
+        self
+    }
+
+    pub fn without_power_domains(mut self) -> Self {
+        self.enable_power_domains = false;
+        self
+    }
+
+    pub fn with_power_domains(mut self) -> Self {
+        self.enable_power_domains = true;
+        self
+    }
+
+    pub fn with_supply(mut self, name: impl Into<String>) -> Self {
+        self.supply_names.push(name.into());
+        self
+    }
+
+    pub fn with_named_clock_rate(mut self, name: impl Into<String>) -> Self {
+        self.clock_rates.push(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ResourcePrepareReport {
+    clock_rates: BTreeMap<String, u64>,
+}
+
+impl ResourcePrepareReport {
+    pub fn clock_rate(&self, name: &str) -> Option<u64> {
+        self.clock_rates.get(name).copied()
+    }
+
+    fn insert_clock_rate(&mut self, name: String, rate: u64) {
+        self.clock_rates.insert(name, rate);
+    }
+}
+
+#[derive(Clone)]
+struct ClockLine {
+    node_name: String,
+    clock_name: Option<String>,
+    device: Device<rdif_clk::Clk>,
+    id: rdif_clk::ClockId,
+}
+
+impl ClockLine {
+    fn from_ref(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<Self, OnProbeError> {
+        let clock_id = clock_selector(info, clock)?;
+        let device_id = info.phandle_to_device_id(clock.phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] clock {:?} phandle {:?} has no device id",
+                info.node.name(),
+                clock.name,
+                clock.phandle
+            ))
+        })?;
+        let device = crate::get::<rdif_clk::Clk>(device_id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] clock {:?} provider {:?} has no rdif-clk interface: {err}",
+                info.node.name(),
+                clock.name,
+                clock.phandle
+            ))
+        })?;
+        Ok(Self {
+            node_name: info.node.name().to_string(),
+            clock_name: clock.name.clone(),
+            device,
+            id: rdif_clk::ClockId::from(clock_id as usize),
+        })
+    }
+
+    fn enable(&self) -> Result<(), OnProbeError> {
+        let mut clock = self.lock()?;
+        clock.enable(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to enable clock {:?} ({:?}): {err:?}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+
+    fn set_rate(&self, rate: u64) -> Result<(), OnProbeError> {
+        let mut clock = self.lock()?;
+        clock.set_rate(self.id, rate).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to set clock {:?} ({:?}) to {} Hz: {err:?}",
+                self.node_name, self.clock_name, self.id, rate
+            ))
+        })
+    }
+
+    fn rate(&self) -> Result<u64, OnProbeError> {
+        let clock = self.lock()?;
+        clock.get_rate(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to read clock {:?} ({:?}): {err:?}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+
+    fn lock(&self) -> Result<crate::DeviceGuard<rdif_clk::Clk>, OnProbeError> {
+        self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock clock {:?} ({:?}): {err}",
+                self.node_name, self.clock_name, self.id
+            ))
+        })
+    }
+}
+
+fn clock_selector(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<u32, OnProbeError> {
+    if clock.cells == 0 {
+        return Ok(0);
+    }
+    clock.select().ok_or_else(|| {
+        OnProbeError::other(format!(
+            "[{}] clock {:?} provider {:?} has no selector",
+            info.node.name(),
+            clock.name,
+            clock.phandle
+        ))
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResetRef {
+    pub name: Option<String>,
+    pub phandle: Phandle,
+    pub cells: u32,
+    pub specifier: Vec<u32>,
+}
+
+impl ResetRef {
+    pub fn select(&self) -> Option<u32> {
+        (self.cells > 0)
+            .then(|| self.specifier.first().copied())
+            .flatten()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PowerDomainRef {
+    pub name: Option<String>,
+    pub phandle: Phandle,
+    pub cells: u32,
+    pub specifier: Vec<u32>,
+}
+
+impl PowerDomainRef {
+    pub fn select(&self) -> Option<u32> {
+        (self.cells > 0)
+            .then(|| self.specifier.first().copied())
+            .flatten()
+    }
+}
+
+#[derive(Clone)]
+pub struct ResetLine {
+    node_name: String,
+    name: Option<String>,
+    device: Device<rdif_reset::Reset>,
+    id: rdif_reset::ResetId,
+}
+
+impl ResetLine {
+    fn from_refs(node_name: &str, refs: Vec<ResetRef>) -> Result<Vec<Self>, OnProbeError> {
+        refs.into_iter()
+            .map(|reset| Self::from_ref(node_name, &reset))
+            .collect()
+    }
+
+    fn from_ref(node_name: &str, reset: &ResetRef) -> Result<Self, OnProbeError> {
+        if reset.cells != 1 {
+            return Err(OnProbeError::other(format!(
+                "[{node_name}] reset {} uses {} cells, only one-cell reset selectors are supported",
+                reset_label(reset),
+                reset.cells
+            )));
+        }
+        let selector = reset.select().ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{node_name}] reset {} has no selector",
+                reset_label(reset)
+            ))
+        })?;
+        let provider_id = system()
+            .phandle_to_device_id(reset.phandle)
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{node_name}] reset provider phandle {:?} is not populated",
+                    reset.phandle
+                ))
+            })?;
+        let device = crate::get::<rdif_reset::Reset>(provider_id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{node_name}] reset provider {:?} has no rdif-reset interface: {err}",
+                reset.phandle
+            ))
+        })?;
+
+        Ok(Self {
+            node_name: node_name.to_string(),
+            name: reset.name.clone(),
+            device,
+            id: rdif_reset::ResetId::from(selector),
+        })
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn id(&self) -> rdif_reset::ResetId {
+        self.id
+    }
+
+    pub fn assert(&self) -> Result<(), OnProbeError> {
+        self.with_reset("assert", |reset, id| reset.assert(id))
+    }
+
+    pub fn deassert(&self) -> Result<(), OnProbeError> {
+        self.with_reset("deassert", |reset, id| reset.deassert(id))
+    }
+
+    pub fn reset(&self) -> Result<(), OnProbeError> {
+        self.with_reset("reset", |reset, id| reset.reset(id))
+    }
+
+    fn with_reset(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(
+            &mut rdif_reset::Reset,
+            rdif_reset::ResetId,
+        ) -> Result<(), rdif_reset::ResetError>,
+    ) -> Result<(), OnProbeError> {
+        let mut reset = self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock reset {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })?;
+        f(&mut reset, self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to {operation} reset {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.name() {
+            Some(name) => format!("{name}({:#x})", self.id.raw()),
+            None => format!("{:#x}", self.id.raw()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PowerDomainLine {
+    node_name: String,
+    name: Option<String>,
+    device: Device<rdif_power::Power>,
+    id: rdif_power::PowerDomainId,
+}
+
+impl PowerDomainLine {
+    fn from_refs(node_name: &str, refs: Vec<PowerDomainRef>) -> Result<Vec<Self>, OnProbeError> {
+        refs.into_iter()
+            .map(|domain| Self::from_ref(node_name, &domain))
+            .collect()
+    }
+
+    fn from_ref(node_name: &str, domain: &PowerDomainRef) -> Result<Self, OnProbeError> {
+        if domain.cells != 1 {
+            return Err(OnProbeError::other(format!(
+                "[{node_name}] power domain {} uses {} cells, only one-cell power-domain \
+                 selectors are supported",
+                power_domain_label(domain),
+                domain.cells
+            )));
+        }
+        let selector = domain.select().ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{node_name}] power domain {} has no selector",
+                power_domain_label(domain)
+            ))
+        })?;
+        let provider_id = system()
+            .phandle_to_device_id(domain.phandle)
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{node_name}] power-domain provider phandle {:?} is not populated",
+                    domain.phandle
+                ))
+            })?;
+        let device = crate::get::<rdif_power::Power>(provider_id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{node_name}] power-domain provider {:?} has no rdif-power interface: {err}",
+                domain.phandle
+            ))
+        })?;
+
+        Ok(Self {
+            node_name: node_name.to_string(),
+            name: domain.name.clone(),
+            device,
+            id: rdif_power::PowerDomainId::from(selector),
+        })
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn id(&self) -> rdif_power::PowerDomainId {
+        self.id
+    }
+
+    pub fn power_on(&self) -> Result<(), OnProbeError> {
+        self.with_power("power on", |power, id| power.power_on(id))
+    }
+
+    pub fn power_off(&self) -> Result<(), OnProbeError> {
+        self.with_power("power off", |power, id| power.power_off(id))
+    }
+
+    pub fn is_powered(&self) -> Result<bool, OnProbeError> {
+        let power = self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock power domain {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })?;
+        power.is_powered(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to query power domain {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })
+    }
+
+    fn with_power(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(
+            &mut rdif_power::Power,
+            rdif_power::PowerDomainId,
+        ) -> Result<(), rdif_power::PowerError>,
+    ) -> Result<(), OnProbeError> {
+        let mut power = self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock power domain {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })?;
+        f(&mut power, self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to {operation} power domain {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.name() {
+            Some(name) => format!("{name}({:#x})", self.id.raw()),
+            None => format!("{:#x}", self.id.raw()),
+        }
+    }
+}
+
+fn reset_label(reset: &ResetRef) -> String {
+    match reset.name.as_deref() {
+        Some(name) => name.to_string(),
+        None => format!("phandle {:?}", reset.phandle),
+    }
+}
+
+fn power_domain_label(domain: &PowerDomainRef) -> String {
+    match domain.name.as_deref() {
+        Some(name) => name.to_string(),
+        None => format!("phandle {:?}", domain.phandle),
+    }
+}
+
+pub fn reset_refs(node: NodeType<'_>) -> Result<Vec<ResetRef>, OnProbeError> {
+    let Some(prop) = node.as_node().get_property("resets") else {
+        return Ok(Vec::new());
+    };
+    let reset_names = node
+        .as_node()
+        .get_property("reset-names")
+        .map(|prop| {
+            prop.as_str_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    let mut index = 0;
+    while let Some(phandle_raw) = reader.read_u32() {
+        let phandle = Phandle::from(phandle_raw);
+        let provider = system().get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] reset provider phandle {phandle:?} not found",
+                node.name()
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#reset-cells")
+            .and_then(|prop| prop.get_u32())
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] reset provider {} has no #reset-cells",
+                    node.name(),
+                    provider.name()
+                ))
+            })?;
+
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated resets entry for phandle {phandle:?}",
+                    node.name()
+                ))
+            })?;
+            specifier.push(value);
+        }
+
+        refs.push(ResetRef {
+            name: reset_names.get(index).cloned(),
+            phandle,
+            cells,
+            specifier,
+        });
+        index += 1;
+    }
+    Ok(refs)
+}
+
+fn power_domain_refs_from_node(
+    node: NodeType<'_>,
+    mut provider_cells: impl FnMut(Phandle) -> Result<(String, u32), OnProbeError>,
+) -> Result<Vec<PowerDomainRef>, OnProbeError> {
+    let Some(prop) = node.as_node().get_property("power-domains") else {
+        return Ok(Vec::new());
+    };
+    let domain_names = node
+        .as_node()
+        .get_property("power-domain-names")
+        .map(|prop| {
+            prop.as_str_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    let mut index = 0;
+    while let Some(phandle_raw) = reader.read_u32() {
+        let phandle = Phandle::from(phandle_raw);
+        let (_provider_name, cells) = provider_cells(phandle)?;
+
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated power-domains entry for phandle {phandle:?}",
+                    node.name()
+                ))
+            })?;
+            specifier.push(value);
+        }
+
+        refs.push(PowerDomainRef {
+            name: domain_names.get(index).cloned(),
+            phandle,
+            cells,
+            specifier,
+        });
+        index += 1;
+    }
+    Ok(refs)
+}
+
+pub fn power_domain_refs(node: NodeType<'_>) -> Result<Vec<PowerDomainRef>, OnProbeError> {
+    power_domain_refs_from_node(node, |phandle| {
+        let provider = system().get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] power-domain provider phandle {phandle:?} not found",
+                node.name()
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#power-domain-cells")
+            .and_then(|prop| prop.get_u32())
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] power-domain provider {} has no #power-domain-cells",
+                    node.name(),
+                    provider.name()
+                ))
+            })?;
+
+        Ok((provider.name().to_string(), cells))
+    })
+}
+
+pub fn reset_lines(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    let refs = reset_refs(node)?;
+    ResetLine::from_refs(node.name(), refs)
+}
+
+pub fn power_domain_lines(node: NodeType<'_>) -> Result<Vec<PowerDomainLine>, OnProbeError> {
+    let refs = power_domain_refs(node)?;
+    PowerDomainLine::from_refs(node.name(), refs)
+}
+
+pub fn child_nodes(node: NodeType<'_>) -> Vec<NodeType<'static>> {
+    let parent_path = node.path();
+    node.as_node()
+        .children()
+        .iter()
+        .filter_map(|child_id| {
+            let child_name = system().fdt().node(*child_id)?.name();
+            let child_path = if parent_path == "/" {
+                format!("/{child_name}")
+            } else {
+                format!("{parent_path}/{child_name}")
+            };
+            system().fdt().get_by_path(&child_path)
+        })
+        .collect()
+}
+
 impl<'a> FdtInfo<'a> {
     pub fn get_by_phandle(&self, phandle: Phandle) -> Option<NodeType<'a>> {
         system().get_by_phandle(phandle)
@@ -78,9 +667,220 @@ impl<'a> FdtInfo<'a> {
             .find(|clock| clock.name.as_deref() == Some(name))
     }
 
+    pub fn prepare_resources(
+        &self,
+        config: ResourcePrepareConfig,
+    ) -> Result<ResourcePrepareReport, OnProbeError> {
+        if config.apply_assigned_clocks {
+            apply_assigned_clocks(self)?;
+        }
+        apply_supply_regulators(self, &config.supply_names)?;
+        if config.enable_power_domains {
+            for domain in self.power_domain_lines()? {
+                domain.power_on()?;
+            }
+        }
+        if config.enable_clocks {
+            for clock in self.node.clocks() {
+                ClockLine::from_ref(self, &clock)?.enable()?;
+            }
+        }
+        if config.deassert_resets {
+            for reset in self.reset_lines()? {
+                reset.deassert()?;
+            }
+        }
+
+        let mut report = ResourcePrepareReport::default();
+        for name in config.clock_rates {
+            let Some(clock) = self.find_clk_by_name(&name) else {
+                continue;
+            };
+            let clock = ClockLine::from_ref(self, &clock)?;
+            report.insert_clock_rate(name, clock.rate()?);
+        }
+        Ok(report)
+    }
+
+    pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {
+        reset_refs(self.node)
+    }
+
+    pub fn find_reset_by_name(&self, name: &str) -> Result<Option<ResetRef>, OnProbeError> {
+        Ok(self
+            .resets()?
+            .into_iter()
+            .find(|reset| reset.name.as_deref() == Some(name)))
+    }
+
+    pub fn reset_lines(&self) -> Result<Vec<ResetLine>, OnProbeError> {
+        reset_lines(self.node)
+    }
+
+    pub fn find_reset_line_by_name(&self, name: &str) -> Result<Option<ResetLine>, OnProbeError> {
+        Ok(self
+            .reset_lines()?
+            .into_iter()
+            .find(|reset| reset.name() == Some(name)))
+    }
+
+    pub fn power_domains(&self) -> Result<Vec<PowerDomainRef>, OnProbeError> {
+        power_domain_refs(self.node)
+    }
+
+    pub fn find_power_domain_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<PowerDomainRef>, OnProbeError> {
+        Ok(self
+            .power_domains()?
+            .into_iter()
+            .find(|domain| domain.name.as_deref() == Some(name)))
+    }
+
+    pub fn power_domain_lines(&self) -> Result<Vec<PowerDomainLine>, OnProbeError> {
+        power_domain_lines(self.node)
+    }
+
+    pub fn find_power_domain_line_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<PowerDomainLine>, OnProbeError> {
+        Ok(self
+            .power_domain_lines()?
+            .into_iter()
+            .find(|domain| domain.name() == Some(name)))
+    }
+
     pub fn interrupts(&self) -> Vec<InterruptRef> {
         self.node.interrupts()
     }
+}
+
+fn apply_assigned_clocks(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    let clocks = clock_refs_from_property(info, "assigned-clocks")?;
+    let rates = info
+        .node
+        .as_node()
+        .get_property("assigned-clock-rates")
+        .map(|prop| prop.get_u32_iter().map(u64::from).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for (index, clock) in clocks.into_iter().enumerate() {
+        let Some(rate) = rates.get(index).copied() else {
+            continue;
+        };
+        if rate == 0 {
+            continue;
+        }
+        ClockLine::from_ref(info, &clock)?.set_rate(rate)?;
+    }
+    Ok(())
+}
+
+fn clock_refs_from_property(
+    info: &FdtInfo<'_>,
+    property_name: &'static str,
+) -> Result<Vec<ClockRef>, OnProbeError> {
+    let Some(prop) = info.node.as_node().get_property(property_name) else {
+        return Ok(Vec::new());
+    };
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    while let Some(phandle_raw) = reader.read_u32() {
+        let phandle = Phandle::from(phandle_raw);
+        let provider = info.get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] {property_name} provider phandle {:?} not found",
+                info.node.name(),
+                phandle
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#clock-cells")
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(1);
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated {property_name} entry for phandle {:?}",
+                    info.node.name(),
+                    phandle
+                ))
+            })?;
+            specifier.push(value);
+        }
+        refs.push(ClockRef::new(phandle, cells, specifier));
+    }
+    Ok(refs)
+}
+
+fn apply_supply_regulators(
+    info: &FdtInfo<'_>,
+    supply_names: &[String],
+) -> Result<(), OnProbeError> {
+    for name in supply_names {
+        let Some(phandle) = supply_phandle(info.node.as_node(), name) else {
+            continue;
+        };
+        let Some(node) = info.get_by_phandle(phandle) else {
+            return Err(OnProbeError::other(format!(
+                "[{}] supply {name} phandle {:?} not found",
+                info.node.name(),
+                phandle
+            )));
+        };
+        if !fixed_regulator_has_control(node.as_node()) {
+            continue;
+        }
+        apply_fixed_regulator(info, node.as_node(), name)?;
+    }
+    Ok(())
+}
+
+fn supply_phandle(node: &Node, name: &str) -> Option<Phandle> {
+    node.get_property(name)
+        .and_then(|prop| prop.get_u32())
+        .map(Phandle::from)
+}
+
+fn fixed_regulator_has_control(node: &Node) -> bool {
+    node.compatibles()
+        .any(|compatible| compatible == "regulator-fixed")
+        && (node.get_property("gpios").is_some()
+            || node.get_property("gpio").is_some()
+            || node.get_property("pinctrl-0").is_some())
+}
+
+fn apply_fixed_regulator(
+    info: &FdtInfo<'_>,
+    regulator: &Node,
+    supply_name: &str,
+) -> Result<(), OnProbeError> {
+    let pinctrl = crate::get_one::<PinctrlDevice>().ok_or_else(|| {
+        OnProbeError::other(format!(
+            "[{}] PinctrlDevice not found for controlled supply {supply_name}",
+            info.node.name()
+        ))
+    })?;
+    let mut pinctrl = pinctrl
+        .lock()
+        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+    match pinctrl.apply_fdt_fixed_regulator(system().fdt(), regulator, "rdrive-resource") {
+        Ok(()) | Err(PinctrlError::NotAvailable) => Ok(()),
+        Err(err) => Err(OnProbeError::other(format!(
+            "[{}] failed to enable supply {supply_name}: {err}",
+            info.node.name()
+        ))),
+    }
+}
+
+fn apply_power_domains(node: NodeType<'_>) -> Result<(), OnProbeError> {
+    for domain in power_domain_lines(node)? {
+        domain.power_on()?;
+    }
+    Ok(())
 }
 
 fn apply_default_pinctrl(node: NodeType<'_>) -> Result<(), OnProbeError> {
@@ -249,21 +1049,23 @@ impl System {
             let phandle_map = self.phandle_2_device_id.clone();
 
             debug!("Probe [{}]->[{}]", node.name(), node_info.name);
-            let res = apply_default_pinctrl(node).and_then(|()| {
-                let descriptor = Descriptor {
-                    name: node_info.name,
-                    device_id: id,
-                    irq_parent,
-                };
+            let res = apply_power_domains(node)
+                .and_then(|()| apply_default_pinctrl(node))
+                .and_then(|()| {
+                    let descriptor = Descriptor {
+                        name: node_info.name,
+                        device_id: id,
+                        irq_parent,
+                    };
 
-                (node_info.on_probe)(ProbeFdt::new(
-                    FdtInfo {
-                        node,
-                        phandle_2_device_id: phandle_map,
-                    },
-                    PlatformDevice::new(descriptor),
-                ))
-            });
+                    (node_info.on_probe)(ProbeFdt::new(
+                        FdtInfo {
+                            node,
+                            phandle_2_device_id: phandle_map,
+                        },
+                        PlatformDevice::new(descriptor),
+                    ))
+                });
 
             if res.is_ok() {
                 self.populated_paths.lock().insert(node.path(), id);
@@ -281,4 +1083,121 @@ struct ProbeFdtInfo<'a> {
     name: &'static str,
     node: NodeType<'a>,
     on_probe: FnOnProbe,
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{format, vec};
+
+    use fdt_edit::{Node, Property};
+
+    use super::*;
+
+    #[test]
+    fn power_domain_refs_parse_names_and_provider_cells() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props(
+                "power-controller",
+                &[
+                    prop_u32s("phandle", &[0x61]),
+                    prop_u32s("#power-domain-cells", &[1]),
+                ],
+            ),
+        );
+        let consumer = fdt.add_node(
+            root,
+            node_with_props(
+                "npu@fdab0000",
+                &[
+                    prop_u32s("power-domains", &[0x61, 9, 0x61, 10, 0x61, 11]),
+                    prop_strs("power-domain-names", &["npu0", "npu1", "npu2"]),
+                ],
+            ),
+        );
+
+        let refs =
+            power_domain_refs_from_node(fdt.get_by_path("/npu@fdab0000").unwrap(), |phandle| {
+                fdt.get_by_phandle(phandle)
+                    .and_then(|provider| {
+                        provider
+                            .as_node()
+                            .get_property("#power-domain-cells")
+                            .and_then(|prop| prop.get_u32())
+                            .map(|cells| (provider.name().to_string(), cells))
+                    })
+                    .ok_or_else(|| OnProbeError::other(format!("missing provider {phandle:?}")))
+            })
+            .unwrap();
+
+        assert_eq!(
+            refs,
+            vec![
+                PowerDomainRef {
+                    name: Some("npu0".into()),
+                    phandle: Phandle::from(0x61),
+                    cells: 1,
+                    specifier: vec![9],
+                },
+                PowerDomainRef {
+                    name: Some("npu1".into()),
+                    phandle: Phandle::from(0x61),
+                    cells: 1,
+                    specifier: vec![10],
+                },
+                PowerDomainRef {
+                    name: Some("npu2".into()),
+                    phandle: Phandle::from(0x61),
+                    cells: 1,
+                    specifier: vec![11],
+                },
+            ]
+        );
+        assert_eq!(fdt.node(consumer).unwrap().name(), "npu@fdab0000");
+    }
+
+    #[test]
+    fn power_domain_refs_reject_truncated_provider_specifier() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let consumer = fdt.add_node(
+            root,
+            node_with_props("jpeg@fdba0000", &[prop_u32s("power-domains", &[0x61])]),
+        );
+
+        let err = power_domain_refs_from_node(fdt.get_by_path("/jpeg@fdba0000").unwrap(), |_| {
+            Ok(("power-controller".into(), 1))
+        })
+        .unwrap_err();
+
+        assert!(format!("{err}").contains("truncated power-domains entry"));
+        assert_eq!(fdt.node(consumer).unwrap().name(), "jpeg@fdba0000");
+    }
+
+    fn node_with_props(name: &str, props: &[Property]) -> Node {
+        let mut node = Node::new(name);
+        for prop in props {
+            node.set_property(prop.clone());
+        }
+        node
+    }
+
+    fn prop_u32s(name: &str, values: &[u32]) -> Property {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        Property::new(name, data)
+    }
+
+    fn prop_strs(name: &str, values: &[&str]) -> Property {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend_from_slice(value.as_bytes());
+            data.push(0);
+        }
+        Property::new(name, data)
+    }
 }

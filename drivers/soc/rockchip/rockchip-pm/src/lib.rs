@@ -23,10 +23,10 @@
 //! let mut pm = RockchipPM::new(base, RkBoard::Rk3588);
 //!
 //! // Turn on NPU power domain
-//! pm.power_domain_on(PowerDomain::NPU).unwrap();
+//! pm.power_domain_on(PowerDomain(8)).unwrap();
 //!
 //! // Turn off NPU power domain
-//! pm.power_domain_off(PowerDomain::NPU).unwrap();
+//! pm.power_domain_off(PowerDomain(8)).unwrap();
 //! ```
 
 extern crate alloc;
@@ -155,7 +155,7 @@ impl RockchipPM {
     /// # let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
     /// # let pm = RockchipPM::new(base, RkBoard::Rk3588);
     /// let domain = pm.get_power_dowain_by_name("npu");
-    /// assert_eq!(domain, Some(PowerDomain::NPU));
+    /// assert_eq!(domain, Some(PowerDomain(8)));
     /// ```
     pub fn get_power_dowain_by_name(&self, name: &str) -> Option<PowerDomain> {
         for (domain, info) in &self.info.domains {
@@ -187,7 +187,7 @@ impl RockchipPM {
     /// # use core::ptr::NonNull;
     /// # let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
     /// # let mut pm = RockchipPM::new(base, RkBoard::Rk3588);
-    /// pm.power_domain_on(PowerDomain::NPU).unwrap();
+    /// pm.power_domain_on(PowerDomain(8)).unwrap();
     /// ```
     pub fn power_domain_on(&mut self, domain: PowerDomain) -> PmResult<()> {
         self.set_power_domain(domain, true)
@@ -214,7 +214,7 @@ impl RockchipPM {
     /// # use core::ptr::NonNull;
     /// # let base = unsafe { NonNull::new_unchecked(0xfd5d8000 as *mut u8) };
     /// # let mut pm = RockchipPM::new(base, RkBoard::Rk3588);
-    /// pm.power_domain_off(PowerDomain::NPU).unwrap();
+    /// pm.power_domain_off(PowerDomain(8)).unwrap();
     /// ```
     pub fn power_domain_off(&mut self, domain: PowerDomain) -> PmResult<()> {
         self.set_power_domain(domain, false)

@@ -1096,19 +1096,16 @@ impl Sdhci {
         polls: &mut u32,
     ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
         if !*started {
-            if mask == RESET_ALL
-                && let Some(hook) = self.reset_hook
-            {
-                hook.before_reset_all(self).map_err(map_protocol_error)?;
+            if mask == RESET_ALL {
+                self.call_before_reset_all_hook()
+                    .map_err(map_protocol_error)?;
             }
             self.write_u8(REG_SOFTWARE_RESET, mask);
             *started = true;
         }
         if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
             if mask == RESET_ALL {
-                if let Some(hook) = self.reset_hook {
-                    hook.after_reset(self).map_err(map_protocol_error)?;
-                }
+                self.call_after_reset_hook().map_err(map_protocol_error)?;
                 self.restore_completion_irq_after_reset(was_irq_enabled);
             }
             return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
@@ -1365,16 +1362,13 @@ impl Sdhci {
 
     fn reset_controller_for_host2_abort(&mut self) -> Result<(), sdio_host2::Error> {
         let was_irq_enabled = self.completion_irq_enabled();
-        if let Some(hook) = self.reset_hook {
-            hook.before_reset_all(self).map_err(map_protocol_error)?;
-        }
+        self.call_before_reset_all_hook()
+            .map_err(map_protocol_error)?;
         self.write_u8(REG_SOFTWARE_RESET, RESET_ALL);
         if !self.reset_with_mask_best_effort(RESET_ALL) {
             return Err(sdio_host2::Error::Timeout);
         }
-        if let Some(hook) = self.reset_hook {
-            hook.after_reset(self).map_err(map_protocol_error)?;
-        }
+        self.call_after_reset_hook().map_err(map_protocol_error)?;
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();

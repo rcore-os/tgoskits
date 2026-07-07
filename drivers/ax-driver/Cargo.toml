@@ -14,7 +14,7 @@ name = "ax_driver"
 default = []
 
 irq = []
-pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
+pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:ax-kspin", "dep:rd-net"]
@@ -26,7 +26,7 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio", "pci"]
+virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
@@ -106,9 +106,16 @@ rockchip-dwmmc = [
 ]
 starfive-jh7110-dwmmc = [
     "block",
-    "dep:dwmmc-host",
+    "starfive-soc",
     "dep:sdmmc-protocol",
+    "dep:starfive-jh7110-dwmmc",
+    "sdmmc-protocol/rdif",
     "sdmmc-protocol/sdio",
+]
+starfive-soc = [
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:tock-registers",
 ]
 rk3588-pwm = [
     "rockchip-soc",
@@ -121,8 +128,14 @@ rk3588-pcie = [
     "rockchip-pm",
     "dep:rk3588-pci",
 ]
-rockchip-soc = ["pinctrl", "dep:rdif-clk", "dep:rockchip-soc"]
-rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
+rockchip-soc = [
+    "pinctrl",
+    "dep:ax-kspin",
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:rockchip-soc",
+]
+rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
@@ -158,9 +171,12 @@ rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
+rdif-msi = { workspace = true, optional = true }
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
+rdif-power = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
+rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true
@@ -177,10 +193,15 @@ sdhci-host = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
+starfive-jh7110-dwmmc = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
+tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
+
+[dev-dependencies]
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

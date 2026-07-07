@@ -2,7 +2,7 @@ use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc};
 use core::time::Duration;
 
 use super::{
-    CruOp,
+    NamedResetLine, ResetLine,
     udphy::regmap::{RK3588_UDPHY_24M_REFCLK_CFG, RK3588_UDPHY_INIT_SEQUENCE, Regmap},
 };
 use crate::{
@@ -52,7 +52,7 @@ pub struct UdphyParam<'a> {
     pub vo_grf: Mmio,
     /// prop `rockchip,dp-lane-mux`
     pub dp_lane_mux: &'a [u32],
-    pub rst_list: &'a [(&'a str, u64)],
+    pub rst_list: &'a [NamedResetLine],
 }
 
 pub struct Udphy {
@@ -75,12 +75,11 @@ pub struct Udphy {
     dp_lane_sel: [u32; 4],
     /// Type C 反转标志
     flip: bool,
-    cru: Arc<dyn CruOp>,
-    rsts: BTreeMap<String, u64>,
+    rsts: BTreeMap<String, Arc<dyn ResetLine>>,
 }
 
 impl Udphy {
-    pub fn new(base: Mmio, cru: Arc<dyn CruOp>, param: UdphyParam<'_>) -> Self {
+    pub fn new(base: Mmio, param: UdphyParam<'_>) -> Self {
         let cfg = Box::new(config::RK3588_UDPHY_CFGS.clone());
         let mut lane_mux_sel = [0u32; 4];
         let mut dp_lane_sel = [0u32; 4];
@@ -127,11 +126,11 @@ impl Udphy {
         }
 
         let mut rsts = BTreeMap::new();
-        for &(name, id) in param.rst_list.iter() {
-            if cfg.rst_list.contains(&name) {
-                rsts.insert(String::from(name), id);
+        for reset in param.rst_list.iter() {
+            if cfg.rst_list.contains(&reset.name()) {
+                rsts.insert(String::from(reset.name()), reset.line());
             } else {
-                panic!("unsupported reset name: {}", name);
+                panic!("unsupported reset name: {}", reset.name());
             }
         }
 
@@ -146,7 +145,6 @@ impl Udphy {
             vo_grf: Regmap::new(param.vo_grf),
             lane_mux_sel,
             dp_lane_sel,
-            cru,
             rsts,
             flip,
         }
@@ -386,16 +384,16 @@ impl Udphy {
     }
 
     fn reset_assert(&self, name: &str) {
-        if let Some(&rst_id) = self.rsts.get(name) {
-            self.cru.reset_assert(rst_id);
+        if let Some(reset) = self.rsts.get(name) {
+            reset.assert();
         } else {
             panic!("unsupported reset name: {}", name);
         }
     }
 
     fn reset_deassert(&self, name: &str) {
-        if let Some(&rst_id) = self.rsts.get(name) {
-            self.cru.reset_deassert(rst_id);
+        if let Some(reset) = self.rsts.get(name) {
+            reset.deassert();
         } else {
             panic!("unsupported reset name: {}", name);
         }

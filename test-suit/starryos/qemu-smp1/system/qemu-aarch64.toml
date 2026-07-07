@@ -1,5 +1,7 @@
 args = [
     "-nographic",
+    "-machine",
+    "virt,gic-version=3,its=on",
     "-m",
     "512M",
     "-cpu",

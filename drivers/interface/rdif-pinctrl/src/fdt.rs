@@ -124,11 +124,7 @@ impl FdtPinctrl {
 
         let active_value = regulator_node.get_property("enable-active-low").is_none();
         let gpio_active_low = Self::gpio_flags_active_low(regulator_node);
-        let output_value = if gpio_active_low {
-            !active_value
-        } else {
-            active_value
-        };
+        let output_value = active_value && !gpio_active_low;
 
         for line in lines {
             Self::drive_gpio_line(interface, line, output_value, owner)?;
@@ -531,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_regulator_uses_gpio_flags_and_enable_active_low_for_output_value() {
+    fn fixed_regulator_uses_enable_active_low_for_output_value() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
         fdt.add_node(
@@ -543,7 +539,7 @@ mod tests {
             node_with_props(
                 "vbus-regulator",
                 &[
-                    prop_u32s("gpios", &[20, 5, 1]),
+                    prop_u32s("gpios", &[20, 5, 0]),
                     Property::new("enable-active-low", Vec::new()),
                 ],
             ),
@@ -565,7 +561,36 @@ mod tests {
         )));
         assert!(recorder.configs.contains(&ConfigSetting::pin(
             PinId::new(37),
-            PinConfig::OutputValue(true)
+            PinConfig::OutputValue(false)
+        )));
+    }
+
+    #[test]
+    fn fixed_regulator_uses_gpio_active_low_flag_for_output_value() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props("gpio1@0", &[prop_u32s("phandle", &[20])]),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props("vbus-regulator", &[prop_u32s("gpios", &[20, 5, 1])]),
+        );
+        let mut recorder = Recorder::new();
+
+        FdtPinctrl::apply_fixed_regulator(
+            &mut recorder,
+            &fdt,
+            fdt.node(regulator).unwrap(),
+            &TestParser,
+            "dwc-xhci-vbus",
+        )
+        .unwrap();
+
+        assert!(recorder.configs.contains(&ConfigSetting::pin(
+            PinId::new(37),
+            PinConfig::OutputValue(false)
         )));
     }
 

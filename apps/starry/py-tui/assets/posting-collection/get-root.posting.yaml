@@ -1,0 +1,5 @@
+name: get-root
+url: http://api.local/
+headers:
+- name: Accept
+  value: application/json

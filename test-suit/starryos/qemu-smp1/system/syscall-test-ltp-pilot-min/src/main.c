@@ -17,6 +17,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/inotify.h>
+#include <sys/xattr.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -212,6 +215,108 @@ static void test_mmap_min(void)
     expect_mmap_einval("mmap length zero -> EINVAL", 0, PROT_READ);
 }
 
+struct mmap_maps_case {
+    int prot;
+    int flags;
+    const char *expected;
+};
+
+static int read_maps_perms(void *addr, char perms[5])
+{
+    FILE *maps = fopen("/proc/self/maps", "r");
+    unsigned long target = (unsigned long)addr;
+    char line[256];
+
+    if (!maps) {
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char found[5] = {0};
+
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, found) == 3 &&
+            start == target && target < end) {
+            memcpy(perms, found, sizeof(found));
+            fclose(maps);
+            return 0;
+        }
+    }
+
+    fclose(maps);
+    errno = ENOENT;
+    return -1;
+}
+
+static void expect_mmap_maps_perms(const struct mmap_maps_case *tc)
+{
+    long pagesize = sysconf(_SC_PAGESIZE);
+    int guard_flags = (tc->flags & MAP_PRIVATE) ? MAP_SHARED : MAP_PRIVATE;
+    void *addr1;
+    void *addr2;
+    char perms[5] = {0};
+    char name[96];
+
+    if (pagesize <= 0) {
+        CHECK(0, "mmap maps perms setup pagesize");
+        return;
+    }
+
+    addr1 = mmap(NULL, (size_t)pagesize * 2, PROT_NONE,
+                 MAP_ANONYMOUS | guard_flags, -1, 0);
+    if (addr1 == MAP_FAILED) {
+        CHECK(0, "mmap maps perms setup guard mapping");
+        return;
+    }
+
+    addr2 = mmap((char *)addr1 + pagesize, (size_t)pagesize, tc->prot,
+                 tc->flags | MAP_FIXED, -1, 0);
+    if (addr2 == MAP_FAILED) {
+        munmap(addr1, (size_t)pagesize * 2);
+        CHECK(0, "mmap maps perms setup fixed mapping");
+        return;
+    }
+
+    snprintf(name, sizeof(name), "mmap /proc/self/maps perms %s", tc->expected);
+    if (read_maps_perms(addr2, perms) != 0) {
+        CHECK(0, name);
+    } else {
+        CHECK(strcmp(perms, tc->expected) == 0, name);
+        if (strcmp(perms, tc->expected) != 0) {
+            printf("    expected=%s found=%s\n", tc->expected, perms);
+        }
+    }
+
+    munmap(addr1, (size_t)pagesize * 2);
+}
+
+static void test_mmap_maps_min(void)
+{
+    static const struct mmap_maps_case tcases[] = {
+        {PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, "---p"},
+        {PROT_NONE, MAP_ANONYMOUS | MAP_SHARED, "---s"},
+        {PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, "r--p"},
+        {PROT_READ, MAP_ANONYMOUS | MAP_SHARED, "r--s"},
+        {PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, "-w-p"},
+        {PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, "-w-s"},
+        {PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, "rw-p"},
+        {PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, "rw-s"},
+        {PROT_READ | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "r-xp"},
+        {PROT_READ | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "r-xs"},
+        {PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "-wxp"},
+        {PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "-wxs"},
+        {PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, "rwxp"},
+        {PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, "rwxs"},
+    };
+    size_t i;
+
+    printf("[TEST] mmap /proc/self/maps permissions\n");
+    for (i = 0; i < sizeof(tcases) / sizeof(tcases[0]); i++) {
+        expect_mmap_maps_perms(&tcases[i]);
+    }
+}
+
 static char *make_long_path(void)
 {
     char *path = malloc(PATH_MAX + 1);
@@ -232,6 +337,48 @@ static char *make_long_path(void)
     return path;
 }
 
+static void test_pipe_efault_min(void)
+{
+    int marker;
+    int fds[2] = {-1, -1};
+    long ret;
+
+    printf("[TEST] pipe bad user pointer rollback\n");
+
+    marker = open("/dev/null", O_RDONLY);
+    if (marker < 0) {
+        marker = open(".", O_RDONLY | O_DIRECTORY);
+    }
+    CHECK(marker >= 0, "pipe rollback setup marker fd");
+    if (marker < 0) {
+        return;
+    }
+
+#ifdef SYS_pipe2
+    errno = 0;
+    ret = syscall(SYS_pipe2, (int *)-1, 0);
+    CHECK(ret == -1 && errno == EFAULT, "pipe2 bad user fd array -> EFAULT");
+#else
+    errno = ENOSYS;
+    ret = -1;
+    CHECK(0, "pipe2 syscall number available");
+#endif
+
+    if (ret == -1 && errno == EFAULT) {
+        CHECK(pipe(fds) == 0, "pipe succeeds after pipe2 EFAULT");
+        if (fds[0] >= 0 && fds[1] >= 0) {
+            CHECK(fds[0] == marker + 1 && fds[1] == marker + 2,
+                  "pipe2 EFAULT does not leak allocated fds");
+        }
+    }
+
+    if (fds[0] >= 0)
+        close(fds[0]);
+    if (fds[1] >= 0)
+        close(fds[1]);
+    close(marker);
+}
+
 static void expect_path_errno(const char *name, int ret, int expected)
 {
     if (ret >= 0) {
@@ -240,10 +387,23 @@ static void expect_path_errno(const char *name, int ret, int expected)
     CHECK(ret == -1 && errno == expected, name);
 }
 
+static void expect_ret_errno(const char *name, long ret, int expected)
+{
+    CHECK(ret == -1 && errno == expected, name);
+}
+
+struct test_file_handle {
+    unsigned int handle_bytes;
+    int handle_type;
+    unsigned char f_handle[8];
+};
+
 static void test_pathmax_min(void)
 {
     char *path = make_long_path();
     struct stat st;
+    struct statfs sfs;
+    int ifd;
 #ifdef SYS_statx
     long statx_buf[64];
 #endif
@@ -269,8 +429,103 @@ static void test_pathmax_min(void)
     errno = 0;
     expect_path_errno("openat long path -> ENAMETOOLONG", openat(AT_FDCWD, path, O_RDONLY),
                       ENAMETOOLONG);
+    errno = 0;
+    expect_path_errno("chroot long path -> ENAMETOOLONG", chroot(path), ENAMETOOLONG);
+
+    ifd = inotify_init1(IN_CLOEXEC);
+    CHECK(ifd >= 0, "inotify setup fd");
+    if (ifd >= 0) {
+        errno = 0;
+        CHECK(inotify_add_watch(ifd, path, IN_MODIFY) == -1 && errno == ENAMETOOLONG,
+              "inotify_add_watch long path -> ENAMETOOLONG");
+        close(ifd);
+    }
+
+    errno = 0;
+    expect_ret_errno("mknod long path -> ENAMETOOLONG",
+                     mknod(path, S_IFIFO | 0600, 0), ENAMETOOLONG);
+
+    errno = 0;
+    expect_ret_errno("statfs long path -> ENAMETOOLONG", statfs(path, &sfs),
+                     ENAMETOOLONG);
+
+#ifdef SYS_name_to_handle_at
+    {
+        struct test_file_handle handle = {
+            .handle_bytes = sizeof(handle.f_handle),
+        };
+        int mount_id = -1;
+
+        errno = 0;
+        expect_ret_errno("name_to_handle_at long path -> ENAMETOOLONG",
+                         syscall(SYS_name_to_handle_at, AT_FDCWD, path, &handle,
+                                 &mount_id, 0),
+                         ENAMETOOLONG);
+    }
+#endif
+
+    errno = 0;
+    expect_ret_errno("getxattr long path -> ENAMETOOLONG",
+                     getxattr(path, "user.test", NULL, 0), ENAMETOOLONG);
+
+    errno = 0;
+    expect_ret_errno("truncate long path -> ENAMETOOLONG", truncate(path, 0),
+                     ENAMETOOLONG);
 
     free(path);
+}
+
+static void test_raw_alias_min(void)
+{
+    printf("[TEST] raw syscall alias minimal conformance\n");
+
+#ifdef SYS_creat
+    {
+        const char *path = "ltp-pilot-raw-creat";
+        struct stat st;
+        long fd;
+
+        unlink(path);
+        errno = 0;
+        fd = syscall(SYS_creat, path, 0600);
+        CHECK(fd >= 0, "raw SYS_creat creates a file");
+        if (fd >= 0) {
+            CHECK(close((int)fd) == 0, "raw SYS_creat close fd");
+            CHECK(stat(path, &st) == 0 && S_ISREG(st.st_mode),
+                  "raw SYS_creat result is a regular file");
+            unlink(path);
+        }
+    }
+#else
+    CHECK(1, "raw SYS_creat not available on this arch");
+#endif
+
+#ifdef SYS_eventfd
+    {
+        uint64_t value = 0;
+        long fd;
+
+        errno = 0;
+        fd = syscall(SYS_eventfd, 7);
+        CHECK(fd >= 0, "raw SYS_eventfd creates an eventfd");
+        if (fd >= 0) {
+            CHECK(read((int)fd, &value, sizeof(value)) == (ssize_t)sizeof(value) &&
+                      value == 7,
+                  "raw SYS_eventfd preserves initval");
+            close((int)fd);
+        }
+    }
+#else
+    CHECK(1, "raw SYS_eventfd not available on this arch");
+#endif
+
+#ifdef SYS_eventfd2
+    errno = 0;
+    expect_ret_errno("raw SYS_eventfd2 unknown flag -> EINVAL",
+                     syscall(SYS_eventfd2, 0, 0x80000000U), EINVAL);
+#else
+    CHECK(1, "raw SYS_eventfd2 not available on this arch");
+#endif
 }
 
 int main(void)
@@ -281,7 +536,10 @@ int main(void)
 
     test_openat2_min();
     test_mmap_min();
+    test_mmap_maps_min();
     test_pathmax_min();
+    test_pipe_efault_min();
+    test_raw_alias_min();
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", pass_count, fail_count);

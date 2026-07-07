@@ -1,0 +1,5 @@
+name: get-user
+url: http://api.local/users/42
+headers:
+- name: Accept
+  value: application/json

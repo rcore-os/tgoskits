@@ -100,7 +100,7 @@ Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor，建立在 ArceOS
 
 本轮重构不迁移 `axdevice` / `axdevice_base`。它们继续作为 Axvisor / axvm 的 guest emulated device model，与宿主物理设备路径保持边界。
 
-→ 详细设计见 [rdrive + rdif 驱动框架](./rdrive-rdif)
+→ 详细设计见 [驱动框架](./driver/overview)
 
 ## 平台层架构
 

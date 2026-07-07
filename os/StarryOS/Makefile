@@ -15,7 +15,7 @@ export DISK_IMG := rootfs-$(ARCH).img
 # Generated Options
 export A := $(CURDIR)/starryos
 export NO_AXSTD := y
-export AX_LIB := ax-feat
+export AX_LIB := ax-std
 export APP_FEATURES := qemu
 
 ifeq ($(MEMTRACK), y)

@@ -25,7 +25,7 @@
 flowchart TD
     A["ArceosConfig / Override"] --> B["resolve_effective_smp + resolve_platform"]
     B --> C["准备动态平台 target / linker 参数"]
-    C --> D["FeatureResolver 计算 ax_features / lib_features"]
+    C --> D["FeatureResolver 计算 arceos_features / lib_features"]
     D --> E["ostool::build_cargo_spec"]
     E --> F["ostool 执行 cargo build / qemu"]
 ```
@@ -43,10 +43,10 @@ flowchart TD
 `axbuild` 并不是简单把用户输入的 feature 原样透传给 Cargo，而是做了分层解析：
 
 - 旧别名和已移除的平台选择项会先被归一化或过滤。
-- 普通能力 feature，例如 `fs`、`net`、`multitask`，会根据应用实际依赖选择 `ax-std/`、`ax-feat/` 或 `ax-libc/` 前缀。
+- 普通能力 feature，例如 `fs`、`net`、`multitask`，会根据应用实际依赖选择 `ax-std/`、`ax-runtime/` 或 `ax-libc/` 前缀。
 - `max_cpu_num > 1` 时才注入对应前缀的 `smp`。
 
-`detect_ax_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `ax-std` 或 `ax-feat`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
+`detect_std_feature_prefix_family()` 甚至会通过 `cargo metadata` 检查应用是否直接依赖 `ax-std` 或 `ax-runtime`。这一步体现了 `axbuild` 对真实调用关系的感知，而不是纯字符串拼接。
 
 ### 1.4 宿主环境与目标环境的边界
 `src/arceos/ostool.rs` 显式构造了目标构建所需的宿主环境变量：

@@ -30,7 +30,7 @@ use bare_test::{
 use crab_usb::*;
 use log::*;
 use rockchip_pm::RockchipPM;
-use rockchip_soc::{Cru, CruOp, GpioDirection, PinConfig, PinCtrl, PinCtrlOp, SocType};
+use rockchip_soc::{Cru, GpioDirection, PinConfig, PinCtrl, PinCtrlOp, ResetOp, SocType};
 
 #[bare_test::tests]
 mod tests {
@@ -40,7 +40,7 @@ mod tests {
     use bare_test::time::spin_delay;
     use crab_usb::usb_if::{DrMode, descriptor::ConfigurationDescriptor};
     use ktest_helper::KernelImpl;
-    use rockchip_soc::CruOp;
+    use rockchip_soc::ResetOp;
 
     use super::*;
 
@@ -288,7 +288,7 @@ mod tests {
                     if let Some(reset_names_prop) = u2_phy_node.find_property("reset-names") {
                         let reset_names = reset_names_prop.str_list().collect::<Vec<_>>();
                         for (cell, &name) in resets.chunks(2).zip(reset_names.iter()) {
-                            u2phy_rst_list.push((name, cell[1] as u64));
+                            u2phy_rst_list.push(NamedResetLine::new(name, ResetLineImpl(cell[1] as u64)));
                         }
                     }
                 }
@@ -384,7 +384,7 @@ mod tests {
                     .expect("Missing reset-names property");
                 let reset_names = reset_names_prop.str_list().collect::<Vec<_>>();
                 for (cell, &name) in resets.chunks(2).zip(reset_names.iter()) {
-                    phy_rst_list.push((name, cell[1] as u64));
+                    phy_rst_list.push(NamedResetLine::new(name, ResetLineImpl(cell[1] as u64)));
                 }
 
                 let mut rst_list = Vec::new();
@@ -397,7 +397,7 @@ mod tests {
                     .expect("Missing reset-names property");
                 let reset_names = reset_names_prop.str_list().collect::<Vec<_>>();
                 for (cell, &name) in resets.chunks(2).zip(reset_names.iter()) {
-                    rst_list.push((name, cell[1] as u64));
+                    rst_list.push(NamedResetLine::new(name, ResetLineImpl(cell[1] as u64)));
                 }
 
                 let mut params = DwcParams::default();
@@ -504,7 +504,6 @@ mod tests {
                             rst_list: &u2phy_rst_list,
                         },
                         rst_list: &rst_list,
-                        cru: CruOpImpl,
                         params,
                         kernel: &KernelImpl,
                     })
@@ -867,16 +866,17 @@ fn setup_pinctrl() {
     info!("VBUS power toggled via GPIO");
 }
 
-struct CruOpImpl;
+struct ResetLineImpl(u64);
 
-impl crab_usb::CruOp for CruOpImpl {
-    fn reset_assert(&self, id: u64) {
+impl crab_usb::ResetLine for ResetLineImpl {
+    fn assert(&self) {
         let cru = rdrive::get_list::<CruDev>().remove(0);
-        cru.lock().unwrap().0.reset_assert(id.into());
+        cru.lock().unwrap().0.reset_assert(self.0.into());
     }
-    fn reset_deassert(&self, id: u64) {
+
+    fn deassert(&self) {
         let cru = rdrive::get_list::<CruDev>().remove(0);
-        cru.lock().unwrap().0.reset_deassert(id.into());
+        cru.lock().unwrap().0.reset_deassert(self.0.into());
     }
 }
 

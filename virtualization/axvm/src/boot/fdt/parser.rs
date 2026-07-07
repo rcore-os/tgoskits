@@ -33,6 +33,7 @@ use crate::{MappingFlags, config::AxVMConfig};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     let bootarg: usize = crate::host_fdt_bootarg();
     if bootarg == 0 {
@@ -583,7 +584,7 @@ pub fn parse_passthrough_devices_address(
     Ok(())
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
@@ -609,16 +610,38 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
             continue;
         };
         for interrupt in view.interrupts() {
-            if interrupt.specifier.first().copied() == Some(0)
-                && let Some(irq) = interrupt.specifier.get(1)
-            {
-                trace!("node: {name}, GIC_SPI interrupt id: 0x{irq:x}");
-                vm_cfg.add_pass_through_spi(*irq);
+            if let Some(irq) = passthrough_irq_from_interrupt_specifier(&interrupt.specifier) {
+                trace!("node: {name}, passthrough interrupt id: 0x{irq:x}");
+                vm_cfg.add_pass_through_irq(irq);
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn passthrough_irq_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        aarch64_gic_spi_from_interrupt_specifier(specifier)
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        riscv_plic_source_from_interrupt_specifier(specifier)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_gic_spi_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
+    (specifier.first().copied() == Some(0))
+        .then(|| specifier.get(1).copied())
+        .flatten()
+}
+
+#[cfg(any(target_arch = "riscv64", test))]
+fn riscv_plic_source_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
+    specifier.first().copied().filter(|source| *source != 0)
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -653,7 +676,9 @@ pub fn update_provided_fdt(
 
 #[cfg(test)]
 mod tests {
-    use axvm_types::AddressSpacePolicy;
+    use alloc::{string::ToString, vec, vec::Vec};
+
+    use axvm_types::{AddressSpacePolicy, VmMemConfig, VmMemMappingType};
     use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
@@ -777,5 +802,22 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].base_gpa, 0x1000_1000);
         assert_eq!(ranges[0].length, 0x1000);
+    }
+
+    #[test]
+    fn riscv_plic_interrupt_uses_first_fdt_cell() {
+        assert_eq!(
+            super::riscv_plic_source_from_interrupt_specifier(&[8]),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn riscv_plic_interrupt_rejects_reserved_source_zero() {
+        assert_eq!(
+            super::riscv_plic_source_from_interrupt_specifier(&[0]),
+            None
+        );
+        assert_eq!(super::riscv_plic_source_from_interrupt_specifier(&[]), None);
     }
 }

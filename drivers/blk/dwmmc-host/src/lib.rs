@@ -1343,6 +1343,11 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
             .rintsts()
             .write(crate::regs::RIntSts::from_bits(raw_status));
     }
+    let fifo_ready = raw_status & (crate::DWMMC_INT_RXDR | crate::DWMMC_INT_TXDR);
+    if fifo_ready != 0 {
+        let mask = irq.regs.intmask().read();
+        irq.regs.intmask().write(mask & !fifo_ready);
+    }
     let idmac_status = irq.regs.idsts().read();
     if idmac_status & (DWMMC_IDMAC_INT_TI | DWMMC_IDMAC_INT_RI) != 0 {
         irq.regs
@@ -1571,6 +1576,41 @@ mod tests {
 
         let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
         assert_eq!(intmask, dma_mask);
+
+        host.program_fifo_interrupt_mask();
+
+        let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
+        assert_eq!(intmask, fifo_mask);
+    }
+
+    #[test]
+    fn fifo_ready_irq_is_masked_until_task_side_drain() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        const INTMASK_WORD: usize = 9;
+        const MINTSTS_WORD: usize = 16;
+        let fifo_ready = crate::DWMMC_INT_RXDR | crate::DWMMC_INT_TXDR;
+        let fifo_mask = crate::DWMMC_INT_DATA_TRANSFER_OVER
+            | crate::DWMMC_INT_COMMAND_DONE
+            | crate::DWMMC_INT_ERROR_MASK
+            | fifo_ready;
+
+        host.enable_completion_irq();
+        host.program_fifo_interrupt_mask();
+        host.irq.state.begin_request();
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(MINTSTS_WORD)
+                .write_volatile(fifo_ready);
+        }
+
+        let mut irq = host.irq_endpoint();
+
+        assert_eq!(irq.handle_irq(), Event::ReceiveReady);
+        assert_eq!(host.irq.state.pending(), fifo_ready);
+        let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
+        assert_eq!(intmask, fifo_mask & !fifo_ready);
 
         host.program_fifo_interrupt_mask();
 

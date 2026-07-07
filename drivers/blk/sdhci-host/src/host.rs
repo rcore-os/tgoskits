@@ -236,7 +236,7 @@ pub struct Sdhci {
     /// completed and before protocol commands are issued. DWCMSHC-style
     /// integrations use this for vendor PHY/DLL defaults that reset does not
     /// leave in a usable identification-mode state.
-    pub(crate) reset_hook: Option<&'static dyn HostResetHook>,
+    pub(crate) reset_hook: Option<Box<dyn HostResetHook>>,
     /// Optional monotonic timer used by asynchronous bus-operation state
     /// machines that have specification-defined wall-clock delays.
     pub(crate) timer: Option<&'static dyn HostTimer>,
@@ -342,11 +342,29 @@ impl Sdhci {
     /// Install a platform post-reset hook. The hook is called after ResetAll
     /// clears, both for the legacy blocking reset helper and for the native
     /// `sdio-host2` bus-operation state machine.
-    pub fn set_reset_hook<H>(&mut self, hook: &'static H)
+    pub fn set_reset_hook<H>(&mut self, hook: H)
     where
         H: HostResetHook + 'static,
     {
+        self.reset_hook = Some(Box::new(hook));
+    }
+
+    pub(crate) fn call_before_reset_all_hook(&mut self) -> Result<(), Error> {
+        let Some(hook) = self.reset_hook.take() else {
+            return Ok(());
+        };
+        let result = hook.before_reset_all(self);
         self.reset_hook = Some(hook);
+        result
+    }
+
+    pub(crate) fn call_after_reset_hook(&mut self) -> Result<(), Error> {
+        let Some(hook) = self.reset_hook.take() else {
+            return Ok(());
+        };
+        let result = hook.after_reset(self);
+        self.reset_hook = Some(hook);
+        result
     }
 
     /// Install a platform monotonic timer in milliseconds.
@@ -409,18 +427,14 @@ impl Sdhci {
     }
 
     fn reset_with_mask(&mut self, mask: u8, phase: Phase) -> Result<(), Error> {
-        if mask == RESET_ALL
-            && let Some(hook) = self.reset_hook
-        {
-            hook.before_reset_all(self)?;
+        if mask == RESET_ALL {
+            self.call_before_reset_all_hook()?;
         }
         self.write_u8(REG_SOFTWARE_RESET, mask);
         for _ in 0..1000 {
             if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
-                if mask == RESET_ALL
-                    && let Some(hook) = self.reset_hook
-                {
-                    hook.after_reset(self)?;
+                if mask == RESET_ALL {
+                    self.call_after_reset_hook()?;
                 }
                 return Ok(());
             }
@@ -690,7 +704,7 @@ pub trait HostClock: Send {
 
 /// Platform hook for SDHCI integrations that need vendor register setup after
 /// controller ResetAll has completed.
-pub trait HostResetHook: Sync {
+pub trait HostResetHook: Send + Sync {
     fn before_reset_all(&self, _host: &mut Sdhci) -> Result<(), Error> {
         Ok(())
     }
@@ -754,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_all_calls_platform_before_hook_before_software_reset() {
+    fn reset_all_calls_owned_platform_before_hook_before_software_reset() {
         struct Hook;
         static OBSERVED_RESET: AtomicU8 = AtomicU8::new(u8::MAX);
 
@@ -769,11 +783,10 @@ mod tests {
             }
         }
 
-        static HOOK: Hook = Hook;
         let mut mmio = [0u8; 256];
         let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
         let mut host = unsafe { Sdhci::new(base) };
-        host.set_reset_hook(&HOOK);
+        host.set_reset_hook(Hook);
 
         assert!(host.reset_all().is_err());
 

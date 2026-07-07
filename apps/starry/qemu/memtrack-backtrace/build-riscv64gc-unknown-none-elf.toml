@@ -1,6 +1,6 @@
 env = { BACKTRACE = "y" }
 features = [
-  "ax-feat/rtc",
+  "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

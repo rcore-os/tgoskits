@@ -5,11 +5,11 @@ sidebar_label: "平台契约"
 
 # 平台契约
 
-平台契约由 [platforms/ax-plat](platforms/ax-plat) 定义，平台 crate 负责实现这些 trait，`ax-hal` 再把它们转成 ArceOS、StarryOS 和 Axvisor 可复用的统一接口。这个边界的核心约束是：**一个最终镜像中只能有一个平台 crate 实现 `ax-plat` 接口**。
+平台契约由 `platforms/ax-plat` 定义，平台 crate 负责实现这些 trait，`ax-hal` 再把它们转成 ArceOS、StarryOS 和 Axvisor 可复用的统一接口。这个边界的核心约束是：**一个最终镜像中只能有一个平台 crate 实现 `ax-plat` 接口**。
 
 ## crate 全貌
 
-`ax-plat` 是一个 `#![cfg_attr(not(test), no_std)]` 的库（[platforms/ax-plat/src/lib.rs](platforms/ax-plat/src/lib.rs)），默认开启 `alloc`。其顶层模块：
+`ax-plat` 是一个 `#![cfg_attr(not(test), no_std)]` 的库（`platforms/ax-plat/src/lib.rs`），默认开启 `alloc`。其顶层模块：
 
 ```rust
 // platforms/ax-plat/src/lib.rs
@@ -40,20 +40,20 @@ pub use ax_plat_macros::secondary_main;
 
 | 接口 | 源码 | 关键方法 |
 | --- | --- | --- |
-| `PlatformInfoIf` | [platform.rs](platforms/ax-plat/src/platform.rs) | `fn platform_name() -> &'static str` |
-| `InitIf` | [init.rs](platforms/ax-plat/src/init.rs) | `init_early`、`init_later`，以及 `smp` feature 下的 `_secondary` 变种 |
-| `ConsoleIf` | [console.rs](platforms/ax-plat/src/console.rs) | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及 `irq` feature 下的 IRQ 系列 |
-| `MemIf` | [mem.rs](platforms/ax-plat/src/mem.rs) | `phys_ram_ranges`、`reserved_phys_ram_ranges`、`mmio_ranges`、`phys_to_virt`、`virt_to_phys`、`kernel_aspace` |
-| `TimeIf` | [time.rs](platforms/ax-plat/src/time.rs) | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
-| `PowerIf` | [power.rs](platforms/ax-plat/src/power.rs) | `system_off`、`system_reset`、`cpu_num`，`smp` 下 `cpu_boot(cpu_id, stack_top_paddr)` |
-| `IrqIf` | [irq.rs](platforms/ax-plat/src/irq.rs) | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
-| `LoongArchHvIrqIf` | [irq/loongarch64_hv.rs](platforms/ax-plat/src/irq/loongarch64_hv.rs) | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
+| `PlatformInfoIf` | `platform.rs` | `fn platform_name() -> &'static str` |
+| `InitIf` | `init.rs` | `init_early`、`init_later`，以及 `smp` feature 下的 `_secondary` 变种 |
+| `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及 `irq` feature 下的 IRQ 系列 |
+| `MemIf` | `mem.rs` | `phys_ram_ranges`、`reserved_phys_ram_ranges`、`mmio_ranges`、`phys_to_virt`、`virt_to_phys`、`kernel_aspace` |
+| `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
+| `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下 `cpu_boot(cpu_id, stack_top_paddr)` |
+| `IrqIf` | `irq.rs` | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
+| `LoongArchHvIrqIf` | `irq/loongarch64_hv.rs` | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
 
-`IrqIf` 是体量最大的模块（[irq.rs](platforms/ax-plat/src/irq.rs) 约 470 行），它把 `irq_framework` 的整套 API 都 re-export，并维护一个静态的 `Registry<PlatIrqOps>`（`spin::Once` 包裹）。`PlatIrqOps` 是 `IrqOps` 的实现，桥接到平台层 `current_cpu`、`cpu_online`、`in_irq_context`、`local_irq_save`/`restore`、`run_on_cpu_sync`、`set_enabled`、`set_affinity` 等运行时事实。
+`IrqIf` 是体量最大的模块（`irq.rs` 约 470 行），它把 `irq_framework` 的整套 API 都 re-export，并维护一个静态的 `Registry<PlatIrqOps>`（`spin::Once` 包裹）。`PlatIrqOps` 是 `IrqOps` 的实现，桥接到平台层 `current_cpu`、`cpu_online`、`in_irq_context`、`local_irq_save`/`restore`、`run_on_cpu_sync`、`set_enabled`、`set_affinity` 等运行时事实。
 
 ### IRQ domain 常量
 
-[platforms/ax-plat/src/irq.rs](platforms/ax-plat/src/irq.rs) 中定义的全局 `IrqDomainId` 预留段：
+`platforms/ax-plat/src/irq.rs` 中定义的全局 `IrqDomainId` 预留段：
 
 ```rust
 pub const LEGACY_IRQ_DOMAIN:       IrqDomainId = IrqDomainId(0);
@@ -70,7 +70,7 @@ pub const CPU_LOCAL_IRQ_DOMAIN:    IrqDomainId = IrqDomainId(u16::MAX);
 
 ### `IpiTarget` 抽象
 
-IPI 的目标集合由 [platforms/ax-plat/src/irq.rs](platforms/ax-plat/src/irq.rs) 的 `IpiTarget` 枚举表达，避免裸 `usize` 表示：
+IPI 的目标集合由 `platforms/ax-plat/src/irq.rs` 的 `IpiTarget` 枚举表达，避免裸 `usize` 表示：
 
 ```rust
 pub enum IpiTarget {
@@ -82,7 +82,7 @@ pub enum IpiTarget {
 
 ### MemIf 的类型集合
 
-`MemIf` 不是裸数字的堆砌：[mem.rs](platforms/ax-plat/src/mem.rs) 提供 `bitflags! MemRegionFlags: usize`、`struct PhysMemRegion { paddr, size, flags, name }` 与构造器 `new_ram`/`new_mmio`/`new_reserved`，并提供 `Aligned4K<T>` 4K 对齐包装器。一组默认 flag 常量被预定义：
+`MemIf` 不是裸数字的堆砌：`mem.rs` 提供 `bitflags! MemRegionFlags: usize`、`struct PhysMemRegion { paddr, size, flags, name }` 与构造器 `new_ram`/`new_mmio`/`new_reserved`，并提供 `Aligned4K<T>` 4K 对齐包装器。一组默认 flag 常量被预定义：
 
 | 常量 | 取值 | 用途 |
 | --- | --- | --- |
@@ -94,7 +94,7 @@ pub enum IpiTarget {
 
 ### ConsoleIf 的 IRQ 事件
 
-[console.rs](platforms/ax-plat/src/console.rs) 定义：
+`console.rs` 定义：
 
 ```rust
 pub enum ConsoleDeviceIdError { NotSpecified, NoHardwareDevice, DeviceNotFound }
@@ -111,7 +111,7 @@ bitflags! ConsoleIrqEvent: u32 {
 
 ## `def_plat_interface` 宏展开
 
-`#[def_plat_interface]` 由 [platforms/ax-plat-macros/src/lib.rs](platforms/ax-plat-macros/src/lib.rs) 提供。展开等价于：
+`#[def_plat_interface]` 由 `platforms/ax-plat-macros/src/lib.rs` 提供。展开等价于：
 
 ```rust
 #[crate::__priv::def_interface]
@@ -126,7 +126,7 @@ pub #sig {
 
 对 trait 的每个方法，宏都会生成同名的 free function，函数体通过 `call_interface!` 宏分发到 `ax-crate-interface` 维护的单实现槽。该宏拒绝带 `self` 的方法（`FnArg::Receiver`）。
 
-`__priv` 模块 ([platforms/ax-plat/src/lib.rs](platforms/ax-plat/src/lib.rs#L23-L27)) 内 re-export 了 `ax_crate_interface::{call_interface, def_interface}` 与 `const_str::equal`。
+`__priv` 模块 (`platforms/ax-plat/src/lib.rs`) 内 re-export 了 `ax_crate_interface::{call_interface, def_interface}` 与 `const_str::equal`。
 
 ## 入口符号契约
 
@@ -147,7 +147,7 @@ unsafe extern "Rust" {
 }
 ```
 
-`#[ax_plat::main]` / `#[ax_plat::secondary_main]` 校验函数签名后用 `#[unsafe(export_name = "...")]` 把用户函数绑定到这两个 Rust ABI 符号。`main` 要求 `fn(usize, usize) -> !`，`secondary_main` 要求 `fn(usize) -> !`。详细展开规则见 [platforms/ax-plat-macros/src/lib.rs](platforms/ax-plat-macros/src/lib.rs) 中的 `common_main` 辅助函数。
+`#[ax_plat::main]` / `#[ax_plat::secondary_main]` 校验函数签名后用 `#[unsafe(export_name = "...")]` 把用户函数绑定到这两个 Rust ABI 符号。`main` 要求 `fn(usize, usize) -> !`，`secondary_main` 要求 `fn(usize) -> !`。详细展开规则见 `platforms/ax-plat-macros/src/lib.rs` 中的 `common_main` 辅助函数。
 
 入口流程：
 
@@ -165,7 +165,7 @@ SMP 从核路径使用 `ax_plat::call_secondary_main(cpu_id)`，随后进入 `in
 
 ## percpu 集成
 
-[platforms/ax-plat/src/percpu.rs](platforms/ax-plat/src/percpu.rs) 通过 `#[ax_percpu::def_percpu]` 声明两个 per-CPU 静态：
+`platforms/ax-plat/src/percpu.rs` 通过 `#[ax_percpu::def_percpu]` 声明两个 per-CPU 静态：
 
 ```rust
 static CPU_ID:  usize = 0;
@@ -197,7 +197,7 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 | 使用层 | 示例 feature |
 | --- | --- |
 | 直接 HAL | `ax-hal/axplat-myplat` |
-| ArceOS feature 聚合 | `ax-feat/axplat-myplat` |
+| ArceOS feature 聚合 | `ax-runtime/axplat-myplat` |
 | Rust std 应用 | `ax-std/axplat-myplat` |
 | C / libc 应用 | `ax-libc/axplat-myplat` |
 

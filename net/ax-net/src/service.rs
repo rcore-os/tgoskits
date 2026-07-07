@@ -62,7 +62,7 @@ use core::{
     task::{Context, Waker},
 };
 
-use ax_errno::{AxResult, ax_err_type};
+use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_kspin::SpinRwLock as RwLock;
 use ax_task::future::sleep_until;
@@ -87,7 +87,7 @@ use crate::{
     consts::STANDARD_MTU,
     device::{ArpEntry, EthernetDevice},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -636,6 +636,85 @@ impl Service {
         self.router.device_index(name)
     }
 
+    /// Assigns a static IPv4 address to an interface at runtime.
+    ///
+    /// The current control model owns a single IPv4 address per interface. Keep
+    /// `ip addr add` conservative and report `EEXIST` once an address is
+    /// already present instead of silently replacing it or pretending to support
+    /// secondary addresses.
+    pub fn configure_static_ipv4(
+        &mut self,
+        interface_id: InterfaceId,
+        address: Ipv4Address,
+        prefix_len: u8,
+    ) -> AxResult {
+        if prefix_len > 32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+        if interface.kind != InterfaceKind::Ethernet {
+            return Err(AxError::OperationNotSupported);
+        }
+        if interface.ipv4.is_some() {
+            return Err(AxError::AlreadyExists);
+        }
+
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: Some(Ipv4Cidr::new(address, prefix_len)),
+            gateway: None,
+            dns_source: DnsSource::Dhcp,
+            dns_servers: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Removes a configured IPv4 address from an interface at runtime.
+    pub fn remove_static_ipv4(
+        &mut self,
+        interface_id: InterfaceId,
+        address: Ipv4Address,
+        prefix_len: u8,
+    ) -> AxResult {
+        if prefix_len > 32 {
+            return Err(AxError::InvalidInput);
+        }
+
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+        // Runtime deletion is intentionally exact: with one IPv4 address per
+        // interface, a mismatched address or prefix must not clear the current
+        // configuration.
+        if interface.ipv4 != Some(Ipv4Cidr::new(address, prefix_len)) {
+            return Err(AxError::NotFound);
+        }
+
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Dhcp,
+            dns_servers: Vec::new(),
+        });
+        Ok(())
+    }
+
     /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
     pub fn reconfigure_as_ap(
         &mut self,
@@ -915,6 +994,10 @@ impl Service {
 
     pub fn arp_entries(&self) -> Vec<ArpEntry> {
         self.router.arp_entries(now())
+    }
+
+    pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
+        self.router.net_dev_stats()
     }
 
     pub fn wake_all_devices(&self) {

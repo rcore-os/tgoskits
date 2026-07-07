@@ -27,13 +27,14 @@ use alloc::{
 };
 use core::{
     mem::size_of,
+    net::Ipv4Addr,
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
+use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_net::{InterfaceFlags, InterfaceInfo, InterfaceKind};
+use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
@@ -56,6 +57,9 @@ const MAX_QUEUED: usize = 128;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_MULTI: u16 = 2;
+const NLM_F_ROOT: u16 = 0x100;
+const NLM_F_MATCH: u16 = 0x200;
+const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
 
 /// Generic netlink controller family ID. Linux's
 /// `Documentation/netlink/genetlink-legacy.rst` reserves this for
@@ -78,7 +82,9 @@ const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
 const RTM_GETADDR: u16 = 22;
 const RTM_NEWADDR: u16 = 20;
+const RTM_DELADDR: u16 = 21;
 
+const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
@@ -183,6 +189,48 @@ struct AddrInfo {
     scope: u8,
     local: [u8; 4],
     broadcast: Option<[u8; 4]>,
+}
+
+#[derive(Default)]
+struct LinkFilter {
+    index: Option<i32>,
+    name: Option<String>,
+}
+
+impl LinkFilter {
+    // `iproute2` resolves `dev <name>` by sending RTM_GETLINK with either an
+    // ifindex or IFLA_IFNAME. Keep dump requests unfiltered, but honor those
+    // selectors so a lookup for eth1 does not accidentally return lo first.
+    fn matches(&self, link: &LinkInfo) -> bool {
+        self.index.is_none_or(|index| link.index == index)
+            && self.name.as_ref().is_none_or(|name| link.name == *name)
+    }
+
+    fn has_selector(&self) -> bool {
+        self.index.is_some() || self.name.is_some()
+    }
+}
+
+#[derive(Default)]
+struct AddrFilter {
+    family: u8,
+    index: Option<u32>,
+    label: Option<String>,
+}
+
+impl AddrFilter {
+    // `ip addr show dev <name>` resolves the link first, then sends
+    // RTM_GETADDR with `ifaddrmsg.ifa_index`. Some callers also include
+    // IFA_LABEL. An unfiltered dump still returns every IPv4 address.
+    fn matches(&self, addr: &AddrInfo) -> bool {
+        matches!(self.family, AF_UNSPEC | AF_INET)
+            && self.index.is_none_or(|index| addr.index == index)
+            && self.label.as_ref().is_none_or(|label| addr.label == *label)
+    }
+
+    fn has_selector(&self) -> bool {
+        self.index.is_some() || self.label.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -353,20 +401,66 @@ impl NetlinkSocket {
         let mut response = Vec::new();
         match header.ty {
             RTM_GETLINK => {
+                let filter = parse_link_filter(request);
+                let mut matched = false;
                 for link in link_infos() {
                     if !in_root && link.index != 1 {
                         continue;
                     }
+                    if !filter.matches(&link) {
+                        continue;
+                    }
+                    matched = true;
                     push_link_message(&mut response, header.seq, pid, &link);
+                }
+                if !matched && !is_dump_request(header.flags) && filter.has_selector() {
+                    push_nlmsg_error_from_ax(&mut response, request, pid, AxError::NoSuchDevice);
+                    return Ok(response);
                 }
             }
             RTM_GETADDR => {
+                let filter = parse_addr_filter(request);
+                let mut matched = false;
                 for addr in addr_infos() {
                     if !in_root && addr.index != 1 {
                         continue;
                     }
+                    if !filter.matches(&addr) {
+                        continue;
+                    }
+                    matched = true;
                     push_addr_message(&mut response, header.seq, pid, &addr);
                 }
+                if !matched && !is_dump_request(header.flags) && filter.has_selector() {
+                    push_nlmsg_error_from_ax(&mut response, request, pid, AxError::NoSuchDevice);
+                    return Ok(response);
+                }
+            }
+            RTM_NEWADDR => {
+                let error = match handle_newaddr_request(request) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        let linux_err = LinuxError::from(err);
+                        -linux_err.code()
+                    }
+                };
+                push_nlmsg_error(&mut response, request, pid, error);
+                return Ok(response);
+            }
+            RTM_DELADDR => {
+                let error = match handle_deladdr_request(request) {
+                    Ok(()) => 0,
+                    // Linux reports EADDRNOTAVAIL when the requested address
+                    // is not assigned; ax-net uses NotFound for that internal
+                    // state so translate it explicitly for iproute2.
+                    Err(AxError::NotFound) => -LinuxError::EADDRNOTAVAIL.code(),
+                    Err(err) => {
+                        let linux_err = LinuxError::from(err);
+                        -linux_err.code()
+                    }
+                };
+                push_nlmsg_error(&mut response, request, pid, error);
+                return Ok(response);
             }
             _ => {}
         }
@@ -728,6 +822,170 @@ fn push_nlmsg_error(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, error: i3
     push_nl_header(out, NLMSG_ERROR, 0, header.seq, pid, payload_len);
     out.extend_from_slice(&error.to_ne_bytes());
     out.extend_from_slice(&request_bytes[..req_len]);
+}
+
+fn push_nlmsg_error_from_ax(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, err: AxError) {
+    let linux_err = LinuxError::from(err);
+    push_nlmsg_error(out, request_bytes, pid, -linux_err.code());
+}
+
+fn handle_newaddr_request(request: &[u8]) -> AxResult {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    let addr = unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<IfAddrMsg>()
+            .read_unaligned()
+    };
+    if addr.family != AF_INET {
+        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+    }
+
+    let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>()..msg_len];
+    let local = parse_ipv4_attr(attrs, IFA_LOCAL)
+        .or_else(|| parse_ipv4_attr(attrs, IFA_ADDRESS))
+        .ok_or(AxError::InvalidInput)?;
+    ax_net::set_interface_ipv4(
+        InterfaceId::new(addr.index),
+        Ipv4Addr::from(local),
+        addr.prefix_len,
+    )
+}
+
+fn handle_deladdr_request(request: &[u8]) -> AxResult {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    let addr = unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<IfAddrMsg>()
+            .read_unaligned()
+    };
+    if addr.family != AF_INET {
+        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+    }
+
+    let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>()..msg_len];
+    let local = parse_ipv4_attr(attrs, IFA_LOCAL)
+        .or_else(|| parse_ipv4_attr(attrs, IFA_ADDRESS))
+        .ok_or(AxError::InvalidInput)?;
+    ax_net::remove_interface_ipv4(
+        InterfaceId::new(addr.index),
+        Ipv4Addr::from(local),
+        addr.prefix_len,
+    )
+}
+
+fn parse_ipv4_attr(mut buf: &[u8], ty: u16) -> Option<[u8; 4]> {
+    while buf.len() >= size_of::<RtAttr>() {
+        let attr = unsafe { buf.as_ptr().cast::<RtAttr>().read_unaligned() };
+        let len = attr.len as usize;
+        if len < size_of::<RtAttr>() || len > buf.len() {
+            return None;
+        }
+        if attr.ty == ty {
+            let payload = &buf[size_of::<RtAttr>()..len];
+            return (payload.len() >= 4)
+                .then(|| payload[..4].try_into().ok())
+                .flatten();
+        }
+        let aligned = (len + 3) & !3;
+        if aligned > buf.len() {
+            return None;
+        }
+        buf = &buf[aligned..];
+    }
+    None
+}
+
+fn parse_addr_filter(request: &[u8]) -> AddrFilter {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return AddrFilter::default();
+    }
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>() {
+        return AddrFilter::default();
+    }
+    let info = unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<IfAddrMsg>()
+            .read_unaligned()
+    };
+    let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>()..msg_len];
+    AddrFilter {
+        family: info.family,
+        index: (info.index > 0).then_some(info.index),
+        label: parse_string_attr(attrs, IFA_LABEL),
+    }
+}
+
+fn parse_link_filter(request: &[u8]) -> LinkFilter {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<IfInfoMsg>() {
+        return LinkFilter::default();
+    }
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<IfInfoMsg>() {
+        return LinkFilter::default();
+    }
+    let info = unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<IfInfoMsg>()
+            .read_unaligned()
+    };
+    let attrs = &request[size_of::<NlMsgHdr>() + size_of::<IfInfoMsg>()..msg_len];
+    LinkFilter {
+        index: (info.index > 0).then_some(info.index),
+        name: parse_string_attr(attrs, IFLA_IFNAME),
+    }
+}
+
+fn parse_string_attr(mut buf: &[u8], ty: u16) -> Option<String> {
+    while buf.len() >= size_of::<RtAttr>() {
+        let attr = unsafe { buf.as_ptr().cast::<RtAttr>().read_unaligned() };
+        let len = attr.len as usize;
+        if len < size_of::<RtAttr>() || len > buf.len() {
+            return None;
+        }
+        if attr.ty == ty {
+            let payload = &buf[size_of::<RtAttr>()..len];
+            let end = payload
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(payload.len());
+            return core::str::from_utf8(&payload[..end]).ok().map(String::from);
+        }
+        let aligned = (len + 3) & !3;
+        if aligned > buf.len() {
+            return None;
+        }
+        buf = &buf[aligned..];
+    }
+    None
+}
+
+fn is_dump_request(flags: u16) -> bool {
+    flags & NLM_F_DUMP == NLM_F_DUMP
 }
 
 /// Walk the attribute stream after a `genlmsghdr` and return the

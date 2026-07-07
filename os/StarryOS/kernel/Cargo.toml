@@ -16,24 +16,22 @@ license.workspace = true
 [features]
 default = ["dynamic_debug"]
 dev-log = []
-kprobe_test = []
 ext4 = ["ax-fs-ng/ext4"]
-input = ["dep:ax-input", "ax-feat/input"]
-ipi = ["ax-feat/ipi"]
+input = ["dep:ax-input", "ax-runtime/input"]
+ipi = ["ax-runtime/ipi"]
 loongarch64-low-va = []
-memtrack = ["ax-feat/backtrace", "ax-alloc/tracking"]
+memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
 rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
 ]
-std-compat = []
-k230-kpu = ["ax-feat/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
-vsock = ["ax-feat/vsock"]
+k230-kpu = ["ax-hal/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
+vsock = ["ax-runtime/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
-    "ax-feat/usb",
+    "ax-runtime/irq",
     "ax-driver/usb",
     "dep:ax-dma",
     "dep:axklib",
@@ -43,40 +41,17 @@ sg2002 = [
     "dep:sg200x-bsp",
     "dep:tock-registers",
 ]
-# SG2002 AIC8800 SoftAP Wi-Fi. The whole bring-up (FDT probe + SoftAP + stack
-# registration) now lives in ax-driver / ax-runtime; the kernel just turns the
-# feature on. No direct chip-crate deps needed here anymore.
-sg2002-wifi = [
-    "sg2002",
-    "ax-feat/aic8800-wifi",
-]
-stack-guard-page = ["ax-feat/stack-guard-page"]
-stack-protector = ["ax-feat/stack-protector"]
+stack-guard-page = ["ax-runtime/stack-guard-page"]
+stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
 
 [dependencies]
-ax-feat = { workspace = true, features = [
-    "fp-simd",
-    "irq",
-    "uspace",
-
-    "multitask",
-    "task-ext",
-    "tracepoint-hooks",
-    "sched-rr",
-
-    "rtc",
-
-    "ext4fs",
-    "net",
-] }
-
 ax-alloc = { workspace = true }
 ax-crate-interface.workspace = true
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
-ax-hal.workspace = true
+ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
@@ -85,9 +60,21 @@ ax-net = { workspace = true }
 ax-driver = { workspace = true, features = ["serial", "usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn.workspace = true
-ax-runtime.workspace = true
-ax-sync.workspace = true
-ax-task.workspace = true
+ax-runtime = { workspace = true, features = [
+    "irq",
+    "uspace",
+    "multitask",
+    "rtc",
+    "ext4fs",
+    "net",
+] }
+ax-sync = { workspace = true, features = ["multitask"] }
+ax-task = { workspace = true, features = [
+    "multitask",
+    "task-ext",
+    "tracepoint-hooks",
+    "sched-rr",
+] }
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
@@ -137,7 +124,7 @@ ax-memory-set = { workspace = true }
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
 ax-percpu = { workspace = true }
-rand = { version = "0.10", default-features = false, features = ["alloc"] }
+rand = { version = "0.10", default-features = false, features = ["alloc", "chacha"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }

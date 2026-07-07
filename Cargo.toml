@@ -147,7 +147,6 @@ ax-dma = { version = "0.6.7", path = "os/arceos/modules/axdma" }
 ax-driver = { version = "0.10.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.1", path = "components/axerrno" }
-ax-feat = { version = "0.5.24", path = "os/arceos/api/axfeat" }
 ax-fs-ng = { version = "0.7.0", path = "os/arceos/modules/axfs-ng" }
 ax-hal = { version = "0.5.23", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.3.0", path = "components/irq-framework" }
@@ -227,10 +226,12 @@ rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
 rdif-eth = { version = "0.3.6", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.2.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.15.0", path = "drivers/interface/rdif-intc" }
+rdif-msi = { version = "0.1.0", path = "drivers/interface/rdif-msi" }
 rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.1.1", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.1.0", path = "drivers/interface/rdif-pwm" }
 rdif-power = { version = "0.7.3", path = "drivers/interface/rdif-power" }
+rdif-reset = { version = "0.1.0", path = "drivers/interface/rdif-reset" }
 rdif-serial = { version = "0.9.0", path = "drivers/interface/rdif-serial" }
 rdif-systick = { version = "0.6.3", path = "drivers/interface/rdif-systick" }
 rdif-timer = { version = "0.6.3", path = "drivers/interface/rdif-timer" }
@@ -263,6 +264,7 @@ phytium-mci-host = { version = "0.3.0", path = "drivers/blk/phytium-mci-host", d
 cv181x-sdhci = { version = "0.1.0", path = "drivers/blk/cv181x-sdhci", default-features = false }
 sdhci-host = { version = "0.3.0", path = "drivers/blk/sdhci-host", default-features = false }
 sdmmc-protocol = { version = "0.3.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
+starfive-jh7110-dwmmc = { version = "0.1.0", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.2.5", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.6.6", path = "os/StarryOS/kernel" }

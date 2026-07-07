@@ -11,13 +11,13 @@ sidebar_label: "多设备实现"
 
 | 源码 | 职责 |
 | --- | --- |
-| [router.rs](net/ax-net/src/router.rs) | `Router` 虚拟设备、route dispatch、bounded queue、loopback 快速路径、RX/TX worker |
-| [device/mod.rs](net/ax-net/src/device/mod.rs) | 内部 `Device` trait、ARP entry 对外模型 |
-| [device/ethernet.rs](net/ax-net/src/device/ethernet.rs) | Ethernet 帧封装/解析、ARP、IRQ/OOB readiness |
-| [device/loopback.rs](net/ax-net/src/device/loopback.rs) | `lo` 接口占位设备，真实回环由 Router 快速路径完成 |
-| [device/driver.rs](net/ax-net/src/device/driver.rs) | `rd-net` 到 `EthernetDriver` 的适配 |
-| [service.rs](net/ax-net/src/service.rs) | `Service::poll()` 调度 Router、smoltcp、DHCP、orphan |
-| [lib.rs](net/ax-net/src/lib.rs) | net-poll worker、`request_poll()`、设备注册入口 |
+| `router.rs` | `Router` 虚拟设备、route dispatch、bounded queue、loopback 快速路径、RX/TX worker |
+| `device/mod.rs` | 内部 `Device` trait、ARP entry 对外模型 |
+| `device/ethernet.rs` | Ethernet 帧封装/解析、ARP、IRQ/OOB readiness |
+| `device/loopback.rs` | `lo` 接口占位设备，真实回环由 Router 快速路径完成 |
+| `device/driver.rs` | `rd-net` 到 `EthernetDriver` 的适配 |
+| `service.rs` | `Service::poll()` 调度 Router、smoltcp、DHCP、orphan |
+| `lib.rs` | net-poll worker、`request_poll()`、设备注册入口 |
 
 ## 设计边界
 

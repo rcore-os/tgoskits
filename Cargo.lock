@@ -399,10 +399,6 @@ name = "arm_vcpu"
 version = "0.5.15"
 dependencies = [
  "aarch64-cpu 11.2.0",
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-percpu",
- "axvm-types",
  "log",
  "numeric-enum-macro",
  "spin",
@@ -550,7 +546,6 @@ dependencies = [
  "ax-display",
  "ax-dma",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
@@ -683,9 +678,12 @@ dependencies = [
  "rdif-display",
  "rdif-input",
  "rdif-intc",
+ "rdif-msi",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-power",
  "rdif-pwm",
+ "rdif-reset",
  "rdif-serial",
  "rdif-vsock",
  "rdrive",
@@ -706,6 +704,8 @@ dependencies = [
  "simple-ahci",
  "some-serial",
  "spin",
+ "starfive-jh7110-dwmmc",
+ "tock-registers 0.10.1",
  "virtio-drivers",
  "x86",
 ]
@@ -728,26 +728,6 @@ dependencies = [
  "log",
  "quote",
  "strum 0.27.2",
-]
-
-[[package]]
-name = "ax-feat"
-version = "0.5.24"
-dependencies = [
- "ax-alloc",
- "ax-display",
- "ax-driver",
- "ax-fs-ng",
- "ax-hal",
- "ax-input",
- "ax-ipi",
- "ax-kspin",
- "ax-log",
- "ax-net",
- "ax-runtime",
- "ax-sync",
- "ax-task",
- "axbacktrace",
 ]
 
 [[package]]
@@ -857,10 +837,11 @@ version = "0.5.23"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-hal",
  "ax-io",
+ "ax-kspin",
  "ax-posix-api",
+ "ax-runtime",
  "bindgen 0.72.1",
 ]
 
@@ -1023,7 +1004,6 @@ version = "0.5.24"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
@@ -1104,13 +1084,14 @@ dependencies = [
  "ax-api",
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-hal",
  "ax-io",
  "ax-kspin",
  "ax-lazyinit",
  "ax-posix-api",
  "ax-runtime",
+ "ax-task",
+ "axbacktrace",
  "libc",
  "lock_api",
  "spin",
@@ -3776,8 +3757,8 @@ name = "hello"
 version = "0.5.12"
 dependencies = [
  "ax-driver",
- "ax-feat",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "axplat-dyn",
  "kmod-tools",
@@ -4598,9 +4579,9 @@ name = "kprobe_test"
 version = "0.5.12"
 dependencies = [
  "ax-driver",
- "ax-feat",
  "ax-hal",
  "ax-log",
+ "ax-runtime",
  "ax-std",
  "axplat-dyn",
  "kmod-tools",
@@ -5514,8 +5495,10 @@ dependencies = [
  "log",
  "mmio-api",
  "pci_types",
+ "rdif-msi",
  "rdif-pcie",
  "thiserror 2.0.18",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -6317,6 +6300,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-msi"
+version = "0.1.0"
+dependencies = [
+ "irq-framework",
+ "rdif-base",
+]
+
+[[package]]
 name = "rdif-pcie"
 version = "0.2.5"
 dependencies = [
@@ -6340,10 +6331,19 @@ name = "rdif-power"
 version = "0.7.3"
 dependencies = [
  "rdif-base",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rdif-pwm"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rdif-reset"
 version = "0.1.0"
 dependencies = [
  "rdif-base",
@@ -6396,8 +6396,11 @@ dependencies = [
  "paste",
  "pcie",
  "rdif-base",
+ "rdif-clk",
  "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-power",
+ "rdif-reset",
  "rdrive-macros",
  "spin",
  "thiserror 2.0.18",
@@ -7553,6 +7556,7 @@ dependencies = [
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
+ "rdif-msi",
  "rdrive",
  "riscv",
  "sbi-rt",
@@ -7609,6 +7613,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "starfive-jh7110-dwmmc"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "dwmmc-host",
+ "log",
+ "rdif-block",
+ "sdio-host2",
+ "sdmmc-protocol",
+]
+
+[[package]]
 name = "starry-fatfs"
 version = "0.4.1-preview.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7629,7 +7645,6 @@ dependencies = [
  "ax-dma",
  "ax-driver",
  "ax-errno 0.6.1",
- "ax-feat",
  "ax-fs-ng",
  "ax-hal",
  "ax-input",
@@ -7756,8 +7771,8 @@ version = "0.5.20"
 dependencies = [
  "anyhow",
  "ax-driver",
- "ax-feat",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "axbuild",
  "axplat-dyn",

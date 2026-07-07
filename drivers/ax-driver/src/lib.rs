@@ -83,7 +83,8 @@ pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
-    feature = "rockchip-dwmmc"
+    feature = "rockchip-dwmmc",
+    feature = "starfive-soc"
 ))]
 pub mod soc;
 #[cfg(feature = "rtc")]
@@ -95,7 +96,7 @@ pub mod virtio;
 
 #[cfg(feature = "pci")]
 pub use binding_info::PciIrqRequirement;
-pub use binding_info::{BindingInfo, BindingIrq, BindingIrqSource, FdtIrqSpec};
+pub use binding_info::{BindingInfo, BindingIrq, BindingIrqBinding, BindingIrqSource, FdtIrqSpec};
 #[cfg(feature = "pci")]
 pub use binding_resolver::binding_info_from_pci;
 pub use binding_resolver::{

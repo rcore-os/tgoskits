@@ -138,16 +138,24 @@ impl FileBackendInner {
         let pt = aspace.page_table_mut();
         let mut cursor = pt.cursor();
         match cursor.query(vaddr) {
-            Ok((paddr, flags, PageSize::Size4K)) if flags.contains(MappingFlags::WRITE) => {
-                let new_flags = flags - MappingFlags::WRITE;
-                if let Err(err) = cursor.remap(vaddr, paddr, new_flags) {
-                    warn!(
-                        "Failed to write-protect dirty mmap page {:?}: {:?}",
-                        vaddr, err
-                    );
-                    return false;
+            Ok((paddr, flags, PageSize::Size4K)) => {
+                // A writable shared mapping can dirty this page concurrently with the
+                // writeback snapshot, so drop WRITE to fault the next store. A read-only
+                // shared mapping cannot dirty the page through the mapping at all (e.g.
+                // bbolt maps its db read-only and writes through pwrite), so there is
+                // nothing to protect - leave it mapped and report success rather than
+                // failing the fdatasync with EBUSY.
+                if flags.contains(MappingFlags::WRITE) {
+                    let new_flags = flags - MappingFlags::WRITE;
+                    if let Err(err) = cursor.remap(vaddr, paddr, new_flags) {
+                        warn!(
+                            "Failed to write-protect dirty mmap page {:?}: {:?}",
+                            vaddr, err
+                        );
+                        return false;
+                    }
+                    flush_tlb_range_sync(vaddr, PAGE_SIZE_4K);
                 }
-                flush_tlb_range_sync(vaddr, PAGE_SIZE_4K);
                 true
             }
             Ok((_, _, page_size)) => {

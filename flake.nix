@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -15,8 +19,15 @@
       ];
 
       perSystem =
-        { pkgs, ... }:
+        { system, ... }:
         let
+          pkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [
+              # (import inputs.rust-overlay)
+            ];
+          };
+
           lib = pkgs.lib;
 
           optionalPackageByPath =
@@ -27,6 +38,10 @@
             lib.optional (package != null) package;
 
           llvmPackages = pkgs.llvmPackages;
+          rustBin = inputs.rust-overlay.lib.mkRustBin {
+            # distRoot = "https://mirrors.ustc.edu.cn/rust-static";
+          } pkgs;
+          rustToolchain = rustBin.fromRustupToolchainFile ./rust-toolchain.toml;
 
           commonPackages =
             with pkgs;
@@ -49,7 +64,8 @@
               pkg-config
               python3
               qemu
-              rustup
+              rustToolchain
+              # rustup
               wget
               xz
               zlib
@@ -109,18 +125,19 @@
               LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
 
               shellHook = ''
-                project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-                export RUSTUP_HOME="$project_root/.rustup"
+                # export RUSTUP_HOME="$project_root/.rustup"
                 export CARGO_HOME="$project_root/.cargo"
                 export PATH="$CARGO_HOME/bin:$PATH"
 
-                mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
+                # mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
+                mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
 
                 echo "TGOSKits dev shell"
-                echo "  RUSTUP_HOME=$RUSTUP_HOME"
+                # echo "  RUSTUP_HOME=$RUSTUP_HOME"
                 echo "  CARGO_HOME=$CARGO_HOME"
-                echo "  Rust toolchain: rust-toolchain.toml"
+                echo "  Rust toolchain: rust-overlay from rust-toolchain.toml"
 
                 exec fish
               '';

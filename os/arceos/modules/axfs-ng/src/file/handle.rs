@@ -168,7 +168,6 @@ pub struct File {
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
-    #[cfg(feature = "times")]
     access_flags: AtomicU8,
 }
 
@@ -190,7 +189,6 @@ impl File {
             inner,
             flags: AtomicU8::new(flags.bits()),
             position,
-            #[cfg(feature = "times")]
             access_flags: AtomicU8::new(0),
         }
     }
@@ -287,10 +285,7 @@ impl File {
 
     /// Reads data from the current position, advancing the cursor.
     pub fn read(&self, dst: impl Write + IoBufMut) -> ax_io::Result<usize> {
-        #[cfg(feature = "times")]
-        {
-            self.access_flags.fetch_or(1, Ordering::AcqRel);
-        }
+        self.access_flags.fetch_or(1, Ordering::AcqRel);
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             self.read_at(dst, *pos).inspect(|n| {
@@ -303,10 +298,7 @@ impl File {
 
     /// Writes data at the current position (or appends), advancing the cursor.
     pub fn write(&self, src: impl Read + IoBuf) -> ax_io::Result<usize> {
-        #[cfg(feature = "times")]
-        {
-            self.access_flags.fetch_or(3, Ordering::AcqRel);
-        }
+        self.access_flags.fetch_or(3, Ordering::AcqRel);
         // WRITE bit is mandatory for any write path, regardless of whether
         // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
         // succeed writes (since access(APPEND) only checks the APPEND bit).
@@ -386,7 +378,6 @@ impl FsPollable for File {
     }
 }
 
-#[cfg(feature = "times")]
 impl Drop for File {
     fn drop(&mut self) {
         let flags = self.access_flags.load(Ordering::Acquire);

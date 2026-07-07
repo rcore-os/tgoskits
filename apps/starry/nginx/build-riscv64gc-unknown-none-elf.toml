@@ -1,7 +1,7 @@
 target = "riscv64gc-unknown-none-elf"
 log = "Warn"
 features = [
-  "ax-feat/rtc",
+  "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

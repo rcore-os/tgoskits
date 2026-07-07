@@ -1,5 +1,8 @@
 use alloc::sync::Arc;
-use core::ffi::c_char;
+use core::{
+    ffi::c_char,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_kspin::SpinNoIrq;
 
@@ -20,12 +23,15 @@ const fn pad_str(info: &str) -> [c_char; 65] {
     data
 }
 
+static NEXT_UTS_NS_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Per-process UTS namespace, containing the hostname and domain name
 /// visible to `uname(2)`.  When a process calls `unshare(CLONE_NEWUTS)` or
 /// `clone(CLONE_NEWUTS)`, it receives a fresh copy of the parent namespace
 /// so that subsequent `sethostname(2)` / `setdomainname(2)` do not affect
 /// the original namespace.
 pub struct UtNamespace {
+    pub id: u64,
     pub nodename: [c_char; 65],
     pub domainname: [c_char; 65],
 }
@@ -34,6 +40,7 @@ impl UtNamespace {
     /// Create the initial root UTS namespace with default values.
     pub fn new_root() -> Self {
         Self {
+            id: NEXT_UTS_NS_ID.fetch_add(1, Ordering::Relaxed),
             nodename: pad_str("starry"),
             domainname: pad_str("https://github.com/Starry-OS/StarryOS"),
         }
@@ -42,6 +49,7 @@ impl UtNamespace {
     /// Clone the namespace (shallow copy of nodename/domainname).
     pub fn clone_ns(&self) -> Self {
         Self {
+            id: NEXT_UTS_NS_ID.fetch_add(1, Ordering::Relaxed),
             nodename: self.nodename,
             domainname: self.domainname,
         }

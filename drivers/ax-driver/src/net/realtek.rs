@@ -1,5 +1,3 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use log::{debug, info, warn};
 use pcie::CommandRegister;
 use rdrive::probe::{
@@ -12,7 +10,6 @@ use crate::{PciIrqRequirement, net::ProbePciNet};
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
 const RTL8125_DMA_MASK: u64 = u32::MAX as u64;
-static REGISTERED_RTL8125: AtomicBool = AtomicBool::new(false);
 
 crate::model_register!(
     name: "Realtek RTL8125 PCI Network",
@@ -30,11 +27,6 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     }
 
     let address = endpoint.address();
-    if REGISTERED_RTL8125.load(Ordering::Acquire) {
-        info!("RTL8125 at {address} left unused: first port already registered");
-        return Err(OnProbeError::NotMatch);
-    }
-
     let Some((bar_index, bar)) = first_mmio_bar(endpoint) else {
         warn!("RTL8125 at {address} left unused: no PCI MMIO BAR found");
         return Err(OnProbeError::NotMatch);
@@ -73,13 +65,6 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
             "RTL8125 at {address}: link is down after init; registering and checking link again \
              on tx, status={status:?}"
         );
-    }
-    if REGISTERED_RTL8125
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        info!("RTL8125 at {address} left unused: first port already registered");
-        return Err(OnProbeError::NotMatch);
     }
 
     let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;

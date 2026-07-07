@@ -13,11 +13,10 @@
 // limitations under the License.
 
 use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
-use ax_errno::{AxError, AxResult};
-use axvm_types::{AccessWidth, GuestPhysAddr, SysRegAddr, VmExit};
 use log::error;
 
 use crate::{
+    ArmAccessWidth, ArmGuestPhysAddr, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
     TrapFrame,
     exception_utils::{
         exception_class, exception_class_value, exception_data_abort_access_is_write,
@@ -59,6 +58,7 @@ core::arch::global_asm!(
     include_str!("exception.S"),
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
+    trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
 );
 
 /// Handles synchronous exceptions that occur during the execution of a guest VM.
@@ -74,7 +74,7 @@ core::arch::global_asm!(
 ///
 /// # Returns
 ///
-/// An `AxResult` containing an `VmExit` indicating the reason for the VM exit.
+/// An [`ArmVcpuResult`] containing an [`ArmVmExit`] indicating the reason for the VM exit.
 /// This could be due to a hypervisor call (`Hypercall`) or other reasons such as data aborts.
 ///
 /// # Panics
@@ -82,7 +82,7 @@ core::arch::global_asm!(
 /// If an unhandled exception class is encountered, the function will panic, outputting
 /// details about the exception including the instruction pointer, faulting address, exception
 /// syndrome register (ESR), and system control registers.
-pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<VmExit> {
+pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     match exception_class() {
         Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
             let elr = ctx.exception_pc();
@@ -106,7 +106,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<VmExit> {
             // And arm64 hcall implementation uses `x0` to specify the hcall number.
             // For more details on the hypervisor call (HVC) mechanism and the use of general-purpose registers,
             // refer to the [Linux Kernel documentation on KVM ARM hypervisor ABI](https://github.com/torvalds/linux/blob/master/Documentation/virt/kvm/arm/hyp-abi.rst).
-            Ok(VmExit::Hypercall {
+            Ok(ArmVmExit::Hypercall {
                 nr: ctx.gpr[0],
                 args: [
                     ctx.gpr[1], ctx.gpr[2], ctx.gpr[3], ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
@@ -138,7 +138,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> AxResult<VmExit> {
     }
 }
 
-fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
+fn handle_data_abort(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     let addr = exception_fault_addr()?;
     let access_width = exception_data_abort_access_width();
     let is_write = exception_data_abort_access_is_write();
@@ -153,15 +153,8 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
         exception_esr(),
     );
 
-    let width = match AccessWidth::try_from(access_width) {
-        Ok(access_width) => access_width,
-        Err(_) => return Err(AxError::InvalidInput),
-    };
-
-    let reg_width = match AccessWidth::try_from(reg_width) {
-        Ok(reg_width) => reg_width,
-        Err(_) => return Err(AxError::InvalidInput),
-    };
+    let width = ArmAccessWidth::try_from(access_width)?;
+    let reg_width = ArmAccessWidth::try_from(reg_width)?;
 
     if !exception_data_abort_handleable() {
         panic!(
@@ -173,20 +166,20 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
 
     if !exception_data_abort_is_translate_fault() {
         if exception_data_abort_is_permission_fault() {
-            return Err(AxError::Unsupported);
+            return Err(ArmVcpuError::Unsupported);
         } else {
             panic!("Core data abort is not translate fault {:#x}", addr,);
         }
     }
 
     if is_write {
-        return Ok(VmExit::MmioWrite {
+        return Ok(ArmVmExit::MmioWrite {
             addr,
             width,
             data: context_frame.gpr(reg) as u64,
         });
     }
-    Ok(VmExit::MmioRead {
+    Ok(ArmVmExit::MmioRead {
         addr,
         width,
         reg,
@@ -204,9 +197,9 @@ fn handle_data_abort(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
 /// * `context_frame` - A mutable reference to the trap frame containing the CPU state.
 ///
 /// # Returns
-/// * `AxResult<VmExit>` - An `AxResult` containing an `VmExit` indicating
+/// * [`ArmVcpuResult<ArmVmExit>`] - The VM-exit reason or a typed vCPU error.
 ///   whether the operation was a read or write and the relevant details.
-fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
+fn handle_system_register(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     let iss = ESR_EL2.read(ESR_EL2::ISS);
 
     let addr = exception_sysreg_addr(iss.try_into().unwrap());
@@ -216,13 +209,13 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
     let reg = exception_sysreg_gpr(iss) as usize;
     context_frame.set_exception_pc(val);
     if write {
-        return Ok(VmExit::SysRegWrite {
-            addr: SysRegAddr::new(addr),
+        return Ok(ArmVmExit::SysRegWrite {
+            addr: ArmSysRegAddr::new(addr),
             value: context_frame.gpr(reg) as u64,
         });
     }
-    Ok(VmExit::SysRegRead {
-        addr: SysRegAddr::new(addr),
+    Ok(ArmVmExit::SysRegRead {
+        addr: ArmSysRegAddr::new(addr),
         reg,
     })
 }
@@ -234,7 +227,7 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> AxResult<VmExit> {
 /// calling convention is used) is a psci call. This function handles them all.
 ///
 /// Returns `None` if the HVC is not a psci call.
-fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<VmExit>> {
+fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
     const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
@@ -257,13 +250,13 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<VmExit>> {
     };
 
     match fn_offset {
-        Some(PSCI_FN_CPU_OFF) => Some(Ok(VmExit::CpuDown { _state: ctx.gpr[1] })),
-        Some(PSCI_FN_CPU_ON) => Some(Ok(VmExit::CpuUp {
+        Some(PSCI_FN_CPU_OFF) => Some(Ok(ArmVmExit::CpuDown { state: ctx.gpr[1] })),
+        Some(PSCI_FN_CPU_ON) => Some(Ok(ArmVmExit::CpuUp {
             target_cpu: ctx.gpr[1],
-            entry_point: GuestPhysAddr::from(ctx.gpr[2] as usize),
+            entry_point: ArmGuestPhysAddr::from_usize(ctx.gpr[2] as usize),
             arg: ctx.gpr[3],
         })),
-        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(VmExit::SystemDown)),
+        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(ArmVmExit::SystemDown)),
         // We just forward these request to the ATF directly.
         Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
         _ => None,
@@ -274,7 +267,7 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<AxResult<VmExit>> {
 ///
 /// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
 /// Otherwise, it will forward the SMC call to the ATF directly.
-fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<VmExit> {
+fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     // Is this a psci call?
     if let Some(result) = handle_psci_call(ctx) {
         result
@@ -283,7 +276,7 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<VmExit> {
         // The args are from lower EL, so it is safe to call the ATF.
         (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
             unsafe { crate::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
-        Ok(VmExit::Nothing)
+        Ok(ArmVmExit::Nothing)
     }
 }
 
@@ -294,7 +287,7 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> AxResult<VmExit> {
 fn current_el_irq_handler(_tf: &mut TrapFrame) {
     // TODO: consider if returning VmExit::ExternalInterrupt (or another enum variant) is
     // better than directly calling the handler here.
-    crate::host::handle_irq()
+    crate::host::handle_current_host_irq()
 }
 
 /// Handles synchronous exceptions that occur from the current exception level.
@@ -323,9 +316,10 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
 /// 1. **Restore Previous Host Stack pointor:**
 ///     - The guest context frame is aleady saved by `SAVE_REGS_FROM_EL1` macro in exception.S.
 ///       This function firstly adjusts the `sp` to skip the exception frame
-///       (adding `34 * 8` to the stack pointer) according to the memory layout of `Aarch64VCpu` struct,
-///       which makes current `sp` point to the address of `host_stack_top`.
-///       The host stack top value is restored by `ldr`.
+///       according to the memory layout of [`crate::ArmVcpu`], which makes current `sp`
+///       point to the address of `host.stack_top`.
+///       The saved host `SP_EL0` is restored before any host Rust runs again, then
+///       the host stack top value is restored by `ldr`.
 ///
 /// 2. **Restore Host Context:**
 ///     - The `restore_regs_from_stack!()` macro is invoked to restore the host function context
@@ -334,8 +328,8 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
 ///
 /// 3. **Restore Host Control Flow:**
 ///     - The `ret` instruction is used to return control to the host context after
-///       the guest context has been saved in `Aarch64VCpu` struct and the host context restored.
-///       Finally the control flow is returned back to `Aarch64VCpu.run()` in [vcpu.rs].
+///       the guest context has been saved in `ArmVcpu` and the host context restored.
+///       Finally the control flow is returned back to `ArmVcpu::run()` in [vcpu.rs].
 ///
 /// # Notes
 ///
@@ -353,13 +347,17 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn vmexit_trampoline() -> ! {
     core::arch::naked_asm!(
-        // Curretly `sp` points to the base address of `Aarch64VCpu.ctx`, which stores guest's `TrapFrame`.
-        "add x9, sp, 34 * 8", // Skip the exception frame.
-        // Currently `x9` points to `&Aarch64VCpu.host_stack_top`, see `run_guest()` in vcpu.rs.
-        "ldr x10, [x9]", // Get `host_stack_top` value from `&Aarch64VCpu.host_stack_top`.
+        // Currently `sp` points to the base address of `ArmVcpu.ctx`, which stores guest's `TrapFrame`.
+        "add x9, sp, {host_stack_top_offset}", // Skip the exception frame.
+        // Currently `x9` points to `&ArmVcpu.host.stack_top`, see `run_guest()` in vcpu.rs.
+        "ldr x11, [x9, {host_sp_el0_delta}]", // Restore host SP_EL0 before host Rust resumes.
+        "msr sp_el0, x11",
+        "ldr x10, [x9]", // Get `host_stack_top` value from `&ArmVcpu.host.stack_top`.
         "mov sp, x10",   // Set `sp` as the host stack top.
         restore_regs_from_stack!(), // Restore host function context frame.
-        "ret", /* Control flow is handed back to Aarch64VCpu.run(), simulating the normal return of the `run_guest` function. */
+        "ret", /* Control flow is handed back to ArmVcpu::run(), simulating the normal return of the `run_guest` function. */
+        host_stack_top_offset = const crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
+        host_sp_el0_delta = const crate::ARM_VCPU_HOST_SP_EL0_OFFSET - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
     )
 }
 

@@ -6,7 +6,7 @@
 > 版本：`0.2.0-preview.2`
 > 文档依据：`Cargo.toml`、`src/main.rs`、`src/init.sh`、`.qemu.toml`、`os/StarryOS/README.md`、`os/StarryOS/kernel/src/entry.rs`、`xtask/src/starry/{build.rs,run.rs}`
 
-`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-feat` 能力组合、运行配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
+`starryos` 是 StarryOS 的默认启动镜像包。它不实现 syscall、进程管理或虚拟内存，而是负责把 `ax-runtime` 能力组合、运行配置、`starry-kernel` 和默认 init 命令线装配成一个可启动、可进入交互 shell 的系统镜像。
 
 换句话说，`starryos` 负责的是“把内核打包成一个能启动的 StarryOS 镜像”，而不是“内核本体”。真正的系统核心仍在 `starry-kernel`。
 
@@ -100,12 +100,12 @@ cargo xtask starry run --arch riscv64 --package starryos
 ## 依赖关系
 ```mermaid
 graph LR
-    ax-feat["ax-feat"] --> starryos["starryos"]
+    ax-runtime["ax-runtime"] --> starryos["starryos"]
     kernel["starry-kernel"] --> starryos
 ```
 
 ### 直接依赖
-- `ax-feat`：把底层 ArceOS 运行时和驱动能力 feature 接到镜像入口包上。
+- `ax-runtime`：把底层 ArceOS 运行时和驱动能力 feature 接到镜像入口包上。
 - `starry-kernel`：真正的内核实现，`starryos` 只在 `main()` 里调用其入口。
 
 ### 3.2 关键运行时外部条件
@@ -153,7 +153,7 @@ cargo xtask starry run --arch riscv64 --package starryos
 
 ## 跨项目定位
 ### ArceOS
-`starryos` 建立在 ArceOS 的 `ax-feat`/平台/运行时能力之上，但不是 ArceOS 本体的一部分。它消费的是 ArceOS 的底座能力。
+`starryos` 建立在 ArceOS 的 `ax-runtime`/平台/运行时能力之上，但不是 ArceOS 本体的一部分。它消费的是 ArceOS 的底座能力。
 
 ### StarryOS
 这是 StarryOS 的默认启动镜像入口。用户平时执行 `cargo xtask starry run --package starryos`，真正启动的就是这个包。
