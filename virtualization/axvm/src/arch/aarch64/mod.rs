@@ -1,12 +1,24 @@
+//! AxVM AArch64 adapter.
+//!
+//! This module owns the AxVM/ArceOS glue for the OS-neutral `arm_vcpu` core:
+//! `AxvmArmHostOps` supplies host IRQ/GIC operations, while wrapper types
+//! convert `arm_vcpu` errors and exits into `axvm_types` and `ax_errno` values.
+
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use arm_vcpu::host::ArmVcpuHostIf;
+use arm_vcpu::{
+    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
+    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
+};
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxResult, ax_err};
+use ax_errno::{AxError, AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use axvm_types::NestedPagingConfig;
+use axvm_types::{
+    AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmExit,
+};
 
 use super::{ArchOps, VcpuCreateContext, VcpuSetupContext, target_phys_cpu_ids};
 use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
@@ -16,8 +28,8 @@ mod npt;
 pub(crate) struct Aarch64Arch;
 
 impl ArchOps for Aarch64Arch {
-    type VCpu = arm_vcpu::Aarch64VCpu;
-    type PerCpu = arm_vcpu::Aarch64PerCpu;
+    type VCpu = AxvmArmVcpu;
+    type PerCpu = AxvmArmPerCpu;
     type VcpuCreateState = ();
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
@@ -97,8 +109,8 @@ impl ArchOps for Aarch64Arch {
     fn build_vcpu_create_config(
         _state: &Self::VcpuCreateState,
         ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as axvm_types::VmArchVcpuOps>::CreateConfig> {
-        Ok(arm_vcpu::Aarch64VCpuCreateConfig {
+    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
+        Ok(ArmVcpuCreateConfig {
             mpidr_el1: ctx.phys_cpu_id as _,
             dtb_addr: ctx.dtb_addr.unwrap_or_default().as_usize(),
         })
@@ -106,9 +118,9 @@ impl ArchOps for Aarch64Arch {
 
     fn build_vcpu_setup_config(
         ctx: VcpuSetupContext<'_>,
-    ) -> AxResult<<Self::VCpu as axvm_types::VmArchVcpuOps>::SetupConfig> {
+    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
         let passthrough = ctx.interrupt_mode == axvm_types::VMInterruptMode::Passthrough;
-        Ok(arm_vcpu::Aarch64VCpuSetupConfig {
+        Ok(ArmVcpuSetupConfig {
             passthrough_interrupt: passthrough,
             passthrough_timer: passthrough,
         })
@@ -145,20 +157,250 @@ impl ArchOps for Aarch64Arch {
     }
 }
 
-struct ArmVcpuHostIfImpl;
+struct AxvmArmHostOps;
 
-#[impl_interface]
-impl ArmVcpuHostIf for ArmVcpuHostIfImpl {
-    fn hardware_inject_virtual_interrupt(vector: u8) {
+impl ArmHostOps for AxvmArmHostOps {
+    fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
         gic::inject_interrupt(vector as usize);
+        Ok(())
     }
 
-    fn fetch_irq() -> usize {
-        gic::fetch_irq()
+    fn fetch_pending_host_irq() -> Option<usize> {
+        Some(gic::fetch_irq())
     }
 
-    fn handle_irq() {
+    fn handle_current_host_irq() {
         gic::handle_current_irq();
+    }
+}
+
+pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
+
+impl VmArchVcpuOps for AxvmArmVcpu {
+    type CreateConfig = ArmVcpuCreateConfig;
+    type SetupConfig = ArmVcpuSetupConfig;
+
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+        arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
+    }
+
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+        arm_result(self.0.set_entry(ax_guest_phys_addr_to_arm(entry)))
+    }
+
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+        arm_result(
+            self.0
+                .set_nested_page_table(ax_nested_paging_to_arm(config)),
+        )
+    }
+
+    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+        arm_result(self.0.setup(config))
+    }
+
+    fn run(&mut self) -> AxResult<VmExit> {
+        arm_result(self.0.run()).map(arm_exit_to_ax)
+    }
+
+    fn bind(&mut self) -> AxResult {
+        arm_result(self.0.bind())
+    }
+
+    fn unbind(&mut self) -> AxResult {
+        arm_result(self.0.unbind())
+    }
+
+    fn set_gpr(&mut self, reg: usize, val: usize) {
+        self.0.set_gpr(reg, val);
+    }
+
+    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+        arm_result(self.0.inject_interrupt(vector))
+    }
+
+    fn set_return_value(&mut self, val: usize) {
+        self.0.set_return_value(val);
+    }
+}
+
+pub(crate) struct AxvmArmPerCpu(ArmPerCpu);
+
+impl VmArchPerCpuOps for AxvmArmPerCpu {
+    fn new(cpu_id: usize) -> AxResult<Self> {
+        arm_result(ArmPerCpu::new(cpu_id)).map(Self)
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.0.is_enabled()
+    }
+
+    fn hardware_enable(&mut self) -> AxResult {
+        arm_result(self.0.hardware_enable::<AxvmArmHostOps>())
+    }
+
+    fn hardware_disable(&mut self) -> AxResult {
+        arm_result(self.0.hardware_disable())
+    }
+
+    fn max_guest_page_table_levels(&self) -> usize {
+        self.0.max_guest_page_table_levels()
+    }
+
+    fn guest_phys_addr_bits(&self) -> usize {
+        self.0.guest_phys_addr_bits()
+    }
+}
+
+fn arm_result<T>(result: ArmVcpuResult<T>) -> AxResult<T> {
+    result.map_err(arm_error_to_ax)
+}
+
+fn arm_error_to_ax(err: ArmVcpuError) -> AxError {
+    match err {
+        ArmVcpuError::InvalidInput => AxError::InvalidInput,
+        ArmVcpuError::Unsupported => AxError::Unsupported,
+        ArmVcpuError::BadState => AxError::BadState,
+    }
+}
+
+fn ax_guest_phys_addr_to_arm(addr: GuestPhysAddr) -> ArmGuestPhysAddr {
+    ArmGuestPhysAddr::from_usize(addr.as_usize())
+}
+
+fn arm_guest_phys_addr_to_ax(addr: ArmGuestPhysAddr) -> GuestPhysAddr {
+    GuestPhysAddr::from(addr.as_usize())
+}
+
+fn ax_nested_paging_to_arm(config: NestedPagingConfig) -> ArmNestedPagingConfig {
+    ArmNestedPagingConfig::new(
+        config.root_paddr.as_usize(),
+        config.levels,
+        config.gpa_bits,
+        config.mode,
+    )
+}
+
+fn arm_access_width_to_ax(width: ArmAccessWidth) -> AccessWidth {
+    match width {
+        ArmAccessWidth::Byte => AccessWidth::Byte,
+        ArmAccessWidth::Word => AccessWidth::Word,
+        ArmAccessWidth::Dword => AccessWidth::Dword,
+        ArmAccessWidth::Qword => AccessWidth::Qword,
+    }
+}
+
+fn arm_sys_reg_addr_to_ax(addr: ArmSysRegAddr) -> SysRegAddr {
+    SysRegAddr::new(addr.addr())
+}
+
+fn arm_exit_to_ax(exit: ArmVmExit) -> VmExit {
+    match exit {
+        ArmVmExit::Hypercall { nr, args } => VmExit::Hypercall { nr, args },
+        ArmVmExit::MmioRead {
+            addr,
+            width,
+            reg,
+            reg_width,
+            signed_ext,
+        } => VmExit::MmioRead {
+            addr: arm_guest_phys_addr_to_ax(addr),
+            width: arm_access_width_to_ax(width),
+            reg,
+            reg_width: arm_access_width_to_ax(reg_width),
+            signed_ext,
+        },
+        ArmVmExit::MmioWrite { addr, width, data } => VmExit::MmioWrite {
+            addr: arm_guest_phys_addr_to_ax(addr),
+            width: arm_access_width_to_ax(width),
+            data,
+        },
+        ArmVmExit::SysRegRead { addr, reg } => VmExit::SysRegRead {
+            addr: arm_sys_reg_addr_to_ax(addr),
+            reg,
+        },
+        ArmVmExit::SysRegWrite { addr, value } => VmExit::SysRegWrite {
+            addr: arm_sys_reg_addr_to_ax(addr),
+            value,
+        },
+        ArmVmExit::ExternalInterrupt { vector } => VmExit::ExternalInterrupt { vector },
+        ArmVmExit::CpuDown { state } => VmExit::CpuDown { _state: state },
+        ArmVmExit::CpuUp {
+            target_cpu,
+            entry_point,
+            arg,
+        } => VmExit::CpuUp {
+            target_cpu,
+            entry_point: arm_guest_phys_addr_to_ax(entry_point),
+            arg,
+        },
+        ArmVmExit::SystemDown => VmExit::SystemDown,
+        ArmVmExit::SendIPI {
+            target_cpu,
+            target_cpu_aux,
+            send_to_all,
+            send_to_self,
+            vector,
+        } => VmExit::SendIPI {
+            target_cpu,
+            target_cpu_aux,
+            send_to_all,
+            send_to_self,
+            vector,
+        },
+        ArmVmExit::Nothing => VmExit::Nothing,
+        _ => unreachable!("unmapped arm_vcpu VM-exit variant"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_arm_vcpu_errors_to_ax_errors() {
+        assert_eq!(
+            arm_error_to_ax(ArmVcpuError::InvalidInput),
+            AxError::InvalidInput
+        );
+        assert_eq!(
+            arm_error_to_ax(ArmVcpuError::Unsupported),
+            AxError::Unsupported
+        );
+        assert_eq!(arm_error_to_ax(ArmVcpuError::BadState), AxError::BadState);
+    }
+
+    #[test]
+    fn converts_arm_vcpu_exits_to_axvm_exits() {
+        let mmio = arm_exit_to_ax(ArmVmExit::MmioRead {
+            addr: ArmGuestPhysAddr::from_usize(0x4000),
+            width: ArmAccessWidth::Dword,
+            reg: 5,
+            reg_width: ArmAccessWidth::Qword,
+            signed_ext: true,
+        });
+        assert!(matches!(
+            mmio,
+            VmExit::MmioRead {
+                addr,
+                width: AccessWidth::Dword,
+                reg: 5,
+                reg_width: AccessWidth::Qword,
+                signed_ext: true,
+            } if addr.as_usize() == 0x4000
+        ));
+
+        let cpu_down = arm_exit_to_ax(ArmVmExit::CpuDown { state: 7 });
+        assert!(matches!(cpu_down, VmExit::CpuDown { _state: 7 }));
+
+        let sysreg = arm_exit_to_ax(ArmVmExit::SysRegWrite {
+            addr: ArmSysRegAddr::new(0x3a_3016),
+            value: 0x55,
+        });
+        assert!(matches!(
+            sysreg,
+            VmExit::SysRegWrite { addr, value: 0x55 } if addr.addr() == 0x3a_3016
+        ));
     }
 }
 

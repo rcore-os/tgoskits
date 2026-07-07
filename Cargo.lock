@@ -399,10 +399,6 @@ name = "arm_vcpu"
 version = "0.5.15"
 dependencies = [
  "aarch64-cpu 11.2.0",
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-percpu",
- "axvm-types",
  "log",
  "numeric-enum-macro",
  "spin",
