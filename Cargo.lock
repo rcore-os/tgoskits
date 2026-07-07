@@ -682,6 +682,7 @@ dependencies = [
  "rdif-display",
  "rdif-input",
  "rdif-intc",
+ "rdif-msi",
  "rdif-pcie",
  "rdif-pinctrl",
  "rdif-power",
@@ -5496,8 +5497,10 @@ dependencies = [
  "log",
  "mmio-api",
  "pci_types",
+ "rdif-msi",
  "rdif-pcie",
  "thiserror 2.0.18",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -6294,6 +6297,14 @@ name = "rdif-intc"
 version = "0.15.0"
 dependencies = [
  "cfg-if",
+ "irq-framework",
+ "rdif-base",
+]
+
+[[package]]
+name = "rdif-msi"
+version = "0.1.0"
+dependencies = [
  "irq-framework",
  "rdif-base",
 ]
@@ -7546,6 +7557,7 @@ dependencies = [
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
+ "rdif-msi",
  "rdrive",
  "riscv",
  "sbi-rt",

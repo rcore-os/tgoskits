@@ -219,6 +219,29 @@ impl LPI {
         self.CTLR.modify(RCtrl::EnableLPIs::SET);
     }
 
+    /// Configure property and pending tables for physical LPIs.
+    pub fn configure_lpi_tables(
+        &self,
+        property_table_phys: u64,
+        property_id_bits: u8,
+        pending_table_phys: u64,
+    ) -> Result<(), &'static str> {
+        self.disable_lpi();
+        self.PROPBASER.write(
+            PROPBASER::IDbits.val(property_id_bits.saturating_sub(1) as u64)
+                + PROPBASER::PhysicalAddress.val(property_table_phys >> 12)
+                + PROPBASER::InnerCache::WaWb
+                + PROPBASER::OuterCache::WaWb,
+        );
+        self.PENDBASER.write(
+            PENDBASER::PhysicalAddress.val(pending_table_phys >> 16)
+                + PENDBASER::InnerCache::WaWb
+                + PENDBASER::OuterCache::WaWb,
+        );
+        self.enable_lpi();
+        self.wait_for_rwp()
+    }
+
     /// Disable LPI support
     pub fn disable_lpi(&self) {
         self.CTLR.modify(RCtrl::EnableLPIs::CLEAR);
@@ -268,6 +291,10 @@ impl LPI {
     /// Get affinity value
     pub fn get_affinity(&self) -> u32 {
         self.TYPER.read(TYPER::Affinity) as u32
+    }
+
+    pub fn processor_number(&self) -> u16 {
+        self.TYPER.read(TYPER::ProcessorNumber) as u16
     }
 
     /// Check if physical LPIs are supported

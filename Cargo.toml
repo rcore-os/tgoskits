@@ -226,6 +226,7 @@ rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
 rdif-eth = { version = "0.3.6", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.2.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.15.0", path = "drivers/interface/rdif-intc" }
+rdif-msi = { version = "0.1.0", path = "drivers/interface/rdif-msi" }
 rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.1.1", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.1.0", path = "drivers/interface/rdif-pwm" }

@@ -12,9 +12,9 @@ pub mod queue;
 #[cfg(test)]
 pub use device::NoopDrainWake;
 pub use device::{
-    BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockIrqAction, BlockRuntime,
-    BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, block_io_stats, map_blk_err_to_ax_err,
-    release_block_irqs_for_passthrough,
+    BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockIrqAction, BlockIrqSource,
+    BlockRuntime, BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, block_io_stats,
+    map_blk_err_to_ax_err, release_block_irqs_for_passthrough,
 };
 #[cfg(test)]
 pub use dma::VEC_DMA_OP;

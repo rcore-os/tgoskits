@@ -312,8 +312,14 @@ impl Default for BlockRuntime {
 
 pub struct RdifBlockDevice {
     name: String,
-    irq: Option<IrqId>,
+    irqs: Vec<BlockIrqSource>,
     interface: Box<dyn rdif_block::Interface>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockIrqSource {
+    pub source_id: usize,
+    pub irq: IrqId,
 }
 
 impl RdifBlockDevice {
@@ -322,9 +328,22 @@ impl RdifBlockDevice {
         irq: Option<IrqId>,
         interface: Box<dyn rdif_block::Interface>,
     ) -> Self {
+        Self::new_with_irqs(
+            name,
+            irq.into_iter()
+                .map(|irq| BlockIrqSource { source_id: 0, irq }),
+            interface,
+        )
+    }
+
+    pub fn new_with_irqs(
+        name: impl Into<String>,
+        irqs: impl IntoIterator<Item = BlockIrqSource>,
+        interface: Box<dyn rdif_block::Interface>,
+    ) -> Self {
         Self {
             name: name.into(),
-            irq,
+            irqs: irqs.into_iter().collect(),
             interface,
         }
     }
@@ -333,8 +352,20 @@ impl RdifBlockDevice {
         &self.name
     }
 
-    pub const fn irq(&self) -> Option<IrqId> {
-        self.irq
+    pub fn irq(&self) -> Option<IrqId> {
+        self.irq_for_source(0)
+            .or_else(|| self.irqs.first().map(|source| source.irq))
+    }
+
+    pub fn irq_for_source(&self, source_id: usize) -> Option<IrqId> {
+        self.irqs
+            .iter()
+            .find(|source| source.source_id == source_id)
+            .map(|source| source.irq)
+    }
+
+    pub fn irq_sources(&self) -> &[BlockIrqSource] {
+        &self.irqs
     }
 
     pub fn interface(&self) -> &dyn rdif_block::Interface {
@@ -361,7 +392,7 @@ impl RdifBlockDevice {
         &mut self,
         source_id: usize,
     ) -> Option<(IrqId, Box<dyn rdif_block::IrqHandler>)> {
-        let irq = self.irq?;
+        let irq = self.irq_for_source(source_id)?;
         self.interface
             .take_irq_handler(source_id)
             .map(|handler| (irq, handler))
@@ -1336,7 +1367,7 @@ fn rdif_block_runtime_config(
     drain_wake: Arc<dyn BlockDrainWake>,
 ) -> BlockRuntimeConfig {
     let mut config = BlockRuntimeConfig::new(drain_wake);
-    if block.irq().is_some() && !block.interface().irq_sources().is_empty() {
+    if !block.irq_sources().is_empty() && !block.interface().irq_sources().is_empty() {
         config.max_transfer_bytes = config.max_transfer_bytes.max(IRQ_DRIVEN_MAX_TRANSFER_BYTES);
     }
     config

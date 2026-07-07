@@ -1,5 +1,8 @@
 use alloc::{collections::BTreeMap, format};
-use core::cell::UnsafeCell;
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::{checked_intid, v3::*};
@@ -10,6 +13,7 @@ use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 use crate::common::ioremap;
 
 static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
+static PRIMARY_GICR_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
 
 struct CpuInterfaceSlot {
     inner: UnsafeCell<Option<CpuInterface>>,
@@ -64,6 +68,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         info.node.name()
     )))?;
     let gicr_reg = reg.next().unwrap();
+    PRIMARY_GICR_PHYS_BASE.store(gicr_reg.address, Ordering::Release);
 
     let gicd = ioremap(
         gicd_reg.address,
@@ -140,6 +145,9 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
         current_cpu_interface().set_irq_enable(intid, enable);
         return Ok(());
     }
+    if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
+        return super::its::set_lpi_enabled(irq, enable);
+    }
 
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
         let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
@@ -191,6 +199,13 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
 
 fn affinity_from_mpidr(mpidr: usize) -> Affinity {
     Affinity::from_mpidr(mpidr as u64)
+}
+
+pub(super) fn primary_gicr_phys_base() -> Option<u64> {
+    match PRIMARY_GICR_PHYS_BASE.load(Ordering::Acquire) {
+        0 => None,
+        phys => Some(phys),
+    }
 }
 
 pub fn init_cpu(cpu_idx: usize) {

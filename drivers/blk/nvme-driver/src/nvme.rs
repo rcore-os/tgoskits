@@ -27,15 +27,18 @@ pub struct Nvme {
     page_size: usize,
     max_transfer_bytes: Option<usize>,
     io_queue_interrupts: bool,
-    interrupt_vector: u32,
+    msix_interrupts: bool,
+    interrupt_vectors: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub page_size: usize,
     pub io_queue_pair_count: usize,
     pub io_queue_interrupts: bool,
     pub interrupt_vector: u32,
+    pub msix_interrupts: bool,
+    pub interrupt_vectors: Vec<u16>,
 }
 
 impl Config {
@@ -45,13 +48,38 @@ impl Config {
             io_queue_pair_count,
             io_queue_interrupts: false,
             interrupt_vector: 0,
+            msix_interrupts: false,
+            interrupt_vectors: Vec::new(),
         }
     }
 
-    pub const fn with_intx_irq(mut self) -> Self {
+    pub fn with_intx_irq(mut self) -> Self {
         self.io_queue_interrupts = true;
         self.interrupt_vector = 0;
+        self.msix_interrupts = false;
+        self.interrupt_vectors = Vec::from([0]);
         self
+    }
+
+    pub fn with_msix_vectors(mut self, vectors: impl Into<Vec<u16>>) -> Self {
+        self.interrupt_vectors = vectors.into();
+        self.io_queue_interrupts = !self.interrupt_vectors.is_empty();
+        self.msix_interrupts = self.io_queue_interrupts;
+        self.interrupt_vector = self
+            .interrupt_vectors
+            .first()
+            .copied()
+            .map(u32::from)
+            .unwrap_or(0);
+        self
+    }
+
+    fn interrupt_vector_for_queue(&self, queue_index: usize) -> u32 {
+        self.interrupt_vectors
+            .get(queue_index)
+            .copied()
+            .map(u32::from)
+            .unwrap_or(self.interrupt_vector)
     }
 }
 
@@ -97,7 +125,8 @@ impl Nvme {
             page_size: config.page_size,
             max_transfer_bytes: None,
             io_queue_interrupts: config.io_queue_interrupts,
-            interrupt_vector: config.interrupt_vector,
+            msix_interrupts: config.msix_interrupts,
+            interrupt_vectors: config.interrupt_vectors.clone(),
         };
 
         let version = s.version();
@@ -145,7 +174,9 @@ impl Nvme {
         self.num_ns = controller.number_of_namespaces as _;
         self.max_transfer_bytes = controller_max_transfer_bytes(config.page_size, controller.mdts);
         if config.io_queue_interrupts {
-            self.mask_interrupt_vector(config.interrupt_vector);
+            for vector in &config.interrupt_vectors {
+                self.mask_interrupt_vector(u32::from(*vector));
+            }
         }
         self.config_io_queue(config)?;
 
@@ -224,7 +255,7 @@ impl Nvme {
                 io_queue.cq_bus_addr(),
                 true,
                 config.io_queue_interrupts,
-                config.interrupt_vector,
+                config.interrupt_vector_for_queue(i),
             );
             self.admin_queue.command_sync(data)?;
 
@@ -263,7 +294,19 @@ impl Nvme {
     }
 
     pub fn interrupt_vector(&self) -> u32 {
-        self.interrupt_vector
+        self.interrupt_vectors
+            .first()
+            .copied()
+            .map(u32::from)
+            .unwrap_or(0)
+    }
+
+    pub fn msix_interrupts_enabled(&self) -> bool {
+        self.io_queue_interrupts && self.msix_interrupts
+    }
+
+    pub fn interrupt_vectors(&self) -> &[u16] {
+        &self.interrupt_vectors
     }
 
     pub fn mask_interrupt_vector(&mut self, vector: u32) {
@@ -414,10 +457,25 @@ mod tests {
         let config = Config::new(4096, 1);
         assert!(!config.io_queue_interrupts);
         assert_eq!(config.interrupt_vector, 0);
+        assert!(!config.msix_interrupts);
+        assert!(config.interrupt_vectors.is_empty());
 
         let irq_config = config.with_intx_irq();
         assert!(irq_config.io_queue_interrupts);
         assert_eq!(irq_config.interrupt_vector, 0);
+        assert!(!irq_config.msix_interrupts);
+        assert_eq!(irq_config.interrupt_vectors, [0]);
+    }
+
+    #[test]
+    fn config_can_enable_msix_per_queue_vectors() {
+        let config = Config::new(4096, 2).with_msix_vectors([4, 5]);
+
+        assert!(config.io_queue_interrupts);
+        assert!(config.msix_interrupts);
+        assert_eq!(config.interrupt_vector, 4);
+        assert_eq!(config.interrupt_vector_for_queue(0), 4);
+        assert_eq!(config.interrupt_vector_for_queue(1), 5);
     }
 
     #[test]

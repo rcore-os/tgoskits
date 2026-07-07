@@ -71,7 +71,7 @@ pub struct PlatformBlockDevice {
 /// objects directly, installing IRQ handlers according to the OS policy.
 pub struct RdifBlockDevice {
     name: String,
-    irq: Option<BindingIrq>,
+    irqs: Vec<crate::BindingIrqBinding>,
     interface: Box<dyn Interface>,
 }
 
@@ -351,15 +351,36 @@ impl RdifBlockDevice {
     }
 
     pub fn irq(&self) -> Option<&BindingIrq> {
-        self.irq.as_ref()
+        self.irq_for_source(0)
+            .or_else(|| self.irqs.first().map(|binding| &binding.irq))
     }
 
     pub fn irq_cloned(&self) -> Option<BindingIrq> {
-        self.irq.clone()
+        self.irq().cloned()
+    }
+
+    pub fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
+        self.irqs
+            .iter()
+            .find(|binding| binding.source_id == source_id)
+            .map(|binding| &binding.irq)
+    }
+
+    pub fn irq_for_source_cloned(&self, source_id: usize) -> Option<BindingIrq> {
+        self.irq_for_source(source_id).cloned()
+    }
+
+    pub fn irq_sources(&self) -> &[crate::BindingIrqBinding] {
+        &self.irqs
     }
 
     pub fn irq_num(&self) -> Option<usize> {
-        self.irq.as_ref().and_then(BindingIrq::legacy_num)
+        self.irq().and_then(BindingIrq::legacy_num)
+    }
+
+    pub fn irq_num_for_source(&self, source_id: usize) -> Option<usize> {
+        self.irq_for_source(source_id)
+            .and_then(BindingIrq::legacy_num)
     }
 
     pub fn interface(&self) -> &dyn Interface {
@@ -384,7 +405,7 @@ impl RdifBlockDevice {
 
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num()?;
+        let irq_num = self.irq_num_for_source(source_id)?;
         self.interface
             .take_irq_handler(source_id)
             .map(BlockIrqHandler::new_raw)
@@ -610,11 +631,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq = dev.info.irq_cloned();
+        let irqs = dev.info.irq_sources().to_vec();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
-            irq,
+            irqs,
             interface,
         })
     }

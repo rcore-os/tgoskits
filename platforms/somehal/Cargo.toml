@@ -23,6 +23,7 @@ ax-kspin = { workspace = true }
 irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true
+rdif-msi.workspace = true
 rdrive = {workspace = true}
 someboot = {workspace = true}
 somehal-macros = {workspace = true}
