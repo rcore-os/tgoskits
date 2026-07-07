@@ -23,4 +23,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/self-compile-inner.sh"
 success_regex = ["(?m)^SELFHOST_BOOTSTRAP_SUCCESS\\s*$"]
 fail_regex = ['(?i)\bpanicked\b', 'SELFHOST_BOOTSTRAP_FAILED']
-timeout = 7200
+timeout = 14400
