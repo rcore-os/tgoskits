@@ -1,0 +1,25 @@
+board_type = "AKA-00-SG2002"
+dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+cd /akars_tennis && ./run.sh
+'''
+success_regex = [
+  "(?m)^STARRY_AKA00_TENNIS_DETECT_OK$",
+]
+fail_regex = [
+  "(?m)^AKARS_TENNIS_VALIDATE_FAIL .*$",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "(?i)error while loading shared libraries",
+  "(?i)CVI_NN_RegisterModel failed",
+  "(?i)CVI_NN_Forward failed",
+  "(?i)(akars-tennis-validator|run.sh|sh): .*not found",
+  "failed to determine root device",
+]
+timeout = 600
