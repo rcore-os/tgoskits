@@ -749,6 +749,8 @@ pub(crate) fn handle_internal_exit(
             #[cfg(target_arch = "x86_64")]
             super::devices::x86::forward_passthrough_irq_from_vmexit(vm, vcpu, vector as usize);
             #[cfg(target_arch = "x86_64")]
+            super::devices::x86::inject_due_pit_irq0(vm, vcpu);
+            #[cfg(target_arch = "x86_64")]
             super::devices::x86::inject_pending_serial_irq(vm, vcpu);
             #[cfg(target_arch = "riscv64")]
             {

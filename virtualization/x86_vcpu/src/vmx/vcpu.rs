@@ -67,6 +67,8 @@ const X86_PIT_SPEAKER_PORT: u16 = 0x61;
 const X86_COM1_PORT_BASE: u16 = 0x3f8;
 const X86_COM1_PORT_COUNT: u32 = 8;
 pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
+const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
+const X86_LOCAL_APIC_ICR_LOW_OFFSET: usize = 0x300;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
 
@@ -1029,7 +1031,6 @@ impl VmxVcpu {
             {
                 Some(self.handle_amd64_de_cfg_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
             }
-            VmxExitReason::APIC_ACCESS => Some(self.handle_apic_access(exit_info)),
             _ => None,
         }
     }
@@ -1113,7 +1114,7 @@ impl VmxVcpu {
             })
     }
 
-    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult {
+    fn handle_apic_access(&mut self, exit_info: &VmxExitInfo) -> AxResult<AxVCpuExitReason> {
         let apic_access_exit_info = self.apic_access_exit_info()?;
 
         let write = match apic_access_exit_info.access_type {
@@ -1132,12 +1133,9 @@ impl VmxVcpu {
         let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + reg);
         if write {
             let value = self.decode_apic_mmio_write_value(exit_info)?;
-            <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
-                &self.vlapic,
-                addr,
-                AccessWidth::Dword,
-                value,
-            )?;
+            let exit_reason = self.handle_lapic_mmio_write(addr, value)?;
+            self.advance_rip(exit_info.exit_instruction_length as _)?;
+            Ok(exit_reason)
         } else {
             let value =
                 <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_read(
@@ -1146,9 +1144,40 @@ impl VmxVcpu {
                     AccessWidth::Dword,
                 )?;
             self.regs_mut().rax = value as u64;
+            self.advance_rip(exit_info.exit_instruction_length as _)?;
+            Ok(AxVCpuExitReason::Nothing)
+        }
+    }
+
+    fn handle_lapic_mmio_write(
+        &mut self,
+        addr: GuestPhysAddr,
+        value: usize,
+    ) -> AxResult<AxVCpuExitReason> {
+        let offset = addr.as_usize() - X86_APIC_ACCESS_GPA;
+        if offset == X86_LOCAL_APIC_EOI_OFFSET {
+            return Ok(self.handle_lapic_eoi_exit());
         }
 
-        self.advance_rip(exit_info.exit_instruction_length as _)
+        <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
+            &self.vlapic,
+            addr,
+            AccessWidth::Dword,
+            value,
+        )?;
+
+        if offset == X86_LOCAL_APIC_ICR_LOW_OFFSET {
+            Ok(self
+                .take_pending_cpu_up_exit()
+                .unwrap_or(AxVCpuExitReason::Nothing))
+        } else {
+            Ok(AxVCpuExitReason::Nothing)
+        }
+    }
+
+    fn handle_lapic_eoi_exit(&mut self) -> AxVCpuExitReason {
+        let vector = self.vlapic.handle_eoi();
+        AxVCpuExitReason::InterruptEnd { vector }
     }
 
     fn decode_apic_mmio_write_value(&self, exit_info: &VmxExitInfo) -> AxResult<usize> {
@@ -1222,16 +1251,12 @@ impl VmxVcpu {
             return match (write, opcode) {
                 (true, 0x89) => {
                     let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
-                    <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
-                        &self.vlapic,
-                        addr,
-                        AccessWidth::Dword,
-                        self.guest_regs.get_reg_of_index(reg) as u32 as usize,
-                    )
-                    .ok()?;
                     Some(
-                        self.take_pending_cpu_up_exit()
-                            .unwrap_or(AxVCpuExitReason::Nothing),
+                        self.handle_lapic_mmio_write(
+                            addr,
+                            self.guest_regs.get_reg_of_index(reg) as u32 as usize,
+                        )
+                        .ok()?,
                     )
                 }
                 (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
@@ -1240,17 +1265,7 @@ impl VmxVcpu {
                     for i in 0..size_of::<u32>() {
                         data |= (self.read_guest_u8(imm_addr + i).ok()? as u32) << (i * 8);
                     }
-                    <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
-                        &self.vlapic,
-                        addr,
-                        AccessWidth::Dword,
-                        data as usize,
-                    )
-                    .ok()?;
-                    Some(
-                        self.take_pending_cpu_up_exit()
-                            .unwrap_or(AxVCpuExitReason::Nothing),
-                    )
+                    Some(self.handle_lapic_mmio_write(addr, data as usize).ok()?)
                 }
                 (false, 0x8b) => {
                     let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
@@ -1764,29 +1779,20 @@ impl AxArchVCpu for VmxVcpu {
                         self.handle_vmx_preemption_timer()?;
                         AxVCpuExitReason::PreemptionTimer
                     }
-                    VmxExitReason::VIRTUALIZED_EOI => AxVCpuExitReason::InterruptEnd {
-                        vector: self.vlapic.handle_eoi(),
-                    },
+                    VmxExitReason::VIRTUALIZED_EOI => self.handle_lapic_eoi_exit(),
+                    VmxExitReason::APIC_ACCESS => self.handle_apic_access(&exit_info)?,
                     VmxExitReason::APIC_WRITE => {
                         let offset = self.apic_access_exit_info()?.offset as usize;
-                        if offset == 0xb0 {
-                            let vector = self.vlapic.handle_eoi();
-                            AxVCpuExitReason::InterruptEnd { vector }
-                        } else if offset == 0x300 {
+                        if offset == X86_LOCAL_APIC_ICR_LOW_OFFSET {
                             let addr = GuestPhysAddr::from(X86_APIC_ACCESS_GPA + offset);
                             let value = <EmulatedLocalApic as BaseDeviceOps<
                                 AddrRange<GuestPhysAddr>,
                             >>::handle_read(
                                 &self.vlapic, addr, AccessWidth::Dword
                             )?;
-                            <EmulatedLocalApic as BaseDeviceOps<AddrRange<GuestPhysAddr>>>::handle_write(
-                                &self.vlapic,
-                                addr,
-                                AccessWidth::Dword,
-                                value,
-                            )?;
-                            self.take_pending_cpu_up_exit()
-                                .unwrap_or(AxVCpuExitReason::Nothing)
+                            self.handle_lapic_mmio_write(addr, value)?
+                        } else if offset == X86_LOCAL_APIC_EOI_OFFSET {
+                            self.handle_lapic_eoi_exit()
                         } else {
                             AxVCpuExitReason::Nothing
                         }

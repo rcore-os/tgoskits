@@ -5,7 +5,7 @@ use vm_interrupt::InterruptTriggerMode;
 
 use crate::vmm::{
     VCpuRef, VMRef,
-    interrupt::{InterruptRoute, VirtualInterrupt, deliver_interrupt},
+    interrupt::{InterruptRoute, VirtualInterrupt, deliver_interrupt, inject_virtual_interrupt},
 };
 
 const IOAPIC_VECTOR_BASE: usize = 0x20;
@@ -23,7 +23,7 @@ static IOAPIC_IRQ_HANDLERS: [AtomicBool; IOAPIC_GSI_COUNT] =
 
 pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
     if !ioapic_irq_handler_registered(vector) {
-        forward_passthrough_irq(vm, vcpu.id(), vector);
+        forward_passthrough_irq(vm, vcpu, vector);
     }
 }
 
@@ -47,13 +47,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) -> bool {
     };
 
     trace!("Injecting x86 PIT IRQ0 vector {:#x}", irq.vector);
-    deliver_ioapic_interrupt(
-        vm,
-        vcpu.id(),
-        irq.vector,
-        irq.level_triggered,
-        irq.target_vcpu,
-    )
+    deliver_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) -> bool {
@@ -75,13 +69,7 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) -> bool {
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    deliver_ioapic_interrupt(
-        vm,
-        vcpu.id(),
-        irq.vector,
-        irq.level_triggered,
-        irq.target_vcpu,
-    )
+    deliver_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) -> bool {
@@ -97,13 +85,7 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    deliver_ioapic_interrupt(
-        vm,
-        vcpu.id(),
-        irq.vector,
-        irq.level_triggered,
-        irq.target_vcpu,
-    )
+    deliver_ioapic_interrupt(vm, vcpu, irq.vector, irq.level_triggered, irq.target_vcpu)
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -123,10 +105,19 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
         let mut deferred = 0;
         for gsi in 0..IOAPIC_GSI_COUNT {
             if pending & (1usize << gsi) != 0 {
-                if ioapic_gsi_targets_current_vcpu(vm, vcpu, gsi) {
-                    forward_passthrough_irq(vm, vcpu.id(), IOAPIC_VECTOR_BASE + gsi);
-                } else {
-                    deferred |= 1usize << gsi;
+                match vm.get_devices().x86_ioapic_target_vcpu_for_gsi(gsi) {
+                    Some(target_vcpu) if target_vcpu == vcpu.id() => {
+                        forward_passthrough_irq(vm, vcpu, IOAPIC_VECTOR_BASE + gsi);
+                    }
+                    Some(target_vcpu) => {
+                        trace!(
+                            "Deferring x86 IOAPIC GSI {gsi} for target vCPU {target_vcpu} from \
+                             current vCPU {}",
+                            vcpu.id()
+                        );
+                        deferred |= 1usize << gsi;
+                    }
+                    None => {}
                 }
             }
         }
@@ -193,7 +184,7 @@ pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
     IOAPIC_IRQ_PENDING.store(0, Ordering::Release);
 }
 
-fn forward_passthrough_irq(vm: &VMRef, current_vcpu_id: usize, vector: usize) -> bool {
+fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) -> bool {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return false;
     }
@@ -218,7 +209,7 @@ fn forward_passthrough_irq(vm: &VMRef, current_vcpu_id: usize, vector: usize) ->
     );
     deliver_ioapic_interrupt(
         vm,
-        current_vcpu_id,
+        vcpu,
         guest_irq.vector,
         guest_irq.level_triggered,
         guest_irq.target_vcpu,
@@ -233,24 +224,34 @@ fn ioapic_gsi_targets_current_vcpu(vm: &VMRef, vcpu: &VCpuRef, gsi: usize) -> bo
 
 fn deliver_ioapic_interrupt(
     vm: &VMRef,
-    current_vcpu_id: usize,
+    vcpu: &VCpuRef,
     vector: u8,
     level_triggered: bool,
     target_vcpu: usize,
 ) -> bool {
-    deliver_interrupt(InterruptRoute::new(
-        vm.id(),
-        target_vcpu,
-        VirtualInterrupt::with_trigger(
-            vector as usize,
-            if level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        ),
-    ));
-    target_vcpu == current_vcpu_id
+    let interrupt = VirtualInterrupt::with_trigger(
+        vector as usize,
+        if level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    );
+
+    if target_vcpu == vcpu.id() {
+        if let Err(err) = inject_virtual_interrupt(interrupt, vcpu) {
+            warn!(
+                "Failed to inject x86 IOAPIC vector {vector:#x} to VM[{}] VCpu[{}]: {err:?}",
+                vm.id(),
+                vcpu.id()
+            );
+            return false;
+        }
+        return true;
+    }
+
+    deliver_interrupt(InterruptRoute::new(vm.id(), target_vcpu, interrupt));
+    true
 }
 
 fn ioapic_irq_forwarding_handler(vector: usize) {
