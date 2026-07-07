@@ -34,4 +34,19 @@ mod tests {
     fn random_write_mixes_entropy() {
         ax_assert!(axtest_exports::random_write_mixes_entropy());
     }
+
+    #[test]
+    fn pipe_peer_close_with_multiple_readers_is_visible() {
+        ax_assert!(axtest_exports::pipe_peer_close_with_multiple_readers_is_visible());
+    }
+
+    #[test]
+    fn pipe_resize_rejects_oversized_pipe() {
+        ax_assert!(axtest_exports::pipe_resize_rejects_oversized_pipe());
+    }
+
+    #[test]
+    fn fcntl_setpipe_size_returns_capacity() {
+        ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
+    }
 }
