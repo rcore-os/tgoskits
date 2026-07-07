@@ -572,12 +572,17 @@ impl SocketOps for TcpSocket {
         })
     }
 
-    fn send(&self, mut src: impl Read, options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
+        let target_len = src.remaining();
+        if target_len == 0 {
+            return Ok(0);
+        }
+        let mut total_sent = 0;
         let result = self.general.send_poller_with(self, extra_nb, || {
             request_poll();
-            self.with_smol_socket(|socket| {
+            let step = self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
                 } else if !socket.can_send() {
@@ -593,7 +598,11 @@ impl SocketOps for TcpSocket {
                         .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
                     Ok(len)
                 }
-            })
+            });
+            if step.as_ref().is_ok_and(|sent| *sent > 0) {
+                request_poll();
+            }
+            finish_tcp_send_step(&mut total_sent, target_len, extra_nb, step)
         });
         if result.is_ok() {
             request_poll();
@@ -1084,6 +1093,28 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
+fn finish_tcp_send_step(
+    total_sent: &mut usize,
+    target_len: usize,
+    extra_nonblocking: bool,
+    step: AxResult<usize>,
+) -> AxResult<usize> {
+    match step {
+        Ok(sent) => {
+            *total_sent += sent;
+            if *total_sent >= target_len || extra_nonblocking {
+                Ok(*total_sent)
+            } else {
+                Err(AxError::WouldBlock)
+            }
+        }
+        Err(AxError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
+        Err(AxError::WouldBlock) => Err(AxError::WouldBlock),
+        Err(_) if *total_sent > 0 => Ok(*total_sent),
+        Err(err) => Err(err),
+    }
+}
+
 fn get_ephemeral_port() -> AxResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
 }
@@ -1099,6 +1130,49 @@ mod tests {
             LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
         },
     };
+
+    #[test]
+    fn blocking_tcp_send_waits_after_partial_write() {
+        let mut total = 0;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Ok(4)),
+            Err(AxError::WouldBlock),
+        );
+        assert_eq!(total, 4);
+        assert_eq!(finish_tcp_send_step(&mut total, 10, false, Ok(6)), Ok(10),);
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn dontwait_tcp_send_returns_first_partial_write() {
+        let mut total = 0;
+
+        assert_eq!(finish_tcp_send_step(&mut total, 10, true, Ok(4)), Ok(4),);
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn tcp_send_returns_partial_count_after_later_error() {
+        let mut total = 4;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Err(AxError::NotConnected)),
+            Ok(4),
+        );
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn blocking_tcp_send_keeps_waiting_after_partial_wouldblock() {
+        let mut total = 4;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Err(AxError::WouldBlock)),
+            Err(AxError::WouldBlock),
+        );
+        assert_eq!(total, 4);
+    }
 
     #[test]
     fn tcp_info_reports_default_socket_metrics() {
