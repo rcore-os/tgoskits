@@ -7,7 +7,7 @@ use rdrive::probe::{OnProbeError, fdt::NodeType};
 
 use super::{
     clocks_reset_gpio::{
-        assert_resets, clock_specs_for_node, deassert_resets, enable_clocks, parse_resets,
+        assert_resets, clock_lines_for_node, deassert_resets, enable_clocks, parse_resets,
     },
     resources::{
         BIT_WRITEABLE_SHIFT, CombphyResources, PCIE3PHY_SRAM_INIT_DONE, PHP_GRF_PCIESEL_CON,
@@ -122,7 +122,7 @@ fn parse_pcie3_phy(phy: NodeType<'_>) -> Result<Pcie3PhyResources, OnProbeError>
         phy_grf,
         pipe_grf: prop_phandle(node, "rockchip,pipe-grf"),
         pcie30_phymode,
-        clocks: clock_specs_for_node(phy),
+        clocks: clock_lines_for_node(phy)?,
         resets: parse_resets(phy)?,
     })
 }
@@ -206,7 +206,7 @@ fn parse_combphy(phy: NodeType<'_>) -> Result<CombphyResources, OnProbeError> {
         pipe_phy_grf,
         pcie1ln_sel_bits,
         refclk_rate: assigned_clock_rate(node).unwrap_or(100_000_000),
-        clocks: clock_specs_for_node(phy),
+        clocks: clock_lines_for_node(phy)?,
         resets: parse_resets(phy)?,
     })
 }

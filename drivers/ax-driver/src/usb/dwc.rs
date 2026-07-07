@@ -11,18 +11,21 @@ use crab_usb::{
     DwcNewParams, DwcParams, NamedResetLine, UdphyParam, Usb2PhyParam, Usb2PhyPortId,
     UsbPhyInterfaceMode, usb_if::DrMode,
 };
-use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
+use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
     probe::{
         OnProbeError,
-        fdt::{ResetLine as RdriveResetLine, reset_lines},
+        fdt::{
+            ClockLine, ResetLine as RdriveResetLine, apply_assigned_clocks, clock_lines,
+            reset_lines,
+        },
     },
     register::{FdtInfo, ProbeFdt},
 };
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{mmio::iomap, soc::rk3588_enable_clock};
+use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
 
@@ -62,18 +65,12 @@ impl crab_usb::ResetLine for UsbResetLine {
     }
 }
 
-#[derive(Clone)]
-struct ClockSpec {
-    name: Option<String>,
-    id: u32,
-}
-
 struct Usb2PhyResources {
     port_name: String,
     reg: usize,
     grf: Phandle,
     resets: Vec<NamedResetLine>,
-    clocks: Vec<ClockSpec>,
+    clocks: Vec<ClockLine>,
 }
 
 struct UsbdpPhyResources {
@@ -85,12 +82,12 @@ struct UsbdpPhyResources {
     vo_grf: Phandle,
     dp_lane_mux: Vec<u32>,
     resets: Vec<NamedResetLine>,
-    clocks: Vec<ClockSpec>,
+    clocks: Vec<ClockLine>,
 }
 
 struct DwcResources {
     ctrl: RegFixed,
-    clocks: Vec<ClockSpec>,
+    clocks: Vec<ClockLine>,
     ctrl_resets: Vec<NamedResetLine>,
     usb2: Usb2PhyResources,
     usbdp: UsbdpPhyResources,
@@ -117,7 +114,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_clocks(&resources.clocks);
+    enable_clocks(&resources.clocks)?;
 
     let ctrl = map_reg(resources.ctrl)?;
     let phy = map_reg(resources.usbdp.reg)?;
@@ -186,9 +183,10 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<DwcResources, OnPr
 
     let mut clocks = Vec::new();
     if let Some(parent) = info.node.parent() {
-        clocks.extend(clock_specs(parent.clocks()));
+        apply_assigned_clocks(parent)?;
+        clocks.extend(clock_lines(parent)?);
     }
-    clocks.extend(clock_specs(info.node.clocks()));
+    clocks.extend(info.clock_lines()?);
     clocks.extend(usb2.clocks.iter().cloned());
     clocks.extend(usbdp.clocks.iter().cloned());
 
@@ -227,7 +225,10 @@ fn collect_usb2_phy(fdt: &Fdt, port_phandle: Phandle) -> Result<Usb2PhyResources
         reg,
         grf,
         resets: parse_resets(phy)?,
-        clocks: clock_specs(phy.clocks()),
+        clocks: {
+            apply_assigned_clocks(phy)?;
+            clock_lines(phy)?
+        },
     })
 }
 
@@ -257,7 +258,10 @@ fn collect_usbdp_phy(fdt: &Fdt, port_phandle: Phandle) -> Result<UsbdpPhyResourc
             .map(|prop| prop.get_u32_iter().collect())
             .unwrap_or_default(),
         resets: parse_resets(phy)?,
-        clocks: clock_specs(phy.clocks()),
+        clocks: {
+            apply_assigned_clocks(phy)?;
+            clock_lines(phy)?
+        },
     })
 }
 
@@ -361,33 +365,17 @@ fn parse_dwc_params(node: &Node) -> DwcParams {
     params
 }
 
-fn enable_clocks(clocks: &[ClockSpec]) {
+fn enable_clocks(clocks: &[ClockLine]) -> Result<(), OnProbeError> {
     for clock in clocks {
-        if clock.id == 0 {
+        let id = clock.id().raw();
+        if id == 0 {
             continue;
         }
 
-        match rk3588_enable_clock(clock.id) {
-            Ok(()) => debug!("DWC xHCI clock {:?} ({:#x}) enabled", clock.name, clock.id),
-            Err(err) => warn!(
-                "DWC xHCI clock {:?} ({:#x}) enable skipped: {err}",
-                clock.name, clock.id
-            ),
-        }
+        clock.enable()?;
+        debug!("DWC xHCI clock {:?} ({id:#x}) enabled", clock.name());
     }
-}
-
-fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
-    clocks
-        .into_iter()
-        .filter_map(|clock| {
-            let id = *clock.specifier.first()?;
-            Some(ClockSpec {
-                name: clock.name,
-                id,
-            })
-        })
-        .collect()
+    Ok(())
 }
 
 fn usbdp_phy_id(fdt: &Fdt, phy: NodeType<'_>) -> Result<usize, OnProbeError> {

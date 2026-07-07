@@ -22,6 +22,4 @@ mod pm;
 mod pinctrl;
 
 #[cfg(feature = "rockchip-soc")]
-pub use cru::{rk3588_enable_clock, rk3588_set_clock_rate};
-#[cfg(feature = "rockchip-soc")]
 pub use pinctrl::{RockchipFdtPinctrlParser, RockchipPinCtrl};

@@ -2,7 +2,10 @@ use alloc::format;
 use core::time::Duration;
 
 use log::{info, warn};
-use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use rdrive::{
+    probe::{OnProbeError, fdt::ResourcePrepareConfig},
+    register::ProbeFdt,
+};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::Phase,
@@ -55,7 +58,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         mmio_size
     );
     let resources = info.prepare_resources(
-        rdrive::probe::fdt::ResourcePrepareConfig::default().with_named_clock_rate("ciu"),
+        ResourcePrepareConfig::default()
+            .without_assigned_clocks()
+            .with_named_clock_rate("ciu"),
     )?;
     let reference_clock_hz = prepared_reference_clock_hz(resources.clock_rate("ciu"));
     let profile = StarFiveMmcNodeProfile::from_info(info, reference_clock_hz);
@@ -236,6 +241,7 @@ fn is_absent_card_init_error(err: Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "pci"))]
     use axklib::{
         AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle,
         IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
@@ -243,8 +249,10 @@ mod tests {
 
     use super::*;
 
+    #[cfg(not(feature = "pci"))]
     struct KlibImpl;
 
+    #[cfg(not(feature = "pci"))]
     impl_trait! {
         impl Klib for KlibImpl {
             fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {

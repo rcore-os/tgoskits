@@ -22,23 +22,7 @@ pub mod scmi;
 mod starfive;
 
 #[cfg(feature = "rockchip-soc")]
-pub use rockchip::{
-    RockchipFdtPinctrlParser, RockchipPinCtrl, rk3588_enable_clock, rk3588_set_clock_rate,
-};
-
-#[cfg(not(feature = "rockchip-soc"))]
-pub fn rk3588_enable_clock(id: u32) -> Result<(), rdrive::probe::OnProbeError> {
-    Err(rdrive::probe::OnProbeError::other(alloc::format!(
-        "RK3588 clock support is not enabled for clock {id:#x}"
-    )))
-}
-
-#[cfg(not(feature = "rockchip-soc"))]
-pub fn rk3588_set_clock_rate(id: u32, rate_hz: u64) -> Result<(), rdrive::probe::OnProbeError> {
-    Err(rdrive::probe::OnProbeError::other(alloc::format!(
-        "RK3588 clock support is not enabled for clock {id:#x} rate {rate_hz}"
-    )))
-}
+pub use rockchip::{RockchipFdtPinctrlParser, RockchipPinCtrl};
 
 #[cfg(not(feature = "rockchip-soc"))]
 pub struct RockchipPinCtrl;

@@ -17,7 +17,10 @@ use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
 use rdrive::{
-    probe::{OnProbeError, fdt::ResetLine},
+    probe::{
+        OnProbeError,
+        fdt::{ClockLine, ResetLine},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
@@ -31,7 +34,7 @@ use sdmmc_protocol::{
     },
 };
 
-use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
+use super::clock::enable_node_clocks;
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
@@ -88,7 +91,7 @@ const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
-    clock: RockchipClockOps,
+    clock: ClockLine,
 }
 struct RockchipSdhciResetHook {
     resets: Vec<ResetLine>,
@@ -207,9 +210,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 }
 
 fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
-    apply_assigned_clocks(info, "SDHCI")?;
     let resets = info.reset_lines()?;
-    enable_node_clocks(info, "SDHCI");
+    enable_node_clocks(info, "SDHCI")?;
     Ok(resets)
 }
 
@@ -408,17 +410,8 @@ fn is_absent_card_init_error(err: Error) -> bool {
     }
 }
 
-fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<RockchipClockOps>, OnProbeError> {
-    for clk in info.node.clocks() {
-        info!(
-            "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
-            clk.phandle, clk.name, clk.cells
-        );
-        if clk.name.as_deref() == Some("core") {
-            return RockchipClockOps::from_node_clock(info, &clk);
-        }
-    }
-    Ok(None)
+fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<ClockLine>, OnProbeError> {
+    info.find_clock_line_by_name("core")
 }
 
 fn clock_error() -> Error {

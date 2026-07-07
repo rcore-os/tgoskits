@@ -16,7 +16,10 @@ use alloc::format;
 use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
-use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use rdrive::{
+    probe::{OnProbeError, fdt::ClockLine},
+    register::ProbeFdt,
+};
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
@@ -28,7 +31,6 @@ use sdmmc_protocol::{
     },
 };
 
-use super::clock::RockchipClockOps;
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3568 DWCMSHC uses the same SDHCI completion interrupt path as RK3588:
@@ -85,7 +87,7 @@ const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
-    clock: RockchipClockOps,
+    clock: ClockLine,
 }
 struct RockchipSdhciResetHook;
 
@@ -140,7 +142,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
-    if let Some(clock) = RockchipClockOps::named(info, "core")? {
+    if let Some(clock) = info.find_clock_line_by_name("core")? {
+        clock.enable()?;
         info!("rockchip-rk3568-sdhci: using external CRU clock");
         host.set_external_clock(RockchipSdhciClock { clock });
     } else {
