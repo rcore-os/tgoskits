@@ -6,7 +6,13 @@ use rdrive::DeviceId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingInfo {
-    irq: Option<BindingIrq>,
+    irqs: Vec<BindingIrqBinding>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingIrqBinding {
+    pub source_id: usize,
+    pub irq: BindingIrq,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,35 +44,66 @@ pub enum PciIrqRequirement {
 
 impl BindingInfo {
     pub const fn empty() -> Self {
-        Self { irq: None }
+        Self { irqs: Vec::new() }
     }
 
     pub fn with_irq(irq: Option<usize>) -> Result<Self, irq_framework::IrqError> {
-        Ok(Self {
-            irq: irq.map(BindingIrq::try_legacy).transpose()?,
-        })
+        Ok(Self::with_binding_irq(
+            irq.map(BindingIrq::try_legacy).transpose()?,
+        ))
     }
 
     pub fn with_irq_id(irq: Option<IrqId>) -> Self {
-        Self {
-            irq: irq.map(BindingIrq::id),
-        }
+        Self::with_binding_irq(irq.map(BindingIrq::id))
     }
 
     pub fn with_binding_irq(irq: Option<BindingIrq>) -> Self {
-        Self { irq }
+        match irq {
+            Some(irq) => Self::with_irq_sources([(0, irq)]),
+            None => Self::empty(),
+        }
+    }
+
+    pub fn with_irq_sources(irqs: impl IntoIterator<Item = (usize, BindingIrq)>) -> Self {
+        Self {
+            irqs: irqs
+                .into_iter()
+                .map(|(source_id, irq)| BindingIrqBinding { source_id, irq })
+                .collect(),
+        }
     }
 
     pub fn irq(&self) -> Option<&BindingIrq> {
-        self.irq.as_ref()
+        self.irq_for_source(0)
+            .or_else(|| self.irqs.first().map(|binding| &binding.irq))
     }
 
     pub fn irq_cloned(&self) -> Option<BindingIrq> {
-        self.irq.clone()
+        self.irq().cloned()
+    }
+
+    pub fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
+        self.irqs
+            .iter()
+            .find(|binding| binding.source_id == source_id)
+            .map(|binding| &binding.irq)
+    }
+
+    pub fn irq_for_source_cloned(&self, source_id: usize) -> Option<BindingIrq> {
+        self.irq_for_source(source_id).cloned()
+    }
+
+    pub fn irq_sources(&self) -> &[BindingIrqBinding] {
+        &self.irqs
     }
 
     pub fn irq_num(&self) -> Option<usize> {
-        self.irq.as_ref().and_then(BindingIrq::legacy_num)
+        self.irq().and_then(BindingIrq::legacy_num)
+    }
+
+    pub fn irq_num_for_source(&self, source_id: usize) -> Option<usize> {
+        self.irq_for_source(source_id)
+            .and_then(BindingIrq::legacy_num)
     }
 }
 

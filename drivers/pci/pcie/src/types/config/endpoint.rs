@@ -10,6 +10,8 @@ use pci_types::{
 };
 use rdif_pcie::{ConfigAccess, SimpleBarAllocator};
 
+use crate::{MsixError, MsixTableInfo};
+
 pub struct Endpoint {
     base: super::PciHeaderBase,
     header: EndpointHeader,
@@ -78,6 +80,43 @@ impl Endpoint {
 
     pub fn capabilities(&self) -> Vec<PciCapability> {
         self.header.capabilities(self.access()).collect()
+    }
+
+    pub fn msix_capability(&self) -> Option<pci_types::capability::MsixCapability> {
+        self.capabilities().into_iter().find_map(|capability| {
+            if let PciCapability::MsiX(msix) = capability {
+                Some(msix)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn msix_table_info(&self) -> Result<MsixTableInfo, MsixError> {
+        let capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        let info = MsixTableInfo::from_capability(&capability);
+        let bar = self.bar_mmio(info.bar).ok_or(MsixError::InvalidTableBar)?;
+        info.table_range(bar)?;
+        Ok(info)
+    }
+
+    pub fn msix_table_range(&self) -> Result<Range<usize>, MsixError> {
+        let capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        let info = MsixTableInfo::from_capability(&capability);
+        let bar = self.bar_mmio(info.bar).ok_or(MsixError::InvalidTableBar)?;
+        info.table_range(bar)
+    }
+
+    pub fn set_msix_enabled(&mut self, enabled: bool) -> Result<(), MsixError> {
+        let mut capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        capability.set_enabled(enabled, self.access());
+        Ok(())
+    }
+
+    pub fn set_msix_function_mask(&mut self, mask: bool) -> Result<(), MsixError> {
+        let mut capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        capability.set_function_mask(mask, self.access());
+        Ok(())
     }
 
     pub fn interrupt_pin(&self) -> u8 {

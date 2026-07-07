@@ -14,7 +14,7 @@ name = "ax_driver"
 default = []
 
 irq = []
-pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
+pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:ax-kspin", "dep:rd-net"]
@@ -162,6 +162,7 @@ rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
+rdif-msi = { workspace = true, optional = true }
 rdif-pcie = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-power = { workspace = true, optional = true }
