@@ -119,6 +119,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
+                        // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
+                        // semantics: all faults, before resolution). Kernel-mode faults on user
+                        // addresses are counted separately in the mm page-fault handler.
+                        crate::mm::PAGE_FAULT_COUNT
+                            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         // Classify si_code while holding the aspace lock: an
                         // existing mapping that rejected the access is a
                         // permission violation (SEGV_ACCERR), otherwise the

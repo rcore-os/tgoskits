@@ -154,6 +154,28 @@ fn render_meminfo() -> String {
     )
 }
 
+fn render_vmstat() -> String {
+    // /proc/vmstat — system-wide virtual-memory statistics (Linux mm/vmstat.c layout: one
+    // `name value` pair per line). Only the counters StarryOS genuinely maintains are emitted, with
+    // real values (no fabricated fields):
+    //   nr_free_pages — current free page count (RAM minus allocator usage), a live gauge.
+    //   pgfault       — cumulative page faults serviced by the demand-paging handler (mm/access.rs).
+    // node_exporter's vmstat collector reads this file; its default field filter matches `pgfault`,
+    // so the counter surfaces as node_vmstat_pgfault. Both values move with real workload, unlike a
+    // static stub.
+    let total = ax_runtime::hal::mem::total_ram_size();
+    let usages = ax_alloc::global_allocator().usages();
+    let used = usages.get(ax_alloc::UsageKind::RustHeap)
+        + usages.get(ax_alloc::UsageKind::VirtMem)
+        + usages.get(ax_alloc::UsageKind::PageCache)
+        + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::Dma)
+        + usages.get(ax_alloc::UsageKind::Global);
+    let free_pages = total.saturating_sub(used) / 4096;
+    let pgfault = crate::mm::PAGE_FAULT_COUNT.load(Ordering::Relaxed);
+    format!("nr_free_pages {free_pages}\npgfault {pgfault}\n")
+}
+
 fn render_cpuinfo() -> String {
     let cpu_count = ax_runtime::hal::cpu_num();
     let mut buf = String::new();
@@ -1383,6 +1405,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "meminfo",
         SimpleFile::new_regular(fs.clone(), || Ok(render_meminfo())),
+    );
+    root.add(
+        "vmstat",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_vmstat())),
     );
     root.add(
         "cpuinfo",
