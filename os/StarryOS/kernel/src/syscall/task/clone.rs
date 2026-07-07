@@ -126,7 +126,13 @@ impl CloneArgs {
             flags, exit_signal, ..
         } = self;
 
-        if *exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
+        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
+            return Err(AxError::InvalidInput);
+        }
+        if flags.contains(CloneFlags::THREAD | CloneFlags::PARENT)
+            && flags.contains(CloneFlags::THREAD)
+            && flags.contains(CloneFlags::PARENT)
+        {
             return Err(AxError::InvalidInput);
         }
         if flags.contains(CloneFlags::THREAD)

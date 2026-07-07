@@ -39,7 +39,13 @@ impl TryFrom<Clone3Args> for CloneArgs {
 
         let flags = CloneFlags::from_bits_truncate(args.flags);
 
-        if args.exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
+        if args.exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
+            return Err(AxError::InvalidInput);
+        }
+        if flags.contains(CloneFlags::THREAD | CloneFlags::PARENT)
+            && flags.contains(CloneFlags::THREAD)
+            && flags.contains(CloneFlags::PARENT)
+        {
             return Err(AxError::InvalidInput);
         }
         if flags.contains(CloneFlags::DETACHED) {
