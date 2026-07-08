@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/sdio-host2-v0.1.3...sdio-host2-v0.1.4) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/sdio-host2-v0.1.2...sdio-host2-v0.1.3) - 2026-07-07
 
 ### Other

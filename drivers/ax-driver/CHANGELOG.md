@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.11.0...ax-driver-v0.11.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rd-net, aic8800, rdrive, ax-alloc, axklib, arm-scmi-rs, crab-usb, rdif-block, sdmmc-protocol, sdhci-host, cv181x-sdhci, dwmmc-host, eth-intel, nvme-driver, phytium-mci-host, ramdisk, realtek-rtl8125, rockchip-jpeg, rockchip-npu, rockchip-rga, rockchip-soc, starfive-jh7110-dwmmc
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.10.0...ax-driver-v0.11.0) - 2026-07-07
 
 ### Added
