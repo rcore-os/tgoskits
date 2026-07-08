@@ -29,7 +29,8 @@ for bin in /usr/bin/starry-test-suit/test-mountinfo \
            /usr/bin/starry-test-suit/test-cgroup-ns \
            /usr/bin/starry-test-suit/test-max-ns-entries \
            /usr/bin/starry-test-suit/test-proc-environ \
-           /usr/bin/starry-test-suit/test-proc-root-cwd; do
+           /usr/bin/starry-test-suit/test-proc-root-cwd \
+           /usr/bin/starry-test-suit/test-pivot-root; do
     [ -f "$bin" ] && [ -x "$bin" ] || continue
     found=1
     echo "NIX_SANDBOX_DEBUG_TEST_BEGIN: $bin"

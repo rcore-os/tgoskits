@@ -97,6 +97,49 @@ These C-language regression tests were migrated from the former
 under the unified system grouped suite.
 See `test-suit/starryos/qemu-smp1/system/`.
 
+## Nix Sandbox Debug Regression Suite (003)
+
+The `qemu-smp1/nix-sandbox-debug` grouped suite (`test-suit/starryos/qemu-smp1/nix-sandbox-debug/`)
+is a CI-tracked regression suite added by the 003-starryos-nixpkgs feature.
+It contains ten focused C tests, one per Linux-semantics blocker fixed in
+003, plus integration coverage for `pivot_root`. The suite runs under
+`sandbox=off` (it does **not** exercise the nix sandbox builder; it only
+verifies kernel semantics that the nix sandbox path depends on).
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/nix-sandbox-debug
+```
+
+The runner emits `NIX_SANDBOX_DEBUG_TESTS_PASSED` on success. Each test
+binary lives under `/usr/bin/starry-test-suit/` in the guest rootfs and
+prints its own `<NAME>_PASSED` marker.
+
+### Covered semantics
+
+| Test | Kernel area | Marker |
+|------|-------------|--------|
+| `test-mountinfo` | `/proc/<pid>/mountinfo` Linux-compatible format and dynamic mounts | `TEST_MOUNTINFO_PASSED` |
+| `test-per-ns-mounts` | Per-mount-namespace mount visibility (`CLONE_NEWNS`) | `TEST_PER_NS_MOUNTS_PASSED` |
+| `test-remount-flags` | `mount(MS_REMOUNT|MS_NOSUID)` reflected in mountinfo options | `TEST_REMOUNT_FLAGS_PASSED` |
+| `test-mount-bind` | `mount --bind` and `--rbind` semantics | `TEST_MOUNT_BIND_PASSED` |
+| `test-mount-propagation` | Shared peer group unmount propagation | `TEST_MOUNT_PROPAGATION_PASSED` |
+| `test-pivot-root` | `pivot_root` workaround path with absolute `new_root`/`put_old` | `TEST_PIVOT_ROOT_PASSED` |
+| `test-cgroup-ns` | `unshare`/`clone`/`setns` for `CLONE_NEWCGROUP` + `/proc/self/ns/cgroup` | `TEST_CGROUP_NS_PASSED` |
+| `test-max-ns-entries` | All seven `/proc/sys/user/max_*_namespaces` files | `TEST_MAX_NS_ENTRIES_PASSED` |
+| `test-proc-environ` | `/proc/<pid>/environ` NUL-separated envp | `TEST_PROC_ENVIRON_PASSED` |
+| `test-proc-root-cwd` | `/proc/<pid>/root` and `/proc/<pid>/cwd` symlinks track `chdir`/`chroot` | `TEST_PROC_ROOT_CWD_PASSED` |
+
+### Why `pivot-root` runs last
+
+`pivot_root` in StarryOS mirrors Linux `chroot_fs_refs()`: every task whose
+root or cwd matched the old root is repointed at the new root. The
+`test-pivot-root` case therefore leaves the runner shell inside the new root
+once it exits, so the suite runner places it last to avoid breaking
+subsequent test binaries. Cosmetic `can't create /dev/null` messages may
+appear after the `NIX_SANDBOX_DEBUG_TESTS_PASSED` marker; they are expected
+post-test noise and are not treated as failures by the runner's
+success/fail regexes.
+
 ## File Structure
 
 ```
