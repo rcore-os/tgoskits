@@ -410,26 +410,6 @@ fn render_diskstats() -> String {
     )
 }
 
-fn render_mounts() -> String {
-    // Root filesystem plus the pseudo-filesystems mounted unconditionally by
-    // `pseudofs::mount_all()` at boot. The root fs type is read live from the
-    // mount table; the pseudo mounts are fixed. Dynamic user mounts are not
-    // enumerated here because the VFS does not expose a public mount-tree
-    // walker, so third-party mounts made via mount(2) are absent.
-    let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
-        ctx.root_dir().filesystem().name().to_string()
-    };
-    let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
-    buf.push_str("devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n");
-    buf.push_str("tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf
-}
-
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -1025,6 +1005,7 @@ impl SimpleDirOps for ThreadDir {
                 "mem",
                 "auxv",
                 "mounts",
+                "mountinfo",
                 "cmdline",
                 "comm",
                 "exe",
@@ -1119,7 +1100,28 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
+            "mounts" => {
+                let proc_data = self.proc_data.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let scope = proc_data.scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+                })
+                .into()
+            }
+            "mountinfo" => {
+                let proc_data = self.proc_data.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let scope = proc_data.scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+                })
+                .into()
+            }
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1383,7 +1385,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_mounts())),
+        SimpleFile::new_regular(fs.clone(), || {
+            let ctx = FS_CONTEXT.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+        }),
+    );
+    root.add(
+        "mountinfo",
+        SimpleFile::new_regular(fs.clone(), || {
+            let ctx = FS_CONTEXT.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+        }),
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they

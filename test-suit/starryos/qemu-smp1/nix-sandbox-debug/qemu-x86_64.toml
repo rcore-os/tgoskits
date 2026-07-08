@@ -1,0 +1,52 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "Haswell,+avx",
+    "-m",
+    "512M",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+found=0
+failed=0
+fail_marker=NIX_SANDBOX_DEBUG_TEST_FAILED
+for bin in /usr/bin/starry-test-suit/test-mountinfo \
+           /usr/bin/starry-test-suit/test-per-ns-mounts \
+           /usr/bin/starry-test-suit/test-remount-flags \
+           /usr/bin/starry-test-suit/test-mount-bind; do
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    found=1
+    echo "NIX_SANDBOX_DEBUG_TEST_BEGIN: $bin"
+    if "$bin"; then
+        echo "NIX_SANDBOX_DEBUG_TEST_PASSED: $bin"
+    else
+        status=$?
+        echo "$fail_marker: $bin status=$status"
+        failed=1
+    fi
+done
+if [ "$found" -ne 1 ]; then
+    echo "$fail_marker: no nix-sandbox-debug tests found"
+    exit 1
+fi
+if [ "$failed" -ne 0 ]; then
+    echo "$fail_marker: one or more nix-sandbox-debug tests failed"
+    exit 1
+fi
+echo "NIX_SANDBOX_DEBUG_TESTS_PASSED"
+''',
+]
+success_regex = ["(?m)^NIX_SANDBOX_DEBUG_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^NIX_SANDBOX_DEBUG_TEST_FAILED:']
+timeout = 300

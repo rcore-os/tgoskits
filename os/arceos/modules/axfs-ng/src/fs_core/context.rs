@@ -102,6 +102,14 @@ impl MountNamespace {
         &self.root_mount
     }
 
+    /// Walk the mount tree of this namespace, returning `(mount_id,
+    /// parent_id, mountpoint)` tuples in DFS order.
+    ///
+    /// Delegates to [`Mountpoint::walk_tree`] on the root mount.
+    pub fn walk_tree(&self) -> Vec<(u64, u64, Arc<Mountpoint>)> {
+        self.root_mount.walk_tree()
+    }
+
     fn clone_namespace(&self) -> Arc<Self> {
         Arc::new(Self::new(self.root_mount.clone_tree()))
     }

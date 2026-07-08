@@ -1,7 +1,7 @@
 # AGENTS.md
 
 <!-- SPECKIT START -->
-**Active Plan**: `specs/003-starryos-nixpkgs/plan.md` — StarryOS Sandboxed Nix Test (US6, optional)
+**Active Plan**: `specs/003-starryos-nixpkgs/plan.md` — Complete Linux-Semantics Fixes for Nix Sandbox Blockers (mount.rs, namespace.rs, proc.rs)
 <!-- SPECKIT END -->
 
 ## Project Skills

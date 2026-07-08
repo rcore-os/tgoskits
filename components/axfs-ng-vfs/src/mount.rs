@@ -8,7 +8,7 @@ use alloc::{
 use core::{
     any::Any,
     iter, mem,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
 };
@@ -25,6 +25,8 @@ use crate::{
 };
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
 
 struct SyntheticMountDir {
@@ -155,10 +157,22 @@ pub struct Mountpoint {
     location: Mutex<Option<Location>>,
     /// Children of the mountpoint in this namespace-local mount tree.
     children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
-    /// Device ID
+    /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
+    /// Unique mount identifier (Linux `mnt_id`), assigned from `MOUNT_ID_COUNTER`.
+    /// Distinct from `device` which is the filesystem's device number.
+    mount_id: u64,
+    /// Peer group ID for shared mounts (Linux `mnt_group_id`). 0 = not shared.
+    /// Assigned when `set_shared()` is first called; shared among all mounts in
+    /// the same peer group.
+    peer_group_id: AtomicU64,
     /// Read-only flag for this mountpoint.
     readonly: AtomicBool,
+    /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
+    /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
+    /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
+    /// `readonly` for backward compatibility.
+    mount_flags: AtomicU32,
     /// Expire mark for umount2(MNT_EXPIRE).
     expired: AtomicBool,
     /// Mount propagation type.
@@ -182,7 +196,10 @@ impl Mountpoint {
             location: Mutex::new(location_in_parent),
             children: Mutex::new(HashMap::default()),
             device,
+            mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
+            mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
             propagation: Mutex::new(PropagationType::Private),
             peers: Mutex::default(),
@@ -225,6 +242,12 @@ impl Mountpoint {
         result
             .readonly
             .store(source.is_readonly(), Ordering::Release);
+        result
+            .mount_flags
+            .store(source.mount_flags(), Ordering::Release);
+        result
+            .peer_group_id
+            .store(source.peer_group_id(), Ordering::Release);
         *result.propagation.lock() = source.propagation();
         result
             .expired
@@ -349,12 +372,75 @@ impl Mountpoint {
         self.device
     }
 
+    pub fn mount_id(&self) -> u64 {
+        self.mount_id
+    }
+
+    pub fn peer_group_id(&self) -> u64 {
+        self.peer_group_id.load(Ordering::Acquire)
+    }
+
+    /// For slave mounts: returns the peer group ID of the first master.
+    /// Used for mountinfo `master:N` field.
+    pub fn first_master_peer_group_id(&self) -> Option<u64> {
+        self.masters
+            .lock()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .next()
+            .map(|m| m.peer_group_id())
+            .filter(|id| *id != 0)
+    }
+
+    /// Walk the mount tree rooted at `self`, collecting `(mount_id, parent_id,
+    /// mountpoint)` tuples in DFS order.
+    ///
+    /// `mount_id` is the mount's [`device()`](Self::device) (unique per mount,
+    /// assigned incrementally from `DEVICE_COUNTER` — the root mount is 1).
+    /// `parent_id` for the root mount is itself (Linux convention:
+    /// `mount_id == parent_id` for the root mount); for non-root mounts it is
+    /// the parent mount's `device()`.
+    ///
+    /// Lock safety: children are collected into a `Vec` by cloning the `Arc`s
+    /// outside the lock before recursion, so no `Mutex` guard is held during
+    /// the recursive call.
+    pub fn walk_tree(self: &Arc<Self>) -> Vec<(u64, u64, Arc<Mountpoint>)> {
+        let mut result = Vec::new();
+        self.walk_tree_inner(&mut result);
+        result
+    }
+
+    fn walk_tree_inner(self: &Arc<Self>, result: &mut Vec<(u64, u64, Arc<Mountpoint>)>) {
+        let mount_id = self.mount_id();
+        // Root mount (location == None) is its own parent per Linux convention.
+        let parent_id = self
+            .location
+            .lock()
+            .as_ref()
+            .map_or(mount_id, |loc| loc.mountpoint().mount_id());
+        result.push((mount_id, parent_id, self.clone()));
+
+        // Collect children outside the lock to avoid holding it during recursion.
+        let children: Vec<Arc<Self>> = self.children.lock().values().cloned().collect();
+        for child in children {
+            child.walk_tree_inner(result);
+        }
+    }
+
     pub fn is_readonly(&self) -> bool {
         self.readonly.load(Ordering::Acquire)
     }
 
     pub fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
+    }
+
+    pub fn mount_flags(&self) -> u32 {
+        self.mount_flags.load(Ordering::Acquire)
+    }
+
+    pub fn set_mount_flags(&self, flags: u32) {
+        self.mount_flags.store(flags, Ordering::Release);
     }
 
     pub fn mark_expired(&self) -> bool {
@@ -414,12 +500,19 @@ impl Mountpoint {
         self.remove_from_shared_group();
         self.remove_from_masters();
         *self.propagation.lock() = PropagationType::Shared;
+        if self.peer_group_id.load(Ordering::Acquire) == 0 {
+            self.peer_group_id.store(
+                PEER_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed),
+                Ordering::Release,
+            );
+        }
     }
 
     pub fn set_private(self: &Arc<Self>) {
         self.remove_from_shared_group();
         self.remove_from_masters();
         *self.propagation.lock() = PropagationType::Private;
+        self.peer_group_id.store(0, Ordering::Release);
     }
 
     pub fn set_slave(self: &Arc<Self>) {
@@ -431,6 +524,7 @@ impl Mountpoint {
         self.remove_from_shared_group();
         self.remove_from_masters();
         *self.propagation.lock() = PropagationType::Slave;
+        self.peer_group_id.store(0, Ordering::Release);
         for master in masters {
             master.slaves.lock().push(Arc::downgrade(self));
             self.masters.lock().push(Arc::downgrade(&master));
@@ -447,6 +541,10 @@ impl Mountpoint {
         group.extend(source.peers.lock().iter().filter_map(Weak::upgrade));
 
         self.set_shared();
+        let source_group = source.peer_group_id.load(Ordering::Acquire);
+        if source_group != 0 {
+            self.peer_group_id.store(source_group, Ordering::Release);
+        }
         for member in group {
             if Arc::ptr_eq(&member, self) {
                 continue;
@@ -950,4 +1048,167 @@ impl FsPollable for Location {
     fn poll(&self) -> FsIoEvents;
 
     fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+    use core::any::Any;
+
+    use super::*;
+    use crate::StatFs;
+
+    struct MockFs;
+    struct MockNode;
+
+    static MOCK_FS: MockFs = MockFs;
+
+    impl FilesystemOps for MockFs {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn root_dir(&self) -> DirEntry {
+            let node: Arc<dyn DirNodeOps> = Arc::new(MockNode);
+            DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
+        }
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+    }
+
+    impl NodeOps for MockNode {
+        fn inode(&self) -> u64 {
+            0
+        }
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Err(VfsError::InvalidInput)
+        }
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::InvalidInput)
+        }
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &MOCK_FS
+        }
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Err(VfsError::InvalidInput)
+        }
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl DirNodeOps for MockNode {
+        fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+            Ok(0)
+        }
+        fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
+            Err(VfsError::NotFound)
+        }
+        fn create(
+            &self,
+            _name: &str,
+            _node_type: NodeType,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+        fn rename(&self, _src: &str, _dst_dir: &DirNode, _dst: &str) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn mock_filesystem() -> Filesystem {
+        Filesystem::new(Arc::new(MockFs))
+    }
+
+    fn make_dir_entry(name: &str) -> DirEntry {
+        let node: Arc<dyn DirNodeOps> = Arc::new(MockNode);
+        DirEntry::new_dir(
+            |_| DirNode::new(node),
+            Reference::new(None, name.to_string()),
+        )
+    }
+
+    #[test]
+    fn walk_tree_root_only() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let result = root.walk_tree();
+        assert_eq!(result.len(), 1);
+        let (mount_id, parent_id, mp) = &result[0];
+        assert_eq!(*mount_id, root.mount_id());
+        assert_eq!(*parent_id, root.mount_id());
+        assert!(Arc::ptr_eq(mp, &root));
+    }
+
+    #[test]
+    fn walk_tree_root_two_children_one_grandchild() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_id = root.mount_id();
+
+        let child1_entry = make_dir_entry("child1");
+        let child2_entry = make_dir_entry("child2");
+        let grandchild_entry = make_dir_entry("grandchild");
+
+        let child1 = Mountpoint::new_with_root(
+            child1_entry.clone(),
+            Some(root.root_location()),
+            root.device() + 1,
+        );
+        let child2 = Mountpoint::new_with_root(
+            child2_entry.clone(),
+            Some(root.root_location()),
+            root.device() + 2,
+        );
+        let grandchild = Mountpoint::new_with_root(
+            grandchild_entry.clone(),
+            Some(child1.root_location()),
+            root.device() + 3,
+        );
+
+        root.children
+            .lock()
+            .insert(child1_entry.key(), child1.clone());
+        root.children
+            .lock()
+            .insert(child2_entry.key(), child2.clone());
+        child1
+            .children
+            .lock()
+            .insert(grandchild_entry.key(), grandchild.clone());
+
+        let result = root.walk_tree();
+        assert_eq!(result.len(), 4);
+
+        let child1_id = child1.mount_id();
+        let child2_id = child2.mount_id();
+        let grandchild_id = grandchild.mount_id();
+
+        let ids: Vec<u64> = result.iter().map(|(id, ..)| *id).collect();
+        for expected in [root_id, child1_id, child2_id, grandchild_id] {
+            assert!(
+                ids.contains(&expected),
+                "missing mount_id {expected} in {ids:?}"
+            );
+        }
+
+        for (mount_id, parent_id, _) in &result {
+            let expected_parent = match *mount_id {
+                id if id == root_id => root_id,
+                id if id == child1_id || id == child2_id => root_id,
+                id if id == grandchild_id => child1_id,
+                _ => panic!("unexpected mount_id {mount_id}"),
+            };
+            assert_eq!(*parent_id, expected_parent, "mount_id {mount_id}");
+        }
+    }
 }

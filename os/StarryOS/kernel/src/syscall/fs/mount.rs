@@ -17,6 +17,12 @@ const MNT_EXPIRE: i32 = 4;
 const UMOUNT_NOFOLLOW: i32 = 8;
 
 const MS_RDONLY: i32 = 1;
+const MS_NOSUID: i32 = 2;
+const MS_NODEV: i32 = 4;
+const MS_NOEXEC: i32 = 8;
+const MS_NOATIME: i32 = 1 << 10;
+const MS_RELATIME: i32 = 1 << 21;
+const MS_STRICTATIME: i32 = 1 << 24;
 const MS_REMOUNT: i32 = 1 << 5;
 const MS_BIND: i32 = 1 << 12;
 const MS_MOVE: i32 = 1 << 13;
@@ -26,6 +32,9 @@ const MS_UNBINDABLE: i32 = 1 << 17;
 const MS_PRIVATE: i32 = 1 << 18;
 const MS_SLAVE: i32 = 1 << 19;
 const MS_SHARED: i32 = 1 << 20;
+
+const MOUNT_OPTION_FLAGS: i32 =
+    MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_RELATIME | MS_STRICTATIME;
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
@@ -160,9 +169,11 @@ pub fn sys_mount(
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
+        let mp = target.mountpoint();
         if (flags & MS_RDONLY) != 0 {
-            target.mountpoint().set_readonly(true);
+            mp.set_readonly(true);
         }
+        mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(0);
     }
 
@@ -182,6 +193,7 @@ pub fn sys_mount(
         if (flags & MS_RDONLY) != 0 {
             mp.set_readonly(true);
         }
+        mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(0);
     }
 
@@ -193,6 +205,7 @@ pub fn sys_mount(
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "cgroup2" => {
             let fs = crate::pseudofs::cgroup::new_cgroup2fs();
@@ -201,6 +214,7 @@ pub fn sys_mount(
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         #[cfg(feature = "ext4")]
         "ext4" => {
@@ -226,6 +240,7 @@ pub fn sys_mount(
             if readonly || (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         _ => return Err(AxError::NoSuchDevice),
     }
@@ -410,9 +425,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // Relaxed: StarryOS self-bind-mount may not create full mount entries,
     // so accept new_root even when !is_root_of_mount(), as long as
     // new_root is not the global root.
-    if !(!new_root_loc.mountpoint().is_root()
-        || new_root_loc.is_root_of_mount())
-    {
+    if !(!new_root_loc.mountpoint().is_root() || new_root_loc.is_root_of_mount()) {
         warn!(
             "sys_pivot_root: new_root {:?} mountpoint is the global root",
             new_root
