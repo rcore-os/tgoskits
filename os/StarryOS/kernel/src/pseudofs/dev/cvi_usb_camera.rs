@@ -7,7 +7,10 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
-    jpu::{JpuDecoder, regs::{JPU_REG_BASE, VC_REG_BASE}},
+    jpu::{
+        JpuDecoder,
+        regs::{JPU_REG_BASE, VC_REG_BASE},
+    },
     pinmux::{FMUX_USB_VBUS_DET, Pinmux},
     soc::{
         CLKGEN_BASE, CV182X_USB2_PHY_BASE, DWC2_BASE, FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE,
