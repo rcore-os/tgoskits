@@ -375,12 +375,11 @@ mod tests {
     }
 }
 
-pub fn set_phys_cpu_sets(
+pub fn configure_guest_cpus(
     vm_cfg: &mut AxVMConfig,
     fdt: &Fdt,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult {
-    // Find and parse CPU information from host DTB
     let host_cpus: Vec<_> = fdt.find_nodes("/cpus/cpu").collect();
     info!("Found {} host CPU nodes", host_cpus.len());
 
@@ -390,60 +389,22 @@ pub fn set_phys_cpu_sets(
         .as_ref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
-    let cpu_nodes_info: Vec<_> = host_cpus
-        .iter()
-        .filter_map(|cpu_node| {
-            let node_id = cpu_node
-                .name()
-                .strip_prefix("cpu@")
-                .and_then(|id| usize::from_str_radix(id, 16).ok())?;
-            let cpu_reg = cpu_node.reg().and_then(|mut reg| reg.next())?;
-            let guest_cpu_id = cpu_reg.address as usize;
-            info!(
-                "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
-                cpu_node.name(),
-                node_id,
-                guest_cpu_id
-            );
-            Some((node_id, guest_cpu_id))
-        })
-        .collect();
+    let host_cpu_count = host_cpus.len().max(1);
+    let host_cpu_mask = if host_cpu_count >= usize::BITS as usize {
+        usize::MAX
+    } else {
+        (1usize << host_cpu_count) - 1
+    };
+    let default_phys_cpu_sets = vec![host_cpu_mask; phys_cpu_ids.len()];
 
-    let mut new_phys_cpu_sets = Vec::new();
-    let mut guest_phys_cpu_ids = Vec::new();
-    for phys_cpu_id in phys_cpu_ids {
-        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
-            .iter()
-            .enumerate()
-            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
-        {
-            let cpu_mask = 1usize << cpu_index;
-            new_phys_cpu_sets.push(cpu_mask);
-            guest_phys_cpu_ids.push(*guest_cpu_id);
-            debug!(
-                "vCPU {} with phys_cpu_id 0x{:x} mapped to CPU index {} (mask: 0x{:x}), guest CPU \
-                 ID 0x{:x}",
-                vm_cfg.id(),
-                phys_cpu_id,
-                cpu_index,
-                cpu_mask,
-                guest_cpu_id
-            );
-        } else {
-            error!(
-                "vCPU {} with phys_cpu_id 0x{:x} not found in device tree!",
-                vm_cfg.id(),
-                phys_cpu_id
-            );
-        }
-    }
-
-    info!("Calculated phys_cpu_sets: {new_phys_cpu_sets:?}");
-    info!("Calculated guest phys_cpu_ids: {guest_phys_cpu_ids:?}");
+    info!("Configured guest phys_cpu_ids: {phys_cpu_ids:?}");
+    info!("Default host phys_cpu_sets: {default_phys_cpu_sets:?}");
 
     let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
-    phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
-    phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
+    if phys_cpu_ls.phys_cpu_sets().is_none() {
+        phys_cpu_ls.set_guest_cpu_sets(default_phys_cpu_sets);
+    }
+    phys_cpu_ls.set_guest_phys_cpu_ids(phys_cpu_ids.clone());
 
     debug!(
         "vcpu_mappings: {:?}",

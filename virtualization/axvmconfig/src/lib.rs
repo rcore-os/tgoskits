@@ -312,9 +312,10 @@ pub struct VMBaseConfig {
     // Resources.
     /// The number of virtual CPUs.
     pub cpu_num: usize,
-    /// The physical CPU ids.
-    /// - if `None`, vcpu's physical id will be set as vcpu id.
-    /// - if set, each vcpu will be assigned to the specified physical CPU mask.
+    /// CPU IDs exposed to the guest.
+    /// - If `None`, each vCPU's guest-visible CPU ID will be set to its vCPU ID.
+    /// - If set, each entry provides the guest-visible CPU ID for the
+    ///   corresponding vCPU, such as RISC-V hart ID or AArch64 MPIDR affinity.
     ///
     /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
     /// read from `MPIDR_EL1` register (probably for clustering).

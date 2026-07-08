@@ -29,17 +29,20 @@ use axvm::VMMemoryRegion;
 use axvm::config::AxVMCrateConfig;
 use fdt_parser::{Fdt, Node};
 
-use super::vm_fdt::{FdtWriter, FdtWriterNode};
+use super::{
+    arch::FdtRewriter,
+    vm_fdt::{FdtWriter, FdtWriterNode},
+};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::vmm::{VMRef, images::load_vm_image_from_memory};
 
 // use crate::vmm::fdt::print::{print_fdt, print_guest_fdt};
 
-fn fdt_write_err(err: impl core::fmt::Display) -> AxError {
+pub(super) fn fdt_write_err(err: impl core::fmt::Display) -> AxError {
     ax_err_type!(InvalidData, format!("Failed to write guest FDT: {err}"))
 }
 
-fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
+pub(super) fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
     matches!(
         prop_name,
         "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
@@ -73,9 +76,18 @@ pub fn crate_guest_fdt(
 
     let all_nodes: Vec<Node> = fdt.all_nodes().collect();
     let all_paths = super::build_all_node_paths(&all_nodes);
+    let mut fdt_rewriter = FdtRewriter::new(&all_nodes);
 
     for (index, node) in all_nodes.iter().enumerate() {
         let node_path = &all_paths[index];
+        fdt_rewriter.before_node(
+            node_path,
+            phys_cpu_ids,
+            &mut previous_node_level,
+            &mut node_stack,
+            &mut fdt_writer,
+        )?;
+
         let node_action = determine_node_action(node, node_path, passthrough_device_names);
 
         match node_action {
@@ -85,6 +97,7 @@ pub fn crate_guest_fdt(
             NodeAction::CpuNode => {
                 let need = need_cpu_node(phys_cpu_ids, node, node_path);
                 if need {
+                    fdt_rewriter.observe_cpu_node(node.clone(), node_path);
                     handle_node_level_change(
                         &mut fdt_writer,
                         &mut node_stack,
@@ -122,11 +135,29 @@ pub fn crate_guest_fdt(
             if node_path.starts_with("/cpus") && should_skip_guest_cpu_prop(prop.name) {
                 continue;
             }
+            if fdt_rewriter.write_rewritten_property(
+                node,
+                node_path,
+                prop.name,
+                prop.raw_value(),
+                phys_cpu_ids,
+                &mut fdt_writer,
+            )? {
+                continue;
+            }
             fdt_writer
                 .property(prop.name, prop.raw_value())
                 .map_err(fdt_write_err)?;
         }
+        fdt_rewriter.after_node(node_path);
     }
+
+    fdt_rewriter.finish(
+        phys_cpu_ids,
+        &mut previous_node_level,
+        &mut node_stack,
+        &mut fdt_writer,
+    )?;
 
     // End all unclosed nodes
     while let Some(node) = node_stack.pop() {
@@ -253,7 +284,7 @@ fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: 
 }
 
 /// Determine if CPU node is needed
-fn cpu_node_id(node_path: &str) -> Option<usize> {
+pub(super) fn cpu_node_id(node_path: &str) -> Option<usize> {
     node_path
         .strip_prefix("/cpus/cpu@")
         .and_then(|rest| rest.split('/').next())

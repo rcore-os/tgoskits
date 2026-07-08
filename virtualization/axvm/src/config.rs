@@ -373,7 +373,7 @@ pub struct PhysCpuList {
 }
 
 impl PhysCpuList {
-    /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
+    /// Returns vCpu id list, its pCpu affinity list, and its guest-visible CPU id.
     /// If the pCpu affinity is None, it means the vCpu will be allocated to any available pCpu randomly.
     /// If the guest physical CPU ID is not provided, it will be set to the vCPU ID.
     ///
@@ -384,7 +384,7 @@ impl PhysCpuList {
     /// Returns a vector of tuples, each tuple contains:
     /// - The vCpu id.
     /// - The pCpu affinity mask, `None` if not set.
-    /// - The physical id of the vCpu, equal to vCpu id if not provided.
+    /// - The guest-visible CPU id of the vCpu, equal to vCpu id if not provided.
     pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
         let mut vcpu_pcpu_tuples = Vec::new();
 

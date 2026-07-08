@@ -17,10 +17,13 @@
 //! This module provides functionality for parsing and processing device tree blobs,
 //! including CPU configuration, passthrough device detection, and FDT generation.
 
+mod arch;
 mod create;
 mod device;
 mod parser;
 mod print;
+#[cfg(target_arch = "riscv64")]
+mod riscv;
 mod vm_fdt;
 
 use alloc::{collections::BTreeMap, vec::Vec};
@@ -70,7 +73,7 @@ pub fn handle_fdt_operations(
     if let Some(host_fdt_bytes) = host_fdt_bytes {
         let host_fdt = Fdt::from_bytes(host_fdt_bytes)
             .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
-        set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
+        configure_guest_cpus(vm_config, &host_fdt, vm_create_config)?;
 
         if let Some(provided_dtb) = get_developer_provided_dtb(vm_config, vm_create_config)? {
             info!("VM[{}] found DTB , parsing...", vm_config.id());

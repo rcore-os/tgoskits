@@ -498,6 +498,8 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
         drain_vcpu_interrupts(&vm, &vcpu);
         #[cfg(target_arch = "x86_64")]
         super::devices::x86::drain_pending_ioapic_irqs(&vm, &vcpu);
+        #[cfg(target_arch = "riscv64")]
+        rearm_vcpu_timeslice();
         #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
         rearm_passthrough_poll_timer(&vm);
 
@@ -687,6 +689,14 @@ fn rearm_passthrough_poll_timer(vm: &VMRef) {
     axvisor_api::time::set_oneshot_timer(deadline);
 }
 
+#[cfg(target_arch = "riscv64")]
+fn rearm_vcpu_timeslice() {
+    const TIMESLICE_NANOS: u64 = 1_000_000;
+    let deadline = axvisor_api::time::current_time()
+        .saturating_add(core::time::Duration::from_nanos(TIMESLICE_NANOS));
+    axvisor_api::time::set_oneshot_timer(deadline);
+}
+
 fn cpu_up_target_vcpu_id(vm: &VMRef, target_cpu: u64) -> Option<usize> {
     // CPU-up exits report guest-visible CPU IDs (hart IDs on RISC-V, APIC IDs
     // on x86), so translate through guest topology instead of assuming they
@@ -765,6 +775,7 @@ pub(crate) fn handle_internal_exit(
                 axvisor_api::irq::handle_irq(RISCV_S_EXT_VECTOR);
                 crate::arch::riscv64::poll_host_plic(vm.id());
                 vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                axvisor_api::task::yield_now();
             }
             #[cfg(target_arch = "x86_64")]
             super::devices::x86::inject_due_pit_irq0(vm, vcpu);
