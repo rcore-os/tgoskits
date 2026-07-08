@@ -1,6 +1,6 @@
 [package]
 name = "ax-mm"
-version = "0.5.25"
+version = "0.5.26"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

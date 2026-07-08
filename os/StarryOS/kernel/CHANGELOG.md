@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.1...starry-kernel-v0.7.2) - 2026-07-08
+
+### Added
+
+- add jpu after camera pipeline in sg2002 platform ([#1540](https://github.com/rcore-os/tgoskits/pull/1540))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.0...starry-kernel-v0.7.1) - 2026-07-08
 
 ### Added
