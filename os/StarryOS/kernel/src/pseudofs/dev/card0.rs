@@ -219,6 +219,10 @@ struct DumbBuffer {
 struct Framebuffer {
     /// Total backing size in bytes.
     size: u64,
+    /// Row stride (pitch) in bytes — from ADDFB2.pitches[0].
+    stride: u32,
+    /// Framebuffer height in pixels — from ADDFB2.height.
+    height: u32,
     /// Backing pages. Shared with the (now possibly removed) dumb
     /// buffer; refcount keeps them alive until both this fb and any
     /// user mappings have been dropped.
@@ -674,25 +678,37 @@ impl Card0 {
         // the lock so `framebuffer_flush` doesn't run with the
         // map locked. Pages survive a concurrent DESTROY_DUMB because
         // the fb owns its own Arc<GlobalPage> clone.
-        let (pages, size) = match self.fbs.lock().get(&fb_id) {
-            Some(fb) => (fb.pages.clone(), fb.size),
+        let (pages, src_stride, rows, size) = match self.fbs.lock().get(&fb_id) {
+            Some(fb) => (fb.pages.clone(), fb.stride, fb.height as usize, fb.size),
             None => return,
         };
         if !ax_display::has_display() {
             return;
         };
         let info = ax_display::framebuffer_info();
-        let copy = (size as usize).min(info.fb_size);
-        // SAFETY: `pages` owns the source pages; `info.fb_base_vaddr`
-        // is the axdisplay-owned scanout region; the two regions don't
-        // overlap because the per-buffer pages were allocated separately
-        // from the axdisplay framebuffer.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                pages.start_vaddr().as_usize() as *const u8,
-                info.fb_base_vaddr as *mut u8,
-                copy,
-            );
+        let src = pages.start_vaddr().as_usize() as *const u8;
+        let dst = info.fb_base_vaddr as *mut u8;
+
+        if src_stride != 0 && info.stride != 0 && src_stride as usize != info.stride {
+            // Stride mismatch — copy row by row to avoid diagonal tearing.
+            let dst_limit = info.fb_size / info.stride.max(1);
+            let rows = rows.min(dst_limit);
+            let bytes_per_row = (src_stride as usize).min(info.stride);
+            for row in 0..rows {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(row * src_stride as usize),
+                        dst.add(row * info.stride),
+                        bytes_per_row,
+                    );
+                }
+            }
+        } else {
+            // Strides match (or one is unknown) — flat copy.
+            let copy = (size as usize).min(info.fb_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, copy);
+            }
         }
         let _ = ax_display::framebuffer_flush();
     }
@@ -1132,6 +1148,38 @@ impl Card0 {
             };
             (b.pages.clone(), b.size)
         };
+        // Use the plane stride from the ADDFB2 request (f.pitches[0])
+        // rather than the dumb buffer's pitch.  PRIME/import buffers may
+        // have a dumb pitch of 0 even when userspace supplies a valid
+        // stride in the ADDFB2 call.
+        let fb_stride = f.pitches[0];
+        let fb_width = f.width;
+        let fb_height = f.height;
+        let fb_pixel_format = f.pixel_format;
+
+        let bpp = match fb_pixel_format {
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => 32u32,
+            _ => {
+                warn!("ADDFB2: unsupported pixel_format {:#x}", fb_pixel_format);
+                return Err(VfsError::InvalidInput);
+            }
+        };
+        let visible_bytes = fb_width * (bpp / 8);
+        if fb_stride < visible_bytes {
+            warn!(
+                "ADDFB2: stride {} < visible bytes {} ({}bpp, {}px)",
+                fb_stride, visible_bytes, bpp, fb_width
+            );
+            return Err(VfsError::InvalidInput);
+        }
+        let fb_total = fb_stride as u64 * fb_height as u64;
+        if size < fb_total {
+            warn!(
+                "ADDFB2: buffer size {} < fb_total {} ({}stride × {}height)",
+                size, fb_total, fb_stride, fb_height
+            );
+            return Err(VfsError::InvalidInput);
+        }
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
                 if f.handles[i] == 0 {
@@ -1144,7 +1192,15 @@ impl Card0 {
             }
         }
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
-        self.fbs.lock().insert(fb_id, Framebuffer { size, pages });
+        self.fbs.lock().insert(
+            fb_id,
+            Framebuffer {
+                size,
+                stride: fb_stride,
+                height: fb_height,
+                pages,
+            },
+        );
         f.fb_id = fb_id;
         ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
