@@ -264,6 +264,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     ax_hal::init_later(cpu_id, arg);
     if rdrive::is_initialized() {
         registers::append_linker_registers();
+        #[cfg(feature = "irq")]
+        ax_hal::irq::init_boot_irqs(cpu_id)
+            .unwrap_or_else(|err| panic!("failed to initialize boot IRQs: {err:?}"));
+        #[cfg(not(feature = "irq"))]
         rdrive::probe_pre_kernel()
             .unwrap_or_else(|err| panic!("failed to run pre-kernel driver probes: {err:?}"));
     } else {

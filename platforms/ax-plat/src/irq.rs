@@ -318,6 +318,14 @@ pub trait IrqIf {
     /// per-CPU runtime data.
     fn prepare(vector: TrapVector);
 
+    /// Initializes boot-time IRQ controller domains before runtime IRQ handlers
+    /// are registered.
+    fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError>;
+
+    /// Initializes early IRQ state for a secondary CPU.
+    #[cfg(feature = "smp")]
+    fn init_secondary_boot_irqs(cpu_id: usize) -> Result<(), IrqError>;
+
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
 
@@ -364,6 +372,15 @@ mod tests {
     #[impl_plat_interface]
     impl IrqIf for TestIrqIf {
         fn prepare(_vector: TrapVector) {}
+
+        fn init_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+            Ok(())
+        }
+
+        #[cfg(feature = "smp")]
+        fn init_secondary_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+            Ok(())
+        }
 
         fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
             ENABLE_CALLS.fetch_add(1, Ordering::Relaxed);

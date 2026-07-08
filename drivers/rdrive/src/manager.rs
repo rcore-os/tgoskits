@@ -26,7 +26,7 @@ impl Manager {
 
     pub fn unregistered(&mut self) -> Result<Vec<DriverRegister>, ProbeError> {
         let mut out = self.registers.unregistered();
-        out.sort_by_key(|a| a.priority);
+        out.sort_by_key(|a| (a.level, a.priority));
         Ok(out)
     }
 }

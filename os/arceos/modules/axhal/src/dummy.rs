@@ -151,6 +151,15 @@ impl PowerIf for DummyPower {
 impl IrqIf for DummyIrq {
     fn prepare(_vector: TrapVector) {}
 
+    fn init_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "smp")]
+    fn init_secondary_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+        Ok(())
+    }
+
     fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
         Ok(())
     }

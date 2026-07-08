@@ -512,9 +512,7 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn secondary_init_intc(_cpu_idx: usize) {}
-
-    fn secondary_init_systick() {}
+    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
 
     fn send_ipi_to_cpu(cpu_id: usize) {
         Self::send_ipi(lapic_ipi_irq_id(), crate::irq::IpiTarget::Other { cpu_id });

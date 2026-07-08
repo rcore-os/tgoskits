@@ -440,6 +440,31 @@ pub fn systick_irq() -> IrqId {
     Plat::systick_irq()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuBootRole {
+    Primary,
+    Secondary,
+}
+
+pub fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
+    if !rdrive::is_initialized() {
+        warn!("rdrive is not initialized; skip boot IRQ probe");
+        Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
+        return Ok(());
+    }
+
+    rdrive::probe_pre_kernel_until(rdrive::register::ProbePriority::MSI, true).map_err(|err| {
+        warn!("failed to run boot IRQ driver probes: {err:?}");
+        IrqError::Controller
+    })?;
+    Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
+    Ok(())
+}
+
+pub fn init_secondary_boot_irqs(cpu_id: usize) {
+    Plat::init_secondary_boot_irqs(cpu_id);
+}
+
 #[cfg(target_arch = "aarch64")]
 pub fn aarch64_gic_irq_id(hwirq: HwIrq) -> IrqId {
     crate::arch::gic_irq_id(hwirq)

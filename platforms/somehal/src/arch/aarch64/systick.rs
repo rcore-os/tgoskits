@@ -10,7 +10,7 @@ pub fn systick_irq() -> irq_framework::IrqId {
 module_driver!(
     name: "ARMv8 Timer",
     level: ProbeLevel::PreKernel,
-    priority: ProbePriority::DEFAULT,
+    priority: ProbePriority::TIMER,
     probe_kinds: &[
         ProbeKind::Fdt {
             compatibles: &["arm,armv8-timer"],

@@ -39,8 +39,8 @@ static PRIMARY_ITS: AtomicU64 = AtomicU64::new(INVALID_DEVICE_ID);
 
 module_driver!(
     name: "GICv3 ITS",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::MSI,
     probe_kinds: &[
         ProbeKind::Fdt {
             compatibles: &["arm,gic-v3-its"],

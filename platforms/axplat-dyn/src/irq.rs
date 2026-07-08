@@ -42,6 +42,16 @@ struct IrqIfImpl;
 impl IrqIf for IrqIfImpl {
     fn prepare(_vector: TrapVector) {}
 
+    fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
+        somehal::irq::init_boot_irqs(cpu_id)
+    }
+
+    #[cfg(feature = "smp")]
+    fn init_secondary_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
+        somehal::irq::init_secondary_boot_irqs(cpu_id);
+        Ok(())
+    }
+
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
         somehal::irq::irq_set_enable(irq, enabled)
