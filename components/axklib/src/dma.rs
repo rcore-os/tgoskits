@@ -5,6 +5,7 @@ use dma_api::{
     DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaDomainId, DmaError, DmaMapHandle,
     DmaOp,
 };
+use mbarrier::mb;
 
 pub struct KlibDma;
 
@@ -194,6 +195,22 @@ impl DmaOp for KlibDma {
             let num_pages = DmaPages::layout_pages(handle.layout());
             unsafe { DmaPages::dealloc_pages(map_virt, num_pages) };
         }
+    }
+
+    fn flush(&self, addr: NonNull<u8>, size: usize) {
+        mb();
+        crate::klib::dma_cache_clean(VirtAddr::from_usize(addr.as_ptr() as usize), size);
+    }
+
+    fn invalidate(&self, addr: NonNull<u8>, size: usize) {
+        crate::klib::dma_cache_invalidate(VirtAddr::from_usize(addr.as_ptr() as usize), size);
+        mb();
+    }
+
+    fn flush_invalidate(&self, addr: NonNull<u8>, size: usize) {
+        mb();
+        crate::klib::dma_cache_clean_invalidate(VirtAddr::from_usize(addr.as_ptr() as usize), size);
+        mb();
     }
 }
 

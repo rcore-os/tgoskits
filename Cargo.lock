@@ -1303,6 +1303,7 @@ dependencies = [
  "ax-memory-addr",
  "dma-api",
  "irq-framework",
+ "mbarrier",
  "mmio-api",
  "trait-ffi",
 ]

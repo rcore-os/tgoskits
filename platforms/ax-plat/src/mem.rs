@@ -40,6 +40,17 @@ pub enum IomapError {
     Unsupported,
 }
 
+/// Data-cache maintenance operation for a virtual address range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DCacheOp {
+    /// Clean dirty CPU cache lines to the point visible to devices.
+    Clean,
+    /// Invalidate CPU cache lines after device writes.
+    Invalidate,
+    /// Clean and invalidate CPU cache lines for bidirectional ownership changes.
+    CleanInvalidate,
+}
+
 bitflags::bitflags! {
     /// The flags of a physical memory region.
     #[derive(Clone, Copy)]
@@ -207,6 +218,18 @@ pub trait MemIf {
 
     /// Returns whether a newly-created user address space must copy kernel mappings.
     fn user_aspace_needs_kernel_mappings() -> bool;
+
+    /// Maintains a CPU data-cache range for non-coherent DMA ownership changes.
+    fn dcache_range(op: DCacheOp, addr: VirtAddr, size: usize);
+
+    /// Prepares a cached range before the kernel remaps it as uncached for DMA.
+    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize);
+
+    /// Prepares an uncached DMA range before the kernel restores cached mappings.
+    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize);
+
+    /// Completes platform ordering after a DMA coherent mapping attribute update.
+    fn dma_coherent_after_mapping_update();
 }
 
 /// Returns the total size of physical memory (RAM) on the platform.
