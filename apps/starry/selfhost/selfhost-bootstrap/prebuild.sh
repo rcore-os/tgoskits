@@ -74,8 +74,7 @@ fail() {
 if [ -f /bin/bash ] && [ -f /usr/bin/gcc ] && [ -f /usr/bin/git ]; then
     echo "[bootstrap] Build toolchain already installed — skipping apk."
 else
-echo "[bootstrap] apk update + install build toolchain..."
-apk update || fail "apk update failed"
+echo "[bootstrap] apk add build toolchain (cached index)..."
 apk add --no-cache --no-scripts \
     build-base clang clang-dev cmake pkgconf git curl python3 \
     linux-headers openssl-dev perl bash tar xz musl-dev \
