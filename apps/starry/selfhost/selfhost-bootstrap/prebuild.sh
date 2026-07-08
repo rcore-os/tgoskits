@@ -68,6 +68,12 @@ fail() {
 # before boot); the StarryOS guest cannot reliably resize it, so no in-guest
 # resize is attempted here.
 
+# Idempotent: if the toolchain was already installed by a previous run,
+# skip apk entirely.  The apk upgrade of libssl/libcrypto can produce ELF
+# files that rsext4 cannot read after remount, so avoid re-running apk.
+if [ -x /bin/bash ] && [ -x /usr/bin/gcc ] && [ -x /usr/bin/git ]; then
+    echo "[bootstrap] Build toolchain already installed — skipping apk."
+else
 echo "[bootstrap] apk update + install build toolchain..."
 apk update || fail "apk update failed"
 apk add --no-cache --no-scripts \
@@ -80,6 +86,7 @@ apk add --no-cache --no-scripts \
 [ -x /bin/bash ] || fail "bash missing after apk"
 [ -x /usr/bin/gcc ] || fail "gcc missing after apk"
 [ -x /usr/bin/git ] || fail "git missing after apk"
+fi  # end of toolchain-already-installed guard
 
 # Inner scripts carry '#!/usr/bin/bash' shebangs and are invoked via
 # shell_init_cmd; they do NOT depend on /bin/sh.  The kernel init process
