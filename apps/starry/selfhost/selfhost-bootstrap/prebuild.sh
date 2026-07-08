@@ -164,10 +164,14 @@ echo "[bootstrap] $(rustc --version)"
 # kallsyms tools: rust-nm / rust-objcopy (cargo-binutils) + gen_ksym (ksym).
 # Guarded so re-runs skip the (slow) rebuild when the tools already persist.
 echo "[bootstrap] Installing kallsyms tools..."
-cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
-    || fail "cargo install cargo-binutils failed"
-cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
-    || fail "cargo install ksym failed"
+if ! command -v rust-nm >/dev/null 2>&1 || ! command -v rust-objcopy >/dev/null 2>&1; then
+    cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
+        || fail "cargo install cargo-binutils failed"
+fi
+if ! command -v gen_ksym >/dev/null 2>&1; then
+    cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
+        || fail "cargo install ksym failed"
+fi
 command -v gen_ksym >/dev/null 2>&1 || fail "gen_ksym missing after install"
 command -v rust-nm >/dev/null 2>&1 || fail "rust-nm missing after install"
 command -v rust-objcopy >/dev/null 2>&1 || fail "rust-objcopy missing after install"
