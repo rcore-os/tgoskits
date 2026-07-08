@@ -6,6 +6,8 @@ args = [
     "512M",
     "-cpu",
     "cortex-a53",
+    "-smp",
+    "4",
     "-device",
     "nvme,serial=deadbeef,drive=nvm",
     "-drive",
@@ -80,11 +82,11 @@ fi
 echo "STARRY_SYSTEM_TEST_TIMING_END"
 rm -f "$timing_file"
 if [ "$found" -ne 1 ]; then
-    echo "$group_fail_marker: no system tests found"
+    echo "$group_fail_marker: no SMP system tests found"
     exit 1
 fi
 if [ "$failed" -ne 0 ]; then
-    echo "$group_fail_marker: one or more system tests failed"
+    echo "$group_fail_marker: one or more SMP system tests failed"
     exit 1
 fi
 echo "STARRY_GROUPED_TESTS_PASSED"

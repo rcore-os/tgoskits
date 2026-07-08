@@ -9,3 +9,4 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
 ]
+max_cpu_num = 4

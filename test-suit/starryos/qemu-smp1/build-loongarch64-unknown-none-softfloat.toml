@@ -9,3 +9,4 @@ features = [
   "ax-driver/virtio-socket",
   "starry-kernel/input",
 ]
+max_cpu_num = 4
