@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.26...ax-hal-v0.5.27) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
 ## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.25...ax-hal-v0.5.26) - 2026-07-08
 
 ### Other
