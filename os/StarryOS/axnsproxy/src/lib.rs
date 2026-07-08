@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod cgroup;
 mod ipc;
 mod mnt;
 mod net;
@@ -12,6 +13,7 @@ mod uts;
 use alloc::sync::Arc;
 
 use ax_kspin::SpinNoIrq;
+pub use cgroup::{CgroupNamespace, ROOT_CGROUP_NS};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};
@@ -42,6 +44,8 @@ pub struct NsProxy {
     pub net_ns: Arc<SpinNoIrq<NetNamespace>>,
     /// The user namespace (UID/GID mappings).
     pub user_ns: Arc<SpinNoIrq<UserNamespace>>,
+    /// The cgroup namespace (cgroup hierarchy view).
+    pub cgroup_ns: Arc<SpinNoIrq<CgroupNamespace>>,
 }
 
 impl NsProxy {
@@ -55,6 +59,7 @@ impl NsProxy {
             child_pid_ns: None,
             net_ns: ROOT_NET_NS.clone(),
             user_ns: ROOT_USER_NS.clone(),
+            cgroup_ns: ROOT_CGROUP_NS.clone(),
         }
     }
 
@@ -72,6 +77,7 @@ impl NsProxy {
             child_pid_ns: None,
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
+            cgroup_ns: self.cgroup_ns.clone(),
         }
     }
 
@@ -116,6 +122,11 @@ impl NsProxy {
         self.user_ns = Arc::new(SpinNoIrq::new(new_inner));
     }
 
+    pub fn unshare_cgroup(&mut self) {
+        let new_inner = self.cgroup_ns.lock().clone_ns();
+        self.cgroup_ns = Arc::new(SpinNoIrq::new(new_inner));
+    }
+
     /// Replace the UTS namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_uts(&mut self, ns: Arc<SpinNoIrq<UtNamespace>>) {
         self.uts_ns = ns;
@@ -150,5 +161,10 @@ impl NsProxy {
     /// Replace the user namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_user(&mut self, ns: Arc<SpinNoIrq<UserNamespace>>) {
         self.user_ns = ns;
+    }
+
+    /// Replace the cgroup namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_cgroup(&mut self, ns: Arc<SpinNoIrq<CgroupNamespace>>) {
+        self.cgroup_ns = ns;
     }
 }
