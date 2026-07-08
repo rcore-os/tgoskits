@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.25...ax-hal-v0.5.26) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu, ax-plat, ax-alloc, axplat-dyn
+
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.24...ax-hal-v0.5.25) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive, ax-plat, ax-alloc, axplat-dyn
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.23...ax-hal-v0.5.24) - 2026-07-07
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.22...ax-hal-v0.5.23) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(irq-framework)* use domain-scoped irq ids
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.21...ax-hal-v0.5.22) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(platforms)* remove VisionFive2 static platform ([#1371](https://github.com/rcore-os/tgoskits/pull/1371))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.20...ax-hal-v0.5.21) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+- *(starry)* add VisionFive2 board smoke ([#1348](https://github.com/rcore-os/tgoskits/pull/1348))
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.19...ax-hal-v0.5.20) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.18...ax-hal-v0.5.19) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.17...ax-hal-v0.5.18) - 2026-06-11
+
+### Other
+
+- *(axvisor)* remove obsolete x86 q35 static platform ([#1186](https://github.com/rcore-os/tgoskits/pull/1186))
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.16...ax-hal-v0.5.17) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.15...ax-hal-v0.5.16) - 2026-06-03
 
 ### Added

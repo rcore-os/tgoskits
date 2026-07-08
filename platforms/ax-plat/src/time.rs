@@ -37,7 +37,7 @@ pub trait TimeIf {
 
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
-    fn irq_num() -> usize;
+    fn irq_num() -> irq_framework::IrqId;
 
     /// Set a one-shot timer.
     ///
@@ -69,12 +69,12 @@ pub fn wall_time() -> TimeValue {
 
 /// Busy waiting for the given duration.
 pub fn busy_wait(dur: Duration) {
-    busy_wait_until(wall_time() + dur);
+    busy_wait_until(monotonic_time() + dur);
 }
 
-/// Busy waiting until reaching the given deadline.
+/// Busy waiting until reaching the given monotonic deadline.
 pub fn busy_wait_until(deadline: TimeValue) {
-    while wall_time() < deadline {
+    while monotonic_time() < deadline {
         core::hint::spin_loop();
     }
 }

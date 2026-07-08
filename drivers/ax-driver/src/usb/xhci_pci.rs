@@ -4,15 +4,13 @@ use alloc::format;
 
 use log::info;
 use pcie::CommandRegister;
-use rdrive::{
-    PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
-    },
+use rdrive::probe::{
+    OnProbeError,
+    pci::{FnOnProbe, ProbePci},
 };
 
-use super::{PlatformDeviceUsbHost, align_up_4k, pci_irq_or_error, usb_kernel};
+use super::{PlatformDeviceUsbHost, align_up_4k, usb_kernel};
+use crate::BindingInfo;
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
 
@@ -25,7 +23,8 @@ crate::model_register!(
     }],
 );
 
-fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     let class = endpoint.revision_and_class();
     if (class.base_class, class.sub_class, class.interface) != (0x0c, 0x03, 0x30) {
         return Err(OnProbeError::NotMatch);
@@ -36,24 +35,30 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     };
 
     endpoint.update_command(|mut cmd| {
-        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
+        cmd.insert(
+            CommandRegister::MEMORY_ENABLE
+                | CommandRegister::BUS_MASTER_ENABLE
+                | CommandRegister::INTERRUPT_DISABLE,
+        );
         cmd
     });
 
     let mmio = crate::mmio::iomap(bar.start, align_up_4k(bar.count().max(1)))?;
-    let irq_num = Some(pci_irq_or_error(endpoint)?);
+    let address = endpoint.address();
     let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
         OnProbeError::other(format!(
-            "failed to create xHCI host for PCI endpoint {}: {err}",
-            endpoint.address()
+            "failed to create xHCI host for PCI endpoint {address}: {err}",
         ))
     })?;
 
-    plat_dev.register_usb_host(DRIVER_NAME, host, irq_num);
+    let irq = probe.into_platform_device().register_usb_host_with_info(
+        DRIVER_NAME,
+        host,
+        BindingInfo::empty(),
+    );
     info!(
         "xHCI PCI host registered successfully at {} with irq {:?}",
-        endpoint.address(),
-        irq_num
+        address, irq
     );
     Ok(())
 }

@@ -71,6 +71,10 @@ impl<B: BlockDevice> BlockDev<B> {
         }
     }
 
+    pub fn into_inner(self) -> B {
+        self.dev
+    }
+
     /// Creates a cached block device wrapper with a caller-provided buffer.
     pub fn _with_buffer(dev: B, buffer: BlockBuffer) -> Ext4Result<Self> {
         if buffer.len() < 512 {
@@ -171,7 +175,25 @@ impl<B: BlockDevice> BlockDev<B> {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
 
-        self.dev.write(buffer, block_id, count)
+        self.dev.write(buffer, block_id, count)?;
+
+        for off in 0..count {
+            let target = block_id.checked_add(off)?;
+            for entry in self.entries.iter_mut() {
+                if !entry.is_empty() && entry.block_id == Some(target) {
+                    let start = off as usize * block_size;
+                    entry
+                        .buffer
+                        .as_mut_slice()
+                        .copy_from_slice(&buffer[start..start + block_size]);
+                    entry.dirty = false;
+                    entry.referenced = true;
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the active buffer (read-only view of the last accessed block).
@@ -185,15 +207,23 @@ impl<B: BlockDevice> BlockDev<B> {
         self.entries[self.active].buffer.as_mut_slice()
     }
 
-    /// Invalidates the cache without flushing.
-    /// Used after journal commit to prevent stale cached data
-    /// from shadowing newly-committed blocks.
-    pub fn invalidate_cache(&mut self) {
+    /// Flushes dirty cached blocks, then invalidates all entries.
+    ///
+    /// Dirty entries are flushed first so metadata modifications made
+    /// via [`buffer_mut`] are never silently discarded.
+    pub fn invalidate_cache(&mut self) -> Ext4Result<()> {
         for entry in self.entries.iter_mut() {
+            if entry.dirty && !entry.is_empty() {
+                let bid = entry.block_id.unwrap();
+                self.dev.write(entry.buffer.as_slice(), bid, 1)?;
+                entry.dirty = false;
+            }
             entry.block_id = None;
-            entry.dirty = false;
             entry.referenced = false;
         }
+        self.active = 0;
+        self.clock = 0;
+        Ok(())
     }
 
     /// Replaces cached block contents without writing to the device.

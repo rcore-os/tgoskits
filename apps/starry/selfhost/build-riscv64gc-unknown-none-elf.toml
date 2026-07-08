@@ -1,6 +1,4 @@
-env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
-  "ax-hal/riscv64-qemu-virt",
   "qemu",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
@@ -9,6 +7,4 @@ features = [
   "ax-driver/virtio-socket",
 ]
 log = "Warn"
-axconfig_overrides = ["plat.phys-memory-size=0x3_0000_0000"]
-plat_dyn = false
 target = "riscv64gc-unknown-none-elf"

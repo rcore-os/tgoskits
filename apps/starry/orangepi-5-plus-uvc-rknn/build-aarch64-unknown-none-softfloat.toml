@@ -1,6 +1,5 @@
 # Build-time config for the Orange Pi 5 Plus UVC + RKNN Starry example.
 target = "aarch64-unknown-none-softfloat"
-env = {}
 features = [
   "ax-driver/irq",
   "ax-driver/list-pci-devices",
@@ -14,4 +13,3 @@ features = [
 ]
 log = "Warn"
 max_cpu_num = 1
-plat_dyn = true

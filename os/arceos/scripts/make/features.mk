@@ -2,24 +2,20 @@
 #
 # Inputs:
 #   - `FEATURES`: a list of features to be enabled split by spaces or commas.
-#     The features can be selected from the crate `ax-feat` or the user library
-#     (crate `ax-std` or `ax-libc`).
+#     The features can be selected from the user library (crate `ax-std` or
+#     `ax-libc`) or by direct crate feature paths.
 #   - `APP_FEATURES`: a list of features to be enabled for the Rust app.
 #
 # Outputs:
-#   - `AX_FEAT`: features to be enabled for ArceOS modules (crate `ax-feat`).
+#   - `AX_FEATURESURES`: resolved ArceOS user-library or direct crate features.
 #   - `LIB_FEAT`: features to be enabled for the user library (crate `ax-std`, `ax-libc`).
 #   - `APP_FEAT`: features to be enabled for the Rust app.
 
 ifeq ($(APP_TYPE),c)
-  ax_feat_prefix := ax-feat/
+  arceos_feature_prefix := ax-libc/
   lib_features := fp-simd irq alloc multitask lockdep fs net fd pipe select epoll
 else
-  ifeq ($(NO_AXSTD),y)
-    ax_feat_prefix := ax-feat/
-  else
-    ax_feat_prefix := ax-std/
-  endif
+  arceos_feature_prefix := ax-std/
   lib_features :=
 endif
 
@@ -38,26 +34,16 @@ endif
 
 override FEATURES := $(strip $(FEATURES))
 
-ax_feat :=
+arceos_feature :=
 lib_feat :=
 direct_feat :=
-
-ifeq ($(PLAT_DYN),y)
-  ax_feat += plat-dyn
-else
-  ifneq ($(MYPLAT),)
-    ax_feat += myplat
-  else
-    ax_feat += defplat
-  endif
-endif
 
 ifeq ($(filter $(LOG),off error warn info debug trace),)
   $(error "LOG" must be one of "off", "error", "warn", "info", "debug", "trace")
 endif
 
 ifeq ($(DWARF),y)
-  ax_feat += dwarf
+  arceos_feature += dwarf
 endif
 
 ifeq ($(shell test $(SMP) -gt 1; echo $$?),0)
@@ -67,9 +53,9 @@ endif
 direct_feat += $(filter %/%,$(FEATURES))
 legacy_feat := $(filter-out %/%,$(FEATURES))
 
-ax_feat += $(filter-out $(lib_features),$(legacy_feat))
+arceos_feature += $(filter-out $(lib_features),$(legacy_feat))
 lib_feat += $(filter $(lib_features),$(legacy_feat))
 
-AX_FEAT := $(strip $(addprefix $(ax_feat_prefix),$(ax_feat)) $(direct_feat))
+AX_FEATURESURES := $(strip $(addprefix $(arceos_feature_prefix),$(arceos_feature)) $(direct_feat))
 LIB_FEAT := $(strip $(addprefix $(lib_feat_prefix),$(lib_feat)))
 APP_FEAT := $(strip $(shell echo $(APP_FEATURES) | tr ',' ' '))

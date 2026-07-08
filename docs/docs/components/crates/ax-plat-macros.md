@@ -129,7 +129,7 @@ graph LR
 - 展开后导出符号与 `call_interface` 调用路径是否符合预期。
 
 ### 集成测试
-- 用 `ax-helloworld-myplat` 和系统级 smoke test 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
+- 用 `arceos-helloworld` 和系统级 smoke test 验证 `_start -> ax_plat::call_main -> __axplat_main` 链条。
 - 用 `axplat` 内部 trait 接口验证 `def_plat_interface` 与 `impl_plat_interface` 的配合。
 
 ### 覆盖率
@@ -195,15 +195,14 @@ graph LR
 
 ### 被依赖情况
 - `arceos-affinity`
-- `ax-helloworld`
-- `ax-helloworld-myplat`
-- `ax-httpclient`
-- `ax-httpserver`
+- `arceos-helloworld`
+- `arceos-httpclient`
+- `arceos-httpserver`
 - `arceos-irq`
 - `arceos-memtest`
 - `arceos-parallel`
 - `arceos-priority`
-- `ax-shell`
+- `arceos-shell`
 - `arceos-sleep`
 - `arceos-wait-queue`
 - 另外还有 `37` 个同类项未在此展开
@@ -247,7 +246,7 @@ ax-plat-macros = { workspace = true }
 
 ## 跨项目定位
 ### ArceOS
-`ax-plat-macros` 主要通过 `arceos-affinity`、`ax-helloworld`、`ax-helloworld-myplat`、`ax-httpclient`、`ax-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
+`ax-plat-macros` 主要通过 `arceos-affinity`、`arceos-helloworld`、`arceos-httpclient`、`arceos-httpserver`、`arceos-irq` 等（另有 26 项） 等上层 crate 被 ArceOS 间接复用，通常处于更底层的公共依赖层。
 
 ### StarryOS
 `ax-plat-macros` 主要通过 `starry-kernel`、`starryos`、`starryos-test` 等上层 crate 被 StarryOS 间接复用，通常处于更底层的公共依赖层。

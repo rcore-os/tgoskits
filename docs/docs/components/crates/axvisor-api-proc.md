@@ -99,7 +99,7 @@
 - `arm_vcpu`
 - `arm_vgic`
 - `axdevice`
-- `axvcpu`
+- `axvm`
 - `axvm`
 - `riscv_vcpu`
 - `riscv_vplic`
@@ -165,7 +165,7 @@
 - `arm_vcpu`
 - `arm_vgic`
 - `axdevice`
-- `axvcpu`
+- `axvm`
 - `axvm`
 - `riscv_vcpu`
 - `riscv_vplic`

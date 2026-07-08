@@ -19,7 +19,6 @@ pub(crate) struct ArchSpec {
     pub(crate) arch: &'static str,
     pub(crate) target: &'static str,
     pub(crate) default_rootfs_image: &'static str,
-    pub(crate) starry_default_platform: Option<&'static str>,
     pub(crate) cross_compile: CrossCompileSpec,
 }
 
@@ -28,7 +27,6 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "aarch64",
         target: "aarch64-unknown-none-softfloat",
         default_rootfs_image: "rootfs-aarch64-alpine.img",
-        starry_default_platform: None,
         cross_compile: CrossCompileSpec {
             llvm_target: "aarch64-linux-musl",
             cmake_system_processor: "aarch64",
@@ -41,7 +39,6 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "x86_64",
         target: "x86_64-unknown-none",
         default_rootfs_image: "rootfs-x86_64-alpine.img",
-        starry_default_platform: Some("x86-pc"),
         cross_compile: CrossCompileSpec {
             llvm_target: "x86_64-linux-musl",
             cmake_system_processor: "x86_64",
@@ -54,7 +51,6 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "riscv64",
         target: "riscv64gc-unknown-none-elf",
         default_rootfs_image: "rootfs-riscv64-alpine.img",
-        starry_default_platform: None,
         cross_compile: CrossCompileSpec {
             llvm_target: "riscv64-linux-musl",
             cmake_system_processor: "riscv64",
@@ -67,7 +63,6 @@ const ARCH_SPECS: &[ArchSpec] = &[
         arch: "loongarch64",
         target: "loongarch64-unknown-none-softfloat",
         default_rootfs_image: "rootfs-loongarch64-alpine.img",
-        starry_default_platform: Some("loongarch64-qemu-virt"),
         cross_compile: CrossCompileSpec {
             llvm_target: "loongarch64-linux-musl",
             cmake_system_processor: "loongarch64",
@@ -117,14 +112,6 @@ pub(crate) fn arch_for_target_checked(target: &str) -> anyhow::Result<&'static s
 
 pub(crate) fn default_rootfs_image_for_arch(arch: &str) -> Option<&'static str> {
     arch_spec(arch).map(|spec| spec.default_rootfs_image)
-}
-
-pub(crate) fn starry_default_platform_for_arch_checked(
-    arch: &str,
-) -> anyhow::Result<Option<&'static str>> {
-    arch_spec(arch)
-        .map(|spec| spec.starry_default_platform)
-        .ok_or_else(|| unsupported_arch_error(arch, "Starry"))
 }
 
 pub(crate) fn cross_compile_spec_for_arch_checked(arch: &str) -> anyhow::Result<CrossCompileSpec> {

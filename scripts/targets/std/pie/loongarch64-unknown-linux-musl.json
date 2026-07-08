@@ -1,0 +1,45 @@
+{
+  "abi": "softfloat",
+  "arch": "loongarch64",
+  "code-model": "small",
+  "crt-objects-fallback": "false",
+  "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+  "eh-frame-header": false,
+  "env": "musl",
+  "features": "-f,-d,-ual",
+  "has-thread-local": true,
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "llvm-abiname": "lp64s",
+  "llvm-target": "loongarch64-unknown-none",
+  "max-atomic-width": 64,
+  "metadata": {
+    "description": "ArceOS std LoongArch64 musl identity with kernel PIE link style",
+    "host_tools": false,
+    "std": true,
+    "tier": 2
+  },
+  "os": "linux",
+  "panic-strategy": "abort",
+  "position-independent-executables": true,
+  "pre-link-args": {
+    "gnu-lld": [
+      "-pie",
+      "--gc-sections",
+      "-znorelro",
+      "-znostart-stop-gc",
+      "-Tlinker.x",
+      "-u",
+      "_head"
+    ]
+  },
+  "relocation-model": "pic",
+  "relro-level": "off",
+  "static-position-independent-executables": true,
+  "target-family": [
+    "unix"
+  ],
+  "target-mcount": "_mcount",
+  "target-pointer-width": 64,
+  "tls-model": "initial-exec"
+}

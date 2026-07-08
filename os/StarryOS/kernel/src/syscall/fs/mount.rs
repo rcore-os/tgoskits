@@ -1,13 +1,13 @@
-use alloc::{string::String, sync::Arc};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
-    pseudofs::MemoryFs,
+    pseudofs::{MemoryFs, overlay::OverlayOptions},
     task::{AsThread, tasks},
 };
 
@@ -29,6 +29,53 @@ const MS_SHARED: i32 = 1 << 20;
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+fn parse_overlay_options(
+    data: *const c_void,
+) -> AxResult<(Vec<String>, Option<String>, Option<String>)> {
+    if data.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    let data = vm_load_string(data.cast())?;
+    let mut lowerdir = None;
+    let mut upperdir = None;
+    let mut workdir = None;
+
+    for item in data.split(',') {
+        let Some((key, value)) = item.split_once('=') else {
+            continue;
+        };
+        match key {
+            "lowerdir" => lowerdir = Some(value),
+            "upperdir" => upperdir = Some(value),
+            "workdir" => workdir = Some(value),
+            "index" | "redirect_dir" if value != "off" => {
+                return Err(AxError::OperationNotSupported);
+            }
+            _ => {}
+        }
+    }
+
+    let lower_dirs = lowerdir
+        .ok_or(AxError::InvalidInput)?
+        .split(':')
+        .filter(|path| !path.is_empty())
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if lower_dirs.is_empty() {
+        return Err(AxError::InvalidInput);
+    }
+
+    if upperdir.is_some() != workdir.is_some() {
+        return Err(AxError::InvalidInput);
+    }
+
+    Ok((
+        lower_dirs,
+        upperdir.map(String::from),
+        workdir.map(String::from),
+    ))
+}
 
 fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     fd.downcast_ref::<File>()
@@ -66,7 +113,7 @@ pub fn sys_mount(
     target: *const c_char,
     fs_type: *const c_char,
     flags: i32,
-    _data: *const c_void,
+    data: *const c_void,
 ) -> AxResult<isize> {
     let source = vm_load_string(source)?;
     let target = vm_load_string(target)?;
@@ -155,6 +202,27 @@ pub fn sys_mount(
         "ext4" => {
             mount_ext4(&source, &target, (flags & MS_RDONLY) != 0)?;
         }
+        "overlay" => {
+            let (lower_paths, upper_path, work_path) = parse_overlay_options(data)?;
+            let ctx = FS_CONTEXT.lock();
+            let mut lower_dirs = Vec::new();
+            for lower in lower_paths {
+                lower_dirs.push(ctx.resolve(lower)?);
+            }
+            let upper_dir = upper_path.map(|path| ctx.resolve(path)).transpose()?;
+            let work_dir = work_path.map(|path| ctx.resolve(path)).transpose()?;
+            let readonly = upper_dir.is_none();
+            let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
+                lower_dirs,
+                upper_dir,
+                work_dir,
+            })?;
+            let target = ctx.resolve(target)?;
+            let mp = target.mount(&fs)?;
+            if readonly || (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+        }
         _ => return Err(AxError::NoSuchDevice),
     }
 
@@ -184,18 +252,15 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
             warn!("mount_ext4: {:?} is not a loop device", source);
             AxError::NoSuchDevice
         })?;
-    let block_dev = loop_dev.as_dyn_block_device().inspect_err(|e| {
-        warn!(
-            "mount_ext4: loop device as_dyn_block_device failed: {:?}",
-            e
-        );
+    let handle = loop_dev.block_handle().inspect_err(|e| {
+        warn!("mount_ext4: loop device block handle failed: {:?}", e);
     })?;
 
-    let num_blocks = block_dev.num_blocks();
-    let region = ax_fs::BlockRegion::from_num_blocks(num_blocks);
+    let num_blocks = handle.device_info().num_blocks;
+    let region = ax_fs_ng::BlockRegion::from_num_blocks(num_blocks);
 
-    // Create ext4 filesystem from the dynamic block device
-    let fs = ax_fs::new_filesystem_from_dyn(block_dev, region).map_err(|e| {
+    // Create ext4 filesystem from the native block runtime handle
+    let fs = ax_fs_ng::vfs::new_filesystem_from_handle(handle, region).map_err(|e| {
         warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
         AxError::Io
     })?;
@@ -268,6 +333,12 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
     if is_mount_busy(target.mountpoint()) {
         return Err(AxError::from(LinuxError::EBUSY));
     }
+
+    // Flush closed-file page cache entries before the filesystem itself is
+    // flushed by `Location::unmount()`. Otherwise data written through a file
+    // descriptor that has already been closed can remain only in axfs-ng's
+    // global cached-file list and miss the unmount writeback.
+    ax_fs_ng::file::sync_all_cached_files(false)?;
 
     // Retrieve the writeback callback (if any) before unmount tears down
     // the mount.  For ext4-on-loop mounts this flushes the block device
@@ -355,7 +426,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // Propagate root / cwd to all other tasks whose root_dir or current_dir
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
-    ax_fs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
+    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
 
     Ok(0)
 }

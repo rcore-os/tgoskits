@@ -1,26 +1,9 @@
-#[cfg(all(not(test), not(feature = "myplat")))]
+#[cfg(all(not(test), not(feature = "host-test")))]
 include!(concat!(env!("OUT_DIR"), "/selected_platform.rs"));
 
-#[cfg(all(
-    target_os = "none",
-    not(test),
-    not(feature = "myplat"),
-    not(feature = "defplat"),
-    not(ax_hal_any_platform_feature)
-))]
-compile_error!("select an ax-hal platform feature or enable ax-hal/myplat");
-
-#[cfg(test)]
+#[cfg(any(test, feature = "host-test"))]
 #[path = "dummy.rs"]
 mod dummy;
 
-#[cfg(all(
-    not(test),
-    not(target_os = "none"),
-    not(feature = "defplat"),
-    not(ax_hal_any_platform_feature)
-))]
-#[path = "dummy.rs"]
-mod dummy;
-
+#[cfg(any(test, feature = "host-test"))]
 pub mod selected {}

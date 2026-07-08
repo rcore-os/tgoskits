@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 use core::{
-    fmt::{self, Debug, Display, Write},
+    fmt::{self, Debug, Display},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -9,6 +9,8 @@ use pci_types::{
     device_type::DeviceType,
 };
 use rdif_pcie::{ConfigAccess, SimpleBarAllocator};
+
+use crate::{MsixError, MsixTableInfo};
 
 pub struct Endpoint {
     base: super::PciHeaderBase,
@@ -78,6 +80,43 @@ impl Endpoint {
 
     pub fn capabilities(&self) -> Vec<PciCapability> {
         self.header.capabilities(self.access()).collect()
+    }
+
+    pub fn msix_capability(&self) -> Option<pci_types::capability::MsixCapability> {
+        self.capabilities().into_iter().find_map(|capability| {
+            if let PciCapability::MsiX(msix) = capability {
+                Some(msix)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn msix_table_info(&self) -> Result<MsixTableInfo, MsixError> {
+        let capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        let info = MsixTableInfo::from_capability(&capability);
+        let bar = self.bar_mmio(info.bar).ok_or(MsixError::InvalidTableBar)?;
+        info.table_range(bar)?;
+        Ok(info)
+    }
+
+    pub fn msix_table_range(&self) -> Result<Range<usize>, MsixError> {
+        let capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        let info = MsixTableInfo::from_capability(&capability);
+        let bar = self.bar_mmio(info.bar).ok_or(MsixError::InvalidTableBar)?;
+        info.table_range(bar)
+    }
+
+    pub fn set_msix_enabled(&mut self, enabled: bool) -> Result<(), MsixError> {
+        let mut capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        capability.set_enabled(enabled, self.access());
+        Ok(())
+    }
+
+    pub fn set_msix_function_mask(&mut self, mask: bool) -> Result<(), MsixError> {
+        let mut capability = self.msix_capability().ok_or(MsixError::MissingCapability)?;
+        capability.set_function_mask(mask, self.access());
+        Ok(())
     }
 
     pub fn interrupt_pin(&self) -> u8 {
@@ -180,45 +219,80 @@ impl Display for Endpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let address = self.base.address();
         let class_info = self.base.revision_and_class();
-        let device_type = self.device_type();
+        EndpointIdentity {
+            segment: address.segment(),
+            bus: address.bus(),
+            device: address.device(),
+            function: address.function(),
+            device_type: self.device_type(),
+            vendor_id: self.base.vendor_id(),
+            device_id: self.base.device_id(),
+            revision_id: class_info.revision_id,
+            interface: class_info.interface,
+        }
+        .fmt(f)
+    }
+}
 
+struct EndpointIdentity {
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+    device_type: DeviceType,
+    vendor_id: u16,
+    device_id: u16,
+    revision_id: u8,
+    interface: u8,
+}
+
+impl Display for EndpointIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let device_type = format!("{:?}", self.device_type);
         write!(
             f,
-            "{:04x}:{:02x}:{:02x}.{} {} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
-            address.segment(),
-            address.bus(),
-            address.device(),
-            address.function(),
-            PaddedDebug(&device_type, 24),
-            self.base.vendor_id(),
-            self.base.device_id(),
-            class_info.revision_id,
-            class_info.interface,
+            "{:04x}:{:02x}:{:02x}.{} {:24} {:04x}:{:04x} (rev {:02x}, prog-if {:02x})",
+            self.segment,
+            self.bus,
+            self.device,
+            self.function,
+            device_type,
+            self.vendor_id,
+            self.device_id,
+            self.revision_id,
+            self.interface,
         )
     }
 }
 
-struct PaddedDebug<'a, T>(&'a T, usize);
+#[cfg(test)]
+mod tests {
+    use alloc::format;
 
-impl<T: Debug> Display for PaddedDebug<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct Counter<'a, 'b> {
-            inner: &'a mut fmt::Formatter<'b>,
-            len: usize,
-        }
+    use pci_types::device_type::DeviceType;
 
-        impl fmt::Write for Counter<'_, '_> {
-            fn write_str(&mut self, s: &str) -> fmt::Result {
-                self.len += s.len();
-                self.inner.write_str(s)
+    use super::EndpointIdentity;
+
+    #[test]
+    fn endpoint_identity_pads_device_type_for_aligned_output() {
+        let rendered = format!(
+            "{}",
+            EndpointIdentity {
+                segment: 0,
+                bus: 0,
+                device: 1,
+                function: 0,
+                device_type: DeviceType::UsbController,
+                vendor_id: 0x1234,
+                device_id: 0x5678,
+                revision_id: 1,
+                interface: 0x30,
             }
-        }
+        );
 
-        let mut counter = Counter { inner: f, len: 0 };
-        write!(counter, "{:?}", self.0)?;
-        for _ in counter.len..self.1 {
-            counter.inner.write_str(" ")?;
-        }
-        Ok(())
+        assert_eq!(
+            rendered,
+            "0000:00:01.0 UsbController            1234:5678 (rev 01, prog-if 30)"
+        );
     }
 }

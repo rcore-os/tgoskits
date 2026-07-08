@@ -1,17 +1,18 @@
 //! Physical memory management.
 
-pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va};
+pub use ax_memory_addr::{
+    MemoryAddr, PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va,
+};
 pub use ax_plat::mem::{
-    MemRegionFlags, PhysMemRegion, kernel_aspace, mmio_ranges, phys_ram_ranges, phys_to_virt,
-    reserved_phys_ram_ranges, total_ram_size, virt_to_phys,
+    IomapAttrs, IomapDecision, IomapError, MemRegionFlags, PhysMemRegion, kernel_aspace,
+    mmio_ranges, phys_ram_ranges, phys_to_virt, prepare_iomap, reserved_phys_ram_ranges,
+    total_ram_size, user_aspace_needs_kernel_mappings, virt_to_phys,
 };
 use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
 use spin::LazyLock;
 
 #[allow(unused_imports)]
-use crate::addr_of_sym;
-
 const MAX_REGIONS: usize = 128;
 
 static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::new(|| {
@@ -21,52 +22,6 @@ static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::ne
             all_regions.push(r).expect("too many memory regions");
         }
     };
-
-    #[cfg(not(feature = "plat-dyn"))]
-    {
-        // Push regions in kernel image
-        push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(_stext).into()),
-            size: addr_of_sym!(_etext) - addr_of_sym!(_stext),
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::EXECUTE,
-            name: ".text",
-        });
-        let rodata_start = addr_of_sym!(_srodata);
-        let rodata_end = addr_of_sym!(_erodata);
-        let rodata_page_end = rodata_end & !(PAGE_SIZE_4K - 1);
-        // Runtime linker sections may be inserted between rodata and data.
-        // Split on page boundaries because the kernel address space maps whole pages.
-        push(PhysMemRegion {
-            paddr: virt_to_phys(rodata_start.into()),
-            size: rodata_page_end - rodata_start,
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ,
-            name: ".rodata",
-        });
-        push(PhysMemRegion {
-            paddr: virt_to_phys(rodata_page_end.into()),
-            size: addr_of_sym!(_sdata) - rodata_page_end,
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
-            name: ".rodata .runtime",
-        });
-        push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(_sdata).into()),
-            size: addr_of_sym!(_edata) - addr_of_sym!(_sdata),
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
-            name: ".data .tdata .tbss .percpu",
-        });
-        push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(boot_stack).into()),
-            size: addr_of_sym!(boot_stack_top) - addr_of_sym!(boot_stack),
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
-            name: "boot stack",
-        });
-        push(PhysMemRegion {
-            paddr: virt_to_phys(addr_of_sym!(_sbss).into()),
-            size: addr_of_sym!(_ebss) - addr_of_sym!(_sbss),
-            flags: MemRegionFlags::RESERVED | MemRegionFlags::READ | MemRegionFlags::WRITE,
-            name: ".bss",
-        });
-    }
 
     // Push MMIO & reserved regions
     for &(start, size) in mmio_ranges() {
@@ -89,20 +44,20 @@ static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::ne
         .iter()
         .cloned()
         .collect::<Vec<_, MAX_REGIONS>>();
-    #[cfg(not(feature = "plat-dyn"))]
-    {
-        // Combine kernel image range and reserved ranges
-        let kernel_start = virt_to_phys(addr_of_sym!(_skernel).into()).as_usize();
-        let kernel_size = addr_of_sym!(_ekernel) - addr_of_sym!(_skernel);
-        reserved_ranges
-            .push((kernel_start, kernel_size))
-            .expect("too many memory regions"); // kernel image range is also reserved
-    }
 
     // Remove all reserved ranges from RAM ranges, and push the remaining as free memory
     reserved_ranges.sort_unstable_by_key(|&(start, _size)| start);
     ranges_difference(phys_ram_ranges(), &reserved_ranges, |(start, size)| {
-        push(PhysMemRegion::new_ram(start, size, "free memory"));
+        let end = start + size;
+        let aligned_start = PhysAddr::from_usize(start).align_up_4k().as_usize();
+        let aligned_end = PhysAddr::from_usize(end).align_down_4k().as_usize();
+        if aligned_start < aligned_end {
+            push(PhysMemRegion::new_ram(
+                aligned_start,
+                aligned_end - aligned_start,
+                "free memory",
+            ));
+        }
     })
     .inspect_err(|(a, b)| error!("Reserved memory region {a:#x?} overlaps with {b:#x?}"))
     .unwrap();
@@ -122,17 +77,14 @@ pub fn memory_regions() -> impl Iterator<Item = PhysMemRegion> {
 }
 
 pub fn boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    #[cfg(plat_dyn)]
-    {
-        axplat_dyn::boot_stack_bounds(cpu_id)
-    }
-    #[cfg(not(plat_dyn))]
+    #[cfg(any(test, feature = "host-test"))]
     {
         let _ = cpu_id;
-        let bottom = addr_of_sym!(boot_stack);
-        let top = addr_of_sym!(boot_stack_top);
-        (VirtAddr::from(bottom), top - bottom)
+        (va!(0), 0)
     }
+
+    #[cfg(not(any(test, feature = "host-test")))]
+    crate::platform::boot_stack_bounds(cpu_id)
 }
 
 /// Fills the `.bss` section with zeros.

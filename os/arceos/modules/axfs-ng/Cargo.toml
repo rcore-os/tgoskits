@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.5.16"
+version = "0.8.2"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -9,35 +9,28 @@ license.workspace = true
 
 [features]
 fat = ["dep:fatfs"]
-ext4-lwext4 = ["dep:lwext4_rust"]
-ext4-rsext4 = ["dep:rsext4"]
-ext4 = ["ext4-rsext4"]
-times = []
-std = ["lwext4_rust?/std"]
+ext4 = ["dep:rsext4"]
+vfs = []
+lockdep = ["axfs-ng-vfs/lockdep"]
 
 [dependencies]
-ax-alloc = { workspace = true }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
-ax-hal = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-axpoll = { workspace = true }
 ax-sync = { workspace = true }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
+dma-api = { workspace = true }
 intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
+irq-framework = { workspace = true }
 log = { workspace = true }
 lru = "0.16"
+rdif-block = { workspace = true }
 scope-local = { workspace = true }
 slab = { version = "0.4", default-features = false }
 spin = { workspace = true }
-
-[dependencies.lwext4_rust]
-version = "0.2"
-default-features = false
-optional = true
 
 [dependencies.rsext4]
 workspace = true

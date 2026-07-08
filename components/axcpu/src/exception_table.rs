@@ -3,85 +3,50 @@ use crate::TrapFrame;
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
 struct ExceptionTableEntry {
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    ))]
     from: i32,
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    ))]
     to: i32,
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    from: usize,
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "riscv64",
-        target_arch = "x86_64"
-    )))]
-    to: usize,
 }
 
 impl ExceptionTableEntry {
     #[inline]
     fn source_addr(&self) -> usize {
-        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-        {
-            field_relative_addr(&self.from)
-        }
-
-        #[cfg(target_arch = "riscv64")]
-        {
-            let base = unsafe { _ex_table_start.as_ptr() } as isize;
-            (base + self.from as isize) as usize
-        }
-
-        #[cfg(not(any(
-            target_arch = "aarch64",
-            target_arch = "riscv64",
-            target_arch = "x86_64"
-        )))]
-        {
-            self.from
-        }
+        exception_addr(&self.from)
     }
 
     #[inline]
     fn to_addr(&self) -> usize {
-        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-        {
-            field_relative_addr(&self.to)
-        }
-
-        #[cfg(target_arch = "riscv64")]
-        {
-            let base = unsafe { _ex_table_start.as_ptr() } as isize;
-            (base + self.to as isize) as usize
-        }
-
-        #[cfg(not(any(
-            target_arch = "aarch64",
-            target_arch = "riscv64",
-            target_arch = "x86_64"
-        )))]
-        {
-            self.to
-        }
+        exception_addr(&self.to)
     }
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 #[inline]
-fn field_relative_addr(offset: &i32) -> usize {
-    let base = (offset as *const i32) as isize;
-    (base + *offset as isize) as usize
+fn exception_addr(offset: &i32) -> usize {
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "x86_64"
+    ))]
+    {
+        let base = (offset as *const i32) as isize;
+        (base + *offset as isize) as usize
+    }
+
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    {
+        let base = unsafe { _ex_table_start.as_ptr() } as isize;
+        (base + *offset as isize) as usize
+    }
+
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv32",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    )))]
+    {
+        *offset as usize
+    }
 }
 
 unsafe extern "C" {

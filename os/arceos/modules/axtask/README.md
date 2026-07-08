@@ -14,7 +14,7 @@ by cargo features.
 - `multitask`: Enable multi-task support with complex scheduling and more task-related APIs.
 - `irq`: Enable timer-based APIs such as `sleep`, `sleep_until`, and `WaitQueue::wait_timeout`.
 - `preempt`: Enable preemptive scheduling.
-- `sched-fifo`: Use the FIFO cooperative scheduler (enables `multitask`).
+- FIFO cooperative scheduler is the default when no scheduler feature is selected.
 - `sched-rr`: Use the Round-robin preemptive scheduler (enables `multitask` and `preempt`).
 - `sched-cfs`: Use the Completely Fair Scheduler (enables `multitask` and `preempt`).
 - `tls`: Enable kernel space thread-local storage support.

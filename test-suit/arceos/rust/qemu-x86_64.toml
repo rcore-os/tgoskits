@@ -1,0 +1,31 @@
+args = [
+    "-m",
+    "256M",
+    "-smp",
+    "4",
+    "-device",
+    "virtio-blk-pci,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/arceos/rust/disk.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-display",
+    "none",
+    "-serial",
+    "mon:stdio",
+]
+
+timeout = 120
+uefi = false
+to_bin = false
+success_regex = ["ArceOS test suite run OK!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18180
+body = "ArceOS rust test suite host fixture\n"

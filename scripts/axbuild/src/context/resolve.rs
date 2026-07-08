@@ -17,6 +17,13 @@ struct ResolvedCommandPaths {
     uboot_config: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ArceosConfigSelectors {
+    package: Option<String>,
+    target: Option<String>,
+    uses_app_c: bool,
+}
+
 pub(crate) struct AxvisorRequestPaths<L, R> {
     pub(crate) package: String,
     pub(crate) axvisor_dir: PathBuf,
@@ -33,25 +40,54 @@ impl AppContext {
         resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         let snapshot = ArceosCommandSnapshot::load(&self.root)?;
+        let inherit_snapshot_config = cli.package.is_none()
+            && cli.arch.is_none()
+            && cli.target.is_none()
+            && cli.config.is_none();
+        let resolved_config = self.resolve_command_path(
+            cli.config.clone(),
+            inherit_snapshot_config
+                .then_some(snapshot.config.as_ref())
+                .flatten(),
+        );
+        let config_selectors = resolved_config
+            .as_deref()
+            .filter(|path| path.exists())
+            .map(arceos_config_selectors)
+            .transpose()?
+            .unwrap_or_default();
+        let explicit_config_path = if cli.config.is_some() {
+            resolved_config
+        } else {
+            resolved_config.filter(|path| path.exists())
+        };
 
         let package = cli
             .package
             .clone()
-            .or_else(|| snapshot.package.clone())
+            .or(config_selectors.package)
+            .or_else(|| {
+                if config_selectors.uses_app_c {
+                    Some("ax-libc".to_string())
+                } else {
+                    snapshot.package.clone()
+                }
+            })
             .ok_or_else(|| {
                 anyhow!(
                     "missing ArceOS package; pass `--package` or set `package` in {}",
                     ARCEOS_SNAPSHOT_FILE
                 )
             })?;
+        let config_target = config_selectors.target;
         let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() {
+            if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
                 snapshot.arch.clone()
             }
         });
-        let effective_target = cli.target.clone().or_else(|| {
+        let effective_target = cli.target.clone().or(config_target).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {
@@ -63,11 +99,6 @@ impl AppContext {
             && cli.arch.is_none()
             && cli.target.is_none()
             && cli.config.is_none();
-        let plat_dyn = cli.plat_dyn.or_else(|| {
-            inherit_snapshot_runtime
-                .then_some(snapshot.plat_dyn)
-                .flatten()
-        });
         let smp = cli
             .smp
             .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
@@ -85,16 +116,15 @@ impl AppContext {
                 None
             },
         );
-        let build_info_path = resolve_build_info_path(&package, &target, cli.config.clone())?;
+        let build_info_path = resolve_build_info_path(&package, &target, explicit_config_path)?;
 
         let request = ResolvedBuildRequest {
             package: package.clone(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
             smp,
             debug: cli.debug,
-            build_info_path,
+            build_info_path: build_info_path.clone(),
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };
@@ -103,8 +133,8 @@ impl AppContext {
             package: Some(package),
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
             smp,
+            config: Some(snapshot_path_value(&self.root, &build_info_path)),
             qemu: ArceosQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
@@ -188,7 +218,6 @@ impl AppContext {
             package: STARRY_PACKAGE.to_string(),
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn: None,
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
@@ -277,7 +306,6 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
-        let plat_dyn = cli.plat_dyn.or(snapshot.plat_dyn);
         let smp = cli.smp.or(snapshot.smp);
         let build_info_path = resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
         let inherit_snapshot_runtime = cli.arch.is_none()
@@ -298,10 +326,12 @@ impl AppContext {
                 None
             },
         );
-        let vmconfigs = if cli.vmconfigs.is_empty() {
+        let vmconfigs = if !cli.vmconfigs.is_empty() {
+            self.resolve_workspace_paths(cli.vmconfigs.iter())
+        } else if inherit_snapshot_runtime {
             self.resolve_workspace_paths(snapshot.vmconfigs.iter())
         } else {
-            self.resolve_workspace_paths(cli.vmconfigs.iter())
+            Vec::new()
         };
 
         let request = ResolvedAxvisorRequest {
@@ -309,7 +339,6 @@ impl AppContext {
             axvisor_dir,
             arch: arch.clone(),
             target: target.clone(),
-            plat_dyn,
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
@@ -321,7 +350,6 @@ impl AppContext {
         let snapshot = AxvisorCommandSnapshot {
             arch: Some(arch),
             target: Some(target),
-            plat_dyn,
             smp,
             config: Some(snapshot_path_value(&self.root, &build_info_path)),
             vmconfigs: vmconfigs
@@ -390,6 +418,15 @@ impl AppContext {
             self.root.join(path)
         }
     }
+}
+
+fn arceos_config_selectors(path: &Path) -> anyhow::Result<ArceosConfigSelectors> {
+    let file = crate::arceos::build::load_arceos_build_file(path)?;
+    Ok(ArceosConfigSelectors {
+        package: file.package,
+        target: file.target,
+        uses_app_c: file.config.app_c.is_some(),
+    })
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {

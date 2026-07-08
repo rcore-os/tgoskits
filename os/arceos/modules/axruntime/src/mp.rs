@@ -14,84 +14,20 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(not(feature = "plat-dyn"))]
-use ax_config::TASK_STACK_SIZE;
-use ax_config::plat::MAX_CPU_NUM;
+#[cfg(feature = "multitask")]
 use ax_hal::mem::VirtAddr;
-#[cfg(not(feature = "plat-dyn"))]
-use ax_hal::mem::virt_to_phys;
 
-#[cfg(not(feature = "plat-dyn"))]
-struct SecondaryBootStack {
-    pages: ax_alloc::GlobalPage,
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-impl SecondaryBootStack {
-    fn alloc() -> Self {
-        use ax_hal::mem::PAGE_SIZE_4K;
-        use ax_memory_addr::align_up_4k;
-        let stack_size = align_up_4k(TASK_STACK_SIZE);
-        let mut pages =
-            ax_alloc::GlobalPage::alloc_contiguous(stack_size / PAGE_SIZE_4K, PAGE_SIZE_4K)
-                .expect("failed to allocate secondary boot stack");
-        pages.zero();
-        Self { pages }
-    }
-
-    fn bottom(&self) -> VirtAddr {
-        self.pages.start_vaddr()
-    }
-
-    fn top(&self) -> VirtAddr {
-        self.bottom() + self.pages.size()
-    }
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-static SECONDARY_BOOT_STACKS: [ax_lazyinit::LazyInit<SecondaryBootStack>; MAX_CPU_NUM - 1] =
-    [const { ax_lazyinit::LazyInit::new() }; MAX_CPU_NUM - 1];
-
-static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; MAX_CPU_NUM - 1] =
-    [const { AtomicUsize::new(usize::MAX) }; MAX_CPU_NUM - 1];
+static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::build_info::CPU_CAPACITY - 1];
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-#[cfg(all(feature = "multitask", not(feature = "plat-dyn")))]
-fn secondary_boot_stack_bottom(slot: usize) -> VirtAddr {
-    SECONDARY_BOOT_STACKS[slot].bottom()
-}
-
-#[cfg(not(feature = "plat-dyn"))]
-fn secondary_boot_stack_top(slot: usize) -> VirtAddr {
-    SECONDARY_BOOT_STACKS[slot].top()
-}
-
-#[cfg(all(feature = "multitask", not(feature = "plat-dyn")))]
-fn secondary_slot_from_cpu_id(cpu_id: usize) -> usize {
-    SECONDARY_CPUID_BY_SLOT
-        .iter()
-        .position(|slot_cpu_id| slot_cpu_id.load(Ordering::Acquire) == cpu_id)
-        .unwrap_or_else(|| panic!("secondary slot is not initialized for cpu_id {cpu_id}"))
-}
-
 #[cfg(feature = "multitask")]
 fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    #[cfg(feature = "plat-dyn")]
-    {
-        ax_hal::mem::boot_stack_bounds(cpu_id)
-    }
-    #[cfg(not(feature = "plat-dyn"))]
-    {
-        let slot = secondary_slot_from_cpu_id(cpu_id);
-        (secondary_boot_stack_bottom(slot), TASK_STACK_SIZE)
-    }
+    ax_hal::mem::boot_stack_bounds(cpu_id)
 }
 
 fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
-    #[cfg(not(feature = "plat-dyn"))]
-    SECONDARY_BOOT_STACKS[slot].init_once(SecondaryBootStack::alloc());
-
     SECONDARY_CPUID_BY_SLOT[slot].store(cpu_id, Ordering::Release);
 }
 
@@ -103,10 +39,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
         if i != primary_cpu_id && slot < cpu_num - 1 {
             prepare_secondary_boot_stack(slot, i);
 
-            #[cfg(feature = "plat-dyn")]
             let stack_top = 0;
-            #[cfg(not(feature = "plat-dyn"))]
-            let stack_top = virt_to_phys(secondary_boot_stack_top(slot)).as_usize();
 
             debug!("starting CPU {i}...");
             ax_hal::power::cpu_boot(i, stack_top);
@@ -126,12 +59,12 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // Park harts whose logical index is beyond the compile-time CPU count: QEMU
     // may start more harts (`-smp M`) than the kernel was built for
-    // (`MAX_CPU_NUM == N`). Mirror Linux — run on the first N CPUs and park the
+    // (`CPU_CAPACITY == N`). Mirror Linux — run on the first N CPUs and park the
     // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
     // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
-    // `index < MAX_CPU_NUM`. Must precede `init_secondary`, which would otherwise
+    // `index < CPU_CAPACITY`. Must precede `init_secondary`, which would otherwise
     // mis-index the per-CPU area first.
-    if cpu_id >= MAX_CPU_NUM {
+    if cpu_id >= crate::build_info::CPU_CAPACITY {
         loop {
             ax_hal::asm::wait_for_irqs();
         }
@@ -159,13 +92,9 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "ipi")]
     ax_ipi::init();
 
-    info!("Secondary CPU {cpu_id:x} init OK.");
-    super::INITED_CPUS.fetch_add(1, Ordering::Release);
-
-    while !super::is_init_ok() {
-        core::hint::spin_loop();
-    }
-
+    // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
+    // primary cannot enter user-visible init while remote CPUs still lack SGI
+    // handlers or pending per-CPU IRQ enables.
     #[cfg(feature = "irq")]
     super::init_percpu_irq(cpu_id);
 
@@ -174,6 +103,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::mark_current_cpu_ready();
+
+    info!("Secondary CPU {cpu_id:x} init OK.");
+    super::INITED_CPUS.fetch_add(1, Ordering::Release);
+
+    while !super::is_init_ok() {
+        core::hint::spin_loop();
+    }
 
     #[cfg(all(feature = "tls", not(feature = "multitask")))]
     super::init_tls();

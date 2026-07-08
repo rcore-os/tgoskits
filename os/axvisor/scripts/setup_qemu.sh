@@ -8,9 +8,10 @@ set -euo pipefail
 #   ./scripts/setup_qemu.sh --guest linux
 #   ./scripts/setup_qemu.sh nimbos
 #   ./scripts/setup_qemu.sh nimbos-uefi
+#   ./scripts/setup_qemu.sh linux-x86_64
 #   ./scripts/setup_qemu.sh linux-x86_64-uefi
 #
-# Supported guests: arceos, arceos-riscv64, linux, nimbos, nimbos-uefi, linux-x86_64-uefi
+# Supported guests: arceos, arceos-riscv64, linux, linux-x86_64, nimbos, nimbos-uefi, linux-x86_64-uefi
 # LoongArch64 AxVisor shell smoke uses quick-start.sh instead of this script.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -159,11 +160,12 @@ prepare_nimbos_from_tgosimages() {
 }
 
 usage() {
-  echo "Usage: $0 [--guest] <arceos|arceos-riscv64|linux|nimbos|nimbos-uefi|linux-x86_64-uefi>"
+  echo "Usage: $0 [--guest] <arceos|arceos-riscv64|linux|linux-x86_64|nimbos|nimbos-uefi|linux-x86_64-uefi>"
   echo ""
   echo "  arceos          - aarch64 ArceOS guest"
   echo "  arceos-riscv64  - riscv64 ArceOS guest"
   echo "  linux           - aarch64 Linux guest"
+  echo "  linux-x86_64    - x86_64 Linux guest through direct boot"
   echo "  nimbos          - x86_64 NimbOS guest (requires VT-x/KVM)"
   echo "  nimbos-uefi     - x86_64 NimbOS guest through external UEFI firmware"
   echo "  linux-x86_64-uefi - x86_64 Linux guest through external UEFI firmware"
@@ -208,7 +210,7 @@ while [[ $# -gt 0 ]]; do
       shift
       break
       ;;
-    arceos|arceos-riscv64|linux|nimbos|nimbos-uefi|linux-x86_64-uefi)
+    arceos|arceos-riscv64|linux|linux-x86_64|nimbos|nimbos-uefi|linux-x86_64-uefi)
       GUEST="$1"
       shift
       break
@@ -229,18 +231,19 @@ done
 [[ -n "${GUEST}" ]] || usage
 
 # Guest configuration:
-# image_name|vmconfig_template|generated_vmconfig_name|build_config|qemu_config|kernel_file|success_msg
+# image_name|vmconfig_template|generated_vmconfig_name|build_config|qemu_config_path|kernel_file|success_msg
 case "$GUEST" in
-  arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
-  arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
-  linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
-  nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
-  linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
+  arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
+  arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|.github/workflows/qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
+  linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
+  linux-x86_64)   CFG="qemu_x86_64_linux|qemu/x86_64/linux-vmx-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux-qemu|test pass!" ;;
+  nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
+  nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
+  linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
   *)       echo "Unknown guest: $GUEST" >&2; usage ;;
 esac
 
-IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG KERNEL_FILE SUCCESS_MSG <<< "$CFG"
+IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG_PATH KERNEL_FILE SUCCESS_MSG <<< "$CFG"
 # NOTE:
 #  - `cargo axvisor image pull` extracts images to
 #    `/tmp/.axvisor-images/<IMAGE_NAME>` by default.
@@ -254,6 +257,11 @@ ROOTFS_TARGET="${REPO_ROOT}/tmp/rootfs.img"
 KERNEL_IMAGE="${IMAGE_DIR}/${KERNEL_FILE}"
 ROOTFS_IMAGE="${IMAGE_DIR}/rootfs.img"
 ABS_KERNEL_PATH="${IMAGE_DIR}/${KERNEL_FILE}"
+QEMU_CONFIG_ABS_PATH="${REPO_ROOT}/${QEMU_CONFIG_PATH}"
+
+if [[ "$GUEST" == "linux-x86_64" ]]; then
+  ROOTFS_TARGET="${REPO_ROOT}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+fi
 
 echo "[setup_qemu] Guest: ${GUEST} | Repo: ${REPO_ROOT}"
 
@@ -285,6 +293,14 @@ fi
 
 if [ ! -f "${ROOTFS_IMAGE}" ]; then
   echo "ERROR: rootfs image not found at ${ROOTFS_IMAGE}" >&2
+  exit 1
+fi
+
+if [ ! -f "${QEMU_CONFIG_ABS_PATH}" ]; then
+  echo "ERROR: QEMU config file not found at ${QEMU_CONFIG_ABS_PATH}" >&2
+  if [[ "$GUEST" == "linux-x86_64" ]]; then
+    echo "  -> linux-x86_64 direct boot expects configs/qemu/qemu-x86_64-linux.toml." >&2
+  fi
   exit 1
 fi
 
@@ -381,7 +397,7 @@ You can now run the QEMU test with:
   cd ${REPO_ROOT}
   cargo xtask axvisor qemu \\
     --config configs/board/${BUILD_CONFIG} \\
-    --qemu-config .github/workflows/${QEMU_CONFIG} \\
+    --qemu-config ${QEMU_CONFIG_PATH} \\
     --vmconfigs ${GENERATED_VMCONFIG_PATH}
 
 Success indicator: '${SUCCESS_MSG}'

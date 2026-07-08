@@ -7,8 +7,8 @@ pub fn link<B: BlockDevice>(
     link_path: &str,
     linked_path: &str,
 ) -> Ext4Result<()> {
-    let link_norm = split_paren_child_and_tranlatevalid(link_path);
-    let linked_norm = split_paren_child_and_tranlatevalid(linked_path);
+    let link_norm = split_paren_child_and_translatevalid(link_path);
+    let linked_norm = split_paren_child_and_translatevalid(linked_path);
 
     // Resolve the target inode first.
     let (target_ino, target_inode) = match get_file_inode(fs, block_dev, &linked_norm) {

@@ -1,6 +1,6 @@
 [package]
 name = "ax-errno"
-version = "0.6.0"
+version = "0.6.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -12,3 +12,6 @@ license = "Apache-2.0"
 [dependencies]
 log = "0.4"
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+
+[build-dependencies]
+quote = "1.0"

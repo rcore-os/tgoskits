@@ -1,5 +1,3 @@
-#![cfg_attr(not(target_os = "none"), allow(dead_code, unused_imports))]
-
 mod descriptor;
 mod irq;
 mod manager;
@@ -45,32 +43,120 @@ fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
     })
 }
 
-pub(crate) fn new_usbfs() -> LinuxResult<Filesystem> {
+pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
     if let Some(manager) = manager() {
-        return Ok(create_filesystem(manager));
+        return Ok(Some(create_filesystem(manager)));
     }
 
     info!("usbfs: initializing manager");
     let (hosts, irq_slots) = manager::discover_hosts();
-    let manager = Arc::new(UsbFsManager::new(hosts));
-    irq::init_globals(manager.clone(), irq_slots);
-    let should_spawn_refresh = manager::initialize_hosts(&manager) > 0;
-
-    if should_spawn_refresh {
-        info!("usbfs: spawning refresh task");
-        let refresh_manager = manager.clone();
-        ax_task::spawn_with_name(
-            move || ax_task::future::block_on(manager::usbfs_refresh_task(refresh_manager.clone())),
-            "usbfs-refresh".to_owned(),
-        );
-        manager.refresh_event.notify(1);
+    if hosts.is_empty() {
+        info!("usbfs: no USB host found, skip mounting usbfs");
+        return Ok(None);
     }
 
-    Ok(create_filesystem(manager))
+    let manager = Arc::new(UsbFsManager::new(hosts));
+    irq::init_globals(manager.clone(), irq_slots);
+    // Polling USB hosts need their event handler active while the initial
+    // probe waits for xHCI command and transfer events.
+    irq::start_event_pump();
+
+    let initialized_hosts = manager::initialize_hosts(&manager) > 0;
+    if !initialized_hosts {
+        info!("usbfs: no USB host initialized, skip mounting usbfs");
+        return Ok(None);
+    }
+
+    info!("usbfs: spawning refresh task");
+    let refresh_manager = manager.clone();
+    ax_task::spawn_with_name(
+        move || manager::usbfs_refresh_task(refresh_manager.clone()),
+        "usbfs-refresh".to_owned(),
+    );
+    manager.notify_refresh();
+
+    Ok(Some(create_filesystem(manager)))
+}
+
+pub(crate) fn has_manager() -> bool {
+    manager().is_some_and(|manager| manager.has_hosts())
+}
+
+pub(crate) fn start_event_pump() {
+    irq::start_event_pump();
 }
 
 pub(crate) fn new_bus_usb_sysfs() -> Filesystem {
     sysfs::new_bus_usb_sysfs()
+}
+
+#[derive(Clone)]
+pub(crate) struct UsbDeviceSnapshotInfo {
+    pub(crate) bus_num: u8,
+    pub(crate) device_num: u8,
+    pub(crate) descriptor_blob: Vec<u8>,
+}
+
+pub(crate) struct UsbDeviceHandle {
+    lease: manager::UsbDeviceLease,
+}
+
+impl UsbDeviceHandle {
+    pub(crate) fn claim_interface(&self, interface: u8, alternate: u8) -> AxResult<()> {
+        self.lease.claim_interface(interface, alternate)
+    }
+
+    pub(crate) fn release_interface(&self, interface: u8) -> AxResult<()> {
+        self.lease.release_interface(interface)
+    }
+
+    pub(crate) fn control_transfer(
+        &self,
+        b_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        data: &mut [u8],
+    ) -> AxResult<usize> {
+        self.lease
+            .control_transfer(b_request_type, b_request, w_value, w_index, data)
+    }
+
+    pub(crate) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+        self.lease.bulk_in(endpoint, data)
+    }
+
+    pub(crate) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+        self.lease.bulk_out(endpoint, data)
+    }
+}
+
+pub(crate) fn usb_device_snapshots() -> Vec<UsbDeviceSnapshotInfo> {
+    let Some(manager) = manager() else {
+        return Vec::new();
+    };
+
+    let mut snapshots = Vec::new();
+    for bus_num in manager.bus_numbers() {
+        for device_num in manager.device_numbers(bus_num) {
+            let Some(snapshot) = manager.device_snapshot(bus_num, device_num) else {
+                continue;
+            };
+            snapshots.push(UsbDeviceSnapshotInfo {
+                bus_num,
+                device_num,
+                descriptor_blob: snapshot.descriptor_blob,
+            });
+        }
+    }
+    snapshots
+}
+
+pub(crate) fn acquire_usb_device(bus_num: u8, device_num: u8) -> AxResult<UsbDeviceHandle> {
+    let manager = manager().ok_or(AxError::NoSuchDevice)?;
+    manager
+        .acquire_device(bus_num, device_num)
+        .map(|lease| UsbDeviceHandle { lease })
 }
 
 pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
@@ -79,7 +165,7 @@ pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
 
 pub(crate) fn open_usbfs_file(
     inner: &dyn Any,
-    file: ax_fs::File,
+    file: ax_fs_ng::File,
     open_flags: u32,
 ) -> AxResult<Arc<dyn FileLike>> {
     let ops = inner
@@ -1118,7 +1204,11 @@ impl UsbDeviceFile {
                 if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
                     Poll::Ready(())
                 } else {
-                    self.poll_urbs.register(cx.waker());
+                    // Registration happens from usbfs reap task context.
+                    unsafe {
+                        self.poll_urbs
+                            .register(cx.waker(), IoEvents::IN | IoEvents::OUT)
+                    };
                     if self.collect_submitted_urbs(Some(cx)) || !self.pending_urbs.lock().is_empty()
                     {
                         Poll::Ready(())
@@ -1185,7 +1275,7 @@ impl FileLike for UsbDeviceFile {
         self.base.path()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs::FileBackend, ax_fs::FileFlags)> {
+    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         self.base.file_mmap()
     }
 
@@ -1292,7 +1382,11 @@ impl Pollable for UsbDeviceFile {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.poll_urbs.register(context.waker());
+            // Registration happens from usbfs poll task context.
+            unsafe {
+                self.poll_urbs
+                    .register(context.waker(), events & (IoEvents::IN | IoEvents::OUT))
+            };
             if self.collect_submitted_urbs(Some(context)) || !self.pending_urbs.lock().is_empty() {
                 context.waker().wake_by_ref();
             }
@@ -1326,8 +1420,11 @@ fn complete_urb(
     poll_urbs: &Arc<PollSet>,
     completed: CompletedUrb,
 ) {
-    pending_urbs.lock().push_back(completed);
-    poll_urbs.wake();
+    {
+        pending_urbs.lock().push_back(completed);
+    }
+    // Completed URB is queued before waking poll/reap waiters.
+    unsafe { poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
 }
 
 fn completed_urb_from_result(

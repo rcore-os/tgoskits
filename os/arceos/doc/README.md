@@ -16,7 +16,6 @@ Most of the modules are optional, depending on the features enabled by the appli
 
 * [ax-runtime](../modules/axruntime/): Bootstrapping from the bare-metal environment, and initialization.
 * [ax-hal](../modules/axhal/): Hardware abstraction layer, provides unified APIs for cross-platform.
-* [axconfig](../modules/axconfig/): Platform constants and kernel parameters, such as physical memory base, kernel load addresses, stack size, etc.
 * [ax-log](../modules/axlog/): Multi-level formatted logging.
 
 Other optional modules and their corresponding features are as follows:
@@ -25,7 +24,7 @@ Other optional modules and their corresponding features are as follows:
 |-|-|-|
 | [ax-alloc](../modules/axalloc) | alloc | ArceOS global memory allocator. |
 | [ax-display](../modules/axdisplay) | display | ArceOS graphics module. |
-| [ax-fs](../modules/axfs) | fs | ArceOS filesystem module. |
+| [ax-fs-ng](../modules/axfs-ng) | fs | ArceOS filesystem module. |
 | [ax-net](../modules/ax-net) | net | ArceOS network module. |
 | [axdriver](../modules/axdriver) | driver-*, fs, net, display | ArceOS device drivers. |
 | [ax-task](../modules/axtask) | multitask | ArceOS task management module. |

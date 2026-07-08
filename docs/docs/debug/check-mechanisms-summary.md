@@ -20,9 +20,16 @@ sidebar_label: "检查机制总览"
 当前原子上下文主要包括：
 
 - IRQ 已关闭。
+- 显式 IRQ context。
 - preempt 已禁用。
 
-如果在这类上下文中调用可能阻塞的路径，系统会 panic，并打印 IRQ 状态和 preempt 计数。
+如果在这类上下文中调用可能阻塞的路径，系统会 panic，并打印调用点、结构化原因、IRQ enabled 状态、显式 IRQ context、preempt 计数、CPU、任务 ID 和任务状态。启用 `lockdep` 时，还会打印当前 held-lock stack，包括 kind、`sleep_forbidden`、class、addr 和 acquire 位置。
+
+当前实现还没有完整覆盖所有“不能睡眠”的语义来源。特别是：
+
+- `SpinRaw` / `SpinRwLock<NoOp>` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
+- 用户内存 fault、可能触发 reclaim 的分配、必须原子执行的 hook 入口还缺少独立语义注解。
+- preempt-disable 来源仍需后续阶段补充到诊断中。
 
 典型覆盖路径包括：
 
@@ -32,21 +39,31 @@ sidebar_label: "检查机制总览"
 - `WaitQueue::wait*`
 - `TaskInner::join`
 - `future::block_on`
-- `ax-sync::Mutex::lock` / `try_lock`
+- `ax-sync::Mutex::lock`
 - Starry 用户内存访问和 page fault slow path
+
+`ax-sync::Mutex::try_lock` 不属于覆盖路径。它是单次 CAS，不会阻塞或睡眠，因此保持可在原子上下文中调用，语义接近 Linux `mutex_trylock`。
 
 主要入口：
 
 - `os/arceos/modules/axtask/src/api.rs`
 - `os/arceos/modules/axtask/src/wait_queue.rs`
+- `os/arceos/modules/axtask/src/future/mod.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
+- `os/arceos/modules/axhal/src/irq.rs`
+- `platforms/ax-plat/src/irq.rs`
 - `os/StarryOS/kernel/src/mm/access.rs`
 
 后续改进方向：
 
-- 扩展覆盖更多可能睡眠的内核 API，特别是跨模块间接阻塞路径。
-- 改进 panic 信息，输出调用点、当前任务和持锁状态，降低定位成本。
-- 梳理确实必须绕过检查的内部调度路径，减少 `yield_now_unchecked` 这类例外入口的使用面。
+- 继续补 QEMU 级 IRQ handler 回归，验证显式 IRQ context 路径。
+- 继续实现 held non-sleep lock 的直接判定，特别是 `SpinRaw`、`SpinRwLock<NoOp>` 和后续项目内 non-sleep rwlock。
+- 继续改进 panic 信息，输出 preempt-disable 来源。
+- 增加 `might_fault()`、`might_alloc()`、`cant_sleep()` / non-block scope 等语义注解，减少跨模块间接阻塞路径的盲区。
+- 明确启动阶段 sleepability，区分早期启动限制和真实运行期 atomic sleep bug。
+- 补充针对性回归，覆盖 IRQ handler、持 non-sleep lock、faultable user copy、阻塞式分配和 `try_lock` 非阻塞语义。
+
+详细计划和逐项讨论状态见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。本文只保留机制级总览，避免与详细计划重复维护。
 
 ## 2. `sync-lint` 原子内存序静态检查
 
@@ -82,28 +99,46 @@ cargo xtask sync-lint
 
 task stack canary 用来发现任务栈溢出或栈底被破坏。
 
-启用 `stack-canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
+启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
 
-当前 `ax-task` 的 `multitask` feature 会启用 `stack-canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+当前 `ax-task` 的 `multitask` feature 会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
 
-`stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-feat/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
+`stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
 
 canary 覆盖范围包括：
 
 - 动态分配的普通任务栈。
 - 主 CPU 的 boot stack。
 - secondary CPU 的 boot/idle stack。
-- `plat-dyn` 场景下由平台提供的 secondary boot stack。
+- 由平台提供的 secondary boot stack。
 
 guard page 当前覆盖范围更窄，只覆盖 `TaskStack::alloc()` 创建并由 `ax-task`
 拥有生命周期的动态任务栈。它不覆盖 `TaskStack::borrowed()` 包装的
 boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception stack
-或 overflow stack。这个边界与 `plat-dyn` / 非 `plat-dyn` 无直接绑定：
-两种平台模式下，动态任务栈都覆盖，borrowed 栈都暂不覆盖。
+或 overflow stack。这个边界与动态平台无直接绑定：动态任务栈覆盖，borrowed 栈暂不覆盖。
 
-平台栈边界需要按平台类型区分。静态平台可以使用 linker script 中的
-`boot_stack` / `boot_stack_top` 符号作为主 CPU boot stack 的边界；
-`plat-dyn` 下这两个符号只是兼容占位，并不表示真实栈空间。`plat-dyn`
+Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任务栈底是否
+被覆盖，作用与当前 `stack canary` 接近；`CONFIG_STACKPROTECTOR` /
+`CONFIG_STACKPROTECTOR_STRONG` 则依赖编译器在函数栈帧中插入 canary，
+函数返回前比较保存值和运行时 guard，失败时调用 `__stack_chk_fail()`。
+后者可以发现尚未一路覆盖到任务栈底的函数局部栈溢出，是当前机制尚未覆盖
+的方向。
+
+项目后续可参照 Linux 分阶段增强栈帧级保护。第一阶段优先实现跨架构的
+全局 guard 方案：通过 opt-in hardening 开关在构建系统中注入
+`-Z stack-protector=strong`，并在内核运行时提供 `__stack_chk_guard`
+和 `__stack_chk_fail()`。当前 nightly 对项目使用的
+`x86_64-unknown-none`、`riscv64gc-unknown-none-elf`、
+`aarch64-unknown-none-softfloat`、`loongarch64-unknown-none-softfloat`
+四个目标都接受 `-Z stack-protector=strong`，生成对象也统一依赖
+`__stack_chk_guard` / `__stack_chk_fail`，因此全局 guard 方案可以作为
+四架构共同的最小闭环。第二阶段再评估 Linux 风格 per-task 或 per-cpu
+guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
+系统寄存器约定逐步设计；loongarch64 在 Linux 6.12 中也主要体现为全局
+`__stack_chk_guard` 路径，建议放在全局方案稳定后再单独评估。
+
+平台栈边界需要来自平台事实。linker script 中的
+`boot_stack` / `boot_stack_top` 符号只是兼容占位，并不表示真实栈空间。动态平台
 的主 CPU 和 secondary CPU boot stack 都应通过平台提供的
 `boot_stack_bounds(cpu_id)` 获取，否则 stack canary 写入可能落到内核镜像
 映射边界之外，在真实板卡上触发 page fault。
@@ -123,6 +158,9 @@ boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception
 
 - 在更多边界点触发检查，例如任务退出、panic 前诊断或长时间运行的 idle 路径。
 - 持续完善动态任务栈 guard page 的 SMP shootdown、跨架构 QEMU 回归和 fault 诊断。
+- 增加 opt-in 的编译器栈帧级 stack protector，先采用四架构通用的
+  全局 `__stack_chk_guard` / `__stack_chk_fail` 方案，再评估 per-task
+  或 per-cpu guard。
 - 后续在 `axmm` 上补 kernel vmap allocator，把 guard page 从额外物理页演进为仅占虚拟地址空间的空洞。
 - 在 vmap-style 栈和 stack metadata 稳定后，再评估 borrowed boot/current 栈、secondary boot 栈以及专用 IRQ/exception/overflow 栈的 guard page 接入。
 - 完善不同架构和不同平台栈布局的文档，明确 canary 写入位置和误报边界。
@@ -205,6 +243,9 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 - 扩展覆盖范围到更多同步原语，例如 rwlock、wait queue、futex 或文件系统内部锁。
 - 改进 CI 策略，保留默认关闭的同时增加按需 lockdep 回归矩阵或夜间检测。
 - 优化违例诊断输出，关联任务、CPU、锁类型和历史依赖路径，提升复杂 ABBA 问题的可读性。
+
+外部 `spin` 迁移后留下的锁类型、锁范围和原子上下文 follow-up 统一记录在
+[`锁使用问题跟踪`](./lock-usage-followups.md)。
 
 ## CI 默认启用边界
 

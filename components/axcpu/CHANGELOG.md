@@ -1,5 +1,79 @@
 # Changelog
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.2...ax-cpu-v0.8.3) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.1...ax-cpu-v0.8.2) - 2026-07-07
+
+### Other
+
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.0...ax-cpu-v0.8.1) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+- *(starry)* ARM PMUv3 hardware-PMU perf support (perf stat / record / report) ([#1395](https://github.com/rcore-os/tgoskits/pull/1395))
+
+### Other
+
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.7.1...ax-cpu-v0.8.0) - 2026-06-27
+
+### Fixed
+
+- *(axcpu)* seed a fresh x86_64 task's x87 stack as empty (FXSAVE tag) ([#1366](https://github.com/rcore-os/tgoskits/pull/1366))
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.7.0...ax-cpu-v0.7.1) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axbacktrace
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.8...ax-cpu-v0.7.0) - 2026-06-22
+
+### Fixed
+
+- *(axcpu)* preserve AVX state across x86_64 context switch (XSAVE) ([#1329](https://github.com/rcore-os/tgoskits/pull/1329))
+
+### Other
+
+- Feat/x86 64 ptrace clean ([#1062](https://github.com/rcore-os/tgoskits/pull/1062))
+
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.7...ax-cpu-v0.6.8) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.6...ax-cpu-v0.6.7) - 2026-06-11
+
+### Fixed
+
+- *(axcpu)* support LoongArch user trap recovery
+
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.5...ax-cpu-v0.6.6) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(axcpu)* preserve loongarch64 LASX state for Git HTTPS ([#1178](https://github.com/rcore-os/tgoskits/pull/1178))
+- *(axcpu-aarch64)* emulate EL0 MRS reads of ID_AA64* feature registers ([#1128](https://github.com/rcore-os/tgoskits/pull/1128))
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
+### Other
+
+- *(starryos)* add K230 NNCase runtime demo ([#1058](https://github.com/rcore-os/tgoskits/pull/1058))
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.6.4...ax-cpu-v0.6.5) - 2026-06-03
 
 ### Added

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.4...axfs-ng-vfs-v0.5.5) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.3...axfs-ng-vfs-v0.5.4) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
+### Fixed
+
+- *(starry)* harden path, random, and icmp behavior ([#1517](https://github.com/rcore-os/tgoskits/pull/1517))
+
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.2...axfs-ng-vfs-v0.5.3) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-errno
+
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.1...axfs-ng-vfs-v0.5.2) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.0...axfs-ng-vfs-v0.5.1) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.3...axfs-ng-vfs-v0.5.0) - 2026-06-09
+
+### Added
+
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
+### Fixed
+
+- *(locking)* narrow spinlock scope in VFS and Starry paths ([#1146](https://github.com/rcore-os/tgoskits/pull/1146))
+- *(lockdep)* resolve Starry lock ordering and log print issues ([#1103](https://github.com/rcore-os/tgoskits/pull/1103))
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.4.2...axfs-ng-vfs-v0.4.3) - 2026-06-03
 
 ### Added

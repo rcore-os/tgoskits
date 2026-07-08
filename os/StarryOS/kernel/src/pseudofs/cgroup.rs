@@ -238,7 +238,7 @@ impl DirNodeOps for CgroupDir {
         Err(VfsError::OperationNotPermitted)
     }
 
-    fn unlink(&self, name: &str) -> VfsResult<()> {
+    fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
         if crate::cgroup::is_interface_file_name(name) {
             return Err(VfsError::OperationNotPermitted);
         }

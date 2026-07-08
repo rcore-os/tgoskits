@@ -22,6 +22,10 @@ extern crate log;
 extern crate log;
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use ax_errno::{AxResult, ax_err};
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");
@@ -29,11 +33,71 @@ compile_error!("features `vmx` and `svm` are mutually exclusive");
 #[cfg(test)]
 mod test_utils;
 
+/// Maximum number of x86 host I/O port ranges configured for one vCPU.
+pub const X86_MAX_PASSTHROUGH_PORT_RANGES: usize = 16;
+
+/// x86 vCPU creation configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct X86VCpuCreateConfig;
+
+/// x86 host I/O port range that should trap and be handled by the VMM.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct X86PassthroughPortRange {
+    /// First port in the range.
+    pub base: u16,
+    /// Number of ports in the range.
+    pub length: u16,
+}
+
 /// x86 vCPU setup configuration.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct X86VCpuSetupConfig {
     /// Intercept COM1 PIO ports and route them to an emulated serial device.
     pub emulate_com1: bool,
+    /// Host I/O port ranges routed through AxVM passthrough port devices.
+    pub passthrough_ports: [Option<X86PassthroughPortRange>; X86_MAX_PASSTHROUGH_PORT_RANGES],
+}
+
+impl Default for X86VCpuSetupConfig {
+    fn default() -> Self {
+        Self {
+            emulate_com1: false,
+            passthrough_ports: [None; X86_MAX_PASSTHROUGH_PORT_RANGES],
+        }
+    }
+}
+
+impl X86VCpuSetupConfig {
+    /// Adds one host I/O port range to the vCPU I/O intercept list.
+    pub fn add_passthrough_port_range(&mut self, base: u16, length: u16) -> AxResult {
+        if length == 0 {
+            return ax_err!(InvalidInput, "x86 passthrough port range is empty");
+        }
+        if base.checked_add(length - 1).is_none() {
+            return ax_err!(InvalidInput, "x86 passthrough port range overflows");
+        }
+
+        let range = X86PassthroughPortRange { base, length };
+        if self.passthrough_ports.contains(&Some(range)) {
+            return Ok(());
+        }
+
+        if let Some(slot) = self
+            .passthrough_ports
+            .iter_mut()
+            .find(|slot| slot.is_none())
+        {
+            *slot = Some(range);
+            return Ok(());
+        }
+
+        ax_err!(NoMemory, "too many x86 passthrough port ranges")
+    }
+
+    /// Iterates over configured host I/O port ranges.
+    pub fn passthrough_port_ranges(&self) -> impl Iterator<Item = X86PassthroughPortRange> + '_ {
+        self.passthrough_ports.iter().filter_map(|range| *range)
+    }
 }
 
 pub mod host;
@@ -63,7 +127,7 @@ pub(crate) struct X86RealModeEntryState {
 }
 
 #[cfg(any(feature = "vmx", feature = "svm", test))]
-pub(crate) fn x86_real_mode_entry_state(entry: axvcpu::GuestPhysAddr) -> X86RealModeEntryState {
+pub(crate) fn x86_real_mode_entry_state(entry: axvm_types::GuestPhysAddr) -> X86RealModeEntryState {
     if entry.as_usize() == X86_RESET_VECTOR_GPA {
         return X86RealModeEntryState {
             cs_selector: X86_RESET_CS_SELECTOR,
@@ -135,7 +199,7 @@ pub(crate) fn host_tsc_frequency_mhz() -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use axvcpu::GuestPhysAddr;
+    use axvm_types::GuestPhysAddr;
 
     use super::*;
 
@@ -161,5 +225,39 @@ mod tests {
                 rip: 0xfff0,
             }
         );
+    }
+
+    #[test]
+    fn setup_config_records_passthrough_port_ranges() {
+        let mut config = X86VCpuSetupConfig::default();
+
+        config.add_passthrough_port_range(0x6000, 0x80).unwrap();
+        config.add_passthrough_port_range(0x6000, 0x80).unwrap();
+
+        let ranges = config
+            .passthrough_port_ranges()
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(
+            ranges,
+            std::vec![X86PassthroughPortRange {
+                base: 0x6000,
+                length: 0x80
+            }]
+        );
+    }
+
+    #[test]
+    fn setup_config_rejects_invalid_or_excess_passthrough_port_ranges() {
+        let mut config = X86VCpuSetupConfig::default();
+
+        assert!(config.add_passthrough_port_range(0x6000, 0).is_err());
+        assert!(config.add_passthrough_port_range(0xfff0, 0x20).is_err());
+
+        for index in 0..X86_MAX_PASSTHROUGH_PORT_RANGES {
+            config
+                .add_passthrough_port_range((0x1000 + index * 0x10) as u16, 1)
+                .unwrap();
+        }
+        assert!(config.add_passthrough_port_range(0x3000, 1).is_err());
     }
 }

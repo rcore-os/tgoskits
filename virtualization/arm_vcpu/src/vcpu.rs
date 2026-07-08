@@ -12,29 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::marker::PhantomData;
+
 use aarch64_cpu::registers::*;
-use ax_errno::AxResult;
-use axvcpu::{AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, SysRegAddr};
 
 use crate::{
+    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuResult, ArmVmExit,
     TrapFrame,
     context_frame::GuestSystemRegisters,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
 };
 
-#[ax_percpu::def_percpu]
-static HOST_SP_EL0: u64 = 0;
-
-/// Save host's `SP_EL0` to the current ax-percpu region.
-unsafe fn save_host_sp_el0() {
-    unsafe { HOST_SP_EL0.write_current_raw(SP_EL0.get()) }
-}
-
-/// Restore host's `SP_EL0` from the current ax-percpu region.
-unsafe fn restore_host_sp_el0() {
-    SP_EL0.set(unsafe { HOST_SP_EL0.read_current_raw() });
-}
+/// Size of the guest trap frame used by the EL2 entry/exit assembly.
+pub const ARM_VCPU_TRAP_FRAME_SIZE: usize = core::mem::size_of::<TrapFrame>();
+/// Offset of [`HostRuntimeContext::stack_top`] within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = ARM_VCPU_TRAP_FRAME_SIZE;
+/// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize =
+    ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>();
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
@@ -48,22 +44,31 @@ pub struct VmCpuRegisters {
     pub vm_system_regs: GuestSystemRegisters,
 }
 
-/// A virtual CPU within a guest
+/// Host-only state used by one guest entry/exit round.
+#[repr(C)]
+#[derive(Debug, Default)]
+struct HostRuntimeContext {
+    stack_top: u64,
+    sp_el0: u64,
+}
+
+/// A virtual CPU within a guest.
 #[repr(C)]
 #[derive(Debug)]
-pub struct Aarch64VCpu {
-    // DO NOT modify `guest_regs` and `host_stack_top` and their order unless you do know what you are doing!
-    // DO NOT add anything before or between them unless you do know what you are doing!
+pub struct ArmVcpu<H: ArmHostOps> {
+    // The first two fields are consumed by exception.S and vmexit_trampoline.
+    // Keep `ctx` first and `host` immediately after it.
     ctx: TrapFrame,
-    host_stack_top: u64,
+    host: HostRuntimeContext,
     guest_system_regs: GuestSystemRegisters,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
+    _host: PhantomData<fn() -> H>,
 }
 
-/// Configuration for creating a new `Aarch64VCpu`
+/// Configuration for creating a new [`ArmVcpu`].
 #[derive(Clone, Debug, Default)]
-pub struct Aarch64VCpuCreateConfig {
+pub struct ArmVcpuCreateConfig {
     /// The MPIDR_EL1 value for the new vCPU,
     /// which is used to identify the CPU in a multiprocessor system.
     /// Note: mind CPU cluster.
@@ -73,97 +78,107 @@ pub struct Aarch64VCpuCreateConfig {
     pub dtb_addr: usize,
 }
 
-/// Configuration for setting up a new `Aarch64VCpu`
+/// Configuration for setting up a new [`ArmVcpu`].
 #[derive(Clone, Debug, Default)]
-pub struct Aarch64VCpuSetupConfig {
+pub struct ArmVcpuSetupConfig {
     /// Should the hypervisor passthrough interrupts to the guest?
     pub passthrough_interrupt: bool,
     /// Should the hypervisor passthrough timers to the guest?
     pub passthrough_timer: bool,
 }
 
-impl axvcpu::AxArchVCpu for Aarch64VCpu {
-    type CreateConfig = Aarch64VCpuCreateConfig;
-
-    type SetupConfig = Aarch64VCpuSetupConfig;
-
-    fn new(_vm_id: usize, _vcpu_id: usize, config: Self::CreateConfig) -> AxResult<Self> {
+impl<H: ArmHostOps> ArmVcpu<H> {
+    /// Creates a new architecture-specific vCPU.
+    pub fn new(_vm_id: usize, _vcpu_id: usize, config: ArmVcpuCreateConfig) -> ArmVcpuResult<Self> {
         let mut ctx = TrapFrame::default();
         ctx.set_argument(config.dtb_addr);
 
         Ok(Self {
             ctx,
-            host_stack_top: 0,
+            host: HostRuntimeContext::default(),
             guest_system_regs: GuestSystemRegisters::default(),
             mpidr: config.mpidr_el1,
+            _host: PhantomData,
         })
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    /// Completes architecture-specific setup.
+    pub fn setup(&mut self, config: ArmVcpuSetupConfig) -> ArmVcpuResult {
         self.init_hv(config);
         Ok(())
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    /// Sets the guest entry point.
+    pub fn set_entry(&mut self, entry: ArmGuestPhysAddr) -> ArmVcpuResult {
         debug!("set vcpu entry:{entry:?}");
         self.set_elr(entry.as_usize());
         Ok(())
     }
 
-    fn set_ept_root(&mut self, ept_root: HostPhysAddr) -> AxResult {
-        debug!("set vcpu ept root:{ept_root:#x}");
-        self.guest_system_regs.vttbr_el2 = ept_root.as_usize() as u64;
+    /// Sets the nested page table selected by the embedding VMM.
+    pub fn set_nested_page_table(&mut self, config: ArmNestedPagingConfig) -> ArmVcpuResult {
+        debug!("set vcpu stage-2 root:{:#x}", config.root_paddr);
+        self.guest_system_regs.vttbr_el2 = config.root_paddr as u64;
+        let pa_bits = if config.mode == 0 {
+            pa_bits()
+        } else {
+            config.mode
+        };
+        self.guest_system_regs.vtcr_el2 = vtcr_for_config(config.levels, config.gpa_bits, pa_bits);
         Ok(())
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    /// Runs the vCPU until a VM exit.
+    pub fn run(&mut self) -> ArmVcpuResult<ArmVmExit> {
         unsafe {
             core::arch::asm!("msr daifset, #2");
         }
 
-        // Run guest.
-        let exit_reson = unsafe {
-            // Save host SP_EL0 to the ctx becase it's used as current task ptr.
-            // This has to be done before vm system regs are restored.
-            save_host_sp_el0();
+        let exit_reason = unsafe {
             self.restore_vm_system_regs();
             self.run_guest()
         };
+
+        let trap_kind = TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
+        let result = self.vmexit_handler(trap_kind);
 
         unsafe {
             core::arch::asm!("msr daifclr, #2");
         }
 
-        let trap_kind = TrapKind::try_from(exit_reson as u8).expect("Invalid TrapKind");
-        self.vmexit_handler(trap_kind)
+        result
     }
 
-    fn bind(&mut self) -> AxResult {
+    /// Binds this vCPU to the current physical CPU.
+    pub fn bind(&mut self) -> ArmVcpuResult {
         Ok(())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    /// Unbinds this vCPU from the current physical CPU.
+    pub fn unbind(&mut self) -> ArmVcpuResult {
         Ok(())
     }
 
-    fn set_gpr(&mut self, idx: usize, val: usize) {
+    /// Sets a general-purpose register.
+    pub fn set_gpr(&mut self, idx: usize, val: usize) {
         self.ctx.set_gpr(idx, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
-        crate::host::hardware_inject_virtual_interrupt(vector as u8);
-        Ok(())
+    /// Injects an interrupt into the guest vCPU.
+    pub fn inject_interrupt(&mut self, vector: usize) -> ArmVcpuResult {
+        H::inject_virtual_interrupt(vector as u8)
     }
 
-    fn set_return_value(&mut self, val: usize) {
+    /// Sets the guest return value.
+    pub fn set_return_value(&mut self, val: usize) {
         // Return value is stored in x0.
         self.ctx.set_argument(val);
     }
 }
 
 // Private function
-impl Aarch64VCpu {
-    fn init_hv(&mut self, config: Aarch64VCpuSetupConfig) {
+impl<H: ArmHostOps> ArmVcpu<H> {
+    fn init_hv(&mut self, config: ArmVcpuSetupConfig) {
         self.ctx.spsr = (SPSR_EL1::M::EL1h
             + SPSR_EL1::I::Masked
             + SPSR_EL1::F::Masked
@@ -174,7 +189,7 @@ impl Aarch64VCpu {
     }
 
     /// Init guest context. Also set some el2 register value.
-    fn init_vm_context(&mut self, config: Aarch64VCpuSetupConfig) {
+    fn init_vm_context(&mut self, config: ArmVcpuSetupConfig) {
         // CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
         // Set CNTVOFF_EL2 to the current physical counter so the guest's
         // virtual counter (CNTVCT_EL0 = CNTPCT_EL0 - CNTVOFF_EL2) starts near zero.
@@ -191,12 +206,12 @@ impl Aarch64VCpu {
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
 
-        self.guest_system_regs.vtcr_el2 = probe_vtcr_support()
-            + (VTCR_EL2::TG0::Granule4KB
-                + VTCR_EL2::SH0::Inner
-                + VTCR_EL2::ORGN0::NormalWBRAWA
-                + VTCR_EL2::IRGN0::NormalWBRAWA)
-                .value;
+        if self.guest_system_regs.vtcr_el2 == 0 {
+            let pa_bits = pa_bits();
+            let levels = max_gpt_level(pa_bits);
+            let gpa_bits = if levels == 3 { 39 } else { 48 };
+            self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
+        }
 
         let mut hcr_el2 =
             HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
@@ -233,7 +248,7 @@ impl Aarch64VCpu {
 }
 
 /// Private functions related to vcpu runtime control flow.
-impl Aarch64VCpu {
+impl<H: ArmHostOps> ArmVcpu<H> {
     /// Save host context and run guest.
     ///
     /// When a VM-Exit happens when guest's vCpu is running,
@@ -250,18 +265,21 @@ impl Aarch64VCpu {
         core::arch::naked_asm!(
             // Save host context.
             save_regs_to_stack!(),
-            // Save current host stack top to `self.host_stack_top`.
+            // Save the host stack top and SP_EL0 to `self.host`.
             //
             // 'extern "C"' here specifies the aapcs64 calling convention, according to which
-            // the first and only parameter, the pointer of self, should be in x0:
+            // the first and only parameter, the pointer of self, should be in x0.
             "mov x9, sp",
-            "add x0, x0, {host_stack_top_offset}",
-            "str x9, [x0]",
-            // Go to `context_vm_entry`.
+            "add x10, x0, {host_stack_top_offset}",
+            "str x9, [x10]",
+            "mrs x9, sp_el0",
+            "str x9, [x10, #8]",
+            // Go to `context_vm_entry` with x0 pointing to `self.host.stack_top`.
+            "mov x0, x10",
             "b context_vm_entry",
             // Panic if the control flow comes back here, which should never happen.
             "b {run_guest_panic}",
-            host_stack_top_offset = const core::mem::size_of::<TrapFrame>(),
+            host_stack_top_offset = const ARM_VCPU_HOST_STACK_TOP_OFFSET,
             run_guest_panic = sym Self::run_guest_panic,
         );
     }
@@ -302,39 +320,32 @@ impl Aarch64VCpu {
     /// - `exit_reason`: The reason why the VM-Exit happened in [`TrapKind`].
     ///
     /// Returns:
-    /// - [`AxVCpuExitReason`]: a wrappered VM-Exit reason needed to be handled by the hypervisor.
+    /// - [`ArmVmExit`]: a wrappered VM-Exit reason needed to be handled by the hypervisor.
     ///
     /// This function may panic for unhandled exceptions.
-    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> AxResult<AxVCpuExitReason> {
+    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> ArmVcpuResult<ArmVmExit> {
         trace!(
-            "Aarch64VCpu vmexit_handler() esr:{:#x} ctx:{:#x?}",
+            "ArmVcpu vmexit_handler() esr:{:#x} ctx:{:#x?}",
             exception_class_value(),
             self.ctx
         );
 
         unsafe {
-            // Store guest system regs
+            // Store guest system regs. Guest SP_EL0 was already saved into `self.ctx`
+            // by the EL2 assembly before host SP_EL0 was restored.
             self.guest_system_regs.store();
-
-            // Store guest `SP_EL0` into the `Aarch64VCpu` struct,
-            // which will be restored when the guest is resumed in `exception_return_el2`.
-            self.ctx.sp_el0 = self.guest_system_regs.sp_el0;
-
-            // Restore host `SP_EL0`.
-            // This has to be done after guest's SP_EL0 is stored by `ext_regs_store`.
-            restore_host_sp_el0();
         }
 
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
-            TrapKind::Irq => Ok(AxVCpuExitReason::ExternalInterrupt {
-                vector: crate::host::fetch_irq() as u64,
+            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {
+                vector: H::fetch_pending_host_irq().unwrap_or(0) as u64,
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };
 
         match result {
-            Ok(AxVCpuExitReason::SysRegRead { addr, reg }) => {
+            Ok(ArmVmExit::SysRegRead { addr, reg }) => {
                 if let Some(exit_reason) =
                     self.builtin_sysreg_access_handler(addr, false, 0, reg)?
                 {
@@ -343,7 +354,7 @@ impl Aarch64VCpu {
 
                 result
             }
-            Ok(AxVCpuExitReason::SysRegWrite { addr, value }) => {
+            Ok(ArmVmExit::SysRegWrite { addr, value }) => {
                 if let Some(exit_reason) =
                     self.builtin_sysreg_access_handler(addr, true, value, 0)?
                 {
@@ -361,12 +372,12 @@ impl Aarch64VCpu {
     /// Return `Ok(None)` if the system register access is not handled by the VCpu itself,
     fn builtin_sysreg_access_handler(
         &mut self,
-        addr: SysRegAddr,
+        addr: ArmSysRegAddr,
         write: bool,
         value: u64,
         reg: usize,
-    ) -> AxResult<Option<AxVCpuExitReason>> {
-        const SYSREG_ICC_SGI1R_EL1: SysRegAddr = SysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
+    ) -> ArmVcpuResult<Option<ArmVmExit>> {
+        const SYSREG_ICC_SGI1R_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
 
         match (addr, write) {
             (SYSREG_ICC_SGI1R_EL1, true) => {
@@ -381,7 +392,7 @@ impl Aarch64VCpu {
                 if irm {
                     debug!("arm_vcpu ICC_SGI1R_EL1 write: irm == 1, send to all except self");
 
-                    return Ok(Some(AxVCpuExitReason::SendIPI {
+                    return Ok(Some(ArmVmExit::SendIPI {
                         target_cpu: 0,
                         target_cpu_aux: 0,
                         send_to_all: true,
@@ -400,7 +411,7 @@ impl Aarch64VCpu {
                      intid:{intid:#x} target_list:{target_list:#x}"
                 );
 
-                Ok(Some(AxVCpuExitReason::SendIPI {
+                Ok(Some(ArmVmExit::SendIPI {
                     target_cpu: (aff3 << 24) | (aff2 << 16) | (aff1 << 8),
                     target_cpu_aux: target_list,
                     send_to_all: false,
@@ -411,7 +422,7 @@ impl Aarch64VCpu {
             (SYSREG_ICC_SGI1R_EL1, false) => {
                 // ICC_SGI1R_EL1 is WO, we take it as RAZ.
                 self.set_gpr(reg, 0);
-                Ok(Some(AxVCpuExitReason::Nothing))
+                Ok(Some(ArmVmExit::Nothing))
             }
             _ => {
                 // If the system register access is not handled by the VCpu itself,
@@ -452,12 +463,10 @@ pub(crate) fn max_gpt_level(pa_bits: usize) -> usize {
     }
 }
 
-fn probe_vtcr_support() -> u64 {
-    let pa_bits = pa_bits();
-
-    let mut val = match max_gpt_level(pa_bits) {
-        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val(64 - 48),
-        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val(64 - 39),
+fn vtcr_for_config(levels: usize, gpa_bits: usize, pa_bits: usize) -> u64 {
+    let mut val = match levels {
+        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
+        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
     };
 
     match pa_bits {
@@ -469,6 +478,11 @@ fn probe_vtcr_support() -> u64 {
         36..=39 => val += VTCR_EL2::PS::PA_36B_64GB,
         _ => val += VTCR_EL2::PS::PA_32B_4GB,
     }
+
+    val += VTCR_EL2::TG0::Granule4KB
+        + VTCR_EL2::SH0::Inner
+        + VTCR_EL2::ORGN0::NormalWBRAWA
+        + VTCR_EL2::IRGN0::NormalWBRAWA;
 
     val.value
 }

@@ -36,6 +36,15 @@ impl FdSet {
     }
 }
 
+fn write_fd_set(user: Option<&mut __kernel_fd_set>, selected: &FdSet, nfds: usize) {
+    if let Some(user) = user {
+        unsafe { FD_ZERO(user) };
+        for index in selected.0.into_iter().take(nfds) {
+            unsafe { FD_SET(index as _, user) };
+        }
+    }
+}
+
 impl fmt::Debug for FdSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(&self.0).finish()
@@ -98,20 +107,14 @@ fn do_select(
     drop(fd_table);
     let fds = FdPollSet(fds);
 
-    if let Some(readfds) = readfds.as_deref_mut() {
-        unsafe { FD_ZERO(readfds) };
-    }
-    if let Some(writefds) = writefds.as_deref_mut() {
-        unsafe { FD_ZERO(writefds) };
-    }
-    if let Some(exceptfds) = exceptfds.as_deref_mut() {
-        unsafe { FD_ZERO(exceptfds) };
-    }
     with_blocked_signals(sigmask.copied(), || {
-        match block_on(future::timeout(
+        let result = block_on(future::timeout(
             timeout,
             poll_io(&fds, IoEvents::empty(), false, || {
                 let mut res = 0usize;
+                let mut selected_readfds = FdSet(Bitmap::new());
+                let mut selected_writefds = FdSet(Bitmap::new());
+                let mut selected_exceptfds = FdSet(Bitmap::new());
                 for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
                     let events = fd.poll();
                     let always_report = events & IoEvents::ALWAYS_POLL;
@@ -123,28 +126,38 @@ fn do_select(
                     let selected_except =
                         selected.contains(IoEvents::ERR) && except_set.0.get(index);
 
-                    if selected_read && let Some(set) = readfds.as_deref_mut() {
+                    if selected_read {
                         res += 1;
-                        unsafe { FD_SET(index as _, set) };
+                        selected_readfds.0.set(index, true);
                     }
-                    if selected_write && let Some(set) = writefds.as_deref_mut() {
+                    if selected_write {
                         res += 1;
-                        unsafe { FD_SET(index as _, set) };
+                        selected_writefds.0.set(index, true);
                     }
-                    if selected_except && let Some(set) = exceptfds.as_deref_mut() {
+                    if selected_except {
                         res += 1;
-                        unsafe { FD_SET(index as _, set) };
+                        selected_exceptfds.0.set(index, true);
                     }
                 }
                 if res > 0 {
+                    write_fd_set(readfds.as_deref_mut(), &selected_readfds, nfds as _);
+                    write_fd_set(writefds.as_deref_mut(), &selected_writefds, nfds as _);
+                    write_fd_set(exceptfds.as_deref_mut(), &selected_exceptfds, nfds as _);
                     return Ok(res as _);
                 }
 
                 Err(AxError::WouldBlock)
             }),
-        )) {
+        ));
+        match result {
             Ok(r) => r,
-            Err(_) => Ok(0),
+            Err(_) => {
+                let empty = FdSet(Bitmap::new());
+                write_fd_set(readfds, &empty, nfds as _);
+                write_fd_set(writefds, &empty, nfds as _);
+                write_fd_set(exceptfds, &empty, nfds as _);
+                Ok(0)
+            }
         }
     })
 }

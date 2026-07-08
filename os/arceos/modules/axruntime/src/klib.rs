@@ -14,10 +14,9 @@ use core::time::Duration;
 
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
-#[cfg(feature = "irq")]
-use axklib::IrqError;
 use axklib::{
-    AxError, AxResult, IrqCpuMask, IrqHandle, Klib, PhysAddr, RawIrqHandler, VirtAddr, impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
+    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -38,6 +37,7 @@ fn map_irq_error(err: IrqError) -> AxError {
     match err {
         IrqError::InvalidIrq | IrqError::InvalidCpu => AxError::InvalidInput,
         IrqError::CpuOffline | IrqError::Unsupported => AxError::Unsupported,
+        IrqError::Timeout => AxError::TimedOut,
         IrqError::Busy | IrqError::InIrqContext => AxError::ResourceBusy,
         IrqError::NoMemory => AxError::NoMemory,
         IrqError::NotFound => AxError::NotFound,
@@ -208,19 +208,44 @@ impl_trait! {
         /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
         /// ignore this request because there is no interrupt controller
         /// service to program.
-        fn irq_set_enable(_irq: usize, _enabled: bool) {
+        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
             #[cfg(feature = "irq")]
-            ax_hal::irq::set_enable(_irq, _enabled);
+            {
+                ax_hal::irq::set_enable(_irq, _enabled).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
         }
 
         fn irq_request_shared(
-            _irq: usize,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _irq: IrqId,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_shared_irq(_irq, _handler, _data).map_err(map_irq_error)
+                ax_hal::irq::request_shared_irq(_irq, _handler).map_err(map_irq_error)
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                Err(AxError::Unsupported)
+            }
+        }
+
+        fn irq_request_shared_disabled(
+            _irq: IrqId,
+            _handler: BoxedIrqHandler,
+        ) -> AxResult<IrqHandle> {
+            #[cfg(feature = "irq")]
+            {
+                ax_hal::irq::request_irq(
+                    _irq,
+                    ax_hal::irq::IrqRequest::new(_handler)
+                        .share_mode(ax_hal::irq::ShareMode::Shared)
+                        .auto_enable(ax_hal::irq::AutoEnable::No),
+                )
+                .map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {
@@ -229,14 +254,14 @@ impl_trait! {
         }
 
         fn irq_request_percpu(
-            _irq: usize,
+            _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data).map_err(map_irq_error)
+                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler)
+                    .map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {
@@ -274,6 +299,22 @@ impl_trait! {
             #[cfg(not(feature = "irq"))]
             {
                 Err(AxError::Unsupported)
+            }
+        }
+
+        unsafe fn irq_run_on_cpu_sync(
+            _cpu: IrqCpuId,
+            _f: unsafe fn(*mut ()),
+            _arg: *mut (),
+        ) -> Result<(), IrqError> {
+            #[cfg(feature = "irq")]
+            {
+                unsafe { ax_hal::irq::run_on_cpu_sync(_cpu, _f, _arg) }
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                let _ = (_cpu, _f, _arg);
+                Err(IrqError::Unsupported)
             }
         }
     }

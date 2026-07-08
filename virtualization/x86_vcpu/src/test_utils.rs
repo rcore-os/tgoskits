@@ -14,7 +14,8 @@
 
 #[cfg(test)]
 pub mod mock {
-    use ax_kspin::SpinNoIrq as Mutex;
+    use std::sync::Mutex;
+
     use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 
     use crate::host::X86VcpuHostIf;
@@ -47,7 +48,7 @@ pub mod mock {
     impl X86VcpuHostIf for MockMmHal {
         /// Allocate a frame.
         fn alloc_frame() -> Option<PhysAddr> {
-            let mut state = GLOBAL_LOCK.lock();
+            let mut state = GLOBAL_LOCK.lock().unwrap();
 
             for i in 0..16 {
                 let bit = 1 << i;
@@ -62,7 +63,7 @@ pub mod mock {
 
         /// Allocate a number of contiguous frames, with a specified alignment.
         fn alloc_contiguous_frames(num_frames: usize, frame_align: usize) -> Option<PhysAddr> {
-            let mut state = GLOBAL_LOCK.lock();
+            let mut state = GLOBAL_LOCK.lock().unwrap();
 
             if num_frames == 0 || num_frames > 16 {
                 return None;
@@ -86,7 +87,7 @@ pub mod mock {
 
         /// Deallocate a frame allocated previously by [`alloc_frame`].
         fn dealloc_frame(paddr: PhysAddr) {
-            let mut state = GLOBAL_LOCK.lock();
+            let mut state = GLOBAL_LOCK.lock().unwrap();
 
             let addr = paddr.as_usize();
             if addr >= 0x1000
@@ -102,7 +103,7 @@ pub mod mock {
         /// Deallocate a number of contiguous frames allocated previously by
         /// [`alloc_contiguous_frames`].
         fn dealloc_contiguous_frames(first_addr: PhysAddr, num_frames: usize) {
-            let mut state = GLOBAL_LOCK.lock();
+            let mut state = GLOBAL_LOCK.lock().unwrap();
 
             let addr = first_addr.as_usize();
             if num_frames == 0
@@ -123,7 +124,7 @@ pub mod mock {
 
         /// Convert a physical address to a virtual address.
         fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-            let state = GLOBAL_LOCK.lock();
+            let state = GLOBAL_LOCK.lock().unwrap();
 
             let addr = paddr.as_usize();
             if addr >= 0x1000 && addr < 0x1000 + 16 * PAGE_SIZE_4K {
@@ -146,7 +147,7 @@ pub mod mock {
         // Reset the mock memory allocator state
         #[allow(dead_code)]
         pub fn reset() {
-            let mut state = GLOBAL_LOCK.lock();
+            let mut state = GLOBAL_LOCK.lock().unwrap();
             state.memory_pool = [[0; PAGE_SIZE_4K]; 16];
             state.alloc_mask = 0;
             state.reset_counter += 1;
@@ -155,14 +156,14 @@ pub mod mock {
         // Get the number of allocated frames
         #[allow(dead_code)]
         pub fn allocated_count() -> usize {
-            let state = GLOBAL_LOCK.lock();
+            let state = GLOBAL_LOCK.lock().unwrap();
             state.alloc_mask.count_ones() as usize
         }
 
         // Check if a physical address is allocated
         #[allow(dead_code)]
         pub fn is_allocated(paddr: ax_memory_addr::PhysAddr) -> bool {
-            let state = GLOBAL_LOCK.lock();
+            let state = GLOBAL_LOCK.lock().unwrap();
 
             let addr = paddr.as_usize();
             if addr >= 0x1000
@@ -180,7 +181,7 @@ pub mod mock {
         // Get the current reset count
         #[allow(dead_code)]
         pub fn reset_count() -> usize {
-            let state = GLOBAL_LOCK.lock();
+            let state = GLOBAL_LOCK.lock().unwrap();
             state.reset_counter
         }
 
@@ -189,7 +190,7 @@ pub mod mock {
         where
             F: FnOnce() -> R,
         {
-            let _guard = TEST_LOCK.lock();
+            let _guard = TEST_LOCK.lock().unwrap();
             Self::reset();
             test()
         }

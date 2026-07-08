@@ -24,6 +24,11 @@ pub trait FilesystemOps: Send + Sync {
     /// Gets the name of the filesystem
     fn name(&self) -> &str;
 
+    /// Returns whether this filesystem was mounted read-only.
+    fn is_readonly(&self) -> bool {
+        false
+    }
+
     /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry;
 
@@ -44,6 +49,8 @@ pub struct Filesystem {
 #[inherit_methods(from = "self.ops")]
 impl Filesystem {
     pub fn name(&self) -> &str;
+
+    pub fn is_readonly(&self) -> bool;
 
     pub fn root_dir(&self) -> DirEntry;
 

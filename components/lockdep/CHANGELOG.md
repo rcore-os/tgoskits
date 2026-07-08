@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/ax-lockdep-v0.1.4...ax-lockdep-v0.2.0) - 2026-07-07
+
+### Other
+
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/ax-lockdep-v0.1.3...ax-lockdep-v0.1.4) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axpanic
+
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/ax-lockdep-v0.1.2...ax-lockdep-v0.1.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: ax-kernel-guard
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/ax-lockdep-v0.1.1...ax-lockdep-v0.1.2) - 2026-06-03
 
 ### Fixed

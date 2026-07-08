@@ -1,3 +1,0 @@
-board_type = "OrangePi-5-Plus"
-success_regex = ["(?m)^.*DWC xHCI driver initialized successfully for usb@fc400000.*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b']

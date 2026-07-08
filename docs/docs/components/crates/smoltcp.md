@@ -6,7 +6,7 @@
 > 版本：`0.13.0`（crates.io）
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`tests/netsim.rs`、`examples/*`、`benches/bench.rs`、`fuzz/fuzz_targets/*`
 
-`smoltcp` 是仓库中引入并维护的一份独立 TCP/IP 协议栈源码。它提供的是事件驱动的协议状态机、接口层、设备抽象和报文表示，而不是 ArceOS/StarryOS 直接面向系统调用或应用的网络模块。在本仓库里，真正把它接到驱动、等待模型、地址族抽象和系统接口上的，是 `ax-net` 与 `ax-net-ng`。
+`smoltcp` 是仓库中引入并维护的一份独立 TCP/IP 协议栈源码。它提供的是事件驱动的协议状态机、接口层、设备抽象和报文表示，而不是 ArceOS/StarryOS 直接面向系统调用或应用的网络模块。在本仓库里，真正把它接到驱动、等待模型、地址族抽象和系统接口上的，是 `ax-net` 与 `ax-net`。
 
 最关键的边界是：`smoltcp` 负责协议与报文，不负责操作系统策略。路由装配、阻塞/非阻塞等待、超时、Unix socket、vsock、文件描述符映射与系统调用兼容，都不属于它的职责。
 
@@ -49,7 +49,7 @@
 
 ### 1.4 在本仓库中的实际启用方式
 
-`ax-net` 和 `ax-net-ng` 都没有使用 `smoltcp` 的默认 feature，而是显式打开了一组更贴近内核场景的能力：
+`ax-net` 和 `ax-net` 都没有使用 `smoltcp` 的默认 feature，而是显式打开了一组更贴近内核场景的能力：
 
 - `alloc`
 - `log`
@@ -66,7 +66,7 @@
 
 这说明在本仓库里，`smoltcp` 的定位不是 host-side 演示库，而是内核内 IP/TCP/UDP 协议引擎。
 
-### 1.5 与 `ax-net` / `ax-net-ng` 的边界
+### 1.5 与 `ax-net` / `ax-net` 的边界
 
 在 ArceOS / StarryOS 中，`smoltcp` 的职责到以下范围为止：
 
@@ -76,7 +76,7 @@
 - 不提供 `bind` / `accept4` / `sendmsg` 一类系统接口语义
 - 不理解 `axpoll`、`ax-task`、`ax-fs-ng`、Unix socket、vsock 这些系统层概念
 
-因此，`ax-net` / `ax-net-ng` 不是“薄薄一层壳”，而是在把协议栈本体接到操作系统语义上。
+因此，`ax-net` / `ax-net` 不是“薄薄一层壳”，而是在把协议栈本体接到操作系统语义上。
 
 ## 核心功能
 
@@ -93,9 +93,9 @@
 本仓库中的真实调用链可以概括为：
 
 1. `ax-driver` 暴露 NIC 或更高层网络设备
-2. `ax-net` / `ax-net-ng` 将其适配成 `smoltcp::phy::Device`
+2. `ax-net` / `ax-net` 将其适配成 `smoltcp::phy::Device`
 3. `smoltcp::iface::Interface` 与 `SocketSet` 负责推进协议状态机
-4. `ax-net` / `ax-net-ng` 把 `smoltcp` socket 封装成系统友好的同步 socket 接口
+4. `ax-net` / `ax-net` 把 `smoltcp` socket 封装成系统友好的同步 socket 接口
 5. `ax-api`、`ax-posix-api`、StarryOS socket 子系统继续向上暴露用户可见语义
 
 ### 2.3 质量保障资产也是实现的一部分
@@ -135,7 +135,7 @@
 | 消费者 | 使用方式 |
 | --- | --- |
 | `ax-net` | 第一代 IP socket 封装 |
-| `ax-net-ng` | 第二代统一 socket 服务层中的 IP 协议引擎 |
+| `ax-net` | 第二代统一 socket 服务层中的 IP 协议引擎 |
 | `smoltcp-fuzz` | 直接针对本仓库这份协议栈源码做 fuzz 验证 |
 
 ### 3.3 与上层模块的职责边界
@@ -144,7 +144,7 @@
 | --- | --- |
 | `smoltcp` | 协议状态机、报文解析/构造、接口轮询模型 |
 | `ax-net` | 把 `smoltcp` 封装成第一代同步 TCP/UDP/DNS 接口 |
-| `ax-net-ng` | 在 `smoltcp` 之上实现统一 socket 语义、路由、Unix/vsock、poll/waker |
+| `ax-net` | 在 `smoltcp` 之上实现统一 socket 语义、路由、Unix/vsock、poll/waker |
 
 ## 开发指南
 
@@ -157,7 +157,7 @@
 smoltcp = { version = "0.12", default-features = false, features = ["alloc"] }
 ```
 
-但在本仓库中，更常见的做法不是让业务代码直接依赖 `smoltcp`，而是通过 `ax-net` / `ax-net-ng` 间接消费。
+但在本仓库中，更常见的做法不是让业务代码直接依赖 `smoltcp`，而是通过 `ax-net` / `ax-net` 间接消费。
 
 ### 4.2 修改前先判断自己在动哪一层
 
@@ -192,7 +192,7 @@ smoltcp = { version = "0.12", default-features = false, features = ["alloc"] }
 - 协议或报文层改动优先补单元测试与 fuzz corpus
 - 接口层改动至少跑一条 netsim 回归
 - 修改编译期参数或 feature 时，同时检查默认组合与 ArceOS 实际使用组合
-- 若变更会影响 `ax-net` / `ax-net-ng`，还必须补系统级回归
+- 若变更会影响 `ax-net` / `ax-net`，还必须补系统级回归
 
 ### 5.3 推荐验证命令
 
@@ -207,11 +207,11 @@ cargo test -p smoltcp --test netsim --features _netsim
 
 ### ArceOS
 
-在 ArceOS 中，`smoltcp` 不是用户直接面对的网络 API，而是 `ax-net` / `ax-net-ng` 下方的协议引擎。它决定 TCP/UDP/DNS/IP 行为，但不直接决定系统调用或应用接口语义。
+在 ArceOS 中，`smoltcp` 不是用户直接面对的网络 API，而是 `ax-net` / `ax-net` 下方的协议引擎。它决定 TCP/UDP/DNS/IP 行为，但不直接决定系统调用或应用接口语义。
 
 ### StarryOS
 
-StarryOS 同样不会把 `smoltcp` 直接暴露给上层，而是通过 `ax-net-ng` 间接使用它。对 StarryOS 来说，`smoltcp` 是主 socket 子系统下方的协议核心，而不是 socket 子系统本身。
+StarryOS 同样不会把 `smoltcp` 直接暴露给上层，而是通过 `ax-net` 间接使用它。对 StarryOS 来说，`smoltcp` 是主 socket 子系统下方的协议核心，而不是 socket 子系统本身。
 
 ### Axvisor
 

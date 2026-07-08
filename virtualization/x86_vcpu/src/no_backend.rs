@@ -8,16 +8,16 @@
 // None of the methods are ever called at runtime in such configurations.
 
 use ax_errno::{AxResult, ax_err};
-use axvcpu::{
-    AxArchPerCpu, AxArchVCpu, AxVCpuExitReason, GuestPhysAddr, HostPhysAddr, VCpuId, VMId,
+use axvm_types::{
+    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmExit,
 };
 
-use crate::X86VCpuSetupConfig;
+use crate::{X86VCpuCreateConfig, X86VCpuSetupConfig};
 
 /// Stub per-CPU state; never instantiated in no-backend builds.
 pub struct X86ArchPerCpuState;
 
-impl AxArchPerCpu for X86ArchPerCpuState {
+impl VmArchPerCpuOps for X86ArchPerCpuState {
     fn new(_cpu_id: usize) -> AxResult<Self> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
@@ -38,11 +38,12 @@ impl AxArchPerCpu for X86ArchPerCpuState {
 /// Stub vCPU; never instantiated in no-backend builds.
 pub struct X86ArchVCpu;
 
-impl AxArchVCpu for X86ArchVCpu {
-    type CreateConfig = ();
+impl VmArchVcpuOps for X86ArchVCpu {
+    type CreateConfig = X86VCpuCreateConfig;
     type SetupConfig = X86VCpuSetupConfig;
+    type Exit = VmExit;
 
-    fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: ()) -> AxResult<Self> {
+    fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: X86VCpuCreateConfig) -> AxResult<Self> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
@@ -50,7 +51,7 @@ impl AxArchVCpu for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn set_ept_root(&mut self, _ept_root: HostPhysAddr) -> AxResult {
+    fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> AxResult {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
@@ -58,7 +59,7 @@ impl AxArchVCpu for X86ArchVCpu {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    fn run(&mut self) -> AxResult<AxVCpuExitReason> {
+    fn run(&mut self) -> AxResult<Self::Exit> {
         ax_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 

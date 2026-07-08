@@ -7,19 +7,23 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
+use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
     file::{IoDst, IoSrc},
     pseudofs::Device,
 };
+
+// FusionIO/directFS atomic-write toggle used by MySQL.
+const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
     let mut fs = FS_CONTEXT.lock();
@@ -111,16 +115,16 @@ pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
     }
 }
 
-/// File wrapper for `ax_fs::fops::File`.
+/// File wrapper for `ax_fs_ng::fops::File`.
 pub struct File {
-    inner: ax_fs::File,
+    inner: ax_fs_ng::File,
     open_flags: u32,
     nonblock: AtomicBool,
     append: AtomicBool,
 }
 
 impl File {
-    pub fn new(inner: ax_fs::File, open_flags: u32) -> Self {
+    pub fn new(inner: ax_fs_ng::File, open_flags: u32) -> Self {
         Self {
             inner,
             open_flags,
@@ -129,7 +133,7 @@ impl File {
         }
     }
 
-    pub fn inner(&self) -> &ax_fs::File {
+    pub fn inner(&self) -> &ax_fs_ng::File {
         &self.inner
     }
 }
@@ -151,6 +155,14 @@ impl File {
 fn path_for(loc: &Location) -> Cow<'static, str> {
     loc.absolute_path()
         .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
+}
+
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
 }
 
 impl FileLike for File {
@@ -196,7 +208,14 @@ impl FileLike for File {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        self.inner().backend()?.location().ioctl(cmd, arg)
+        let loc = self.inner().backend()?.location();
+        match cmd {
+            DFS_IOCTL_ATOMIC_WRITE_SET => {
+                let _enabled: u32 = (arg as *const u32).vm_read()?;
+                Ok(0)
+            }
+            _ => loc.ioctl(cmd, arg),
+        }
     }
 
     fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
@@ -255,15 +274,17 @@ impl FileLike for File {
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        self.inner().location().poll()
+        fs_events_to_io(self.inner().location().poll())
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner().location().register(context, events);
+        self.inner()
+            .location()
+            .register(context, io_events_to_fs(events));
     }
 }
 
-/// Directory wrapper for `ax_fs::fops::Directory`.
+/// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
     pub offset: Mutex<u64>,
@@ -325,7 +346,7 @@ impl FileLike for Directory {
 }
 impl Pollable for Directory {
     fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+        fs_events_to_io(FsIoEvents::IN | FsIoEvents::OUT)
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}

@@ -1,0 +1,16 @@
+args = [
+    "-nographic",
+    "-m", "512M",
+    "-cpu", "rv64",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sed -i -e 's|https://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|https://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' /etc/apk/repositories; (apk add python3 git git-daemon openssl || (apk update && apk add python3 git git-daemon openssl)) && /usr/bin/probe_https_remote.py || printf 'GIT_HTTPS_%s\\n' HAS_FAILURES"
+success_regex = ["(?m)^GIT_HTTPS_ALL_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\S+_HAS_FAILURES\s*$']
+timeout = 900

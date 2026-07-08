@@ -1,66 +1,148 @@
 //! Software perf event with BPF program attachment + ringbuf output.
 //!
-//! Ported from `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/perf/bpf.rs`).
-//! The user-visible ringbuf is created by `BpfPerfEvent::do_mmap`; tgoskits'
-//! `FileLike` does not expose a `custom_mmap()` hook on perf-event fds at
-//! the moment (#805 + #673 do not introduce one), so the mmap pathway is
-//! reachable only through internal callers for now — a follow-up PR will
-//! wire it into `mmap(2)`. The rest of the event lifecycle (enable /
-//! disable / set_bpf_prog / write_event) matches the upstream behaviour.
+//! The user-visible ringbuf is created on the first `mmap(perf_fd, ...)`
+//! call: `BpfPerfEventWrapper::device_mmap` allocates `1 + 2^N` physically
+//! contiguous 4 K pages (header page + power-of-two-page data ring) and
+//! hands the kernel virtual address to `BpfPerfEvent::do_mmap`, which
+//! initializes `perf_event_mmap_page` in page 0. `sys_mmap` then maps the
+//! same physical range into the caller's address space, so user reads of
+//! `data_head` / `data_tail` and kernel writes via `bpf_perf_event_output`
+//! share one buffer.
 
-use alloc::sync::Arc;
-use core::{any::Any, fmt::Debug};
+use alloc::sync::{Arc, Weak};
+use core::{
+    any::Any,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
+use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::PhysAddr;
+use ax_hal::mem::virt_to_phys;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
+use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
-    linux_bpf::perf_event_sample_format,
+    linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
 };
 use kprobe::PtRegs;
 use rbpf::EbpfVmRaw;
 
 use super::PerfEventOps;
+#[cfg(target_arch = "x86_64")]
+use crate::perf::BPFJitMemory;
 use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
 };
 
+/// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
+/// Each JIT-compiled eBPF program fits within this space; the allocation
+/// is sized generously (16 KiB) since programs are typically < 1 page.
+const BPF_JIT_MEM_PAGES: usize = 4;
+
 /// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll
-/// set so readers can wait for new records, and the backing
-/// `(PhysAddr, page_count)` produced by `do_mmap` (Some after the user
-/// `mmap`s the ringbuf; None before).
+/// set so readers can wait for new records, and a weak handle to the
+/// backing pages produced by `device_mmap` (Some after the first
+/// `mmap(perf_fd)`; None before).
+///
+/// Ownership model: the user VMA owns the ringbuf pages via the strong
+/// `Arc<GlobalPage>` threaded into `DeviceMmap::Physical`'s retainer slot;
+/// this wrapper keeps only a `Weak`. Consequences:
+///
+/// * UAF safety — the pages outlive `close(perf_fd)` (which drops this
+///   wrapper) for as long as a mapping is live, because the VMA holds the
+///   strong ref. A userspace read after closing the fd never observes
+///   freed memory.
+/// * Self-cleaning allocation — if a `device_mmap` result is never adopted
+///   by a surviving VMA (a non-direct mmap path, a permission/address
+///   error, or an `aspace.map` failure), the lone strong ref drops, the
+///   frames free, and `is_mapped` flips back to false so the perf fd can
+///   be mmap'd again instead of being wedged in `ResourceBusy`. After a
+///   normal `munmap` the same thing happens, matching Linux's allowance to
+///   re-`mmap` a perf fd.
+///
+/// `inner` holds a raw pointer into the page buffer; `RingPage` has no
+/// destructor and is never dereferenced once the pages are gone (every
+/// access through `inner` is gated on [`Self::is_mapped`]), so a dangling
+/// pointer left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
     inner: BpfPerfEvent,
-    poll_ready: PollSet,
-    phys_addr: Option<(PhysAddr, usize)>,
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
+    /// Weak handle to the contiguous pages backing the ringbuf. The strong
+    /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
+    /// mapping still exists. See the type-level docs for the ownership
+    /// rationale.
+    pages: Option<Weak<GlobalPage>>,
 }
 
 impl BpfPerfEventWrapper {
     /// Construct the wrapper around a freshly-built `BpfPerfEvent`.
     pub fn new(inner: BpfPerfEvent) -> Self {
+        let poll_ready = Arc::new(PollSet::new());
+        let poll_notify = Arc::new(IrqNotify::new());
+        let poll_alive = Arc::new(AtomicBool::new(true));
+        start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
             inner,
-            poll_ready: PollSet::new(),
-            phys_addr: None,
+            poll_ready,
+            poll_notify,
+            poll_alive,
+            pages: None,
         }
     }
 
-    /// Write a record into the ringbuf and wake any readers. Pre-mmap
-    /// calls are accepted as no-ops (matching the source behaviour).
+    /// Whether a live user mapping of the ringbuf currently exists. The
+    /// wrapper only holds a `Weak` to the backing pages, so this is true
+    /// exactly while some VMA still pins them; once every mapping is gone
+    /// (munmap / exit) — or an in-progress mmap was abandoned before a VMA
+    /// adopted the pages — the strong refs drop and this returns false.
+    fn is_mapped(&self) -> bool {
+        self.pages.as_ref().is_some_and(|w| w.strong_count() > 0)
+    }
+
+    /// Write a record into the ringbuf and wake any readers. Calls before a
+    /// mapping exists (or after it is gone) are accepted as no-ops: the
+    /// `kbpf_basic::RingPage` pointer is either still `empty()` or now
+    /// dangling, so dereferencing it would be UB.
     pub fn write_event(&mut self, data: &[u8]) -> AxResult<()> {
-        if self.phys_addr.is_none() {
-            // Ringbuf not yet mapped by userland; drop the sample silently
-            // — Linux behavior on EINVAL would alarm libbpf-style readers.
+        if !self.is_mapped() {
             return Ok(());
         }
         self.inner.write_event(data).into_ax_result()?;
         if self.inner.enabled() {
-            self.poll_ready.wake();
+            self.poll_notify.notify_irq();
         }
         Ok(())
     }
+}
+
+impl Drop for BpfPerfEventWrapper {
+    fn drop(&mut self) {
+        self.poll_alive.store(false, Ordering::Release);
+        self.poll_notify.notify();
+    }
+}
+
+fn start_bpf_perf_notify_worker(
+    poll_ready: Arc<PollSet>,
+    poll_notify: Arc<IrqNotify>,
+    poll_alive: Arc<AtomicBool>,
+) {
+    ax_task::spawn_with_name(
+        move || loop {
+            poll_notify.wait();
+            if !poll_alive.load(Ordering::Acquire) {
+                break;
+            }
+            // Ring data is written before the deferred poll wake.
+            unsafe { poll_ready.wake(IoEvents::IN) };
+        },
+        "bpf-perf-notify".into(),
+    );
 }
 
 impl Debug for BpfPerfEventWrapper {
@@ -83,15 +165,53 @@ impl PerfEventOps for BpfPerfEventWrapper {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-}
 
-impl Drop for BpfPerfEventWrapper {
-    fn drop(&mut self) {
-        // The mmap'd ringbuf pages, if any, were allocated via the global
-        // page allocator in the (not yet wired) mmap path; once that path
-        // lands, this drop will need to call `frame_dealloc` for each. For
-        // now the field stays `None`, so this is effectively a no-op.
-        let _ = self.phys_addr.take();
+    fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if self.is_mapped() {
+            // Linux allows only one live mmap per perf event fd; a second
+            // mapping while the first is alive would orphan it. A stale
+            // `Weak` from an abandoned or munmap'd previous attempt does not
+            // count (its pages are already freed), so the fd stays mmap-able.
+            return Err(AxError::ResourceBusy);
+        }
+        // libbpf requires `(1 + 2^N) * PAGE_SIZE` so the data region is a
+        // power of two pages; `RingPage::init` enforces ≥ 2 pages total and
+        // 4 K alignment. Reject anything that would trip those asserts.
+        if len == 0 || !len.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(AxError::InvalidInput);
+        }
+        let num_pages = len / PAGE_SIZE_4K;
+        if num_pages < 2 || !(num_pages - 1).is_power_of_two() {
+            return Err(AxError::InvalidInput);
+        }
+        let mut pages = GlobalPage::alloc_contiguous(num_pages, PAGE_SIZE_4K)?;
+        pages.zero();
+        let kvirt = pages.start_vaddr();
+        let paddr = virt_to_phys(kvirt);
+        self.inner
+            .do_mmap(kvirt.as_usize(), len, 0)
+            .map_err(|_| AxError::InvalidInput)?;
+        // kbpf_basic::RingPage::init sets the data-region geometry but leaves
+        // version at 0. perf checks `perf_event_mmap_page.version == 1` and
+        // rejects 0 (`perf_mmap__is_mmap_ok`), so we must set it here.
+        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
+        // SAFETY: header points at the freshly allocated header page, no reader yet.
+        unsafe {
+            core::ptr::addr_of_mut!((*header).version).write(1);
+            core::ptr::addr_of_mut!((*header).compat_version).write(0);
+        }
+        let pages = Arc::new(pages);
+        // Keep only a `Weak`; hand the sole strong ref to the caller, which
+        // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
+        // pins these frames until `munmap`/exit even if the perf fd (and this
+        // wrapper) is closed first. Because the wrapper does not retain a
+        // strong ref, an mmap that is abandoned or fails before a VMA adopts
+        // the anchor simply frees the pages and leaves the fd mmap-able again
+        // (see the type-level docs). Without the anchor the pages would free
+        // under a live mapping.
+        self.pages = Some(Arc::downgrade(&pages));
+        let anchor: Arc<dyn Any + Send + Sync> = pages;
+        Ok((paddr, anchor))
     }
 }
 
@@ -106,7 +226,8 @@ impl Pollable for BpfPerfEventWrapper {
 
     fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_ready.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -125,15 +246,16 @@ pub fn perf_event_open_bpf(args: PerfProbeArgs) -> BpfPerfEventWrapper {
 /// A loaded BPF program bundled with an `rbpf` interpreter that borrows
 /// into the program's instruction buffer.
 ///
-/// Soundness: the interpreter holds a `'static`-typed slice into the
-/// instruction bytes owned by `_prog`; the only thing keeping those bytes
-/// alive is the [`Arc<BpfProg>`] in `_prog`. Field order in this struct is
-/// therefore load-bearing — `vm` is declared first, `_prog` last, so the
-/// struct's drop glue runs `vm`'s destructor before `_prog`'s, and the
-/// instruction buffer is freed strictly after the borrower is gone. Do not
-/// reorder the fields.
+/// Soundness: the interpreter holds `'static`-typed borrows into resources
+/// owned by this struct. Field order is therefore load-bearing: `vm` must be
+/// declared first so its destructor runs before the JIT memory and program
+/// instruction buffer are released. Do not reorder the fields.
 pub struct OwnedEbpfVm {
     vm: EbpfVmRaw<'static>,
+    #[cfg(target_arch = "x86_64")]
+    /// MUST be declared after `vm` (drop order). Keeps the JIT executable
+    /// memory alive for the entire lifetime of `vm`.
+    _jit_exec_memory: BPFJitMemory,
     /// MUST be declared after `vm` (drop order). Keeps the instruction
     /// buffer alive for the entire lifetime of `vm`.
     _prog: Arc<BpfProg>,
@@ -168,11 +290,42 @@ impl OwnedEbpfVm {
         // TODO: not all of the address space is accessible to a BPF program;
         // allowing the full `0..u64::MAX` range disables rbpf's bounds check
         // and lets a buggy/hostile program read arbitrary kernel memory via
-        // direct loads. Narrow this to the legitimately-reachable context /
-        // map / stack ranges once kbpf-basic exposes the per-program bounds.
+        // direct loads.
+        //
+        // FIXME: narrow this to the legitimately-reachable context /
+        // map / stack ranges once kbpf-basic exposes per-program
+        // bounds.
         vm.register_allowed_memory(0..u64::MAX);
 
-        Ok(Self { vm, _prog: prog })
+        #[cfg(target_arch = "x86_64")]
+        {
+            // TODO: calculate a more precise size.
+            let mut jit_exec_memory = BPFJitMemory::new(BPF_JIT_MEM_PAGES)?;
+            // SAFETY: `jit_exec_memory` is moved into the returned
+            // `OwnedEbpfVm` after `vm`; field drop order guarantees `vm` is
+            // destroyed before the executable mapping is unmapped.
+            let jit_slice = unsafe { jit_exec_memory.as_static_mut_slice() };
+            vm.set_jit_exec_memory(jit_slice).map_err(|e| {
+                error!("rbpf::EbpfVmRaw::set_jit_exec_memory failed: {e:?}");
+                AxError::InvalidInput
+            })?;
+
+            vm.jit_compile().map_err(|e| {
+                error!("rbpf::EbpfVmRaw::jit_compile failed: {e:?}");
+                AxError::InvalidInput
+            })?;
+
+            Ok(Self {
+                vm,
+                _jit_exec_memory: jit_exec_memory,
+                _prog: prog,
+            })
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            Ok(Self { vm, _prog: prog })
+        }
     }
 
     /// Execute the wrapped BPF program with the supplied context bytes.
@@ -182,7 +335,14 @@ impl OwnedEbpfVm {
     /// exterior mutability — and therefore no lock — is required around an
     /// `OwnedEbpfVm`.
     pub fn execute_program(&self, ctx: &mut [u8]) -> Result<u64, rbpf::lib::Error> {
-        self.vm.execute_program(ctx)
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            self.vm.execute_program(ctx)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe { self.vm.execute_program_jit(ctx) }
+        }
     }
 
     /// Execute the wrapped BPF program with a `PtRegs` as the single-pointer
@@ -197,7 +357,7 @@ impl OwnedEbpfVm {
                 core::mem::size_of::<PtRegs>(),
             )
         };
-        self.vm.execute_program(probe_context)
+        self.execute_program(probe_context)
     }
 }
 

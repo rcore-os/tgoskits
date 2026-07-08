@@ -1,12 +1,12 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
 #[cfg(feature = "irq")]
-use ax_plat::irq::{IpiTarget, IrqIf};
+use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
 use ax_plat::{
-    console::ConsoleIf,
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{MemIf, RawRange},
+    mem::{IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -42,8 +42,14 @@ impl ConsoleIf for DummyConsole {
         unimplemented!()
     }
 
+    fn device_id() -> ConsoleDeviceIdResult {
+        Err(ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn claim_runtime_output() {}
+
     #[cfg(feature = "irq")]
-    fn irq_num() -> Option<usize> {
+    fn irq_num() -> Option<IrqId> {
         None
     }
 
@@ -70,6 +76,14 @@ impl MemIf for DummyMem {
         &[]
     }
 
+    fn prepare_iomap(
+        addr: ax_memory_addr::PhysAddr,
+        _size: usize,
+        _attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError> {
+        Ok(IomapDecision::UseGeneric(addr))
+    }
+
     fn phys_to_virt(_paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
         va!(0)
     }
@@ -80,6 +94,10 @@ impl MemIf for DummyMem {
 
     fn kernel_aspace() -> (ax_memory_addr::VirtAddr, usize) {
         (va!(0), 0)
+    }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        true
     }
 }
 
@@ -102,8 +120,8 @@ impl TimeIf for DummyTime {
     }
 
     #[cfg(feature = "irq")]
-    fn irq_num() -> usize {
-        0
+    fn irq_num() -> IrqId {
+        IrqNumber(0).expect("dummy legacy IRQ exceeds legacy IRQ width")
     }
 
     #[cfg(feature = "irq")]
@@ -119,6 +137,10 @@ impl PowerIf for DummyPower {
         unimplemented!()
     }
 
+    fn system_reset() -> ! {
+        unimplemented!()
+    }
+
     fn cpu_num() -> usize {
         1
     }
@@ -127,11 +149,35 @@ impl PowerIf for DummyPower {
 #[cfg(feature = "irq")]
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
-    fn set_enable(_irq: usize, _enabled: bool) {}
+    fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
+        Ok(())
+    }
 
-    fn handle(_irq: usize) -> Option<usize> {
+    fn set_affinity(
+        _irq: IrqId,
+        _affinity: ax_plat::irq::IrqAffinity,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
+
+    fn handle(_irq: TrapVector) -> Option<IrqId> {
         None
     }
 
-    fn send_ipi(_irq: usize, _target: IpiTarget) {}
+    fn send_ipi(_irq: IrqId, _target: IpiTarget) {}
+
+    fn ipi_irq() -> IrqId {
+        IrqId::new(ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))
+    }
+
+    fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
+        match source {
+            IrqSource::ControllerLine { domain, hwirq } => Ok(IrqId::new(domain, hwirq)),
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
+        }
+    }
+
+    fn resolve_percpu(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
+        Err(IrqError::Unsupported)
+    }
 }

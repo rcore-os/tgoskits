@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 用户库层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`alloc-buddy`、`alloc-level-1`、`alloc-slab`、`alloc-tlsf`、`bus-mmio`、`bus-pci`、`defplat`、`display`、`dma` 等（另有 31 个 feature） 控制编译期能力装配。
+- feature 视角：主要通过 `alloc`、`alloc-buddy`、`alloc-level-1`、`alloc-slab`、`alloc-tlsf`、`bus-mmio`、`bus-pci`、`display`、`dma` 等能力 feature 控制编译期能力装配；平台实现固定由 `axplat-dyn` 运行时发现。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `Instant`、`Result`、`Output`。
 
 ### 模块结构
@@ -41,7 +41,7 @@ graph LR
     current["ax-std"]
     current --> ax-api["ax-api"]
     current --> ax_errno["ax-errno"]
-    current --> ax-feat["ax-feat"]
+    current --> ax-runtime["ax-runtime"]
     current --> axio["ax-io"]
     current --> ax_kspin["ax-kspin"]
     current --> ax_lazyinit["ax-lazyinit"]
@@ -58,7 +58,7 @@ graph LR
 ### 直接依赖
 - `ax-api`
 - `ax-errno`
-- `ax-feat`
+- `ax-runtime`
 - `axio`
 - `ax-kspin`
 - `ax-lazyinit`
@@ -69,9 +69,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
 - `ax-dma`

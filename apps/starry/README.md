@@ -33,6 +33,21 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
+## Resource Monitor
+
+The `resource-monitor` case provides an offline user-space collector and a static
+viewer for StarryOS application experiments. It samples existing `/proc` files
+into CSV/JSONL logs and replays StarryOS/Linux runs locally in the browser; it
+does not add kernel counters, drivers, online telemetry, or robot workload
+control.
+
+```bash
+cd apps/starry/resource-monitor/offline-viewer
+python3 -m http.server 8000
+```
+
+See `resource-monitor/README.md` for the demo usage, log export flow, and file format.
+
 ## PicoClaw CLI
 
 The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
@@ -68,8 +83,37 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-See `k230-kpu-nncase/README.md` and `docs/k230-kpu-nncase-runtime.md` for the
+See `k230-kpu-nncase/README.md` and `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
+
+## macOS AArch64 Self-Build
+
+The `macos-selfbuild` case is an Apple Silicon macOS workflow that boots an
+AArch64 StarryOS SMP kernel with QEMU HVF, enters the StarryOS guest userland,
+and runs guest `cargo build` to build StarryOS again.
+
+```bash
+apps/starry/macos-selfbuild/full_self_build.sh
+qemu-system-aarch64 \
+  -snapshot \
+  -machine virt,gic-version=3 \
+  -nographic \
+  -cpu cortex-a53 \
+  -m 512M \
+  -smp 1 \
+  -device virtio-blk-pci,drive=disk0 \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
+  -netdev user,id=net0
+```
+
+`full_self_build.sh` is the default full entrypoint. It prepares host tools,
+uses `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` for the
+seed kernel build, rootfs preparation, overlay injection, and QEMU/HVF run, then
+extracts the guest-built kernel into `target/starry-macos-selfbuild/uploaded/`.
+See `macos-selfbuild/README.md` and `macos-selfbuild/README_CN.md` for the script
+roles, M3 validation environment, per-stage timing, rootfs path, PASS markers,
+and direct QEMU boot verification of the self-built kernel.
 
 ## Redis
 
@@ -84,16 +128,43 @@ cargo xtask starry app run -t redis --arch riscv64
 Stress configs are available through explicit QEMU config variants; see
 `redis/README.md`.
 
-## GDB Smoke
+## Apache
 
-The `gdb-smoke` case is a RISC-V QEMU app workflow that prepares a temporary
-rootfs overlay with GDB, GDBServer, and two tiny target programs.
+The `apache` case is a QEMU app workflow that runs Apache httpd smoke checks
+and manual phase reruns. Before marking any StarryOS tracker item passed, run
+the same script or equivalent commands in Linux Alpine as the behavior oracle.
 
 ```bash
-cargo xtask starry app run -t gdb-smoke --arch riscv64
-cargo xtask starry app run -t gdb-smoke --arch riscv64 \
-  --qemu-config qemu-riscv64-gdbserver.toml
+cargo xtask starry app qemu -t apache --arch riscv64
 ```
+
+`apps/starry/apache` is organized into `runner/`, `smoke/`, `phase/`,
+`qemu/phase/`, `qemu/all/`, and `qemu/debug/`. The default app entry is
+smoke-only. Manual phase reruns live under `qemu/phase/`; issue-focused probes
+live under `qemu/debug/`.
+
+## GDB Smoke
+
+The `gdb-smoke` case is a QEMU app workflow that prepares a temporary rootfs
+overlay with GDB, GDBServer, and tiny debugger smoke targets. Native GDB smoke
+and gdbserver smoke are available on x86_64, riscv64, aarch64, and loongarch64.
+
+```bash
+cargo xtask starry app qemu -t gdb-smoke --arch x86_64
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-threads.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-stress.toml
+cargo xtask starry app qemu -t gdb-smoke --arch riscv64 \
+  --qemu-config qemu-riscv64-gdbserver-manual.toml
+```
+
+When using the long-lived Docker container for a `*-manual.toml` entry, run the
+same command through `docker exec -it tgoskits-dev ...` so the QEMU serial
+console stays interactive.
 
 ## MariaDB
 
@@ -132,11 +203,13 @@ packages in a staging root during prebuild, injects runtime artifacts to the
 app overlay, then runs nginx smoke tests inside StarryOS.
 
 ```bash
-cargo xtask starry app run -t nginx --arch x86_64
+cargo xtask starry app qemu -t nginx --arch x86_64
 ```
 
-`apps/starry/nginx` maintains four directories: `smoke`, `phase`, `stress`, and
-`debug`. Currently only smoke is connected as nginx test entry in tgoskits workflows.
+`apps/starry/nginx` keeps the CI-discovered smoke QEMU configs at the app root,
+and keeps manual `all`/`phase`/`debug` QEMU configs under `qemu/`. The guest
+entrypoint is `runner/nginx-runner.sh`; currently only smoke is connected as the
+nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 

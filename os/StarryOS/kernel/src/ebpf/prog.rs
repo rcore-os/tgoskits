@@ -10,7 +10,7 @@ use axpoll::Pollable;
 use kbpf_basic::{preprocessor::EbpfPreProcessor, prog::BpfProgMeta};
 
 use crate::{
-    ebpf::{map::BpfMap, transform::EbpfKernelAuxiliary},
+    ebpf::{KernelRawMutex, map::BpfMap, transform::EbpfKernelAuxiliary},
     file::FileLike,
 };
 
@@ -92,7 +92,7 @@ impl FileLike for BpfProg {
 /// [`BpfProg`].
 pub fn load_prog(meta: &mut BpfProgMeta) -> kbpf_basic::BpfResult<BpfProg> {
     let insns = meta.take_insns().ok_or(kbpf_basic::BpfError::EINVAL)?;
-    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary>(insns)?;
+    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary, KernelRawMutex>(insns)?;
     Ok(BpfProg::new(
         BpfProgMeta {
             prog_flags: meta.prog_flags,

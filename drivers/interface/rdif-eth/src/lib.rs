@@ -117,7 +117,7 @@ impl IdList {
     }
 }
 
-/// Event returned by [`Interface::handle_irq`] indicating which queues have
+/// Event returned by [`IrqHandler::handle_irq`] indicating which queues have
 /// completed operations.
 #[derive(Debug, Clone, Copy)]
 pub struct Event {
@@ -135,6 +135,22 @@ impl Event {
         }
     }
 }
+
+/// Owned interrupt endpoint for a network device.
+///
+/// Drivers that can split their control/data-plane state from the IRQ
+/// top-half should return this through [`Interface::take_irq_handler`]. The
+/// handler is then moved into the platform IRQ callback, so hard IRQ context no
+/// longer needs to lock the complete network device object.
+pub trait IrqHandler: Send + 'static {
+    /// Acknowledge/snapshot the device IRQ source and publish queue-local event
+    /// bits. Packet copies, descriptor refills, DMA reclaim, and waker
+    /// execution must stay in task/deferred context.
+    fn handle_irq(&mut self) -> Event;
+}
+
+/// Boxed owned IRQ endpoint.
+pub type BIrqHandler = Box<dyn IrqHandler>;
 
 /// Core interface that network device drivers must implement.
 ///
@@ -163,7 +179,78 @@ pub trait Interface: DriverGeneric {
     fn is_irq_enabled(&self) -> bool;
 
     /// Handle a device interrupt, returning which queues have events.
+    ///
+    /// This method is kept for non-OS test code and direct polling adapters.
+    /// Runtime IRQ registration must use [`Interface::take_irq_handler`] so the
+    /// hard IRQ callback owns a narrow endpoint instead of borrowing the full
+    /// interface object.
     fn handle_irq(&mut self) -> Event;
+
+    /// Detach an owned IRQ endpoint from the interface.
+    ///
+    /// Returns `None` for devices without an OS-registered NIC IRQ. Drivers
+    /// with an IRQ line must return `Some` so hard IRQ callbacks do not need to
+    /// lock the whole device.
+    fn take_irq_handler(&mut self) -> Option<BIrqHandler> {
+        None
+    }
+
+    /// Optional wireless control plane.
+    ///
+    /// A plain wired NIC returns `None` (the default). A wireless device
+    /// returns its [`WifiControl`] so the upper layers can drive STA/SoftAP
+    /// control, link policy and out-of-band RX wake-up through the *same* net
+    /// device model — no separate Wi-Fi device type or registration path.
+    fn wifi_control(&mut self) -> Option<&mut dyn WifiControl> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optional wireless control plane
+// ---------------------------------------------------------------------------
+
+/// Wireless link policy a device reports for itself, so the protocol stack can
+/// apply it without any Wi-Fi/SoftAP-specific knowledge.
+///
+/// This is plain data carried alongside the device; the stack only sees a
+/// static IPv4 + optional single-client DHCP server lease.
+#[derive(Clone, Copy, Debug)]
+pub struct WifiLinkPolicy {
+    /// This interface's static address / SoftAP gateway.
+    pub ip: [u8; 4],
+    /// Prefix length for [`ip`](Self::ip).
+    pub prefix_len: u8,
+    /// If set, run a built-in DHCP server handing out this single address.
+    pub dhcp_server_client_ip: Option<[u8; 4]>,
+}
+
+/// Optional control plane for a wireless [`Interface`].
+///
+/// Bundles the wireless-specific capabilities (STA connect, SoftAP start, MAC,
+/// out-of-band RX wake, link policy) onto the same object that carries the data
+/// plane. A chip driver implements this on its `Interface` device so wireless
+/// devices need no bespoke lifecycle trait or registration path.
+pub trait WifiControl {
+    /// Connect to a network in STA mode (scan + associate + authenticate).
+    fn connect(&mut self, ssid: &str, password: &str) -> Result<(), NetError>;
+
+    /// Disconnect from the current STA network.
+    fn disconnect(&mut self) -> Result<(), NetError>;
+
+    /// Start an open (unencrypted) SoftAP broadcasting `ssid` on `channel`.
+    fn start_ap_open(&mut self, ssid: &[u8], channel: u8) -> Result<(), NetError>;
+
+    /// Register a wake callback for out-of-band RX.
+    ///
+    /// SDIO Wi-Fi delivers RX outside the ethernet IRQ framework, so the driver
+    /// calls this `wake` when a data frame has been enqueued, to nudge the
+    /// stack's per-device poll task.
+    fn set_rx_wake(&mut self, wake: fn());
+
+    /// The link policy this device wants applied once the stack is up. `None`
+    /// means "no special policy" (e.g. a STA that will use DHCP like any NIC).
+    fn link_policy(&self) -> Option<WifiLinkPolicy>;
 }
 
 // ---------------------------------------------------------------------------

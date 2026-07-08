@@ -176,7 +176,7 @@
 - `ax-runtime`
 - `ax-task`
 - `ax-alloc`
-- `axvcpu`
+- `axvm`
 - `axvm`
 - `arm_vcpu`
 - `os/axvisor`
@@ -191,7 +191,7 @@ graph TD
     C --> D[ax-hal]
     D --> E[ax-runtime]
     D --> F[ax-task]
-    B --> G[axvcpu]
+    B --> G[axvm]
     G --> H[axvm / Axvisor]
     B --> I[StarryOS kernel]
 ```

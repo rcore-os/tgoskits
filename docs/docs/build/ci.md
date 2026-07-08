@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 20
 sidebar_label: "自动 CI 测试"
 ---
 
@@ -39,15 +39,17 @@ flowchart TB
 | `pull_request` | 同上 |
 | `workflow_dispatch` | 手动触发，仅用于发布容器镜像（`base` / `axvisor-lvz` / `both`），不执行 CI 检查 |
 
-同一 `ref` 上新的触发会取消正在运行的旧任务（`concurrency.cancel-in-progress: true`）。
+`dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
 
 ## 执行流水线
 
 ```text
-detect_changes
+cancel_stale_runs
+  |
+  `-- detect_changes
   |
   +-- [ci_checks == true]
-  |     `-- static_checks (fmt || sync-lint)    fail-fast: true
+  |     `-- static_checks (fmt/publish-dry-run || sync-lint || spin-lint)  fail-fast: true
   |           `-- test_checks (所有测试并发)     fail-fast: true
   |
   `-- [push/dispatch 到 main/dev]
@@ -55,7 +57,7 @@ detect_changes
         `-- publish_axvisor_lvz_container       依赖 base 成功后才运行
 ```
 
-`static_checks` 作为测试矩阵的前置门禁：格式检查或 sync-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
+`static_checks` 作为测试矩阵的前置门禁：格式检查、workspace 发布 dry-run、sync-lint 或 spin-lint 不通过时，后续测试不会启动。`static_checks` 和 `test_checks` 都启用 `fail-fast: true`，任意矩阵项失败会取消同矩阵内其他任务，减少 runner 占用。
 
 ## 变更检测
 
@@ -63,7 +65,7 @@ detect_changes
 
 | 检测路径 | 触发任务 |
 |----------|----------|
-| `.cargo/`、`Cargo.toml`、`Cargo.lock`、`components/`、`drivers/`、`examples/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`xtask/` 等 | CI 检查 |
+| `.cargo/`、`.github/workflows/{ci,reusable-command,container-publish}.yml`、`Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`bootloader/axloader/`、`components/`、`drivers/`、`memory/`、`net/`、`os/`、`platforms/`、`scripts/`、`test-suit/`、`virtualization/`、`xtask/` 等 | CI 检查 |
 | `container/Dockerfile`、`rust-toolchain.toml` | 发布基础容器镜像 |
 | `container/Dockerfile.axvisor-lvz`、`rust-toolchain.toml` | 发布 LVZ 扩展镜像 |
 
@@ -80,8 +82,9 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 
 | Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
 |----------|--------|----------|-----------|----------|
-| Check formatting | `ubuntu-latest` | 否 | 无 | `cargo fmt --all -- --check` |
-| Run sync-lint | `ubuntu-latest` | 是（`base`） | `sync-lint` | `cargo xtask sync-lint --since <base>`；需要完整 git 历史 |
+| Check formatting | `self-hosted linux qcs`（非 `rcore-os` 回退到 `ubuntu-latest` + `base` 容器） | 通常否 | 无 | `cargo fmt --all -- --check` 和 `cargo publish --workspace --dry-run --no-verify` |
+| Run sync-lint | `ubuntu-latest` | 是（`base`） | 无 | `cargo xtask sync-lint --since <base>`；需要完整 git 历史，并上传编译好的 `tg-xtask` 供后续容器 job 复用 |
+| Run spin-lint | `ubuntu-latest` | 是（`base`） | 无 | `cargo xtask spin-lint`，校验 vendored `spin` 迁移约束 |
 
 ## Test Checks
 
@@ -102,11 +105,16 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 | Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
 | Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
 | Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
-| Test axvisor self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64 UEFI | `self-hosted linux intel kvm` | 否 | 无 | 安装/定位 OVMF，生成 nimbos UEFI VM config，并运行 `cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos`；仅 `rcore-os` 仓库触发 |
+| Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target 与 OVMF，运行 `cargo axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |
 | Test axvisor x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted board roc-rk3568-pc-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board roc-rk3568-pc-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted board phytiumpi-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board phytiumpi-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test starry self-hosted board orangepi-5-plus | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board orangepi-5-plus`；物理板卡；仅 `rcore-os` 仓库触发 |
-| Test starry self-hosted board licheerv-nano-sg2002 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board licheerv-nano-sg2002`；LicheeRV-Nano-SG2002 物理板卡；仅 `rcore-os` 仓库触发 |
+| Test starry self-hosted board aka-00-sg2002 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board aka-00-sg2002`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test starry self-hosted board visionfive2 | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board visionfive2`；物理板卡；仅 `rcore-os` 仓库触发 |
 
 StarryOS stress 测试条目保留在 workflow 中，但当前处于注释状态。启用后仅用于 target 为 `main` 的 PR。
 
@@ -126,10 +134,9 @@ self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted
 
 | Cache Key | 使用 Job | 保存时机 | 说明 |
 |-----------|----------|----------|------|
-| `sync-lint` | Run sync-lint | `push` 事件 | xtask 与 sync-lint 工具链编译产物 |
 | `test-axvisor-loongarch64` | Test axvisor loongarch64 QEMU | `push` 事件 | Axvisor loongarch64 编译产物 |
 | `test-starry-riscv64/aarch64/loongarch64/x86_64` | Test starry riscv64/aarch64/loongarch64/x86_64 QEMU | `push` 事件 | StarryOS QEMU 编译产物 |
-| 无（`cache_key: ""`） | self-hosted runner job，包括 Run clippy 和 Test with std | - | 依赖 self-hosted runner 本地磁盘缓存，不使用 GitHub Actions cache |
+| 无（`cache_key: ""`） | static checks、self-hosted runner job、hosted x86_64/SVM/board 类 job | - | 不启用 `Swatinem/rust-cache`；self-hosted 任务依赖 runner 本地磁盘缓存 |
 
 self-hosted runner 不设置 `cache_key`，避免 `Swatinem/rust-cache@v2` 的 post-job 清理影响 runner 上跨次运行自然积累的共享缓存。
 

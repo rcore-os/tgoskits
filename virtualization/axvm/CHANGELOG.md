@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.20...axvm-v0.5.21) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-plat, ax-driver, ax-hal, ax-std
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.19...axvm-v0.5.20) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive, ax-plat, ax-driver, arm_vgic, riscv_vplic, x86_vlapic, axdevice, ax-hal, ax-std, loongarch_vcpu, x86_vcpu
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.18...axvm-v0.5.19) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+
+### Other
+
+- *(axvm)* handle vCPU exits in arch adapters ([#1528](https://github.com/rcore-os/tgoskits/pull/1528))
+- *(arm_vcpu)* decouple host interface ([#1523](https://github.com/rcore-os/tgoskits/pull/1523))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+- *(axvm)* migrate fdt handling to fdt-edit ([#1476](https://github.com/rcore-os/tgoskits/pull/1476))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.17...axvm-v0.5.18) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(axvisor)* gate x86 host fs passthrough prepare
+- *(axvm)* resolve LoongArch passthrough IRQ ids
+- *(axvm)* use kspin for IOAPIC forwarding locks
+- *(axvm)* mask forwarded IOAPIC host lines
+- *(irq)* avoid hard irq controller locks
+
+### Other
+
+- *(axvm)* decouple axvisor arch logic ([#1471](https://github.com/rcore-os/tgoskits/pull/1471))
+- *(axvm)* decouple vcpu backends ([#1467](https://github.com/rcore-os/tgoskits/pull/1467))
+- *(axvm)* move VM boot and memory preparation into axvm ([#1462](https://github.com/rcore-os/tgoskits/pull/1462))
+- *(axvm)* redesign guest address layout planning ([#1454](https://github.com/rcore-os/tgoskits/pull/1454))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(axvm)* redesign VM lifecycle state machine ([#1447](https://github.com/rcore-os/tgoskits/pull/1447))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(axvm)* route host IRQs with domain metadata
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.16...axvm-v0.5.17) - 2026-06-27
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(axdevice)* unify Device model with indexed dispatch and conflict detect ([#1335](https://github.com/rcore-os/tgoskits/pull/1335))
+
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.15...axvm-v0.5.16) - 2026-06-23
+
+### Other
+
+- Enhance archive extraction logic and add legacy file tests ([#1355](https://github.com/rcore-os/tgoskits/pull/1355))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.14...axvm-v0.5.15) - 2026-06-22
+
+### Other
+
+- *(axvm)* route RISC-V IRQs through vPLIC backend ([#1317](https://github.com/rcore-os/tgoskits/pull/1317))
+- *(axvm)* add VM interrupt fabric ([#1273](https://github.com/rcore-os/tgoskits/pull/1273))
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+- Issue 595 device foundation ([#1258](https://github.com/rcore-os/tgoskits/pull/1258))
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.13...axvm-v0.5.14) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.12...axvm-v0.5.13) - 2026-06-11
+
+### Fixed
+
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.11...axvm-v0.5.12) - 2026-06-09
+
+### Added
+
+- *(axvisor)* support dynamic x86_64 QEMU guest boot ([#1166](https://github.com/rcore-os/tgoskits/pull/1166))
+
+### Fixed
+
+- *(axvisor)* cache x86 emulated devices directly and harden vCPU interrupt queuing ([#1137](https://github.com/rcore-os/tgoskits/pull/1137))
+
 ### Fixed
 
 - publish the corrected feature metadata for host filesystem and platform-dynamic support

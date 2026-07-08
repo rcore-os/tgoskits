@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.1...ax-fs-ng-v0.8.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.0...ax-fs-ng-v0.8.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, axfs-ng-vfs, rsext4, rdif-block, ax-sync
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.7.0...ax-fs-ng-v0.8.0) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+- *(starry)* back /proc/diskstats, /proc/net/dev and /proc/mounts with real data ([#1504](https://github.com/rcore-os/tgoskits/pull/1504))
+
+### Fixed
+
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+- *(starry-mm)* bound per-file page-cache pre-allocation to avoid OOM ([#1499](https://github.com/rcore-os/tgoskits/pull/1499))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.6.0...ax-fs-ng-v0.7.0) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(ax-fs-ng)* keep early IRQ block events ([#1429](https://github.com/rcore-os/tgoskits/pull/1429))
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.21...ax-fs-ng-v0.6.0) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(lockdep)* resolve Starry lock order regressions ([#1375](https://github.com/rcore-os/tgoskits/pull/1375))
+
+### Other
+
+- Merge pull request #1336 from sdio-host2-physical-model
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.20...ax-fs-ng-v0.5.21) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rsext4, rdif-block, ax-sync
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.19...ax-fs-ng-v0.5.20) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.18...ax-fs-ng-v0.5.19) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-hal, ax-alloc, ax-sync
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.17...ax-fs-ng-v0.5.18) - 2026-06-11
+
+### Fixed
+
+- *(starry-mm)* bound file-backed mmap populate at EOF ([#1164](https://github.com/rcore-os/tgoskits/pull/1164))
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.16...ax-fs-ng-v0.5.17) - 2026-06-09
+
+### Added
+
+- *(rsext4)* fine-grained locking for SMP scalability ([#1057](https://github.com/rcore-os/tgoskits/pull/1057))
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
+### Fixed
+
+- *(axfs-ng)* zero the partial last page when truncating a file shorter ([#1124](https://github.com/rcore-os/tgoskits/pull/1124))
+- *(locking)* narrow spinlock scope in VFS and Starry paths ([#1146](https://github.com/rcore-os/tgoskits/pull/1146))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.15...ax-fs-ng-v0.5.16) - 2026-06-03
 
 ### Added

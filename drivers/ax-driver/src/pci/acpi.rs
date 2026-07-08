@@ -1,36 +1,18 @@
 extern crate alloc;
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
 use alloc::format;
 
 use log::debug;
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
-use rdrive::probe::pci::PciAddress;
 use rdrive::{
     PlatformDevice,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiInfo},
+        acpi::{AcpiId, ProbeAcpi},
+        pci::PciInfo,
     },
 };
+
+use crate::BindingIrq;
 
 crate::model_register!(
     name: "ACPI Generic PCIe Controller Driver",
@@ -47,7 +29,8 @@ crate::model_register!(
     ],
 );
 
-fn probe_acpi_ecam(info: AcpiInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_acpi_ecam(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let mut registered = false;
     for region in info.root.pci_ecam_regions() {
         debug!("ACPI MCFG PCI ECAM region: {region:?}");
@@ -70,40 +53,24 @@ fn probe_acpi_ecam(info: AcpiInfo<'_>, plat_dev: PlatformDevice) -> Result<(), O
     }
 }
 
-#[cfg(all(
-    target_os = "none",
-    any(
-        feature = "intel-net",
-        feature = "ixgbe",
-        feature = "realtek-rtl8125",
-        feature = "virtio-net",
-        feature = "xhci-pci",
-    )
-))]
-pub(crate) fn acpi_irq_for_endpoint(
-    address: PciAddress,
-    interrupt_pin: u8,
-) -> Result<Option<usize>, OnProbeError> {
-    let Some(result) =
-        rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(address, interrupt_pin))
+pub(crate) fn acpi_irq_for_endpoint(info: PciInfo) -> Result<Option<BindingIrq>, OnProbeError> {
+    let Some(result) = rdrive::probe::acpi::with_acpi(|acpi| acpi.pci_irq_for_endpoint(info))
     else {
         return Ok(None);
     };
-    result
-        .map(|route| {
-            route.map(|route| {
-                log::info!(
-                    "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} IOAPIC {} input {} vector \
-                     {:#x}",
-                    address,
-                    interrupt_pin,
-                    route.gsi,
-                    route.io_apic_id,
-                    route.io_apic_input,
-                    route.vector
-                );
-                route.vector
-            })
-        })
-        .map_err(|err| OnProbeError::other(format!("{err}")))
+    let route = result.map_err(|err| OnProbeError::other(format!("{err}")))?;
+    let Some(route) = route else {
+        return Ok(None);
+    };
+
+    log::info!(
+        "ACPI PCI INTx route: endpoint {} pin {} -> GSI {} {:?} {} input {}",
+        info.address,
+        route.intx_route.root_pin,
+        route.gsi.gsi,
+        route.gsi.controller,
+        route.gsi.controller_id,
+        route.gsi.controller_input,
+    );
+    Ok(Some(BindingIrq::from(route.gsi)))
 }

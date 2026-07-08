@@ -11,6 +11,7 @@ use alloc::{
     collections::vec_deque::VecDeque,
     sync::{Arc, Weak},
     task::Wake,
+    vec::Vec,
 };
 use core::{
     hash::{Hash, Hasher},
@@ -103,7 +104,17 @@ enum ConsumeResult {
 }
 
 fn match_ready_events(current: IoEvents, interested: IoEvents) -> IoEvents {
-    (current & interested) | (current & IoEvents::ALWAYS_POLL)
+    let mut matched = (current & interested) | (current & IoEvents::ALWAYS_POLL);
+    // When the fd is hung up, also force IN so that epoll callers who only
+    // inspect EPOLLIN (a common pattern for pipes/sockets) can detect EOF.
+    // This is safe because a hung-up fd is always readable (read() returns 0
+    // immediately).  Linux epoll reports EPOLLHUP regardless of interest, but
+    // applications that mask on EPOLLIN alone still need to see the event.
+    // Calling `poll(2)` directly is unaffected by this epoll-only convention.
+    if matched.contains(IoEvents::HUP) {
+        matched |= IoEvents::IN;
+    }
+    matched
 }
 
 fn register_events(interested: IoEvents) -> IoEvents {
@@ -249,19 +260,11 @@ impl Wake for InterestWaker {
         };
 
         if interest.try_mark_in_queue() {
-            // The queue lock must disable IRQs because wakers may be invoked
-            // from IRQ wake paths. `VecDeque::push_back` can still allocate
-            // when capacity is exhausted; if this path is proven to run in IRQ
-            // context, replace the queue with a bounded or deferred design.
-            epoll
-                .ready_queue
-                .lock()
-                .push_back(Arc::downgrade(&interest));
+            epoll.enqueue_marked_ready(&interest);
             trace!(
                 "Epoll: fd={} added to ready queue, events={:?} wake up poller",
                 interest.key.fd, interest.event.events
             );
-            epoll.poll_ready.wake();
         }
     }
 }
@@ -269,6 +272,7 @@ impl Wake for InterestWaker {
 struct EpollInner {
     interests: SpinNoIrq<HashMap<EntryKey, Arc<EpollInterest>>>,
     ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
+    overflow_ready: AtomicBool,
     poll_ready: PollSet,
 }
 
@@ -277,8 +281,131 @@ impl Default for EpollInner {
         Self {
             interests: SpinNoIrq::new(HashMap::new()),
             ready_queue: SpinNoIrq::new(VecDeque::new()),
+            overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
         }
+    }
+}
+
+impl EpollInner {
+    fn reserve_ready_capacity(&self, min_capacity: usize) -> AxResult<()> {
+        loop {
+            if self.ready_queue.lock().capacity() >= min_capacity {
+                return Ok(());
+            }
+
+            let mut replacement = VecDeque::new();
+            replacement
+                .try_reserve(min_capacity)
+                .map_err(|_| AxError::NoMemory)?;
+
+            let mut queue = self.ready_queue.lock();
+            if queue.capacity() >= min_capacity {
+                return Ok(());
+            }
+            if queue.len() > replacement.capacity() {
+                continue;
+            }
+            while let Some(entry) = queue.pop_front() {
+                replacement.push_back(entry);
+            }
+            *queue = replacement;
+            return Ok(());
+        }
+    }
+
+    fn enqueue_marked_ready(&self, interest: &Arc<EpollInterest>) {
+        let queued = {
+            let mut queue = self.ready_queue.lock();
+            if queue.len() == queue.capacity() {
+                queue.retain(|entry| entry.upgrade().is_some());
+            }
+            if queue.len() < queue.capacity() {
+                queue.push_back(Arc::downgrade(interest));
+                true
+            } else {
+                false
+            }
+        };
+
+        if !queued {
+            interest.mark_not_in_queue();
+            self.overflow_ready.store(true, Ordering::Release);
+        }
+        // Ready queue or overflow state is published before waking epoll waiters.
+        unsafe { self.poll_ready.wake(IoEvents::IN) };
+    }
+
+    fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
+        self.ready_queue
+            .lock()
+            .retain(|entry| entry.strong_count() != 0 && !Weak::ptr_eq(entry, target));
+    }
+
+    fn drain_ready_queue(&self) -> AxResult<VecDeque<Weak<EpollInterest>>> {
+        loop {
+            let len = self.ready_queue.lock().len();
+            let mut txlist = VecDeque::new();
+            txlist.try_reserve(len).map_err(|_| AxError::NoMemory)?;
+
+            let mut queue = self.ready_queue.lock();
+            if queue.len() > txlist.capacity() {
+                continue;
+            }
+            while let Some(entry) = queue.pop_front() {
+                txlist.push_back(entry);
+            }
+            return Ok(txlist);
+        }
+    }
+
+    fn snapshot_interests(&self) -> AxResult<Vec<Arc<EpollInterest>>> {
+        loop {
+            let len = self.interests.lock().len();
+            let mut snapshot = Vec::new();
+            snapshot.try_reserve(len).map_err(|_| AxError::NoMemory)?;
+
+            let interests = self.interests.lock();
+            if interests.len() > snapshot.capacity() {
+                continue;
+            }
+            for interest in interests.values() {
+                snapshot.push(Arc::clone(interest));
+            }
+            return Ok(snapshot);
+        }
+    }
+
+    fn enqueue_overflow_ready(&self) -> AxResult<()> {
+        if !self.overflow_ready.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let result = (|| {
+            let interests = self.snapshot_interests()?;
+            self.reserve_ready_capacity(interests.len())?;
+            for interest in interests {
+                if interest.is_in_queue() || !interest.is_enabled() {
+                    continue;
+                }
+                let Some(file) = interest.key.get_file() else {
+                    self.interests.lock().remove(&interest.key);
+                    continue;
+                };
+                if !match_ready_events(file.poll(), interest.event.events).is_empty()
+                    && interest.try_mark_in_queue()
+                {
+                    self.enqueue_marked_ready(&interest);
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.overflow_ready.store(true, Ordering::Release);
+            // Overflow state is published before waking epoll waiters.
+            unsafe { self.poll_ready.wake(IoEvents::IN) };
+        }
+        result
     }
 }
 
@@ -344,12 +471,27 @@ impl Epoll {
     pub fn add(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
         let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
-        let mut guard = self.inner.interests.lock();
-        if guard.contains_key(&key) {
-            return Err(AxError::AlreadyExists);
+        let target_capacity = {
+            let guard = self.inner.interests.lock();
+            if guard.contains_key(&key) {
+                return Err(AxError::AlreadyExists);
+            }
+            guard.len() + 1
+        };
+        self.inner.reserve_ready_capacity(target_capacity)?;
+
+        let target_capacity = {
+            let mut guard = self.inner.interests.lock();
+            if guard.contains_key(&key) {
+                return Err(AxError::AlreadyExists);
+            }
+            guard.insert(key.clone(), Arc::clone(&interest));
+            guard.len()
+        };
+        if let Err(err) = self.inner.reserve_ready_capacity(target_capacity) {
+            self.inner.interests.lock().remove(&key);
+            return Err(err);
         }
-        guard.insert(key.clone(), Arc::clone(&interest));
-        drop(guard);
         trace!("Epoll add fd: {} interest {:?} ", fd, interest.event.events);
         self.check_and_register_waker(&interest);
         Ok(())
@@ -376,17 +518,15 @@ impl Epoll {
         // Push a fresh Weak for the replacement interest so poll_events()
         // still finds something to consume.
         let was_in_queue = old.is_in_queue();
+        let old_ready_entry = Arc::downgrade(old);
         if was_in_queue {
             interest.in_ready_queue.store(true, Ordering::Release);
         }
         *old = Arc::clone(&interest);
         drop(guard);
         if was_in_queue {
-            self.inner
-                .ready_queue
-                .lock()
-                .push_back(Arc::downgrade(&interest));
-            self.inner.poll_ready.wake();
+            self.inner.remove_ready_entries_for(&old_ready_entry);
+            self.inner.enqueue_marked_ready(&interest);
         }
         trace!(
             "Epoll: modify fd={}, events={:?}",
@@ -399,11 +539,15 @@ impl Epoll {
 
     pub fn delete(&self, fd: i32) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        self.inner
+        let interest = self
+            .inner
             .interests
             .lock()
             .remove(&key)
             .ok_or(AxError::NotFound)?;
+        let ready_entry = Arc::downgrade(&interest);
+        self.inner.remove_ready_entries_for(&ready_entry);
+        interest.mark_not_in_queue();
         trace!("Epoll: delete fd={fd}");
         Ok(())
     }
@@ -415,11 +559,13 @@ impl Epoll {
     ) -> AxResult<usize> {
         trace!("Epoll: poll_events_with called, max_events={max_events}");
 
+        self.inner.enqueue_overflow_ready()?;
+
         // Splice the entire ready_queue into a local txlist, mirroring
         // Linux's ep_send_events. Visiting each interest at most once per
         // epoll_wait prevents the LT path from re-feeding the same fd back
         // into the loop and filling out[] with duplicates of one ready fd.
-        let mut txlist = core::mem::take(&mut *self.inner.ready_queue.lock());
+        let mut txlist = self.inner.drain_ready_queue()?;
         let mut count = 0;
         let mut keep: VecDeque<Weak<EpollInterest>> = VecDeque::new();
 
@@ -459,12 +605,14 @@ impl Epoll {
                     if let Err(err) = put_event(count, event) {
                         interest.restore_mode(old_mode);
                         interest.in_ready_queue.store(true, Ordering::Release);
-                        let mut queue = self.inner.ready_queue.lock();
-                        queue.push_back(Arc::downgrade(&interest));
-                        queue.extend(txlist);
-                        queue.extend(keep);
-                        drop(queue);
-                        self.inner.poll_ready.wake();
+                        self.inner.enqueue_marked_ready(&interest);
+                        for entry in txlist.into_iter().chain(keep) {
+                            if let Some(interest) = entry.upgrade()
+                                && interest.is_in_queue()
+                            {
+                                self.inner.enqueue_marked_ready(&interest);
+                            }
+                        }
                         return if count == 0 { Err(err) } else { Ok(count) };
                     }
 
@@ -498,11 +646,7 @@ impl Epoll {
                             && !(f.poll() & in_mask).is_empty()
                             && interest.try_mark_in_queue()
                         {
-                            self.inner
-                                .ready_queue
-                                .lock()
-                                .push_back(Arc::downgrade(&interest));
-                            self.inner.poll_ready.wake();
+                            self.inner.enqueue_marked_ready(&interest);
                         }
                     }
                 }
@@ -524,12 +668,13 @@ impl Epoll {
         }
 
         if !keep.is_empty() {
-            let mut queue = self.inner.ready_queue.lock();
             for entry in keep {
-                queue.push_back(entry);
+                if let Some(interest) = entry.upgrade()
+                    && interest.is_in_queue()
+                {
+                    self.inner.enqueue_marked_ready(&interest);
+                }
             }
-            drop(queue);
-            self.inner.poll_ready.wake();
         }
 
         if count == 0 {
@@ -548,7 +693,9 @@ impl FileLike for Epoll {
 
 impl Pollable for Epoll {
     fn poll(&self) -> IoEvents {
-        if self.inner.ready_queue.lock().is_empty() {
+        if self.inner.ready_queue.lock().is_empty()
+            && !self.inner.overflow_ready.load(Ordering::Acquire)
+        {
             IoEvents::empty()
         } else {
             IoEvents::IN
@@ -557,7 +704,12 @@ impl Pollable for Epoll {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.inner.poll_ready.register(context.waker());
+            // Registration happens from epoll wait task context.
+            unsafe {
+                self.inner
+                    .poll_ready
+                    .register(context.waker(), IoEvents::IN)
+            };
         }
     }
 }

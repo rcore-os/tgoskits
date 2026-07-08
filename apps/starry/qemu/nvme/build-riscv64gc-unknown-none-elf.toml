@@ -1,7 +1,6 @@
-env = {}
 features = [
-  "ax-feat/display",
-  "ax-feat/rtc",
+  "ax-runtime/display",
+  "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/nvme",
   "ax-driver/virtio-gpu",
@@ -11,5 +10,4 @@ features = [
   "starry-kernel/vsock",
 ]
 log = "Warn"
-plat_dyn = true
 target = "riscv64gc-unknown-none-elf"

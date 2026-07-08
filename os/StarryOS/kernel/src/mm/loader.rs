@@ -1,10 +1,10 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
-use core::{ffi::CStr, iter};
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
+use core::{ffi::CStr, iter, mem::size_of};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{CachedFile, FS_CONTEXT, FileBackend};
+use ax_fs_ng::vfs::{CachedFile, FS_CONTEXT, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     mem::virt_to_phys,
@@ -12,24 +12,15 @@ use ax_runtime::hal::{
 };
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
-use kernel_elf_parser::{
-    AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser, app_stack_region,
-};
+use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
+use zerocopy::IntoBytes;
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
     mm::aspace::{AddrSpace, Backend},
 };
-
-#[cfg(target_arch = "riscv64")]
-const RISCV_COMPAT_HWCAP_IMAFDC: usize = (1 << (b'I' - b'A'))
-    | (1 << (b'M' - b'A'))
-    | (1 << (b'A' - b'A'))
-    | (1 << (b'F' - b'A'))
-    | (1 << (b'D' - b'A'))
-    | (1 << (b'C' - b'A'));
 
 // RISC-V relocation types
 #[cfg(target_arch = "riscv64")]
@@ -91,6 +82,69 @@ fn mapping_flags(flags: xmas_elf::program::Flags) -> MappingFlags {
     mapping_flags
 }
 
+fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usize) -> Vec<u8> {
+    let mut data = VecDeque::new();
+    let mut push = |src: &[u8]| -> usize {
+        data.extend(src.iter().copied());
+        data.rotate_right(src.len());
+        sp - data.len()
+    };
+
+    let random_str_pos = push(b"0123456789abcdef");
+    let envs_slice: Vec<_> = envs
+        .iter()
+        .map(|env| {
+            push(b"\0");
+            push(env.as_bytes())
+        })
+        .collect();
+    let argv_slice: Vec<_> = args
+        .iter()
+        .map(|arg| {
+            push(b"\0");
+            push(arg.as_bytes())
+        })
+        .collect();
+    let padding_null = "\0".repeat(size_of::<usize>());
+    let sp = push(padding_null.as_bytes());
+
+    push(&b"\0".repeat(sp % 16));
+
+    if (envs.len() + args.len() + 3) & 1 != 0 {
+        push(padding_null.as_bytes());
+    }
+
+    let has_random = auxv.iter().any(|entry| entry.get_type() == AuxType::RANDOM);
+    let has_execfn = auxv.iter().any(|entry| entry.get_type() == AuxType::EXECFN);
+
+    // `push` prepends bytes to the stack image. Push the terminator first so
+    // user memory presents auxv as: supplied entries, AT_RANDOM, AT_EXECFN,
+    // AT_NULL. Without AT_NULL, musl keeps parsing argv/env padding as auxv
+    // and can falsely enable AT_SECURE.
+    push(AuxEntry::new(AuxType::NULL, 0).as_bytes());
+    if !has_execfn {
+        push(AuxEntry::new(AuxType::EXECFN, argv_slice[0]).as_bytes());
+    }
+    if !has_random {
+        push(AuxEntry::new(AuxType::RANDOM, random_str_pos).as_bytes());
+    }
+    push(auxv.as_bytes());
+
+    push(padding_null.as_bytes());
+    push(envs_slice.as_bytes());
+    push(padding_null.as_bytes());
+    push(argv_slice.as_bytes());
+    let sp = push(args.len().as_bytes());
+
+    assert!(sp % 16 == 0);
+
+    let mut result = Vec::with_capacity(data.len());
+    let (first, second) = data.as_slices();
+    result.extend_from_slice(first);
+    result.extend_from_slice(second);
+    result
+}
+
 /// Map the elf file to the user address space.
 ///
 /// # Arguments
@@ -107,12 +161,36 @@ fn map_elf<'a>(
     let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
     let cache = entry.borrow_cache();
 
-    for ph in elf_parser
+    // PT_TLS init image may extend beyond the last PT_LOAD's file range.
+    // This assumes the PT_TLS file data is contiguous with and immediately
+    // follows the last PT_LOAD segment's file extent, which is the standard
+    // layout produced by GNU ld and LLVM lld.
+    // Compute the maximum file offset needed so the COW backend can serve
+    // TLS init-image page faults for the dynamic linker.
+    let tls_max_offset: u64 = elf_parser
+        .headers()
+        .ph
+        .iter()
+        .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Tls))
+        .map(|ph| {
+            debug!(
+                "PT_TLS: vaddr={:#x} memsz={:#x} filesz={:#x} offset={:#x}",
+                ph.virtual_addr, ph.mem_size, ph.file_size, ph.offset
+            );
+            ph.offset + ph.file_size
+        })
+        .max()
+        .unwrap_or(0);
+
+    let load_segments: Vec<_> = elf_parser
         .headers()
         .ph
         .iter()
         .filter(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Load))
-    {
+        .collect();
+    let last_load_idx = load_segments.len().wrapping_sub(1);
+
+    for (i, ph) in load_segments.iter().enumerate() {
         let vaddr = ph.virtual_addr as usize + elf_parser.base();
         debug!(
             "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {}",
@@ -129,12 +207,17 @@ fn map_elf<'a>(
 
         // Note that `offset` might not be aligned to 4K here, and it's
         // backend's responsibility to properly handle it.
+        let file_end = if i == last_load_idx && tls_max_offset > ph.offset + ph.file_size {
+            tls_max_offset
+        } else {
+            ph.offset + ph.file_size
+        };
         let backend = Backend::new_cow(
             seg_start,
             PageSize::Size4K,
             FileBackend::Cached(cache.clone()),
             ph.offset,
-            Some(ph.offset + ph.file_size),
+            Some(file_end),
             false,
         );
         uspace.map(
@@ -144,8 +227,6 @@ fn map_elf<'a>(
             false,
             backend,
         )?;
-
-        // TDOO: flush the I-cache
     }
 
     // Apply relocations for static-pie binaries
@@ -429,7 +510,7 @@ struct ElfCacheEntry {
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc);
+        let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
@@ -452,48 +533,6 @@ impl ElfCacheEntry {
     }
 }
 
-/// The value reported in the `AT_HWCAP` auxiliary vector entry.
-///
-/// `AT_HWCAP` (auxv type 16) advertises architecture-dependent CPU capability
-/// bits to userspace. `getauxval(AT_HWCAP)` reads it, and feature-dispatching
-/// runtimes gate optional instruction sets on it.
-///
-/// Per-arch policy:
-/// - **loongarch64**: report the baseline the kernel actually provides. The
-///   platform enables LSX (128-bit vectors) at boot via `enable_lsx()`
-///   (`EUEN.SXE`), so we set `CPUCFG | LAM | UAL | FPU | LSX`. This is required:
-///   numpy on Alpine loongarch is built with an LSX baseline and refuses to
-///   import unless `HWCAP_LOONGARCH_LSX` (bit 4) is set. LASX (256-bit, bit 5)
-///   is intentionally *not* set because the kernel does not enable `EUEN.ASXE`;
-///   claiming it could trap when userspace executes 256-bit ops.
-/// - **riscv64**: report the baseline ISA bits expected by Linux-compatible
-///   user space (`IMAFDC`).
-/// - **x86_64 / aarch64**: 0. x86 uses CPUID; aarch64 ASIMD/NEON is mandatory.
-const fn hwcap_value() -> usize {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        // Linux loongarch HWCAP bits (uapi/asm/hwcap.h):
-        const HWCAP_LOONGARCH_CPUCFG: usize = 1 << 0;
-        const HWCAP_LOONGARCH_LAM: usize = 1 << 1;
-        const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
-        const HWCAP_LOONGARCH_FPU: usize = 1 << 3;
-        const HWCAP_LOONGARCH_LSX: usize = 1 << 4;
-        HWCAP_LOONGARCH_CPUCFG
-            | HWCAP_LOONGARCH_LAM
-            | HWCAP_LOONGARCH_UAL
-            | HWCAP_LOONGARCH_FPU
-            | HWCAP_LOONGARCH_LSX
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        RISCV_COMPAT_HWCAP_IMAFDC
-    }
-    #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
-    {
-        0
-    }
-}
-
 struct ElfLoader(LRUCache<ElfCacheEntry, 32>);
 
 type LoadResult = Result<(VirtAddr, Vec<AuxEntry>), Vec<u8>>;
@@ -503,9 +542,7 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, path: &str) -> AxResult<LoadResult> {
-        let loc = FS_CONTEXT.lock().resolve(path)?;
-
+    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> AxResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -575,14 +612,29 @@ impl ElfLoader {
             ldso.as_ref()
                 .map_or_else(|| elf.entry(), |ldso| ldso.entry()),
         );
+        let has_ldso = ldso.is_some();
         let mut auxv = elf
             .aux_vector(PAGE_SIZE_4K, ldso.map(|elf| elf.base()))
             .collect::<Vec<_>>();
-        // `aux_vector()` only emits PHDR/PHENT/PHNUM/PAGESZ/ENTRY (+BASE). Add
-        // AT_HWCAP so `getauxval(AT_HWCAP)` returns the CPU capability bits the
-        // kernel actually provides (notably LSX on loongarch64, which numpy
-        // requires to import). See `hwcap_value()` for the per-arch policy.
-        auxv.push(AuxEntry::new(AuxType::HWCAP, hwcap_value()));
+        auxv.push(AuxEntry::new(
+            AuxType::HWCAP,
+            ax_runtime::hal::cpu::cap::elf_hwcap(),
+        ));
+        auxv.push(AuxEntry::new(AuxType::UID, 0));
+        auxv.push(AuxEntry::new(AuxType::EUID, 0));
+        auxv.push(AuxEntry::new(AuxType::GID, 0));
+        auxv.push(AuxEntry::new(AuxType::EGID, 0));
+        auxv.push(AuxEntry::new(AuxType::SECURE, 0));
+
+        debug!(
+            "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",
+            entry.as_usize(),
+            auxv.len(),
+            has_ldso,
+            auxv.last()
+                .map(|e| e.get_type() as usize)
+                .unwrap_or(usize::MAX),
+        );
 
         Ok(Ok((entry, auxv)))
     }
@@ -600,10 +652,19 @@ pub fn clear_elf_cache() {
 
 /// Load the user app to the user address space.
 ///
+/// The executable is identified by an already-resolved [`Location`] — the
+/// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
+/// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
+/// re-resolves the main executable from its pathname. Interpreters reached
+/// through a `.sh` redirect or a `#!` shebang are resolved here by path, which
+/// is Linux's `open_exec(interp)` and legitimately follows symlinks.
+///
 /// # Arguments
 /// - `uspace`: The address space of the user app.
-/// - `args`: The arguments of the user app. The first argument is the path of
-///   the user app.
+/// - `loc`: The resolved executable to load.
+/// - `path`: The pathname the executable was invoked as, used for the `.sh`
+///   redirect and for the script name an interpreter receives in `argv`.
+/// - `args`: The arguments of the user app.
 /// - `envs`: The environment variables of the user app.
 ///
 /// # Returns
@@ -611,14 +672,11 @@ pub fn clear_elf_cache() {
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     uspace: &mut AddrSpace,
-    path: Option<&str>,
+    loc: Location,
+    path: &str,
     args: &[String],
     envs: &[String],
 ) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    let path = path
-        .or_else(|| args.first().map(String::as_str))
-        .ok_or(AxError::InvalidInput)?;
-
     // `/proc/self/exe` is available in procfs; busybox can `readlink` it
     // to re-exec itself as a shell on ENOEXEC, provided the busybox build
     // includes that fallback (Alpine's prebuilt binary may not).
@@ -626,10 +684,11 @@ pub fn load_user_app(
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
             .collect();
-        return load_user_app(uspace, None, &new_args, envs);
+        let sh = FS_CONTEXT.lock().resolve("/bin/sh")?;
+        return load_user_app(uspace, sh, "/bin/sh", &new_args, envs);
     }
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, path)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -644,7 +703,10 @@ pub fn load_user_app(
                     .chain(iter::once(path.to_owned()))
                     .chain(args.iter().skip(1).cloned())
                     .collect();
-                return load_user_app(uspace, None, &new_args, envs);
+                // Open the interpreter by path (Linux's `open_exec` on the
+                // shebang interpreter) and load it as the new executable.
+                let interp = FS_CONTEXT.lock().resolve(&new_args[0])?;
+                return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
             }
             return Err(AxError::InvalidExecutable);
         }

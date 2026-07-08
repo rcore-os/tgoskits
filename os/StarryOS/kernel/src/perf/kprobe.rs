@@ -5,7 +5,7 @@
 //! Symbol resolution goes through the real in-kernel `.kallsyms` blob
 //! (`crate::pseudofs::proc::KALLSYMS`), the same table `/proc/kallsyms` reads.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicU32, Ordering},
@@ -16,6 +16,14 @@ use axpoll::Pollable;
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::{CallBackFunc, KretprobeBuilder, ProbeBuilder, PtRegs};
 
+/// Config value for entry probes (kprobe/uprobe), per Linux PERF_TYPE_PROBE ABI.
+pub const PROBE_CONFIG_ENTRY: u64 = 0;
+/// Config value for return probes (kretprobe/uretprobe), per Linux PERF_TYPE_PROBE ABI.
+pub const PROBE_CONFIG_RETURN: u64 = 1;
+/// Maximum number of concurrently active kretprobe instances, matching
+/// Linux's `max(10, 2*NR_CPUS)` default for single-CPU configurations.
+const KRETPROBE_MAX_ACTIVE: u32 = 10;
+
 use crate::{
     file::FileLike,
     kprobe::{
@@ -23,17 +31,17 @@ use crate::{
         register_kretprobe, unregister_kprobe, unregister_kretprobe,
     },
     perf::{PerfEventOps, bpf::OwnedEbpfVm},
+    uprobe::{KernelUprobe, unregister_uprobe},
 };
 
-/// One of {kprobe, kretprobe}. Uprobe is *not* exposed through
-/// `ProbeTy` because tgoskits does not yet provide the uprobe manager
-/// infrastructure the source assumes (`ProcessData::uprobe_manager`,
-/// `ProcessData::uprobe_point_list`). The uprobe perf event variant
-/// returns `Unsupported` until that infrastructure lands.
+/// One of {kprobe, kretprobe, uprobe}. Kprobe/kretprobe live in the global
+/// kernel-text manager; uprobe lives in the firing process' per-process manager
+/// (`ProcessData::uprobe_manager`), but exposes the same probe API.
 #[derive(Debug)]
 pub enum ProbeTy {
     Kprobe(Arc<KernelKprobe>),
     Kretprobe(Arc<KernelKretprobe>),
+    Uprobe(Arc<KernelUprobe>),
 }
 
 /// Per-fd perf event wrapping a kprobe/kretprobe registration.
@@ -61,11 +69,13 @@ impl Drop for ProbePerfEvent {
             match self.probe {
                 ProbeTy::Kprobe(ref k) => k.unregister_event_callback(*cid),
                 ProbeTy::Kretprobe(ref k) => k.unregister_event_callback(*cid),
+                ProbeTy::Uprobe(ref u) => u.unregister_event_callback(*cid),
             }
         }
         match self.probe {
             ProbeTy::Kprobe(ref k) => unregister_kprobe(k.clone()),
             ProbeTy::Kretprobe(ref k) => unregister_kretprobe(k.clone()),
+            ProbeTy::Uprobe(ref u) => unregister_uprobe(u.clone()),
         }
     }
 }
@@ -87,6 +97,7 @@ impl PerfEventOps for ProbePerfEvent {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.enable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().enable(),
+            ProbeTy::Uprobe(ref u) => u.enable(),
         }
         Ok(())
     }
@@ -95,6 +106,7 @@ impl PerfEventOps for ProbePerfEvent {
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.disable(),
             ProbeTy::Kretprobe(ref k) => k.kprobe().disable(),
+            ProbeTy::Uprobe(ref u) => u.disable(),
         }
         Ok(())
     }
@@ -116,10 +128,11 @@ impl PerfEventOps for ProbePerfEvent {
         static CALLBACK_ID: AtomicU32 = AtomicU32::new(0);
         let id = CALLBACK_ID.fetch_add(1, Ordering::Relaxed);
 
-        let callback = Box::new(KprobePerfCallBack::new(vm));
+        let callback = Arc::new(KprobePerfCallBack::new(vm));
         match self.probe {
             ProbeTy::Kprobe(ref k) => k.register_event_callback(id, callback),
             ProbeTy::Kretprobe(ref k) => k.register_event_callback(id, callback),
+            ProbeTy::Uprobe(ref u) => u.register_event_callback(id, callback),
         }
         self.callback_list.push(id);
         Ok(())
@@ -177,25 +190,24 @@ fn perf_probe_arg_to_kretprobe_builder(
 ) -> AxResult<KretprobeBuilder<KernelRawMutex>> {
     let symbol = &args.name;
     let addr = lookup_symbol_addr(symbol)?;
-    Ok(KretprobeBuilder::<KernelRawMutex>::new(10)
-        .with_symbol(symbol.clone())
-        .with_symbol_addr(addr))
+    Ok(
+        KretprobeBuilder::<KernelRawMutex>::new(KRETPROBE_MAX_ACTIVE)
+            .with_symbol(symbol.clone())
+            .with_symbol_addr(addr),
+    )
 }
 
 /// Build a `ProbePerfEvent` for a `PERF_TYPE_KPROBE` perf_event_open call.
-/// Config 0 = kprobe; config 1 = kretprobe (per kbpf-basic convention).
+/// Config `PROBE_CONFIG_ENTRY` (0) = kprobe; `PROBE_CONFIG_RETURN` (1) = kretprobe.
 pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> AxResult<ProbePerfEvent> {
     let probe = match args.config {
-        PerfProbeConfig::Raw(val) => {
-            if val == 0 {
-                let builder = perf_probe_arg_to_kprobe_builder(&args)?;
-                ProbeTy::Kprobe(register_kprobe(builder))
-            } else if val == 1 {
-                let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
-                ProbeTy::Kretprobe(register_kretprobe(builder))
-            } else {
-                return Err(AxError::InvalidInput);
-            }
+        PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
+            let builder = perf_probe_arg_to_kprobe_builder(&args)?;
+            ProbeTy::Kprobe(register_kprobe(builder))
+        }
+        PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
+            let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
+            ProbeTy::Kretprobe(register_kretprobe(builder))
         }
         _ => return Err(AxError::InvalidInput),
     };

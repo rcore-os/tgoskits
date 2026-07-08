@@ -65,6 +65,10 @@ impl Gic {
         self.gicd
     }
 
+    pub fn max_intid(&self) -> u32 {
+        self.gicd().max_spi_num()
+    }
+
     pub fn cpu_interface(&self) -> CpuInterface {
         CpuInterface {
             gicd: self.gicd.as_ptr(),
@@ -973,4 +977,32 @@ pub enum VirtualInterruptState {
     Pending          = 1,
     Active           = 2,
     PendingAndActive = 3,
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    #[test]
+    fn distributor_initializes_all_spi_byte_registers() {
+        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
+        let gic = unsafe { Gic::new(VirtAddr::from(regs.as_mut_ptr()), VirtAddr::new(0), None) };
+
+        let max_interrupts = 64;
+        gic.gicd().set_default_spi_priorities(max_interrupts);
+        gic.gicd().configure_interrupt_targets(max_interrupts);
+
+        let regs = gic.gicd();
+        assert_eq!(regs.IPRIORITYR[31].get(), 0);
+        assert_eq!(regs.IPRIORITYR[32].get(), 0xA0);
+        assert_eq!(regs.IPRIORITYR[63].get(), 0xA0);
+        assert_eq!(regs.IPRIORITYR[64].get(), 0);
+
+        assert_eq!(regs.ITARGETSR[31].get(), 0);
+        assert_eq!(regs.ITARGETSR[32].get(), 0x01);
+        assert_eq!(regs.ITARGETSR[63].get(), 0x01);
+        assert_eq!(regs.ITARGETSR[64].get(), 0);
+    }
 }

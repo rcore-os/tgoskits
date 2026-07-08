@@ -17,14 +17,15 @@
 //! - [`handle_breakpoint`]: Entry point for breakpoint exceptions (INT3/EBREAK/BRK)
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
-use ax_kspin::RawSpinNoIrq;
+use ax_kspin::{RawSpinNoIrq, SpinNoIrq};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
-    register_kretprobe as kprobe_crate_register_kretprobe,
+    register_kretprobe as kprobe_crate_register_kretprobe, retprobe::RetprobeInstance,
     unregister_kprobe as kprobe_crate_unregister_kprobe,
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
@@ -49,13 +50,36 @@ pub struct KernelKprobeOps;
 
 impl KprobeAuxiliaryOps for KernelKprobeOps {
     fn copy_memory(src: *const u8, dst: *mut u8, len: usize, user_pid: Option<i32>) {
-        if let Some(_pid) = user_pid {
-            unsafe {
-                let buf =
-                    core::slice::from_raw_parts_mut(dst as *mut core::mem::MaybeUninit<u8>, len);
-                if let Err(e) = starry_vm::vm_read_slice(src, buf) {
-                    warn!("kprobe copy_memory: vm_read_slice failed: {:?}", e);
+        if let Some(pid) = user_pid {
+            // Uprobe arm/disarm reads the target process' original text bytes
+            // while the per-process kprobe manager spin-lock is held (IRQs
+            // disabled), so the faultable user-access path (`vm_read_slice`,
+            // which asserts IRQs enabled) cannot be used. Read through the
+            // *kernel* direct-map alias of the target page's physical frame
+            // instead — the same aliasing `set_writeable_for_address` uses to
+            // write. The text page is already resident (the loader executes the
+            // probed function before arming).
+            let task = crate::task::get_task(pid as _).expect("Failed to get task for uprobe");
+            let aspace = task.as_thread().proc_data.aspace();
+            let mm = aspace.lock();
+            let pt = mm.page_table();
+            let mut copied = 0;
+            while copied < len {
+                let vaddr = VirtAddr::from(src as usize + copied);
+                let Ok((paddr, ..)) = pt.query(vaddr) else {
+                    warn!(
+                        "kprobe copy_memory: user addr {:#x} not mapped",
+                        vaddr.as_usize()
+                    );
+                    return;
+                };
+                let page_off = vaddr.as_usize() & (PAGE_SIZE_4K - 1);
+                let chunk = core::cmp::min(len - copied, PAGE_SIZE_4K - page_off);
+                let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kvaddr.as_ptr(), dst.add(copied), chunk);
                 }
+                copied += chunk;
             }
         } else {
             unsafe {
@@ -70,41 +94,31 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         user_pid: Option<i32>,
         action: F,
     ) {
-        if user_pid.is_some() {
-            unimplemented!("user space breakpoint insertion not yet supported")
+        if let Some(pid) = user_pid {
+            // User-space probe (uprobe): patch the target process' text by
+            // writing through the *kernel* direct-map alias of the page's
+            // physical frame. The user PTE keeps its read-only/exec flags
+            // untouched (no per-fire `protect` dance needed — uprobe single-step
+            // is out-of-line, see `alloc_user_exec_memory`). This runs at
+            // arm/disarm time (syscall context), so taking the sleeping aspace
+            // lock is fine. The instruction patch (≤ a few bytes) stays within
+            // the resolved page.
+            let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+            let aspace = task.as_thread().proc_data.aspace();
+            let mm = aspace.lock();
+            let vaddr = VirtAddr::from(address);
+            let (paddr, ..) = mm
+                .page_table()
+                .query(vaddr)
+                .expect("uprobe: target address not mapped");
+            let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+            action(kvaddr.as_mut_ptr());
+            ax_runtime::hal::cache::sync_kernel_text(vaddr.align_down_4k(), PAGE_SIZE_4K);
+            return;
         }
         let addr = VirtAddr::from(address);
-        let aligned_addr = addr.align_down_4k();
-        let aligned_end = (addr + len).align_up_4k();
-        let aligned_length: usize = aligned_end - aligned_addr;
-
-        crate::stop_machine::stop_machine(
-            move || {
-                let mut guard = ax_mm::kernel_aspace().lock();
-                let (_, original_flags, _) = guard
-                    .page_table()
-                    .query(aligned_addr)
-                    .expect("kprobe: set_writeable: address not mapped");
-                guard
-                    .protect(
-                        aligned_addr,
-                        aligned_length,
-                        original_flags | ax_runtime::hal::paging::MappingFlags::WRITE,
-                    )
-                    .expect("kprobe: set_writeable: protect failed");
-                crate::mm::flush_tlb_range(aligned_addr, aligned_length);
-                action(addr.as_mut_ptr());
-                #[cfg(target_arch = "aarch64")]
-                ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, len);
-                guard
-                    .protect(aligned_addr, aligned_length, original_flags)
-                    .expect("kprobe: set_writeable: restore failed");
-            },
-            move || {
-                crate::mm::flush_tlb_range(aligned_addr, aligned_length);
-                ax_runtime::hal::cpu::asm::flush_icache_all();
-            },
-        );
+        crate::mm::patch_kernel_text(addr, len, action)
+            .expect("kprobe: set_writeable: patch kernel text failed");
     }
 
     fn alloc_kernel_exec_memory() -> *mut u8 {
@@ -117,9 +131,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .map_alloc(
                 vaddr,
                 PAGE_SIZE_4K,
-                ax_runtime::hal::paging::MappingFlags::READ
-                    | ax_runtime::hal::paging::MappingFlags::WRITE
-                    | ax_runtime::hal::paging::MappingFlags::EXECUTE,
+                MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
                 true,
             )
             .expect("kprobe: map_alloc for exec memory failed");
@@ -134,31 +146,81 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .expect("kprobe: unmap exec memory failed");
     }
 
-    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(_pid: Option<i32>, _action: F) -> *mut u8 {
-        unimplemented!("user exec memory allocation for uprobes not yet supported")
+    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(pid: Option<i32>, action: F) -> *mut u8 {
+        // Allocate one anonymous, user-executable page in the target process for
+        // out-of-line single-stepping (the displaced original instruction is
+        // copied here so the planted `int3` can stay armed). `action` writes
+        // that instruction through the kernel alias of the freshly-mapped frame.
+        let pid = pid.expect("uprobe: alloc_user_exec_memory needs a pid");
+        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let aspace = task.as_thread().proc_data.aspace();
+        let mut mm = aspace.lock();
+        let range = VirtAddrRange::new(mm.base(), mm.end());
+        let vaddr = mm
+            .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
+            .expect("uprobe: no free user va for exec memory");
+        let backend = crate::mm::Backend::new_alloc(vaddr, PageSize::Size4K, "uprobe-ols");
+        mm.map(
+            vaddr,
+            PAGE_SIZE_4K,
+            MappingFlags::READ | MappingFlags::EXECUTE | MappingFlags::USER,
+            true,
+            backend,
+        )
+        .expect("uprobe: map user exec memory failed");
+        let (paddr, ..) = mm
+            .page_table()
+            .query(vaddr)
+            .expect("uprobe: exec page not mapped after populate");
+        let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
+        action(kvaddr.as_mut_ptr());
+        ax_runtime::hal::cache::sync_kernel_text(vaddr, PAGE_SIZE_4K);
+        vaddr.as_mut_ptr()
     }
 
-    fn free_user_exec_memory(_pid: Option<i32>, _ptr: *mut u8) {
-        unimplemented!("user exec memory deallocation for uprobes not yet supported")
+    fn free_user_exec_memory(pid: Option<i32>, ptr: *mut u8) {
+        let pid = pid.expect("uprobe: free_user_exec_memory needs a pid");
+        let task = crate::task::get_task(pid as _).expect("uprobe: target task gone");
+        let aspace = task.as_thread().proc_data.aspace();
+        let mut mm = aspace.lock();
+        mm.unmap(VirtAddr::from(ptr as usize), PAGE_SIZE_4K)
+            .expect("uprobe: unmap user exec memory failed");
     }
 
-    fn insert_kretprobe_instance_to_task(instance: kprobe::retprobe::RetprobeInstance) {
-        let curr = ax_task::current();
-        curr.as_thread().kretprobe_stack.lock().push(instance);
+    fn insert_kretprobe_instance_to_task(instance: RetprobeInstance) {
+        let task = ax_task::current_may_uninit();
+        if let Some(task) = task {
+            let thread = task.try_as_thread();
+            if let Some(thread) = thread {
+                let mut kretprobe_instances = thread.kretprobe_stack.lock();
+                kretprobe_instances.push(instance);
+                return;
+            }
+        }
+        // If the current task is None, we can store it in a static variable
+        let mut instances = INSTANCE.lock();
+        instances.push(instance);
     }
 
-    fn pop_kretprobe_instance_from_task() -> kprobe::retprobe::RetprobeInstance {
-        let curr = ax_task::current();
-        curr.as_thread()
-            .kretprobe_stack
-            .lock()
-            .pop()
-            .expect("kretprobe instance stack underflow")
+    fn pop_kretprobe_instance_from_task() -> RetprobeInstance {
+        let task = ax_task::current_may_uninit();
+        if let Some(task) = task {
+            let thread = task.try_as_thread();
+            if let Some(thread) = thread {
+                let mut kretprobe_instances = thread.kretprobe_stack.lock();
+                return kretprobe_instances
+                    .pop()
+                    .expect("kretprobe instance stack underflow");
+            }
+        }
+        // If the current task is None, we can pop it from the static variable
+        let mut instances = INSTANCE.lock();
+        instances.pop().unwrap()
     }
 }
 
-type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
-type KprobePointList = ProbePointList<KernelKprobeOps>;
+pub(crate) type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+pub(crate) type KprobePointList = ProbePointList<KernelKprobeOps>;
 
 /// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
 /// auxiliary ops, named to match what the perf module expects.
@@ -168,58 +230,54 @@ pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
 /// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
 pub type KprobeAuxiliary = KernelKprobeOps;
 
-static KPROBE_MANAGER: ax_sync::spin::SpinNoIrq<Option<KprobeManager>> =
-    ax_sync::spin::SpinNoIrq::new(None);
-static KPROBE_POINT_LIST: ax_sync::spin::SpinNoIrq<Option<KprobePointList>> =
-    ax_sync::spin::SpinNoIrq::new(None);
+static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
+static KPROBE_POINT_LIST: SpinNoIrq<KprobePointList> = SpinNoIrq::new(KprobePointList::new());
+static INSTANCE: SpinNoIrq<Vec<RetprobeInstance>> = SpinNoIrq::new(Vec::new());
 
 fn with_manager<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut KprobeManager) -> R,
+    F: FnOnce(&KprobeManager) -> R,
 {
-    let mut guard = KPROBE_MANAGER.lock();
-    if guard.is_none() {
-        *guard = Some(KprobeManager::default());
-    }
-    f(guard.as_mut().expect("kprobe: manager not initialized"))
+    f(&KPROBE_MANAGER)
 }
 
 fn with_manager_and_list<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut KprobeManager, &mut KprobePointList) -> R,
+    F: FnOnce(&KprobeManager, &mut KprobePointList) -> R,
 {
-    let mut mgr = KPROBE_MANAGER.lock();
-    if mgr.is_none() {
-        *mgr = Some(KprobeManager::default());
-    }
-    let mut list = KPROBE_POINT_LIST.lock();
-    if list.is_none() {
-        *list = Some(KprobePointList::new());
-    }
-    f(mgr.as_mut().unwrap(), list.as_mut().unwrap())
+    let mut list = KPROBE_POINT_LIST.try_lock().unwrap();
+    f(&KPROBE_MANAGER, &mut list)
 }
 
 /// Register a kprobe into the global manager, returning the live handle.
+#[inline(never)]
 pub fn register_kprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelKprobe> {
-    with_manager_and_list(|mgr, list| kprobe_crate_register_kprobe(mgr, list, builder))
+    with_manager_and_list(|mgr, list| {
+        kprobe_crate_register_kprobe(mgr, list, builder).expect("Failed to register kprobe")
+    })
 }
 
 /// Unregister a previously registered kprobe.
+#[inline(never)]
 pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kprobe(mgr, list, kprobe));
 }
 
 /// Register a kretprobe and return its live handle.
+#[inline(never)]
 pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
-    with_manager_and_list(|mgr, list| kprobe_crate_register_kretprobe(mgr, list, builder))
+    with_manager_and_list(|mgr, list| {
+        kprobe_crate_register_kretprobe(mgr, list, builder).expect("Failed to register kretprobe")
+    })
 }
 
 /// Unregister a previously registered kretprobe.
+#[inline(never)]
 pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
-fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
+pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
         kprobe::PtRegs {
@@ -238,7 +296,7 @@ fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
             rdx: tf.rdx as usize,
             rsi: tf.rsi as usize,
             rdi: tf.rdi as usize,
-            orig_rax: 0,
+            orig_rax: tf.vector as usize,
             rip: tf.rip as usize,
             cs: tf.cs as usize,
             rflags: tf.rflags as usize,
@@ -336,7 +394,7 @@ fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
                 tf.regs.s7,
                 tf.regs.s8,
             ],
-            orig_a0: tf.regs.a0,
+            orig_a0: 0,
             csr_era: tf.era,
             csr_badvaddr: 0,
             csr_crmd: 0,
@@ -348,7 +406,7 @@ fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
     }
 }
 
-fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
+pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
     #[cfg(target_arch = "x86_64")]
     {
         tf.r15 = pt.r15 as u64;
@@ -368,6 +426,7 @@ fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFra
         tf.rdi = pt.rdi as u64;
         tf.rip = pt.rip as u64;
         tf.cs = pt.cs as u64;
+        tf.vector = pt.orig_rax as u64;
         tf.rflags = pt.rflags as u64;
         tf.rsp = pt.rsp as u64;
         tf.ss = pt.ss as u64;
@@ -460,83 +519,6 @@ pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
         return true;
     }
     false
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-#[inline(never)]
-fn kprobe_selftest_target() -> i32 {
-    42
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-static SELFTEST_HIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-#[cfg(not(target_arch = "loongarch64"))]
-static SELFTEST_RET_HIT: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-#[cfg(not(target_arch = "loongarch64"))]
-fn selftest_pre_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
-    SELFTEST_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-fn selftest_ret_handler(_data: &dyn kprobe::ProbeData, _pt: &mut kprobe::PtRegs) {
-    SELFTEST_RET_HIT.store(true, core::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-pub fn run_selftest() -> bool {
-    SELFTEST_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
-    SELFTEST_RET_HIT.store(false, core::sync::atomic::Ordering::SeqCst);
-
-    let target_addr = kprobe_selftest_target as *const () as usize;
-    let mut kprobe_ok = false;
-    let mut kretprobe_ok = false;
-
-    with_manager(|manager| {
-        let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::ProbeBuilder::<KernelKprobeOps>::new()
-            .with_symbol_addr(target_addr)
-            .with_pre_handler(selftest_pre_handler)
-            .with_enable(true);
-
-        let kp = kprobe::register_kprobe(manager, &mut probe_list, builder);
-        let val = kprobe_selftest_target();
-        kprobe_ok = SELFTEST_HIT.load(core::sync::atomic::Ordering::SeqCst);
-
-        kprobe::unregister_kprobe(manager, &mut probe_list, kp);
-
-        if kprobe_ok && val == 42 {
-            info!("kprobe selftest passed");
-        } else {
-            warn!("kprobe selftest failed: hit={}, val={}", kprobe_ok, val);
-        }
-    });
-
-    with_manager(|manager| {
-        let mut probe_list = kprobe::ProbePointList::new();
-        let builder = kprobe::KretprobeBuilder::<KernelRawMutex>::new(4)
-            .with_symbol_addr(target_addr)
-            .with_ret_handler(selftest_ret_handler)
-            .with_enable(true);
-
-        let kr = kprobe::register_kretprobe(manager, &mut probe_list, builder);
-        let val = kprobe_selftest_target();
-        kretprobe_ok = SELFTEST_RET_HIT.load(core::sync::atomic::Ordering::SeqCst);
-
-        kprobe::unregister_kretprobe(manager, &mut probe_list, kr);
-
-        if kretprobe_ok && val == 42 {
-            info!("kretprobe selftest passed");
-        } else {
-            warn!(
-                "kretprobe selftest failed: hit={}, val={}",
-                kretprobe_ok, val
-            );
-        }
-    });
-
-    kprobe_ok && kretprobe_ok
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -3,7 +3,7 @@
 use alloc::string::String;
 
 /// Normalizes a path by collapsing repeated separators and trimming a trailing slash.
-pub fn split_paren_child_and_tranlatevalid(pat: &str) -> String {
+pub fn split_paren_child_and_translatevalid(pat: &str) -> String {
     let mut last_c = '\0';
     let mut result_s = String::new();
     for ch in pat.chars() {

@@ -4,6 +4,7 @@ use crate::{
 };
 
 mod dwc;
+mod ehci;
 mod hub;
 mod kcore;
 pub mod osal;
@@ -15,9 +16,11 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap};
 
 use dwc::Dwc;
 pub use dwc::{
-    CruOp, DwcNewParams, DwcParams, UdphyParam, Usb2PhyParam, UsbPhyInterfaceMode,
-    usb2phy::Usb2PhyPortId,
+    DwcNewParams, DwcParams, NamedResetLine, ResetLine, UdphyParam, Usb2PhyParam,
+    UsbPhyInterfaceMode, usb2phy::Usb2PhyPortId,
 };
+use ehci::Ehci;
+pub use ehci::EhciNewParams;
 use id_arena::Id;
 use kcore::*;
 pub use osal::*;
@@ -31,14 +34,19 @@ impl USBHost {
         Ok(USBHost::new(Xhci::new(mmio, kernel)?))
     }
 
-    pub fn new_dwc(params: DwcNewParams<'_, impl CruOp>) -> Result<USBHost> {
+    pub fn new_dwc(params: DwcNewParams<'_>) -> Result<USBHost> {
         Ok(USBHost::new(Dwc::new(params)?))
+    }
+
+    pub fn new_ehci(params: EhciNewParams) -> Result<USBHost> {
+        Ok(USBHost::new(Ehci::new(params)?))
     }
 
     pub(crate) fn new(backend: impl CoreOp) -> Self {
         let b = Core::new(backend);
         Self {
             backend: Box::new(b),
+            initialized: false,
         }
     }
 }

@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / 定时事件队列基础件
 > 版本：`0.1.0`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`os/axvisor/src/vmm/timer.rs`
+> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`virtualization/axvm/src/timer.rs`
 
 `ax-timer-list` 提供一个按截止时间排序的定时事件容器。它内部用 `BinaryHeap` 实现最小堆语义，向上暴露“插入事件、取消事件、取出最早到期事件”的接口。它是容器型叶子基础件：不是硬件定时器驱动、不是中断时钟源，也不是完整的定时器子系统。
 
@@ -53,7 +53,7 @@ flowchart TD
 - 逐个弹出已经到期的事件。
 
 ### 使用场景
-- `TimerList::set()`：`os/axvisor/src/vmm/timer.rs` 在注册 VMM timer 时调用。
+- `TimerList::set()`：`virtualization/axvm/src/timer.rs` 在注册 VMM timer 时调用。
 - `cancel()`：Axvisor 按 token 取消已登记的事件。
 - `expire_one()`：Axvisor 的 `check_events()` 循环不断取出已到期事件，再由上层显式执行回调。
 - `TimerEventFn::new()`：本 crate 测试里用于快速包装闭包事件。

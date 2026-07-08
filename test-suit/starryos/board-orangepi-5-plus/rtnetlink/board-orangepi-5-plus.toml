@@ -1,0 +1,56 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+printf '\nSTARRY_RTNL_BEGIN\n'
+ok=1
+
+ip addr del 192.168.10.2/24 dev eth1 >/tmp/starry-rtnl-cleanup 2>&1 || true
+ip link show dev eth1 || ok=0
+if ip link show dev starry_missing0 >/tmp/starry-rtnl-missing 2>&1; then
+  echo STARRY_RTNL_BAD_MISSING_LINK
+  ok=0
+else
+  cat /tmp/starry-rtnl-missing
+fi
+
+ip addr add 192.168.10.2/24 dev eth1 || ok=0
+ip -o addr show dev eth1 || ok=0
+ip addr del 192.168.10.2/24 dev eth1 || ok=0
+if ip addr del 192.168.10.2/24 dev eth1 >/tmp/starry-rtnl-del-missing 2>&1; then
+  echo STARRY_RTNL_BAD_DELADDR_MISSING
+  ok=0
+else
+  cat /tmp/starry-rtnl-del-missing
+fi
+
+if ip -o addr show dev eth1 | grep -q '192\.168\.10\.2/24'; then
+  echo STARRY_RTNL_BAD_DELADDR
+  ok=0
+fi
+
+ip addr add 192.168.10.2/24 dev eth1 || ok=0
+ip -o addr show dev eth1 || ok=0
+
+if [ "$ok" = "1" ]; then
+  echo STARRY_RTNL_OK
+else
+  echo STARRY_RTNL_FAILED
+fi
+printf '\nSTARRY_RTNL_DONE\n'
+'''
+success_regex = [
+  "(?m)^STARRY_RTNL_OK\\s*$",
+  "(?m)^STARRY_RTNL_DONE\\s*$",
+  "inet 192\\.168\\.10\\.2/24",
+  "RTNETLINK answers: Cannot assign requested address",
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  "(?i)(cat|sh): .*not found",
+  "(?m)^STARRY_RTNL_BAD_",
+  "(?m)^STARRY_RTNL_FAILED\\s*$",
+]
+timeout = 180

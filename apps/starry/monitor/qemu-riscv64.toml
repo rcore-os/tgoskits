@@ -1,0 +1,15 @@
+# monitor riscv64 -- Prometheus stack + glances carpet. prometheus/node_exporter riscv64 are the
+# OFFICIAL upstream release (upstream ships riscv64). uefi=false / to_bin=true = riscv64 raw boot.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "2048M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-monitor.sh"
+success_regex = ['(?m)^MONITOR_OK=8/8', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000

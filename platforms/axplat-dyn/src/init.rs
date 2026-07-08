@@ -10,28 +10,14 @@ impl InitIf for InitIfImpl {
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _dtb: usize) {
-        #[cfg(target_arch = "riscv64")]
-        somehal::arch::register_current_cpu_id(_cpu_id, ax_plat::percpu::this_cpu_id);
-        ax_cpu::init::init_trap();
-        #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
-        {
-            ax_cpu::asm::enable_fp();
-            debug!("axplat-dyn: fp/simd enabled");
-        }
+        enable_fp_simd();
         somehal::timer::enable();
     }
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
-        #[cfg(target_arch = "riscv64")]
-        somehal::arch::register_current_cpu_id(_cpu_id, ax_plat::percpu::this_cpu_id);
-        ax_cpu::init::init_trap();
-        #[cfg(all(target_arch = "aarch64", feature = "fp-simd"))]
-        {
-            ax_cpu::asm::enable_fp();
-            debug!("axplat-dyn: secondary fp/simd enabled");
-        }
+        enable_fp_simd();
         somehal::timer::enable();
     }
 
@@ -42,12 +28,31 @@ impl InitIf for InitIfImpl {
     /// platform configuration and initialization.
     fn init_later(_cpu_id: usize, _dtb: usize) {
         somehal::post_paging();
-        somehal::timer::irq_enable();
+        #[cfg(all(feature = "rtc", target_arch = "loongarch64"))]
+        crate::generic_timer::try_init_epoch_offset_from_firmware();
     }
 
     /// Initializes the platform at the later stage for secondary cores.
     #[cfg(feature = "smp")]
-    fn init_later_secondary(_cpu_id: usize) {
-        somehal::timer::irq_enable();
-    }
+    fn init_later_secondary(_cpu_id: usize) {}
 }
+
+#[cfg(all(
+    feature = "fp-simd",
+    any(target_arch = "aarch64", target_arch = "loongarch64")
+))]
+fn enable_fp_simd() {
+    ax_cpu::asm::enable_fp();
+    #[cfg(target_arch = "loongarch64")]
+    {
+        ax_cpu::asm::enable_lsx();
+        ax_cpu::asm::enable_lasx();
+    }
+    debug!("axplat-dyn: fp/simd enabled");
+}
+
+#[cfg(not(all(
+    feature = "fp-simd",
+    any(target_arch = "aarch64", target_arch = "loongarch64")
+)))]
+fn enable_fp_simd() {}

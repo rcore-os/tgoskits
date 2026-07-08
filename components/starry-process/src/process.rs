@@ -203,6 +203,21 @@ impl Process {
         self.tg.lock().group_exited
     }
 
+    /// Starts a process-wide exit if one is not already in progress.
+    ///
+    /// Returns a snapshot of the thread group at the point where the group-exit
+    /// state was first published. Later exiting threads must not overwrite the
+    /// recorded process exit code.
+    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
+        let mut tg = self.tg.lock();
+        if tg.group_exited {
+            return None;
+        }
+        tg.group_exited = true;
+        tg.exit_code = exit_code;
+        Some(tg.threads.iter().cloned().collect())
+    }
+
     /// Marks the [`Process`] as group exited.
     pub fn group_exit(&self) {
         self.tg.lock().group_exited = true;
@@ -251,19 +266,14 @@ impl Process {
 
         let reaper_proc = self.orphan_reaper();
         let reaper_parent = Arc::downgrade(&reaper_proc);
-        let children = {
-            let mut children = self.children.lock();
-            core::mem::take(&mut *children)
-        };
 
         let mut reaper_children = reaper_proc.children.lock();
-        for (pid, child) in children {
+        let mut children = self.children.lock();
+        self.is_zombie.store(true, Ordering::Release);
+        for (pid, child) in core::mem::take(&mut *children) {
             *child.parent.lock() = reaper_parent.clone();
             reaper_children.insert(pid, child);
         }
-        drop(reaper_children);
-
-        self.is_zombie.store(true, Ordering::Release);
     }
 
     /// Frees a zombie [`Process`]. Removes it from the parent.
@@ -352,4 +362,61 @@ static INIT_PROC: LazyInit<Arc<Process>> = LazyInit::new();
 /// This function panics if the init process has not been initialized yet.
 pub fn init_proc() -> Arc<Process> {
     INIT_PROC.get().unwrap().clone()
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::sync::Arc;
+    use core::time::Duration;
+    use std::{
+        sync::{Arc as StdArc, Barrier},
+        thread,
+        time::Instant,
+    };
+
+    use super::Process;
+
+    #[test]
+    fn orphan_never_becomes_invisible_while_reparenting() {
+        let init = Process::new_init(1);
+        let reaper = init.fork(2);
+        reaper.set_child_subreaper(true);
+        let parent = reaper.fork(3);
+        let child = parent.fork(4);
+        let child_pid = child.pid();
+
+        let reaper_children = reaper.children.lock();
+        let start_exit = StdArc::new(Barrier::new(2));
+        let exit_parent = parent.clone();
+        let exit_start = start_exit.clone();
+        let exit_thread = thread::spawn(move || {
+            exit_start.wait();
+            exit_parent.exit();
+        });
+
+        start_exit.wait();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut observed_invisible = false;
+        while Instant::now() < deadline {
+            let parent_has_child = parent.children.lock().contains_key(&child_pid);
+            let reaper_has_child = reaper_children.contains_key(&child_pid);
+            if !parent_has_child && !reaper_has_child {
+                observed_invisible = true;
+                break;
+            }
+            thread::yield_now();
+        }
+
+        drop(reaper_children);
+        exit_thread.join().unwrap();
+
+        assert!(
+            !observed_invisible,
+            "orphan was removed from its old parent before it became visible to the reaper"
+        );
+        assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
+        assert!(reaper.children.lock().contains_key(&child_pid));
+    }
 }

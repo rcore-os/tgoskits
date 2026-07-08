@@ -3,6 +3,7 @@
 export HOME=/root
 export USER=root
 export HOSTNAME=starry
+export TERM=xterm-256color
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf "Welcome to \033[96m\033[1mStarry OS\033[0m!\n"
@@ -13,6 +14,12 @@ printf "Use \033[1m\033[3mapk\033[0m to install packages.\n"
 echo
 
 # Do your initialization here!
+
+if [ -f /usr/bin/starry-run-case-tests ]; then
+    echo "STARRY_GROUPED_AUTORUN_INIT"
+    export AXBUILD_GROUPED_AUTORUN_DONE=1
+    sh /usr/bin/starry-run-case-tests
+fi
 
 # Pre-populate /run/udev/data/ so libudev considers our devices
 # "initialized" (otherwise libinput silently skips every input device
@@ -46,6 +53,7 @@ if [ -x /test_runner.sh ]; then
 fi
 
 cd "$HOME" || cd /
+
 cat > /tmp/starry-shrc <<'EOF'
 export PS1='${USER}@${HOSTNAME}:${PWD} # '
 EOF

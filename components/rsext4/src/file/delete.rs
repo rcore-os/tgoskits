@@ -7,7 +7,7 @@ pub(crate) struct ParentDirEntry {
     pub file_type: u8,
 }
 
-fn free_inode_with_dtime<B: BlockDevice>(
+pub fn free_inode<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
@@ -55,7 +55,7 @@ pub fn unlink<B: BlockDevice>(
 ) -> Ext4Result<()> {
     // Resolve the parent directory and target entry before mutating link
     // counts or directory contents.
-    let norm_path = split_paren_child_and_tranlatevalid(link_path);
+    let norm_path = split_paren_child_and_translatevalid(link_path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()
@@ -96,7 +96,7 @@ pub fn unlink<B: BlockDevice>(
     // When the final link disappears, free blocks and inode through the shared
     // deletion path.
     if new_links == 0 {
-        free_inode_with_dtime(fs, block_dev, entry.ino, &mut target_inode)?;
+        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
     }
 
     // Remove the directory entry at the block found above (no second scan).
@@ -208,14 +208,14 @@ fn try_remove_dentry_in_block<B: BlockDevice>(
     parent_inode: &Ext4Inode,
     phys: AbsoluteBN,
     name_bytes: &[u8],
-) -> bool {
+) -> Ext4Result<bool> {
     let superblock = &fs.superblock;
     let mut removed = false;
-    let _ = fs.datablock_cache.modify(block_dev, phys, |data| {
+    fs.datablock_cache.modify(block_dev, phys, |data| {
         removed =
             remove_dentry_in_dir_block(superblock, parent_ino_num, parent_inode, data, name_bytes);
-    });
-    removed
+    })?;
+    Ok(removed)
 }
 
 fn parent_dir_data_blocks<B: BlockDevice>(
@@ -303,7 +303,7 @@ pub(crate) fn remove_named_entry_at<B: BlockDevice>(
     phys: AbsoluteBN,
     name_bytes: &[u8],
 ) -> Ext4Result<()> {
-    if try_remove_dentry_in_block(fs, block_dev, parent_ino, parent_inode, phys, name_bytes) {
+    if try_remove_dentry_in_block(fs, block_dev, parent_ino, parent_inode, phys, name_bytes)? {
         Ok(())
     } else {
         Err(Ext4Error::not_found())
@@ -360,7 +360,7 @@ pub fn delete_dir<B: BlockDevice>(
         stage: u8, // 0=scan, 1=cleanup
     }
 
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     if norm_path == "/" {
         return Err(Ext4Error::busy());
     }
@@ -522,7 +522,7 @@ pub fn delete_dir<B: BlockDevice>(
             fs.set_inode_links_count(block_dev, pino, parent_new_links)?;
         }
 
-        free_inode_with_dtime(fs, block_dev, frame.ino_num, &mut cur_inode)?;
+        free_inode(fs, block_dev, frame.ino_num, &mut cur_inode)?;
 
         // Keep the group-descriptor directory count in sync with the removal.
         let (group_idx, _idx_in_group) = fs.inode_allocator.global_to_group(frame.ino_num)?;
@@ -565,7 +565,7 @@ pub fn delete_file<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> Ext4Result<()> {
-    let norm_path = split_paren_child_and_tranlatevalid(path);
+    let norm_path = split_paren_child_and_translatevalid(path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()
@@ -603,7 +603,7 @@ pub fn delete_file<B: BlockDevice>(
     fs.set_inode_links_count(block_dev, entry.ino, new_links)?;
     if new_links == 0 {
         debug!("Will free inode:{} path:{path}", entry.ino);
-        free_inode_with_dtime(fs, block_dev, entry.ino, &mut target_inode)?;
+        free_inode(fs, block_dev, entry.ino, &mut target_inode)?;
     } else {
         debug!(
             "inode {} still has {new_links} link(s); removing directory entry only",

@@ -17,12 +17,24 @@ bitflags! {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_eventfd(initval: u32) -> AxResult<isize> {
+    sys_eventfd2(initval, 0)
+}
+
+// Create an eventfd and install it into the current file descriptor table.
 pub fn sys_eventfd2(initval: u32, flags: u32) -> AxResult<isize> {
-    debug!("sys_eventfd2 <= initval: {initval}, flags: {flags}");
+    debug!(
+        "sys_eventfd2 called: initval={}, flags={:#x}",
+        initval, flags
+    );
 
     let flags = EventFdFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
 
     let event_fd = EventFd::new(initval as _, flags.contains(EventFdFlags::SEMAPHORE));
     event_fd.set_nonblocking(flags.contains(EventFdFlags::NONBLOCK))?;
-    add_file_like(event_fd as _, flags.contains(EventFdFlags::CLOEXEC)).map(|fd| fd as _)
+    let fd =
+        add_file_like(event_fd as _, flags.contains(EventFdFlags::CLOEXEC)).map(|fd| fd as _)?;
+    debug!("sys_eventfd2: success, fd={}", fd);
+    Ok(fd)
 }

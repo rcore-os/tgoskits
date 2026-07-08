@@ -1,6 +1,6 @@
 [package]
 name = "axvmconfig"
-version = "0.6.0"
+version = "0.8.1"
 edition.workspace = true
 authors = [
     "Keyang Hu <keyang.hu@qq.com>",

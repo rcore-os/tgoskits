@@ -15,13 +15,10 @@ use self::dma::ALLOCATOR;
 
 /// Converts a physical address to a bus address.
 ///
-/// It assumes that there is a linear mapping with the offset
-/// [`ax_config::plat::PHYS_BUS_OFFSET`], that maps all the physical memory
-/// to the virtual space at the address plus the offset. So we have
-/// `baddr = paddr + PHYS_BUS_OFFSET`.
+/// Dynamic platforms expose identity bus addresses for coherent allocations.
 #[inline]
 pub const fn phys_to_bus(paddr: PhysAddr) -> BusAddr {
-    BusAddr::new((paddr.as_usize() + ax_config::plat::PHYS_BUS_OFFSET) as u64)
+    BusAddr::new(paddr.as_usize() as u64)
 }
 
 /// Allocates **coherent** memory that meets Direct Memory Access (DMA)
@@ -88,6 +85,20 @@ pub unsafe fn dealloc_coherent_pages(dma: DMAInfo, layout: Layout) {
 /// Same safety requirements as [`alloc_coherent`].
 pub unsafe fn alloc_coherent_pages(layout: Layout) -> AllocResult<DMAInfo> {
     ALLOCATOR.lock().alloc_coherent_pages(layout)
+}
+
+/// Allocates contiguous DMA pages constrained to 32-bit physical addresses
+/// (< 4 GiB), bypassing the slab byte allocator. The region is mapped uncached.
+///
+/// For IOMMU-bypassed devices (e.g. the RK3588 JPU/RGA/NPU) that program raw
+/// 32-bit DMA addresses into hardware registers and therefore cannot reach
+/// buffers allocated above 4 GiB on large-memory boards.
+///
+/// # Safety
+///
+/// Same safety requirements as [`alloc_coherent`].
+pub unsafe fn alloc_coherent_pages_dma32(layout: Layout) -> AllocResult<DMAInfo> {
+    ALLOCATOR.lock().alloc_coherent_pages_dma32(layout)
 }
 
 /// A bus memory address.

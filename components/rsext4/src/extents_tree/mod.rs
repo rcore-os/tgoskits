@@ -16,4 +16,5 @@ mod root;
 mod split;
 
 pub use node::ExtentNode;
+pub use parse::ExtentRun;
 pub use root::ExtentTree;

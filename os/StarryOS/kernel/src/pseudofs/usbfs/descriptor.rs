@@ -8,6 +8,7 @@ use crab_usb::{
     usb_if::{
         self,
         descriptor::{ConfigurationDescriptor, DeviceDescriptor},
+        host::hub::Speed,
     },
 };
 use linux_raw_sys::general::{
@@ -155,11 +156,11 @@ pub(super) struct UsbDeviceSnapshot {
     pub(super) descriptor_blob: Vec<u8>,
 }
 
-pub(super) fn root_hub_snapshot(bus_num: u8) -> UsbDeviceSnapshot {
+pub(super) fn root_hub_snapshot(bus_num: u8, speed: Speed) -> UsbDeviceSnapshot {
     UsbDeviceSnapshot {
         bus_num,
         device_num: 1,
-        descriptor_blob: root_hub_descriptor_blob(),
+        descriptor_blob: root_hub_descriptor_blob(speed),
     }
 }
 
@@ -296,15 +297,48 @@ fn serialize_descriptor_blob(
     out
 }
 
-fn root_hub_descriptor_blob() -> Vec<u8> {
+fn root_hub_descriptor_blob(speed: Speed) -> Vec<u8> {
+    let (usb_version, product_id, protocol, max_packet_size_0) = match speed {
+        Speed::SuperSpeed | Speed::SuperSpeedPlus => (0x0300u16, 0x0003u16, 0x03u8, 9u8),
+        Speed::High | Speed::Wireless => (0x0200u16, 0x0002u16, 0x01u8, 64u8),
+        Speed::Full | Speed::Low => (0x0110u16, 0x0001u16, 0x00u8, 8u8),
+    };
+
     let mut out = Vec::new();
-    out.extend_from_slice(&[
-        18, 0x01, 0x00, 0x03, 0x09, 0x00, 0x03, 9, 0x6b, 0x1d, 0x03, 0x00, 0x00, 0x06, 0, 0, 0, 1,
-    ]);
+    out.extend_from_slice(&[18, 0x01]);
+    out.extend_from_slice(&usb_version.to_le_bytes());
+    out.extend_from_slice(&[0x09, 0x00, protocol, max_packet_size_0]);
+    out.extend_from_slice(&0x1d6bu16.to_le_bytes());
+    out.extend_from_slice(&product_id.to_le_bytes());
+    out.extend_from_slice(&0x0600u16.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 1]);
     out.extend_from_slice(&[9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0]);
     out.extend_from_slice(&[9, 0x04, 0, 0, 1, 0x09, 0, 0, 0]);
     out.extend_from_slice(&[7, 0x05, 0x81, 0x03, 4, 0, 12]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high_speed_root_hub_uses_usb2_linux_foundation_id() {
+        let snapshot = root_hub_snapshot(1, Speed::High);
+
+        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0200u16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0002u16.to_le_bytes());
+    }
+
+    #[test]
+    fn superspeed_root_hub_keeps_usb3_linux_foundation_id() {
+        let snapshot = root_hub_snapshot(1, Speed::SuperSpeedPlus);
+
+        assert_eq!(&snapshot.descriptor_blob[2..4], &0x0300u16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[8..10], &0x1d6bu16.to_le_bytes());
+        assert_eq!(&snapshot.descriptor_blob[10..12], &0x0003u16.to_le_bytes());
+    }
 }
 
 fn endpoint_attributes(transfer_type: usb_if::descriptor::EndpointType) -> u8 {

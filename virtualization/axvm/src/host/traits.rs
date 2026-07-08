@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 use alloc::boxed::Box;
 use core::time::Duration;
 
@@ -47,10 +51,15 @@ pub trait HostTime {
     fn monotonic_time(&self) -> Duration;
 
     /// Program the host one-shot timer.
+    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64);
 
     /// Register a VM timer callback.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     fn register_timer(
         &self,
         deadline_ns: u64,
@@ -58,7 +67,7 @@ pub trait HostTime {
     ) -> Self::CancelToken;
 
     /// Cancel a VM timer callback.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     fn cancel_timer(&self, token: Self::CancelToken);
 }
 
@@ -72,9 +81,6 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
-
-    /// Bind current task to one host CPU.
-    fn bind_current_to_cpu(&self, cpu_id: usize) -> AxResult;
 }
 
 /// Host console operations.

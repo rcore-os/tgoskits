@@ -3,17 +3,22 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use anyhow::Context;
 use log::info;
 use ostool::{
-    Tool, ToolConfig,
-    board::{RunBoardOptions, config::BoardRunConfig},
-    build::{CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs, config::Cargo},
+    board::{self as ostool_board, RunBoardOptions, config::BoardRunConfig},
+    build::{
+        self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
+        RuntimeArtifactInput,
+        config::{BuildConfig, BuildSystem, Cargo},
+    },
+    invocation::{Invocation, InvocationOptions},
     run::{
-        qemu::{QemuConfig, RunQemuOptions},
-        uboot::UbootConfig,
+        qemu::{self as ostool_qemu, QemuConfig, RunQemuOptions},
+        uboot::{self as ostool_uboot, UbootConfig},
     },
 };
 
@@ -28,9 +33,8 @@ mod workspace;
 pub(crate) use arch::{
     CrossCompileSpec, arch_for_target_checked, cross_compile_spec_for_arch_checked,
     default_rootfs_image_for_arch, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
-    resolve_starry_arch_and_target, starry_arch_for_target_checked,
-    starry_default_platform_for_arch_checked, starry_target_for_arch_checked, supported_arches,
-    supported_targets, validate_supported_target,
+    resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
+    supported_arches, supported_targets, validate_supported_target,
 };
 pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
 pub use types::{
@@ -69,7 +73,7 @@ fn snapshot_store_disabled() -> bool {
 }
 
 pub struct AppContext {
-    tool: Tool,
+    invocation: Invocation,
     build_config_path: Option<PathBuf>,
     root: PathBuf,
     member_dirs: HashMap<String, PathBuf>,
@@ -84,9 +88,10 @@ impl AppContext {
 
         info!("Workspace root: {}", workspace_root.display());
 
-        let tool = Tool::new(ToolConfig::default()).context("failed to initialize ostool")?;
+        let invocation = Self::new_invocation(&workspace_root, false)
+            .context("failed to initialize ostool invocation")?;
         Ok(Self {
-            tool,
+            invocation,
             build_config_path: None,
             root: workspace_root,
             member_dirs: HashMap::new(),
@@ -97,10 +102,6 @@ impl AppContext {
 
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.root
-    }
-
-    pub(crate) fn tool_mut(&mut self) -> &mut Tool {
-        &mut self.tool
     }
 
     pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
@@ -123,10 +124,26 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<ostool_build::CargoBuildOutput> {
         self.set_build_config_path(build_config_path);
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
-        self.tool.cargo_build(&cargo).await
+        let build_config_path = self.build_config_path.clone();
+        let stage = StageLog::start(format!(
+            "cargo build package={} target={} config={}",
+            cargo.package,
+            cargo.target,
+            display_optional_path(build_config_path.as_deref())
+        ));
+        let output =
+            ostool_build::cargo_build(&mut self.invocation, &cargo, build_config_path.as_deref())
+                .await?;
+        stage.done();
+        println!("[axbuild] cargo build elf={}", output.elf_path().display());
+        println!(
+            "[axbuild] cargo build artifact_dir={}",
+            output.cargo_artifact_dir().display()
+        );
+        Ok(output)
     }
 
     pub(crate) async fn prepare_elf_artifact(
@@ -134,29 +151,43 @@ impl AppContext {
         elf_path: PathBuf,
         to_bin: bool,
     ) -> anyhow::Result<()> {
-        self.tool.prepare_elf_artifact(elf_path, to_bin).await
+        self.invocation.prepare_elf_artifact(elf_path, to_bin).await
     }
 
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        qemu: Option<QemuConfig>,
+        mut qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
+        if let Some(qemu) = qemu.as_mut() {
+            crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, &cargo);
+        }
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run(
-                &cargo,
-                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
-                    qemu,
-                    debug: self.debug,
-                    dtb_dump: false,
-                    show_output: true,
-                })),
-            )
-            .await
+        let build_config_path = self.build_config_path.clone();
+        let stage = StageLog::start(format!(
+            "qemu build+run package={} target={} config={}",
+            cargo.package,
+            cargo.target,
+            display_optional_path(build_config_path.as_deref())
+        ));
+        let result = ostool_build::cargo_run(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
+                qemu,
+                debug: self.debug,
+                dtb_dump: false,
+            })),
+        )
+        .await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
     }
 
     pub(crate) async fn run_qemu(
@@ -171,15 +202,45 @@ impl AppContext {
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;
-        self.tool
-            .run_qemu(
-                &qemu,
-                RunQemuOptions {
-                    dtb_dump: false,
-                    show_output: true,
-                },
-            )
-            .await
+        self.activate_cargo_build_context(cargo)?;
+        let stage = StageLog::start(format!(
+            "qemu run package={} target={}",
+            cargo.package, cargo.target
+        ));
+        let result = ostool_qemu::run_qemu(
+            &mut self.invocation,
+            &qemu,
+            RunQemuOptions { dtb_dump: false },
+        )
+        .await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
+    }
+
+    pub(crate) async fn run_qemu_with_axtest_coverage(
+        &mut self,
+        cargo: &Cargo,
+        mut qemu: QemuConfig,
+        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
+    ) -> anyhow::Result<()> {
+        if !crate::support::axtest_coverage::enabled(cargo) {
+            return self.run_qemu(cargo, qemu, capture_backtrace).await;
+        }
+
+        let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
+            self.workspace_root(),
+            &cargo.package,
+            &cargo.target,
+        )?;
+        crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths);
+        crate::support::axtest_coverage::update_success_regex(&mut qemu);
+        let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(&paths)
+            .context("failed to install axtest coverage capture")?;
+        let result = self.run_qemu(cargo, qemu, capture_backtrace).await;
+        capture.finish()?;
+        result
     }
 
     pub(crate) async fn run_prepared_qemu(
@@ -192,15 +253,26 @@ impl AppContext {
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
             .context("failed to install backtrace block output capture")?;
-        self.tool
-            .run_qemu(
-                &qemu,
-                RunQemuOptions {
-                    dtb_dump: false,
-                    show_output: true,
-                },
-            )
-            .await
+        let stage = StageLog::start("qemu run prepared artifact");
+        let result = ostool_qemu::run_qemu(
+            &mut self.invocation,
+            &qemu,
+            RunQemuOptions { dtb_dump: false },
+        )
+        .await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
+    }
+
+    pub(crate) async fn run_prepared_uboot(&mut self, uboot: UbootConfig) -> anyhow::Result<()> {
+        let stage = StageLog::start("uboot run prepared artifact");
+        let result = ostool_uboot::run_uboot(&mut self.invocation, &uboot).await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
     }
 
     pub(crate) async fn uboot(
@@ -211,15 +283,24 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run(
-                &cargo,
-                &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs {
-                    uboot,
-                    show_output: true,
-                })),
-            )
-            .await
+        let build_config_path = self.build_config_path.clone();
+        let stage = StageLog::start(format!(
+            "uboot build+run package={} target={} config={}",
+            cargo.package,
+            cargo.target,
+            display_optional_path(build_config_path.as_deref())
+        ));
+        let result = ostool_build::cargo_run(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs { uboot })),
+        )
+        .await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
     }
 
     pub(crate) async fn board(
@@ -231,9 +312,54 @@ impl AppContext {
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
-        self.tool
-            .cargo_run_board(&cargo, &board_config, options)
-            .await
+        let build_config_path = self.build_config_path.clone();
+        let stage = StageLog::start(format!(
+            "board build+run package={} target={} config={}",
+            cargo.package,
+            cargo.target,
+            display_optional_path(build_config_path.as_deref())
+        ));
+        let result = ostool_board::cargo_run_board(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &board_config,
+            options,
+        )
+        .await;
+        if result.is_ok() {
+            stage.done();
+        }
+        result
+    }
+
+    pub(crate) async fn board_prepared_elf(
+        &mut self,
+        elf_path: PathBuf,
+        to_bin: bool,
+        build_config_path: PathBuf,
+        board_config: BoardRunConfig,
+        options: RunBoardOptions,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        let prepare_stage = StageLog::start(format!(
+            "prepare runtime artifact elf={} to_bin={}",
+            elf_path.display(),
+            to_bin
+        ));
+        ostool_build::prepare_runtime_artifact(
+            &mut self.invocation,
+            RuntimeArtifactInput::new(elf_path, to_bin),
+        )?;
+        prepare_stage.done();
+
+        let run_stage = StageLog::start("board run prepared artifact");
+        let result =
+            ostool_board::run_prepared_board(&mut self.invocation, &board_config, options).await;
+        if result.is_ok() {
+            run_stage.done();
+        }
+        result
     }
 
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
@@ -241,21 +367,74 @@ impl AppContext {
             return Ok(());
         }
 
-        self.tool = Tool::new(ToolConfig {
-            debug,
-            ..ToolConfig::default()
-        })?;
+        self.invocation = Self::new_invocation(&self.root, debug)
+            .context("failed to reinitialize ostool invocation")?;
         self.debug = debug;
-
-        self.tool
-            .set_build_config_path(self.build_config_path.clone());
 
         Ok(())
     }
 
+    pub(crate) async fn read_qemu_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<QemuConfig> {
+        ostool_qemu::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn read_uboot_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<UbootConfig> {
+        ostool_uboot::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn ensure_uboot_config_for_cargo(
+        &self,
+        cargo: &Cargo,
+    ) -> anyhow::Result<UbootConfig> {
+        ostool_uboot::ensure_config_for_cargo(&self.invocation, cargo).await
+    }
+
+    pub(crate) async fn read_board_run_config_from_path_for_cargo(
+        &self,
+        cargo: &Cargo,
+        path: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        ostool_board::read_run_config_from_path_for_cargo(&self.invocation, cargo, path).await
+    }
+
+    pub(crate) async fn ensure_board_run_config_in_dir_for_cargo(
+        &self,
+        cargo: &Cargo,
+        dir: &Path,
+    ) -> anyhow::Result<BoardRunConfig> {
+        ostool_board::ensure_run_config_in_dir_for_cargo(&self.invocation, cargo, dir).await
+    }
+
     fn set_build_config_path(&mut self, path: PathBuf) {
-        self.build_config_path = Some(path.clone());
-        self.tool.set_build_config_path(Some(path));
+        self.build_config_path = Some(path);
+    }
+
+    fn activate_cargo_build_context(&mut self, cargo: &Cargo) -> anyhow::Result<()> {
+        let build_config_path = self.build_config_path.clone();
+        ostool_build::activate_build_config(
+            &mut self.invocation,
+            &BuildConfig {
+                system: BuildSystem::Cargo(Box::new(cargo.clone())),
+            },
+            build_config_path.as_deref(),
+        )
+    }
+
+    fn new_invocation(workspace_root: &Path, debug: bool) -> anyhow::Result<Invocation> {
+        Invocation::new(InvocationOptions::new(
+            Some(workspace_root.join("Cargo.toml")),
+            None,
+            None,
+            debug,
+        ))
     }
 
     fn scoped_qemu_path(&self, cargo: &Cargo) -> anyhow::Result<PathRestoreGuard> {
@@ -266,6 +445,35 @@ impl AppContext {
         }
         Ok(guard)
     }
+}
+
+struct StageLog {
+    name: String,
+    started: Instant,
+}
+
+impl StageLog {
+    fn start(name: impl Into<String>) -> Self {
+        let name = name.into();
+        println!("[axbuild] {name} ...");
+        Self {
+            name,
+            started: Instant::now(),
+        }
+    }
+
+    fn done(self) {
+        println!(
+            "[axbuild] {} ... done ({:.2?})",
+            self.name,
+            self.started.elapsed()
+        );
+    }
+}
+
+fn display_optional_path(path: Option<&Path>) -> String {
+    path.map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<default>".to_string())
 }
 
 struct EnvRestoreGuard {
@@ -368,19 +576,51 @@ fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
 fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
-            candidates.push(home.join(suffix));
+    let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/axvisor/qemu-lvz"))
+        });
+    if let Some(cache_root) = cache_root {
+        candidates.push(cache_root.join("latest").join("bin"));
+        if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
+            candidates.push(cache_root.join(commit).join("bin"));
         }
-    }
-
-    for ancestor in workspace_root.ancestors() {
-        for suffix in ["QEMU-LVZ/build", "qemu-lvz/build"] {
-            candidates.push(ancestor.join(suffix));
-        }
+        candidates.extend(cached_loongarch_qemu_dirs(&cache_root));
     }
 
     candidates
+}
+
+fn cached_loongarch_qemu_dirs(cache_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return Vec::new();
+    };
+
+    let mut dirs: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.file_name().is_some_and(|name| name == "src") {
+                return None;
+            }
+            let bin_dir = path.join("bin");
+            is_loongarch_qemu_dir(&bin_dir).then_some(bin_dir)
+        })
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+fn pinned_qemu_lvz_commit(workspace_root: &Path) -> Option<String> {
+    let version_file = workspace_root.join("os/axvisor/scripts/qemu-lvz.version");
+    let content = std::fs::read_to_string(version_file).ok()?;
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("QEMU_LVZ_COMMIT="))
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+        .map(str::to_owned)
 }
 
 fn is_loongarch_qemu_dir(dir: &Path) -> bool {

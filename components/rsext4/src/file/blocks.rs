@@ -61,9 +61,9 @@ pub fn build_file_block_mapping_with_inode_num<B: BlockDevice>(
         let mut tree = ExtentTree::with_checksum(inode, &fs.superblock, inode_num);
         for extend in exts_vec {
             tree.insert_extent(fs, extend, block_dev)
-                .expect("Extend insert Failed!");
+                .expect("Extent insert failed!");
         }
     } else {
-        error!("not support tranditional block pointer");
+        error!("not support traditional block pointer");
     }
 }

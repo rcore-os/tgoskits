@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.0...rockchip-soc-v0.4.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.5...rockchip-soc-v0.4.0) - 2026-07-07
+
+### Added
+
+- *(rdrive)* apply assigned clocks before FDT probe ([#1527](https://github.com/rcore-os/tgoskits/pull/1527))
+- *(starry-kernel)* add RK3588 PWM sysfs support ([#1468](https://github.com/rcore-os/tgoskits/pull/1468))
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.4...rockchip-soc-v0.3.5) - 2026-07-02
+
+### Added
+
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+
+### Other
+
+- *(rdrive)* apply default FDT pinctrl before probe ([#1458](https://github.com/rcore-os/tgoskits/pull/1458))
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+
+## [0.3.4](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.3...rockchip-soc-v0.3.4) - 2026-06-27
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.3.3](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.2...rockchip-soc-v0.3.3) - 2026-06-23
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.1...rockchip-soc-v0.3.2) - 2026-06-09
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.0...rockchip-soc-v0.3.1) - 2026-06-03
 
 ### Fixed

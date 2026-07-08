@@ -20,7 +20,7 @@ impl Mapper for MemMapper {
 type Registers = xhci::Registers<MemMapper>;
 // type RegistersExtList = xhci::extended_capabilities::List<MemMapper>;
 // type SupportedProtocol = xhci::extended_capabilities::XhciSupportedProtocol<MemMapper>;
-pub(crate) type XhciRegistersShared = alloc::sync::Arc<spin::RwLock<XhciRegisters>>;
+pub(crate) type XhciRegistersShared = alloc::sync::Arc<ax_kspin::SpinRwLock<XhciRegisters>>;
 
 pub(crate) struct XhciRegisters {
     pub mmio_base: usize,

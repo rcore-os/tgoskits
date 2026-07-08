@@ -1,23 +1,36 @@
-use rdrive::{IrqId, probe::OnProbeError};
-use someboot::PagingError;
+use irq_framework::{IrqError, IrqId, IrqSource};
+use rdrive::probe::OnProbeError;
+use someboot::{ArchTrait, PagingError};
 
 use crate::setup::MmioRaw;
 
 pub trait PlatOp {
-    fn irq_set_enable(irq: IrqId, enable: bool);
+    type ActiveIrq;
+
+    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError>;
+
+    fn irq_set_affinity(_irq: IrqId, _affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
+    }
 
     fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
         panic!("IPI is not implemented for this dynamic platform");
     }
 
-    fn irq_handler() -> someboot::irq::IrqId;
+    fn ipi_irq() -> IrqId;
 
-    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
-        let _ = raw;
-        Some(Self::irq_handler())
-    }
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
+
+    fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
     fn systick_irq() -> IrqId;
+
+    fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
+        match source {
+            IrqSource::ControllerLine { domain, hwirq } => Ok(IrqId::new(domain, hwirq)),
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
+        }
+    }
 
     fn secondary_init();
 
@@ -31,8 +44,9 @@ pub trait PlatOp {
 }
 
 #[allow(dead_code)]
-pub fn ioremap(paddr: u64, size: usize) -> anyhow::Result<MmioRaw> {
-    let mmio = unsafe { mmio_api::ioremap_raw(paddr.into(), size)? };
+pub fn ioremap(addr: u64, size: usize) -> anyhow::Result<MmioRaw> {
+    let paddr = <someboot::arch::Arch as ArchTrait>::canonicalize_paddr(addr as usize);
+    let mmio = unsafe { mmio_api::ioremap_raw((paddr as u64).into(), size)? };
     Ok(mmio)
 }
 

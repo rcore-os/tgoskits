@@ -43,6 +43,7 @@ const LOG_LEVELS: &[&[u8; 2]] = &[
 
 /// `memset` shim. C ABI; some modules call this directly rather than
 /// through the compiler's intrinsic.
+#[cfg(not(target_env = "musl"))]
 #[capi_fn]
 pub unsafe extern "C" fn memset(s: *mut core::ffi::c_void, c: c_int, n: usize) -> *mut c_char {
     let xs = s as *mut u8;

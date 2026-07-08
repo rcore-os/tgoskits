@@ -1,0 +1,28 @@
+args = [
+    "-machine",
+    "virt,gic-version=3",
+    "-m",
+    "256M",
+    "-cpu",
+    "cortex-a72",
+    "-smp",
+    "4",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-display",
+    "none",
+    "-serial",
+    "mon:stdio",
+]
+uefi = false
+to_bin = true
+success_regex = ["ArceOS C test suite run OK!"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_C_TEST_FAIL"]
+timeout = 120
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18281
+body = "ArceOS C test suite host fixture\n"

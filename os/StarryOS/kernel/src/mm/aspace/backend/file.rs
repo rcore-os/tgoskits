@@ -7,14 +7,18 @@ use alloc::{
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{CachedFile, FileFlags};
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_fs_ng::vfs::{CachedFile, FileFlags};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
-use super::{AddrSpace, Backend, BackendFileInfo, BackendOps, PopulateCallback, pages_in};
+use super::{
+    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
+    PopulateCallback, RssKind, pages_in,
+};
+use crate::mm::flush_tlb_range_sync;
 
 #[doc(hidden)]
 pub struct FileBackendInner {
@@ -48,14 +52,16 @@ impl FileBackendInner {
             panic!("Listener already registered");
         }
         let aspace = Arc::downgrade(aspace);
-        let handle = self.cache.add_evict_listener({
-            let this = Arc::downgrade(self);
+        let writeback_aspace = aspace.clone();
+        let this = Arc::downgrade(self);
+        let writeback = this.clone();
+        let handle = self.cache.add_page_listener(
             move |pn, _page| -> bool {
                 let Some(this) = this.upgrade() else {
                     // Backend dropped — no mappings remain, safe to free.
                     return true;
                 };
-                let Some(aspace) = aspace.upgrade() else {
+                let Some(aspace) = writeback_aspace.upgrade() else {
                     // The address space has been dropped, nothing to do.
                     return true;
                 };
@@ -68,8 +74,18 @@ impl FileBackendInner {
                 };
                 this.on_evict(pn, &mut aspace);
                 true
-            }
-        });
+            },
+            move |pn| -> bool {
+                let Some(this) = writeback.upgrade() else {
+                    return true;
+                };
+                let Some(aspace) = aspace.upgrade() else {
+                    return true;
+                };
+                let mut aspace = aspace.lock();
+                this.protect_dirty_page(pn, &mut aspace)
+            },
+        );
         self.handle.store(handle, Ordering::Release);
     }
 
@@ -86,11 +102,73 @@ impl FileBackendInner {
             return;
         }
 
+        let kind = if self.shared {
+            RssKind::Shmem
+        } else {
+            RssKind::File
+        };
+        let unmapped = {
+            let pt = aspace.page_table_mut();
+            match pt.cursor().unmap(vaddr) {
+                Ok(_) => true,
+                Err(PagingError::NotMapped) => false,
+                Err(err) => {
+                    warn!("Failed to unmap page {:?}: {:?}", vaddr, err);
+                    false
+                }
+            }
+        };
+        if unmapped {
+            aspace.rss().dec(kind, 1);
+        }
+    }
+
+    fn protect_dirty_page(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
+        let file_data = self.file_data.lock();
+        let Some(pn) = pn.checked_sub(file_data.offset_page) else {
+            return true;
+        };
+        let vaddr = file_data.start + pn as usize * PageSize::Size4K as usize;
+        if !aspace.find_area(vaddr).is_some_and(
+            |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
+        ) {
+            return true;
+        }
+
         let pt = aspace.page_table_mut();
-        match pt.cursor().unmap(vaddr) {
-            Ok(_) | Err(PagingError::NotMapped) => {}
+        let mut cursor = pt.cursor();
+        match cursor.query(vaddr) {
+            Ok((paddr, flags, PageSize::Size4K)) => {
+                // A writable shared mapping can dirty this page concurrently with the
+                // writeback snapshot, so drop WRITE to fault the next store. A read-only
+                // shared mapping cannot dirty the page through the mapping at all (e.g.
+                // bbolt maps its db read-only and writes through pwrite), so there is
+                // nothing to protect - leave it mapped and report success rather than
+                // failing the fdatasync with EBUSY.
+                if flags.contains(MappingFlags::WRITE) {
+                    let new_flags = flags - MappingFlags::WRITE;
+                    if let Err(err) = cursor.remap(vaddr, paddr, new_flags) {
+                        warn!(
+                            "Failed to write-protect dirty mmap page {:?}: {:?}",
+                            vaddr, err
+                        );
+                        return false;
+                    }
+                    flush_tlb_range_sync(vaddr, PAGE_SIZE_4K);
+                }
+                true
+            }
+            Ok((_, _, page_size)) => {
+                warn!(
+                    "Unexpected file-backed mmap page size during writeback protect: {:?}",
+                    page_size
+                );
+                false
+            }
+            Err(PagingError::NotMapped) => true,
             Err(err) => {
-                warn!("Failed to unmap page {:?}: {:?}", vaddr, err);
+                warn!("Failed to query dirty mmap page {:?}: {:?}", vaddr, err);
+                false
             }
         }
     }
@@ -149,30 +227,29 @@ impl FileBackend {
         self.0.shared
     }
 
+    fn rss_kind(&self) -> RssKind {
+        if self.0.shared {
+            RssKind::Shmem
+        } else {
+            RssKind::File
+        }
+    }
+
     pub fn cache(&self) -> &CachedFile {
         &self.0.cache
     }
 
-    pub fn writeback_and_protect(
-        &self,
-        _aspace: &mut AddrSpace,
-        range_start: VirtAddr,
-        range_end: VirtAddr,
-        _area_flags: MappingFlags,
-    ) -> AxResult {
+    pub fn writeback_range(&self, range_start: VirtAddr, range_end: VirtAddr) -> AxResult {
         let file_data = self.0.file_data.lock();
 
         let offset_page = file_data.offset_page;
         let mapping_start = file_data.start;
-        let mapping_size = (range_end - range_start).min(
-            range_end
-                .as_usize()
-                .saturating_sub(mapping_start.as_usize()),
-        );
         let local_start = range_start
             .as_usize()
             .saturating_sub(mapping_start.as_usize());
-        let local_end = local_start + mapping_size;
+        let local_end = range_end
+            .as_usize()
+            .saturating_sub(mapping_start.as_usize());
 
         let start_pn = offset_page + (local_start / PAGE_SIZE_4K) as u32;
         let end_pn = offset_page + local_end.div_ceil(PAGE_SIZE_4K) as u32;
@@ -216,15 +293,27 @@ impl BackendOps for FileBackend {
         &self,
         _range: VirtAddrRange,
         flags: MappingFlags,
+        _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTableCursor,
     ) -> AxResult {
         self.check_flags(flags)
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult {
+        let kind = self.rss_kind();
         for addr in pages_in(range, PageSize::Size4K)? {
             match pt.unmap(addr) {
-                Ok(_) | Err(PagingError::NotMapped) => {}
+                Ok(_) => {
+                    if let Some(acct) = acct {
+                        acct.dec(kind, 1);
+                    }
+                }
+                Err(PagingError::NotMapped) => {}
                 Err(err) => {
                     warn!("Failed to unmap page {:?}: {:?}", addr, err);
                     return Err(err.into());
@@ -248,29 +337,36 @@ impl BackendOps for FileBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
         let mut to_be_evicted = Vec::new();
+        let kind = self.rss_kind();
         let file_data = self.0.file_data.lock();
         let start_page =
             ((range.start - file_data.start) / PAGE_SIZE_4K) as u32 + file_data.offset_page;
+        // Pages at or beyond EOF must not be eagerly backed (Linux SIGBUS past EOF;
+        // without this bound MAP_POPULATE over a sparse mapping exhausts RAM).
+        let eof_page = self
+            .0
+            .cache
+            .file_len()
+            .unwrap_or(u64::MAX)
+            .div_ceil(PAGE_SIZE_4K as u64);
         for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
             let pn = start_page + i as u32;
+            if (pn as u64) >= eof_page {
+                continue;
+            }
             match pt.query(addr) {
                 Ok((paddr, page_flags, _)) => {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        let in_memory = self.0.cache.in_memory();
-                        self.0.cache.with_page(pn, |page| {
-                            if !in_memory {
-                                page.expect("page should be present").mark_dirty();
-                            }
-                            pt.remap(addr, paddr, flags)?;
-                            pages += 1;
-                            AxResult::Ok(())
-                        })?;
+                        self.0.cache.mark_mmap_dirty_page(pn)?;
+                        pt.remap(addr, paddr, flags)?;
+                        pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
                     }
@@ -298,7 +394,15 @@ impl BackendOps for FileBackend {
                             // through the stale mapping.
                             to_be_evicted.push(evicted);
                         }
-                        pt.map(addr, page.paddr(), PageSize::Size4K, map_flags)?;
+                        pt.map(
+                            addr,
+                            PhysAddr::from(page.paddr()?),
+                            PageSize::Size4K,
+                            map_flags,
+                        )?;
+                        if let Some(acct) = acct {
+                            acct.inc(kind, 1);
+                        }
                         pages += 1;
                         Ok(())
                     })?;
@@ -354,6 +458,7 @@ impl BackendOps for FileBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
+        _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         let start = self.0.file_data.lock().start;
         Ok(Backend::File(self.with_start(start, new_aspace)))

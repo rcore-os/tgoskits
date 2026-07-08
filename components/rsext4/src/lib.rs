@@ -12,6 +12,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 // Re-export shared configuration constants for external callers.
 // Re-export the most frequently used public APIs.
 pub use api::{lseek, open, read_at, write_at};
@@ -27,10 +30,11 @@ pub use dir::{mkdir, mkdir_with_owner};
 pub use disknode::{Ext4TimeSpec, Ext4Timestamp};
 // Re-export the unified error model.
 pub use error::{Errno, Ext4Error, Ext4Result};
-pub use ext4::{Ext4FileSystem, find_file, mkfs, mount, umount};
+pub use ext4::{Ext4FileSystem, MountOptions, find_file, mkfs, mount, mount_with_options, umount};
 pub use file::{
-    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, is_dir_empty, link,
-    mkfile, mkfile_with_owner, mv, read_file, rename, truncate, unlink, write_file,
+    create_symbol_link, create_symbol_link_with_owner, delete_dir, delete_file, free_inode,
+    is_dir_empty, link, mkfile, mkfile_with_owner, mv, read_file, read_inode_data_into,
+    remove_inodeentry_from_parentdir, rename, truncate, truncate_inode, unlink, write_file,
     write_inode_data,
 };
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};

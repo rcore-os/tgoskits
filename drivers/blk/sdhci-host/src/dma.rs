@@ -18,9 +18,12 @@
 //! bare-metal coherent systems (identity mapping, no cache ops), and
 //! bare-metal incoherent systems (identity mapping + dcache flush/invalidate).
 
+use alloc::boxed::Box;
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
+use dma_api::{
+    CoherentArray, CompletedDma, CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma, PreparedDma,
+};
 use sdmmc_protocol::{
     block::{
         BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
@@ -75,6 +78,10 @@ const ADMA2_MAX_PER_DESC: usize = 65_528; // 64 KiB - 8B, multiple of 8
 pub const ADMA2_DESC_COUNT: usize = 16;
 pub const ADMA2_DESC_ALIGN: usize = 64;
 const BLOCK_SIZE: usize = 512;
+pub const ADMA2_MAX_TRANSFER_SIZE: usize =
+    (ADMA2_DESC_COUNT * ADMA2_MAX_PER_DESC / BLOCK_SIZE) * BLOCK_SIZE;
+pub const ADMA2_MAX_BLOCKS: u32 = (ADMA2_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
+const DWC_MSHC_ADMA_BOUNDARY: u64 = 128 * 1024 * 1024;
 
 pub type RequestId = BlockRequestId;
 
@@ -82,10 +89,35 @@ pub type RequestId = BlockRequestId;
 pub struct BlockRequestSlot {
     next: usize,
     state: BlockTransferState,
+    completed_dma: Option<CompletedDma>,
+}
+
+impl BlockRequestSlot {
+    pub fn take_completed_dma(&mut self) -> Option<CompletedDma> {
+        self.completed_dma.take()
+    }
 }
 
 pub struct BlockRequest {
     inner: BlockRequestKind,
+}
+
+pub struct PreparedDmaSubmitError {
+    pub error: Error,
+    buffer: Box<PreparedDma>,
+}
+
+impl PreparedDmaSubmitError {
+    fn new(error: Error, buffer: PreparedDma) -> Self {
+        Self {
+            error,
+            buffer: Box::new(buffer),
+        }
+    }
+
+    pub fn into_buffer(self) -> PreparedDma {
+        *self.buffer
+    }
 }
 
 // `BlockRequest` owns the DMA mappings and descriptor buffer for one
@@ -121,7 +153,7 @@ enum BlockRequestKind {
     },
     Read {
         id: RequestId,
-        map: StreamingMap<u8>,
+        buffer: DmaRequestBuffer,
         _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
@@ -131,7 +163,7 @@ enum BlockRequestKind {
     },
     Write {
         id: RequestId,
-        _map: StreamingMap<u8>,
+        buffer: DmaRequestBuffer,
         _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
@@ -139,6 +171,54 @@ enum BlockRequestKind {
         stop_after_complete: bool,
         response: Option<Response>,
     },
+}
+
+enum DmaRequestBuffer {
+    Bounce {
+        buffer: InFlightDma,
+        readback: Option<(NonNull<u8>, usize)>,
+    },
+    Owned(InFlightDma),
+}
+
+impl DmaRequestBuffer {
+    fn complete(self, read: bool) -> Option<CompletedDma> {
+        self.finish(read, true)
+    }
+
+    fn abort(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        self.finish(read, quiesced)
+    }
+
+    fn finish(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        match self {
+            Self::Bounce { buffer, readback } => {
+                if !quiesced {
+                    let _quarantined = buffer.quarantine();
+                    return None;
+                }
+                if read {
+                    let completed = unsafe { buffer.complete_after_quiesce() };
+                    if let Some((dst, len)) = readback {
+                        completed.copy_from_device_to_slice(unsafe {
+                            core::slice::from_raw_parts_mut(dst.as_ptr(), len)
+                        });
+                    }
+                    None
+                } else {
+                    drop(unsafe { buffer.complete_after_quiesce() });
+                    None
+                }
+            }
+            Self::Owned(in_flight) => {
+                if !quiesced {
+                    let _quarantined = in_flight.quarantine();
+                    return None;
+                }
+                Some(unsafe { in_flight.complete_after_quiesce() })
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,10 +293,19 @@ impl BlockRequestSlot {
     }
 
     pub fn complete(&mut self, id: RequestId) -> Result<(), Error> {
+        self.complete_with_dma(id, None)
+    }
+
+    fn complete_with_dma(
+        &mut self,
+        id: RequestId,
+        completed_dma: Option<CompletedDma>,
+    ) -> Result<(), Error> {
         if self.state.id() != Some(id) {
             return Err(Error::InvalidArgument);
         }
         self.state = BlockTransferState::Idle;
+        self.completed_dma = completed_dma;
         Ok(())
     }
 
@@ -255,7 +344,10 @@ pub(crate) fn build_descriptors(
         if written >= ADMA2_DESC_COUNT {
             return Err(Error::Misaligned);
         }
-        let chunk = remaining.min(ADMA2_MAX_PER_DESC);
+        let boundary_room = DWC_MSHC_ADMA_BOUNDARY - ((base + offset) % DWC_MSHC_ADMA_BOUNDARY);
+        let chunk = remaining
+            .min(ADMA2_MAX_PER_DESC)
+            .min(boundary_room as usize);
         let is_last = chunk == remaining;
         let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
         if is_last {
@@ -289,6 +381,7 @@ impl Sdhci {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Read)?;
         let result = match mode {
             BlockTransferMode::Dma => {
@@ -320,6 +413,7 @@ impl Sdhci {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Write)?;
         let result = match mode {
             BlockTransferMode::Dma => {
@@ -331,6 +425,52 @@ impl Sdhci {
             _ => Err(Error::UnsupportedCommand),
         };
         match result {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_read_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_read_request(start_block, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_write_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Write) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_write_request(start_block, buffer, dma, id) {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -416,12 +556,11 @@ impl Sdhci {
                             | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
-                    return Ok(DataCommandPoll::Pending);
                 }
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot);
+                    let _ = self.abort_block_request(request, id, slot);
                     return Err(err);
                 }
             }
@@ -437,10 +576,19 @@ impl Sdhci {
             // Future BlockPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot);
+                let _ = self.abort_block_request(request, id, slot);
                 Err(err)
             }
         }
+    }
+
+    pub fn abort_block_request_response(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<(), Error> {
+        self.abort_block_request(request, id, slot)
     }
 
     fn build_dma_read_request(
@@ -455,13 +603,10 @@ impl Sdhci {
             return Err(Error::UnsupportedCommand);
         }
         let block_count = dma_read_block_count(size)?;
-        let map = dma
-            .map_streaming_slice_for_device(
-                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::FromDevice,
-            )
+        let backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::FromDevice)
             .map_err(map_dma_error)?;
+        let dma_addr = backing.dma_addr().as_u64();
+        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
         let mut desc = dma
             .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
@@ -473,7 +618,7 @@ impl Sdhci {
         self.submit_adma2_blocks_mapped(
             &cmd,
             block_count,
-            map.dma_addr().as_u64(),
+            dma_addr,
             &mut desc,
             DataDirection::Read,
             Phase::DataRead,
@@ -481,9 +626,12 @@ impl Sdhci {
         Ok(BlockRequest {
             inner: BlockRequestKind::Read {
                 id,
-                map,
+                buffer: DmaRequestBuffer::Bounce {
+                    buffer: in_flight,
+                    readback: Some((buffer, size.get())),
+                },
                 _desc: desc,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase: Phase::DataRead,
                 stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
@@ -504,13 +652,13 @@ impl Sdhci {
             return Err(Error::UnsupportedCommand);
         }
         let block_count = dma_write_block_count(size)?;
-        let map = dma
-            .map_streaming_slice_for_device(
-                unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), size.get()) },
-                BLOCK_SIZE,
-                DmaDirection::ToDevice,
-            )
+        let mut backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::ToDevice)
             .map_err(map_dma_error)?;
+        backing.copy_to_device_from_slice(unsafe {
+            core::slice::from_raw_parts(buffer.as_ptr(), size.get())
+        });
+        let dma_addr = backing.dma_addr().as_u64();
+        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
         let mut desc = dma
             .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
             .map_err(map_dma_error)?;
@@ -522,7 +670,7 @@ impl Sdhci {
         self.submit_adma2_blocks_mapped(
             &cmd,
             block_count,
-            map.dma_addr().as_u64(),
+            dma_addr,
             &mut desc,
             DataDirection::Write,
             Phase::DataWrite,
@@ -530,9 +678,126 @@ impl Sdhci {
         Ok(BlockRequest {
             inner: BlockRequestKind::Write {
                 id,
-                _map: map,
+                buffer: DmaRequestBuffer::Bounce {
+                    buffer: in_flight,
+                    readback: None,
+                },
                 _desc: desc,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
+                phase: Phase::DataWrite,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: block_count > 1,
+                response: None,
+            },
+        })
+    }
+
+    fn build_prepared_dma_read_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if !self.supports_adma2() {
+            return Err(PreparedDmaSubmitError::new(
+                Error::UnsupportedCommand,
+                buffer,
+            ));
+        }
+        if buffer.direction() != DmaDirection::FromDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match dma_read_block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let mut desc = match dma
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+        {
+            Ok(desc) => desc,
+            Err(err) => return Err(PreparedDmaSubmitError::new(map_dma_error(err), buffer)),
+        };
+        let cmd = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        match self.submit_adma2_blocks_mapped(
+            &cmd,
+            block_count,
+            buffer.dma_addr().as_u64(),
+            &mut desc,
+            DataDirection::Read,
+            Phase::DataRead,
+        ) {
+            Ok(()) => {}
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        }
+        let buffer = unsafe { buffer.into_in_flight() };
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Read {
+                id,
+                buffer: DmaRequestBuffer::Owned(buffer),
+                _desc: desc,
+                cmd_index: cmd.index,
+                phase: Phase::DataRead,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: block_count > 1,
+                response: None,
+            },
+        })
+    }
+
+    fn build_prepared_dma_write_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if !self.supports_adma2() {
+            return Err(PreparedDmaSubmitError::new(
+                Error::UnsupportedCommand,
+                buffer,
+            ));
+        }
+        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match dma_write_block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let mut desc = match dma
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+        {
+            Ok(desc) => desc,
+            Err(err) => return Err(PreparedDmaSubmitError::new(map_dma_error(err), buffer)),
+        };
+        let cmd = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        match self.submit_adma2_blocks_mapped(
+            &cmd,
+            block_count,
+            buffer.dma_addr().as_u64(),
+            &mut desc,
+            DataDirection::Write,
+            Phase::DataWrite,
+        ) {
+            Ok(()) => {}
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        }
+        let buffer = unsafe { buffer.into_in_flight() };
+        Ok(BlockRequest {
+            inner: BlockRequestKind::Write {
+                id,
+                buffer: DmaRequestBuffer::Owned(buffer),
+                _desc: desc,
+                cmd_index: cmd.index,
                 phase: Phase::DataWrite,
                 stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
@@ -602,6 +867,7 @@ impl Sdhci {
         direction: DataDirection,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let transfer_direction = match direction {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
@@ -669,7 +935,7 @@ impl Sdhci {
                 len,
                 block_size: block_size_usize,
                 offset: 0,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -681,7 +947,7 @@ impl Sdhci {
                 len,
                 block_size: block_size_usize,
                 offset: 0,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -732,23 +998,53 @@ impl Sdhci {
         response
     }
 
-    fn finish_block_request(&mut self, request: BlockRequest) -> Result<(), Error> {
-        match request.inner {
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {}
-            BlockRequestKind::Read { stage, .. } => {
-                if stage == BlockRequestStage::Command {
-                    let _ = self.take_command_response();
-                }
-            }
-            BlockRequestKind::Write { stage, .. } => {
-                if stage == BlockRequestStage::Command {
-                    let _ = self.take_command_response();
-                }
-            }
+    fn finish_block_request(
+        &mut self,
+        request: BlockRequest,
+    ) -> Result<Option<CompletedDma>, Error> {
+        self.finish_block_request_with_quiesce(request, true)
+    }
+
+    fn finish_block_request_with_quiesce(
+        &mut self,
+        request: BlockRequest,
+        quiesced: bool,
+    ) -> Result<Option<CompletedDma>, Error> {
+        if !quiesced {
+            self.poison_dma();
+            core::mem::forget(request);
+            self.pending_data = None;
+            self.active_data_cmd = 0;
+            self.irq.state.end_request();
+            return Ok(None);
         }
+        let completed_dma = match request.inner {
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => None,
+            BlockRequestKind::Read { stage, buffer, .. } => {
+                if stage == BlockRequestStage::Command {
+                    let _ = self.take_command_response();
+                }
+                if quiesced {
+                    buffer.complete(true)
+                } else {
+                    buffer.abort(true, false)
+                }
+            }
+            BlockRequestKind::Write { stage, buffer, .. } => {
+                if stage == BlockRequestStage::Command {
+                    let _ = self.take_command_response();
+                }
+                if quiesced {
+                    buffer.complete(false)
+                } else {
+                    buffer.abort(false, false)
+                }
+            }
+        };
         self.pending_data = None;
         self.active_data_cmd = 0;
-        Ok(())
+        self.irq.state.end_request();
+        Ok(completed_dma)
     }
 
     fn finish_dma_data(
@@ -763,12 +1059,10 @@ impl Sdhci {
 
         let stop_after_complete = match &mut active.inner {
             BlockRequestKind::Read {
-                map,
                 stop_after_complete,
                 stage,
                 ..
             } => {
-                map.complete_for_cpu_all();
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
@@ -792,8 +1086,8 @@ impl Sdhci {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active)?;
-        slot.complete(id)?;
+        let completed_dma = self.finish_block_request(active)?;
+        slot.complete_with_dma(id, completed_dma)?;
         Ok(DataCommandPoll::Complete(response))
     }
 
@@ -809,14 +1103,14 @@ impl Sdhci {
                 let _ = self.take_command_response()?;
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
-                self.finish_block_request(active)?;
-                slot.complete(id)?;
+                let completed_dma = self.finish_block_request(active)?;
+                slot.complete_with_dma(id, completed_dma)?;
                 Ok(DataCommandPoll::Complete(response))
             }
             // Future CommandPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot);
+                let _ = self.abort_block_request(request, id, slot);
                 Err(err)
             }
         }
@@ -863,12 +1157,11 @@ impl Sdhci {
                         }
                     }
                     set_fifo_stage(request, BlockRequestStage::Data)?;
-                    return Ok(DataCommandPoll::Pending);
                 }
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot);
+                    let _ = self.abort_block_request(request, id, slot);
                     return Err(err);
                 }
             }
@@ -890,7 +1183,7 @@ impl Sdhci {
             // Future BlockPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot);
+                let _ = self.abort_block_request(request, id, slot);
                 Err(err)
             }
         }
@@ -957,7 +1250,8 @@ impl Sdhci {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active)?;
+        let completed_dma = self.finish_block_request(active)?;
+        drop(completed_dma);
         slot.complete(id)?;
         Ok(DataCommandPoll::Complete(response))
     }
@@ -967,21 +1261,38 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) {
-        let _ = request.take();
-        self.recover_after_adma2_error();
-        let _ = slot.complete(id);
+    ) -> Result<(), Error> {
+        let active = request.take().ok_or(Error::InvalidArgument)?;
+        let recovery = self.recover_after_adma2_error();
+        let completed_dma = self.finish_block_request_with_quiesce(active, recovery.is_ok())?;
+        drop(completed_dma);
+        slot.complete(id)?;
+        recovery
     }
 
-    fn recover_after_adma2_error(&mut self) {
+    fn recover_after_adma2_error(&mut self) -> Result<(), Error> {
+        let was_irq_enabled = self.completion_irq_enabled();
         self.use_dma = false;
         self.pending_data = None;
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
-        let _ = self.reset_cmd();
-        let _ = self.reset_dat();
+        self.clear_cached_irq_status();
+
+        let cmd = self.reset_cmd();
+        let dat = self.reset_dat();
+        match (cmd, dat) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), _) | (_, Err(err)) => {
+                let fallback = self.reset_all();
+                self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
+                self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+                self.clear_cached_irq_status();
+                self.restore_completion_irq_after_reset(was_irq_enabled);
+                fallback.map_err(|_| err)
+            }
+        }
     }
 
     pub(crate) fn poll_data_complete_with_adma(
@@ -1008,6 +1319,24 @@ impl Sdhci {
             });
         }
         Ok(BlockPoll::Pending)
+    }
+
+    fn poll_fifo_data_complete(
+        &mut self,
+        cmd_index: u8,
+        phase: Phase,
+        write: bool,
+    ) -> Result<BlockPoll, Error> {
+        match self.poll_data_complete_with_adma(cmd_index, phase)? {
+            BlockPoll::Pending if !data_line_inhibited(self) => Ok(BlockPoll::Complete),
+            // Some DWCMSHC instances can miss the polling-visible transfer
+            // complete bit for PIO writes. Once the FIFO path has pushed the
+            // last word, DAT0 high is the card-side busy release signal; the
+            // buffer-write-ready bit is not guaranteed to remain asserted at
+            // that point.
+            BlockPoll::Pending if write && fifo_write_not_busy(self) => Ok(BlockPoll::Complete),
+            poll => Ok(poll),
+        }
     }
 }
 
@@ -1054,12 +1383,18 @@ fn poll_fifo_read_step(
     phase: Phase,
 ) -> Result<BlockPoll, Error> {
     if *offset >= len {
-        return host.poll_data_complete_with_adma(cmd_index, phase);
+        return host.poll_fifo_data_complete(cmd_index, phase, false);
     }
 
-    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
-    if status & NORMAL_INT_BUFFER_READ_READY == 0 {
-        return poll_fifo_status(host, status, cmd_index, phase, true);
+    let (status, error) =
+        host.take_fifo_irq_status(NORMAL_INT_BUFFER_READ_READY | NORMAL_INT_ERROR);
+    if status & NORMAL_INT_ERROR != 0 {
+        return poll_fifo_status(host, status, error, cmd_index, phase, true);
+    }
+    if status & NORMAL_INT_BUFFER_READ_READY == 0
+        && !fifo_present_state_ready(host, PRESENT_BUFFER_READ_ENABLE)
+    {
+        return poll_fifo_status(host, status, error, cmd_index, phase, true);
     }
 
     let end = (*offset + block_size).min(len);
@@ -1086,12 +1421,18 @@ fn poll_fifo_write_step(
     phase: Phase,
 ) -> Result<BlockPoll, Error> {
     if *offset >= len {
-        return host.poll_data_complete_with_adma(cmd_index, phase);
+        return host.poll_fifo_data_complete(cmd_index, phase, true);
     }
 
-    let status = host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
-    if status & NORMAL_INT_BUFFER_WRITE_READY == 0 {
-        return poll_fifo_status(host, status, cmd_index, phase, false);
+    let (status, error) =
+        host.take_fifo_irq_status(NORMAL_INT_BUFFER_WRITE_READY | NORMAL_INT_ERROR);
+    if status & NORMAL_INT_ERROR != 0 {
+        return poll_fifo_status(host, status, error, cmd_index, phase, false);
+    }
+    if status & NORMAL_INT_BUFFER_WRITE_READY == 0
+        && !fifo_present_state_ready(host, PRESENT_BUFFER_WRITE_ENABLE)
+    {
+        return poll_fifo_status(host, status, error, cmd_index, phase, false);
     }
 
     let end = (*offset + block_size).min(len);
@@ -1107,9 +1448,22 @@ fn poll_fifo_write_step(
     Ok(BlockPoll::Pending)
 }
 
+fn fifo_present_state_ready(host: &Sdhci, ready_mask: u32) -> bool {
+    host.read_u32(REG_PRESENT_STATE) & ready_mask != 0
+}
+
+fn data_line_inhibited(host: &Sdhci) -> bool {
+    host.read_u32(REG_PRESENT_STATE) & PRESENT_DAT_INHIBIT != 0
+}
+
+fn fifo_write_not_busy(host: &Sdhci) -> bool {
+    host.read_u32(REG_PRESENT_STATE) & PRESENT_DAT0_LINE_SIGNAL_LEVEL != 0
+}
+
 fn poll_fifo_status(
     host: &mut Sdhci,
     status: u16,
+    error: u16,
     cmd_index: u8,
     phase: Phase,
     read: bool,
@@ -1118,17 +1472,22 @@ fn poll_fifo_status(
         return Ok(BlockPoll::Pending);
     }
 
+    log::info!(
+        "sdhci: data buffer cached status CMD{} normal={:#06x} error={:#06x}",
+        cmd_index,
+        status,
+        error
+    );
     host.log_status("data buffer error", cmd_index);
-    let err = host.read_u16(REG_ERROR_INT_STATUS);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
     host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
     let _ = host.reset_cmd();
     let _ = host.reset_dat();
     let ctx = ErrorContext::for_cmd(phase, cmd_index);
     Err(
-        if err & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
+        if error & (ERROR_INT_DATA_TIMEOUT | ERROR_INT_CMD_TIMEOUT) != 0 {
             Error::Timeout(ctx)
-        } else if err & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
+        } else if error & (ERROR_INT_DATA_CRC | ERROR_INT_CMD_CRC) != 0 {
             Error::Crc(ctx)
         } else if read {
             Error::ReadError(ctx)
@@ -1166,7 +1525,14 @@ fn map_dma_error(err: dma_api::DmaError) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use core::ptr::NonNull;
+
+    use sdmmc_protocol::response::Response;
+
     use super::*;
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
 
     fn empty_table() -> [Adma2Desc32; ADMA2_DESC_COUNT] {
         [Adma2Desc32 {
@@ -1203,6 +1569,21 @@ mod tests {
         assert_eq!(table[1].length, 4096);
         assert!(table[1].attr & ADMA2_ATTR_END != 0);
         assert_eq!(table[1].address, 0x2000_0000 + ADMA2_MAX_PER_DESC as u32);
+    }
+
+    #[test]
+    fn splits_at_dwcmshc_128m_boundary() {
+        let mut table = empty_table();
+        let base = DWC_MSHC_ADMA_BOUNDARY - 1024;
+        let n = build_descriptors(&mut table, base, 4096, Phase::DataRead).unwrap();
+
+        assert_eq!(n, 2);
+        assert_eq!(table[0].length, 1024);
+        assert_eq!(table[0].address, base as u32);
+        assert!(table[0].attr & ADMA2_ATTR_END == 0);
+        assert_eq!(table[1].length, 3072);
+        assert_eq!(table[1].address, DWC_MSHC_ADMA_BOUNDARY as u32);
+        assert!(table[1].attr & ADMA2_ATTR_END != 0);
     }
 
     #[test]
@@ -1265,5 +1646,180 @@ mod tests {
 
         assert_send::<BlockRequest>();
         assert_send::<BlockRequestSlot>();
+    }
+
+    #[test]
+    fn block_poll_consumes_data_complete_cached_with_command_complete() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut slot = BlockRequestSlot::default();
+        let id = slot
+            .start(BlockTransferMode::Fifo, BlockTransferDirection::Write)
+            .unwrap();
+        let buffer = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut request = Some(BlockRequest {
+            inner: BlockRequestKind::FifoWrite {
+                id,
+                buffer,
+                len: 0,
+                block_size: BLOCK_SIZE,
+                offset: 0,
+                cmd_index: 24,
+                phase: Phase::DataWrite,
+                stage: BlockRequestStage::Command,
+                stop_after_complete: false,
+                response: None,
+            },
+        });
+        host.command_state = CommandState::Complete {
+            response: Response::Empty,
+        };
+        host.enable_completion_irq();
+        host.irq.state.begin_request();
+        let generation = host.irq.state.generation();
+        host.irq.state.cache_if_current(
+            generation,
+            NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE,
+            0,
+        );
+
+        assert_eq!(
+            host.poll_block_request(&mut request, id, &mut slot),
+            Ok(BlockPoll::Complete)
+        );
+        assert!(request.is_none());
+        assert!(matches!(slot.state(), BlockTransferState::Idle));
+    }
+
+    #[test]
+    fn fifo_write_step_accepts_present_state_ready_without_irq_status() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut buffer = [0x5au8; BLOCK_SIZE];
+        buffer[BLOCK_SIZE - 4..].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+        let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
+        let mut offset = 0;
+        host.write_u32(REG_PRESENT_STATE, PRESENT_BUFFER_WRITE_ENABLE);
+
+        assert_eq!(
+            poll_fifo_write_step(
+                &mut host,
+                ptr,
+                buffer.len(),
+                BLOCK_SIZE,
+                &mut offset,
+                24,
+                Phase::DataWrite,
+            ),
+            Ok(BlockPoll::Pending)
+        );
+
+        assert_eq!(offset, BLOCK_SIZE);
+        assert_eq!(host.read_u32(REG_BUFFER_DATA_PORT), 0x1122_3344);
+    }
+
+    #[test]
+    fn fifo_read_step_accepts_present_state_ready_without_irq_status() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut buffer = [0u8; BLOCK_SIZE];
+        let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
+        let mut offset = 0;
+        host.write_u32(REG_PRESENT_STATE, PRESENT_BUFFER_READ_ENABLE);
+        host.write_u32(REG_BUFFER_DATA_PORT, 0xaabb_ccdd);
+
+        assert_eq!(
+            poll_fifo_read_step(
+                &mut host,
+                ptr,
+                4,
+                BLOCK_SIZE,
+                &mut offset,
+                17,
+                Phase::DataRead,
+            ),
+            Ok(BlockPoll::Pending)
+        );
+
+        assert_eq!(offset, 4);
+        assert_eq!(&buffer[..4], &0xaabb_ccddu32.to_le_bytes());
+    }
+
+    #[test]
+    fn fifo_data_complete_accepts_dat_inhibit_clear_without_irq_status() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut buffer = [0u8; BLOCK_SIZE];
+        let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
+        let mut offset = BLOCK_SIZE;
+        host.write_u32(REG_PRESENT_STATE, 0);
+
+        assert_eq!(
+            poll_fifo_read_step(
+                &mut host,
+                ptr,
+                BLOCK_SIZE,
+                BLOCK_SIZE,
+                &mut offset,
+                17,
+                Phase::DataRead,
+            ),
+            Ok(BlockPoll::Complete)
+        );
+    }
+
+    #[test]
+    fn fifo_write_complete_waits_while_dat0_busy_without_xfer_irq() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut buffer = [0u8; BLOCK_SIZE];
+        let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
+        let mut offset = BLOCK_SIZE;
+        host.write_u32(REG_PRESENT_STATE, PRESENT_DAT_INHIBIT);
+
+        assert_eq!(
+            poll_fifo_write_step(
+                &mut host,
+                ptr,
+                BLOCK_SIZE,
+                BLOCK_SIZE,
+                &mut offset,
+                24,
+                Phase::DataWrite,
+            ),
+            Ok(BlockPoll::Pending)
+        );
+    }
+
+    #[test]
+    fn fifo_write_complete_accepts_dat0_ready_without_xfer_irq_or_write_ready() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        let mut buffer = [0u8; BLOCK_SIZE];
+        let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
+        let mut offset = BLOCK_SIZE;
+        host.write_u32(
+            REG_PRESENT_STATE,
+            PRESENT_DAT_INHIBIT | PRESENT_DAT0_LINE_SIGNAL_LEVEL,
+        );
+
+        assert_eq!(
+            poll_fifo_write_step(
+                &mut host,
+                ptr,
+                BLOCK_SIZE,
+                BLOCK_SIZE,
+                &mut offset,
+                24,
+                Phase::DataWrite,
+            ),
+            Ok(BlockPoll::Complete)
+        );
     }
 }

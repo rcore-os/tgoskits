@@ -1,8 +1,8 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
+use ax_kspin::SpinRaw as Mutex;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
-use spin::Mutex;
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DescriptorType, DeviceDescriptor, DeviceDescriptorBase,
@@ -167,7 +167,7 @@ impl Device {
 
         let dci = Dci::CTRL;
         self.ctx.with_input(|input| {
-            let _ = input.control_mut().add_context_flag(1); // Endpoint 0 Context
+            input.control_mut().set_add_context_flag(1); // Endpoint 0 Context
 
             let endpoint = input.device_mut().endpoint_mut(dci.as_usize());
             endpoint.set_max_packet_size(packet_size);
@@ -242,7 +242,6 @@ impl Device {
 
                 while let Some(p) = parent_id {
                     let parent_hub = info.infos.get(&p).unwrap();
-                    tt_port = parent_hub.port_id;
                     if parent_hub.hub_depth == -1 {
                         break;
                     }
@@ -250,6 +249,7 @@ impl Device {
                         hs_parent = Some(p);
                         break;
                     }
+                    tt_port = parent_hub.port_id;
                     parent_id = parent_hub.parent;
                 }
 

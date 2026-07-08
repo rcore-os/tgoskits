@@ -1,5 +1,6 @@
-use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
+use ax_plat::mem::{IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr};
 use heapless::Vec;
+use someboot::ArchTrait;
 use somehal::mem::MemoryType;
 use spin::Once;
 
@@ -19,6 +20,13 @@ const X86_RESERVED_RAM_RANGES: &[RawRange] = &[
     // Match the static q35 platform: the low 2 MiB contains legacy holes and
     // boot-time data such as the AP trampoline, and must not enter the heap.
     (0, 0x20_0000),
+];
+
+#[cfg(target_arch = "loongarch64")]
+const LOONGARCH_RESERVED_RAM_RANGES: &[RawRange] = &[
+    // Keep the low RAM identity-mappable for passthrough DMA used by the
+    // LoongArch QEMU virt machine.
+    (0, 0x1000_0000),
 ];
 
 struct MemIfImpl;
@@ -74,10 +82,6 @@ impl MemIf for MemIfImpl {
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
         RESERVED_LIST.call_once(|| {
             let mut list = Vec::new();
-            #[cfg(target_arch = "x86_64")]
-            for &range in X86_RESERVED_RAM_RANGES {
-                push_non_overlapping(&mut list, range);
-            }
             for r in somehal::mem::memory_map() {
                 if matches!(
                     r.memory_type,
@@ -85,6 +89,14 @@ impl MemIf for MemIfImpl {
                 ) {
                     push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
+            }
+            #[cfg(target_arch = "x86_64")]
+            for &range in X86_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
+            }
+            #[cfg(target_arch = "loongarch64")]
+            for &range in LOONGARCH_RESERVED_RAM_RANGES {
+                push_non_overlapping(&mut list, range);
             }
             list
         })
@@ -107,6 +119,25 @@ impl MemIf for MemIfImpl {
         })
     }
 
+    fn prepare_iomap(
+        addr: PhysAddr,
+        size: usize,
+        attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError> {
+        if size == 0 {
+            return Err(IomapError::InvalidInput);
+        }
+        let paddr: PhysAddr =
+            <someboot::arch::Arch as ArchTrait>::canonicalize_paddr(addr.as_usize()).into();
+        if attrs == IomapAttrs::DEVICE
+            && let Some(vaddr) =
+                <someboot::arch::Arch as ArchTrait>::ioremap_device(paddr.as_usize(), size)
+        {
+            return Ok(IomapDecision::Mapped((vaddr as usize).into()));
+        }
+        Ok(IomapDecision::UseGeneric(paddr))
+    }
+
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         (somehal::mem::phys_to_virt(paddr.as_usize()) as usize).into()
     }
@@ -118,6 +149,10 @@ impl MemIf for MemIfImpl {
     fn kernel_aspace() -> (VirtAddr, usize) {
         let range = somehal::mem::kernel_space();
         (range.start.into(), range.len())
+    }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        <someboot::arch::Arch as ArchTrait>::user_aspace_needs_kernel_mappings()
     }
 }
 

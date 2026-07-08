@@ -1,0 +1,71 @@
+[package]
+name = "arceos-test-suit"
+version = "0.3.1"
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+std = []
+ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std"]
+memtest = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
+task-yield = ["ax-std", "ax-std/multitask"]
+sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rr"]
+sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-cfs"]
+task-affinity = ["ax-std", "ax-std/multitask"]
+task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
+task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
+task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
+task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
+task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
+task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
+task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
+task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
+task-smp-online = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
+task-stack-guard-page = ["ax-std", "ax-std/multitask", "ax-std/paging", "ax-std/stack-guard-page"]
+net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
+fs-basic = ["ax-std", "ax-driver/virtio-blk", "ax-std/alloc", "ax-std/fatfs"]
+debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
+debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
+display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-std/display"]
+exception-breakpoint = ["ax-std"]
+exception-page-fault = ["ax-std", "ax-std/paging"]
+lockdep-baseline = ["ax-std", "dep:ax-kspin", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
+lockdep-detect = [
+    "ax-std",
+    "dep:ax-kspin",
+    "dep:axfs-ng-vfs",
+    "axfs-ng-vfs/lockdep",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/lockdep",
+]
+all = [
+    "memtest",
+    "task-yield",
+    "task-affinity",
+    "task-wait-queue",
+    "task-wait-queue-remote-wake",
+    "task-ipi",
+    "task-irq",
+    "task-tls",
+    "task-parallel",
+    "task-priority",
+    "task-sleep",
+    "net-loopback",
+    "fs-basic",
+    "debug-backtrace",
+    "display-basic",
+    "exception-breakpoint",
+    "lockdep-baseline",
+]
+
+[dependencies]
+ax-driver = { workspace = true, optional = true }
+ax-hal = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true }
+axbacktrace = { workspace = true, optional = true }
+axfs-ng-vfs = { workspace = true, optional = true }
+ax-kspin = { workspace = true, optional = true }
+embedded-graphics = { version = "0.8", optional = true }
+rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

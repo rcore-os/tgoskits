@@ -16,7 +16,10 @@ use buddy_slab_allocator::{
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance for buddy-slab mode.
-#[cfg_attr(all(target_os = "none", not(test)), global_allocator)]
+#[cfg_attr(
+    all(any(target_os = "none", feature = "global-allocator"), not(test)),
+    global_allocator
+)]
 static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();
 
 /// The default byte allocator for buddy-slab mode.
@@ -42,14 +45,14 @@ impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
         }
     }
 
-    fn init(&mut self, cpu_id: usize) {
+    fn init_during_cpu_bringup(&mut self, cpu_id: usize) {
         let cpu_id = u16::try_from(cpu_id).expect("CPU id exceeds per-CPU slab range");
         assert!(
             self.cpu_id.is_none(),
             "per-CPU slab is already initialized on this CPU",
         );
         self.cpu_id = Some(cpu_id);
-        *self.inner.lock() = SlabAllocator::new();
+        *self.inner.get_mut() = SlabAllocator::new();
     }
 
     fn cpu_id_checked(&self) -> u16 {
@@ -371,12 +374,18 @@ pub fn global_allocator() -> &'static GlobalAllocator {
     &GLOBAL_ALLOCATOR
 }
 
-/// Initializes the per-CPU slab for the current CPU.
+/// Initializes the per-CPU slab for the current CPU during CPU bring-up.
 ///
 /// Must run after per-CPU storage is initialized and before scheduler, IPI, or
 /// IRQ paths can allocate on this CPU.
 pub fn init_percpu_slab(cpu_id: usize) {
-    PERCPU_SLAB.with_current(|slab| slab.init(cpu_id));
+    // Safety: while the CPU-local slab is still private to this CPU, initialize
+    // it directly instead of entering the runtime SpinNoIrq guard path.
+    unsafe {
+        PERCPU_SLAB
+            .current_ref_mut_raw()
+            .init_during_cpu_bringup(cpu_id)
+    };
 }
 
 /// Initializes the global allocator with the given memory region.

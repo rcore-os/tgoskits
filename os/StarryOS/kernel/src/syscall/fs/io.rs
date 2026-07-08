@@ -5,12 +5,14 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{__kernel_off_t, O_APPEND};
+use linux_raw_sys::general::{
+    __kernel_off_t, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
@@ -23,7 +25,7 @@ use crate::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
     task::AsThread,
 };
 
@@ -66,6 +68,29 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     {
         pos_l
     }
+}
+
+// Writes zero-filled chunks into the file over the requested byte range.
+fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
+    const ZERO_CHUNK_SIZE: usize = 64 * 1024;
+
+    let zeroes = vec![0; ZERO_CHUNK_SIZE];
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = remaining.min(ZERO_CHUNK_SIZE as u64) as usize;
+        let mut written = 0;
+        while written < chunk {
+            let n = file.write_at(&zeroes[written..chunk], offset)?;
+            if n == 0 {
+                return Err(AxError::WriteZero);
+            }
+            written += n;
+            offset += n as u64;
+            remaining -= n as u64;
+        }
+    }
+
+    Ok(())
 }
 
 struct DummyFd;
@@ -172,8 +197,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     Err(AxError::from(LinuxError::ESPIPE))
 }
 
-pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
-    let path = path.get_as_str()?;
+pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isize> {
+    let path = vm_load_path_string(path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
         return Err(AxError::from(LinuxError::ENOENT));
@@ -183,7 +208,7 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
     }
     let file = OpenOptions::new()
         .write(true)
-        .open(&FS_CONTEXT.lock(), path)?
+        .open(&FS_CONTEXT.lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
@@ -244,7 +269,13 @@ pub fn sys_fallocate(
     let f = file_or_espipe_write(fd)?;
     let f_like = get_file_like(fd)?;
     memfd_check_write_seal(&f_like)?;
-    if mode != 0 {
+
+    let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
+    let operation = mode & !FALLOC_FL_KEEP_SIZE;
+    let supported_mode = operation == 0 && !keep_size
+        || operation == FALLOC_FL_ZERO_RANGE
+        || operation == FALLOC_FL_PUNCH_HOLE && keep_size;
+    if !supported_mode {
         return Err(AxError::OperationNotSupported);
     }
     if offset < 0 || len <= 0 {
@@ -267,15 +298,39 @@ pub fn sys_fallocate(
             return Err(AxError::OperationNotPermitted);
         }
         let cur_len = f.inner().backend()?.location().len()?;
-        if end > cur_len && seals & F_SEAL_GROW != 0 {
+        if !keep_size && end > cur_len && seals & F_SEAL_GROW != 0 {
             return Err(AxError::OperationNotPermitted);
         }
     }
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
     let old_len = file.location().len()?;
-    memfd_check_resize_seals(&f_like, old_len, old_len.max(end))?;
-    file.set_len(old_len.max(end))?;
+    let new_len = if keep_size { old_len } else { old_len.max(end) };
+    memfd_check_resize_seals(&f_like, old_len, new_len)?;
+
+    match operation {
+        0 => {
+            if new_len != old_len {
+                file.set_len(new_len)?;
+            }
+        }
+        FALLOC_FL_ZERO_RANGE => {
+            if new_len != old_len {
+                file.set_len(new_len)?;
+            }
+            let zero_end = old_len.min(end);
+            if (offset as u64) < zero_end {
+                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
+            }
+        }
+        FALLOC_FL_PUNCH_HOLE => {
+            let zero_end = old_len.min(end);
+            if (offset as u64) < zero_end {
+                write_zero_range(file, offset as u64, zero_end - offset as u64)?;
+            }
+        }
+        _ => unreachable!(),
+    }
     Ok(0)
 }
 
@@ -672,12 +727,12 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             *pos += bytes_written as u64;
             user.vm_write(*pos)?;
         }
+        total_written += bytes_written;
+        remaining -= bytes_written;
+
         if bytes_written < bytes_read {
             break;
         }
-
-        total_written += bytes_written;
-        remaining -= bytes_written;
     }
 
     Ok(total_written)

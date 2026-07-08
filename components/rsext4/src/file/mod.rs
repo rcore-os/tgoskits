@@ -32,7 +32,11 @@ mod rename;
 
 pub use blocks::build_file_block_mapping_with_inode_num;
 pub use create::{create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner};
-pub use delete::{delete_dir, delete_file, is_dir_empty, unlink};
-pub use io::{read_file, truncate, write_file, write_inode_data};
+pub use delete::{
+    delete_dir, delete_file, free_inode, is_dir_empty, remove_inodeentry_from_parentdir, unlink,
+};
+pub use io::{
+    read_file, read_inode_data_into, truncate, truncate_inode, write_file, write_inode_data,
+};
 pub use link::link;
 pub use rename::{mv, rename};

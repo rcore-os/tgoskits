@@ -6,7 +6,7 @@
 > 版本：`0.2.2`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/vmx/*`、`src/regs/*`
 
-`x86_vcpu` 是 Axvisor 所依赖的 ArceOS Hypervisor 体系中面向 x86_64 的架构后端，实现了基于 Intel VT-x/VMX 的 vCPU 执行引擎。它负责把 `axvcpu` 给出的抽象接口落到 x86 硬件虚拟化机制上，包括 VMXON、VMCS 初始化、vCPU 运行、VM-exit 解析、x2APIC 相关 MSR 拦截以及中断注入等。它不是完整的虚拟机管理器，但它是 x86 虚拟化执行面最核心的那一层。
+`x86_vcpu` 是 Axvisor 所依赖的 ArceOS Hypervisor 体系中面向 x86_64 的架构后端，实现了基于 Intel VT-x/VMX 和 AMD SVM 的 vCPU 执行引擎。它实现 `axvm-types` 给出的架构协议接口，并把 PIO、APIC、MSR、EPT/NPT 等 x86 语义保留在本 crate 内部，统一生命周期和运行循环由 `axvm` 负责。
 
 ## 架构设计
 
@@ -14,9 +14,9 @@
 
 该 crate 的职责可以概括为三点：
 
-- 实现 x86_64 架构下的 `AxArchVCpu`
+- 实现 x86_64 架构下的 `VmArchVcpuOps`
 - 实现每物理 CPU 的 VMX 启停逻辑
-- 将 VMX exit 原因翻译成 `axvcpu::AxVCpuExitReason`
+- 将 VMX/SVM exit 原因翻译成 `axvm-types::VmExit`
 
 它不承担：
 
@@ -82,7 +82,7 @@
 
 ### 1.4 `VmxPerCpuState`：每核硬件虚拟化开关
 
-`VmxPerCpuState` 对应 `axvcpu::AxArchPerCpu`。它负责：
+`VmxPerCpuState` 对应 `axvm-types::VmArchPerCpuOps`。它负责：
 
 - 打开 CR4.VMXE
 - 检查 VMX 能力 MSR
@@ -137,7 +137,7 @@
 
 #### 协议翻译层
 
-如果 exit 不能在本地完全处理，就继续翻译成 `AxVCpuExitReason` 上抛给 `axvm`/VMM，例如：
+如果 exit 不能在本地完全处理，就继续翻译成 `VmExit` 上抛给 `axvm`/VMM，例如：
 
 - `Hypercall`
 - `IoRead` / `IoWrite`
@@ -178,11 +178,11 @@
 
 ### 2.2 关键 API 语义
 
-作为 `AxArchVCpu` 实现，它最关键的接口包括：
+作为 `VmArchVcpuOps` 实现，它最关键的接口包括：
 
 - `new()`
 - `set_entry()`
-- `set_ept_root()`
+- `set_nested_page_table_root()`
 - `setup()`
 - `run()`
 - `bind()`
@@ -190,7 +190,7 @@
 - `inject_interrupt()`
 - `set_return_value()`
 
-这些接口共同构成高层 `axvcpu` 调用架构后端的最小协议。
+这些接口共同构成高层 `axvm` 调用架构后端的最小协议。
 
 ### 2.3 典型运行路径
 
@@ -201,7 +201,7 @@ flowchart TD
     C --> D[bind 到当前物理 CPU]
     D --> E[vmlaunch/vmresume]
     E --> F[发生 VM-exit]
-    F --> G[内建处理或翻译为 AxVCpuExitReason]
+    F --> G[内建处理或翻译为 VmExit]
     G --> H[高层 VMM 决策]
 ```
 
@@ -221,7 +221,7 @@ flowchart TD
 
 | 依赖 | 作用 |
 | --- | --- |
-| `axvcpu` | 提供架构无关的 vCPU 抽象与退出协议 |
+| `axvm-types` | 提供架构无关的 vCPU/VM-exit 协议类型 |
 | `axaddrspace` | EPT 相关地址空间基础类型 |
 | `ax-page-table-entry` | `MappingFlags` 等页表权限语义 |
 | `memory_addr` | 地址类型基础 |
@@ -241,7 +241,7 @@ flowchart TD
 
 ```mermaid
 graph TD
-    A[axvcpu] --> B[x86_vcpu]
+    A[axvm-types] --> B[x86_vcpu]
     C[axaddrspace] --> B
     D[axvisor_api] --> B
     E[axdevice_base] --> B
@@ -267,8 +267,8 @@ graph TD
 
 1. 先在 `vmcs.rs` / `definitions.rs` 中确认 exit 信息解析无误
 2. 判断该 exit 应在内建层处理还是上抛高层
-3. 若上抛，映射为现有 `AxVCpuExitReason`
-4. 若现有协议不足，再考虑扩展 `axvcpu` 层统一退出类型
+3. 若上抛，映射为现有 `VmExit`
+4. 若现有协议不足，再考虑扩展 `axvm-types` 中的统一退出类型
 
 ### 4.3 维护时的重点
 
@@ -311,9 +311,9 @@ graph TD
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
 | ArceOS | Hypervisor 扩展链中的 x86 后端 | x86 架构虚拟 CPU 执行层 | 当 ArceOS 作为 Axvisor 宿主时，为 x86 VM 提供 VMX 级执行能力 |
-| StarryOS | 当前仓库中无直接常规依赖 | 间接相关基础件 | StarryOS 若未来接入同一 hypervisor 栈，可通过 `axvm`/`axvcpu` 间接使用它 |
+| StarryOS | 当前仓库中无直接常规依赖 | 间接相关基础件 | StarryOS 若未来接入同一 hypervisor 栈，可通过 `axvm` 间接使用它 |
 | Axvisor | x86 虚拟化执行核心 | x86 vCPU 后端实现 | 与 `axvm`、`axaddrspace`、`axdevice` 等共同组成 x86 客户机执行面 |
 
 ## 总结
 
-`x86_vcpu` 是整个虚拟化栈里最“贴硬件”的组件之一。它把 `axvcpu` 的统一抽象落实为 Intel VMX 的实际执行流程，并把大量 x86 专有的 VMCS、MSR、x2APIC、EPT 细节收拢在架构后端内部。对 Axvisor 而言，它不是可选增强件，而是 x86 客户机能否真正跑起来的关键执行引擎。
+`x86_vcpu` 是整个虚拟化栈里最“贴硬件”的组件之一。它把 `axvm-types` 的共享协议落实为 Intel VMX/SVM 的实际执行流程，并把大量 x86 专有的 VMCS/VMCB、MSR、x2APIC、EPT/NPT 细节收拢在架构后端内部。对 Axvisor 而言，它不是可选增强件，而是 x86 客户机能否真正跑起来的关键执行引擎。

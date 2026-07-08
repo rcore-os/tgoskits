@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.20](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.19...riscv_vplic-v0.4.20) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin
+
+## [0.4.19](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.18...riscv_vplic-v0.4.19) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, axvm-types, axdevice_base
+
+## [0.4.18](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.17...riscv_vplic-v0.4.18) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-errno, axvm-types, axdevice_base
+
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.16...riscv_vplic-v0.4.17) - 2026-06-27
+
+### Other
+
+- updated the following local packages: axdevice_base
+
+## [0.4.16](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.15...riscv_vplic-v0.4.16) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin
+
+## [0.4.15](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.14...riscv_vplic-v0.4.15) - 2026-06-22
+
+### Other
+
+- *(axvm)* route RISC-V IRQs through vPLIC backend ([#1317](https://github.com/rcore-os/tgoskits/pull/1317))
+
+## [0.4.14](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.13...riscv_vplic-v0.4.14) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.4.13](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.12...riscv_vplic-v0.4.13) - 2026-06-03
 
 ### Other

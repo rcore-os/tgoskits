@@ -305,11 +305,11 @@ function HeroTerminal() {
   const sessions = useMemo(() => [
     {
       os: 'ArceOS',
-      command: 'cargo xtask arceos qemu --package ax-helloworld --arch aarch64',
+      command: 'cargo xtask arceos qemu --package arceos-helloworld --arch aarch64',
       output: [
-        'Building ArceOS package ax-helloworld',
+        'Building ArceOS package arceos-helloworld',
         'Launching qemu-system-aarch64 on the virt platform',
-        'Booting app: ax-helloworld',
+        'Booting app: arceos-helloworld',
         'Hello, world!',
       ],
     },
@@ -427,7 +427,7 @@ function CapabilitySection() {
     { icon: 'shield', title: 'Rust 内存安全', desc: '内核、驱动与虚拟化路径均基于 Rust 实现，在编译期消除缓冲区溢出与数据竞争等常见系统漏洞。', to: '/docs/architecture/overview' },
     { icon: 'pulse', title: '四架构支持', desc: 'riscv64、aarch64、x86_64、loongarch64 均可通过 xtask 一键构建与 QEMU 运行，接口统一而适配独立。', to: '/docs/introduction/hardware' },
     { icon: 'chip', title: '镜像与快照闭环', desc: '从配置生成、交叉编译、镜像打包到 QEMU 启动与快照管理，构建产物可追溯、可复现。', to: '/docs/build/overview' },
-    { icon: 'server', title: '分层验证策略', desc: 'Host 侧 cargo test 与 clippy 先行，系统级 QEMU 运行验证跟进，板级回归兜底，验证粒度逐层放大。', to: '/docs/build/test/overview' },
+    { icon: 'server', title: '分层验证策略', desc: 'Host 侧 cargo test 与 clippy 先行，系统级 QEMU 运行验证跟进，板级回归兜底，验证粒度逐层放大。', to: '/docs/build/overview' },
   ];
 
   return (
@@ -564,7 +564,7 @@ function SystemsSection() {
 function WorkflowSection() {
   const steps = [
     { index: '01', title: '理解仓库分层', desc: '阅读 overview 与 repo 文档，建立组件层、系统层和平台层的心智模型。', to: '/docs/introduction/overview', linkLabel: '项目概览', command: 'docs/introduction/overview' },
-    { index: '02', title: '跑通 QEMU 构建', desc: '选择目标系统，用 xtask 一条命令完成编译、镜像生成和虚拟平台运行。', to: '/docs/quickstart/overview', linkLabel: '快速开始', command: 'cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf' },
+    { index: '02', title: '跑通 QEMU 构建', desc: '选择目标系统，用 xtask 一条命令完成编译、镜像生成和虚拟平台运行。', to: '/docs/quickstart/overview', linkLabel: '快速开始', command: 'cargo xtask arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf' },
     { index: '03', title: '参与开发与验证', desc: '进入具体系统指南，了解目录约定、构建命令和验证策略后开始贡献。', to: '/docs/architecture/overview', linkLabel: '架构与验证', command: 'cargo xtask clippy && cargo xtask test' },
   ];
 

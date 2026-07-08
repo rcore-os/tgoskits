@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 #[cfg(not(feature = "stack-guard-page"))]
 use core::alloc::Layout;
+#[cfg(feature = "smp")]
+use core::sync::atomic::AtomicPtr;
 #[cfg(any(
     feature = "preempt",
     all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
@@ -28,9 +30,9 @@ use futures_util::task::AtomicWaker;
 use crate::lockdep::HeldLockStack;
 use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
 
-#[cfg(all(feature = "stack-canary", target_pointer_width = "64"))]
+#[cfg(target_pointer_width = "64")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
-#[cfg(all(feature = "stack-canary", target_pointer_width = "32"))]
+#[cfg(target_pointer_width = "32")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11usize;
 
 /// Required alignment for task kernel stacks. x86_64 task context setup relies
@@ -96,6 +98,18 @@ pub struct TaskInner {
     /// Used to indicate whether the task is running on a CPU.
     #[cfg(feature = "smp")]
     on_cpu: AtomicBool,
+    /// One-shot cross-core wake handoff.
+    ///
+    /// When a remote CPU wins the `Blocked -> Ready` transition for this task
+    /// while it is still `on_cpu` (its context not yet fully saved on its owning
+    /// CPU), the waker must NOT enqueue it — and must not spin on `on_cpu`
+    /// either (that is the cross-core mutual-wake deadlock). Instead it records
+    /// the target run-queue in `cpu_id` and stashes an owned reference here; the
+    /// owning CPU drains it in `clear_prev_task_on_cpu()` once `on_cpu` is false,
+    /// then enqueues + kicks the target. Holds a `*const AxTask` produced by
+    /// `Arc::into_raw` (null = empty). See `run_queue::put_task_with_state`.
+    #[cfg(feature = "smp")]
+    wake_handoff: AtomicPtr<AxTask>,
 
     /// A ticket ID used to identify the timer event.
     /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
@@ -105,6 +119,8 @@ pub struct TaskInner {
 
     #[cfg(feature = "preempt")]
     need_resched: AtomicBool,
+    #[cfg(feature = "preempt")]
+    force_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
 
@@ -202,6 +218,7 @@ impl TaskInner {
     /// Wait for the task to exit, and return the exit code.
     ///
     /// It will return immediately if the task has already exited (but not dropped).
+    #[track_caller]
     pub fn join(&self) -> i32 {
         crate::api::might_sleep();
         self.wait_for_exit
@@ -358,8 +375,12 @@ impl TaskInner {
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
             on_cpu: AtomicBool::new(false),
+            #[cfg(feature = "smp")]
+            wake_handoff: AtomicPtr::new(core::ptr::null_mut()),
             #[cfg(feature = "preempt")]
             need_resched: AtomicBool::new(false),
+            #[cfg(feature = "preempt")]
+            force_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
             interrupted: AtomicBool::new(false),
@@ -490,6 +511,36 @@ impl TaskInner {
 
     #[inline]
     #[cfg(feature = "preempt")]
+    pub(crate) fn set_force_resched_pending(&self, pending: bool) {
+        self.force_resched.store(pending, Ordering::Release)
+    }
+
+    #[inline]
+    #[cfg(feature = "preempt")]
+    fn force_resched_pending(&self) -> bool {
+        self.force_resched.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    #[cfg(all(test, feature = "preempt"))]
+    pub(crate) fn preempt_pending_for_test(&self) -> bool {
+        self.need_resched.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    #[cfg(all(test, feature = "preempt"))]
+    pub(crate) fn force_resched_pending_for_test(&self) -> bool {
+        self.force_resched_pending()
+    }
+
+    #[inline]
+    #[cfg(feature = "preempt")]
+    fn take_force_resched_pending(&self) -> bool {
+        self.force_resched.swap(false, Ordering::AcqRel)
+    }
+
+    #[inline]
+    #[cfg(feature = "preempt")]
     pub(crate) fn preempt_count(&self) -> usize {
         self.preempt_disable_count.load(Ordering::Acquire)
     }
@@ -519,11 +570,17 @@ impl TaskInner {
     fn current_check_preempt_pending() {
         use ax_kernel_guard::NoPreemptIrqSave;
         let curr = crate::current();
-        if curr.need_resched.load(Ordering::Acquire) && curr.can_preempt(0) {
+        if (curr.force_resched_pending() || curr.need_resched.load(Ordering::Acquire))
+            && curr.can_preempt(0)
+        {
             // Note: if we want to print log msg during `preempt_resched`, we have to
             // disable preemption here, because the ax-log may cause preemption.
             let mut rq = crate::current_run_queue::<NoPreemptIrqSave>();
-            if curr.need_resched.load(Ordering::Acquire) {
+            if curr.take_force_resched_pending() {
+                #[cfg(all(feature = "smp", feature = "ipi"))]
+                crate::run_queue::clear_remote_reschedule_pending_for_current_cpu();
+                rq.force_resched()
+            } else if curr.need_resched.load(Ordering::Acquire) {
                 rq.preempt_resched()
             }
         }
@@ -541,7 +598,6 @@ impl TaskInner {
         self.ctx.get()
     }
 
-    #[cfg(feature = "stack-canary")]
     #[inline]
     pub(crate) fn check_stack_canary(&self) {
         if self.kstack.is_canary_intact() {
@@ -570,17 +626,52 @@ impl TaskInner {
     /// while it has not finished its scheduling process.
     /// The `on_cpu field is set to `true` when the task is preparing to run on a CPU,
     /// and it is set to `false` when the task has finished its scheduling process in `clear_prev_task_on_cpu()`.
+    ///
+    /// `SeqCst` because it participates in a store-before-load (Dekker) handshake
+    /// with [`Self::stash_wake`]/[`Self::take_wake`] across two distinct atomics
+    /// (`on_cpu` and `wake_handoff`); Acquire/Release would permit the
+    /// "both sides observe the other's stale value" lost-wakeup execution.
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn on_cpu(&self) -> bool {
-        self.on_cpu.load(Ordering::Acquire)
+        self.on_cpu.load(Ordering::SeqCst)
     }
 
-    /// Sets whether the task is running on a CPU.
+    /// Sets whether the task is running on a CPU. `SeqCst`, see [`Self::on_cpu`].
     #[cfg(feature = "smp")]
     #[inline]
     pub(crate) fn set_on_cpu(&self, on_cpu: bool) {
-        self.on_cpu.store(on_cpu, Ordering::Release)
+        self.on_cpu.store(on_cpu, Ordering::SeqCst)
+    }
+
+    /// Stash an owned reference for a deferred cross-core wake (see the
+    /// `wake_handoff` field). Transfers ownership of `task` into the slot via
+    /// `Arc::into_raw`. Must be paired with exactly one [`Self::take_wake`].
+    #[cfg(feature = "smp")]
+    #[inline]
+    pub(crate) fn stash_wake(&self, task: AxTaskRef) {
+        let ptr = Arc::into_raw(task) as *mut AxTask;
+        // SeqCst: ordered with the `on_cpu` handshake (see `on_cpu`).
+        self.wake_handoff.store(ptr, Ordering::SeqCst);
+    }
+
+    /// Atomically consume a stashed deferred-wake reference, if any. Returns the
+    /// owned `AxTaskRef` to exactly one caller (the swap is the single arbiter);
+    /// all other callers get `None`.
+    #[cfg(feature = "smp")]
+    #[inline]
+    pub(crate) fn take_wake(&self) -> Option<AxTaskRef> {
+        let ptr = self
+            .wake_handoff
+            .swap(core::ptr::null_mut(), Ordering::SeqCst);
+        if ptr.is_null() {
+            None
+        } else {
+            // Safety: `ptr` came from `Arc::into_raw` in `stash_wake`, and the
+            // swap guarantees a single consumer, so this reconstructs the unique
+            // owning `Arc` exactly once.
+            Some(unsafe { Arc::from_raw(ptr as *const AxTask) })
+        }
     }
 }
 
@@ -642,10 +733,7 @@ impl TaskStack {
             align,
             kind: TaskStackKind::Alloc,
         };
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
@@ -667,10 +755,7 @@ impl TaskStack {
             kind: TaskStackKind::GuardedAlloc,
         };
         stack.unmap_guard_page();
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
@@ -687,14 +772,10 @@ impl TaskStack {
             alloc_pages: 0,
             kind: TaskStackKind::Borrowed,
         };
-        #[cfg(feature = "stack-canary")]
-        unsafe {
-            stack.write_canary()
-        };
+        unsafe { stack.write_canary() };
         stack
     }
 
-    #[cfg(feature = "stack-canary")]
     #[inline]
     pub fn bottom(&self) -> VirtAddr {
         VirtAddr::from(self.ptr)
@@ -752,24 +833,21 @@ impl TaskStack {
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     fn canary_ptr(&self) -> *mut usize {
         self.ptr as *mut usize
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     unsafe fn write_canary(&self) {
         unsafe { self.canary_ptr().write(STACK_END_MAGIC) };
     }
 
     #[inline]
-    #[cfg(feature = "stack-canary")]
     pub fn is_canary_intact(&self) -> bool {
         unsafe { self.canary_ptr().read() == STACK_END_MAGIC }
     }
 
-    #[cfg(all(test, feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(all(test, not(feature = "stack-guard-page")))]
     fn corrupt_canary_for_test(&self) {
         unsafe { self.canary_ptr().write(0) };
     }
@@ -815,7 +893,11 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
     while ack_count.load(Ordering::Acquire) != remote_cpu_count {
         core::hint::spin_loop();
         if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
-            panic!("task stack guard page TLB shootdown timeout");
+            let acked = ack_count.load(Ordering::Acquire);
+            panic!(
+                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
+                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
+            );
         }
     }
 }
@@ -868,7 +950,7 @@ impl Drop for TaskStack {
 mod stack_tests {
     use super::{TASK_STACK_ALIGN, TaskStack};
 
-    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(not(feature = "stack-guard-page"))]
     #[test]
     fn task_stack_canary_detects_corruption() {
         let stack = TaskStack::alloc(0x1000);
@@ -879,7 +961,7 @@ mod stack_tests {
         assert!(!stack.is_canary_intact());
     }
 
-    #[cfg(all(feature = "stack-canary", not(feature = "stack-guard-page")))]
+    #[cfg(not(feature = "stack-guard-page"))]
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn task_stack_top_stays_16_byte_aligned() {
@@ -964,7 +1046,7 @@ extern "C" fn task_entry() -> ! {
         crate::run_queue::clear_prev_task_on_cpu();
     }
     // Enable irq (if feature "irq" is enabled) before running the task entry function.
-    #[cfg(feature = "irq")]
+    #[cfg(all(feature = "irq", not(feature = "host-test")))]
     ax_hal::asm::enable_irqs();
     let task = crate::current();
     if let Some(entry) = task.entry.take() {

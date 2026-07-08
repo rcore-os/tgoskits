@@ -1,7 +1,9 @@
-use rdif_intc::Intc;
+use arm_gic_driver::fdt_parse_irq_config;
+use irq_framework::{IrqDomainId, IrqId};
+use rdif_intc::{Intc, Interface};
 use rdrive::Device;
-use someboot::irq::IrqId;
 
+mod its;
 mod v2;
 mod v3;
 
@@ -29,12 +31,18 @@ fn backend() -> GicBackend {
 }
 
 pub fn init_current_cpu() {
+    let cpu_idx = crate::cpu::current_cpu_idx()
+        .unwrap_or_else(|| panic!("current logical CPU index is not available for GIC init"));
+    init_cpu(cpu_idx);
+}
+
+pub fn init_cpu(cpu_idx: usize) {
     match backend() {
         GicBackend::V2 => v2::init_cpu(),
-        GicBackend::V3 => v3::init_cpu(),
+        GicBackend::V3 => v3::init_cpu(cpu_idx),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::init_cpu();
+                v3::init_cpu(cpu_idx);
             } else {
                 v2::init_cpu();
             }
@@ -42,20 +50,71 @@ pub fn init_current_cpu() {
     }
 }
 
-fn get_gicd() -> Device<Intc> {
-    rdrive::get_one().expect("no interrupt controller found")
+fn get_primary_gicd() -> Result<Device<Intc>, crate::irq::IrqError> {
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    crate::irq::intc_by_domain(domain)
 }
 
-pub fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
-    let raw = irq.into();
+pub fn with_gic_domain<T: Interface, R>(
+    domain: IrqDomainId,
+    f: impl FnOnce(&mut T) -> R,
+) -> Result<R, crate::irq::IrqError> {
+    let mut intc = crate::irq::intc_by_domain(domain)?
+        .try_lock()
+        .map_err(|_| crate::irq::IrqError::Busy)?;
+    let gic = intc
+        .typed_mut::<T>()
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    Ok(f(gic))
+}
+
+pub fn with_primary_gic<T: Interface, R>(
+    f: impl FnOnce(&mut T) -> R,
+) -> Result<R, crate::irq::IrqError> {
+    let mut intc = get_primary_gicd()?
+        .try_lock()
+        .map_err(|_| crate::irq::IrqError::Busy)?;
+    let gic = intc
+        .typed_mut::<T>()
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    Ok(f(gic))
+}
+
+pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
     match backend() {
-        GicBackend::V2 => v2::irq_set_enable(raw, enable),
-        GicBackend::V3 => v3::irq_set_enable(raw, enable),
+        GicBackend::V2 => v2::irq_set_enable(irq, enable),
+        GicBackend::V3 => v3::irq_set_enable(irq, enable),
+        GicBackend::None => Err(crate::irq::IrqError::Unsupported),
+    }
+}
+
+pub fn irq_set_affinity(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    match backend() {
+        GicBackend::V2 => v2::irq_set_affinity(irq, affinity),
+        GicBackend::V3 => v3::irq_set_affinity(irq, affinity),
         GicBackend::None => {
-            v2::irq_set_enable(raw, enable);
-            v3::irq_set_enable(raw, enable);
+            if v3::is_support_icc() {
+                v3::irq_set_affinity(irq, affinity)
+            } else {
+                v2::irq_set_affinity(irq, affinity)
+            }
         }
     }
+}
+
+pub fn setup_irq_by_fdt(cells: &[u32]) -> Result<rdif_intc::IrqTranslation, crate::irq::IrqError> {
+    fdt_parse_irq_config(cells).map_err(|_| crate::irq::IrqError::InvalidIrq)?;
+    let mut gic = rdrive::get_one::<Intc>()
+        .ok_or(crate::irq::IrqError::Unsupported)?
+        .lock()
+        .map_err(|_| crate::irq::IrqError::Controller)?;
+    let translation = gic.translate_fdt(cells)?;
+    gic.configure(&translation)?;
+    Ok(translation)
 }
 
 pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
@@ -73,34 +132,34 @@ pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
     }
 }
 
-fn hardware_cpu_id(cpu_id: usize) -> usize {
-    someboot::smp::cpu_idx_to_id(cpu_id).unwrap_or(cpu_id)
+fn hardware_cpu_id(cpu_idx: usize) -> usize {
+    someboot::smp::cpu_idx_to_id(cpu_idx).unwrap_or(cpu_idx)
 }
 
-#[unsafe(no_mangle)]
-fn __aarch64_irq_handler() {
-    irq_handler();
+pub enum ActiveIrq {
+    V2(v2::ActiveIrq),
+    V3(v3::ActiveIrq),
 }
 
-pub(crate) fn irq_handler() -> someboot::irq::IrqId {
-    match backend() {
-        GicBackend::V2 => v2::handle_irq(),
-        GicBackend::V3 => v3::handle_irq(),
-        GicBackend::None => {
-            if v3::is_support_icc() {
-                v3::handle_irq()
-            } else {
-                v2::handle_irq()
-            }
+impl ActiveIrq {
+    pub fn id(&self) -> rdrive::IrqId {
+        match self {
+            Self::V2(active) => active.id(),
+            Self::V3(active) => active.id(),
         }
     }
 }
 
-fn _handle_irq(hwirq: IrqId) {
-    unsafe extern "Rust" {
-        fn _someboot_handle_irq(hwirq: IrqId);
-    }
-    unsafe {
-        _someboot_handle_irq(hwirq);
+pub fn begin_irq() -> Option<ActiveIrq> {
+    match backend() {
+        GicBackend::V2 => v2::begin_irq().map(ActiveIrq::V2),
+        GicBackend::V3 => v3::begin_irq().map(ActiveIrq::V3),
+        GicBackend::None => {
+            if v3::is_support_icc() {
+                v3::begin_irq().map(ActiveIrq::V3)
+            } else {
+                v2::begin_irq().map(ActiveIrq::V2)
+            }
+        }
     }
 }

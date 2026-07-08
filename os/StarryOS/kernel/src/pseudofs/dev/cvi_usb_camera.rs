@@ -1,16 +1,16 @@
 use core::{any::Any, time::Duration};
 
-use ax_config::plat::PHYS_VIRT_OFFSET;
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use ax_runtime::hal::{
-    mem::{phys_to_virt, virt_to_phys},
-    time::busy_wait,
-};
+use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
+    jpu::{
+        JpuDecoder,
+        regs::{JPU_REG_BASE, VC_REG_BASE},
+    },
     pinmux::{FMUX_USB_VBUS_DET, Pinmux},
     soc::{
         CLKGEN_BASE, CV182X_USB2_PHY_BASE, DWC2_BASE, FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE,
@@ -33,13 +33,34 @@ const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
 const VBUS_GPIO_PIN: u8 = 6;
 const VBUS_GPIO_ACTIVE_HIGH: bool = true;
 
+/// MMIO span of the TOP control block. The PHY ID-pad reset register lives at
+/// `TOP_BASE + 0x3000`, so a single 4K page is not enough — map four pages.
+const TOP_MMIO_SIZE: usize = 0x4000;
+/// MMIO span for the single-page register blocks (CLKGEN, FMUX, IOBLK, GRTC,
+/// GPIO, DWC2 controller, USB2 PHY). Each block's registers fit within one 4K
+/// page; FMUX/IOBLK share a page so their mappings coincide (idempotent).
+const REG_MMIO_SIZE: usize = 0x1000;
+
+/// Map a physical MMIO region into the kernel address space and return its
+/// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
+/// `PHYS_VIRT_OFFSET == 0` and there is no static linear MMIO window — `iomap`
+/// installs a real device mapping and is idempotent for already-mapped pages.
+fn iomap_usize(paddr: usize, size: usize) -> usize {
+    ax_mm::iomap(PhysAddr::from_usize(paddr), size)
+        .unwrap_or_else(|err| panic!("failed to iomap MMIO at {paddr:#x}+{size:#x}: {err:?}"))
+        .as_usize()
+}
+
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
 const MAX_CAPTURE_TRIES: u32 = 8;
+/// Default resolution cap (640×480 = 307200 pixels) guiding UVC frame selection.
+const DEFAULT_RESOLUTION: u32 = 640 * 480;
 
 pub const CVI_CAMERA_IOCTL_INIT: u32 = 1;
 pub const CVI_CAMERA_IOCTL_GET_INFO: u32 = 2;
 pub const CVI_CAMERA_IOCTL_GET_FRAME: u32 = 3;
+pub const CVI_CAMERA_IOCTL_GET_YUV_FRAME: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,6 +80,11 @@ struct UsbCameraSession {
 #[derive(Default)]
 struct UsbCameraState {
     session: Option<UsbCameraSession>,
+    jpu: Option<JpuDecoder>,
+}
+
+fn jpu_dma_to_phys(v: usize) -> usize {
+    virt_to_phys(VirtAddr::from(v)).as_usize()
 }
 
 pub struct CviCamera {
@@ -70,7 +96,7 @@ fn ep0_dma_virt_to_phys(p: *const u8) -> u32 {
 }
 
 unsafe fn enable_usb_clocks_cv181x() {
-    let b = phys_to_virt(PhysAddr::from_usize(CLKGEN_BASE)).as_usize();
+    let b = iomap_usize(CLKGEN_BASE, REG_MMIO_SIZE);
     let en1 = (b + 0x004) as *mut u32;
     let en2 = (b + 0x008) as *mut u32;
     let byp0 = (b + 0x030) as *mut u32;
@@ -86,7 +112,7 @@ unsafe fn enable_usb_clocks_cv181x() {
 
 /// PHY ID pad toggle workaround: switch to device mode first, then host mode.
 unsafe fn cvitek_usb_top_host_bringup() {
-    let top = phys_to_virt(PhysAddr::from_usize(TOP_BASE)).as_usize();
+    let top = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
     let rst = (top + 0x3000) as *mut u32;
     unsafe {
         let v = core::ptr::read_volatile(rst);
@@ -110,19 +136,15 @@ unsafe fn cvitek_usb_top_host_bringup() {
 }
 
 fn pinmux_usb_vbus_det_gpio_output_prep() {
-    let pinmux = unsafe {
-        Pinmux::new(
-            FMUX_BASE + PHYS_VIRT_OFFSET,
-            IOBLK_BASE + PHYS_VIRT_OFFSET,
-            IOBLK_GRTC_BASE + PHYS_VIRT_OFFSET,
-        )
-    };
+    let fmux_vaddr = iomap_usize(FMUX_BASE, REG_MMIO_SIZE);
+    let ioblk_vaddr = iomap_usize(IOBLK_BASE, REG_MMIO_SIZE);
+    let ioblk_grtc_vaddr = iomap_usize(IOBLK_GRTC_BASE, REG_MMIO_SIZE);
+    let pinmux = unsafe { Pinmux::new(fmux_vaddr, ioblk_vaddr, ioblk_grtc_vaddr) };
     pinmux
         .fmux()
         .usb_vbus_det
         .write(FMUX_USB_VBUS_DET::FSEL::XGPIOB_6);
-    let iob = phys_to_virt(PhysAddr::from_usize(IOBLK_BASE)).as_usize();
-    let r = (iob + IOBLK_G1_USB_VBUS_DET_OFF) as *mut u32;
+    let r = (ioblk_vaddr + IOBLK_G1_USB_VBUS_DET_OFF) as *mut u32;
     unsafe {
         let v = core::ptr::read_volatile(r);
         core::ptr::write_volatile(r, v | (7 << 5));
@@ -130,7 +152,7 @@ fn pinmux_usb_vbus_det_gpio_output_prep() {
 }
 
 fn enable_usb_vbus_gpio() {
-    let gpio = unsafe { GPIO::new(GPIO1_BASE + PHYS_VIRT_OFFSET) };
+    let gpio = unsafe { GPIO::new(iomap_usize(GPIO1_BASE, REG_MMIO_SIZE)) };
     gpio.pin(VBUS_GPIO_PIN).set_direction(Direction::Output);
     gpio.pin(VBUS_GPIO_PIN).set(VBUS_GPIO_ACTIVE_HIGH);
 }
@@ -151,8 +173,8 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     enable_usb_vbus_gpio();
     ax_task::sleep(Duration::from_micros(2_000_000));
 
-    usb::set_dwc2_base_virt(DWC2_BASE + PHYS_VIRT_OFFSET);
-    usb::set_cv182x_phy_base_virt(CV182X_USB2_PHY_BASE + PHYS_VIRT_OFFSET);
+    usb::set_dwc2_base_virt(iomap_usize(DWC2_BASE, REG_MMIO_SIZE));
+    usb::set_cv182x_phy_base_virt(iomap_usize(CV182X_USB2_PHY_BASE, REG_MMIO_SIZE));
     usb::set_usb_dma_to_phys_fn(Some(ep0_dma_virt_to_phys));
 
     unsafe {
@@ -199,6 +221,7 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     })?;
     let cfg_total = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let cfg = &cfg_buf[..cfg_total.min(cfg_buf.len())];
+    uvc::set_preferred_max_pixels(DEFAULT_RESOLUTION);
     let mut sel = uvc::parse_uvc_video_stream(cfg, cfg_total).map_err(|e| {
         warn!("cvi-camera: parse UVC video stream failed: {e:?}");
         map_usb_init_error(e)
@@ -299,6 +322,38 @@ impl UsbCameraState {
             AxError::Io
         })
     }
+
+    fn ensure_jpu(&mut self) -> VfsResult<&mut JpuDecoder> {
+        if self.jpu.is_none() {
+            let jpu_v = iomap_usize(JPU_REG_BASE, REG_MMIO_SIZE);
+            let top_v = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
+            let vc_v = iomap_usize(VC_REG_BASE, REG_MMIO_SIZE);
+            let decoder = unsafe {
+                JpuDecoder::new_at(jpu_v, top_v, vc_v, jpu_dma_to_phys).map_err(|e| {
+                    warn!("cvi-camera: JPU init failed: {e}");
+                    AxError::Io
+                })?
+            };
+            self.jpu = Some(decoder);
+        }
+        Ok(self.jpu.as_mut().unwrap())
+    }
+
+    fn yuv_frame(&mut self) -> VfsResult<&'static [u8]> {
+        let jpeg = self.frame()?;
+        let jpu = self.ensure_jpu()?;
+        let result = jpu.decode(jpeg).map_err(|e| {
+            warn!("cvi-camera: JPU decode failed: {e}");
+            AxError::Io
+        })?;
+        info!(
+            "cvi-camera: JPU decode OK {}x{} yuv={} bytes",
+            result.width,
+            result.height,
+            result.yuv_data.len()
+        );
+        Ok(result.yuv_data)
+    }
 }
 
 impl CviCamera {
@@ -341,6 +396,11 @@ impl DeviceOps for CviCamera {
                 let frame = self.state.lock().frame()?;
                 vm_write_slice(arg as *mut u8, frame)?;
                 Ok(frame.len())
+            }
+            CVI_CAMERA_IOCTL_GET_YUV_FRAME => {
+                let yuv = self.state.lock().yuv_frame()?;
+                vm_write_slice(arg as *mut u8, yuv)?;
+                Ok(yuv.len())
             }
             _ => Err(AxError::InvalidInput),
         }

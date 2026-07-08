@@ -3,11 +3,16 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{CpuId, CpuMask, IrqError, IrqNumber, IrqRequest, IrqScope, ShareMode, action::Action};
+use crate::{
+    CpuId, CpuMask, IrqAffinity, IrqError, IrqExecution, IrqId, IrqRequest, IrqScope, ShareMode,
+    action::Action,
+};
 
 pub(crate) struct Descriptor {
-    pub(crate) irq: IrqNumber,
+    pub(crate) irq: IrqId,
     share_mode: ShareMode,
+    affinity: IrqAffinity,
+    execution: IrqExecution,
     pub(crate) in_flight: AtomicUsize,
     line_desired: bool,
     line_applied: bool,
@@ -17,10 +22,12 @@ pub(crate) struct Descriptor {
 }
 
 impl Descriptor {
-    pub(crate) fn new(irq: IrqNumber, request: &IrqRequest) -> Self {
+    pub(crate) fn new(irq: IrqId, request: &IrqRequest) -> Self {
         Self {
             irq,
             share_mode: request.share_mode,
+            affinity: request.affinity,
+            execution: request.execution,
             in_flight: AtomicUsize::new(0),
             line_desired: false,
             line_applied: false,
@@ -31,17 +38,30 @@ impl Descriptor {
     }
 
     pub(crate) fn compatible_with(&mut self, request: &IrqRequest) -> Result<(), IrqError> {
-        let has_active_actions = self.actions().any(|action| {
+        let mut has_active_actions = false;
+        for action in self.actions() {
             let action = unsafe { &*action };
-            !action.detached.load(Ordering::Acquire)
-        });
+            if action.detached.load(Ordering::Acquire) {
+                continue;
+            }
+            has_active_actions = true;
+            if !scope_compatible(action.scope, request.scope) {
+                return Err(IrqError::InvalidIrq);
+            }
+        }
 
         if !has_active_actions {
             self.share_mode = request.share_mode;
+            self.affinity = request.affinity;
+            self.execution = request.execution;
             return Ok(());
         }
 
         if self.share_mode != ShareMode::Shared || request.share_mode != ShareMode::Shared {
+            return Err(IrqError::Busy);
+        }
+
+        if self.affinity != request.affinity || self.execution != request.execution {
             return Err(IrqError::Busy);
         }
 
@@ -125,6 +145,13 @@ pub(crate) fn action_matches_cpu(scope: IrqScope, cpu: CpuId) -> bool {
         IrqScope::Global => true,
         IrqScope::PerCpu { cpus } => cpus.contains(cpu),
     }
+}
+
+fn scope_compatible(existing: IrqScope, requested: IrqScope) -> bool {
+    matches!(
+        (existing, requested),
+        (IrqScope::Global, IrqScope::Global) | (IrqScope::PerCpu { .. }, IrqScope::PerCpu { .. })
+    )
 }
 
 pub(crate) fn recompute_scope_line_desired(descriptor: &mut Descriptor, scope: IrqScope) {

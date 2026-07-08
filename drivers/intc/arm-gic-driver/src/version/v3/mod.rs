@@ -9,9 +9,11 @@ pub use tock_registers::{LocalRegisterCopy, interfaces::*};
 
 mod gicd;
 mod gicr;
+mod its;
 
 use gicd::*;
 use gicr::*;
+pub use its::*;
 
 use crate::version::{IrqVecReadable, IrqVecWriteable};
 pub use crate::{IntId, VirtAddr, define::Trigger, sys_reg::*};
@@ -405,6 +407,41 @@ impl Gic {
     /// ```
     pub fn max_intid(&self) -> u32 {
         self.gicd().max_intid()
+    }
+
+    pub fn supports_lpis(&self) -> bool {
+        self.gicd().has_lpis()
+    }
+
+    pub fn redistributor_count(&self) -> usize {
+        self.rd_slice().iter().count()
+    }
+
+    pub fn current_collection_target(&self, gicr_phys_base: u64, use_physical_target: bool) -> u64 {
+        if use_physical_target {
+            gicr_phys_base
+        } else {
+            u64::from(self.current_rd_ref().lpi.processor_number()) << 16
+        }
+    }
+
+    pub fn init_lpi_tables(
+        &self,
+        property_table_phys: u64,
+        property_id_bits: u8,
+        pending_table_phys_base: u64,
+        pending_table_stride: usize,
+    ) -> Result<(), &'static str> {
+        for (idx, rd) in self.rd_slice().iter().enumerate() {
+            let pending = pending_table_phys_base + (idx * pending_table_stride) as u64;
+            unsafe { rd.as_ref() }.lpi.configure_lpi_tables(
+                property_table_phys,
+                property_id_bits,
+                pending,
+            )?;
+        }
+        barrier::dsb(barrier::SY);
+        Ok(())
     }
 
     fn disable(&self) {
@@ -1159,4 +1196,5 @@ pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
             ICC_SGI1R_EL1.write(value);
         }
     }
+    barrier::isb(barrier::SY);
 }

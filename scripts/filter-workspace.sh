@@ -60,6 +60,8 @@ esac
 # but their presence in workspace members causes cargo to validate them).
 # These test crates may pull arch-specific dev-dependencies unavailable offline.
 sed -i '/^[[:space:]]*"components\/crate_interface\/test_crates\/\*",$/d' "$CARGO"
+sed -i '/^[[:space:]]*"drivers\/test_crates\/\*",$/d' "$CARGO"
 sed -i '/^[[:space:]]*"drivers\/usb\/test_crates\/\*",$/d' "$CARGO"
+sed -i '/^[[:space:]]*"virtualization\/test_crates\/virtualization-tests",$/d' "$CARGO"
 
 echo "filter-workspace: removed arch-incompatible members for $ARCH"

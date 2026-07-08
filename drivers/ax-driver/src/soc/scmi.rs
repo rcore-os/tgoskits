@@ -6,7 +6,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
-use crate::{DriverGeneric, PlatformDevice, mmio::iomap, probe::OnProbeError, register::FdtInfo};
+use crate::{DriverGeneric, mmio::iomap, probe::OnProbeError, register::ProbeFdt};
 
 const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
@@ -26,7 +26,8 @@ crate::model_register!(
     ],
 );
 
-fn probe(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
     let smc_id = info
         .node
         .as_node()
@@ -100,6 +101,32 @@ pub fn clock_rate(_phandle: Phandle, clock_id: u32) -> Option<u64> {
         Err(err) => {
             warn!(
                 "SCMI clock rate get failed: clock_id={:#x}, {:?}",
+                clock_id, err
+            );
+            None
+        }
+    }
+}
+
+pub fn enable_clock(_phandle: Phandle, clock_id: u32) -> Option<()> {
+    if !SCMI_REGISTERED.load(Ordering::Acquire) {
+        warn!(
+            "SCMI clock enable requested before SCMI registration: clock_id={:#x}",
+            clock_id
+        );
+        return None;
+    }
+    let mut guard = SCMI.lock();
+    let scmi = guard.as_mut()?;
+    let mut clock = scmi.protocol_clk_no_init();
+    match clock.clk_enable(clock_id) {
+        Ok(()) => {
+            info!("SCMI clock enabled: clock_id={:#x}", clock_id);
+            Some(())
+        }
+        Err(err) => {
+            warn!(
+                "SCMI clock enable failed: clock_id={:#x}, {:?}",
                 clock_id, err
             );
             None

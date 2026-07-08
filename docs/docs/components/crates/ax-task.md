@@ -13,7 +13,7 @@
 `ax-task` 的设计目标不是提供“单一线程库”，而是构造一个可裁剪的内核任务运行时：
 
 - 通过 `multitask` feature 在“真正多任务调度器”和“单任务桩实现”之间切换。
-- 通过 `sched-fifo`、`sched-rr`、`sched-cfs` 在同一套 API 下选择不同调度策略。
+- 通过 `multitask`、`sched-rr`、`sched-cfs` 在同一套 API 下选择不同调度策略。
 - 通过 `irq`、`preempt`、`smp`、`tls`、`task-ext` 决定任务系统究竟具备多少内核能力。
 
 因此，`ax-task` 是一个强 feature 驱动的状态机模块，而不是简单的 API 封装。
@@ -44,7 +44,7 @@
 ### 1.4 调度器抽象与算法实现
 `ax-task` 并不自己实现完整调度算法，而是通过 `api.rs` 中的类型别名把 `TaskInner` 适配到 `axsched`：
 
-- `sched-fifo`：`FifoScheduler` + `FifoTask`，协作式调度。
+- `multitask`：`FifoScheduler` + `FifoTask`，协作式调度。
 - `sched-rr`：`RRScheduler` + `RRTask`，带时间片，依赖 `preempt`。
 - `sched-cfs`：`CFScheduler` + `CFSTask`，公平调度，同样依赖 `preempt`。
 
@@ -123,23 +123,8 @@ let wq = ax-task::WaitQueue::new();
 graph LR
     ax-hal["ax-hal"] --> ax-task["ax-task"]
     axsched["ax-sched"] --> ax-task
-    axconfig["ax-config"] --> ax-task
-    kernel_guard["kernel_guard"] --> ax-task
-    axpoll["axpoll"] --> ax-task
-    cpumask["cpumask"] --> ax-task
-
-    ax-task --> ax-runtime["ax-runtime"]
-    ax-task --> ax-sync["ax-sync"]
-    ax-task --> ax-api["ax-api"]
-    ax-task --> ax-posix-api["ax-posix-api"]
-    ax-task --> starry["starry-kernel"]
-    ax-task --> axvisor["axvisor (via ax-std/indirect)"]
-```
-
-### 直接依赖
 - `ax-hal`：任务上下文、当前 CPU、时间、IRQ、TLS 与上下文切换能力来源。
 - `axsched`：具体调度算法实现。
-- `axconfig`：任务栈大小、CPU 数量上限等静态配置来源。
 - `kernel_guard`：抢占关闭/恢复的接口桥接。
 - `axpoll`：异步 poll 与 I/O 等待适配。
 - `cpumask`、`ax-percpu`、`ax-kspin`：SMP 与每核运行队列支持。
@@ -149,7 +134,7 @@ graph LR
 - `ax-sync`：基于 `ax-task` 的阻塞/唤醒机制构建锁和同步原语。
 - `ax-api`、`ax-posix-api`：把任务、睡眠、等待队列等能力对外暴露。
 - `starry-kernel`：在 Linux 兼容线程模型上直接复用 `ax-task`。
-- `ax-net`、`ax-net-ng`：在网络栈阻塞/异步路径上复用调度与等待能力。
+- `ax-net`、`ax-net`：在网络栈阻塞/异步路径上复用调度与等待能力。
 
 ## 开发指南
 ### 接入方式
@@ -161,7 +146,7 @@ ax-task = { workspace = true }
 常见 feature 组合：
 
 - `multitask`：启用完整任务管理。
-- `sched-fifo` / `sched-rr` / `sched-cfs`：选择调度器。
+- `multitask` / `sched-rr` / `sched-cfs`：选择调度器。
 - `preempt`：允许基于 timer tick 的抢占。
 - `irq`：启用 sleep/timeout 等基于中断的时间能力。
 - `smp`：启用多核运行队列与任务迁移。
@@ -200,7 +185,7 @@ ax-task = { workspace = true }
 系统级验证更重要：
 
 - `test-suit/arceos/task/*` 是最直接的回归入口。
-- `ax-helloworld` 可验证最小 bring-up。
+- `arceos-helloworld` 可验证最小 bring-up。
 - StarryOS 线程/进程路径能验证 `task-ext` 和复杂阻塞语义。
 - Axvisor 的 vCPU 任务路径能验证 `TaskExt` 与 `WaitQueue` 的复用场景。
 

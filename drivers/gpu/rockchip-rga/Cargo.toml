@@ -1,0 +1,14 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Low-level device layer for Rockchip RGA 2D accelerators"
+edition.workspace = true
+keywords = ["rk3588", "rga", "graphics"]
+license.workspace = true
+name = "rockchip-rga"
+repository.workspace = true
+version = "0.1.5"
+
+[dependencies]
+dma-api.workspace = true
+rdif-base.workspace = true

@@ -1,0 +1,9 @@
+RKNN_VALIDATE_EXPECTED version=1 image_count=3 min_confidence=25 nms_threshold_q10000=4500
+image index=0 path=validation/tennis-ball-close.jpg width=1279 height=1706 count=1
+det image=0 cls=32 score_q10000=7081 left=479 top=706 right=773 bottom=1010
+image index=1 path=validation/tennis-ball-black-box.jpg width=1279 height=1706 count=2
+det image=1 cls=32 score_q10000=8591 left=517 top=932 right=730 bottom=1151
+det image=1 cls=58 score_q10000=8159 left=868 top=335 right=1167 bottom=538
+image index=2 path=validation/tennis-ball-plant.jpg width=1279 height=1706 count=2
+det image=2 cls=75 score_q10000=4881 left=335 top=527 right=725 bottom=871
+det image=2 cls=58 score_q10000=4610 left=0 top=0 right=1231 bottom=911

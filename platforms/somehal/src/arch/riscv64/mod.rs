@@ -1,36 +1,95 @@
-use crate::common::PlatOp;
+use crate::{
+    common::PlatOp,
+    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource},
+};
 
 mod plic;
 
+use crate::irq_routing::{
+    RISCV_INTERRUPT_BIT, RISCV_S_SOFT_CAUSE, riscv_cpu_local_hwirq_is_runtime_irq,
+    riscv_cpu_local_irq_from_raw, riscv_local_irq_raw, riscv_resolve_controller_line,
+};
+
 pub struct Plat;
 
-pub fn register_current_cpu_id(cpu_idx: usize, reader: fn() -> usize) {
-    plic::register_current_cpu_id(cpu_idx, reader);
+fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvPlic)
+        .ok_or(IrqError::Unsupported)?;
+    let source = u32::try_from(source).map_err(|_| IrqError::InvalidIrq)?;
+    if source == 0 {
+        return Err(IrqError::InvalidIrq);
+    }
+    Ok(IrqId::new(domain, HwIrq(source)))
 }
 
-pub(crate) fn claim_external_irq() -> Option<someboot::irq::IrqId> {
-    plic::claim_external_irq()
-}
-
-pub(crate) fn complete_external_irq(irq: someboot::irq::IrqId) {
-    plic::complete_external_irq(irq);
+fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
+    if riscv_cpu_local_hwirq_is_runtime_irq(hwirq) {
+        Ok(IrqId::new(CPU_LOCAL_IRQ_DOMAIN, hwirq))
+    } else {
+        Err(IrqError::InvalidIrq)
+    }
 }
 
 impl PlatOp for Plat {
-    fn irq_set_enable(irq: rdrive::IrqId, enable: bool) {
-        plic::irq_set_enable(irq, enable);
+    type ActiveIrq = plic::ActiveIrq;
+
+    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
+        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
+            return plic::local_irq_set_enable(riscv_local_irq_raw(irq)?.into(), enable);
+        }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
+            return crate::irq::set_controller_irq_enabled(irq, enable);
+        }
+        Err(IrqError::InvalidIrq)
     }
 
-    fn irq_handler() -> someboot::irq::IrqId {
-        someboot::irq::IrqId::new(plic::systick_irq().raw())
+    fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
+        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
+            return Err(IrqError::Unsupported);
+        }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
+            return plic::irq_set_affinity(irq.hwirq, affinity);
+        }
+        Err(IrqError::InvalidIrq)
     }
 
-    fn irq_handler_with_raw(raw: usize) -> Option<someboot::irq::IrqId> {
-        plic::irq_handler_with_raw(raw)
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
+        plic::begin_irq(raw)
     }
 
-    fn systick_irq() -> rdrive::IrqId {
-        plic::systick_irq()
+    fn active_irq_id(active: &Self::ActiveIrq) -> IrqId {
+        let raw: usize = active.id().into();
+        if raw & RISCV_INTERRUPT_BIT != 0 {
+            riscv_cpu_local_irq_from_raw(raw).expect("active RISC-V local IRQ must be validated")
+        } else {
+            plic_irq_id_from_claimed_source(raw)
+                .expect("active RISC-V PLIC source must come from a validated claim")
+        }
+    }
+
+    fn systick_irq() -> IrqId {
+        riscv_cpu_local_irq_from_raw(plic::systick_irq().into())
+            .expect("RISC-V systick IRQ must be a CPU-local timer cause")
+    }
+
+    fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
+        riscv_resolve_controller_line(source, || {
+            matches!(
+                source,
+                IrqSource::ControllerLine { domain, .. }
+                    if crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic)
+            )
+        })?;
+        match source {
+            IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
+                checked_cpu_local_irq(hwirq)
+            }
+            IrqSource::ControllerLine { domain, hwirq } => {
+                plic::source_from_hwirq(hwirq)?;
+                Ok(IrqId::new(domain, hwirq))
+            }
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => unreachable!(),
+        }
     }
 
     fn secondary_init() {}
@@ -41,7 +100,11 @@ impl PlatOp for Plat {
 
     fn secondary_init_systick() {}
 
-    fn send_ipi(_irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+        if irq != Self::ipi_irq() {
+            warn!("refuse to send non-runtime RISC-V IPI IRQ {irq:?}");
+            return;
+        }
         match target {
             crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
                 plic::send_ipi_to_cpu(cpu_id);
@@ -54,6 +117,10 @@ impl PlatOp for Plat {
                 }
             }
         }
+    }
+
+    fn ipi_irq() -> IrqId {
+        IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(RISCV_S_SOFT_CAUSE as u32))
     }
 
     fn send_ipi_to_cpu(cpu_id: usize) {

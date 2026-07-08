@@ -93,7 +93,9 @@ impl Inotify {
             return Err(AxError::InvalidInput);
         }
         Self::push_event(&mut state.queue, wd, IN_IGNORED, None);
-        self.poll_rx.wake();
+        drop(state);
+        // Inotify event is queued before waking readers.
+        unsafe { self.poll_rx.wake(IoEvents::IN) };
         Ok(())
     }
 
@@ -127,7 +129,9 @@ impl Inotify {
         for (wd, mask, name) in events {
             Self::push_event(&mut state.queue, wd, mask, name.as_deref());
         }
-        self.poll_rx.wake();
+        drop(state);
+        // Inotify events are queued before waking readers.
+        unsafe { self.poll_rx.wake(IoEvents::IN) };
     }
 
     fn notify_delete(&self, path: &str, is_dir: bool) {
@@ -155,7 +159,9 @@ impl Inotify {
             Self::push_event(&mut state.queue, wd, mask, name.as_deref());
         }
         state.watches.retain(|_, watch| watch.path != path);
-        self.poll_rx.wake();
+        drop(state);
+        // Delete events are queued before waking readers.
+        unsafe { self.poll_rx.wake(IoEvents::IN) };
     }
 
     fn push_event(queue: &mut VecDeque<Vec<u8>>, wd: i32, mask: u32, name: Option<&str>) {
@@ -250,7 +256,8 @@ impl Pollable for Inotify {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

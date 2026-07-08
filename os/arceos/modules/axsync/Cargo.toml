@@ -1,6 +1,6 @@
 [package]
 name = "ax-sync"
-version = "0.5.16"
+version = "0.5.26"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

@@ -1,9 +1,8 @@
 use log::debug;
 use rdif_intc::*;
 use rdrive::{
-    PlatformDevice,
     probe::OnProbeError,
-    register::{DriverRegister, FdtInfo, ProbeKind, ProbeLevel, ProbePriority},
+    register::{DriverRegister, ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
 };
 
 pub struct IrqTest {}
@@ -27,19 +26,20 @@ impl rdrive::DriverGeneric for IrqTest {
 }
 
 impl Interface for IrqTest {
-    fn setup_irq_by_fdt(&mut self, irq_prop: &[u32]) -> IrqId {
-        debug!("IrqTest setup_irq_by_fdt: {:?}", irq_prop);
-        42.into()
+    fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
+        debug!("IrqTest translate_fdt: {:?}", irq_prop);
+        Ok(ControllerIrqTranslation::new(HwIrq(42)))
     }
 }
 
-fn probe_intc(fdt: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe_intc(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (fdt, plat_dev) = probe.into_parts();
     debug!(
         "on_probe: {}, parent intc {:?}",
         fdt.node.name(),
         plat_dev.descriptor.irq_parent,
     );
-    plat_dev.register(Intc::new(IrqTest {}));
+    plat_dev.register(Intc::new(IrqDomainId(0), IrqTest {}));
 
     Ok(())
 }

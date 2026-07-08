@@ -1,6 +1,6 @@
 use aarch64_cpu::registers::*;
-use ax_errno::{AxResult, ax_err};
-use axvcpu::GuestPhysAddr;
+
+use crate::{ArmGuestPhysAddr, ArmVcpuError, ArmVcpuResult};
 
 /// Retrieves the Exception Syndrome Register (ESR) value from EL2.
 ///
@@ -83,11 +83,11 @@ macro_rules! arm_at {
 /// * `far` - The Fault Address Register value that needs to be translated.
 ///
 /// # Returns
-/// * `AxResult<usize>` - The translated HPFAR value, or an error if translation fails.
+/// * [`ArmVcpuResult<usize>`] - The translated HPFAR value, or an error if translation fails.
 ///
 /// # Errors
 /// Returns a `BadState` error if the translation is aborted (indicated by the `F` bit in `PAR_EL1`).
-fn translate_far_to_hpfar(far: usize) -> AxResult<usize> {
+fn translate_far_to_hpfar(far: usize) -> ArmVcpuResult<usize> {
     // We have
     // 	PAR[PA_Shift - 1 : 12] = PA[PA_Shift - 1 : 12]
     // 	HPFAR[PA_Shift - 9 : 4]  = FIPA[PA_Shift - 1 : 12]
@@ -102,7 +102,7 @@ fn translate_far_to_hpfar(far: usize) -> AxResult<usize> {
     let tmp = PAR_EL1.get();
     PAR_EL1.set(par);
     if (tmp & PAR_EL1::F::TranslationAborted.value) != 0 {
-        ax_err!(BadState, "PAR_EL1::F::TranslationAborted value")
+        Err(ArmVcpuError::BadState)
     } else {
         Ok(par_to_far(tmp) as usize)
     }
@@ -124,9 +124,9 @@ fn translate_far_to_hpfar(far: usize) -> AxResult<usize> {
 /// `FAR_EL2` with the page number from `HPFAR_EL2`.
 ///
 /// # Returns
-/// * `AxResult<GuestPhysAddr>` - The guest physical address that caused the exception, wrapped in an `AxResult`.
+/// * [`ArmVcpuResult<ArmGuestPhysAddr>`] - The guest physical address that caused the exception.
 #[inline(always)]
-pub fn exception_fault_addr() -> AxResult<GuestPhysAddr> {
+pub fn exception_fault_addr() -> ArmVcpuResult<ArmGuestPhysAddr> {
     let far = FAR_EL2.get() as usize;
     let hpfar =
         if (exception_esr() & ESR_ELx_S1PTW) == 0 && exception_data_abort_is_permission_fault() {
@@ -134,7 +134,7 @@ pub fn exception_fault_addr() -> AxResult<GuestPhysAddr> {
         } else {
             exception_hpfar()
         };
-    Ok(GuestPhysAddr::from((far & 0xfff) | (hpfar << 8)))
+    Ok(ArmGuestPhysAddr::from_usize((far & 0xfff) | (hpfar << 8)))
 }
 
 /// Determines the instruction length based on the ESR_EL2 register.
@@ -270,7 +270,7 @@ pub fn exception_data_abort_access_is_sign_ext() -> bool {
 ///
 /// This macro should be used in conjunction with `restore_regs_from_stack!` to ensure that
 /// the saved registers are properly restored when needed,
-/// and the control flow can be returned to `Aarch64VCpu.run()` in `vcpu.rs` happily.
+/// and the control flow can be returned to `ArmVcpu::run()` in `vcpu.rs` happily.
 macro_rules! save_regs_to_stack {
     () => {
         "
@@ -292,7 +292,7 @@ macro_rules! save_regs_to_stack {
 /// ## Note
 ///
 /// This macro is called in `return_run_guest()` in exception.rs,
-/// it should only be used after `save_regs_to_stack!` to correctly restore the control flow of `Aarch64VCpu.run()`.
+/// it should only be used after `save_regs_to_stack!` to correctly restore the control flow of `ArmVcpu::run()`.
 macro_rules! restore_regs_from_stack {
     () => {
         "

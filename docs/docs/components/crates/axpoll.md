@@ -33,7 +33,7 @@
 | --- | --- |
 | `IoEvents` | 基于 `bitflags` 封装 Linux `POLL*` 事件位 |
 | `Pollable` | 约定对象如何查询当前事件，以及如何注册等待者 |
-| `Inner` | `PollSet` 的内部 ring buffer，保存 `Waker` |
+| `Inner` | `PollSet` 的内部 ring buffer，保存 `Waker` 与订阅的事件位 |
 | `PollSet` | 对外暴露的等待者集合，可注册与批量唤醒 |
 
 ### 1.3 `IoEvents`：readiness 位图协议
@@ -52,11 +52,12 @@
 
 `PollSet` 看起来像一个等待者集合，但它不是无界队列，而是一个固定容量为 64 的 ring buffer。当前实现有几条必须写进文档的行为约束：
 
-- `register()` 会把 waker 写入循环缓冲区
+- `register()` 会把 waker 和它订阅的 `IoEvents` 写入循环缓冲区
 - 超过 64 个等待者后，新注册会覆盖最旧槽位
 - 被覆盖掉的旧 waker 若与新 waker 不是同一个，会被立即唤醒
-- `wake()` 会把旧 `Inner` 整体换出，然后依靠旧 `Inner` 的 `Drop` 逐个唤醒
-- `PollSet` 自身 `Drop` 时会再触发一次 `wake()`，避免等待者永远悬挂
+- `wake(ready)` 只唤醒订阅事件与 `ready` 相交的等待者，未就绪的等待者会留在集合中
+- `wake_from_irq(ready)` 面向设备中断路径，不分配新的等待队列存储，也同样按事件位过滤
+- `PollSet` 自身 `Drop` 时会再触发一次 `wake(IoEvents::all())`，避免等待者永远悬挂
 
 因此，`PollSet` 的真实语义更接近“有限容量的唤醒集合”，而不是严格意义上的公平等待队列。
 
@@ -69,7 +70,7 @@
 3. 若返回 `WouldBlock` 且非 nonblocking 模式，则调用 `pollable.register(cx, events)`
 4. 事件成立后，由对象自身通过 `PollSet::wake()` 或自定义注册逻辑唤醒等待任务
 
-同一文件里还有 `register_irq_waker()`，说明 `axpoll` 不只服务文件/网络对象，也被用来桥接 IRQ 事件与任务等待。
+IRQ 驱动对象也按同一模型工作：中断处理路径确认设备状态后调用对象自己的 `PollSet::wake_from_irq(IoEvents::...)`，把硬件事件转成等待任务可见的 I/O 就绪状态，同时避免在硬中断上下文分配新的等待队列存储。
 
 ## 核心功能
 
@@ -78,14 +79,14 @@
 - 用统一位图表达可读、可写、挂断、错误等事件
 - 为任意内核对象定义 `poll()` / `register()` 契约
 - 提供可复用的 `PollSet`，让对象能够保存等待者并在状态变化时批量唤醒
-- 通过实现 `Wake`，让 `PollSet` 能直接接入 Rust waker 生态
+- 保存 Rust `Waker`，让内核对象能在状态变化时接入任务唤醒链路
 
 ### 2.2 仓库里的真实使用者
 
 当前仓库中直接依赖 `axpoll` 的关键路径包括：
 
 - `ax-task`：把同步 nonblocking I/O 封装成可等待 future
-- `ax-net-ng`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
+- `ax-net`：为 TCP、UDP、Unix domain socket、vsock、loopback 设备提供统一 readiness 语义
 - `ax-fs-ng` / `axfs-ng-vfs`：为文件节点暴露可轮询事件
 - StarryOS 内核：为 `FileLike`、pipe、TTY、socket、eventfd、epoll 等对象复用同一套等待协议
 
@@ -122,7 +123,7 @@
 | 消费者 | 使用方式 |
 | --- | --- |
 | `ax-task` | 通过 `poll_io()`、IRQ waker 等机制消费 `Pollable` 与 `PollSet` |
-| `ax-net-ng` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
+| `ax-net` | 为不同地址族 socket 与设备统一事件位和 waker 注册 |
 | `ax-fs-ng` | 让文件节点支持统一 readiness 协议 |
 | StarryOS 内核 | 作为 fd 世界底层的 readiness glue 层 |
 
@@ -140,13 +141,13 @@ axpoll = { workspace = true }
 1. `poll()` 中只读当前状态，不要在这里阻塞或睡眠。
 2. `register()` 中只保存/转发 waker；真正的 `wake()` 必须发生在状态变化点。
 3. 如果对象有不同类型的唤醒源，优先按读、写、关闭、异常分开组织 `PollSet`。
-4. 如果对象本身有 IRQ 或设备事件来源，可参考 `ax-task` 与 `ax-net-ng` 的做法，把底层事件桥接到 `PollSet`。
+4. 如果对象本身有 IRQ 或设备事件来源，可参考 `ax-task` 与 `ax-net` 的做法，把底层事件桥接到 `PollSet`。
 
 ### 4.3 修改实现时的风险点
 
 - `PollSet` 的 64 项容量是实现边界，不可误当成无限等待列表
 - 覆盖旧 waker 时会主动唤醒旧者，这会影响高并发下的重试频率和公平性
-- `wake()` 依赖旧 `Inner` 的 `Drop` 完成真正逐个唤醒，改这条路径极易产生丢唤醒
+- `wake(ready)` / `wake_from_irq(ready)` 必须先从集合里移除已就绪等待者，再在释放锁后执行 waker，改这条路径极易产生丢唤醒或重入死锁
 - `IoEvents` 与 Linux 常量必须保持稳定对应关系，否则上层兼容性会直接出问题
 
 ## 测试
@@ -175,7 +176,7 @@ cargo test -p axpoll
 
 ### ArceOS
 
-在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net-ng`、`ax-fs-ng` 的公共 readiness glue 层。
+在 ArceOS 中，`axpoll` 处在同步 nonblocking I/O 与任务等待之间，是 `ax-task`、`ax-net`、`ax-fs-ng` 的公共 readiness glue 层。
 
 ### StarryOS
 

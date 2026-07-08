@@ -1,4 +1,5 @@
 use core::{
+    cell::UnsafeCell,
     hint::spin_loop,
     mem,
     ptr::NonNull,
@@ -246,8 +247,12 @@ impl CompletionStatus {
         self.0 & 1 > 0
     }
 
+    fn status_field(&self) -> u16 {
+        (self.0 >> 1) & 0x7ff
+    }
+
     pub(crate) fn is_success(&self) -> bool {
-        self.0 & (1 << 1) == 0
+        self.status_field() == 0
     }
 
     // pub fn do_not_retry(&self) -> bool {
@@ -255,11 +260,29 @@ impl CompletionStatus {
     // }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::CompletionStatus;
+
+    #[test]
+    fn completion_status_ignores_phase_for_success() {
+        assert!(CompletionStatus(0).is_success());
+        assert!(CompletionStatus(1).is_success());
+    }
+
+    #[test]
+    fn completion_status_checks_full_status_field() {
+        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
+    }
+}
+
 pub struct NvmeQueue {
     pub qid: u32,
-    pub sq: SubmitQueue,
-    pub cq: CompleteQueue,
-    pub reg: NonNull<NvmeReg>,
+    sq: UnsafeCell<SubmitQueue>,
+    cq: UnsafeCell<CompleteQueue>,
+    reg: NonNull<NvmeReg>,
 }
 
 // SAFETY: An `NvmeQueue` is owned by exactly one RDIF queue after creation.
@@ -280,8 +303,8 @@ impl NvmeQueue {
         let complete_queue = CompleteQueue::new(dma, cq, page_size)?;
 
         Ok(NvmeQueue {
-            sq: submit_queue,
-            cq: complete_queue,
+            sq: UnsafeCell::new(submit_queue),
+            cq: UnsafeCell::new(complete_queue),
             qid,
             reg,
         })
@@ -291,34 +314,64 @@ impl NvmeQueue {
         unsafe { self.reg.as_ref() }
     }
 
-    fn submit_admin_data(&mut self, data: CommandSet) {
-        let tail = self.sq.submit(data);
+    fn with_sq<R>(&self, f: impl FnOnce(&mut SubmitQueue) -> R) -> R {
+        let sq = unsafe { &mut *self.sq.get() };
+        f(sq)
+    }
+
+    fn with_cq<R>(&self, f: impl FnOnce(&mut CompleteQueue) -> R) -> R {
+        let cq = unsafe { &mut *self.cq.get() };
+        f(cq)
+    }
+
+    fn submit_admin_data(&self, data: CommandSet) {
+        let tail = self.with_sq(|sq| sq.submit(data));
         wmb();
         self.reg().write_sq_y_tail_doolbell(self.qid as _, tail);
     }
 
-    pub(crate) fn submit_io_data(&mut self, data: CommandSet) {
+    pub(crate) fn submit_io_data(&self, data: CommandSet) {
         self.submit_admin_data(data);
     }
 
-    pub(crate) fn poll_completion(&mut self) -> Option<NvmeCompletion> {
-        let complete = self.cq.take_complete()?;
+    pub(crate) fn poll_completion(&self) -> Option<NvmeCompletion> {
+        let (complete, head) = self.with_cq(|cq| {
+            let complete = cq.take_complete()?;
+            Some((complete, cq.head))
+        })?;
         wmb();
-        self.reg()
-            .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
+        self.reg().write_cq_y_head_doolbell(self.qid as _, head);
         Some(complete)
     }
 
     pub(crate) fn depth(&self) -> usize {
-        self.sq.len().min(self.cq.len())
+        self.sq_len().min(self.cq_len())
+    }
+
+    pub(crate) fn sq_len(&self) -> usize {
+        unsafe { &*self.sq.get() }.len()
+    }
+
+    pub(crate) fn cq_len(&self) -> usize {
+        unsafe { &*self.cq.get() }.len()
+    }
+
+    pub(crate) fn sq_bus_addr(&self) -> u64 {
+        unsafe { &*self.sq.get() }.bus_addr()
+    }
+
+    pub(crate) fn cq_bus_addr(&self) -> u64 {
+        unsafe { &*self.cq.get() }.bus_addr()
     }
 
     pub fn command_sync(&mut self, data: CommandSet) -> Result<()> {
         self.submit_admin_data(data);
-        let complete = self.cq.spin_for_complete();
+        let (complete, head) = self.with_cq(|cq| {
+            let complete = cq.spin_for_complete();
+            (complete, cq.head)
+        });
         wmb();
-        self.reg()
-            .write_cq_y_head_doolbell(self.qid as _, self.cq.head);
+        self.reg().write_cq_y_head_doolbell(self.qid as _, head);
 
         if complete.status.is_success() {
             Ok(())

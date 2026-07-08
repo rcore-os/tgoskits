@@ -211,6 +211,10 @@ clk_id_group!(
 clk_id_group!(
     HCLK_SDIO = 409,
     CCLK_SRC_SDIO = 410,
+    SCLK_SDIO_DRV = 704,
+    SCLK_SDIO_SAMPLE = 705,
+    SCLK_SDMMC_DRV = 706,
+    SCLK_SDMMC_SAMPLE = 707,
     HCLK_EMMC = 312,
     ACLK_EMMC = 313,
     CCLK_EMMC = 314,
@@ -219,6 +223,8 @@ clk_id_group!(
     SCLK_SFC = 317,
     HCLK_SFC = 318,
     HCLK_SFC_XIP = 319,
+    HCLK_NVM_ROOT = 320,
+    ACLK_NVM_ROOT = 321,
 );
 
 // =============================================================================
@@ -369,6 +375,17 @@ clk_id_group!(
 );
 clk_id_group!(CLK_PCIE1L0_PIPE = 708, CLK_PCIE1L1_PIPE = 709,);
 
+// =============================================================================
+// JPEG 解码器 (VDPU) 时钟 ID
+//
+// 注意：436/437 是本 crate 内部使用的合成 ClkId（仅作为 gate 表的查找键），并非
+// RK3588 设备树绑定编号。规范的 ACLK/HCLK_JPEG_DECODER = 421/422 在本文件中已被
+// 既有的 USB3OTG1 条目占用（SUSPEND_CLK_USB3OTG1=421, REF_CLK_USB3OTG1=422），
+// 故改用未占用的 436/437 作键。实际硬件门控由 gate.rs 中经核对的
+// CLKGATE_CON(45) bit 2/3 选择，与此键值无关。
+// =============================================================================
+clk_id_group!(ACLK_JPEG_DECODER = 436, HCLK_JPEG_DECODER = 437,);
+
 pub const PCLK_PHP_USBHOST3_0: ClkId = PCLK_PHP_ROOT;
 pub const CLK_PIPE_USBHOST3_0: ClkId = CLK_PIPEPHY2_PIPE_U3_G;
 pub const CLK_REF_USB3OTG0: ClkId = REF_CLK_USB3OTG0;
@@ -426,8 +443,25 @@ pub fn is_adc_clk(clk_id: ClkId) -> bool {
 
 /// 判断时钟 ID 是否为 MMC/EMMC/SDIO/SFC
 pub fn is_mmc_clk(clk_id: ClkId) -> bool {
-    // CCLK_EMMC, BCLK_EMMC, CCLK_SRC_SDIO, SCLK_SFC
-    matches!(clk_id, CCLK_EMMC | BCLK_EMMC | CCLK_SRC_SDIO | SCLK_SFC)
+    matches!(
+        clk_id,
+        HCLK_SDIO
+            | HCLK_EMMC
+            | ACLK_EMMC
+            | CCLK_EMMC
+            | BCLK_EMMC
+            | TMCLK_EMMC
+            | SCLK_SFC
+            | HCLK_SFC
+            | HCLK_SFC_XIP
+            | HCLK_NVM_ROOT
+            | ACLK_NVM_ROOT
+            | CCLK_SRC_SDIO
+            | SCLK_SDIO_DRV
+            | SCLK_SDIO_SAMPLE
+            | SCLK_SDMMC_DRV
+            | SCLK_SDMMC_SAMPLE
+    )
 }
 
 /// 判断时钟 ID 是否为 NPU

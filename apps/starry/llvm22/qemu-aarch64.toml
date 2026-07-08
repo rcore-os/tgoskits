@@ -1,0 +1,16 @@
+# llvm22 aarch64 - musl-native LLVM 22 toolchain carpet.
+# -cpu max exposes the full AArch64 feature set (LSE atomics, the ARMv8.2+ extensions) that the
+# LLVM host-CPU codegen path may select; cortex-a72 lacks them. -m 4096M for libLLVM + clang.
+args = [
+    "-nographic", "-cpu", "max", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-llvm22.sh"
+success_regex = ['(?m)^LLVM22_OK=874/874\s*$', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000

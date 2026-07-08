@@ -238,7 +238,7 @@ impl HashTreeManager {
             return Err(HashTreeError::EntryNotFound);
         }
 
-        error!("FS NOT SUPPORT NORMAL MULTIPUL POINTER ,PLEASE TURN ON EXTEND FEATURE!");
+        error!("FS DOES NOT SUPPORT NORMAL MULTIPLE POINTERS, PLEASE TURN ON EXTENT FEATURE!");
         Err(HashTreeError::CorruptedHashTree)
     }
 }

@@ -26,15 +26,32 @@ mod exception;
 pub mod host;
 mod pcpu;
 mod smc;
+mod types;
 mod vcpu;
 
 pub use self::{
-    pcpu::Aarch64PerCpu,
-    vcpu::{Aarch64VCpu, Aarch64VCpuCreateConfig, Aarch64VCpuSetupConfig},
+    host::ArmHostOps,
+    pcpu::ArmPerCpu,
+    types::{
+        ArmAccessWidth, ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError,
+        ArmVcpuResult, ArmVmExit,
+    },
+    vcpu::{
+        ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
+        ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig,
+    },
 };
 
 /// context frame for aarch64
 pub type TrapFrame = context_frame::Aarch64ContextFrame;
+/// Compatibility alias for existing AArch64 users.
+pub type Aarch64VCpu<H> = ArmVcpu<H>;
+/// Compatibility alias for existing AArch64 users.
+pub type Aarch64PerCpu = ArmPerCpu;
+/// Compatibility alias for existing AArch64 users.
+pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
+/// Compatibility alias for existing AArch64 users.
+pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
 
 /// Returns the maximum guest page table levels supported by the hardware.
 ///
@@ -43,6 +60,11 @@ pub type TrapFrame = context_frame::Aarch64ContextFrame;
 /// - < 44 bit PA → 3 levels (39-bit IPA)
 pub fn max_guest_page_table_levels() -> usize {
     vcpu::max_gpt_level(vcpu::pa_bits())
+}
+
+/// Returns the physical address width reported by the current CPU.
+pub fn pa_bits() -> usize {
+    vcpu::pa_bits()
 }
 
 /// Return if current platform support virtualization extension.

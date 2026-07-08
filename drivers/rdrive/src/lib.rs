@@ -7,9 +7,12 @@ extern crate log;
 
 use core::ptr::NonNull;
 
+// The registry is not hard-IRQ safe, but it is also used by runtime discovery
+// paths that must not trigger task preemption hooks on lock release.
+use ax_kspin::SpinRaw as Mutex;
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel};
-use spin::{Mutex, Once};
+use spin::Once;
 
 mod descriptor;
 pub mod driver;
@@ -177,20 +180,57 @@ pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError> {
     Ok(())
 }
 
+/// Returns all registered devices that implement `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and allocates
+/// the returned `Vec`. Hard IRQ handlers must use pre-published IRQ-side state
+/// instead of looking devices up through rdrive.
 pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>> {
     read(|manager| manager.dev_container.devices())
 }
 
+/// Returns a registered device by id and expected interface type.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock. Hard IRQ
+/// handlers must use pre-published IRQ-side state instead of looking devices up
+/// through rdrive.
 pub fn get<T: DriverGeneric>(id: DeviceId) -> Result<Device<T>, GetDeviceError> {
     read(|manager| manager.dev_container.get_typed(id))
 }
 
+/// Returns one registered device that implements `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and scans the
+/// registry. Hard IRQ handlers must use pre-published IRQ-side state instead of
+/// looking devices up through rdrive.
 pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
     read(|manager| manager.dev_container.get_one())
 }
 
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
+}
+
+pub fn fdt_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::fdt::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn note_fdt_device_path(path: &str, device_id: DeviceId) -> bool {
+    probe::fdt::try_system().is_some_and(|system| system.note_device_path(path, device_id))
+}
+
+pub fn acpi_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn acpi_resource_address_to_device_id(
+    address: probe::acpi::AcpiResourceAddress,
+) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.resource_address_to_device_id(address))
+}
+
+pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
+    probe::acpi::spcr_console_device_id()
 }
 
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
@@ -218,35 +258,24 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{
-///     PlatformDevice, driver::*, module_driver, probe::OnProbeError, register::FdtInfo,
-/// };
+/// use rdrive::{driver::*, module_driver, probe::OnProbeError, register::ProbeFdt};
 ///
-/// struct ClkDriver {}
+/// struct DemoDriver {}
 ///
-/// impl DriverGeneric for ClkDriver {
+/// impl DriverGeneric for DemoDriver {
 ///     fn name(&self) -> &str {
-///         "ClkDriver"
-///     }
-/// }
-///
-/// impl rdif_clk::Interface for ClkDriver {
-///     fn perper_enable(&mut self) {}
-///     fn get_rate(&self, _id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-///         Ok(1000000)
-///     }
-///     fn set_rate(&mut self, _id: rdif_clk::ClockId, _rate: u64) -> Result<(), rdrive::KError> {
-///         Ok(())
+///         "DemoDriver"
 ///     }
 /// }
 ///
 /// // Define probe function
-/// fn probe_clk(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+/// fn probe_clk(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 ///     // Implement specific device probing logic
-///     dev.register(rdif_clk::Clk::new(ClkDriver {}));
+///     let dev = probe.into_platform_device();
+///     dev.register(DemoDriver {});
 ///     Ok(())
 /// }
 ///
@@ -258,7 +287,7 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///     probe_kinds: &[ProbeKind::Fdt {
 ///         compatibles: &["fixed-clock"],
 ///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
-///         on_probe: |fdt, dev|{
+///         on_probe: |_probe|{
 ///             Ok(())
 ///         },
 ///     }],

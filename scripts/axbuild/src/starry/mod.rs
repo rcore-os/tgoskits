@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
@@ -8,11 +7,12 @@ use ostool::{
 
 use crate::{
     context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs},
-    test::{case as qemu_case, qemu},
+    test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
 
 pub(crate) mod apk;
 pub mod app;
+mod args;
 pub mod board;
 pub mod build;
 pub mod config;
@@ -22,154 +22,13 @@ pub mod quick_start;
 pub(crate) mod resolver;
 pub mod rootfs;
 pub mod test;
+#[cfg(test)]
+mod tests;
 
-/// StarryOS subcommands
-#[derive(Subcommand)]
-pub enum Command {
-    /// Build StarryOS application
-    Build(ArgsBuild),
-    /// Build and run StarryOS application
-    Qemu(ArgsQemu),
-    /// Generate a default StarryOS board config
-    Defconfig(ArgsDefconfig),
-    /// StarryOS board config helpers
-    Config(ArgsConfig),
-    /// Build and profile StarryOS with qperf
-    Perf(ArgsPerf),
-    /// Run StarryOS test suites
-    Test(test::ArgsTest),
-    /// Run StarryOS runnable apps
-    App(app::ArgsApp),
-    /// Download rootfs image into workspace target directory
-    Rootfs(rootfs::ArgsRootfs),
-    /// Convenience entrypoints for common QEMU and Orange Pi workflows
-    #[command(name = "quick-start")]
-    QuickStart(quick_start::ArgsQuickStart),
-    /// Build and run StarryOS application with U-Boot
-    Uboot(ArgsUboot),
-    /// Build and run StarryOS on a remote board
-    Board(ArgsBoard),
-    /// Build StarryOS loadable kernel modules (`.ko`)
-    Kmod(kmod::ArgsKmod),
-}
-
-#[derive(Args, Clone)]
-pub struct ArgsBuild {
-    #[arg(short, long)]
-    pub config: Option<PathBuf>,
-    #[arg(long)]
-    pub arch: Option<String>,
-    #[arg(short, long)]
-    pub target: Option<String>,
-
-    #[arg(long, value_name = "CPUS")]
-    pub smp: Option<usize>,
-
-    #[arg(long)]
-    pub debug: bool,
-}
-
-#[derive(Args)]
-pub struct ArgsQemu {
-    #[command(flatten)]
-    pub build: ArgsBuild,
-
-    #[arg(long)]
-    pub qemu_config: Option<PathBuf>,
-
-    /// Override the rootfs disk image path (skips auto-download).
-    #[arg(long, value_name = "IMAGE")]
-    pub rootfs: Option<PathBuf>,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ArgsPerf {
-    #[arg(long)]
-    pub arch: Option<String>,
-    #[arg(long, default_value_t = 99)]
-    pub freq: u32,
-    #[arg(long)]
-    pub out: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = PerfFormat::All)]
-    pub format: PerfFormat,
-    #[arg(long, default_value_t = 64)]
-    pub max_depth: usize,
-    #[arg(long, value_name = "SECONDS", default_value_t = 20)]
-    pub timeout: u64,
-    #[arg(long, default_value = "tb")]
-    pub mode: String,
-    #[arg(long, default_value_t = 20)]
-    pub top: usize,
-    #[arg(long, value_name = "CPUS")]
-    pub smp: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PerfFormat {
-    Folded,
-    Svg,
-    Pprof,
-    All,
-}
-
-#[derive(Args)]
-pub struct ArgsUboot {
-    #[command(flatten)]
-    pub build: ArgsBuild,
-
-    #[arg(long)]
-    pub uboot_config: Option<PathBuf>,
-}
-
-#[derive(Args)]
-pub struct ArgsBoard {
-    #[command(flatten)]
-    pub build: ArgsBuild,
-
-    #[arg(long = "board-config")]
-    pub board_config: Option<PathBuf>,
-
-    #[arg(short = 'b', long)]
-    pub board_type: Option<String>,
-
-    #[arg(long)]
-    pub server: Option<String>,
-
-    #[arg(long)]
-    pub port: Option<u16>,
-}
-
-#[derive(Args)]
-pub struct ArgsDefconfig {
-    pub board: String,
-}
-
-#[derive(Args)]
-pub struct ArgsConfig {
-    #[command(subcommand)]
-    pub command: ConfigCommand,
-}
-
-#[derive(Subcommand)]
-pub enum ConfigCommand {
-    /// List available board names
-    Ls,
-}
+pub use args::*;
 
 pub struct Starry {
     pub(super) app: AppContext,
-}
-
-impl From<&ArgsBuild> for StarryCliArgs {
-    fn from(args: &ArgsBuild) -> Self {
-        Self {
-            config: args.config.clone(),
-            arch: args.arch.clone(),
-            target: args.target.clone(),
-            smp: args.smp,
-            debug: args.debug,
-        }
-    }
 }
 
 impl Starry {
@@ -198,6 +57,7 @@ impl Starry {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
+        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
@@ -208,17 +68,7 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
-        if let Some(board) = config::ensure_default_build_config_for_target(
-            self.app.workspace_root(),
-            &request.target,
-            &request.build_info_path,
-        )? {
-            println!(
-                "generated missing Starry qemu build config {} from board {}",
-                request.build_info_path.display(),
-                board.name
-            );
-        }
+        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -269,18 +119,17 @@ impl Starry {
         let board_config = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
-        self.app
-            .board(
-                cargo,
-                request.build_info_path,
-                board_config,
-                RunBoardOptions {
-                    board_type: args.board_type,
-                    server: args.server,
-                    port: args.port,
-                },
-            )
-            .await
+        self.run_board_artifact(
+            &request,
+            cargo,
+            board_config,
+            RunBoardOptions {
+                board_type: args.board_type,
+                server: args.server,
+                port: args.port,
+            },
+        )
+        .await
     }
 
     async fn quick_start(&mut self, args: quick_start::ArgsQuickStart) -> anyhow::Result<()> {
@@ -392,11 +241,11 @@ impl Starry {
             && test_case.test_commands.is_empty()
             && test_case.subcases.is_empty()
         {
-            let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+            let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
                 case.rootfs_path,
-            );
+            )?;
             rootfs::ensure_qemu_rootfs_ready(
                 &request,
                 self.app.workspace_root(),
@@ -407,7 +256,6 @@ impl Starry {
             let cargo = build::load_cargo_config(&request)?;
             let mut qemu = self
                 .app
-                .tool_mut()
                 .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
                 .await?;
             rootfs::patch_rootfs(
@@ -415,8 +263,12 @@ impl Starry {
                 &rootfs_path,
                 rootfs::RootfsPatchMode::EnsureDiskBootNet,
             );
-            if !qemu.args.iter().any(|arg| arg == "-snapshot") {
+            if case.snapshot && !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
+            }
+            qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+            if qemu.uefi {
+                qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
             }
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
@@ -425,16 +277,23 @@ impl Starry {
                 qemu::qemu_timeout_summary(&qemu)
             );
             println!("  rootfs: {}", rootfs_path.display());
-            return self
-                .app
-                .qemu(cargo, request.build_info_path, Some(qemu))
-                .await;
+            // Start a [host_http_server] (if configured) before booting; keep the
+            // guard alive across the run so e.g. an online pip/uv install can hit
+            // a local wheel index at 10.0.2.2:PORT over real TCP.
+            let _host_http_server = test_case
+                .host_http_server
+                .as_ref()
+                .map(|config| {
+                    crate::test::host_http::HostHttpServerGuard::start(config, &test_case.name)
+                })
+                .transpose()?;
+            return self.run_qemu_artifact(&request, cargo, qemu).await;
         }
-        let rootfs_path = crate::rootfs::store::resolve_explicit_rootfs(
+        let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
             self.app.workspace_root(),
             &request.arch,
             case.rootfs_path,
-        );
+        )?;
         rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs_path))
             .await?;
         self.app.set_debug_mode(request.debug)?;
@@ -442,7 +301,6 @@ impl Starry {
         let asset_config = test::starry_case_asset_config();
         let mut qemu = self
             .app
-            .tool_mut()
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
         qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
@@ -462,6 +320,7 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),
@@ -479,10 +338,13 @@ impl Starry {
         );
         println!("  rootfs: {}", prepared_assets.rootfs_path.display());
 
-        let result = self
-            .app
-            .qemu(cargo, request.build_info_path, Some(qemu))
-            .await;
+        let _host_http_server = test_case
+            .host_http_server
+            .as_ref()
+            .map(|config| HostHttpServerGuard::start(config, &test_case.name))
+            .transpose()?;
+
+        let result = self.run_qemu_artifact(&request, cargo, qemu).await;
         qemu_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
         qemu_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
         result
@@ -511,19 +373,20 @@ impl Starry {
         let mut board_config = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(case.init_cmd);
-        self.app
-            .board(
-                cargo,
-                request.build_info_path,
-                board_config,
-                RunBoardOptions {
-                    board_type: args.board_type,
-                    server: args.server,
-                    port: args.port,
-                },
-            )
-            .await
+        if board_config.shell_init_cmd.is_none() {
+            board_config.shell_init_cmd = Some(case.init_cmd);
+        }
+        self.run_board_artifact(
+            &request,
+            cargo,
+            board_config,
+            RunBoardOptions {
+                board_type: args.board_type,
+                server: args.server,
+                port: args.port,
+            },
+        )
+        .await
     }
 
     pub(super) fn prepare_request(
@@ -545,6 +408,25 @@ impl Starry {
         Ok(request)
     }
 
+    pub(super) fn ensure_default_build_config_for_request(
+        &self,
+        request: &ResolvedStarryRequest,
+        command: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(board) = config::ensure_default_build_config_for_target(
+            self.app.workspace_root(),
+            &request.target,
+            &request.build_info_path,
+        )? {
+            println!(
+                "generated missing Starry {command} build config {} from board {}",
+                request.build_info_path.display(),
+                board.name
+            );
+        }
+        Ok(())
+    }
+
     fn quick_start_build_args(arch: &str, config: PathBuf) -> StarryCliArgs {
         StarryCliArgs {
             config: Some(config),
@@ -563,7 +445,6 @@ impl Starry {
         match request.uboot_config.as_deref() {
             Some(path) => self
                 .app
-                .tool_mut()
                 .read_uboot_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some),
@@ -579,18 +460,67 @@ impl Starry {
         match board_config_path {
             Some(path) => {
                 self.app
-                    .tool_mut()
                     .read_board_run_config_from_path_for_cargo(cargo, path)
                     .await
             }
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
-                    .tool_mut()
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
             }
         }
+    }
+
+    pub(super) async fn build_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+    ) -> anyhow::Result<ostool::build::CargoBuildOutput> {
+        build::build_starry_artifact(self, request, cargo).await
+    }
+
+    pub(super) async fn run_qemu_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        qemu: ostool::run::qemu::QemuConfig,
+    ) -> anyhow::Result<()> {
+        self.build_artifact(request, cargo.clone()).await?;
+        self.app.run_qemu(&cargo, qemu, None).await
+    }
+
+    pub(super) async fn run_uboot_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        uboot: Option<ostool::run::uboot::UbootConfig>,
+    ) -> anyhow::Result<()> {
+        let uboot = match uboot {
+            Some(uboot) => uboot,
+            None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
+        };
+        self.build_artifact(request, cargo).await?;
+        self.app.run_prepared_uboot(uboot).await
+    }
+
+    pub(super) async fn run_board_artifact(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: Cargo,
+        board_config: BoardRunConfig,
+        options: RunBoardOptions,
+    ) -> anyhow::Result<()> {
+        let output = self.build_artifact(request, cargo.clone()).await?;
+        self.app
+            .board_prepared_elf(
+                output.elf_path().to_path_buf(),
+                cargo.to_bin,
+                request.build_info_path.clone(),
+                board_config,
+                options,
+            )
+            .await
     }
 
     async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -600,14 +530,14 @@ impl Starry {
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        self.app.build(cargo, request.build_info_path).await
+        self.build_artifact(&request, cargo).await.map(|_| ())
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
-        self.app.uboot(cargo, request.build_info_path, uboot).await
+        self.run_uboot_artifact(&request, cargo, uboot).await
     }
 
     async fn quick_start_qemu(
@@ -738,555 +668,5 @@ fn format_app_run_progress(
     match arch {
         Some(arch) => format!("RUN\t{index}/{total}\t{app_name}\tarch={arch}"),
         None => format!("RUN\t{index}/{total}\t{app_name}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::*;
-    use crate::starry::test::TestCommand;
-
-    #[test]
-    fn command_parses_test_qemu() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "qemu", "--target", "x86_64"]).unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.target.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(!args.stress);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_defconfig() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "defconfig", "qemu-aarch64"]).unwrap();
-
-        match cli.command {
-            Command::Defconfig(args) => assert_eq!(args.board, "qemu-aarch64"),
-            _ => panic!("expected defconfig command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_config_ls() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "config", "ls"]).unwrap();
-
-        match cli.command {
-            Command::Config(args) => match args.command {
-                ConfigCommand::Ls => {}
-            },
-            _ => panic!("expected config ls command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_board() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "test",
-            "board",
-            "-g",
-            "normal",
-            "-c",
-            "smoke",
-            "--board",
-            "orangepi-5-plus",
-            "-b",
-            "OrangePi-5-Plus",
-            "--server",
-            "10.0.0.2",
-            "--port",
-            "9000",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Board(args) => {
-                    assert_eq!(args.test_group.as_deref(), Some("normal"));
-                    assert_eq!(args.test_case.as_deref(), Some("smoke"));
-                    assert_eq!(args.board.as_deref(), Some("orangepi-5-plus"));
-                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
-                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
-                    assert_eq!(args.port, Some(9000));
-                }
-                _ => panic!("expected board test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_with_group_and_case() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry", "test", "qemu", "--arch", "x86_64", "-g", "stress", "-c", "smoke",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.target, None);
-                    assert_eq!(args.test_group.as_deref(), Some("stress"));
-                    assert_eq!(args.test_case, Some("smoke".to_string()));
-                    assert!(!args.stress);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_with_stress_alias() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "test", "qemu", "--arch", "x86_64", "--stress"])
-            .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.test_group, None);
-                    assert!(args.stress);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_test_qemu_with_target() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli =
-            Cli::try_parse_from(["starry", "test", "qemu", "--target", "x86_64-unknown-none"])
-                .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch, None);
-                    assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
-
-    #[test]
-    fn command_rejects_removed_shell_init_cmd_flag() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        assert!(
-            Cli::try_parse_from([
-                "starry",
-                "test",
-                "qemu",
-                "--target",
-                "x86_64",
-                "--shell-init-cmd",
-                "echo test",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn command_rejects_removed_timeout_flag() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        assert!(
-            Cli::try_parse_from([
-                "starry",
-                "test",
-                "qemu",
-                "--target",
-                "x86_64",
-                "--timeout",
-                "10",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn command_parses_quick_start_qemu_build() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "quick-start", "qemu-aarch64", "build"]).unwrap();
-
-        match cli.command {
-            Command::QuickStart(args) => match args.command {
-                quick_start::QuickStartCommand::QemuAarch64(inner) => {
-                    assert!(matches!(inner.action, quick_start::QuickQemuAction::Build));
-                }
-                _ => panic!("expected qemu-aarch64 quick-start command"),
-            },
-            _ => panic!("expected quick-start command"),
-        }
-    }
-
-    #[test]
-    fn command_rejects_removed_plat_dyn_flag() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        assert!(Cli::try_parse_from(["starry", "qemu", "--plat-dyn"]).is_err());
-    }
-
-    #[test]
-    fn command_parses_quick_start_orangepi_run() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "quick-start",
-            "orangepi-5-plus",
-            "run",
-            "--serial",
-            "/dev/ttyUSB0",
-            "--baud",
-            "1500000",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::QuickStart(args) => match args.command {
-                quick_start::QuickStartCommand::Orangepi5Plus(inner) => match inner.action {
-                    quick_start::QuickOrangeAction::Run(run) => {
-                        assert_eq!(run.serial.as_deref(), Some("/dev/ttyUSB0"));
-                        assert_eq!(run.baud.as_deref(), Some("1500000"));
-                    }
-                    _ => panic!("expected orangepi run quick-start command"),
-                },
-                _ => panic!("expected orangepi quick-start command"),
-            },
-            _ => panic!("expected quick-start command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_quick_start_orangepi_build_with_overrides() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "quick-start",
-            "orangepi-5-plus",
-            "build",
-            "--serial",
-            "/dev/ttyUSB0",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::QuickStart(args) => match args.command {
-                quick_start::QuickStartCommand::Orangepi5Plus(inner) => match inner.action {
-                    quick_start::QuickOrangeAction::Build(build) => {
-                        assert_eq!(build.serial.as_deref(), Some("/dev/ttyUSB0"));
-                    }
-                    _ => panic!("expected orangepi build quick-start command"),
-                },
-                _ => panic!("expected orangepi quick-start command"),
-            },
-            _ => panic!("expected quick-start command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_quick_start_sg2002_local_run() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "quick-start",
-            "licheerv-nano-sg2002",
-            "run",
-            "--serial",
-            "/dev/ttyUSB1",
-            "--baud",
-            "115200",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::QuickStart(args) => match args.command {
-                quick_start::QuickStartCommand::LicheervNanoSg2002(inner) => match inner.action {
-                    quick_start::QuickSg2002Action::Run(run) => {
-                        assert_eq!(run.serial.as_deref(), Some("/dev/ttyUSB1"));
-                        assert_eq!(run.baud.as_deref(), Some("115200"));
-                    }
-                    _ => panic!("expected sg2002 run quick-start command"),
-                },
-                _ => panic!("expected sg2002 quick-start command"),
-            },
-            _ => panic!("expected quick-start command"),
-        }
-    }
-
-    #[test]
-    fn formats_starry_app_run_progress() {
-        assert_eq!(
-            format_app_run_progress(3, 12, "qemu/sqlite", Some("x86_64")),
-            "RUN\t3/12\tqemu/sqlite\tarch=x86_64"
-        );
-        assert_eq!(
-            format_app_run_progress(1, 1, "deepseek-tui", None),
-            "RUN\t1/1\tdeepseek-tui"
-        );
-    }
-
-    #[test]
-    fn command_parses_app_board() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "app",
-            "board",
-            "-t",
-            "orangepi-5-plus-uvc",
-            "-b",
-            "OrangePi-5-Plus",
-            "--server",
-            "10.0.0.2",
-            "--port",
-            "9000",
-            "--debug",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::App(args) => match args.command {
-                app::AppCommand::Board(args) => {
-                    assert_eq!(args.test_case, "orangepi-5-plus-uvc");
-                    assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
-                    assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
-                    assert_eq!(args.port, Some(9000));
-                    assert!(args.debug);
-                }
-                _ => panic!("expected app board command"),
-            },
-            _ => panic!("expected app command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_app_board_with_long_case_and_config() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "app",
-            "board",
-            "--test-case",
-            "orangepi-5-plus-uvc",
-            "--board-config",
-            "board.toml",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::App(args) => match args.command {
-                app::AppCommand::Board(args) => {
-                    assert_eq!(args.test_case, "orangepi-5-plus-uvc");
-                    assert_eq!(args.board_config, Some(PathBuf::from("board.toml")));
-                }
-                _ => panic!("expected app board command"),
-            },
-            _ => panic!("expected app command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_app_list() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from(["starry", "app", "list", "--kind", "qemu"]).unwrap();
-
-        match cli.command {
-            Command::App(args) => match args.command {
-                app::AppCommand::List(args) => {
-                    assert_eq!(args.kind, Some(app::StarryAppKind::Qemu))
-                }
-                _ => panic!("expected app list command"),
-            },
-            _ => panic!("expected app command"),
-        }
-    }
-
-    #[test]
-    fn command_parses_app_qemu_all() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "app",
-            "qemu",
-            "--all",
-            "--cap",
-            "board:OrangePi-5-Plus",
-            "--arch",
-            "x86_64",
-            "--qemu-config",
-            "qemu.toml",
-            "--debug",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::App(args) => match args.command {
-                app::AppCommand::Qemu(args) => {
-                    assert!(args.all);
-                    assert_eq!(args.caps, vec!["board:OrangePi-5-Plus"]);
-                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
-                    assert!(args.debug);
-                }
-                _ => panic!("expected app qemu command"),
-            },
-            _ => panic!("expected app command"),
-        }
-    }
-
-    #[test]
-    fn command_rejects_app_board_without_case() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        assert!(Cli::try_parse_from(["starry", "app", "board"]).is_err());
-    }
-
-    #[test]
-    fn command_parses_board() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "starry",
-            "board",
-            "--arch",
-            "aarch64",
-            "--board-config",
-            "remote.board.toml",
-            "-b",
-            "rk3568",
-            "--server",
-            "10.0.0.2",
-            "--port",
-            "9000",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Board(args) => {
-                assert_eq!(args.build.arch.as_deref(), Some("aarch64"));
-                assert_eq!(args.board_config, Some(PathBuf::from("remote.board.toml")));
-                assert_eq!(args.board_type.as_deref(), Some("rk3568"));
-                assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
-                assert_eq!(args.port, Some(9000));
-            }
-            _ => panic!("expected board command"),
-        }
     }
 }

@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.9...ax-alloc-v0.8.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.9](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.8...ax-alloc-v0.8.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-plat
+
+## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.7...ax-alloc-v0.8.8) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, axbacktrace, ax-percpu, ax-plat
+
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.6...ax-alloc-v0.8.7) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-errno, ax-plat
+
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.5...ax-alloc-v0.8.6) - 2026-06-27
+
+### Other
+
+- updated the following local packages: axbacktrace, ax-plat
+
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.4...ax-alloc-v0.8.5) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-plat, ax-kspin, axbacktrace
+
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.3...ax-alloc-v0.8.4) - 2026-06-22
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.2...ax-alloc-v0.8.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.1...ax-alloc-v0.8.2) - 2026-06-11
+
+### Fixed
+
+- *(kernel)* harden early allocation and virtio PCI setup
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.0...ax-alloc-v0.8.1) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.7.2...ax-alloc-v0.8.0) - 2026-06-03
 
 ### Added

@@ -4,7 +4,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{File, FileLike, resolve_at},
-    mm::{UserPtr, vm_load_string},
+    mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
 
@@ -68,7 +68,7 @@ pub fn sys_fstatat(
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -126,7 +126,7 @@ pub fn sys_statx(
     //        below), then the target file is the one referred to by the
     //        file descriptor dirfd.
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
@@ -154,7 +154,7 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
     let file = resolve_at(dirfd, path.as_deref(), flags)?;
@@ -229,7 +229,7 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
 }
 
 pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
 
     buf.vm_write(statfs(
@@ -261,7 +261,7 @@ pub fn sys_name_to_handle_at(
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_name_to_handle_at <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {

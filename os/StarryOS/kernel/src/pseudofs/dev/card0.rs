@@ -27,6 +27,7 @@
 //!     synthesized 60 Hz.
 
 use alloc::{
+    borrow::Cow,
     collections::{BTreeMap, VecDeque},
     format,
     string::String,
@@ -41,16 +42,18 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
+use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
+use linux_raw_sys::general::O_CLOEXEC;
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use super::drm::{
-    DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER,
+    DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER, DRM_CAP_PRIME,
     DRM_CAP_TIMESTAMP_MONOTONIC, DRM_EVENT_FLIP_COMPLETE, DRM_FORMAT_ARGB8888,
     DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DRM_IOCTL_AUTH_MAGIC,
     DRM_IOCTL_DROP_MASTER, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_MAGIC, DRM_IOCTL_GET_UNIQUE,
@@ -68,14 +71,18 @@ use super::drm::{
     DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE,
     DRM_MODE_PAGE_FLIP_EVENT, DRM_MODE_PROP_ATOMIC, DRM_MODE_PROP_BLOB, DRM_MODE_PROP_ENUM,
     DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
-    DRM_PROP_NAME_LEN, DrmAuth, DrmEvent, DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
-    DrmModeCreateBlob, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob,
-    DrmModeDestroyDumb, DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder,
-    DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
+    DRM_PRIME_CAP_EXPORT, DRM_PRIME_CAP_IMPORT, DRM_PROP_NAME_LEN, DrmAuth, DrmEvent,
+    DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateBlob, DrmModeCreateDumb,
+    DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob, DrmModeDestroyDumb, DrmModeDirtyFB,
+    DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
+    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
     DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
     DrmUnique, DrmVersion, DrmWaitVblank,
 };
-use crate::pseudofs::{DeviceMmap, DeviceOps};
+use crate::{
+    file::{FileLike, add_file_like},
+    pseudofs::{DeviceMmap, DeviceOps},
+};
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
 pub const DRIVER_DATE: &str = "2026-04-19";
@@ -170,6 +177,27 @@ const MAX_BLOB_BYTES: usize = 64 * 1024;
 /// `DeviceMmap::Physical` keeps its own strong ref. The underlying
 /// pages aren't released until every user mapping is unmapped, which
 /// is exactly Linux's GEM refcount contract.
+///
+/// # Field semantics
+///
+/// Only `size`, `offset`, and `pages` are **consumed** by downstream
+/// operations (`ADDFB2` reads `pages`+`size`; `mmap` reads `offset`;
+/// `present_fb` reads `pages`+`size`).  The fields `width`, `height`,
+/// `bpp`, and `pitch` are **metadata only** — written once by
+/// `CREATE_DUMB` but never read back by any ioctl handler in this
+/// driver.  They exist solely so that a human examining a debug dump
+/// or a future `GET_DUMB_INFO` (if added) can see what geometry the
+/// buffer was allocated for.
+///
+/// This matters for the `PRIME_FD_TO_HANDLE` import path: the
+/// [`DrmPrimeHandle`] ioctl struct carries only `{handle, flags, fd}`
+/// — it does **not** convey width/height/bpp/pitch from the exporting
+/// driver.  Consequently an imported `DumbBuffer` will always have
+/// these four fields set to zero.  No ioctl handler depends on them,
+/// so the zero values are safe.  If a future commit adds code that
+/// reads `.width` / `.height` / `.bpp` / `.pitch` from an imported
+/// buffer, that code must handle the zero case (e.g. by falling back
+/// to `ADDFB2`-supplied geometry).
 struct DumbBuffer {
     width: u32,
     height: u32,
@@ -191,10 +219,63 @@ struct DumbBuffer {
 struct Framebuffer {
     /// Total backing size in bytes.
     size: u64,
+    /// Row stride (pitch) in bytes — from ADDFB2.pitches[0].
+    stride: u32,
+    /// Framebuffer height in pixels — from ADDFB2.height.
+    height: u32,
     /// Backing pages. Shared with the (now possibly removed) dumb
     /// buffer; refcount keeps them alive until both this fb and any
     /// user mappings have been dropped.
     pages: Arc<GlobalPage>,
+}
+
+/// StarryOS kernel-side dma-buf GEM object for DRM card0.
+///
+/// Wraps the physical pages backing a dumb buffer so the exported fd
+/// (returned by [`Self::handle_prime_handle_to_fd`]) can be mmap'd,
+/// read, or passed via SCM_RIGHTS for cross-process buffer sharing.
+/// Follows the same pattern as card1.rs's `ExportedGemBuffer`.
+struct DmaBufGem {
+    /// Physical address range of the underlying buffer.
+    range: PhysAddrRange,
+    /// Backing pages shared with the source dumb buffer — keeps the
+    /// allocation alive even after a `DESTROY_DUMB` on the source
+    /// handle.
+    pages: Arc<GlobalPage>,
+    /// Total size in bytes.
+    size: u64,
+}
+
+impl FileLike for DmaBufGem {
+    fn path(&self) -> Cow<'_, str> {
+        "anon_inode:dmabuf".into()
+    }
+
+    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<DeviceMmap> {
+        // Validate that the requested sub-range fits within the buffer.
+        // `checked_add` guards against a wrapping length that would
+        // bypass the > self.size check.
+        let end = offset.checked_add(length).ok_or(AxError::InvalidInput)?;
+        if end > self.size {
+            return Err(AxError::InvalidInput);
+        }
+        // Return the *full* backing range.  The generic mmap layer
+        // (mmap.rs, Physical arm) adds `offset` to `range.start` and
+        // clamps `length` to `range.size()`, producing the correct
+        // sub-mapping of [base+offset, base+offset+length).  Returning
+        // the full range (rather than a length-clamped subset) avoids
+        // the double-accounting bug where the generic layer would
+        // shrink or invalidate the range after shifting it.
+        Ok(DeviceMmap::Physical(self.range, Some(self.pages.clone())))
+    }
+}
+
+impl Pollable for DmaBufGem {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
 
 /// Last legacy `SETCRTC` binding so `GETCRTC` can report what the
@@ -290,11 +371,13 @@ pub struct Card0 {
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: Mutex<()>,
+    /// Registered virtio-gpu IRQ action, when the display backend advertises one.
+    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        let card = Arc::new(Self {
             events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
@@ -314,7 +397,45 @@ impl Card0 {
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: Mutex::new(()),
+            irq_handle: spin::Once::new(),
+        });
+        card.register_irq();
+        card
+    }
+
+    fn register_irq(self: &Arc<Self>) {
+        if !ax_display::has_display() {
+            return;
+        }
+        let Some(irq) = ax_display::framebuffer_irq_id() else {
+            return;
+        };
+
+        let request = ax_runtime::hal::irq::IrqRequest::new(|_| {
+            if ax_display::framebuffer_handle_irq() {
+                ax_runtime::hal::irq::IrqReturn::Handled
+            } else {
+                ax_runtime::hal::irq::IrqReturn::Unhandled
+            }
         })
+        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+        match ax_runtime::hal::irq::request_irq(irq, request) {
+            Ok(handle) => {
+                self.irq_handle.call_once(|| handle);
+                ax_display::framebuffer_enable_irq();
+                if let Some(handle) = self.irq_handle.get().copied()
+                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
+                {
+                    warn!("failed to enable display irq handler for irq {irq:?}: {err:?}");
+                    ax_display::framebuffer_disable_irq();
+                }
+            }
+            Err(err) => {
+                warn!("failed to register display irq handler for irq {irq:?}: {err:?}");
+                ax_display::framebuffer_disable_irq();
+            }
+        }
     }
 
     /// Lazily construct the `IN_FORMATS` blob the first time a caller
@@ -490,9 +611,9 @@ impl DeviceOps for Card0 {
 
             DRM_IOCTL_GET_MAGIC => handle_get_magic(arg),
             DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(arg),
-            DRM_IOCTL_MODE_DIRTYFB => handle_dirty_fb(arg),
-            DRM_IOCTL_PRIME_HANDLE_TO_FD => handle_prime_handle_to_fd(arg),
-            DRM_IOCTL_PRIME_FD_TO_HANDLE => handle_prime_fd_to_handle(arg),
+            DRM_IOCTL_MODE_DIRTYFB => self.handle_dirty_fb(arg),
+            DRM_IOCTL_PRIME_HANDLE_TO_FD => self.handle_prime_handle_to_fd(arg),
+            DRM_IOCTL_PRIME_FD_TO_HANDLE => self.handle_prime_fd_to_handle(arg),
 
             _ => Err(VfsError::OperationNotSupported),
         }
@@ -539,7 +660,8 @@ impl Pollable for Card0 {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from DRM file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -556,25 +678,37 @@ impl Card0 {
         // the lock so `framebuffer_flush` doesn't run with the
         // map locked. Pages survive a concurrent DESTROY_DUMB because
         // the fb owns its own Arc<GlobalPage> clone.
-        let (pages, size) = match self.fbs.lock().get(&fb_id) {
-            Some(fb) => (fb.pages.clone(), fb.size),
+        let (pages, src_stride, rows, size) = match self.fbs.lock().get(&fb_id) {
+            Some(fb) => (fb.pages.clone(), fb.stride, fb.height as usize, fb.size),
             None => return,
         };
         if !ax_display::has_display() {
             return;
         };
         let info = ax_display::framebuffer_info();
-        let copy = (size as usize).min(info.fb_size);
-        // SAFETY: `pages` owns the source pages; `info.fb_base_vaddr`
-        // is the axdisplay-owned scanout region; the two regions don't
-        // overlap because the per-buffer pages were allocated separately
-        // from the axdisplay framebuffer.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                pages.start_vaddr().as_usize() as *const u8,
-                info.fb_base_vaddr as *mut u8,
-                copy,
-            );
+        let src = pages.start_vaddr().as_usize() as *const u8;
+        let dst = info.fb_base_vaddr as *mut u8;
+
+        if src_stride != 0 && info.stride != 0 && src_stride as usize != info.stride {
+            // Stride mismatch — copy row by row to avoid diagonal tearing.
+            let dst_limit = info.fb_size / info.stride.max(1);
+            let rows = rows.min(dst_limit);
+            let bytes_per_row = (src_stride as usize).min(info.stride);
+            for row in 0..rows {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(row * src_stride as usize),
+                        dst.add(row * info.stride),
+                        bytes_per_row,
+                    );
+                }
+            }
+        } else {
+            // Strides match (or one is unknown) — flat copy.
+            let copy = (size as usize).min(info.fb_size);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, copy);
+            }
         }
         let _ = ax_display::framebuffer_flush();
     }
@@ -715,6 +849,7 @@ fn handle_get_cap(arg: usize) -> VfsResult<usize> {
         DRM_CAP_TIMESTAMP_MONOTONIC => 1,
         DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
         DRM_CAP_ADDFB2_MODIFIERS => 1,
+        DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
         _ => 0,
     };
     ptr.vm_write(cap).map_err(|_| VfsError::BadAddress)?;
@@ -738,24 +873,108 @@ fn handle_auth_magic(_arg: usize) -> VfsResult<usize> {
     Ok(0)
 }
 
-fn handle_dirty_fb(_arg: usize) -> VfsResult<usize> {
-    Ok(0)
-}
+impl Card0 {
+    /// Export a GEM handle as a dma-buf file descriptor via PRIME.
+    ///
+    /// Looks up the dumb buffer backing `req.handle`, wraps its physical
+    /// pages in a [`DmaBufGem`], and registers it in the calling process's
+    /// fd table.  The returned fd can be passed across processes via
+    /// `SCM_RIGHTS` or used directly with `mmap`/`read`.
+    fn handle_prime_handle_to_fd(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmPrimeHandle;
+        let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
 
-fn handle_prime_handle_to_fd(arg: usize) -> VfsResult<usize> {
-    let ptr = arg as *mut DrmPrimeHandle;
-    let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    req.fd = req.handle as i32;
-    ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
-    Ok(0)
-}
+        let dumbs = self.dumbs.lock();
+        let buf = dumbs.get(&req.handle).ok_or(VfsError::InvalidInput)?;
 
-fn handle_prime_fd_to_handle(arg: usize) -> VfsResult<usize> {
-    let ptr = arg as *mut DrmPrimeHandle;
-    let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
-    req.handle = req.fd as u32;
-    ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
-    Ok(0)
+        // Convert the dumb buffer's virtual address to a physical address
+        // range that the mmap machinery can map into user space.
+        // `PhysAddrRange::from_start_size(virt_to_phys(...), size)` builds
+        // `{ start = pa, end = pa + size }` — the standard idiom for
+        // constructing a range from a base + length.
+        let range = PhysAddrRange::from_start_size(
+            virt_to_phys(buf.pages.start_vaddr()),
+            buf.size as usize,
+        );
+        let dma_buf = Arc::new(DmaBufGem {
+            range,
+            pages: buf.pages.clone(),
+            size: buf.size,
+        });
+
+        let cloexec = req.flags & O_CLOEXEC != 0;
+        let fd = add_file_like(dma_buf, cloexec).map_err(|_| VfsError::NoMemory)?;
+        req.fd = fd;
+
+        ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    /// Import a dma-buf fd back into the card's GEM handle namespace.
+    ///
+    /// Resolves `req.fd` to a [`DmaBufGem`] object, then registers it in
+    /// our dumbs table with a fresh handle so the calling process can use
+    /// it with other DRM ioctls (e.g. `ADDFB2`).
+    ///
+    /// # Why this cannot be an identity mapping
+    ///
+    /// The prior implementation (`req.handle = req.fd as u32`) treated the
+    /// fd number directly as a GEM handle. This is incorrect because:
+    ///
+    /// - fd numbers and GEM handles live in **separate namespaces**.  A
+    ///   process may have fd 5 pointing to a socket, not a dma-buf, and
+    ///   fd_to_handle would blindly mint handle=5 in the dumbs table,
+    ///   creating a dangling entry that refers to un-related memory.
+    /// - No type check: any fd (pipe, socket, regular file) was accepted
+    ///   without verifying it is actually a dma-buf backed by our card.
+    /// - No reference counting: the imported "handle" had no `Arc` bump on
+    ///   the backing pages.  A concurrent `DESTROY_DUMB` on the source
+    ///   handle (or `close` on the fd) could free the pages while the
+    ///   importer still holds the fake handle.
+    ///
+    /// The current implementation uses `downcast_ref::<DmaBufGem>` to
+    /// reject non-dma-buf fds and `Arc::clone` to participate in the GEM
+    /// refcount contract, matching Linux's behaviour.
+    fn handle_prime_fd_to_handle(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmPrimeHandle;
+        let mut req: DrmPrimeHandle = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+
+        let file = crate::file::get_file_like(req.fd).map_err(|_| VfsError::BadFileDescriptor)?;
+        let dma_buf: &DmaBufGem = file
+            .as_any()
+            .downcast_ref::<DmaBufGem>()
+            .ok_or(VfsError::InvalidInput)?;
+
+        let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
+        let offset = self
+            .next_offset
+            .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
+        self.dumbs.lock().insert(
+            handle,
+            // NOTE: width/height/bpp/pitch are zero because the
+            // PRIME_FD_TO_HANDLE ioctl does not carry geometry
+            // information — the kernel only receives {handle, flags, fd}
+            // from userspace and has no way to learn the original
+            // CREATE_DUMB parameters.  These fields are metadata-only
+            // (see the DumbBuffer doc comment) and no ioctl handler
+            // reads them, so zero is safe.  A future code path that
+            // inspects .width / .height / .bpp / .pitch on an
+            // arbitrary buffer must tolerate zero for imports.
+            DumbBuffer {
+                width: 0,
+                height: 0,
+                bpp: 0,
+                pitch: 0,
+                size: dma_buf.size,
+                offset,
+                pages: dma_buf.pages.clone(),
+            },
+        );
+        req.handle = handle;
+
+        ptr.vm_write(req).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
 }
 
 fn handle_get_resources(arg: usize) -> VfsResult<usize> {
@@ -929,6 +1148,38 @@ impl Card0 {
             };
             (b.pages.clone(), b.size)
         };
+        // Use the plane stride from the ADDFB2 request (f.pitches[0])
+        // rather than the dumb buffer's pitch.  PRIME/import buffers may
+        // have a dumb pitch of 0 even when userspace supplies a valid
+        // stride in the ADDFB2 call.
+        let fb_stride = f.pitches[0];
+        let fb_width = f.width;
+        let fb_height = f.height;
+        let fb_pixel_format = f.pixel_format;
+
+        let bpp = match fb_pixel_format {
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => 32u32,
+            _ => {
+                warn!("ADDFB2: unsupported pixel_format {:#x}", fb_pixel_format);
+                return Err(VfsError::InvalidInput);
+            }
+        };
+        let visible_bytes = fb_width * (bpp / 8);
+        if fb_stride < visible_bytes {
+            warn!(
+                "ADDFB2: stride {} < visible bytes {} ({}bpp, {}px)",
+                fb_stride, visible_bytes, bpp, fb_width
+            );
+            return Err(VfsError::InvalidInput);
+        }
+        let fb_total = fb_stride as u64 * fb_height as u64;
+        if size < fb_total {
+            warn!(
+                "ADDFB2: buffer size {} < fb_total {} ({}stride × {}height)",
+                size, fb_total, fb_stride, fb_height
+            );
+            return Err(VfsError::InvalidInput);
+        }
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
                 if f.handles[i] == 0 {
@@ -941,7 +1192,15 @@ impl Card0 {
             }
         }
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
-        self.fbs.lock().insert(fb_id, Framebuffer { size, pages });
+        self.fbs.lock().insert(
+            fb_id,
+            Framebuffer {
+                size,
+                stride: fb_stride,
+                height: fb_height,
+                pages,
+            },
+        );
         f.fb_id = fb_id;
         ptr.vm_write(f).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
@@ -1220,6 +1479,16 @@ fn range_u32(name: &'static str, atomic: u32) -> PropMeta {
 }
 
 impl Card0 {
+    fn handle_dirty_fb(&self, arg: usize) -> VfsResult<usize> {
+        let ptr = arg as *const DrmModeDirtyFB;
+        let dirty: DrmModeDirtyFB = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
+        if !self.fbs.lock().contains_key(&dirty.fb_id) {
+            return Err(VfsError::InvalidInput);
+        }
+        self.present_fb(dirty.fb_id);
+        Ok(0)
+    }
+
     fn handle_page_flip(&self, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeCrtcPageFlip;
         let f: DrmModeCrtcPageFlip = ptr.vm_read().map_err(|_| VfsError::BadAddress)?;
@@ -1262,7 +1531,8 @@ impl Card0 {
             }
         };
         if enqueued {
-            self.poll_rx.wake();
+            // DRM event is queued before waking readers.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
     }
 
@@ -1552,8 +1822,12 @@ fn checked_i32(value: u64) -> VfsResult<i32> {
     }
 }
 
-// Acknowledge dead fields to silence lint warnings — these are
-// recorded but not directly read. The whole struct is meaningful.
+// Suppress dead_code for `DumbBuffer.width/height/bpp/pitch`.  These
+// four fields are metadata-only (see the struct-level doc comment) and
+// are never consumed by any ioctl handler, but keeping them in the
+// struct makes a potential future `GET_DUMB_INFO` possible and makes
+// debug dumps informative.  The closure below signals to the compiler
+// that the field access is intentional — they are not "unnecessary".
 #[allow(dead_code)]
 const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
     let _ = (b.width, b.height, b.bpp, b.pitch);

@@ -298,7 +298,7 @@ impl<T: SpiTransport, D: DelayNs> SpiSdmmc<T, D> {
             Response::R1(r1) | Response::R1b(r1) => Ok(r1),
             _ => Err(Error::BadResponse(ErrorContext::for_cmd(
                 Phase::ResponseWait,
-                cmd.cmd,
+                cmd.index,
             ))),
         }
     }
@@ -310,7 +310,7 @@ impl<T: SpiTransport, D: DelayNs> SpiSdmmc<T, D> {
             self.transport.send_byte(b)?;
         }
 
-        let response = match cmd.resp_type {
+        let response = match cmd.response {
             ResponseType::None => {
                 let r1 = self.read_r1()?;
                 Ok(Response::R1(r1))

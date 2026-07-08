@@ -20,3 +20,33 @@ pub struct IrqConfig {
     /// Is cpu private interrupt?
     pub is_private: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiIrqTrigger {
+    Edge,
+    Level,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiIrqPolarity {
+    ActiveHigh,
+    ActiveLow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiGsiController {
+    IoApic,
+    PchPic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpiGsiRoute {
+    pub gsi: u32,
+    pub vector: usize,
+    pub controller: AcpiGsiController,
+    pub controller_id: u16,
+    pub controller_address: u64,
+    pub controller_input: u8,
+    pub trigger: AcpiIrqTrigger,
+    pub polarity: AcpiIrqPolarity,
+}

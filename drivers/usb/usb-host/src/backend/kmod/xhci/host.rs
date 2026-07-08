@@ -7,10 +7,10 @@ use ::xhci::{
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
+use ax_kspin::SpinRwLock as RwLock;
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
-use spin::RwLock;
 use usb_if::err::{TransferError, USBError};
 
 use super::{
@@ -74,6 +74,16 @@ impl CoreOp for Xhci {
                 .take()
                 .expect("Event handler can only be created once"),
         )
+    }
+
+    fn enable_irq(&mut self) -> Result<()> {
+        Self::enable_irq(self);
+        Ok(())
+    }
+
+    fn disable_irq(&mut self) -> Result<()> {
+        Self::disable_irq(self);
+        Ok(())
     }
 
     fn kernel(&self) -> &Kernel {

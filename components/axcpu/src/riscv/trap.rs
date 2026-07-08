@@ -58,7 +58,7 @@ fn riscv_trap_handler(tf: &mut TrapFrame) {
             }
             Trap::Exception(E::Breakpoint) => handle_breakpoint(tf),
             Trap::Interrupt(_) => {
-                crate::trap::irq_handler(scause.bits());
+                crate::trap::dispatch_irq(scause.bits());
             }
             _ => {
                 let bt = tf.backtrace();

@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.7...rdif-eth-v0.3.8) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.3.7](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.6...rdif-eth-v0.3.7) - 2026-07-07
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.3.6](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.5...rdif-eth-v0.3.6) - 2026-07-02
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.4...rdif-eth-v0.3.5) - 2026-06-27
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.3.4](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.3...rdif-eth-v0.3.4) - 2026-06-23
+
+### Other
+
+- release ([#1342](https://github.com/rcore-os/tgoskits/pull/1342))
+
+## [0.3.3](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.2...rdif-eth-v0.3.3) - 2026-06-22
+
+### Added
+
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+### Other
+
+- release ([#1263](https://github.com/rcore-os/tgoskits/pull/1263))
+
+## [0.3.3](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.2...rdif-eth-v0.3.3) - 2026-06-22
+
+### Added
+
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.1...rdif-eth-v0.3.2) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-base
+
+## [0.3.1](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.0...rdif-eth-v0.3.1) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-base, dma-api
+
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.2.1...rdif-eth-v0.3.0) - 2026-06-03
 
 ### Other

@@ -25,12 +25,62 @@ pub struct Nvme {
     sqes: u32,
     cqes: u32,
     page_size: usize,
+    max_transfer_bytes: Option<usize>,
+    io_queue_interrupts: bool,
+    msix_interrupts: bool,
+    interrupt_vectors: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub page_size: usize,
     pub io_queue_pair_count: usize,
+    pub io_queue_interrupts: bool,
+    pub interrupt_vector: u32,
+    pub msix_interrupts: bool,
+    pub interrupt_vectors: Vec<u16>,
+}
+
+impl Config {
+    pub const fn new(page_size: usize, io_queue_pair_count: usize) -> Self {
+        Self {
+            page_size,
+            io_queue_pair_count,
+            io_queue_interrupts: false,
+            interrupt_vector: 0,
+            msix_interrupts: false,
+            interrupt_vectors: Vec::new(),
+        }
+    }
+
+    pub fn with_intx_irq(mut self) -> Self {
+        self.io_queue_interrupts = true;
+        self.interrupt_vector = 0;
+        self.msix_interrupts = false;
+        self.interrupt_vectors = Vec::from([0]);
+        self
+    }
+
+    pub fn with_msix_vectors(mut self, vectors: impl Into<Vec<u16>>) -> Self {
+        self.interrupt_vectors = vectors.into();
+        self.io_queue_interrupts = !self.interrupt_vectors.is_empty();
+        self.msix_interrupts = self.io_queue_interrupts;
+        self.interrupt_vector = self
+            .interrupt_vectors
+            .first()
+            .copied()
+            .map(u32::from)
+            .unwrap_or(0);
+        self
+    }
+
+    fn interrupt_vector_for_queue(&self, queue_index: usize) -> u32 {
+        self.interrupt_vectors
+            .get(queue_index)
+            .copied()
+            .map(u32::from)
+            .unwrap_or(self.interrupt_vector)
+    }
 }
 
 impl Nvme {
@@ -44,7 +94,7 @@ impl Nvme {
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
-        let dma = DeviceDma::new(dma_mask, dma_op);
+        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         Self::new_mmio(mmio, dma, config)
     }
 
@@ -73,6 +123,10 @@ impl Nvme {
             sqes: 6,
             cqes: 4,
             page_size: config.page_size,
+            max_transfer_bytes: None,
+            io_queue_interrupts: config.io_queue_interrupts,
+            msix_interrupts: config.msix_interrupts,
+            interrupt_vectors: config.interrupt_vectors.clone(),
         };
 
         let version = s.version();
@@ -118,6 +172,12 @@ impl Nvme {
         debug!("Controller: {:?}", controller);
 
         self.num_ns = controller.number_of_namespaces as _;
+        self.max_transfer_bytes = controller_max_transfer_bytes(config.page_size, controller.mdts);
+        if config.io_queue_interrupts {
+            for vector in &config.interrupt_vectors {
+                self.mask_interrupt_vector(u32::from(*vector));
+            }
+        }
         self.config_io_queue(config)?;
 
         debug!("IO queue ok.");
@@ -158,15 +218,15 @@ impl Nvme {
     // 3. enable ctrl
     fn nvme_configure_admin_queue(&mut self) {
         self.reg().set_admin_submission_and_completion_queue_size(
-            self.admin_queue.sq.len(),
-            self.admin_queue.cq.len(),
+            self.admin_queue.sq_len(),
+            self.admin_queue.cq_len(),
         );
 
         self.reg()
-            .set_admin_submission_queue_base_address(self.admin_queue.sq.bus_addr());
+            .set_admin_submission_queue_base_address(self.admin_queue.sq_bus_addr());
 
         self.reg()
-            .set_admin_completion_queue_base_address(self.admin_queue.cq.bus_addr());
+            .set_admin_completion_queue_base_address(self.admin_queue.cq_bus_addr());
     }
 
     fn config_io_queue(&mut self, config: Config) -> Result {
@@ -191,18 +251,18 @@ impl Nvme {
 
             let data = CommandSet::create_io_completion_queue(
                 io_queue.qid,
-                io_queue.cq.len() as _,
-                io_queue.cq.bus_addr(),
+                io_queue.cq_len() as _,
+                io_queue.cq_bus_addr(),
                 true,
-                true,
-                0,
+                config.io_queue_interrupts,
+                config.interrupt_vector_for_queue(i),
             );
             self.admin_queue.command_sync(data)?;
 
             let data = CommandSet::create_io_submission_queue(
                 io_queue.qid,
-                io_queue.sq.len() as _,
-                io_queue.sq.bus_addr(),
+                io_queue.sq_len() as _,
+                io_queue.sq_bus_addr(),
                 true,
                 0,
                 io_queue.qid,
@@ -223,6 +283,38 @@ impl Nvme {
 
     pub fn page_size(&self) -> usize {
         self.page_size
+    }
+
+    pub(crate) const fn max_transfer_bytes(&self) -> Option<usize> {
+        self.max_transfer_bytes
+    }
+
+    pub fn io_queue_interrupts_enabled(&self) -> bool {
+        self.io_queue_interrupts
+    }
+
+    pub fn interrupt_vector(&self) -> u32 {
+        self.interrupt_vectors
+            .first()
+            .copied()
+            .map(u32::from)
+            .unwrap_or(0)
+    }
+
+    pub fn msix_interrupts_enabled(&self) -> bool {
+        self.io_queue_interrupts && self.msix_interrupts
+    }
+
+    pub fn interrupt_vectors(&self) -> &[u16] {
+        &self.interrupt_vectors
+    }
+
+    pub fn mask_interrupt_vector(&mut self, vector: u32) {
+        self.reg().mask_interrupt_vector(vector);
+    }
+
+    pub fn unmask_interrupt_vector(&mut self, vector: u32) {
+        self.reg().unmask_interrupt_vector(vector);
     }
 
     pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
@@ -340,10 +432,59 @@ impl Nvme {
 
 unsafe impl Send for Nvme {}
 
+fn controller_max_transfer_bytes(page_size: usize, mdts: u8) -> Option<usize> {
+    if mdts == 0 {
+        None
+    } else {
+        Some(page_size.checked_shl(u32::from(mdts)).unwrap_or(usize::MAX))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Namespace {
     pub id: u32,
     pub lba_size: usize,
     pub lba_count: usize,
     pub metadata_size: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, controller_max_transfer_bytes};
+
+    #[test]
+    fn config_defaults_to_polling_and_can_enable_intx() {
+        let config = Config::new(4096, 1);
+        assert!(!config.io_queue_interrupts);
+        assert_eq!(config.interrupt_vector, 0);
+        assert!(!config.msix_interrupts);
+        assert!(config.interrupt_vectors.is_empty());
+
+        let irq_config = config.with_intx_irq();
+        assert!(irq_config.io_queue_interrupts);
+        assert_eq!(irq_config.interrupt_vector, 0);
+        assert!(!irq_config.msix_interrupts);
+        assert_eq!(irq_config.interrupt_vectors, [0]);
+    }
+
+    #[test]
+    fn config_can_enable_msix_per_queue_vectors() {
+        let config = Config::new(4096, 2).with_msix_vectors([4, 5]);
+
+        assert!(config.io_queue_interrupts);
+        assert!(config.msix_interrupts);
+        assert_eq!(config.interrupt_vector, 4);
+        assert_eq!(config.interrupt_vector_for_queue(0), 4);
+        assert_eq!(config.interrupt_vector_for_queue(1), 5);
+    }
+
+    #[test]
+    fn controller_mdts_zero_means_unrestricted_transfer_size() {
+        assert_eq!(controller_max_transfer_bytes(4096, 0), None);
+    }
+
+    #[test]
+    fn controller_mdts_scales_with_controller_page_size() {
+        assert_eq!(controller_max_transfer_bytes(4096, 7), Some(512 * 1024));
+    }
 }

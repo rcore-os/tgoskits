@@ -6,12 +6,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use ax_task::{
     current,
     future::{block_on, poll_io},
 };
 use axpoll::{IoEvents, PollSet, Pollable};
-use spin::RwLock;
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
@@ -80,7 +80,9 @@ impl SignalfdSiginfo {
 }
 
 pub struct Signalfd {
-    mask: RwLock<SignalSet>,
+    // SignalSet is a single Copy bitset, so a short project-visible spin lock
+    // is enough for now. Revisit this when a lockdep-aware project RwLock exists.
+    mask: SpinNoIrq<SignalSet>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -88,19 +90,22 @@ pub struct Signalfd {
 impl Signalfd {
     pub fn new(mask: SignalSet) -> Arc<Self> {
         Arc::new(Self {
-            mask: RwLock::new(mask),
+            mask: SpinNoIrq::new(mask),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         })
     }
 
     pub fn update_mask(&self, mask: SignalSet) {
-        *self.mask.write() = mask;
-        self.poll_rx.wake();
+        {
+            *self.mask.lock() = mask;
+        }
+        // The signal mask update is visible before waking readers.
+        unsafe { self.poll_rx.wake(IoEvents::IN) };
     }
 
     fn mask(&self) -> SignalSet {
-        *self.mask.read()
+        *self.mask.lock()
     }
 
     /// Check if there are any pending signals matching the mask
@@ -138,7 +143,8 @@ impl FileLike for Signalfd {
 
                 // Wake up other waiters if there are more signals pending
                 if self.has_pending_signals() {
-                    self.poll_rx.wake();
+                    // Remaining pending signals are visible before re-wake.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
                 }
 
                 Ok(SIGNALFD_SIGINFO_SIZE)
@@ -176,7 +182,8 @@ impl Pollable for Signalfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

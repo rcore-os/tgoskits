@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.9...rockchip-npu-v0.2.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.2.9](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.8...rockchip-npu-v0.2.9) - 2026-07-07
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.2.8](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.7...rockchip-npu-v0.2.8) - 2026-07-02
+
+### Added
+
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.6...rockchip-npu-v0.2.7) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+### Fixed
+
+- *(rknpu)* honor GEM cache flags for mmap ([#1364](https://github.com/rcore-os/tgoskits/pull/1364))
+
+## [0.2.6](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.5...rockchip-npu-v0.2.6) - 2026-06-23
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.2.5](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.4...rockchip-npu-v0.2.5) - 2026-06-12
+
+### Other
+
+- updated the following local packages: rdif-base
+
+## [0.2.4](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.3...rockchip-npu-v0.2.4) - 2026-06-11
+
+### Added
+
+- *(orangepi-5-plus-uvc-rknn)* add RKNN bench validation ([#1189](https://github.com/rcore-os/tgoskits/pull/1189))
+
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.2...rockchip-npu-v0.2.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-base, dma-api
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.1...rockchip-npu-v0.2.2) - 2026-06-03
 
 ### Added

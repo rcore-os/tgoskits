@@ -8,6 +8,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeSet,
     rc::Rc,
 };
 
@@ -135,6 +136,22 @@ fn build_filesystem_with_written_file() -> (SharedCrcDevice, Vec<u8>) {
     umount(fs, &mut jbd2_dev).expect("umount failed");
 
     (device, payload)
+}
+
+fn sync_with_axfs_ng_order(
+    dev: &mut Jbd2Dev<SharedCrcDevice>,
+    fs: &mut Ext4FileSystem,
+) -> Ext4Result<()> {
+    fs.datablock_cache.flush_all(dev)?;
+    fs.bitmap_cache.flush_all(dev)?;
+    fs.inodetable_cache.flush_all(dev)?;
+    fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
+    fs.sync_superblock(dev)?;
+    fs.sync_group_descriptors(dev)?;
+    if dev.is_use_journal() {
+        dev.umount_commit();
+    }
+    dev.cantflush()
 }
 
 fn read_superblock(device: &SharedCrcDevice) -> Ext4Superblock {
@@ -337,6 +354,55 @@ fn checksums_are_persisted_and_clean_remount_preserves_the_written_file() {
 }
 
 #[test]
+fn axfs_ng_sync_order_preserves_inode_bitmap_across_remount() {
+    // Test idea: mirror axfs-ng's sync_to_disk ordering, then remount and keep
+    // creating files. Inodes allocated before the sync must remain marked in
+    // the persisted inode bitmap and must not be reused after remount.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut first_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut first_dev).expect("mkfs failed");
+    let mut fs = mount(&mut first_dev).expect("mount failed");
+
+    let mut seen = BTreeSet::new();
+    for idx in 0..256 {
+        let path = format!("/before-{idx}");
+        mkfile(&mut first_dev, &mut fs, &path, Some(b"x"), None).expect("mkfile before failed");
+        let file = open(&mut first_dev, &mut fs, &path, false).expect("open before failed");
+        assert!(
+            seen.insert(file.inode_num.raw()),
+            "duplicate inode before sync"
+        );
+    }
+
+    sync_with_axfs_ng_order(&mut first_dev, &mut fs).expect("axfs-ng order sync failed");
+    drop(fs);
+    drop(first_dev);
+
+    let sb = read_superblock(&device);
+    let desc = read_group_desc0(&device, &sb);
+    let inode_bitmap = device.read_block_bytes(desc.inode_bitmap());
+    assert_eq!(
+        desc.inode_bitmap_csum(&sb),
+        ext4_inode_bitmap_csum32(&sb, &inode_bitmap)
+    );
+
+    let mut remount_dev = new_jbd2_dev(device.clone());
+    let mut fs = mount(&mut remount_dev).expect("mount after axfs-ng order sync failed");
+
+    for idx in 0..256 {
+        let path = format!("/after-{idx}");
+        mkfile(&mut remount_dev, &mut fs, &path, Some(b"y"), None).expect("mkfile after failed");
+        let file = open(&mut remount_dev, &mut fs, &path, false).expect("open after failed");
+        assert!(
+            seen.insert(file.inode_num.raw()),
+            "inode reused after axfs-ng order sync/remount"
+        );
+    }
+
+    umount(fs, &mut remount_dev).expect("umount failed");
+}
+
+#[test]
 fn old_32_byte_descriptors_match_low_16_bits_of_bitmap_checksums() {
     let (device, _payload) = build_filesystem_with_written_file();
     let mut sb = read_superblock(&device);
@@ -523,6 +589,56 @@ fn invalid_revoke_record_fails_recovery() {
         Err(err) => err,
     };
     assert_eq!(err.code, Errno::EUCLEAN);
+}
+
+#[test]
+fn readonly_no_replay_mount_can_inspect_unrecoverable_journal() {
+    // Test idea: callers that only need to inspect or read files may explicitly
+    // choose a read-only mount without journal replay. The default writable
+    // mount must still reject the same image because home metadata may be stale.
+    let device = SharedCrcDevice::new(100 * 1024 * 1024);
+    let mut jbd2_dev = new_jbd2_dev(device.clone());
+    mkfs(&mut jbd2_dev).expect("mkfs failed");
+
+    let mut first_mount_dev = new_jbd2_dev(device.clone());
+    let fs = mount(&mut first_mount_dev).expect("mount failed");
+    let journal_block = fs
+        .journal_sb_block_start
+        .expect("journal superblock should be mapped")
+        .raw();
+    umount(fs, &mut first_mount_dev).expect("umount failed");
+
+    let mut sb = read_superblock(&device);
+    sb.s_feature_incompat |= Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    sb.update_checksum();
+    write_superblock(&device, &sb);
+    write_journal_start(&device, journal_block, 1);
+    write_invalid_journal_revoke(&device, journal_block);
+
+    let mut writable_dev = new_jbd2_dev(device.clone());
+    let err = match mount(&mut writable_dev) {
+        Ok(_) => panic!("default mount should fail unrecoverable journal replay"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, Errno::EUCLEAN);
+
+    let mut readonly_dev = Jbd2Dev::initial_jbd2dev(0, device.clone(), false);
+    let fs = mount_with_options(
+        &mut readonly_dev,
+        MountOptions::read_only_no_journal_replay(),
+    )
+    .expect("read-only no-replay mount should allow inspection");
+    assert_ne!(
+        fs.superblock.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
+    assert!(!readonly_dev.is_use_journal());
+
+    let on_disk_sb = read_superblock(&device);
+    assert_ne!(
+        on_disk_sb.s_feature_incompat & Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER,
+        0
+    );
 }
 
 #[test]

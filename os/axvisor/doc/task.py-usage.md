@@ -37,7 +37,7 @@ source ./activate.sh
 ./scripts/task.py build
 
 # 指定平台构建
-./scripts/task.py build --plat aarch64-generic
+./scripts/task.py build --arch aarch64
 
 # 添加特性
 ./scripts/task.py build --features "feature1,feature2"
@@ -67,14 +67,14 @@ source ./activate.sh
 ./scripts/task.py run
 
 **示例**：
-./scripts/task.py run --plat aarch64-generic --arceos-args "MEM=4g,BUS=mmio,BLK=y,LOG=debug" --features "fs"
+./scripts/task.py run --arch aarch64 --arceos-args "MEM=4g,BUS=mmio,BLK=y,LOG=debug" --features "fs"
 
 ```bash
 # 使用 .hvconfig.toml 中的配置运行
 ./task.py run
 
 # 使用特定配置运行，执行后会根据参数生成 .hvconfig.toml
-./task.py run --plat aarch64-generic --arceos-args "MEM=4g,BUS=mmio,BLK=y,LOG=debug" --features "fs"
+./task.py run --arch aarch64 --arceos-args "MEM=4g,BUS=mmio,BLK=y,LOG=debug" --features "fs"
 ```
 
 ./scripts/task.py run --arceos-args "QEMU_ARGS=\"-smp 4 -m 2G -netdev user,id=net0\""
@@ -85,9 +85,9 @@ source ./activate.sh
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--plat` | string | aarch64-generic | 指定目标平台 |
+| `--plat` | string | 已弃用 | 旧平台选择参数；当前构建链固定走 `axplat-dyn` |
 | `--arch` | string | 自动检测 | 指定目标架构 |
-| `--package` | string | 自动检测 | 指定平台包名 |
+| `--package` | string | 自动检测 | 指定 Axvisor 包名 |
 cp .hvconfig.dev.toml .hvconfig.toml && ./scripts/task.py build
 cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 | `--features` | string | 无 | Hypervisor 特性（逗号分隔） |
@@ -97,14 +97,15 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./scripts/task.py run
 
 ### 参数详解
 
-#### --plat (平台)
+#### --plat (旧平台参数)
 
-指定目标平台，系统会自动从 `platforms/{plat}/axconfig.toml` 读取对应的架构和包配置。
+旧平台选择参数。当前 ArceOS 构建链固定走 `axplat-dyn`，旧的平台配置文件路径已经不再作为构建链路的一部分；迁移旧命令时优先使用 `--arch`，不要再手动传平台选择项。
 
 ```bash
---plat aarch64-generic
---plat x86-qemu-q35
+--arch aarch64
 ```
+
+LoongArch QEMU 当前默认走 `axplat-dyn`，不再通过 `--plat` 选择平台 crate。迁移旧命令时，保留 LoongArch 架构选择即可，例如使用 `--arch loongarch64`；构建链会固定走 `axplat-dyn` 与 UEFI/`efi` 启动链路。
 
 **架构特定的 QEMU 参数**：
 
@@ -209,14 +210,14 @@ cp .hvconfig.prod.toml .hvconfig.toml && ./task.py run
    ./task.py build
    ```
 
-2. **平台配置找不到**
+2. **旧平台配置参数**
 
    ```text
-   警告：平台配置文件 platforms/xxx/axconfig.toml 不存在
+   旧平台配置参数不再受支持
    ```
 
-   - 检查平台名称是否正确
-   - 确保对应的平台目录存在
+   - 移除旧 `--plat` 平台选择参数
+   - 使用 `--arch` 选择架构，构建链会固定进入 `axplat-dyn`
 
 3. **TOML 库缺失**
 

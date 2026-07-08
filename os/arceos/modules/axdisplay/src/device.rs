@@ -1,5 +1,7 @@
 use alloc::{boxed::Box, string::String};
 
+use irq_framework::IrqId;
+
 use crate::DisplayInfo;
 
 pub type DisplayResult<T = ()> = Result<T, DisplayError>;
@@ -19,6 +21,22 @@ pub trait DisplayDevice: Send {
     fn info(&self) -> DisplayInfo;
 
     fn flush(&mut self) -> DisplayResult;
+
+    fn irq_id(&self) -> Option<IrqId> {
+        None
+    }
+
+    fn enable_irq(&mut self) {}
+
+    fn disable_irq(&mut self) {}
+
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> bool {
+        false
+    }
 }
 
 pub struct ErasedDisplayDevice {
@@ -51,5 +69,25 @@ impl DisplayDevice for ErasedDisplayDevice {
 
     fn flush(&mut self) -> DisplayResult {
         self.inner.flush()
+    }
+
+    fn irq_id(&self) -> Option<IrqId> {
+        self.inner.irq_id()
+    }
+
+    fn enable_irq(&mut self) {
+        self.inner.enable_irq();
+    }
+
+    fn disable_irq(&mut self) {
+        self.inner.disable_irq();
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.inner.is_irq_enabled()
+    }
+
+    fn handle_irq(&mut self) -> bool {
+        self.inner.handle_irq()
     }
 }

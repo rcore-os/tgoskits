@@ -26,8 +26,9 @@ use alloc::{string::String, vec::Vec};
 
 use ax_errno::AxResult;
 pub use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
+    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
+    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
 
 mod emu_device_type_serde {
@@ -53,6 +54,54 @@ mod emu_device_type_serde {
                 "unknown emulated device type value: {value}"
             ))),
         }
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum AddressSpacePolicySerde {
+    #[serde(rename = "virtualized", alias = "virtual")]
+    #[default]
+    Virtualized,
+    #[serde(rename = "passthrough", alias = "pt")]
+    Passthrough,
+}
+
+impl From<AddressSpacePolicySerde> for AddressSpacePolicy {
+    fn from(value: AddressSpacePolicySerde) -> Self {
+        match value {
+            AddressSpacePolicySerde::Virtualized => Self::Virtualized,
+            AddressSpacePolicySerde::Passthrough => Self::Passthrough,
+        }
+    }
+}
+
+impl From<&AddressSpacePolicy> for AddressSpacePolicySerde {
+    fn from(value: &AddressSpacePolicy) -> Self {
+        match value {
+            AddressSpacePolicy::Virtualized => Self::Virtualized,
+            AddressSpacePolicy::Passthrough => Self::Passthrough,
+        }
+    }
+}
+
+mod address_space_policy_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    pub fn serialize<S>(value: &AddressSpacePolicy, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        AddressSpacePolicySerde::from(value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<AddressSpacePolicy, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(AddressSpacePolicySerde::deserialize(deserializer)?.into())
     }
 }
 
@@ -349,6 +398,73 @@ mod passthrough_address_config_vec_serde {
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PassThroughPortConfigSerde {
+    #[serde(default)]
+    base: u16,
+    #[serde(default)]
+    length: u16,
+}
+
+impl From<PassThroughPortConfigSerde> for PassThroughPortConfig {
+    fn from(value: PassThroughPortConfigSerde) -> Self {
+        Self {
+            base: value.base,
+            length: value.length,
+        }
+    }
+}
+
+impl From<&PassThroughPortConfig> for PassThroughPortConfigSerde {
+    fn from(value: &PassThroughPortConfig) -> Self {
+        Self {
+            base: value.base,
+            length: value.length,
+        }
+    }
+}
+
+mod passthrough_port_config_vec_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    use super::*;
+
+    pub fn serialize<S>(value: &[PassThroughPortConfig], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = value
+            .iter()
+            .map(PassThroughPortConfigSerde::from)
+            .collect::<Vec<_>>();
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PassThroughPortConfig>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<PassThroughPortConfigSerde>::deserialize(deserializer)?
+            .into_iter()
+            .map(|value| {
+                let port = PassThroughPortConfig::from(value);
+                if port.length == 0 {
+                    return Err(de::Error::custom("passthrough port range has zero length"));
+                }
+                if port.base.checked_add(port.length - 1).is_none() {
+                    return Err(de::Error::custom(alloc::format!(
+                        "passthrough port range overflows: base={:#x}, length={:#x}",
+                        port.base,
+                        port.length
+                    )));
+                }
+                Ok(port)
+            })
+            .collect()
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum VMBootProtocolSerde {
     #[serde(rename = "direct", alias = "kernel")]
     #[default]
@@ -451,6 +567,53 @@ mod vm_interrupt_mode_serde {
         D: Deserializer<'de>,
     {
         Ok(VMInterruptModeSerde::deserialize(deserializer)?.into())
+    }
+}
+
+struct BootProtocolSupport {
+    protocol: VMBootProtocol,
+    supported_arches: &'static [&'static str],
+    requires_firmware_path: bool,
+    requires_firmware_load_addr: bool,
+    optional_firmware_requires_load_addr: bool,
+}
+
+const BOOT_PROTOCOL_MATRIX: &[BootProtocolSupport] = &[
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Direct,
+        supported_arches: &["x86_64", "aarch64", "riscv64", "loongarch64"],
+        requires_firmware_path: false,
+        requires_firmware_load_addr: false,
+        optional_firmware_requires_load_addr: false,
+    },
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Multiboot,
+        supported_arches: &["x86_64"],
+        requires_firmware_path: false,
+        requires_firmware_load_addr: false,
+        optional_firmware_requires_load_addr: true,
+    },
+    BootProtocolSupport {
+        protocol: VMBootProtocol::Uefi,
+        supported_arches: &["x86_64", "loongarch64"],
+        requires_firmware_path: true,
+        requires_firmware_load_addr: true,
+        optional_firmware_requires_load_addr: false,
+    },
+];
+
+fn boot_protocol_support(protocol: VMBootProtocol) -> &'static BootProtocolSupport {
+    BOOT_PROTOCOL_MATRIX
+        .iter()
+        .find(|support| support.protocol == protocol)
+        .expect("all VMBootProtocol variants must be described")
+}
+
+fn boot_protocol_name(protocol: VMBootProtocol) -> &'static str {
+    match protocol {
+        VMBootProtocol::Direct => "direct",
+        VMBootProtocol::Multiboot => "multiboot",
+        VMBootProtocol::Uefi => "uefi",
     }
 }
 
@@ -575,11 +738,9 @@ impl VMKernelConfig {
     }
 
     fn validate_boot_config_for_arch(&self, arch: &str) -> AxResult<()> {
+        let protocol = self.effective_boot_protocol();
         if !self.enable_bios {
-            if matches!(
-                self.effective_boot_protocol(),
-                VMBootProtocol::Multiboot | VMBootProtocol::Uefi
-            ) {
+            if protocol != VMBootProtocol::Direct {
                 return Err(ax_errno::ax_err_type!(
                     InvalidInput,
                     "boot_protocol requires enable_bios = true"
@@ -588,57 +749,48 @@ impl VMKernelConfig {
             return Ok(());
         }
 
-        match self.effective_boot_protocol() {
-            VMBootProtocol::Uefi => {
-                if arch != "x86_64" {
-                    warn!(
-                        "boot_protocol=uefi is only supported on x86_64; rejecting config on \
-                         {arch}"
-                    );
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot is only supported on x86_64"
-                    ));
-                }
-                if self.boot_firmware_path().is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot requires uefi_firmware_path or legacy bios_path"
-                    ));
-                }
-                if self.bios_load_addr.is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "UEFI boot requires bios_load_addr"
-                    ));
-                }
-            }
-            VMBootProtocol::Multiboot => {
-                if arch != "x86_64" {
-                    warn!(
-                        "boot_protocol=multiboot is only supported on x86_64; rejecting config on \
-                         {arch}"
-                    );
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "multiboot firmware boot is only supported on x86_64"
-                    ));
-                }
-                if self.bios_path.is_some() && self.bios_load_addr.is_none() {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "external BIOS boot requires bios_load_addr"
-                    ));
-                }
-            }
-            VMBootProtocol::Direct => {
-                if self.enable_bios {
-                    return Err(ax_errno::ax_err_type!(
-                        InvalidInput,
-                        "direct boot must not set enable_bios = true"
-                    ));
-                }
-            }
+        if protocol == VMBootProtocol::Direct {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "direct boot must not set enable_bios = true"
+            ));
+        }
+
+        let support = boot_protocol_support(protocol);
+        if !support.supported_arches.contains(&arch) {
+            warn!(
+                "boot_protocol={} is only supported on {}; rejecting config on {arch}",
+                boot_protocol_name(protocol),
+                support.supported_arches.join(", ")
+            );
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "boot protocol is not supported on this architecture"
+            ));
+        }
+
+        if support.requires_firmware_path && self.boot_firmware_path().is_none() {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "firmware boot requires uefi_firmware_path or legacy bios_path"
+            ));
+        }
+
+        if support.requires_firmware_load_addr && self.bios_load_addr.is_none() {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "firmware boot requires bios_load_addr"
+            ));
+        }
+
+        if support.optional_firmware_requires_load_addr
+            && self.bios_path.is_some()
+            && self.bios_load_addr.is_none()
+        {
+            return Err(ax_errno::ax_err_type!(
+                InvalidInput,
+                "external firmware boot requires bios_load_addr"
+            ));
         }
 
         Ok(())
@@ -669,6 +821,14 @@ const BUILD_TARGET_ARCH: &str = "unknown";
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VMDevicesConfig {
+    /// Guest physical address space population policy.
+    #[serde(default)]
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(with = "AddressSpacePolicySerde")
+    )]
+    #[serde(with = "address_space_policy_serde")]
+    pub address_space_policy: AddressSpacePolicy,
     /// Emu device Information
     #[cfg_attr(
         all(feature = "std", any(windows, unix)),
@@ -702,6 +862,14 @@ pub struct VMDevicesConfig {
     )]
     #[serde(with = "passthrough_address_config_vec_serde")]
     pub passthrough_addresses: Vec<PassThroughAddressConfig>,
+    /// Host I/O port ranges passed through to the VM.
+    #[serde(default)]
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(with = "Vec<PassThroughPortConfigSerde>")
+    )]
+    #[serde(with = "passthrough_port_config_vec_serde")]
+    pub passthrough_ports: Vec<PassThroughPortConfig>,
 }
 
 /// The configuration structure for the guest VM serialized from a toml file provided by user,

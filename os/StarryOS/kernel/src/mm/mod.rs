@@ -4,5 +4,7 @@ mod access;
 mod aspace;
 mod io;
 mod loader;
+mod stats;
+mod vm_stat;
 
-pub use self::{access::*, aspace::*, io::*, loader::*};
+pub use self::{access::*, aspace::*, io::*, loader::*, stats::*, vm_stat::*};
