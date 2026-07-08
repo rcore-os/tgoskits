@@ -173,7 +173,7 @@ log = "Warn"
             config: None,
             qemu: StarryQemuSnapshot {
                 qemu_config: Some(PathBuf::from(
-                    "test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml",
+                    "test-suit/starryos/qemu/system/qemu-riscv64.toml",
                 )),
             },
             uboot: StarryUbootSnapshot {
