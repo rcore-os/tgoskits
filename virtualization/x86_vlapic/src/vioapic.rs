@@ -24,8 +24,6 @@ const REDIRECTION_ENTRY_TRIGGER_MODE: u64 = 1 << 15;
 const REDIRECTION_ENTRY_REMOTE_IRR: u64 = 1 << 14;
 const REDIRECTION_ENTRY_DESTINATION_MODE: u64 = 1 << 11;
 const REDIRECTION_ENTRY_DELIVERY_MODE_MASK: u64 = 0b111 << 8;
-const REDIRECTION_ENTRY_DELIVERY_FIXED: u64 = 0b000 << 8;
-const REDIRECTION_ENTRY_DELIVERY_LOWEST_PRIORITY: u64 = 0b001 << 8;
 const REDIRECTION_ENTRY_DESTINATION_SHIFT: u64 = 56;
 
 #[derive(Debug)]
@@ -51,11 +49,7 @@ impl IoApicState {
             return None;
         }
 
-        let delivery_mode = *entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK;
-        if !matches!(
-            delivery_mode,
-            REDIRECTION_ENTRY_DELIVERY_FIXED | REDIRECTION_ENTRY_DELIVERY_LOWEST_PRIORITY
-        ) {
+        if *entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK != 0 {
             debug!("vIOAPIC GSI {gsi} uses unsupported delivery mode entry {entry:#x}");
             return None;
         }
@@ -123,11 +117,7 @@ impl EmulatedIoApic {
             return None;
         }
 
-        let delivery_mode = entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK;
-        if !matches!(
-            delivery_mode,
-            REDIRECTION_ENTRY_DELIVERY_FIXED | REDIRECTION_ENTRY_DELIVERY_LOWEST_PRIORITY
-        ) {
+        if entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK != 0 {
             debug!("vIOAPIC GSI {gsi} uses unsupported delivery mode entry {entry:#x}");
             return None;
         }
