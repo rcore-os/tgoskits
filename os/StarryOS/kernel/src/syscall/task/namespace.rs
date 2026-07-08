@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::mem;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::FS_CONTEXT;
@@ -8,7 +7,6 @@ use ax_task::current;
 use linux_raw_sys::general::{
     CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
-use scope_local::ActiveScope;
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
@@ -70,18 +68,9 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         // scope.write() would self-deadlock because on_enter holds a
         // leaked scope.read() guard for the task's lifetime.  Temporarily
         // release it, do the rebind, then re-acquire.
-        // SAFETY: the scope is task-private.  The brief window with
-        // ActiveScope pointing to global contains no FS_CONTEXT access.
-        unsafe { curr.as_thread().proc_data.scope.force_read_decrement() };
-        ActiveScope::set_global();
-
-        let mut scope = curr.as_thread().proc_data.scope.write();
-        *FS_CONTEXT.scope_mut(&mut scope) = new_fs;
-        drop(scope);
-
-        let read_guard = curr.as_thread().proc_data.scope.read();
-        unsafe { ActiveScope::set(&read_guard) };
-        mem::forget(read_guard);
+        proc_data.with_current_scope_mut(|scope| {
+            *FS_CONTEXT.scope_mut(scope) = new_fs;
+        });
     }
     if want_ns {
         FS_CONTEXT.lock().unshare_mount_namespace()?;
