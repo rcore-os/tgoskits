@@ -79,6 +79,12 @@ apk add --no-cache --no-scripts \
     build-base clang clang-dev cmake pkgconf git curl python3 \
     linux-headers openssl-dev perl bash tar xz musl-dev \
     || true
+# --no-scripts skips ALL triggers, including busybox which normally
+# creates applet symlinks (tar, readlink, dirname, etc.).  Install them
+# manually so the rest of the script works.
+echo "[bootstrap] Installing busybox symlinks..."
+/bin/busybox --install -s /bin 2>/dev/null || true
+
 # Verify the packages that matter actually installed (apk may return non-zero
 # when a post-install trigger such as busybox-suid segfaults, but the packages
 # themselves are installed).  Only fail if a critical binary is missing.
