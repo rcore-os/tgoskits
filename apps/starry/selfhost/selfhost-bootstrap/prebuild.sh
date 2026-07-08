@@ -71,7 +71,7 @@ fail() {
 # Idempotent: if the toolchain was already installed by a previous run,
 # skip apk entirely.  The apk upgrade of libssl/libcrypto can produce ELF
 # files that rsext4 cannot read after remount, so avoid re-running apk.
-if [ -x /bin/bash ] && [ -x /usr/bin/gcc ] && [ -x /usr/bin/git ]; then
+if [ -f /bin/bash ] && [ -f /usr/bin/gcc ] && [ -f /usr/bin/git ]; then
     echo "[bootstrap] Build toolchain already installed — skipping apk."
 else
 echo "[bootstrap] apk update + install build toolchain..."
