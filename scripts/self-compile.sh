@@ -183,7 +183,8 @@ Run: cargo xtask starry rootfs --arch x86_64"
         info "The guest will install build tools + Rust, then power off."
 
         set +e
-        cargo xtask starry app qemu -t selfhost/selfhost-bootstrap --arch "$ARCH"
+        BOOTSTRAP_LOG="$(mktemp /tmp/bootstrap-log.XXXXXX)"
+        cargo xtask starry app qemu -t selfhost/selfhost-bootstrap --arch "$ARCH" > "$BOOTSTRAP_LOG" 2>&1
         BOOTSTRAP_EXIT=$?
         set -e
 
@@ -192,10 +193,18 @@ Run: cargo xtask starry rootfs --arch x86_64"
         fi
 
         # Relocate the provisioned image to the blueprint path the full-kernel
-        # flow (and the working-copy clone below) consume.
-        mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
-        mv "$BOOTSTRAP_IMG" "$SELFHOST_BLUEPRINT" || error "Failed to relocate bootstrap image to blueprint"
-        info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
+        # flow (and the working-copy clone below) consume.  Only relocate if
+        # the guest actually reported success — a silent QEMU exit (e.g. after
+        # an apk segfault that breaks the network) may return exit 0 without
+        # printing SELFHOST_BOOTSTRAP_SUCCESS.
+        if grep -q "SELFHOST_BOOTSTRAP_SUCCESS" "$BOOTSTRAP_LOG" 2>/dev/null; then
+            mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
+            mv "$BOOTSTRAP_IMG" "$SELFHOST_BLUEPRINT" || error "Failed to relocate bootstrap image to blueprint"
+            info "Bootstrap complete: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
+        else
+            info "Bootstrap guest exited but did not report success — keeping bootstrap image for retry"
+            info "Run --bootstrap again to complete provisioning with a fresh network"
+        fi
     fi
 
     # ─── Blueprint provisioning guidance ────────────────────────────────────
