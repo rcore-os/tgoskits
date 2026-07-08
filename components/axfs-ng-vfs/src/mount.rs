@@ -666,7 +666,54 @@ impl Mountpoint {
         Ok(())
     }
 
+    /// Detach this mountpoint from its parent, propagating the unmount to
+    /// all shared peer group members (Linux `UMOUNT_PROPAGATE` semantics).
+    ///
+    /// On Linux, unmounting a shared mount propagates the unmount to every
+    /// member of the same shared peer group. This matters for nix sandbox
+    /// and systemd-nspawn which set up shared mounts and expect peer-group
+    /// unmount semantics.
+    ///
+    /// Peers form a clique (each peer's `peers` list contains every other
+    /// peer, and each peer also lists `self`). To prevent re-entrant cycles
+    /// when propagating, this method:
+    ///   1. Snapshots the live peers of `self`.
+    ///   2. Detaches `self` from its parent via the non-propagating helper
+    ///      [`detach_from_parent`](Self::detach_from_parent).
+    ///   3. Detaches each peer via the same helper (no further propagation).
+    ///   4. Tears down the shared-group membership for `self`.
     pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
+        if self.is_root() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let peers: Vec<Arc<Self>> = self
+            .peers
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|p| !Arc::ptr_eq(p, self))
+            .collect();
+
+        Self::detach_from_parent(self)?;
+
+        for peer in &peers {
+            let _ = Self::detach_from_parent(peer);
+        }
+
+        self.remove_from_shared_group();
+
+        Ok(())
+    }
+
+    /// Detach this mountpoint from its parent WITHOUT propagating to shared
+    /// peers.
+    ///
+    /// This is the internal helper used by [`detach`](Self::detach) to
+    /// perform the actual parent-children unlink. It does NOT touch the
+    /// `peers` list, so callers that want peer-group unmount semantics
+    /// must use [`detach`](Self::detach) instead.
+    fn detach_from_parent(self: &Arc<Self>) -> VfsResult<()> {
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }
@@ -1044,14 +1091,7 @@ impl Location {
         self.mountpoint.clear_expired();
 
         self.entry.as_dir()?.forget();
-        if let Some(parent_loc) = self.mountpoint.location.lock().as_ref() {
-            parent_loc
-                .mountpoint
-                .children
-                .lock()
-                .remove(&parent_loc.entry.key());
-        }
-        Ok(())
+        self.mountpoint.detach()
     }
 
     pub fn detach_mount(&self) -> VfsResult<()> {
@@ -1381,5 +1421,87 @@ mod tests {
             };
             assert_eq!(*parent_id, expected_parent, "mount_id {mount_id}");
         }
+    }
+
+    #[test]
+    fn detach_propagates_to_shared_peer_group_members() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+
+        let shared_entry = make_dir_entry("shared");
+        let peer_entry = make_dir_entry("peer");
+
+        let shared = Mountpoint::new_with_root(
+            shared_entry.clone(),
+            Some(Location::new(root.clone(), shared_entry.clone())),
+            root.device() + 1,
+        );
+        let peer = Mountpoint::new_with_root(
+            peer_entry.clone(),
+            Some(Location::new(root.clone(), peer_entry.clone())),
+            root.device() + 2,
+        );
+
+        root.children
+            .lock()
+            .insert(shared_entry.key(), shared.clone());
+        root.children.lock().insert(peer_entry.key(), peer.clone());
+
+        shared.set_shared();
+        peer.join_shared_group(&shared);
+
+        assert_eq!(shared.peer_group_id(), peer.peer_group_id());
+        assert!(!shared.peers.lock().is_empty());
+        assert!(!peer.peers.lock().is_empty());
+
+        shared.detach().expect("detach succeeds");
+
+        assert!(
+            root.children.lock().get(&shared_entry.key()).is_none(),
+            "shared should be detached from root"
+        );
+        assert!(
+            root.children.lock().get(&peer_entry.key()).is_none(),
+            "peer should be detached via propagation"
+        );
+        assert!(shared.peers.lock().is_empty());
+    }
+
+    #[test]
+    fn detach_private_mount_does_not_propagate() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+
+        let private_entry = make_dir_entry("private");
+        let neighbor_entry = make_dir_entry("neighbor");
+
+        let private = Mountpoint::new_with_root(
+            private_entry.clone(),
+            Some(Location::new(root.clone(), private_entry.clone())),
+            root.device() + 1,
+        );
+        let neighbor = Mountpoint::new_with_root(
+            neighbor_entry.clone(),
+            Some(Location::new(root.clone(), neighbor_entry.clone())),
+            root.device() + 2,
+        );
+
+        root.children
+            .lock()
+            .insert(private_entry.key(), private.clone());
+        root.children
+            .lock()
+            .insert(neighbor_entry.key(), neighbor.clone());
+
+        private.detach().expect("detach succeeds");
+
+        assert!(
+            root.children.lock().get(&private_entry.key()).is_none(),
+            "private should be detached"
+        );
+        assert!(
+            root.children.lock().contains_key(&neighbor_entry.key()),
+            "neighbor should remain — no propagation without peer group"
+        );
     }
 }
