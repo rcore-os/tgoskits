@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.2...someboot-v0.3.3) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
 ## [0.3.2](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.1...someboot-v0.3.2) - 2026-07-07
 
 ### Other

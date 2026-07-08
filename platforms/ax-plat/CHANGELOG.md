@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.2...ax-plat-v0.10.0) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.1...ax-plat-v0.9.2) - 2026-07-08
 
 ### Other

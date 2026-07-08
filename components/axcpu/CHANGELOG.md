@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.2...ax-cpu-v0.8.3) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.1...ax-cpu-v0.8.2) - 2026-07-07
 
 ### Other

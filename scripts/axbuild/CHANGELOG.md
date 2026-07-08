@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.18](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.17...axbuild-v0.4.18) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
 ## [0.4.17](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.16...axbuild-v0.4.17) - 2026-07-07
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.9...starry-signal-v0.8.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu
+
 ## [0.8.9](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.8...starry-signal-v0.8.9) - 2026-07-08
 
 ### Other
