@@ -453,12 +453,42 @@ pub fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
         return Ok(());
     }
 
-    rdrive::probe_pre_kernel_until(rdrive::register::ProbePriority::MSI, true).map_err(|err| {
-        warn!("failed to run boot IRQ driver probes: {err:?}");
-        IrqError::Controller
-    })?;
+    finish_boot_irq_probe_stage(
+        BootIrqProbeStage::Required("CLK/INTC/TIMER"),
+        rdrive::probe_pre_kernel_until(rdrive::register::ProbePriority::TIMER, true),
+    )?;
+    finish_boot_irq_probe_stage(
+        BootIrqProbeStage::Optional("MSI"),
+        rdrive::probe_pre_kernel_until(rdrive::register::ProbePriority::MSI, false),
+    )?;
     Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootIrqProbeStage {
+    Required(&'static str),
+    Optional(&'static str),
+}
+
+fn finish_boot_irq_probe_stage(
+    stage: BootIrqProbeStage,
+    result: Result<(), rdrive::ProbeError>,
+) -> Result<(), IrqError> {
+    let Err(err) = result else {
+        return Ok(());
+    };
+
+    match stage {
+        BootIrqProbeStage::Required(name) => {
+            warn!("failed to run required boot IRQ {name} probes: {err:?}");
+            Err(IrqError::Controller)
+        }
+        BootIrqProbeStage::Optional(name) => {
+            warn!("optional boot IRQ {name} probes failed; continuing without them: {err:?}");
+            Ok(())
+        }
+    }
 }
 
 pub fn init_secondary_boot_irqs(cpu_id: usize) {
@@ -684,5 +714,17 @@ mod tests {
             ),
             Err(IrqError::InvalidIrq)
         );
+    }
+
+    #[test]
+    fn boot_irq_optional_msi_probe_failure_is_nonfatal() {
+        let result = finish_boot_irq_probe_stage(
+            BootIrqProbeStage::Optional("MSI"),
+            Err(rdrive::ProbeError::OnProbe(
+                rdrive::probe::OnProbeError::Unsupported("missing MSI controller"),
+            )),
+        );
+
+        assert_eq!(result, Ok(()));
     }
 }
