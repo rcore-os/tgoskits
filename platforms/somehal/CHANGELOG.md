@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.5...somehal-v0.7.6) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.4...somehal-v0.7.5) - 2026-07-07
 
 ### Added

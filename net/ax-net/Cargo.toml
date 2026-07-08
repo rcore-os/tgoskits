@@ -1,6 +1,6 @@
 [package]
 name = "ax-net"
-version = "0.12.0"
+version = "0.12.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]

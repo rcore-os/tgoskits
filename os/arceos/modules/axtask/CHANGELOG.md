@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.0...ax-task-v0.6.1) - 2026-07-08
+
+### Fixed
+
+- *(axtask)* defer cross-core wake instead of spinning on remote on_cpu ([#1495](https://github.com/rcore-os/tgoskits/pull/1495))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.24...ax-task-v0.6.0) - 2026-07-07
 
 ### Fixed

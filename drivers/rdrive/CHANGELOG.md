@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.5](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.4...rdrive-v0.23.5) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
 ## [0.23.4](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.3...rdrive-v0.23.4) - 2026-07-07
 
 ### Added

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.0...starry-kernel-v0.7.1) - 2026-07-08
+
+### Added
+
+- *(starry)* report EOPNOTSUPP for SIOCETHTOOL and expose /proc/pid/mountinfo ([#1508](https://github.com/rcore-os/tgoskits/pull/1508))
+
+### Fixed
+
+- *(starry-kernel)* reject private mmap faults past eof ([#1534](https://github.com/rcore-os/tgoskits/pull/1534))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.6...starry-kernel-v0.7.0) - 2026-07-07
 
 ### Added

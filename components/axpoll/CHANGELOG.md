@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.0...axpoll-v0.5.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.4.3...axpoll-v0.5.0) - 2026-07-07
 
 ### Other

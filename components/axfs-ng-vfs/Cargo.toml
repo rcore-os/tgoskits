@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.5.4"
+version = "0.5.5"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
