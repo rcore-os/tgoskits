@@ -1,6 +1,6 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers by PR keywords after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers from .github/MAINTAINERS.md after review.
 ---
 
 # Review Single PR
@@ -17,7 +17,7 @@ When requirements overlap, apply the stricter rule. If skipping a requirement is
 
 ## Goal
 
-Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the local reviewer keyword index when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
+Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from `.github/MAINTAINERS.md` when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
 
 This skill is the authoritative single-PR workflow used by `review-open-prs`: do not fully review all open PRs, but always inspect enough related open PR context to classify duplicate, overlapping, superseded, or conflicting work.
 
@@ -505,17 +505,9 @@ gh pr view <pr> --json number,reviewDecision,latestReviews
 
 After review submission, request reviewers only when the PR still needs domain follow-up. Base the choice on the actual changed surface, review findings, validation risk, and remaining follow-up.
 
-Extract keywords from the PR title, body, changed paths, public APIs, tests, validation commands, and review findings. Normalize obvious aliases that map to rows below, such as `qemu`/`test-suit`, SD/MMC host names, syscall wrapper names, architecture target names, scheduler features, and page-table crate names. Use this keyword index as the reviewer source:
+Read `.github/MAINTAINERS.md` before choosing reviewers. Treat it as the local reviewer source of truth: match PR title, body, changed paths, public APIs, tests, validation commands, and review findings against each entry's `F:` path hints and `K:` keyword hints; request only the matching `R:` logins. Normalize only obvious aliases that map to `.github/MAINTAINERS.md` entries.
 
-| PR keywords or directions | Preferred reviewer candidates |
-| --- | --- |
-| `arceos`, `axvisor`, VM, guest boot, driver, VirtIO, PCI, MMIO, DMA, IRQ, USB, camera, robot, platform, boot, SMP, trap/context, architecture, aarch64, loongarch | `@ZR233` |
-| CI, tests, `test-suit`, QEMU runner, rootfs, distro, `axbuild`, repo maintenance, docs, release, workflow | `@ZCShou` |
-| `x86_vcpu`, x86_64 virtualization, VMX, SVM, VMCS, VMCB, Linux/UEFI guest boot, PIT handling, IVC/HVC, guest communication, FreeRTOS/Zephyr guest, host-fs, `axfs-ng-vfs`, `rsext4`, ext4, `axsched`, `BaseScheduler`, FIFO/RR/CFS, `sched-rr`, `sched-cfs` | `@Josen-B` |
-| SD/MMC, SDHCI, DWMMC, `sdmmc`, `k230-sdhci`, `rockchip-sdhci`, `starfive-jh7110-dwmmc`, `simple-sdmmc`, `mmcblk`, `vmmc-supply`, `vqmmc-supply`, syscall, `sys_*`, `ax_posix_api`, `axlibc`, riscv64, `riscv64gc-unknown-none-elf`, `qemu-riscv64`, `riscv_vcpu`, `riscv_vplic`, SBI/OpenSBI, guest timer, runtime IPI | `@YanLien` |
-| memory management, address space, page table, paging, `ax-mm`, `axaddrspace`, `page-table-generic`, `ax-page-table-multiarch`, `ax-page-table-entry`, `ax-memory-set`, `ax-memory-addr`, `axalloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `FrameAllocator`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA | `@bullhh` |
-
-Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching owner over `@ZR233` when both match; request `@ZR233` only when the broad architecture/platform risk is the primary review need or no more specific row owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If keywords do not match a table row, no keyword-index login is requestable, or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
+Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching entry over broad architecture ownership such as `@ZR233`; request `@ZR233` only when broad architecture/platform risk is the primary review need or no more specific entry owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If no `.github/MAINTAINERS.md` entry matches, no listed login is requestable, or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
 
 Before writing reviewer requests, check current reviewer state and permissions:
 
@@ -531,11 +523,11 @@ printf '%s\n' '{"reviewers":["<login1>","<login2>"]}' |
   gh api -X POST repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers --input -
 ```
 
-After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone outside the keyword index.
+After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone outside `.github/MAINTAINERS.md`.
 
 In the final user summary, state:
 
-- which keyword groups matched the PR;
+- which `.github/MAINTAINERS.md` entries matched the PR;
 - which reviewers were requested, already present, skipped, or rejected;
 - any permission/API limitation;
 - that only GitHub reviewer metadata was changed, when no code files were edited by the assignment step.
