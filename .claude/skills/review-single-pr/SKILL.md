@@ -1,6 +1,6 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers by PR keywords after review.
 ---
 
 # Review Single PR
@@ -11,13 +11,13 @@ This skill is a normative review specification, not a suggestion list. When it t
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
-After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
 
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
 ## Goal
 
-Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the project reviewer direction table when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
+Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the local reviewer keyword index when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
 
 This skill is the authoritative single-PR workflow used by `review-open-prs`: do not fully review all open PRs, but always inspect enough related open PR context to classify duplicate, overlapping, superseded, or conflicting work.
 
@@ -501,28 +501,23 @@ Verify final state:
 gh pr view <pr> --json number,reviewDecision,latestReviews
 ```
 
-## Post-Review Reviewer Assignment
+## Recommended Reviewer Assignment
 
-After review submission, decide whether the PR still needs human reviewer requests. Do this after the technical review so reviewer choice is based on the actual changed surface, duplicate/overlap findings, validation risk, and remaining follow-up.
+After review submission, request reviewers only when the PR still needs domain follow-up. Base the choice on the actual changed surface, review findings, validation risk, and remaining follow-up.
 
-Use discussion 594 as the reviewer source of truth. Read the current table directly before assigning because personnel directions may change:
+Extract keywords from the PR title, body, changed paths, public APIs, tests, validation commands, and review findings. Normalize obvious aliases such as `fs`/`vfs`/`ext4`, `qemu`/`test-suit`, `drm`/`kms`/`wayland`, `socket`/`netlink`/`dhcp`, and architecture names. Use this keyword index as the reviewer source:
 
-```bash
-gh api graphql \
-  -f query='query($owner:String!,$repo:String!,$number:Int!){ repository(owner:$owner,name:$repo){ discussion(number:$number){ title body url comments(first:100){nodes{author{login} body createdAt}} } } }' \
-  -F owner=rcore-os -F repo=tgoskits -F number=594
-```
+| PR keywords or directions | Preferred reviewer candidates |
+| --- | --- |
+| `arceos`, `axvisor`, VM, guest boot, driver, VirtIO, PCI, MMIO, DMA, IRQ, USB, camera, robot, platform, boot, SMP, trap/context, architecture, aarch64, loongarch | `@ZR233` |
+| CI, tests, `test-suit`, QEMU runner, rootfs, distro, `axbuild`, repo maintenance, docs, release, workflow | `@ZCShou` |
+| `x86_vcpu`, x86_64 virtualization, VMX, SVM, VMCS, VMCB, Linux/UEFI guest boot, PIT handling, IVC/HVC, guest communication, FreeRTOS/Zephyr guest, host-fs, `axfs-ng-vfs`, `rsext4`, ext4, `axsched`, `BaseScheduler`, FIFO/RR/CFS, `sched-rr`, `sched-cfs` | `@Josen-B` |
+| SD/MMC, SDHCI, DWMMC, `sdmmc`, `k230-sdhci`, `rockchip-sdhci`, `starfive-jh7110-dwmmc`, `simple-sdmmc`, `mmcblk`, `vmmc-supply`, `vqmmc-supply`, syscall, `sys_*`, `ax_posix_api`, `axlibc`, riscv64, `riscv64gc-unknown-none-elf`, `qemu-riscv64`, `riscv_vcpu`, `riscv_vplic`, SBI/OpenSBI, guest timer, runtime IPI | `@YanLien` |
+| memory management, address space, page table, paging, `ax-mm`, `axaddrspace`, `page-table-generic`, `ax-page-table-multiarch`, `ax-page-table-entry`, `ax-memory-set`, `ax-memory-addr`, `axalloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `FrameAllocator`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA | `@bullhh` |
 
-Map PR content to reviewer directions from the "人员方向整理" table:
+Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching owner over `@ZR233` when both match; request `@ZR233` only when the broad architecture/platform risk is the primary review need or no more specific row owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If no keyword-index login is requestable or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
 
-- StarryOS tests, `test-suit/starryos`, QEMU cases, rootfs/app tests, `apk`, distro behavior, or `axbuild` test flow: prefer reviewers covering `测试`, `发行版/rootfs`, `axbuild`, and the relevant `starry` area.
-- Syscall, filesystem, network, driver, platform, architecture, CI, documentation, and display changes should be mapped to the matching table columns, then cross-checked against changed files and PR body claims.
-- If a PR matches several domains, request one primary reviewer for the highest-risk domain and one secondary reviewer for integration or test coverage. Avoid over-requesting reviewers.
-- Drop the PR author from targets. Preserve existing bot review requests and unrelated existing human reviewer requests unless the user explicitly asks to rebalance them.
-
-For StarryOS QEMU app/rootfs tests such as an `apk` or `git` case under `test-suit/starryos/<case>`, a good mapping is `测试` + `发行版/rootfs` + `starry`: `@ZCShou` for test/rootfs/axbuild ownership and `@luodeb` for Starry/rootfs experience. Use this as a pattern, not as a hard-coded rule; still inspect the current discussion table and PR contents.
-
-Before writing reviewer requests, check current requested reviewers and permissions:
+Before writing reviewer requests, check current reviewer state and permissions:
 
 ```bash
 gh api repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers
@@ -536,11 +531,11 @@ printf '%s\n' '{"reviewers":["<login1>","<login2>"]}' |
   gh api -X POST repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers --input -
 ```
 
-After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone not supported by discussion 594.
+After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone outside the keyword index.
 
 In the final user summary, state:
 
-- which reviewer direction columns matched the PR;
+- which keyword groups matched the PR;
 - which reviewers were requested, already present, skipped, or rejected;
 - any permission/API limitation;
 - that only GitHub reviewer metadata was changed, when no code files were edited by the assignment step.
