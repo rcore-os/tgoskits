@@ -144,6 +144,10 @@ impl ArchTrait for Arch {
         elx::flush_tlb(None);
     }
 
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        false
+    }
+
     fn irq_is_enabled(_irq: crate::irq::IrqId) -> bool {
         unimplemented!()
     }

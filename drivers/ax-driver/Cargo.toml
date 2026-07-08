@@ -35,6 +35,8 @@ virtio-socket = ["vsock", "virtio", "pci"]
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
+ls2k1000-ahci = ["block", "dep:simple-ahci"]
+ls2k1000-gmac = ["net", "dep:ax-kspin"]
 nvme = ["block", "pci", "dep:nvme-driver"]
 cvsd = [
     "block",

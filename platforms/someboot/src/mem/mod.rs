@@ -109,7 +109,7 @@ pub fn virt_to_phys(vaddr: *const u8) -> usize {
 }
 
 pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
-    if mmu::is_kernel_relocated() {
+    if mmu::is_kernel_relocated() || cfg!(target_arch = "loongarch64") {
         __io(paddr)
     } else {
         paddr as *mut u8

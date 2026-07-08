@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{MemIf, RawRange},
+    mem::{IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -76,6 +76,14 @@ impl MemIf for DummyMem {
         &[]
     }
 
+    fn prepare_iomap(
+        addr: ax_memory_addr::PhysAddr,
+        _size: usize,
+        _attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError> {
+        Ok(IomapDecision::UseGeneric(addr))
+    }
+
     fn phys_to_virt(_paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
         va!(0)
     }
@@ -86,6 +94,10 @@ impl MemIf for DummyMem {
 
     fn kernel_aspace() -> (ax_memory_addr::VirtAddr, usize) {
         (va!(0), 0)
+    }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        true
     }
 }
 

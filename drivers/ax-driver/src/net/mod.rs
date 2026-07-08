@@ -6,6 +6,8 @@ pub mod aic8800;
 pub mod fxmac;
 #[cfg(feature = "intel-net")]
 pub mod intel;
+#[cfg(feature = "ls2k1000-gmac")]
+pub mod loongson_gmac;
 #[cfg(feature = "realtek-rtl8125")]
 pub mod realtek;
 

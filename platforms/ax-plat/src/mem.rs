@@ -8,6 +8,39 @@ use core::{
 pub use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, pa, va};
 
 bitflags::bitflags! {
+    /// Attributes requested for an MMIO mapping.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct IomapAttrs: usize {
+        /// Device MMIO mapping with device ordering/cache attributes.
+        const DEVICE        = 1 << 0;
+        /// Write-combining mapping, such as framebuffers.
+        const WRITE_COMBINE = 1 << 1;
+        /// Cacheable mapping.
+        const CACHEABLE     = 1 << 2;
+        /// Non-posted device access.
+        const NON_POSTED    = 1 << 3;
+    }
+}
+
+/// Platform decision for an MMIO mapping request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IomapDecision {
+    /// The platform already provided a valid virtual address.
+    Mapped(VirtAddr),
+    /// Use the generic page-table-backed mapper with this physical address.
+    UseGeneric(PhysAddr),
+}
+
+/// Platform error for an MMIO mapping request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IomapError {
+    /// The requested address range or attributes are invalid.
+    InvalidInput,
+    /// The requested mapping attributes are not supported.
+    Unsupported,
+}
+
+bitflags::bitflags! {
     /// The flags of a physical memory region.
     #[derive(Clone, Copy)]
     pub struct MemRegionFlags: usize {
@@ -144,6 +177,17 @@ pub trait MemIf {
     /// Returns all device memory (MMIO) ranges on the platform.
     fn mmio_ranges() -> &'static [RawRange];
 
+    /// Prepares an MMIO mapping request.
+    ///
+    /// This hook is for architecture/platform-specific IO address handling, such
+    /// as choosing an uncached hardware alias. Returning [`IomapDecision::UseGeneric`]
+    /// asks the generic memory manager to create a page-table-backed mapping.
+    fn prepare_iomap(
+        addr: PhysAddr,
+        size: usize,
+        attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError>;
+
     /// Translates a physical address to a virtual address.
     ///
     /// It is just an easy way to access physical memory when virtual memory
@@ -160,6 +204,9 @@ pub trait MemIf {
 
     /// Returns the kernel address space base virtual address and size.
     fn kernel_aspace() -> (VirtAddr, usize);
+
+    /// Returns whether a newly-created user address space must copy kernel mappings.
+    fn user_aspace_needs_kernel_mappings() -> bool;
 }
 
 /// Returns the total size of physical memory (RAM) on the platform.

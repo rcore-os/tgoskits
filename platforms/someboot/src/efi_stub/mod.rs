@@ -310,9 +310,12 @@ impl crate::console::Con for UefiPrinter {
 fn find_fdt() {
     with_config_table(|config_table| {
         if let Some(addr) = find_fdt_address(config_table) {
-            println!("Found FDT at address: {:p}", addr);
-            unsafe {
-                crate::fdt::FDT_ADDR = addr as usize;
+            let fdt_addr =
+                <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(addr as usize);
+            if crate::fdt::set_fdt_addr_phys_if_valid(fdt_addr) {
+                println!("Found FDT at address: {:p}", addr);
+            } else {
+                println!("Ignoring invalid FDT at address: {:p}", addr);
             }
         } else {
             println!("No FDT found in UEFI config tables.");

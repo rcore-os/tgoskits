@@ -1,6 +1,6 @@
 use irq_framework::{IrqError, IrqId, IrqSource};
 use rdrive::probe::OnProbeError;
-use someboot::PagingError;
+use someboot::{ArchTrait, PagingError};
 
 use crate::setup::MmioRaw;
 
@@ -44,8 +44,9 @@ pub trait PlatOp {
 }
 
 #[allow(dead_code)]
-pub fn ioremap(paddr: u64, size: usize) -> anyhow::Result<MmioRaw> {
-    let mmio = unsafe { mmio_api::ioremap_raw(paddr.into(), size)? };
+pub fn ioremap(addr: u64, size: usize) -> anyhow::Result<MmioRaw> {
+    let paddr = <someboot::arch::Arch as ArchTrait>::canonicalize_paddr(addr as usize);
+    let mmio = unsafe { mmio_api::ioremap_raw((paddr as u64).into(), size)? };
     Ok(mmio)
 }
 

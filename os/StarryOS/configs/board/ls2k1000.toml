@@ -1,0 +1,10 @@
+target = "loongarch64-unknown-none-softfloat"
+log = "Info"
+features = [
+  "ax-hal/plat-dyn",
+  "starry-kernel/loongarch64-low-va",
+  "ax-driver/serial",
+  "ax-driver/rtc",
+  "ax-driver/ls2k1000-ahci",
+  "ax-driver/ls2k1000-gmac",
+]

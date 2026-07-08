@@ -3,7 +3,7 @@ mod binding;
 #[allow(unused)]
 mod shared;
 
-#[cfg(feature = "ahci")]
+#[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
 pub mod ahci;
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835;

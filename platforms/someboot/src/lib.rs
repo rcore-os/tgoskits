@@ -68,6 +68,9 @@ pub trait ArchTrait {
     fn _io(paddr: usize) -> *mut u8 {
         Self::_va(paddr)
     }
+    fn ioremap_device(_addr: usize, _size: usize) -> Option<*mut u8> {
+        None
+    }
     fn _percpu(paddr: usize) -> *mut u8 {
         Self::_va(paddr)
     }
@@ -85,6 +88,13 @@ pub trait ArchTrait {
     fn trap_addr() -> usize;
 
     fn virt_to_phys(vaddr: *const u8) -> usize;
+
+    fn canonicalize_paddr(addr: usize) -> usize {
+        addr
+    }
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        true
+    }
 
     fn kernel_space() -> core::ops::Range<usize>;
     fn is_kernel_relocated_at(addr: usize) -> bool {

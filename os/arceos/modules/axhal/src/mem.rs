@@ -4,8 +4,9 @@ pub use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange, pa, va,
 };
 pub use ax_plat::mem::{
-    MemRegionFlags, PhysMemRegion, kernel_aspace, mmio_ranges, phys_ram_ranges, phys_to_virt,
-    reserved_phys_ram_ranges, total_ram_size, virt_to_phys,
+    IomapAttrs, IomapDecision, IomapError, MemRegionFlags, PhysMemRegion, kernel_aspace,
+    mmio_ranges, phys_ram_ranges, phys_to_virt, prepare_iomap, reserved_phys_ram_ranges,
+    total_ram_size, user_aspace_needs_kernel_mappings, virt_to_phys,
 };
 use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
