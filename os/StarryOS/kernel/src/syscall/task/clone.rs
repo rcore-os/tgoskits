@@ -267,7 +267,10 @@ impl CloneArgs {
                 ProcessImage::new(
                     old_proc_data.exe_path.read().clone(),
                     old_proc_data.cmdline.read().clone(),
+                    old_proc_data.envp.read().clone(),
                     old_proc_data.auxv.read().clone(),
+                    old_proc_data.root_path.read().clone(),
+                    old_proc_data.cwd_path.read().clone(),
                 ),
                 aspace,
                 signal_actions,

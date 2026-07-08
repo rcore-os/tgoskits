@@ -625,15 +625,28 @@ struct JobControl {
 pub struct ProcessImage {
     pub exe_path: String,
     pub cmdline: Arc<Vec<String>>,
+    pub envp: Arc<Vec<String>>,
     pub auxv: Vec<AuxEntry>,
+    pub root_path: String,
+    pub cwd_path: String,
 }
 
 impl ProcessImage {
-    pub fn new(exe_path: String, cmdline: Arc<Vec<String>>, auxv: Vec<AuxEntry>) -> Self {
+    pub fn new(
+        exe_path: String,
+        cmdline: Arc<Vec<String>>,
+        envp: Arc<Vec<String>>,
+        auxv: Vec<AuxEntry>,
+        root_path: String,
+        cwd_path: String,
+    ) -> Self {
         Self {
             exe_path,
             cmdline,
+            envp,
             auxv,
+            root_path,
+            cwd_path,
         }
     }
 }
@@ -645,8 +658,14 @@ pub struct ProcessData {
     pub exe_path: RwLock<String>,
     /// The command line arguments
     pub cmdline: RwLock<Arc<Vec<String>>>,
+    /// The environment variables, exported via `/proc/[pid]/environ`.
+    pub envp: RwLock<Arc<Vec<String>>>,
     /// Auxiliary vector entries exported via `/proc/[pid]/auxv`.
     pub auxv: RwLock<Vec<AuxEntry>>,
+    /// The root directory path, exported via `/proc/[pid]/root`.
+    pub root_path: RwLock<String>,
+    /// The current working directory path, exported via `/proc/[pid]/cwd`.
+    pub cwd_path: RwLock<String>,
     /// The virtual memory address space.
     // TODO: scopify
     aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
@@ -854,7 +873,10 @@ impl ProcessData {
             proc,
             exe_path: RwLock::new(image.exe_path),
             cmdline: RwLock::new(image.cmdline),
+            envp: RwLock::new(image.envp),
             auxv: RwLock::new(image.auxv),
+            root_path: RwLock::new(image.root_path),
+            cwd_path: RwLock::new(image.cwd_path),
             aspace: SpinNoIrq::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),

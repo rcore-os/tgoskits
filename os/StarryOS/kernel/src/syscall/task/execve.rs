@@ -302,6 +302,7 @@ fn do_execve(
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
     *proc_data.cmdline.write() = Arc::new(args);
+    *proc_data.envp.write() = Arc::new(envs);
     let auxv_len = auxv.len();
     let has_ldso = auxv.iter().any(|e| e.get_type() == AuxType::BASE);
     *proc_data.auxv.write() = auxv;
