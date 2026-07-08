@@ -1081,27 +1081,29 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
     let resource_addr = reg.address as usize;
-    if resource_addr != GMAC0_PADDR {
+    let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
+    let mmio = iomap(resource_addr, size)?;
+    let resource_paddr = axklib::mem::virt_to_phys((mmio.as_ptr() as usize).into()).as_usize();
+    if resource_paddr != GMAC0_PADDR {
         warn!(
-            "{DEVICE_NAME}: skip unsupported GMAC node {} at reg={resource_addr:#x}",
+            "{DEVICE_NAME}: skip unsupported GMAC node {} at reg={resource_addr:#x}, \
+             paddr={resource_paddr:#x}",
             info.node.name()
         );
         return Err(OnProbeError::NotMatch);
     }
-    let size = reg.size.unwrap_or(DEFAULT_MMIO_SIZE as u64) as usize;
-    let mmio = iomap(resource_addr, size)?;
     let vaddr = mmio.as_ptr() as usize;
     let mac_address = mac_address_from_fdt(&info);
     let phy_mode = phy_mode_from_fdt(&info);
     let phy_mode = phy_mode.as_deref().unwrap_or("<unknown>");
 
     debug!(
-        "probing {DEVICE_NAME}: node={}, reg={resource_addr:#x}, vaddr={vaddr:#x}, \
-         size={size:#x}, phy_mode={phy_mode}",
+        "probing {DEVICE_NAME}: node={}, reg={resource_addr:#x}, paddr={resource_paddr:#x}, \
+         vaddr={vaddr:#x}, size={size:#x}, phy_mode={phy_mode}",
         info.node.name(),
     );
 
-    let dev = GmacNet::new(mmio, resource_addr, mac_address).map_err(|err| {
+    let dev = GmacNet::new(mmio, resource_paddr, mac_address).map_err(|err| {
         OnProbeError::other(format!("failed to init {DEVICE_NAME} from FDT: {err}"))
     })?;
     let binding_info = gmac_binding_info(&info);
