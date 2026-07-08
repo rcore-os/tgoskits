@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.19](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.18...axbuild-v0.4.19) - 2026-07-08
+
+### Other
+
+- *(starry)* unify qemu-smp1 and qemu-smp4 into single qemu test ([#1544](https://github.com/rcore-os/tgoskits/pull/1544))
+
 ## [0.4.18](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.17...axbuild-v0.4.18) - 2026-07-08
 
 ### Added
