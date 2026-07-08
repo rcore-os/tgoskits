@@ -10,6 +10,7 @@ extern crate alloc;
 extern crate log;
 
 mod boot_console;
+pub mod cache;
 pub(crate) mod common;
 pub mod cpu;
 mod driver;

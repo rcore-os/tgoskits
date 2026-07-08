@@ -130,6 +130,15 @@ pub trait Klib {
     /// allocator.
     fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> AxResult;
 
+    /// Cleans a CPU cache range before device ownership.
+    fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+    /// Invalidates a CPU cache range after device writes.
+    fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+    /// Cleans and invalidates a CPU cache range for bidirectional DMA.
+    fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
+
     /// Allocates contiguous DMA pages.
     ///
     /// `dma_mask` is the device-visible address mask. Implementations should

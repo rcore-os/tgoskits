@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
+    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -99,6 +99,14 @@ impl MemIf for DummyMem {
     fn user_aspace_needs_kernel_mappings() -> bool {
         true
     }
+
+    fn dcache_range(_op: DCacheOp, _addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_before_make_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_before_restore_cached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_after_mapping_update() {}
 }
 
 #[impl_plat_interface]

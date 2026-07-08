@@ -1,4 +1,6 @@
-use ax_plat::mem::{IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr};
+use ax_plat::mem::{
+    DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr,
+};
 use heapless::Vec;
 use someboot::ArchTrait;
 use somehal::mem::MemoryType;
@@ -153,6 +155,30 @@ impl MemIf for MemIfImpl {
 
     fn user_aspace_needs_kernel_mappings() -> bool {
         <someboot::arch::Arch as ArchTrait>::user_aspace_needs_kernel_mappings()
+    }
+
+    fn dcache_range(op: DCacheOp, addr: VirtAddr, size: usize) {
+        somehal::cache::dcache_range(to_somehal_dcache_op(op), addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_make_uncached(addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_restore_cached(addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_after_mapping_update() {
+        somehal::cache::dma_coherent_after_mapping_update();
+    }
+}
+
+fn to_somehal_dcache_op(op: DCacheOp) -> somehal::cache::DCacheOp {
+    match op {
+        DCacheOp::Clean => somehal::cache::DCacheOp::Clean,
+        DCacheOp::Invalidate => somehal::cache::DCacheOp::Invalidate,
+        DCacheOp::CleanInvalidate => somehal::cache::DCacheOp::CleanInvalidate,
     }
 }
 
