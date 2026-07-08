@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.3...ax-input-v0.6.4) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.2...ax-input-v0.6.3) - 2026-07-08
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.10.0...ax-plat-v0.11.0) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.2...ax-plat-v0.10.0) - 2026-07-08
 
 ### Added

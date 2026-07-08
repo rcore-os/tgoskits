@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.11.2...ax-driver-v0.11.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axklib, ax-alloc
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.11.1...ax-driver-v0.11.2) - 2026-07-08
 
 ### Other
