@@ -147,12 +147,6 @@ impl CloneArgs {
             return Err(AxError::InvalidInput);
         }
 
-        // CLONE_NEWCGROUP is not yet implemented.
-        if flags.contains(CloneFlags::NEWCGROUP) {
-            error!("sys_clone/sys_clone3: unsupported namespace flag CLONE_NEWCGROUP");
-            return Err(AxError::InvalidInput);
-        }
-
         Ok(())
     }
 
@@ -310,6 +304,9 @@ impl CloneArgs {
             }
             if flags.contains(CloneFlags::NEWUSER) {
                 new_nsproxy.unshare_user();
+            }
+            if flags.contains(CloneFlags::NEWCGROUP) {
+                new_nsproxy.unshare_cgroup();
             }
 
             // Consume a pending child PID namespace prepared by

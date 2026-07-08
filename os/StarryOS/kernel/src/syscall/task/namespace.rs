@@ -5,7 +5,8 @@ use ax_fs_ng::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
+    CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
@@ -19,6 +20,7 @@ const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
     | CLONE_NEWNET
     | CLONE_NEWIPC
     | CLONE_NEWUSER
+    | CLONE_NEWCGROUP
     | CLONE_FS;
 
 /// unshare(2) — disassociate parts of the process execution context.
@@ -50,6 +52,9 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         }
         if flags & CLONE_NEWUSER != 0 {
             nsproxy.unshare_user();
+        }
+        if flags & CLONE_NEWCGROUP != 0 {
+            nsproxy.unshare_cgroup();
         }
     }
 
@@ -158,6 +163,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
+        NsFd::Cgroup(ns) => nsproxy.set_ns_cgroup(ns.clone()),
         NsFd::User(ns) => {
             // Multi-threaded process cannot change user namespace.
             let thread_count = proc_data.proc.threads().len();
@@ -251,6 +257,9 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
     if nstype & CLONE_NEWUSER != 0 {
         nsproxy.set_ns_user(target_nsproxy.user_ns);
+    }
+    if nstype & CLONE_NEWCGROUP != 0 {
+        nsproxy.set_ns_cgroup(target_nsproxy.cgroup_ns);
     }
 
     debug!(

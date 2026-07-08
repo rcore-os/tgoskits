@@ -285,6 +285,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
+        "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
         _ => return Some(Err(AxError::NotFound)),
     };
 
