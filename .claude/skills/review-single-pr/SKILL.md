@@ -505,7 +505,7 @@ gh pr view <pr> --json number,reviewDecision,latestReviews
 
 After review submission, request reviewers only when the PR still needs domain follow-up. Base the choice on the actual changed surface, review findings, validation risk, and remaining follow-up.
 
-Extract keywords from the PR title, body, changed paths, public APIs, tests, validation commands, and review findings. Normalize obvious aliases such as `fs`/`vfs`/`ext4`, `qemu`/`test-suit`, `drm`/`kms`/`wayland`, `socket`/`netlink`/`dhcp`, and architecture names. Use this keyword index as the reviewer source:
+Extract keywords from the PR title, body, changed paths, public APIs, tests, validation commands, and review findings. Normalize obvious aliases that map to rows below, such as `qemu`/`test-suit`, SD/MMC host names, syscall wrapper names, architecture target names, scheduler features, and page-table crate names. Use this keyword index as the reviewer source:
 
 | PR keywords or directions | Preferred reviewer candidates |
 | --- | --- |
@@ -515,7 +515,7 @@ Extract keywords from the PR title, body, changed paths, public APIs, tests, val
 | SD/MMC, SDHCI, DWMMC, `sdmmc`, `k230-sdhci`, `rockchip-sdhci`, `starfive-jh7110-dwmmc`, `simple-sdmmc`, `mmcblk`, `vmmc-supply`, `vqmmc-supply`, syscall, `sys_*`, `ax_posix_api`, `axlibc`, riscv64, `riscv64gc-unknown-none-elf`, `qemu-riscv64`, `riscv_vcpu`, `riscv_vplic`, SBI/OpenSBI, guest timer, runtime IPI | `@YanLien` |
 | memory management, address space, page table, paging, `ax-mm`, `axaddrspace`, `page-table-generic`, `ax-page-table-multiarch`, `ax-page-table-entry`, `ax-memory-set`, `ax-memory-addr`, `axalloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `FrameAllocator`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA | `@bullhh` |
 
-Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching owner over `@ZR233` when both match; request `@ZR233` only when the broad architecture/platform risk is the primary review need or no more specific row owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If no keyword-index login is requestable or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
+Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching owner over `@ZR233` when both match; request `@ZR233` only when the broad architecture/platform risk is the primary review need or no more specific row owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If keywords do not match a table row, no keyword-index login is requestable, or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
 
 Before writing reviewer requests, check current reviewer state and permissions:
 
