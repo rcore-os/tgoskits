@@ -191,8 +191,8 @@ fn grouped_host_http_test_case(
     grouped_subcase_filter: Option<BTreeSet<String>>,
 ) -> crate::test::case::TestQemuCase {
     crate::test::case::TestQemuCase {
-        name: "qemu-smp1/system".to_string(),
-        display_name: "qemu-smp1/system".to_string(),
+        name: "qemu/system".to_string(),
+        display_name: "qemu/system".to_string(),
         case_dir: case_dir.to_path_buf(),
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),

@@ -183,10 +183,10 @@ fn qemu_case_rootfs_defaults_without_drive_file_arg() {
 #[test]
 fn qemu_cases_are_grouped_by_build_config() {
     let default_build_config = PathBuf::from("/tmp/default/build-x86_64-unknown-none.toml");
-    let smp4_build_config = PathBuf::from("/tmp/smp4/build-x86_64-unknown-none.toml");
+    let qemu_build_config = PathBuf::from("/tmp/qemu/build-x86_64-unknown-none.toml");
     let cases = vec![
         prepared_qemu_case("smoke", default_build_config.clone()),
-        prepared_qemu_case("qemu-smp4/system", smp4_build_config.clone()),
+        prepared_qemu_case("qemu/system", qemu_build_config.clone()),
         prepared_qemu_case("syscall", default_build_config.clone()),
     ];
 
@@ -202,14 +202,14 @@ fn qemu_cases_are_grouped_by_build_config() {
             .collect::<Vec<_>>(),
         vec!["smoke", "syscall"]
     );
-    assert_eq!(groups[1].build_config_path, smp4_build_config.as_path());
+    assert_eq!(groups[1].build_config_path, qemu_build_config.as_path());
     assert_eq!(
         groups[1]
             .cases
             .iter()
             .map(|case| case.case.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["qemu-smp4/system"]
+        vec!["qemu/system"]
     );
 }
 
@@ -233,7 +233,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     let build_config = write_qemu_build_config_with_max_cpu_num(
         root.path(),
         "normal",
-        "qemu-smp4",
+        "qemu",
         "x86_64-unknown-none",
         4,
     );
@@ -259,7 +259,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     let root = tempdir().unwrap();
     let build_config = root
         .path()
-        .join("test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml");
+        .join("test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml");
     fs::create_dir_all(build_config.parent().unwrap()).unwrap();
     fs::write(
         &build_config,
