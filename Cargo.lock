@@ -7292,13 +7292,13 @@ dependencies = [
 
 [[package]]
 name = "sg200x-bsp"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f964b84c5d4409059a332b84bda24bf31c472e1edd2e227353ddbf8b9471056"
+checksum = "fbf592a879bf76d524c19b13e0294d9564967c3a90e7d93d74cd6abed97d965e"
 dependencies = [
  "bit-struct",
  "log",
- "tock-registers 0.9.0",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -7719,7 +7719,7 @@ dependencies = [
  "static-keys",
  "strum 0.28.0",
  "syscalls",
- "tock-registers 0.9.0",
+ "tock-registers 0.10.1",
  "uluru",
  "usb-serial",
  "weak-map",

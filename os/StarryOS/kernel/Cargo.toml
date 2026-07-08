@@ -145,10 +145,10 @@ kmod = { version = "0.3", package = "kmod-tools" }
 kmod-loader = "0.3.1"
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
-sg200x-bsp = { workspace = true, optional = true }
-# 0.9 to match sg200x-bsp's internal tock-registers; cannot use workspace (0.10)
-# because Writeable trait must come from the same version as sg200x-bsp's types.
-tock-registers = { version = "0.9", optional = true }
+sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+# 0.10 to match sg200x-bsp 0.7.x's internal tock-registers; the Writeable trait
+# must come from the same version as sg200x-bsp's ReadWrite types.
+tock-registers = { version = "0.10", optional = true }
 ktracepoint = "0.6"
 ksym = "0.6"
 kbpf-basic = "0.6"

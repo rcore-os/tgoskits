@@ -7,6 +7,7 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
+    jpu::{JpuDecoder, regs::{JPU_REG_BASE, VC_REG_BASE}},
     pinmux::{FMUX_USB_VBUS_DET, Pinmux},
     soc::{
         CLKGEN_BASE, CV182X_USB2_PHY_BASE, DWC2_BASE, FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE,
@@ -50,10 +51,13 @@ fn iomap_usize(paddr: usize, size: usize) -> usize {
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
 const MAX_CAPTURE_TRIES: u32 = 8;
+/// Default resolution cap (640×480 = 307200 pixels) guiding UVC frame selection.
+const DEFAULT_RESOLUTION: u32 = 640 * 480;
 
 pub const CVI_CAMERA_IOCTL_INIT: u32 = 1;
 pub const CVI_CAMERA_IOCTL_GET_INFO: u32 = 2;
 pub const CVI_CAMERA_IOCTL_GET_FRAME: u32 = 3;
+pub const CVI_CAMERA_IOCTL_GET_YUV_FRAME: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -73,6 +77,11 @@ struct UsbCameraSession {
 #[derive(Default)]
 struct UsbCameraState {
     session: Option<UsbCameraSession>,
+    jpu: Option<JpuDecoder>,
+}
+
+fn jpu_dma_to_phys(v: usize) -> usize {
+    virt_to_phys(VirtAddr::from(v)).as_usize()
 }
 
 pub struct CviCamera {
@@ -209,6 +218,7 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     })?;
     let cfg_total = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let cfg = &cfg_buf[..cfg_total.min(cfg_buf.len())];
+    uvc::set_preferred_max_pixels(DEFAULT_RESOLUTION);
     let mut sel = uvc::parse_uvc_video_stream(cfg, cfg_total).map_err(|e| {
         warn!("cvi-camera: parse UVC video stream failed: {e:?}");
         map_usb_init_error(e)
@@ -309,6 +319,38 @@ impl UsbCameraState {
             AxError::Io
         })
     }
+
+    fn ensure_jpu(&mut self) -> VfsResult<&mut JpuDecoder> {
+        if self.jpu.is_none() {
+            let jpu_v = iomap_usize(JPU_REG_BASE, REG_MMIO_SIZE);
+            let top_v = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
+            let vc_v = iomap_usize(VC_REG_BASE, REG_MMIO_SIZE);
+            let decoder = unsafe {
+                JpuDecoder::new_at(jpu_v, top_v, vc_v, jpu_dma_to_phys).map_err(|e| {
+                    warn!("cvi-camera: JPU init failed: {e}");
+                    AxError::Io
+                })?
+            };
+            self.jpu = Some(decoder);
+        }
+        Ok(self.jpu.as_mut().unwrap())
+    }
+
+    fn yuv_frame(&mut self) -> VfsResult<&'static [u8]> {
+        let jpeg = self.frame()?;
+        let jpu = self.ensure_jpu()?;
+        let result = jpu.decode(jpeg).map_err(|e| {
+            warn!("cvi-camera: JPU decode failed: {e}");
+            AxError::Io
+        })?;
+        info!(
+            "cvi-camera: JPU decode OK {}x{} yuv={} bytes",
+            result.width,
+            result.height,
+            result.yuv_data.len()
+        );
+        Ok(result.yuv_data)
+    }
 }
 
 impl CviCamera {
@@ -351,6 +393,11 @@ impl DeviceOps for CviCamera {
                 let frame = self.state.lock().frame()?;
                 vm_write_slice(arg as *mut u8, frame)?;
                 Ok(frame.len())
+            }
+            CVI_CAMERA_IOCTL_GET_YUV_FRAME => {
+                let yuv = self.state.lock().yuv_frame()?;
+                vm_write_slice(arg as *mut u8, yuv)?;
+                Ok(yuv.len())
             }
             _ => Err(AxError::InvalidInput),
         }
