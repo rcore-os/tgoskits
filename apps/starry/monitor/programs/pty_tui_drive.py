@@ -36,6 +36,23 @@ PGUP = b"\x1b[5~"
 HOME = b"\x1b[H"
 END  = b"\x1b[F"
 
+# Function keys as xterm-256color terminfo renders them (kf1..kf10): F1-F4 are the SS3 forms
+# ESC O P/Q/R/S, F5-F10 the CSI ~ forms. Like the SS3 arrows these are what a keypad(True) curses
+# app (htop) matches against its application-mode terminfo; DECCKM only affects cursor keys, so these
+# stay constant. A curses app opens its F-key panels only when the exact terminfo bytes arrive, so a
+# panel appearing after one of these is itself proof the pty delivered the sequence intact.
+F1  = b"\x1bOP"
+F2  = b"\x1bOQ"
+F3  = b"\x1bOR"
+F4  = b"\x1bOS"
+F5  = b"\x1b[15~"
+F6  = b"\x1b[17~"
+F7  = b"\x1b[18~"
+F8  = b"\x1b[19~"
+F9  = b"\x1b[20~"
+F10 = b"\x1b[21~"
+ESC = b"\x1b"
+
 
 # Optional live-screen emulation so the driver can wait UNTIL the TUI has rendered expected content
 # (content-driven capture) instead of a fixed delay -- essential for slow (TCG) arches where glances

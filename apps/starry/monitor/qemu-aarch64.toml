@@ -11,6 +11,6 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "sh /usr/bin/run-monitor.sh"
-success_regex = ['(?m)^MONITOR_OK=8/8', '(?m)^TEST PASSED\s*$']
+success_regex = ['(?m)^MONITOR_OK=9/9', '(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 18000

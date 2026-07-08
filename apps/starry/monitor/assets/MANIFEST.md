@@ -59,7 +59,7 @@ riscv64 (has riscv64, NO loong64). Tarball sha256 == dl.grafana.com `*.tar.gz.sh
 grafana v13's backend does NOT embed the frontend, so loong64 needs only the Go backend cross-compiled
 (no Node/yarn build) with the official arch-independent frontend grafted -- `assets/build-loong-binaries.sh grafana`.
 prebuild strips `public/**/*.map` (~290MB browser debug artifacts, never read server-side) and
-best-effort pre-migrates the arch-independent `grafana.db` (skips the 709 first-run SQLite migrations).
+opportunistically pre-migrates the arch-independent `grafana.db` (skips the 709 first-run SQLite migrations).
 
 ## glances 4.4.1 stack (Alpine v3.23, musl, all 4 arches -- resolved live by `apk add`)
 No pinned URLs: `apk add` resolves the CURRENT version + full musl .so closure per arch (no drift).

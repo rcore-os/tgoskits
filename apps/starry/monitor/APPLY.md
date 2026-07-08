@@ -22,8 +22,9 @@ apps/starry/monitor/
 │   ├── pty_tui_drive.py                      # PTY 驱动器（SS3 应用键模式）
 │   └── pyte_assert.py                        # pyte 屏幕重建 + 三重不变量断言
 └── python/
-    ├── run_monitor.py                        # 编排器 + 唯一门控锚点（MONITOR_OK=8/8 + TEST PASSED）
+    ├── run_monitor.py                        # 编排器 + 唯一门控锚点（MONITOR_OK=9/9 + TEST PASSED）
     ├── PrometheusCarpet.py
+    ├── NodeExporterCarpet.py                 # node_exporter CLI + live /metrics（含 vmstat collector）
     ├── GrafanaCarpet.py                      # headless grafana server + HTTP/API 断言
     ├── GlancesCliCarpet.py
     ├── GlancesHeadlessCarpet.py
@@ -42,7 +43,7 @@ cargo xtask starry app qemu -t monitor --arch riscv64
 cargo xtask starry app qemu -t monitor --arch loongarch64
 ```
 
-判据：xtask `rc=0` + 日志 `SUCCESS PATTERN MATCHED` + `^MONITOR_OK=8/8` + `TEST PASSED`。
+判据：xtask `rc=0` + 日志 `SUCCESS PATTERN MATCHED` + `^MONITOR_OK=9/9` + `TEST PASSED`。
 
 ## prebuild 可调环境变量（均有安全默认）
 
@@ -65,5 +66,5 @@ cargo xtask starry app qemu -t monitor --arch loongarch64
 - **LoongArch 必须 dynamic 平台**：`build-loongarch64*.toml` 保留 `ax-driver/serial` 且不 opt-out 动态平台，
   `qemu-loongarch64.toml` 用 `uefi=false / to_bin=true`（静态平台缺串口 TTY 绑定 → 早退）。
 - **rootfs grow-only**：`prebuild.sh` 只增不减，never 吞掉 resize2fs 失败。
-- **门控锚点唯一**：`MONITOR_OK=8/8` + `TEST PASSED` 只在 `run_monitor.py` 里输出（`run-monitor.sh` 从不输出），
+- **门控锚点唯一**：`MONITOR_OK=9/9` + `TEST PASSED` 只在 `run_monitor.py` 里输出（`run-monitor.sh` 从不输出），
   故 success_regex 不会被命令回显自匹配。
