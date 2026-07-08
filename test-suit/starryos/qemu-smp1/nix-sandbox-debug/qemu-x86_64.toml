@@ -25,6 +25,7 @@ for bin in /usr/bin/starry-test-suit/test-mountinfo \
            /usr/bin/starry-test-suit/test-per-ns-mounts \
            /usr/bin/starry-test-suit/test-remount-flags \
            /usr/bin/starry-test-suit/test-mount-bind \
+           /usr/bin/starry-test-suit/test-mount-propagation \
            /usr/bin/starry-test-suit/test-cgroup-ns \
            /usr/bin/starry-test-suit/test-max-ns-entries \
            /usr/bin/starry-test-suit/test-proc-environ \
