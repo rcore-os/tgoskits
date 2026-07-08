@@ -157,27 +157,31 @@ Run: cargo xtask starry rootfs --arch x86_64"
         # relocate to the blueprint once the guest powers off.
         BOOTSTRAP_IMG="tmp/selfhost/rootfs-x86_64-selfhost-bootstrap.img"
 
-        info "Alpine base: $ALPINE_ROOTFS ($(stat -c%s "$ALPINE_ROOTFS") bytes)"
-        info "Cloning Alpine base → bootstrap image ($BOOTSTRAP_IMG) ..."
-        mkdir -p "$(dirname "$BOOTSTRAP_IMG")"
-        cp "$ALPINE_ROOTFS" "$BOOTSTRAP_IMG" || error "Failed to clone Alpine rootfs"
-        qemu-img resize -f raw "$BOOTSTRAP_IMG" 16G >/dev/null 2>&1 || true
-        # qemu-img resize is a no-op on some filesystems; if the backing file is
-        # still near the ~1 GB Alpine-base size (under this 3 GB sanity floor),
-        # force the grow with truncate.
-        MIN_RESIZED_BYTES=3000000000  # ~2.8 GiB: well above the Alpine base, well below 16 GB
-        if [ "$(stat -c%s "$BOOTSTRAP_IMG")" -lt "$MIN_RESIZED_BYTES" ]; then
-            truncate -s 16G "$BOOTSTRAP_IMG"
-        fi
-        info "Bootstrap image: $BOOTSTRAP_IMG ($(stat -c%s "$BOOTSTRAP_IMG") bytes)"
+        if [ -f "$BOOTSTRAP_IMG" ] && [ "$(stat -c%s "$BOOTSTRAP_IMG")" -gt 3000000000 ]; then
+            info "Reusing existing bootstrap image: $BOOTSTRAP_IMG ($(stat -c%s "$BOOTSTRAP_IMG") bytes)"
+        else
+            info "Alpine base: $ALPINE_ROOTFS ($(stat -c%s "$ALPINE_ROOTFS") bytes)"
+            info "Cloning Alpine base → bootstrap image ($BOOTSTRAP_IMG) ..."
+            mkdir -p "$(dirname "$BOOTSTRAP_IMG")"
+            cp "$ALPINE_ROOTFS" "$BOOTSTRAP_IMG" || error "Failed to clone Alpine rootfs"
+            qemu-img resize -f raw "$BOOTSTRAP_IMG" 16G >/dev/null 2>&1 || true
+            # qemu-img resize is a no-op on some filesystems; if the backing file is
+            # still near the ~1 GB Alpine-base size (under this 3 GB sanity floor),
+            # force the grow with truncate.
+            MIN_RESIZED_BYTES=3000000000  # ~2.8 GiB: well above the Alpine base, well below 16 GB
+            if [ "$(stat -c%s "$BOOTSTRAP_IMG")" -lt "$MIN_RESIZED_BYTES" ]; then
+                truncate -s 16G "$BOOTSTRAP_IMG"
+            fi
+            info "Bootstrap image: $BOOTSTRAP_IMG ($(stat -c%s "$BOOTSTRAP_IMG") bytes)"
 
-        # qemu-img/truncate only enlarge the block device; the ext4 filesystem
-        # inside is still the small Alpine-base size.  Grow it to fill the image
-        # so the guest has room for the toolchain (apk + rustup + build tools).
-        # resize2fs operates on the raw image file directly — no sudo / loop mount.
-        info "Growing ext4 filesystem to fill the bootstrap image..."
-        e2fsck -fy "$BOOTSTRAP_IMG" >/dev/null 2>&1 || true
-        resize2fs "$BOOTSTRAP_IMG" || error "Failed to grow ext4 filesystem in $BOOTSTRAP_IMG"
+            # qemu-img/truncate only enlarge the block device; the ext4 filesystem
+            # inside is still the small Alpine-base size.  Grow it to fill the image
+            # so the guest has room for the toolchain (apk + rustup + build tools).
+            # resize2fs operates on the raw image file directly — no sudo / loop mount.
+            info "Growing ext4 filesystem to fill the bootstrap image..."
+            e2fsck -fy "$BOOTSTRAP_IMG" >/dev/null 2>&1 || true
+            resize2fs "$BOOTSTRAP_IMG" || error "Failed to grow ext4 filesystem in $BOOTSTRAP_IMG"
+        fi
 
         info "=== Starting QEMU bootstrap (~15-20 min) ==="
         info "The guest will install build tools + Rust, then power off."
