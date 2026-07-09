@@ -111,6 +111,53 @@ else
     info "Host Rust components not found; in-guest downloads will run (may be slow)."
 fi
 
+# ── Pre-download rustup toolchain tarballs into the overlay download cache ──────
+# rustup caches downloads at $RUSTUP_HOME/downloads/<YYYY-MM-DD>/; if the cache
+# is pre-populated before the guest runs `rustup toolchain install`, rustup skips
+# the network download entirely.  Download the musl toolchain tarballs (rustc,
+# cargo, rust-std) on the host at full speed (~seconds) instead of over QEMU
+# user-net (~48 min at 50 KiB/s).  The guest needs x86_64-unknown-linux-musl
+# (Alpine's host triple), NOT x86_64-unknown-linux-gnu.
+RUSTUP_DIST="https://static.rust-lang.org/dist"
+RUSTUP_CHANNEL="2026-05-28"
+RUSTUP_HOST="x86_64-unknown-linux-musl"
+
+info "Pre-downloading rustup toolchain tarballs into overlay download cache..."
+mkdir -p "$overlay_dir/root/.rustup/downloads/$RUSTUP_CHANNEL"
+
+for component in rustc cargo rust-std; do
+    tarball="${component}-nightly-${RUSTUP_HOST}.tar.xz"
+    url="${RUSTUP_DIST}/${RUSTUP_CHANNEL}/${tarball}"
+    dest="$overlay_dir/root/.rustup/downloads/$RUSTUP_CHANNEL/${tarball}"
+
+    if [ -f "$dest" ]; then
+        info "  $tarball (cached in overlay)"
+    else
+        info "  downloading $tarball ..."
+        curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 \
+             -fsSL "$url" -o "$dest" || {
+            info "  WARNING: failed to download $tarball — in-guest rustup will retry"
+            rm -f "$dest"
+            continue
+        }
+    fi
+
+    # Also fetch the SHA-256 hash so rustup can verify the tarball.
+    hash_url="${url}.sha256"
+    hash_dest="${dest}.sha256"
+    if [ -f "$hash_dest" ]; then
+        info "  ${tarball}.sha256 (cached)"
+    else
+        curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 60 \
+             -fsSL "$hash_url" -o "$hash_dest" 2>/dev/null || {
+            # If the .sha256 file is missing, rustup will verify against its
+            # built-in hashes — the tarball is still useful.
+            rm -f "$hash_dest"
+        }
+    fi
+done
+info "Rustup download cache staged."
+
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
