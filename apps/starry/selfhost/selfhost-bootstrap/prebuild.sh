@@ -31,7 +31,7 @@ info "Generating toolchain-provisioning overlay for $arch"
 
 mkdir -p "$overlay_dir/usr/bin" "$overlay_dir/opt"
 
-# ── Stage the full source tree as a single tarball (git archive, ~58 MB) ───────
+# ── Stage the full source tree as a single tarball (git archive) ───────────────
 # One overlay-injection write; extracting it in-guest is far cheaper than
 # injecting the whole tree file-by-file via debugfs.
 info "Staging source tarball (git archive HEAD)..."
@@ -39,16 +39,19 @@ git -C "$repo_root" archive --format=tar HEAD -o "$overlay_dir/opt/starryos-src.
 git -C "$repo_root" rev-parse HEAD > "$overlay_dir/opt/.source-commit" 2>/dev/null || true
 
 # ── Stage AIC8800 firmware blobs (gitignored; absent from git archive) ─────────
-# Bootstrap only provisions the toolchain — it does NOT compile the kernel, so
-# firmware is optional here.  The full-kernel self-compile will check for firmware
-# at build time and fail with a clear message if they are missing.
+# This host-side staging copy is optional/best-effort.  Firmware itself is NOT
+# optional: the in-guest inner script (see below) unconditionally downloads all
+# 8 AIC8800 blobs from the pinned upstream commit and SHA-256-verifies them
+# (hard-fail on download error or hash mismatch), so the later offline
+# self-compile finds them.  Bootstrap does not COMPILE the kernel; it only
+# provisions the toolchain and fetches+verifies firmware.  Staging them here
+# just lets the guest skip the download when the host already has them.
 if ls "$repo_root"/components/aic8800/firmware/*.bin >/dev/null 2>&1; then
     mkdir -p "$overlay_dir/opt/firmware-blobs"
     cp "$repo_root"/components/aic8800/firmware/*.bin "$overlay_dir/opt/firmware-blobs/"
     info "Staged $(ls "$overlay_dir"/opt/firmware-blobs/*.bin | wc -l) AIC8800 firmware blob(s)."
 else
-    info "AIC8800 firmware blobs not found (gitignored) — skipping (bootstrap does not compile)."
-    info "Place them at components/aic8800/firmware/ before running the full self-compile."
+    info "AIC8800 firmware blobs not staged from host (gitignored) — the in-guest inner script will download + SHA-256-verify them."
 fi
 
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
@@ -94,11 +97,12 @@ fi  # end of toolchain-already-installed guard
 echo "[bootstrap] Ensuring busybox symlinks..."
 /bin/busybox --install -s /bin 2>/dev/null || true
 
-# Inner scripts carry '#!/usr/bin/bash' shebangs and are invoked via
-# shell_init_cmd; they do NOT depend on /bin/sh.  The kernel init process
-# (/bin/sh -c init.sh) MUST stay on busybox — replacing it with bash
-# breaks init loading.  Only ensure /usr/bin/bash exists for the inner
-# scripts.
+# Both inner scripts now run under busybox '#!/bin/sh' (the rebased kernel
+# cannot load dynamically-linked bash as a shebang interpreter).  The kernel
+# init process (/bin/sh -c init.sh) MUST stay on busybox — replacing it with
+# bash breaks init loading.  /usr/bin/bash is only needed for the `bash -c`
+# heartbeat subprocess in the full-kernel inner script, so just ensure the
+# symlink exists.
 [ -x /bin/bash ] || fail "bash missing after install"
 ln -sf /bin/bash /usr/bin/bash 2>/dev/null || true
 	[ -x /usr/bin/bash ] || fail "/usr/bin/bash symlink missing after bootstrap"
@@ -192,7 +196,7 @@ echo "[bootstrap] kallsyms tools ready."
 
 # Warm the offline dependency cache so the subsequent self-compile (which runs
 # with --offline) finds all crate sources pre-fetched.  cargo fetch downloads
-# every workspace dependency into CARGO_HOME (~1–2 GB on disk); no compilation
+# every workspace dependency into CARGO_HOME (order of ~1 GB on disk); no compilation
 # occurs, so tmpfs/RAM pressure is minimal.
 echo "[bootstrap] Warming offline dependency cache (cargo fetch)..."
 cd /opt/starryos

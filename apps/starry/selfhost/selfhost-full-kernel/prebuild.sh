@@ -70,7 +70,11 @@ gen_inner_script() {
     mkdir -p "$overlay_dir/usr/bin"
     local out="$overlay_dir/usr/bin/self-compile-inner.sh"
 
-    # Dynamic platform features for x86_64 (ax-plat-x86-pc was removed).
+    # NOTE: dyn_features is only interpolated into the non-x86_64 bare-metal
+    # `--features` list below (where it is ""). The x86_64 value set here is
+    # effectively dead: that build is driven by xtask (see the x86_64 branch),
+    # which sets platform features itself. Kept for any future dyn-platform arch
+    # that reuses the bare-metal cargo-build path.
     case "$arch" in
         x86_64) dyn_features=",plat-dyn,axplat-dyn/efi" ;;
         *)      dyn_features="" ;;
