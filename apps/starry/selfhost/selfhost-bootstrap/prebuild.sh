@@ -56,36 +56,59 @@ else
     info "AIC8800 firmware blobs not staged from host (gitignored) — the in-guest inner script will download + SHA-256-verify them."
 fi
 
-# ── Stage host's Rust nightly toolchain into the overlay ────────────────────────
-# rustup in QEMU user-mode network (slirp NAT, ~10-30 KiB/s) cannot download the
-# ~1.4 GiB nightly toolchain within a reasonable timeout — the 'rustup component
-# add' stage reliably fails.  Copy the host's already-installed nightly toolchain
-# and cargo home directly into the overlay so the guest finds them pre-installed
-# and skips the network-dependent rustup steps entirely.  This keeps the bootstrap
-# genuinely no-sudo and network-resilient: the only remaining network steps are
-# apk (toolchain, ~90 packages; retried inside the inner script) and cargo fetch
-# (crate registry, also retried).
-RUSTUP_HOME="$HOME/.rustup"
-CARGO_HOME="$HOME/.cargo"
-if [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" ] && \
-   [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/src/rust" ] && \
-   [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-none" ]; then
-    info "Staging host Rust nightly toolchain (~1.4 GiB) into the overlay..."
-    mkdir -p "$overlay_dir/root/.rustup/toolchains"
-    cp -a "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" \
-          "$overlay_dir/root/.rustup/toolchains/"
-    # Create ~/.cargo/env in the overlay so the inner script's
-    # `. "$HOME/.cargo/env"` succeeds even when the host doesn't have a
-    # rustup-installed cargo env (the toolchain directory itself is the
-    # important part; this just prevents a 'can't open' error).
-    mkdir -p "$overlay_dir/root/.cargo"
-    printf 'export PATH="%s/bin:$PATH"\n' \
-           "\$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" \
-           > "$overlay_dir/root/.cargo/env"
-    info "Rust nightly toolchain staged — guest will skip rustup downloads."
+# ── Stage Rust DATA components into the overlay ────────────────────────────────
+# THE KEY CONSTRAINT: the host's rustc/cargo/rustup binaries are glibc-linked;
+# the Alpine guest uses musl.  We CANNOT simply cp the host's toolchain bin/
+# directory — the binaries won't execute on the guest.  The guest MUST install
+# rustup natively via curl|sh (which downloads musl-compatible binaries).
+#
+# What we CAN pre-stage are DATA-ONLY components that don't depend on libc:
+#   - rust-src: pure source tree, the 500+ MiB component that takes longest to
+#     download and times out most reliably over QEMU user-net
+#   - llvm-tools-preview binaries: pre-compiled host tools like llvm-objcopy
+#     placed into CARGO_HOME/bin so kallsyms finds them without cargo install
+#   - x86_64-unknown-none target: pre-compiled std libs, linked against the
+#     guest's target, not the host's libc — safe to copy from host
+# This keeps ~1 GiB of downloads off QEMU's anemic network while letting the
+# runtime-dependent binaries stay in the guest's native musl path.
+TOOLCHAIN_SRC="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
+TOOLCHAIN_NAME="nightly-2026-05-28-x86_64-unknown-linux-gnu"
+STAGED=""
+
+if [ -d "$TOOLCHAIN_SRC/lib/rustlib/src/rust" ]; then
+    info "Pre-staging rust-src into overlay (~500 MiB, pure source — musl-safe)..."
+    mkdir -p "$overlay_dir/root/.rustup/toolchains/$TOOLCHAIN_NAME/lib/rustlib/src"
+    cp -a "$TOOLCHAIN_SRC/lib/rustlib/src/rust" \
+          "$overlay_dir/root/.rustup/toolchains/$TOOLCHAIN_NAME/lib/rustlib/src/"
+    STAGED="rust-src"
+fi
+
+if [ -d "$TOOLCHAIN_SRC/lib/rustlib/x86_64-unknown-none" ]; then
+    info "Pre-staging x86_64-unknown-none target libs into overlay..."
+    mkdir -p "$overlay_dir/root/.rustup/toolchains/$TOOLCHAIN_NAME/lib/rustlib"
+    cp -a "$TOOLCHAIN_SRC/lib/rustlib/x86_64-unknown-none" \
+          "$overlay_dir/root/.rustup/toolchains/$TOOLCHAIN_NAME/lib/rustlib/"
+    STAGED="$STAGED target"
+fi
+
+# Pre-populate the llvm-tools binaries so kallsyms tools (cargo-binutils,
+# which provides rust-nm/rust-objcopy) find them without needing a network
+# `cargo install`.  These are host-compiled binaries but rust-nm/rust-objcopy
+# are statically-linked tools that generally work fine across libc.
+if [ -d "$TOOLCHAIN_SRC/lib/rustlib/x86_64-unknown-linux-gnu/bin" ]; then
+    info "Pre-staging llvm-tools binaries into overlay..."
+    mkdir -p "$overlay_dir/root/.cargo/bin"
+    cp -a "$TOOLCHAIN_SRC/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy" \
+          "$overlay_dir/root/.cargo/bin/rust-objcopy" 2>/dev/null || true
+    cp -a "$TOOLCHAIN_SRC/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-nm" \
+          "$overlay_dir/root/.cargo/bin/rust-nm" 2>/dev/null || true
+    STAGED="$STAGED llvm-tools"
+fi
+
+if [ -n "$STAGED" ]; then
+    info "Rust data components staged into overlay: $STAGED"
 else
-    info "Host Rust nightly toolchain not fully populated (missing rust-src or x86_64-unknown-none target)."
-    info "The in-guest rustup will fall back to network downloads — this may time out on slow links."
+    info "Host Rust components not found; in-guest downloads will run (may be slow)."
 fi
 
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
@@ -194,54 +217,53 @@ echo "[bootstrap] AIC8800 firmware ready."
 echo "[bootstrap] Installing Rust toolchain..."
 CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-toolchain.toml 2>/dev/null) || true
 [ -n "$CHANNEL" ] || CHANNEL=nightly-2026-05-28
-# The host-side prebuild script may have pre-staged the entire toolchain into
-# /root/.rustup/toolchains/… via the overlay.  If that directory exists, set
-# up RUSTUP_HOME / CARGO_HOME and skip the rustup installer download entirely
-# (QEMU user-mode networking is ~10-30 KiB/s — downloading the installer and
-# toolchain would take hours).
+
+# rustup/cargo/rustc from the host are glibc-linked — they CANNOT run on the
+# Alpine musl guest.  The guest MUST install rustup natively via curl|sh.
+# What the host-side prebuild CAN pre-stage are DATA components (rust-src,
+# target libs, llvm-tools binaries) placed into the toolchain directory so
+# that once rustup is installed natively, it finds the components already in
+# place and skips the network-dependent downloads.
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
+
 if ! command -v rustup >/dev/null 2>&1; then
-    if [ -d "$TOOLCHAIN_DIR" ]; then
-        echo "[bootstrap] Rust nightly toolchain pre-staged from host — setting up rustup environment."
-        export RUSTUP_HOME="$HOME/.rustup"
-        export CARGO_HOME="$HOME/.cargo"
-        mkdir -p "$CARGO_HOME"
-        # rustup is NOT in PATH yet (it lives under the toolchain dir); the
-        # toolchain binaries are at $TOOLCHAIN_DIR/bin/.  Export PATH so the
-        # subsequent 'rustup component add', 'cargo install' etc. find rustup.
-        export PATH="$TOOLCHAIN_DIR/bin:$CARGO_HOME/bin:$PATH"
-    else
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
-            || fail "rustup install failed"
-    fi
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
+        || fail "rustup install failed"
 fi
 . "$HOME/.cargo/env"
 
-# The host-side prebuild script may have pre-staged the nightly toolchain and
-# components into the overlay.  If that copy is present, skip rustup network
-# downloads entirely — QEMU user-mode networking (~10-30 KiB/s) makes these
-# downloads impractical (100+ MiB toolchain takes hours and times out).
-TOOLCHAIN_DIR="$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
-
-# rust-src: the host overlay copies ~/.rustup/toolchains/… into /root/.rustup/,
-# so the per-component check is on that guest-local directory, not a host path.
-if [ -d "$TOOLCHAIN_DIR/lib/rustlib/src/rust" ] && \
-   [ -f "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-llvm-objcopy" ]; then
-    echo "[bootstrap] Rust nightly toolchain pre-staged from host — rust-src + llvm-tools already present."
+# Pre-staged data components (rust-src source tree, target libraries) are
+# placed under $TOOLCHAIN_DIR by the host-side prebuild overlay.  If a
+# component is already on disk, skip the network download.
+# rust-src: check for the library source tree
+if [ -d "$TOOLCHAIN_DIR/lib/rustlib/src/rust" ]; then
+    echo "[bootstrap] rust-src pre-staged from host — skipping download."
 else
-    echo "[bootstrap] Toolchain components not pre-staged, downloading (may be slow over QEMU user-net)..."
     for _ in 1 2 3 4 5; do
-        rustup component add rust-src llvm-tools-preview && break
-        echo "[bootstrap] rustup component add failed, retrying..."
+        rustup component add rust-src && break
+        echo "[bootstrap] rustup component add rust-src failed, retrying..."
         sleep 5
-    done || fail "rustup component add failed after 5 attempts"
+    done || fail "rustup component add rust-src failed after 5 attempts"
 fi
 
+# llvm-tools-preview: check for the llvm-objcopy binary in the toolchain
+if [ -f "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy" ]; then
+    echo "[bootstrap] llvm-tools-preview pre-staged from host — skipping download."
+else
+    for _ in 1 2 3 4 5; do
+        rustup component add llvm-tools-preview && break
+        echo "[bootstrap] rustup component add llvm-tools-preview failed, retrying..."
+        sleep 5
+    done || fail "rustup component add llvm-tools-preview failed after 5 attempts"
+fi
+
+# x86_64-unknown-none target
 if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-none; then
     echo "[bootstrap] target x86_64-unknown-none already installed."
+elif [ -d "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-none" ]; then
+    echo "[bootstrap] target x86_64-unknown-none pre-staged from host."
 else
-    echo "[bootstrap] target x86_64-unknown-none not installed, adding (may be slow over QEMU user-net)..."
     for _ in 1 2 3 4 5; do
         rustup target add x86_64-unknown-none && break
         echo "[bootstrap] rustup target add failed, retrying..."
@@ -251,16 +273,26 @@ fi
 echo "[bootstrap] $(rustc --version)"
 
 
-# kallsyms tools: rust-nm / rust-objcopy (cargo-binutils) + gen_ksym (ksym).
-# Guarded so re-runs skip the (slow) rebuild when the tools already persist.
+# kallsyms tools: rust-nm / rust-objcopy (from cargo-binutils or llvm-tools-preview)
+# + gen_ksym (ksym).  If the host-side prebuild pre-staged llvm-tools binaries
+# into ~/.cargo/bin/ (as rust-nm/rust-objcopy), use them directly.  Otherwise
+# fall back to `cargo install` which requires QEMU user-net (slow but retried).
 echo "[bootstrap] Installing kallsyms tools..."
 if ! command -v rust-nm >/dev/null 2>&1 || ! command -v rust-objcopy >/dev/null 2>&1; then
-    cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
-        || fail "cargo install cargo-binutils failed"
+    if command -v cargo >/dev/null 2>&1; then
+        cargo install --locked cargo-binutils 2>&1 || cargo install cargo-binutils 2>&1 \
+            || fail "cargo install cargo-binutils failed"
+    else
+        fail "cargo not found — cannot install kallsyms tools; ensure rustup installed correctly"
+    fi
 fi
 if ! command -v gen_ksym >/dev/null 2>&1; then
-    cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
-        || fail "cargo install ksym failed"
+    if command -v cargo >/dev/null 2>&1; then
+        cargo install --locked ksym 2>&1 || cargo install ksym 2>&1 \
+            || fail "cargo install ksym failed"
+    else
+        fail "cargo not found — cannot install ksym; ensure rustup installed correctly"
+    fi
 fi
 command -v gen_ksym >/dev/null 2>&1 || fail "gen_ksym missing after install"
 command -v rust-nm >/dev/null 2>&1 || fail "rust-nm missing after install"
