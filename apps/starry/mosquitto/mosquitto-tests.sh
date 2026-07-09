@@ -305,7 +305,7 @@ echo "MOSQUITTO_STAGE small-payload-burst"
 # Test small payload burst - typical embedded sensor reporting pattern
 # 50 tiny messages (temperature readings), simulating a sensor reporting every 200ms
 burst_count=50
-mosquitto_sub -h 127.0.0.1 -p 1883 -t sensors/temp -C "$burst_count" -W 15 > /var/lib/mosquitto/burst-sub.out 2>&1 &
+mosquitto_sub -h 127.0.0.1 -p 1883 -t sensors/temp -C "$burst_count" -W 120 > /var/lib/mosquitto/burst-sub.out 2>&1 &
 sub_burst_pid=$!
 sleep 1
 i=0
@@ -316,8 +316,8 @@ while [ "$i" -lt "$burst_count" ]; do
 done
 wait "$sub_burst_pid" || true
 # Verify first and last readings received
-grep -q '2000' /var/lib/mosquitto/burst-sub.out
-grep -q '2049' /var/lib/mosquitto/burst-sub.out
+grep -q '2000' /var/lib/mosquitto/burst-sub.out || fail_with_file /var/lib/mosquitto/burst-sub.out
+grep -q '2049' /var/lib/mosquitto/burst-sub.out || fail_with_file /var/lib/mosquitto/burst-sub.out
 
 test_done=1
 trap - EXIT

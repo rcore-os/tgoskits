@@ -1,0 +1,4 @@
+read01
+read02
+# read03 # TBROK: opening FIFO with O_NONBLOCK|O_WRONLY returns ENXIO in the current environment
+read04

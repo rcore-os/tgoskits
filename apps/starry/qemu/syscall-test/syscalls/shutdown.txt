@@ -1,0 +1,2 @@
+# shutdown01 # TBROK: unix-socket checkpoint wait times out after SHUT_RD path
+# shutdown02 # TFAIL: one negative case succeeds unexpectedly instead of failing

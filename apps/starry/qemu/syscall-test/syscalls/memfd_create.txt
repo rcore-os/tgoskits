@@ -1,0 +1,4 @@
+# memfd_create01 # TFAIL: fstat reports unexpected file size in current environment
+# memfd_create02 # TFAIL: invalid-name case behaves differently in current environment
+# memfd_create03 # TCONF: hugetlbfs is not supported in current environment
+# memfd_create04 # TCONF: huge page is not supported in current environment

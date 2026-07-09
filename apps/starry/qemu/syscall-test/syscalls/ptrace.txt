@@ -1,0 +1,11 @@
+# ptrace01 # TFAIL/TBROK: ptrace test fails and waitpid returns ECHILD in current environment
+ptrace02
+ptrace03
+# ptrace04 # TCONF: test not supported for x86_64 in current LTP/environment
+# ptrace05 # TFAIL/TBROK: child does not stop as expected and ptrace returns ESRCH in current environment
+# ptrace06 # TFAIL: invalid ptrace access returns ENOMEM/EINVAL instead of EIO/EFAULT in current environment
+# ptrace07 # TBROK: PTRACE_GETREGSET returns ENOSYS in current environment
+# ptrace08 # TBROK: ptrace returns EIO in current environment
+# ptrace09 # TBROK: ptrace returns EIO in current environment
+# ptrace10 # TBROK: ptrace returns EIO in current environment
+# ptrace11 # TBROK: waitpid returns ECHILD in current environment

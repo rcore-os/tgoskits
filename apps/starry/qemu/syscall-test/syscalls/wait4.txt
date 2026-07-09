@@ -1,0 +1,3 @@
+wait401
+wait402
+# wait403 # TBROK: LTP taint check requires /proc/sys/kernel/tainted in current environment

@@ -1,0 +1,2 @@
+getcpu01
+getcpu02

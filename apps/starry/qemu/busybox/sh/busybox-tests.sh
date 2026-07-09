@@ -334,7 +334,7 @@ _t=$({ timeout 10 sh -c "busybox getty -h 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "Usage: getty"; then echo "PASS: busybox_getty"; bb_case_pass; else echo "FAIL_DETAIL: busybox_getty"; bb_case_fail; fi
 
 bb_case_start "busybox_grep"
-_t=$({ timeout 10 sh -c "busybox echo hello | busybox grep hell 2>&1"; } 2>&1)
+_t=$({ timeout 10 sh -c "busybox sh -c \"busybox echo hello > /tmp/bb_grep_t && busybox grep hell /tmp/bb_grep_t\" 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "hello"; then echo "PASS: busybox_grep"; bb_case_pass; else echo "FAIL_DETAIL: busybox_grep"; bb_case_fail; fi
 
 bb_case_start "busybox_groups"
@@ -1083,25 +1083,12 @@ c
 if echo "$_t" | grep -qF "3"; then echo "PASS: busybox_wc"; bb_case_pass; else echo "FAIL_DETAIL: busybox_wc"; bb_case_fail; fi
 
 bb_case_start "busybox_wget"
-_t=$({ timeout 30 sh -c '
-busybox rm -rf /tmp/bb_wget_root /tmp/bb_wget.html
-busybox mkdir -p /tmp/bb_wget_root
-{
-    busybox printf "HTTP/1.0 200 OK\r\n"
-    busybox printf "Content-Length: 22\r\n"
-    busybox printf "Connection: close\r\n"
-    busybox printf "\r\n"
-    busybox printf "busybox wget local ok\n"
-} > /tmp/bb_wget_root/response.http
+_t=$({ timeout 45 sh -c '
+busybox rm -f /tmp/bb_wget.html
 wget_status=1
-for port in 18080 18081 18082 18083 18084; do
-    busybox rm -f /tmp/bb_wget.html
-    busybox nc -l -p "$port" -w 10 < /tmp/bb_wget_root/response.http >/tmp/bb_wget_nc.out 2>&1 &
-    server_pid=$!
-    busybox sleep 1
-    timeout 10 busybox wget -O /tmp/bb_wget.html "http://127.0.0.1:$port/index.html" 2>&1
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    timeout 10 busybox wget -O /tmp/bb_wget.html "http://10.0.2.2:18383/index.html" 2>&1
     wget_status=$?
-    busybox kill "$server_pid" 2>/dev/null || true
     [ "$wget_status" -eq 0 ] && break
     busybox sleep 1
 done

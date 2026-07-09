@@ -1,0 +1,6 @@
+ftruncate01
+ftruncate01_64
+# ftruncate03 # TFAIL: invalid fd case returns EINVAL instead of expected EBADF
+# ftruncate03_64 # TFAIL: invalid fd case returns EINVAL instead of expected EBADF
+# ftruncate04 # TBROK: kernel .config is unavailable in the current environment
+# ftruncate04_64 # TBROK: kernel .config is unavailable in the current environment

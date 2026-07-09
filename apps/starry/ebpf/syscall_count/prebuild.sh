@@ -26,6 +26,35 @@ if [[ -d "$cross_bin" ]]; then
 fi
 cc_bin="${cross_prefix}-gcc"
 
+if ! command -v rustup >/dev/null 2>&1; then
+    echo "$(basename "$app_dir") prebuild: rustup is required to install Rust target $musl_target" >&2
+    exit 1
+fi
+read -r rust_toolchain _ < <(rustup show active-toolchain)
+echo "$(basename "$app_dir") prebuild: installing Rust target $musl_target for toolchain $rust_toolchain"
+rustup target add --toolchain "$rust_toolchain" "$musl_target"
+export RUSTUP_TOOLCHAIN="$rust_toolchain"
+
+host_tools_dir="${STARRY_WORKSPACE:-$app_dir}/tmp/axbuild/starry-host-tools"
+export PATH="$host_tools_dir/bin:${HOME:-/root}/.cargo/bin:$PATH"
+ensure_bpf_linker() {
+    if command -v bpf-linker >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v apk >/dev/null 2>&1; then
+        echo "$(basename "$app_dir") prebuild: installing bpf-linker with apk"
+        apk add --no-cache bpf-linker || true
+        if command -v bpf-linker >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    echo "$(basename "$app_dir") prebuild: installing bpf-linker 0.10.3 with cargo"
+    cargo install bpf-linker --version 0.10.3 --locked --root "$host_tools_dir"
+}
+ensure_bpf_linker
+
 install_loongarch_loader_link() {
     local rootfs="${STARRY_ROOTFS:-}"
     if [[ -z "$rootfs" || ! -f "$rootfs" ]]; then

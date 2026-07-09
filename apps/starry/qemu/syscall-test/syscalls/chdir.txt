@@ -1,0 +1,3 @@
+# chdir01 # TFAIL: nobody can chdir into keep_out instead of getting permission denied
+chdir02
+chdir04

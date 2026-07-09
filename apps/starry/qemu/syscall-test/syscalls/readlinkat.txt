@@ -1,0 +1,2 @@
+# readlinkat01 # TFAIL: several dirfd/path combinations failed with ENOTDIR or wrong buffer
+# readlinkat02 # TFAIL: NULL buffer/zero size symlink case succeeded unexpectedly
