@@ -158,6 +158,26 @@ for component in rustc cargo rust-std; do
 done
 info "Rustup download cache staged."
 
+# Download the standalone rustup-init binary (musl, ~20 MiB) so the inner script
+# can run it directly instead of `curl | sh`.  rustup-init WILL use the download
+# cache at $RUSTUP_HOME/downloads/ — unlike the `curl | sh` wrapper which
+# downloads independently.  When combined with the pre-staged tarballs above,
+# the inner script skips ALL toolchain downloads.
+RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/dist/${RUSTUP_HOST}/rustup-init"
+RUSTUP_INIT_DEST="$overlay_dir/usr/local/bin/rustup-init"
+if [ -f "$RUSTUP_INIT_DEST" ]; then
+    info "rustup-init already staged in overlay."
+else
+    info "Downloading rustup-init ($RUSTUP_HOST, ~20 MiB) ..."
+    mkdir -p "$overlay_dir/usr/local/bin"
+    curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 600 \
+         -fsSL "$RUSTUP_INIT_URL" -o "$RUSTUP_INIT_DEST" || {
+        info "  WARNING: failed to download rustup-init — inner script will fall back to curl | sh"
+        rm -f "$RUSTUP_INIT_DEST"
+    }
+    chmod +x "$RUSTUP_INIT_DEST" 2>/dev/null || true
+fi
+
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
@@ -274,9 +294,25 @@ CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
 
 if ! command -v rustup >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
-        || fail "rustup install failed"
+    # The host-side prebuild may have pre-staged rustup-init + the toolchain
+    # tarballs into the overlay download cache.  Use them directly to avoid
+    # ANY network download inside QEMU (user-mode networking is ~50-400 KiB/s,
+    # making a 140 MiB toolchain impractical).
+    if [ -x /usr/local/bin/rustup-init ]; then
+        echo "[bootstrap] rustup-init pre-staged from host — installing toolchain from local cache..."
+        export RUSTUP_HOME="$HOME/.rustup"
+        export CARGO_HOME="$HOME/.cargo"
+        mkdir -p "$CARGO_HOME"
+        # rustup-init respects $RUSTUP_HOME/downloads/ as a cache — when the
+        # tarballs are pre-staged there, it installs without touching the network.
+        /usr/local/bin/rustup-init -y --default-toolchain "$CHANNEL" --profile minimal \
+            --no-modify-path 2>&1 || fail "rustup-init failed"
+    else
+        echo "[bootstrap] rustup-init not pre-staged, downloading over QEMU user-net..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
+            || fail "rustup install failed"
+    fi
 fi
 . "$HOME/.cargo/env"
 
