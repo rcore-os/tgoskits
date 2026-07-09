@@ -200,7 +200,17 @@ struct Dwc2Registers {
     base: NonNull<u8>,
 }
 
+// SAFETY: `Dwc2Registers` is a copyable handle to a DWC2 MMIO mapping that is
+// owned by the platform USB host for the whole backend lifetime. The type does
+// not provide references into the mapping; all accesses are volatile 32-bit
+// loads/stores through private methods, and higher-level code serializes
+// channel programming with per-channel gates when concurrent task/IRQ paths can
+// touch the same channel registers.
 unsafe impl Send for Dwc2Registers {}
+// SAFETY: Shared references to this handle cannot create Rust aliasing to the
+// MMIO region because MMIO is only accessed by volatile operations. Register
+// ordering and channel-level races are handled by the DWC2 protocol code and
+// the per-channel gates/completion atomics rather than by Rust references.
 unsafe impl Sync for Dwc2Registers {}
 
 impl Dwc2Registers {
@@ -209,10 +219,18 @@ impl Dwc2Registers {
     }
 
     fn read32(self, offset: usize) -> u32 {
+        // SAFETY: `base` points at the live DWC2 register window supplied by the
+        // board glue. `Dwc2Registers` is private, and every caller passes either
+        // a constant register offset from this file or a channel offset computed
+        // from a bounded host-channel index. Volatile access is required for
+        // MMIO and does not create Rust references into the device memory.
         unsafe { (self.base.as_ptr().add(offset) as *const u32).read_volatile() }
     }
 
     fn write32(self, offset: usize, value: u32) {
+        // SAFETY: Same mapping and offset invariants as `read32`. The write is
+        // volatile because it programs hardware state; callers preserve W1C and
+        // read-modify-write semantics at the register-specific helper layer.
         unsafe { (self.base.as_ptr().add(offset) as *mut u32).write_volatile(value) }
     }
 
@@ -550,7 +568,15 @@ pub struct Dwc2 {
     stats: Dwc2Stats,
 }
 
+// SAFETY: `Dwc2` is moved into the kmod core as the unique owner of host state.
+// Public core operations require `&mut self`; the separately exposed IRQ handler
+// owns only cloned register/completion/stat handles. Shared state between the
+// task path and IRQ path is restricted to atomics, wakers, and per-channel gates.
 unsafe impl Send for Dwc2 {}
+// SAFETY: The only `&self` operations exposed by `Dwc2` read/reset atomic
+// statistics or return immutable kernel references. MMIO mutation remains behind
+// `&mut self` core methods or the IRQ handler, whose synchronization invariants
+// are documented on `Dwc2Registers` and `Dwc2EventHandler`.
 unsafe impl Sync for Dwc2 {}
 
 impl Dwc2 {
@@ -793,6 +819,9 @@ struct Dwc2RootHub {
     last_logged_hprt: Option<u32>,
 }
 
+// SAFETY: The root hub is driven by `HubOp` methods taking `&mut self`, so its
+// port state and cached log value are not concurrently mutated. MMIO access uses
+// the `Dwc2Registers` volatile-access invariants.
 unsafe impl Send for Dwc2RootHub {}
 
 impl Dwc2RootHub {
@@ -888,7 +917,15 @@ struct Dwc2EventHandler {
     stats: Dwc2Stats,
 }
 
+// SAFETY: The event handler may be registered on an IRQ path and moved between
+// runtimes. It contains no unsynchronized mutable Rust state: completions and
+// statistics are atomic, and register access is volatile through
+// `Dwc2Registers`.
 unsafe impl Send for Dwc2EventHandler {}
+// SAFETY: `handle_event` only uses `&self`. It acknowledges hardware IRQ bits
+// and publishes completions through atomics/wakers; channel programming races
+// with the task path are bounded by per-channel gates and DWC2 channel-halt
+// completion ordering.
 unsafe impl Sync for Dwc2EventHandler {}
 
 impl Dwc2EventHandler {
@@ -1353,6 +1390,18 @@ fn setup_packet_bytes(setup: &ControlSetup, direction: Direction, len: usize) ->
     ]
 }
 
+fn device_descriptor_base_from_bytes(data: [u8; 8]) -> DeviceDescriptorBase {
+    DeviceDescriptorBase {
+        length: data[0],
+        descriptor_type: data[1],
+        usb_version: u16::from_le_bytes([data[2], data[3]]),
+        class: data[4],
+        subclass: data[5],
+        protocol: data[6],
+        max_packet_size_0: data[7],
+    }
+}
+
 #[derive(Default)]
 struct Dwc2DmaBufferPool {
     cached: Option<CoherentArray<u8>>,
@@ -1417,6 +1466,10 @@ impl Dwc2DmaBuffer {
                 TransferError::Other(anyhow!("DWC2 DMA buffer pool returned no buffer"))
             })?;
             if matches!(direction, Direction::Out) {
+                // SAFETY: `TransferRequest::buffer` is the usb-host transfer
+                // contract for a live CPU buffer of `len` bytes until the
+                // request completes. We only create a temporary shared slice to
+                // copy OUT payload bytes into the owned coherent bounce buffer.
                 let data = unsafe { core::slice::from_raw_parts(ptr.as_ptr().cast_const(), len) };
                 coherent.write_with_cpu(len, |dst| dst.copy_from_slice(data));
                 stats.record_bounce_to_device(len);
@@ -1467,6 +1520,11 @@ impl Dwc2DmaBuffer {
             )));
         }
 
+        // SAFETY: The request buffer pointer comes from `TransferRequest` and
+        // remains owned by that request until this completion path finishes.
+        // `actual` has been checked against both the request length and the
+        // coherent bounce buffer length, so the mutable slice is in-bounds and
+        // used only for the final IN payload copy.
         let dst = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), actual) };
         coherent.read_with_cpu(actual, |src| dst.copy_from_slice(src));
         Ok(())
@@ -1482,7 +1540,7 @@ struct Dwc2Device {
     channel_gates: Vec<Arc<Mutex<()>>>,
     channel_completions: Dwc2ChannelCompletions,
     stats: Dwc2Stats,
-    desc: DeviceDescriptor,
+    desc: Option<DeviceDescriptor>,
     ctrl_ep: Endpoint,
     config_desc: Vec<ConfigurationDescriptor>,
     current_config_value: Option<u8>,
@@ -1501,6 +1559,10 @@ struct Dwc2DeviceParams {
     stats: Dwc2Stats,
 }
 
+// SAFETY: `Dwc2Device` is owned as a boxed `DeviceOp` and every mutating device
+// operation requires `&mut self`. Endpoint objects created from it get their own
+// owned DMA pools and share only atomic completions, per-channel gates, and the
+// volatile register handle.
 unsafe impl Send for Dwc2Device {}
 
 impl Dwc2Device {
@@ -1535,7 +1597,7 @@ impl Dwc2Device {
             channel_gates,
             channel_completions,
             stats,
-            desc: unsafe { core::mem::zeroed() },
+            desc: None,
             ctrl_ep: Endpoint::new(EndpointInfo::control(), raw),
             config_desc: Vec::new(),
             current_config_value: None,
@@ -1553,12 +1615,13 @@ impl Dwc2Device {
             .with_raw_mut::<Dwc2Endpoint, _>(|ep| ep.set_max_packet_size(base.max_packet_size_0));
         self.kernel.delay(Duration::from_millis(10));
 
-        self.desc = self.ctrl_ep.get_device_descriptor().await?;
+        let desc = self.ctrl_ep.get_device_descriptor().await?;
         self.current_config_value = Some(self.ctrl_ep.get_configuration().await?);
-        for index in 0..self.desc.num_configurations {
+        for index in 0..desc.num_configurations {
             let config = self.ctrl_ep.get_configuration_descriptor(index).await?;
             self.config_desc.push(config);
         }
+        self.desc = Some(desc);
         if let Some(config) = self.config_desc.first() {
             self.set_configuration_inner(config.configuration_value)
                 .await?;
@@ -1571,7 +1634,7 @@ impl Dwc2Device {
         self.ctrl_ep
             .get_descriptor(DescriptorType::DEVICE, 0, 0, &mut data)
             .await?;
-        Ok(unsafe { (data.as_ptr() as *const DeviceDescriptorBase).read_unaligned() })
+        Ok(device_descriptor_base_from_bytes(data))
     }
 
     async fn set_address(&mut self) -> Result<()> {
@@ -1685,7 +1748,9 @@ impl DeviceOp for Dwc2Device {
     }
 
     fn descriptor(&self) -> &DeviceDescriptor {
-        &self.desc
+        self.desc
+            .as_ref()
+            .expect("DWC2 device descriptor must be initialized before device publication")
     }
 
     fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
@@ -1781,6 +1846,11 @@ struct Dwc2Endpoint {
     )>,
 }
 
+// SAFETY: `EndpointOp` methods that mutate transfer state require `&mut self`.
+// The endpoint owns its active DMA buffer and reusable bounce buffer pool; the
+// IRQ path never accesses those buffers directly and only publishes HCINT bits
+// through atomic completion slots. Register programming for the endpoint channel
+// is serialized by `channel_gate`.
 unsafe impl Send for Dwc2Endpoint {}
 
 struct Dwc2EndpointParams {
@@ -2291,10 +2361,15 @@ mod tests {
             constraints: DmaConstraints,
             layout: Layout,
         ) -> Option<DmaAllocHandle> {
+            // SAFETY: The test kernel models contiguous DMA with the same
+            // heap-backed allocation used for coherent DMA below.
             unsafe { self.alloc_coherent(constraints, layout) }
         }
 
         unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            // SAFETY: Handles returned by `alloc_contiguous` are created by
+            // `alloc_coherent`, so they must be released through the same mock
+            // deallocation path.
             unsafe { self.dealloc_coherent(handle) }
         }
 
@@ -2303,16 +2378,25 @@ mod tests {
             constraints: DmaConstraints,
             layout: Layout,
         ) -> Option<DmaAllocHandle> {
+            // SAFETY: Unit tests request valid `Layout` values. The returned
+            // pointer is either null or points to a heap allocation owned by the
+            // DMA handle until `dealloc_coherent` consumes it.
             let ptr = unsafe { alloc_zeroed(layout) };
             let ptr = NonNull::new(ptr)?;
             let align = constraints.align.max(layout.align()).max(1) as u64;
             let size = layout.size().max(1) as u64;
             let current = TEST_DMA_ADDR.fetch_add(size + align, AtomicOrdering::Relaxed);
             let dma_addr = (current + align - 1) & !(align - 1);
+            // SAFETY: `ptr` and `layout` describe the allocation above, and
+            // `dma_addr` is a deterministic fake bus address used only by unit
+            // tests that never reaches real hardware.
             Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+            // SAFETY: The mock only creates coherent handles from
+            // `alloc_zeroed` with the stored layout, so deallocating with the
+            // same layout releases exactly that allocation.
             unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
         }
 
@@ -2324,6 +2408,9 @@ mod tests {
             _direction: DmaDirection,
         ) -> core::result::Result<DmaMapHandle, DmaError> {
             let layout = Layout::from_size_align(size.get(), 1)?;
+            // SAFETY: This mock streaming map does not transfer ownership of
+            // `addr`; it records the caller-provided live buffer and a fake bus
+            // address for tests that only inspect programming values.
             Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
         }
 
@@ -2379,6 +2466,20 @@ mod tests {
         crate::backend::kmod::kcore::CoreOp::enable_irq(&mut host).unwrap();
 
         assert_eq!(regs.read32(GINTMSK), GINTSTS_HCHINT);
+    }
+
+    #[test]
+    fn device_descriptor_base_is_parsed_without_unaligned_struct_access() {
+        let desc =
+            super::device_descriptor_base_from_bytes([18, 1, 0x00, 0x02, 0x08, 0x06, 0x50, 64]);
+
+        assert_eq!(desc.length, 18);
+        assert_eq!(desc.descriptor_type, 1);
+        assert_eq!(desc.usb_version, 0x0200);
+        assert_eq!(desc.class, 0x08);
+        assert_eq!(desc.subclass, 0x06);
+        assert_eq!(desc.protocol, 0x50);
+        assert_eq!(desc.max_packet_size_0, 64);
     }
 
     #[test]
