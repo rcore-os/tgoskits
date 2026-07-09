@@ -120,9 +120,12 @@ esac
 command -v debugfs &>/dev/null || error "debugfs not found (install e2fsprogs)"
 
 # The xtask app runner modifies the rootfs in-place (injects overlay,
-# boots QEMU, guest writes /opt/starryos-selfbuilt).  Clone the
-# selfhost rootfs blueprint to a working copy so the blueprint stays
-# pristine and the self-compiled binary persists after QEMU exits.
+# boots QEMU, guest writes /opt/starryos-selfbuilt).  For x86_64, clone
+# the selfhost rootfs blueprint to a working copy (below) so the blueprint
+# stays pristine and the self-compiled binary persists after QEMU exits.
+# For riscv64, ROOTFS_IMG points directly at the blueprint
+# (rootfs-riscv64-debian-selfhost-v2.img) and the app runner mutates it in
+# place — no working copy, and the blueprint is not kept pristine.
 if [ "$ARCH" = "x86_64" ]; then
     mkdir -p tmp/selfhost
     # The selfhost rootfs blueprint is created once by

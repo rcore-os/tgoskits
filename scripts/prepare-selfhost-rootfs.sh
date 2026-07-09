@@ -6,7 +6,8 @@
 #
 # This script requires sudo, debootstrap and systemd-nspawn.  It is NOT the
 # primary verification path for reviewers; the produced blueprint image is
-# reused by self-compile.sh (which clones it to a working copy each run).
+# reused by self-compile.sh (for x86_64 it is cloned to a working copy each
+# run so the blueprint stays pristine; the riscv64 blueprint is used in place).
 #
 # Usage:
 #   sudo ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
@@ -18,7 +19,7 @@
 #   --force   Overwrite existing output image.
 #
 # Prerequisites (auto-checked):
-#   All:     debugfs, resize2fs, git, cargo, systemd-nspawn
+#   All:     debugfs, resize2fs, dd, git, cargo, systemd-nspawn
 #   riscv64: qemu-riscv64-static, base Debian riscv64 image
 #   x86_64:  debootstrap (pacman -S debootstrap)
 #   aarch64: qemu-aarch64-static, debootstrap (pacman -S debootstrap qemu-user-static-binfmt)

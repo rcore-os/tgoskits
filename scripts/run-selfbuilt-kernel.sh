@@ -10,8 +10,10 @@
 # Usage:
 #   ./scripts/run-selfbuilt-kernel.sh [OPTIONS] [rootfs-image]
 #
-#   --arch <arch>   Target architecture: riscv64 (default), x86_64, aarch64.
-#                   Must match the arch used during self-compile.sh.
+#   --arch <arch>   Target architecture: riscv64 (default), x86_64.  Must match
+#                   the arch used during self-compile.sh.  aarch64 is boot-capable
+#                   here but self-compile.sh cannot yet produce an aarch64 kernel
+#                   (no qemu-aarch64.toml), so supply one via --kernel / rootfs.
 #   --smp <N>       Number of QEMU CPUs (default: 4).
 #   --kernel <path> Self-compiled kernel binary (default: tmp/starryos-selfbuilt-<arch>).
 #                   Rootfs defaults to the arch-specific image unless specified.
@@ -180,7 +182,7 @@ case "$ARCH" in
 
         # OVMF firmware — search common distribution paths.
         # Arch:    /usr/share/edk2/x64/OVMF_CODE.4m.fd  (edk2-ovmf)
-        # Debian:  /usr/share/OVMF/OVMF_CODE_4M.fd      (ovmf)
+        # Debian:  /usr/share/OVMF/OVMF_CODE_4M.fd, /usr/share/OVMF/OVMF_CODE.fd  (ovmf)
         # Fedora:  /usr/share/edk2/ovmf/OVMF_CODE.fd    (edk2-ovmf)
         # Generic: /usr/share/ovmf/OVMF.fd, /usr/share/qemu/OVMF.fd
         OVMF_CODE=""

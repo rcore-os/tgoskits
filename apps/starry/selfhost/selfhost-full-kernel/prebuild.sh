@@ -3,21 +3,29 @@ set -euo pipefail
 #
 # prebuild.sh — Generates ALL overlay files for the selfhost self-compilation app.
 #
-# This is the single source of truth for overlay content.  scripts/self-compile.sh
-# calls this script, then injects the generated overlay directory into the rootfs.
+# This is the single source of truth for overlay content.  The Starry app runner
+# (`cargo xtask starry app qemu`, implemented in scripts/axbuild/src/starry/app/
+# rootfs.rs) calls this script with STARRY_OVERLAY_DIR set, then injects the
+# generated overlay directory into the rootfs via inject::inject_overlay.
+# scripts/self-compile.sh drives this indirectly: it exports the SELF_COMPILE_*
+# env vars below and invokes the app runner — it does NOT call this script nor
+# inject the overlay itself.
 #
-# Called by the Starry app runner (cargo xtask starry app run) with:
+# Provided by the app runner:
 #   STARRY_APP_DIR       — path to this app directory (apps/starry/selfhost)
 #   STARRY_OVERLAY_DIR   — staging directory for rootfs injection
 #
-# When called from scripts/self-compile.sh, additional env vars:
+# Forwarded from scripts/self-compile.sh (through the app runner):
 #   SELF_COMPILE_COMMIT      — expected git commit in /opt/starryos
 #   SELF_COMPILE_REF         — expected git ref in /opt/starryos
-#   SEED_KERNEL_DIR          — directory containing the seed kernel (for linker.x)
 #   REPO_ROOT                — repository root
 #   CARGO_BUILD_JOBS         — cargo build parallelism
 #   SELF_COMPILE_ARCH        — target architecture name (riscv64, x86_64, aarch64)
 #   SELF_COMPILE_TARGET      — Rust target triple
+#
+# Optional (NOT set by self-compile.sh; honored only if a caller exports it):
+#   SEED_KERNEL_DIR          — directory to copy linker.x from; otherwise linker.x
+#                              is taken from target/<triple>/{debug,release}/
 #   SELF_COMPILE_SMP         — number of CPUs
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -296,16 +304,20 @@ gen_axconfig() {
     else
         # For dynamic platforms (x86_64) the axbuild system may not generate a
         # static .axconfig.toml (the platform config is resolved at runtime via
-        # FDT/ACPI).  Generate a minimal valid config from known-good defaults
-        # so the guest cargo build has a working AX_CONFIG_PATH.
+        # FDT/ACPI).  Generate a minimal valid config as a defensive placeholder.
+        # NOTE: the x86_64 self-compile is driven by xtask (`$XTASK starry build
+        # --arch x86_64`), a dynamic-platform EFI build that regenerates its own
+        # config and never reads AX_CONFIG_PATH — so this generated file is NOT
+        # consumed by the x86_64 guest build.  AX_CONFIG_PATH is exported and used
+        # only in the non-x86_64 bare-metal branch.
         echo "[prebuild] .axconfig.toml not found in build artifacts — generating minimal config for ${arch}"
         _generate_minimal_axconfig "$arch"
     fi
 }
 
 # Generate a minimal .axconfig.toml for architectures where the build system
-# does not produce one (dynamic platforms).  The values are QEMU virt defaults
-# and match what the inner bare-metal build expects.
+# does not produce one (dynamic platforms).  The values are QEMU virt defaults.
+# Currently only x86_64 is handled here; other arches hit the `*)` error below.
 _generate_minimal_axconfig() {
     local arch="$1"
     local out="$overlay_dir/opt/starryos/.axconfig.toml"
