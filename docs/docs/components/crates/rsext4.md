@@ -3,7 +3,7 @@
 > 路径：`components/rsext4`
 > 类型：库 crate（host 回归测试位于 `tests/`）
 > 分层：组件层 / 可复用基础组件
-> 版本：`0.1.0`
+> 版本：`0.7.3`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/ext4/{mod,fs,sync,mount,mkfs}.rs`、`src/api/{mod,fs,io}.rs`、`src/blockdev/{mod,traits,journal,cached_device}.rs`、`src/jbd2/jbd2.rs`、`src/cache/{data_block,inode_table,bitmap}.rs`、`src/file/*`、`src/dir/*`、`tests/*.rs`、`os/arceos/modules/axfs-ng/src/fs/ext4/`
 
 `rsext4` 是当前仓库里的独立 ext4 引擎。它自己定义块设备接口、挂载与卸载流程、目录/文件 API、JBD2 日志代理、多级缓存和若干 host 侧验证程序；在这棵代码树里，它是新 `ax-fs-ng` ext4 路径的**实际后端**（`ax-fs-ng` 的 `ext4` feature 即 `dep:rsext4`），而不是一条历史并行路线。
@@ -111,7 +111,7 @@ flowchart TD
 ```mermaid
 graph LR
     bitflags["bitflags"] --> current["rsext4"]
-    lazy_static["lazy_static(spin_no_std)"] --> current
+    ax_kspin["ax-kspin (SpinNoPreempt)"] --> current
     log["log"] --> current
 
     current --> axfsng_ext4["ax-fs-ng fs/ext4 适配层 (Ext4Filesystem)"]
@@ -120,7 +120,7 @@ graph LR
 
 ### 直接依赖
 - `bitflags`：位图与标志位表达。
-- `lazy_static`：no_std 下的静态对象辅助。
+- `ax-kspin`（workspace）：提供 `SpinNoPreempt` 自旋锁，用于 `src/cache/*` 的同步。
 - `log`：调试与事务日志输出。
 
 ### 主要消费者
