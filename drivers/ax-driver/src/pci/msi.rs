@@ -22,14 +22,16 @@ pub struct PciMsiTarget {
     pub device: MsiDeviceId,
 }
 
-pub struct PciMsixAllocation {
+pub struct PciIrqLease {
     provider: DeviceId,
     allocation: Option<MsiAllocation>,
     table: MsixTableRegion,
     _table_mmio: mmio_api::Mmio,
 }
 
-impl PciMsixAllocation {
+pub type PciMsixAllocation = PciIrqLease;
+
+impl PciIrqLease {
     pub fn allocate(
         endpoint: &mut Endpoint,
         info: PciInfo,
@@ -51,53 +53,69 @@ impl PciMsixAllocation {
         let mut provider = provider
             .lock()
             .map_err(|_| OnProbeError::other("failed to lock MSI provider"))?;
-        let allocation = provider
-            .allocate(MsiRequest::new(target.device, vector_count))
-            .map_err(|err| {
-                OnProbeError::other(format!(
-                    "failed to allocate {vector_count} MSI-X vectors for {}: {err:?}",
-                    info.address
-                ))
-            })?;
+        let mut allocation = Some(
+            provider
+                .allocate(MsiRequest::new(target.device, vector_count))
+                .map_err(|err| {
+                    OnProbeError::other(format!(
+                        "failed to allocate {vector_count} MSI-X vectors for {}: {err:?}",
+                        info.address
+                    ))
+                })?,
+        );
 
-        let table_mmio = axklib::mmio::ioremap(table_range.start.into(), table_range.len())
-            .map_err(|err| OnProbeError::other(format!("failed to map MSI-X table: {err}")))?;
-        let table =
-            unsafe { MsixTableRegion::new(table_mmio.as_nonnull_ptr(), table_info.entries) };
+        let setup = (|| {
+            let table_mmio = axklib::mmio::ioremap(table_range.start.into(), table_range.len())
+                .map_err(|err| OnProbeError::other(format!("failed to map MSI-X table: {err}")))?;
+            let table =
+                unsafe { MsixTableRegion::new(table_mmio.as_nonnull_ptr(), table_info.entries) };
 
-        endpoint
-            .set_msix_function_mask(true)
-            .map_err(msix_probe_error)?;
-        for vector in allocation.vectors() {
-            let message = provider.compose_message(vector).map_err(|err| {
-                OnProbeError::other(format!(
-                    "failed to compose MSI-X message for {} vector {:?}: {err:?}",
-                    info.address, vector.index
-                ))
-            })?;
-            table
-                .program_masked(vector.index.0, message)
+            endpoint
+                .set_msix_function_mask(true)
                 .map_err(msix_probe_error)?;
-            provider.set_vector_enabled(vector, false).map_err(|err| {
-                OnProbeError::other(format!("failed to disable MSI vector: {err:?}"))
-            })?;
-        }
-        endpoint.set_msix_enabled(true).map_err(msix_probe_error)?;
+            {
+                let allocation_ref = allocation
+                    .as_ref()
+                    .ok_or_else(|| OnProbeError::other("MSI-X allocation was already consumed"))?;
+                for vector in allocation_ref.vectors() {
+                    let message = provider.compose_message(vector).map_err(|err| {
+                        OnProbeError::other(format!(
+                            "failed to compose MSI-X message for {} vector {:?}: {err:?}",
+                            info.address, vector.index
+                        ))
+                    })?;
+                    table
+                        .program_masked(vector.index.0, message)
+                        .map_err(msix_probe_error)?;
+                    provider.set_vector_enabled(vector, false).map_err(|err| {
+                        OnProbeError::other(format!("failed to disable MSI vector: {err:?}"))
+                    })?;
+                }
+            }
+            endpoint.set_msix_enabled(true).map_err(msix_probe_error)?;
 
-        Ok(Self {
-            provider: target.provider,
-            allocation: Some(allocation),
-            table,
-            _table_mmio: table_mmio,
-        })
+            Ok(Self {
+                provider: target.provider,
+                allocation: allocation.take(),
+                table,
+                _table_mmio: table_mmio,
+            })
+        })();
+
+        if setup.is_err()
+            && let Some(allocation) = allocation.take()
+            && let Err(err) = provider.free(allocation)
+        {
+            warn!(
+                "failed to roll back MSI-X allocation for {} after setup error: {err:?}",
+                info.address
+            );
+        }
+        setup
     }
 
     pub fn binding_info(&self) -> BindingInfo {
-        let irqs = self
-            .vectors()
-            .iter()
-            .map(|vector| (usize::from(vector.index.0), BindingIrq::id(vector.irq)));
-        BindingInfo::with_irq_sources(irqs)
+        binding_info_from_msi_vectors(self.vectors())
     }
 
     pub fn irq_bindings(&self) -> Vec<BindingIrqBinding> {
@@ -154,7 +172,21 @@ impl PciMsixAllocation {
     }
 }
 
-impl Drop for PciMsixAllocation {
+impl crate::IrqBindingLease for PciIrqLease {
+    fn binding_info(&self) -> BindingInfo {
+        PciIrqLease::binding_info(self)
+    }
+
+    fn enable_binding_irq(&self) {
+        self.enable();
+    }
+
+    fn disable_binding_irq(&self) {
+        self.disable();
+    }
+}
+
+impl Drop for PciIrqLease {
     fn drop(&mut self) {
         self.disable();
         let Some(allocation) = self.allocation.take() else {
@@ -167,6 +199,13 @@ impl Drop for PciMsixAllocation {
             warn!("failed to free MSI-X allocation: {err:?}");
         }
     }
+}
+
+fn binding_info_from_msi_vectors(vectors: &[rdif_msi::MsiVector]) -> BindingInfo {
+    let irqs = vectors
+        .iter()
+        .map(|vector| (usize::from(vector.index.0), BindingIrq::id(vector.irq)));
+    BindingInfo::with_irq_sources(irqs)
 }
 
 pub fn msi_target_for_endpoint(info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {
@@ -370,6 +409,9 @@ fn msix_probe_error(err: MsixError) -> OnProbeError {
 
 #[cfg(test)]
 mod tests {
+    use irq_framework::{HwIrq, IrqDomainId, IrqId};
+    use rdif_msi::{MsiEventId, MsiVector, MsiVectorIndex};
+
     use super::*;
 
     #[test]
@@ -415,6 +457,26 @@ mod tests {
             err,
             OnProbeError::Unsupported("PCI MSI provider interface is unavailable")
         ));
+    }
+
+    #[test]
+    fn binding_info_uses_leaf_irq_not_parent_lpi() {
+        let parent_irq = IrqId::new(IrqDomainId(7), HwIrq(8192));
+        let leaf_irq = IrqId::new(IrqDomainId(8), HwIrq(0));
+        let info = binding_info_from_msi_vectors(&[MsiVector::with_parent(
+            MsiVectorIndex(0),
+            MsiEventId(32),
+            leaf_irq,
+            parent_irq,
+        )]);
+
+        assert_eq!(
+            info.irq_sources(),
+            &[BindingIrqBinding {
+                source_id: 0,
+                irq: BindingIrq::id(leaf_irq),
+            }]
+        );
     }
 
     fn prop_u32s(name: &str, values: &[u32]) -> fdt_edit::Property {

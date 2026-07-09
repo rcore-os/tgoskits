@@ -546,22 +546,16 @@ impl NvmeQueueCore {
     }
 
     fn drain_irq_completions(&self) -> bool {
-        self.try_with_cq_claim(drain_hardware_completions_to_vec)
-            .map(|completions| self.cache_completions(completions))
-            .unwrap_or(true)
+        self.try_with_cq_claim(|queue| {
+            drain_hardware_completions_to_cache(queue, &self.completion_cache)
+        })
+        .unwrap_or(true)
     }
 
     fn drain_completions(&self) -> bool {
-        let completions = self.with_cq_claim(drain_hardware_completions_to_vec);
-        self.cache_completions(completions)
-    }
-
-    fn cache_completions(&self, completions: Vec<CachedCompletion>) -> bool {
-        if completions.is_empty() {
-            return false;
-        }
-        self.completion_cache.extend(completions);
-        true
+        self.with_cq_claim(|queue| {
+            drain_hardware_completions_to_cache(queue, &self.completion_cache)
+        })
     }
 }
 
@@ -674,12 +668,13 @@ impl NvmeQueueState {
     }
 }
 
-fn drain_hardware_completions_to_vec(queue: &HardwareQueue) -> Vec<CachedCompletion> {
-    let mut completions = Vec::new();
+fn drain_hardware_completions_to_cache(queue: &HardwareQueue, cache: &CompletionCache) -> bool {
+    let mut completed = false;
     while let Some(completion) = queue.poll_completion() {
-        completions.push(CachedCompletion::from(completion));
+        cache.record(CachedCompletion::from(completion));
+        completed = true;
     }
-    completions
+    completed
 }
 
 impl CompletionCache {
@@ -687,12 +682,6 @@ impl CompletionCache {
         let mut entries = Vec::with_capacity(capacity);
         entries.resize_with(capacity, CompletionCacheEntry::new);
         Self { entries }
-    }
-
-    fn extend(&self, completions: Vec<CachedCompletion>) {
-        for completion in completions {
-            self.record(completion);
-        }
     }
 
     fn record(&self, completion: CachedCompletion) {
@@ -1104,7 +1093,7 @@ mod tests {
         let mut slots = test_slots(4);
         slots[2].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::success(2)]);
+        cache.record(CachedCompletion::success(2));
 
         assert_eq!(slots[2].state, SlotState::Pending);
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
@@ -1117,7 +1106,7 @@ mod tests {
         let mut slots = test_slots(4);
         slots[3].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::failed(3, 0x4002)]);
+        cache.record(CachedCompletion::failed(3, 0x4002));
 
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(slots[3].state, SlotState::Failed);
@@ -1129,7 +1118,7 @@ mod tests {
         let mut slots = test_slots(2);
         slots[1].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::success(1)]);
+        cache.record(CachedCompletion::success(1));
 
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(cache.drain_into_slots(0, &mut slots), 0);

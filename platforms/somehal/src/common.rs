@@ -34,9 +34,11 @@ pub trait PlatOp {
 
     fn secondary_init();
 
-    fn secondary_init_intc(cpu_idx: usize);
+    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole);
 
-    fn secondary_init_systick();
+    fn init_secondary_boot_irqs(cpu_idx: usize) {
+        Self::init_boot_irq_cpu(cpu_idx, crate::irq::CpuBootRole::Secondary);
+    }
 
     fn send_ipi_to_cpu(cpu_id: usize) {
         let _ = cpu_id;

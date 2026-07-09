@@ -77,8 +77,7 @@ pub fn __somehal_secondary_default() -> ! {
 fn secondary_entry() -> ! {
     someboot::set_kernel_page_table_paddr(meta.primary_table_paddr);
     arch::Plat::secondary_init();
-    arch::Plat::secondary_init_intc(meta.cpu_idx);
-    arch::Plat::secondary_init_systick();
+    irq::init_secondary_boot_irqs(meta.cpu_idx);
 
     unsafe extern "Rust" {
         fn __somehal_secondary(meta: &crate::smp::PerCpuMeta);

@@ -1,4 +1,5 @@
 mod binding;
+mod irq_bound;
 
 #[allow(unused)]
 mod shared;
@@ -28,6 +29,7 @@ use alloc::{boxed::Box, sync::Arc};
 #[cfg(sync_block_dev)]
 use ax_kspin::SpinRaw as Mutex;
 pub use binding::*;
+pub use irq_bound::IrqBoundBlock;
 #[cfg(sync_block_dev)]
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,
