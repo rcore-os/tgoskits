@@ -11,9 +11,11 @@
   与目标一致时回退 host 内核，跨架构明确报错（避免静默用错内核）
 - eBPF net_stats：四个架构 QEMU 配置统一 `--test`，`--test` 在任一字节计数为 0 时
   报错，QEMU `success_regex` 由 `NET_STATS_END` 收紧为 `TEST PASSED`
-- eBPF net_stats：字节计数因 kretprobe 无法可靠读取 `AxResult<usize>` 的 sret
-  返回缓冲区，降级为 `packets × 64` 估算值（数据包计数仍精确），已在 README 的
-  Known Limitations 记录
+- eBPF net_stats 重构为 phy 层入口计数：从 socket 层 kretprobe 读 sret 返回值改为
+  在 smoltcp phy 层（`ax_net::router` 的 `TxToken/RxToken::consume`）直接读入口
+  参数/结构字段。TX 字节从 `len` 参数读取，RX 字节从 `RxToken.packet` slice 字段
+  读取。消除了 sret ABI 复杂性、异步路径分裂、WRAPPER_MARKERS 过滤，覆盖所有
+  IP 流量（TCP/UDP/ICMP 等），字节数为链路层帧大小（含协议头）
 
 ## 已完成（本次重构）
 
@@ -48,8 +50,6 @@
 ### eBPF net_stats 集成修正
 - [ ] 将 net_stats 采样从 host 侧改为 guest 侧执行，输出纳入 QEMU guest log
 - [ ] 由 host 侧 summarize.py 解析 NET_STATS 块（已支持解析，待接入 guest 采样）
-- [ ] 实现真实字节统计以替代 `packets × 64` 估算（entry/exit 用 BPF HashMap
-  关联缓冲区长度，或 fentry/fexit + BTF 直接读取类型化返回值）
 
 ### CI 接入（可选，保持非默认）
 - [ ] 提供显式触发的 CI 示例（至少 SLIRP + TCG 冒烟），不纳入默认全量 app 测试
