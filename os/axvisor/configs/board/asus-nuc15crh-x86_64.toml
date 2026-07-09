@@ -1,7 +1,5 @@
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2", RDRIVE_ACPI_LOAD_AML = "0" }
-features = [
-    "ept-level-4",
-]
+features = []
 log = "Info"
 target = "x86_64-unknown-none"
 vm_configs = []

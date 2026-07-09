@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml";
 pub const DEFAULT_FALLBACK_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.6.toml";
+    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.8.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
 const DEFAULT_AUTO_SYNC_THRESHOLD: u64 = 60 * 60 * 24 * 7;
 const LOCAL_STORAGE_ENV: &str = "TGOS_IMAGE_LOCAL_STORAGE";
@@ -163,5 +163,11 @@ mod tests {
         let _env = TempEnvVar::set(FALLBACK_REGISTRY_ENV, "https://example.com/new.toml");
 
         assert_eq!(fallback_registry_url(), "https://example.com/new.toml");
+    }
+
+    #[test]
+    fn default_registry_points_to_qemu_x86_branch_for_local_validation() {
+        assert!(DEFAULT_REGISTRY_URL.contains("/refs/heads/qemu_x86/"));
+        assert!(DEFAULT_FALLBACK_REGISTRY_URL.contains("/refs/heads/qemu_x86/"));
     }
 }
