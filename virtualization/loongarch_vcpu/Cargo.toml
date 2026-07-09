@@ -3,7 +3,7 @@ name = "loongarch_vcpu"
 version = "0.5.11"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
-description = "LoongArch VCPU implementation for ArceOS Hypervisor"
+description = "OS-neutral LoongArch vCPU core"
 repository = "https://github.com/rcore-os/tgoskits"
 categories = ["embedded", "no-std"]
 keywords = ["hypervisor", "loongarch", "vcpu"]
@@ -13,13 +13,7 @@ license = "Apache-2.0"
 targets = ["loongarch64-unknown-none-softfloat"]
 
 [dependencies]
-ax-kspin.workspace = true
 log = "0.4"
-
-ax-errno = { workspace = true }
-ax-percpu = { workspace = true }
-ax-memory-addr = { workspace = true }
-ax-page-table-multiarch = { workspace = true }
-ax-crate-interface = { workspace = true }
-axvm-types = { workspace = true }
-loongArch64 = "0.2"
+bitflags.workspace = true
+spin = { workspace = true }
+tock-registers.workspace = true
