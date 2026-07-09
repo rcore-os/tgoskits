@@ -56,6 +56,32 @@ else
     info "AIC8800 firmware blobs not staged from host (gitignored) — the in-guest inner script will download + SHA-256-verify them."
 fi
 
+# ── Stage host's Rust nightly toolchain into the overlay ────────────────────────
+# rustup in QEMU user-mode network (slirp NAT, ~10-30 KiB/s) cannot download the
+# ~1.4 GiB nightly toolchain within a reasonable timeout — the 'rustup component
+# add' stage reliably fails.  Copy the host's already-installed nightly toolchain
+# and cargo home directly into the overlay so the guest finds them pre-installed
+# and skips the network-dependent rustup steps entirely.  This keeps the bootstrap
+# genuinely no-sudo and network-resilient: the only remaining network steps are
+# apk (toolchain, ~90 packages; retried inside the inner script) and cargo fetch
+# (crate registry, also retried).
+RUSTUP_HOME="$HOME/.rustup"
+CARGO_HOME="$HOME/.cargo"
+if [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" ] && \
+   [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/src/rust" ] && \
+   [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-none" ]; then
+    info "Staging host Rust nightly toolchain (~1.4 GiB) into the overlay..."
+    mkdir -p "$overlay_dir/root/.rustup/toolchains"
+    cp -a "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" \
+          "$overlay_dir/root/.rustup/toolchains/"
+    mkdir -p "$overlay_dir/root/.cargo"
+    cp -a "$CARGO_HOME/env" "$overlay_dir/root/.cargo/env" 2>/dev/null || true
+    info "Rust nightly toolchain staged — guest will skip rustup downloads."
+else
+    info "Host Rust nightly toolchain not fully populated (missing rust-src or x86_64-unknown-none target)."
+    info "The in-guest rustup will fall back to network downloads — this may time out on slow links."
+fi
+
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
@@ -76,10 +102,10 @@ fail() {
 # Idempotent: if the toolchain was already installed by a previous run,
 # skip apk entirely.  The apk upgrade of libssl/libcrypto can produce ELF
 # files that rsext4 cannot read after remount, so avoid re-running apk.
-# Also require `tar` (a busybox applet): a base image with bash/gcc/git but
-# an incomplete busybox would otherwise skip apk here and then fail on the
-# source untar below ("can't open 'tar'").
-if [ -f /bin/bash ] && [ -f /usr/bin/gcc ] && [ -f /usr/bin/git ] && command -v tar >/dev/null 2>&1; then
+# Also require `tar` (a busybox applet) to be genuinely executable: a base
+# image with bash/gcc/git but a broken busybox symlink would otherwise skip
+# apk here and then fail on the source untar below ("can't open 'tar'").
+if [ -f /bin/bash ] && [ -f /usr/bin/gcc ] && [ -f /usr/bin/git ] && tar --version >/dev/null 2>&1; then
     echo "[bootstrap] Build toolchain already installed — skipping apk."
 else
 echo "[bootstrap] apk add build toolchain (--no-cache, fresh index each run)..."
@@ -168,18 +194,37 @@ if ! command -v rustup >/dev/null 2>&1; then
         || fail "rustup install failed"
 fi
 . "$HOME/.cargo/env"
-# QEMU user-mode networking is slow; rustup downloads may time out.
-# Retry component/target installs a few times before giving up.
-for _ in 1 2 3 4 5; do
-    rustup component add rust-src llvm-tools-preview && break
-    echo "[bootstrap] rustup component add failed, retrying..."
-    sleep 5
-done || fail "rustup component add failed after 5 attempts"
-for _ in 1 2 3 4 5; do
-    rustup target add x86_64-unknown-none && break
-    echo "[bootstrap] rustup target add failed, retrying..."
-    sleep 5
-done || fail "rustup target add failed after 5 attempts"
+
+# The host-side prebuild script may have pre-staged the nightly toolchain and
+# components into the overlay.  If that copy is present, skip rustup network
+# downloads entirely — QEMU user-mode networking (~10-30 KiB/s) makes these
+# downloads impractical (100+ MiB toolchain takes hours and times out).
+TOOLCHAIN_DIR="$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
+
+# rust-src: the host overlay copies ~/.rustup/toolchains/… into /root/.rustup/,
+# so the per-component check is on that guest-local directory, not a host path.
+if [ -d "$TOOLCHAIN_DIR/lib/rustlib/src/rust" ] && \
+   [ -f "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-llvm-objcopy" ]; then
+    echo "[bootstrap] Rust nightly toolchain pre-staged from host — rust-src + llvm-tools already present."
+else
+    echo "[bootstrap] Toolchain components not pre-staged, downloading (may be slow over QEMU user-net)..."
+    for _ in 1 2 3 4 5; do
+        rustup component add rust-src llvm-tools-preview && break
+        echo "[bootstrap] rustup component add failed, retrying..."
+        sleep 5
+    done || fail "rustup component add failed after 5 attempts"
+fi
+
+if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-none; then
+    echo "[bootstrap] target x86_64-unknown-none already installed."
+else
+    echo "[bootstrap] target x86_64-unknown-none not installed, adding (may be slow over QEMU user-net)..."
+    for _ in 1 2 3 4 5; do
+        rustup target add x86_64-unknown-none && break
+        echo "[bootstrap] rustup target add failed, retrying..."
+        sleep 5
+    done || fail "rustup target add failed after 5 attempts"
+fi
 echo "[bootstrap] $(rustc --version)"
 
 
