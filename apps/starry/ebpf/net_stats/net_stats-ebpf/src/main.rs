@@ -51,17 +51,19 @@ fn add_to(idx: u32, delta: u64) {
 // Both `send` and `recv` in `ax_net::socket::SocketOps` share the same
 // signature shape, returning `AxResult<usize>` (i.e. `Result<usize, AxError>`
 // where `AxError` wraps an `i32`). That value is larger than a single register,
-// so the ABI returns it through an sret pointer; at the kretprobe site the
-// return register holds that pointer. The in-memory layout is:
+// so the ABI returns it through an sret pointer passed as the first (hidden)
+// argument; at the kretprobe site we read that pointer from arg(0). The
+// in-memory layout is:
 //   [+0]  u64  discriminant  (0 = Ok, non-zero = Err)
 //   [+8]  u64  payload       (byte count on Ok)
 //
 // Using this layout for both send and recv avoids depending on architecture-
-// specific argument-register conventions, so the probe stays correct across
+// specific return-register conventions, so the probe stays correct across
 // compiler versions, optimization levels, and target architectures.
 #[inline(always)]
-fn read_ok_bytes_from_ptr(ptr: u64) -> Option<u64> {
-    let ptr = ptr as *const u64;
+fn read_ok_bytes_from_sret(ctx: &RetProbeContext) -> Option<u64> {
+    // sret pointer is passed as first argument (arg 0)
+    let ptr = unsafe { ctx.arg::<u64>(0).ok()? } as *const u64;
     if ptr.is_null() {
         return None;
     }
@@ -89,7 +91,7 @@ pub fn tcp_send_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn tcp_send_ret(ctx: RetProbeContext) -> u32 {
-    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+    if let Some(n) = read_ok_bytes_from_sret(&ctx) {
         add_to(TCP_TX_BYTES, n);
     }
     0
@@ -105,7 +107,7 @@ pub fn tcp_recv_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn tcp_recv_ret(ctx: RetProbeContext) -> u32 {
-    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+    if let Some(n) = read_ok_bytes_from_sret(&ctx) {
         add_to(TCP_RX_BYTES, n);
     }
     0
@@ -121,7 +123,7 @@ pub fn udp_send_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn udp_send_ret(ctx: RetProbeContext) -> u32 {
-    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+    if let Some(n) = read_ok_bytes_from_sret(&ctx) {
         add_to(UDP_TX_BYTES, n);
     }
     0
@@ -137,7 +139,7 @@ pub fn udp_recv_entry(_ctx: ProbeContext) -> u32 {
 
 #[kretprobe]
 pub fn udp_recv_ret(ctx: RetProbeContext) -> u32 {
-    if let Some(n) = read_ok_bytes_from_ptr(ctx.ret::<u64>()) {
+    if let Some(n) = read_ok_bytes_from_sret(&ctx) {
         add_to(UDP_RX_BYTES, n);
     }
     0

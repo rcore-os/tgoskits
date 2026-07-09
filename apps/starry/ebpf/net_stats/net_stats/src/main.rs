@@ -192,6 +192,30 @@ async fn main() -> anyhow::Result<()> {
 
         time::sleep(time::Duration::from_millis(300)).await;
         print_stats(&netstats);
+
+        // Validate that byte counters are non-zero when traffic was generated
+        let get = |i: u32| netstats.get(&i, 0).unwrap_or(0);
+        let tcp_tx_bytes = get(TCP_TX_BYTES);
+        let tcp_rx_bytes = get(TCP_RX_BYTES);
+        let udp_tx_bytes = get(UDP_TX_BYTES);
+        let udp_rx_bytes = get(UDP_RX_BYTES);
+
+        if tcp_tx_bytes == 0 || tcp_rx_bytes == 0 {
+            anyhow::bail!(
+                "TEST FAILED: TCP byte counters are zero (tx={}, rx={}) despite packet traffic",
+                tcp_tx_bytes,
+                tcp_rx_bytes
+            );
+        }
+        if udp_tx_bytes == 0 || udp_rx_bytes == 0 {
+            anyhow::bail!(
+                "TEST FAILED: UDP byte counters are zero (tx={}, rx={}) despite packet traffic",
+                udp_tx_bytes,
+                udp_rx_bytes
+            );
+        }
+
+        println!("TEST PASSED: all byte counters non-zero");
         return Ok(());
     }
 
