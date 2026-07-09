@@ -15,7 +15,6 @@
 use std::sync::{Arc, Mutex};
 
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
     DeviceFactoryRegistry, DeviceRegistration, IrqResolver, MmioDeviceAdapter, PollableDeviceOps,
@@ -25,11 +24,7 @@ use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, IrqLine, Port,
     PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
 };
-use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
-    VCpuId, VMId,
-};
-use x86_vlapic::host::X86VlapicHostIf;
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
 /// Registers a legacy MMIO device through the new DeviceManager API.
 fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
@@ -486,19 +481,32 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 }
 
 #[test]
-fn test_conflicting_device_config_returns_structured_error() {
-    let ioapic = EmulatedDeviceConfig {
-        name: String::from("ioapic"),
-        base_gpa: 0xfec0_0000,
-        length: 0x1000,
-        irq_id: 0,
-        emu_type: EmulatedDeviceType::X86IoApic,
-        cfg_list: vec![],
-    };
+fn test_conflicting_factory_device_config_returns_structured_error() {
+    let mut factories = DeviceFactoryRegistry::new();
+    factories.register(Arc::new(MockMmioFactory)).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let first = device_config(
+        "factory-mmio-first",
+        EmulatedDeviceType::VirtioBlk,
+        0x2_0000,
+        0x1000,
+    );
+    let overlap = device_config(
+        "factory-mmio-overlap",
+        EmulatedDeviceType::VirtioBlk,
+        0x2_0800,
+        0x1000,
+    );
 
     assert_eq!(
-        AxVmDevices::new(AxVmDeviceConfig::new(vec![ioapic.clone(), ioapic])).err(),
-        Some(AxError::InvalidInput)
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![first, overlap]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::AddrInUse)
     );
 }
 
@@ -864,69 +872,4 @@ fn test_sysreg_range_interior_address_dispatch() {
             .handle_sys_reg_read(SysRegAddr::new(0x111), AccessWidth::Qword)
             .is_err()
     );
-}
-
-// Mock implementation for x86_vlapic host callbacks when running
-// `cargo test -p axdevice` on x86_64 host.
-
-struct MockX86VlapicHostIfImpl;
-
-#[ax_crate_interface::impl_interface]
-impl X86VlapicHostIf for MockX86VlapicHostIfImpl {
-    fn alloc_frame() -> Option<PhysAddr> {
-        None
-    }
-
-    fn dealloc_frame(_paddr: PhysAddr) {}
-
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        VirtAddr::from(paddr.as_usize())
-    }
-
-    fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
-        PhysAddr::from(vaddr.as_usize())
-    }
-
-    fn current_time() -> core::time::Duration {
-        core::time::Duration::ZERO
-    }
-
-    fn current_time_nanos() -> u64 {
-        0
-    }
-
-    fn register_timer(
-        _deadline: core::time::Duration,
-        _callback: Box<dyn FnOnce(core::time::Duration) + Send + 'static>,
-    ) -> usize {
-        0
-    }
-
-    fn cancel_timer(_token: usize) {}
-
-    fn write_bytes(_bytes: &[u8]) {}
-
-    fn read_bytes(_bytes: &mut [u8]) -> usize {
-        0
-    }
-
-    fn current_vm_id() -> VMId {
-        0
-    }
-
-    fn current_vm_vcpu_num() -> usize {
-        1
-    }
-
-    fn current_vm_active_vcpus() -> usize {
-        1
-    }
-
-    fn active_vcpus(_vm_id: VMId) -> Option<usize> {
-        Some(1)
-    }
-
-    fn inject_interrupt(_vm_id: VMId, _vcpu_id: VCpuId, _vector: InterruptVector) -> AxResult {
-        Ok(())
-    }
 }

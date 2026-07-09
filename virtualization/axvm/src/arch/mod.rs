@@ -5,14 +5,18 @@ use alloc::{format, vec::Vec};
 use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axaddrspace::NestedPageTableOps;
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+use axvm_types::VmExit;
 use axvm_types::{
     AccessWidth, GuestPhysAddr, NestedPagingConfig, PassThroughPortConfig, SysRegAddr,
     VMInterruptMode, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
 };
 #[cfg(not(target_arch = "aarch64"))]
-use axvm_types::{MappingFlags, Port, VmExit};
+use axvm_types::{MappingFlags, Port};
 
-use crate::{CpuMask, StopReason};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::CpuMask;
+use crate::StopReason;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -45,6 +49,19 @@ pub(crate) fn guest_page_table_levels(
 
 pub(crate) fn new_nested_page_table(levels: usize) -> AxResult<ArchNestedPageTable> {
     CurrentArch::new_nested_page_table(levels)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn register_x86_arch_device(
+    config: &axvm_types::EmulatedDeviceConfig,
+    devices: &mut axdevice::AxVmDevices,
+) -> AxResult {
+    x86_64::register_arch_device(config, devices)
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+pub(crate) fn x86_apic_access_page_addr() -> axvm_types::HostPhysAddr {
+    x86_64::x86_apic_access_page_addr()
 }
 
 pub(crate) fn nested_paging_config(
@@ -80,9 +97,14 @@ pub(crate) enum BoundVcpuExit<D> {
 #[cfg(not(target_arch = "aarch64"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LegacyDeferredRunWork {
-    ExternalInterrupt { vector: usize },
+    ExternalInterrupt {
+        vector: usize,
+    },
     PreemptionTimer,
-    InterruptEnd { vector: Option<u8> },
+    InterruptEnd {
+        vector: Option<u8>,
+    },
+    #[cfg(not(target_arch = "x86_64"))]
     Idle,
 }
 
@@ -143,6 +165,7 @@ pub(crate) struct HypercallExit {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) struct CpuUpExit {
     pub(crate) target_cpu: u64,
     pub(crate) entry_point: GuestPhysAddr,
@@ -150,6 +173,7 @@ pub(crate) struct CpuUpExit {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) struct SendIpiExit {
     pub(crate) target_cpu: u64,
     pub(crate) target_cpu_aux: u64,
@@ -238,6 +262,7 @@ pub(crate) trait ArchOps {
         default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn ipi_targets(
         vm: &crate::AxVMRef,
         current_vcpu_id: usize,
@@ -264,10 +289,12 @@ pub(crate) trait ArchOps {
         targets
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(0, arg);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         vcpu.set_gpr(0, 0);
     }
@@ -339,6 +366,7 @@ pub(crate) trait ArchOps {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(target_arch = "x86_64"))]
     fn handle_idle(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::check_timer_events();
     }
@@ -347,6 +375,7 @@ pub(crate) trait ArchOps {
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn cpu_up_target_vcpu_id(vm: &crate::AxVMRef, target_cpu: u64) -> Option<usize> {
         vm.get_vcpu_affinities_pcpu_ids()
             .iter()
@@ -496,7 +525,7 @@ pub(crate) fn handle_sys_reg_write<D>(
     Ok(BoundVcpuExit::Continue)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) fn handle_nested_page_fault<A>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
@@ -559,6 +588,7 @@ pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
     Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn handle_cpu_up<A: ArchOps>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
@@ -595,6 +625,7 @@ pub(crate) fn handle_cpu_up<A: ArchOps>(
     Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn handle_send_ipi<A: ArchOps>(
     vm: &crate::AxVMRef,
     vcpu_id: usize,
@@ -641,7 +672,7 @@ pub(crate) fn handle_send_ipi<A: ArchOps>(
 
 /// Transitional handler for architecture backends that still return the legacy
 /// common `VmExit` while their raw exit enums are being split out.
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) fn handle_transitional_vm_exit<A>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
@@ -785,6 +816,7 @@ where
         LegacyDeferredRunWork::InterruptEnd { vector } => {
             A::after_interrupt_end(vm, vcpu, vector);
         }
+        #[cfg(not(target_arch = "x86_64"))]
         LegacyDeferredRunWork::Idle => {
             A::handle_idle(vm, vcpu);
         }

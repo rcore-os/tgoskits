@@ -23,49 +23,57 @@ extern crate log;
 
 mod consts;
 pub mod host;
+mod lock;
 mod pit;
 mod regs;
 mod serial;
 mod timer;
+mod types;
 mod utils;
 mod vioapic;
 mod vlapic;
 
-use core::cell::UnsafeCell;
-
-use ax_errno::AxResult;
-use ax_memory_addr::{AddrRange, PAGE_SIZE_4K};
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, SysRegAddr, SysRegAddrRange};
-use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, VCpuId, VMId};
+use core::{cell::UnsafeCell, marker::PhantomData};
 
 use crate::{
     consts::{x2apic::x2apic_msr_access_reg, xapic::xapic_mmio_access_reg_offset},
+    host::X86_PAGE_SIZE_4K,
     vlapic::VirtualApicRegs,
 };
 
 #[repr(align(4096))]
-struct APICAccessPage([u8; PAGE_SIZE_4K]);
+struct APICAccessPage([u8; X86_PAGE_SIZE_4K]);
 
-static VIRTUAL_APIC_ACCESS_PAGE: APICAccessPage = APICAccessPage([0; PAGE_SIZE_4K]);
+static VIRTUAL_APIC_ACCESS_PAGE: APICAccessPage = APICAccessPage([0; X86_PAGE_SIZE_4K]);
 
 /// A emulated local APIC device.
-pub struct EmulatedLocalApic {
-    vlapic_regs: UnsafeCell<VirtualApicRegs>,
+pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
+    vlapic_regs: UnsafeCell<VirtualApicRegs<H>>,
+    _host: PhantomData<fn() -> H>,
 }
 
-pub use pit::EmulatedPit;
-pub use serial::EmulatedSerialPort;
-pub use vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt};
+pub use self::{
+    host::X86VlapicHostOps,
+    pit::EmulatedPit,
+    serial::EmulatedSerialPort,
+    types::{
+        X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
+        X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerCallback,
+        X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
+    },
+    vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
+};
 
-impl EmulatedLocalApic {
+impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     /// Create a new `EmulatedLocalApic`.
-    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
+    pub fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         EmulatedLocalApic {
             vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vm_id, vcpu_id)),
+            _host: PhantomData,
         }
     }
 
-    fn get_vlapic_regs(&self) -> &VirtualApicRegs {
+    fn get_vlapic_regs(&self) -> &VirtualApicRegs<H> {
         unsafe { &*self.vlapic_regs.get() }
     }
 
@@ -82,19 +90,19 @@ impl EmulatedLocalApic {
     /// cross-vCPU interrupt requests are funneled through the vCPU task instead
     /// of directly mutating another vCPU's local APIC registers.
     #[allow(clippy::mut_from_ref)]
-    fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs {
+    fn get_mut_vlapic_regs(&self) -> &mut VirtualApicRegs<H> {
         unsafe { &mut *self.vlapic_regs.get() }
     }
 }
 
-impl EmulatedLocalApic {
+impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     /// APIC-access address (64 bits).
     /// This field contains the physical address of the 4-KByte APIC-access page.
     /// If the “virtualize APIC accesses” VM-execution control is 1,
     /// access to this page may cause VM exits or be virtualized by the processor.
     /// See Section 30.4.
-    pub fn virtual_apic_access_addr() -> HostPhysAddr {
-        host::virt_to_phys(HostVirtAddr::from_usize(
+    pub fn virtual_apic_access_addr() -> X86HostPhysAddr {
+        host::virt_to_phys::<H>(X86HostVirtAddr::from_usize(
             VIRTUAL_APIC_ACCESS_PAGE.0.as_ptr() as usize,
         ))
     }
@@ -103,7 +111,7 @@ impl EmulatedLocalApic {
     /// This field contains the physical address of the 4-KByte virtual-APIC page.
     /// The processor uses the virtual-APIC page to virtualize certain accesses to APIC registers and to manage virtual interrupts;
     /// see Chapter 30.
-    pub fn virtual_apic_page_addr(&self) -> HostPhysAddr {
+    pub fn virtual_apic_page_addr(&self) -> X86HostPhysAddr {
         self.get_vlapic_regs().virtual_apic_page_addr()
     }
 
@@ -113,7 +121,7 @@ impl EmulatedLocalApic {
     }
 
     /// Sets the IA32_APIC_BASE MSR value.
-    pub fn set_apic_base(&self, value: u64) -> AxResult {
+    pub fn set_apic_base(&self, value: u64) -> X86VlapicResult {
         self.get_mut_vlapic_regs().set_apic_base(value)
     }
 
@@ -127,55 +135,69 @@ impl EmulatedLocalApic {
     pub fn handle_eoi(&self) -> Option<u8> {
         self.get_mut_vlapic_regs().handle_eoi()
     }
-}
 
-impl BaseDeviceOps<AddrRange<GuestPhysAddr>> for EmulatedLocalApic {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::InterruptController
-    }
-
-    fn address_range(&self) -> AddrRange<GuestPhysAddr> {
+    /// Returns the xAPIC MMIO range.
+    pub fn mmio_address_range(&self) -> X86GuestPhysAddrRange {
         use crate::consts::xapic::{APIC_MMIO_SIZE, DEFAULT_APIC_BASE};
-        AddrRange::new(
-            GuestPhysAddr::from_usize(DEFAULT_APIC_BASE),
-            GuestPhysAddr::from_usize(DEFAULT_APIC_BASE + APIC_MMIO_SIZE),
+        X86GuestPhysAddrRange::new(
+            X86GuestPhysAddr::from_usize(DEFAULT_APIC_BASE),
+            X86GuestPhysAddr::from_usize(DEFAULT_APIC_BASE + APIC_MMIO_SIZE),
         )
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
-        debug!("EmulatedLocalApic::handle_read: addr={addr:?}, width={width:?}");
+    /// Handles an xAPIC MMIO read.
+    pub fn handle_mmio_read(
+        &self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+    ) -> X86VlapicResult<usize> {
+        debug!("EmulatedLocalApic::handle_mmio_read: addr={addr:?}, width={width:?}");
         let reg_off = xapic_mmio_access_reg_offset(addr);
         self.get_vlapic_regs().handle_read(reg_off, width)
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
-        debug!("EmulatedLocalApic::handle_write: addr={addr:?}, width={width:?}, val={val:#x}");
+    /// Handles an xAPIC MMIO write.
+    pub fn handle_mmio_write(
+        &self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+        val: usize,
+    ) -> X86VlapicResult {
+        debug!(
+            "EmulatedLocalApic::handle_mmio_write: addr={addr:?}, width={width:?}, val={val:#x}"
+        );
         let reg_off = xapic_mmio_access_reg_offset(addr);
         self.get_mut_vlapic_regs().handle_write(reg_off, val, width)
     }
-}
 
-impl BaseDeviceOps<SysRegAddrRange> for EmulatedLocalApic {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::InterruptController
-    }
-
-    fn address_range(&self) -> SysRegAddrRange {
+    /// Returns the x2APIC MSR range.
+    pub fn msr_address_range(&self) -> X86MsrAddrRange {
         use crate::consts::x2apic::{X2APIC_MSE_REG_BASE, X2APIC_MSE_REG_SIZE};
-        SysRegAddrRange::new(
-            SysRegAddr(X2APIC_MSE_REG_BASE),
-            SysRegAddr(X2APIC_MSE_REG_BASE + X2APIC_MSE_REG_SIZE),
+        X86MsrAddrRange::new(
+            X86MsrAddr::new(X2APIC_MSE_REG_BASE),
+            X86MsrAddr::new(X2APIC_MSE_REG_BASE + X2APIC_MSE_REG_SIZE),
         )
     }
 
-    fn handle_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
-        debug!("EmulatedLocalApic::handle_read: addr={addr:?}, width={width:?}");
+    /// Handles an x2APIC MSR read.
+    pub fn handle_msr_read(
+        &self,
+        addr: X86MsrAddr,
+        width: X86AccessWidth,
+    ) -> X86VlapicResult<usize> {
+        debug!("EmulatedLocalApic::handle_msr_read: addr={addr:?}, width={width:?}");
         let reg_off = x2apic_msr_access_reg(addr);
         self.get_vlapic_regs().handle_read(reg_off, width)
     }
 
-    fn handle_write(&self, addr: SysRegAddr, width: AccessWidth, val: usize) -> AxResult {
-        debug!("EmulatedLocalApic::handle_write: addr={addr:?}, width={width:?}, val={val:#x}");
+    /// Handles an x2APIC MSR write.
+    pub fn handle_msr_write(
+        &self,
+        addr: X86MsrAddr,
+        width: X86AccessWidth,
+        val: usize,
+    ) -> X86VlapicResult {
+        debug!("EmulatedLocalApic::handle_msr_write: addr={addr:?}, width={width:?}, val={val:#x}");
         let reg_off = x2apic_msr_access_reg(addr);
         self.get_mut_vlapic_regs().handle_write(reg_off, val, width)
     }

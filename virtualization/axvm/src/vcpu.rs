@@ -201,6 +201,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Sets the guest entry point.
+    #[cfg(not(target_arch = "x86_64"))]
     pub fn set_entry(&self, entry: GuestPhysAddr) -> AxResult {
         self.get_arch_vcpu().set_entry(entry)
     }

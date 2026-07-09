@@ -8952,16 +8952,13 @@ dependencies = [
 name = "virtualization-tests"
 version = "0.1.0"
 dependencies = [
- "ax-crate-interface",
  "ax-errno 0.6.1",
- "ax-memory-addr",
  "ax-plat",
  "axdevice",
  "axdevice_base",
  "axvm",
  "axvm-types",
  "irq-framework",
- "x86_vlapic",
 ]
 
 [[package]]
@@ -9635,11 +9632,6 @@ dependencies = [
 name = "x86_vcpu"
 version = "0.5.18"
 dependencies = [
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-memory-addr",
- "axdevice_base",
- "axvm-types",
  "bit_field",
  "bitflags 2.13.0",
  "cfg-if",
@@ -9658,12 +9650,6 @@ dependencies = [
 name = "x86_vlapic"
 version = "0.4.19"
 dependencies = [
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-kspin",
- "ax-memory-addr",
- "axdevice_base",
- "axvm-types",
  "bit",
  "log",
  "paste",
