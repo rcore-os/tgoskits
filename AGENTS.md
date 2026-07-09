@@ -27,6 +27,7 @@
 
 ## Rust Coding Standards
 
+- Before writing, modifying, or reviewing code, fully read (完整阅读) every file under `book/guideline/` and treat those documents as mandatory coding standards. If the conversation context is compacted, resumed from a summary, or you cannot confidently recall the guideline contents, re-read all files under `book/guideline/` before continuing so the coding rules are not forgotten.
 - Use the pinned Rust 2024 nightly toolchain and the repository rustfmt configuration as the formatting source of truth; do not restate rustfmt-owned layout rules in prose.
 - Prefer `#![no_std]` for reusable kernel, component, memory, virtualization, and portable driver crates; add `alloc`, `std`, or feature-gated support only where the crate boundary requires it.
 - Keep crate and module boundaries aligned with TGOSKits layers: reusable logic belongs in `components/`, `drivers/`, `memory/`, or `virtualization/`; OS glue belongs near the consuming ArceOS, StarryOS, Axvisor, or platform layer.
