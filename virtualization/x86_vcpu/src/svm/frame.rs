@@ -1,39 +1,38 @@
 use core::marker::PhantomData;
 
-use ax_errno::{AxResult, ax_err_type};
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvm_types::HostPhysAddr;
-
-use crate::host;
+use crate::{
+    X86HostOps, X86HostPhysAddr, X86VcpuError, X86VcpuResult, host,
+    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
+};
 
 /// Contiguous physical frames for SVM structures such as IOPM and MSRPM.
 #[derive(Debug)]
-pub struct ContiguousPhysFrames {
-    start_paddr: Option<HostPhysAddr>,
+pub struct ContiguousPhysFrames<H: X86HostOps> {
+    start_paddr: Option<X86HostPhysAddr>,
     frame_count: usize,
-    _marker: PhantomData<()>,
+    _host: PhantomData<fn() -> H>,
 }
 
-impl ContiguousPhysFrames {
-    pub fn alloc(frame_count: usize) -> AxResult<Self> {
-        let start_paddr = host::alloc_contiguous_frames(frame_count, PAGE_SIZE)
-            .ok_or_else(|| ax_err_type!(NoMemory, "allocate contiguous frames failed"))?;
+impl<H: X86HostOps> ContiguousPhysFrames<H> {
+    pub fn alloc(frame_count: usize) -> X86VcpuResult<Self> {
+        let start_paddr = host::alloc_contiguous_frames::<H>(frame_count, PAGE_SIZE)
+            .ok_or(X86VcpuError::NoMemory)?;
 
         assert_ne!(start_paddr.as_usize(), 0);
         Ok(Self {
             start_paddr: Some(start_paddr),
             frame_count,
-            _marker: PhantomData,
+            _host: PhantomData,
         })
     }
 
-    pub fn alloc_zero(frame_count: usize) -> AxResult<Self> {
+    pub fn alloc_zero(frame_count: usize) -> X86VcpuResult<Self> {
         let mut frames = Self::alloc(frame_count)?;
         frames.fill(0);
         Ok(frames)
     }
 
-    pub fn start_paddr(&self) -> HostPhysAddr {
+    pub fn start_paddr(&self) -> X86HostPhysAddr {
         self.start_paddr
             .expect("uninitialized ContiguousPhysFrames")
     }
@@ -43,7 +42,7 @@ impl ContiguousPhysFrames {
     }
 
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        host::phys_to_virt(self.start_paddr()).as_mut_ptr()
+        <H as X86HostOps>::phys_to_virt(self.start_paddr()).as_mut_ptr()
     }
 
     pub fn fill(&mut self, byte: u8) {
@@ -53,10 +52,10 @@ impl ContiguousPhysFrames {
     }
 }
 
-impl Drop for ContiguousPhysFrames {
+impl<H: X86HostOps> Drop for ContiguousPhysFrames<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
-            host::dealloc_contiguous_frames(start_paddr, self.frame_count);
+            host::dealloc_contiguous_frames::<H>(start_paddr, self.frame_count);
             debug!(
                 "[AxVM] deallocated ContiguousPhysFrames({:#x}, {} frames)",
                 start_paddr, self.frame_count

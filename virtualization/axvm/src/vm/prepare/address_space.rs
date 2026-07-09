@@ -8,7 +8,7 @@ use axdevice_base::Resource;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
 use axvm_types::GuestPhysAddr;
 #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use x86_vcpu::{X86_APIC_ACCESS_GPA, x86_apic_access_page_addr};
+use x86_vcpu::X86_APIC_ACCESS_GPA;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
@@ -56,7 +56,7 @@ pub(super) fn map_guest_address_space(
     #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
     resources.address_space.map_linear(
         GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
-        x86_apic_access_page_addr(),
+        crate::arch::x86_apic_access_page_addr(),
         ax_memory_addr::PAGE_SIZE_4K,
         axvm_types::MappingFlags::DEVICE
             | axvm_types::MappingFlags::READ
