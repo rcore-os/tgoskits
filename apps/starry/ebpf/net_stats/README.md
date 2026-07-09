@@ -4,8 +4,8 @@ Real-time network statistics monitoring for StarryOS using eBPF kprobes.
 
 ## Features
 
-- **TCP statistics**: TX/RX packet and byte counters
-- **UDP statistics**: TX/RX packet and byte counters  
+- **TCP statistics**: TX/RX packet counters (exact) and byte counters (estimated)
+- **UDP statistics**: TX/RX packet counters (exact) and byte counters (estimated)
 - **Low overhead**: eBPF-based probing with minimal performance impact
 - **Cross-architecture**: Supports x86_64, aarch64, riscv64, loongarch64
 

@@ -9,9 +9,11 @@
   与 `rootfs-build/` 中间产物
 - Linux 基线内核解析显式化：优先 `linux-baseline/vmlinuz`，否则仅在 host 架构
   与目标一致时回退 host 内核，跨架构明确报错（避免静默用错内核）
-- eBPF net_stats：四个架构 QEMU 配置统一 `--test`，保证各架构都产生自测流量
-- eBPF net_stats：recv 改用与 send 相同的 `AxResult<usize>` sret 指针解析，
-  移除依赖 rdx 寄存器约定的脆弱实现
+- eBPF net_stats：四个架构 QEMU 配置统一 `--test`，`--test` 在任一字节计数为 0 时
+  报错，QEMU `success_regex` 由 `NET_STATS_END` 收紧为 `TEST PASSED`
+- eBPF net_stats：字节计数因 kretprobe 无法可靠读取 `AxResult<usize>` 的 sret
+  返回缓冲区，降级为 `packets × 64` 估算值（数据包计数仍精确），已在 README 的
+  Known Limitations 记录
 
 ## 已完成（本次重构）
 
@@ -46,6 +48,8 @@
 ### eBPF net_stats 集成修正
 - [ ] 将 net_stats 采样从 host 侧改为 guest 侧执行，输出纳入 QEMU guest log
 - [ ] 由 host 侧 summarize.py 解析 NET_STATS 块（已支持解析，待接入 guest 采样）
+- [ ] 实现真实字节统计以替代 `packets × 64` 估算（entry/exit 用 BPF HashMap
+  关联缓冲区长度，或 fentry/fexit + BTF 直接读取类型化返回值）
 
 ### CI 接入（可选，保持非默认）
 - [ ] 提供显式触发的 CI 示例（至少 SLIRP + TCG 冒烟），不纳入默认全量 app 测试
