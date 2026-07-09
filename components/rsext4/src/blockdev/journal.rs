@@ -246,13 +246,18 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
         if let Some(system) = self.system.as_mut() {
-            let committed = system
+            system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
             // The commit checkpoint writes blocks directly to the raw
             // device, bypassing the 4-entry LRU.  Invalidate the LRU so
             // subsequent reads go to disk instead of serving stale data.
-            self.inner.invalidate_cache();
+            // invalidate_cache() flushes dirty entries before clearing them,
+            // so its Result carries a real write-back error; surface it loudly
+            // (this path returns `()`, matching the commit's `.expect()` above).
+            self.inner
+                .invalidate_cache()
+                .expect("cache invalidation after unmount commit failed");
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -284,7 +289,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         // wrote blocks directly to the raw device, bypassing the 4-entry
         // LRU. Invalidate the LRU so subsequent reads see fresh data.
         if system.commit_queue.len() < old_len {
-            self.inner.invalidate_cache();
+            self.inner.invalidate_cache()?;
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
@@ -429,7 +434,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             }
         }
         if commit_occurred {
-            self.inner.invalidate_cache();
+            self.inner.invalidate_cache()?;
         }
 
         Ok(())
