@@ -1,8 +1,6 @@
-use ax_errno::AxResult;
-use axvm_types::VmArchPerCpuOps;
-
-use crate::registers::{
-    CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gstat_read, gstat_write,
+use crate::{
+    registers::{CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gstat_read, gstat_write},
+    types::LoongArchVcpuResult,
 };
 
 #[repr(C)]
@@ -15,8 +13,8 @@ pub struct LoongArchPerCpu {
     pub enabled: bool,
 }
 
-impl VmArchPerCpuOps for LoongArchPerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+impl LoongArchPerCpu {
+    pub fn new(cpu_id: usize) -> LoongArchVcpuResult<Self> {
         Ok(Self {
             cpu_id,
             original_eentry: 0,
@@ -26,11 +24,11 @@ impl VmArchPerCpuOps for LoongArchPerCpu {
         })
     }
 
-    fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    pub fn hardware_enable(&mut self) -> LoongArchVcpuResult {
         self.original_eentry = unsafe { csr_read::<CSR_EENTRY>() };
         self.original_gstat = gstat_read();
         self.original_gcsr_eentry = gcsr_eentry_read();
@@ -46,7 +44,7 @@ impl VmArchPerCpuOps for LoongArchPerCpu {
         Ok(())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    pub fn hardware_disable(&mut self) -> LoongArchVcpuResult {
         unsafe {
             gstat_write(self.original_gstat);
             csr_write::<CSR_EENTRY>(self.original_eentry);
@@ -57,7 +55,7 @@ impl VmArchPerCpuOps for LoongArchPerCpu {
         Ok(())
     }
 
-    fn max_guest_page_table_levels(&self) -> usize {
+    pub const fn max_guest_page_table_levels(&self) -> usize {
         4
     }
 }

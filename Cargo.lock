@@ -4792,15 +4792,10 @@ dependencies = [
 name = "loongarch_vcpu"
 version = "0.5.11"
 dependencies = [
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-kspin",
- "ax-memory-addr",
- "ax-page-table-multiarch",
- "ax-percpu",
- "axvm-types",
+ "bitflags 2.13.0",
  "log",
- "loongArch64",
+ "spin",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
