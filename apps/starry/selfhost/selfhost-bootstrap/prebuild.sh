@@ -176,7 +176,11 @@ if [ -d "$DOWNLOADS" ]; then
         tarball="${DOWNLOADS}/${component}-nightly-${RUSTUP_HOST}.tar.xz"
         if [ -f "$tarball" ]; then
             info "  Extracting $component ..."
-            tar -xJf "$tarball" -C "$TOOLCHAIN_OVERLAY" 2>&1 || {
+            # Tarballs have a top-level prefix directory (e.g.
+            # rustc-nightly-x86_64-unknown-linux-musl/rustc/bin/rustc).
+            # Strip 1 component so the contents land directly in the
+            # toolchain directory (rustc/bin/, rustc/lib/, etc.).
+            tar -xJf "$tarball" -C "$TOOLCHAIN_OVERLAY" --strip-components=1 2>&1 || {
                 info "  WARNING: failed to extract $component tarball"
             }
         else
