@@ -111,6 +111,39 @@ else
     info "Host Rust components not found; in-guest downloads will run (may be slow)."
 fi
 
+# ── Stage rustup component tarballs (for download cache) ─────────────────────
+# The in-guest `curl | sh` downloads rustup-init, which then downloads component
+# tarballs over QEMU user-mode networking — the fatal bottleneck.  Pre-download
+# the three core component tarballs on the host and inject them via debugfs.
+# The inner script copies them into rustup's download cache (keyed by SHA-256
+# hash from the channel manifest) so rustup finds them and skips the network.
+RUST_DATE="2026-05-28"
+RUST_DL="https://static.rust-lang.org/dist/${RUST_DATE}"
+
+# component → xz_hash from channel-rust-nightly.toml (x86_64-unknown-linux-musl)
+for pair in \
+    "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
+    "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
+    "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
+do
+    component="${pair%%:*}"
+    hash="${pair##*:}"
+    url="${RUST_DL}/${component}-nightly-x86_64-unknown-linux-musl.tar.xz"
+    dest="$overlay_dir/root/${component}-nightly-x86_64-unknown-linux-musl.tar.xz"
+    if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 10000000 ]; then
+        info "  ${component} tarball already staged ($(du -h "$dest" | cut -f1))."
+        continue
+    fi
+    if curl -fsSL --retry 3 --connect-timeout 30 --max-time 600 \
+        "$url" -o "$dest.tmp" 2>/dev/null; then
+        mv "$dest.tmp" "$dest"
+        info "  ${component} tarball staged ($(du -h "$dest" | cut -f1), hash=${hash})."
+    else
+        rm -f "$dest.tmp"
+        info "  WARNING: failed to download ${component} tarball."
+    fi
+done
+
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
@@ -226,7 +259,29 @@ CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-
 # place and skips the network-dependent downloads.
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
 
+# Populate rustup download cache before running curl|sh.
+# rustup stores cached downloads as $RUSTUP_HOME/downloads/<sha256-hash>
+# (from rustup/src/dist/download.rs: target_file = download_dir.join(hash)).
+# The hashes are xz_hash values from the channel manifest.
 if ! command -v rustup >/dev/null 2>&1; then
+    CACHE_DIR="$HOME/.rustup/downloads"
+    mkdir -p "$CACHE_DIR"
+    # component → xz_hash
+    for pair in \
+        "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
+        "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
+        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
+    do
+        component="${pair%%:*}"
+        hash="${pair##*:}"
+        tarball="/root/${component}-nightly-x86_64-unknown-linux-musl.tar.xz"
+        if [ -f "$tarball" ]; then
+            cp "$tarball" "$CACHE_DIR/$hash" 2>/dev/null || true
+        fi
+    done
+    if ls "$CACHE_DIR"/???????????????????????????????????????????????????????????????? 2>/dev/null | grep -q .; then
+        echo "[bootstrap] Component tarballs pre-staged in rustup download cache."
+    fi
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
         || fail "rustup install failed"
