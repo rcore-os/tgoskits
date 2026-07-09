@@ -3,7 +3,10 @@ use std::path::Path;
 use anyhow::Context;
 use ostool::board::RunBoardOptions;
 
-use super::{ARCEOS_TEST_SUITE_OS, ArgsTestBoard, types::ArceosBoardTestGroup};
+use super::{
+    ARCEOS_AXTEST_GROUP, ARCEOS_AXTEST_RUSTFLAGS, ARCEOS_TEST_SUITE_OS, ArgsTestBoard,
+    types::ArceosBoardTestGroup,
+};
 use crate::{
     arceos::ArceOS,
     context::{BuildCliArgs, SnapshotPersistence, arch_for_target_checked},
@@ -15,6 +18,8 @@ pub(crate) fn collect_board_test_groups(
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<ArceosBoardTestGroup>> {
     let mut groups = Vec::new();
+    let is_axtest =
+        test_suite_dir.file_name().and_then(|name| name.to_str()) == Some(ARCEOS_AXTEST_GROUP);
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "ArceOS")? {
         let build_file = crate::arceos::board::load_build_file(&info.build_config_path)
             .with_context(|| {
@@ -44,10 +49,19 @@ pub(crate) fn collect_board_test_groups(
             target,
             build_config_path: info.build_config_path,
             board_test_config_path: info.board_test_config_path,
+            is_axtest,
         });
     }
 
     Ok(groups)
+}
+
+fn board_extra_rustflags(group: &ArceosBoardTestGroup) -> &'static [&'static str] {
+    if group.is_axtest {
+        ARCEOS_AXTEST_RUSTFLAGS
+    } else {
+        &[]
+    }
 }
 
 pub(crate) fn discover_board_test_groups(
@@ -106,7 +120,7 @@ impl ArceOS {
                     None,
                     SnapshotPersistence::Discard,
                 )?;
-                self.run_board_request(
+                self.run_board_request_with_extra_rustflags(
                     request,
                     Some(board_test_config.clone()),
                     RunBoardOptions {
@@ -114,6 +128,7 @@ impl ArceOS {
                         server: args.server.clone(),
                         port: args.port,
                     },
+                    board_extra_rustflags(&group),
                 )
                 .await
                 .with_context(|| {
@@ -182,6 +197,32 @@ fail_regex = ["(?i)panic"]
         .unwrap();
     }
 
+    fn write_axtest_board_group(root: &Path) {
+        let group = root.join("test-suit/arceos/axtest");
+        let case = group.join("sg2002-usb-msc");
+        fs::create_dir_all(&case).unwrap();
+        fs::write(
+            group.join("build-riscv64gc-unknown-none-elf.toml"),
+            r#"
+package = "arceos-axtest-sg2002-usb-msc"
+target = "riscv64gc-unknown-none-elf"
+features = []
+log = "Info"
+max_cpu_num = 1
+"#,
+        )
+        .unwrap();
+        fs::write(
+            case.join("board-aka-00-sg2002.toml"),
+            r#"
+board_type = "AKA-00-SG2002"
+success_regex = ["AXTEST_SUITE_OK"]
+fail_regex = ["(?i)panic"]
+"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn collect_board_test_groups_reads_package_and_target_from_build_config() {
         let root = tempdir().unwrap();
@@ -205,6 +246,7 @@ fail_regex = ["(?i)panic"]
             group.board_test_config_path,
             group_dir.join("boot/board-orangepi-5-plus.toml")
         );
+        assert!(!group.is_axtest);
     }
 
     #[test]
@@ -218,5 +260,24 @@ fail_regex = ["(?i)panic"]
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "boot");
         assert_eq!(groups[0].board_name, "orangepi-5-plus");
+    }
+
+    #[test]
+    fn collect_board_test_groups_marks_axtest_groups() {
+        let root = tempdir().unwrap();
+        write_axtest_board_group(root.path());
+        let group_dir = root.path().join("test-suit/arceos/axtest");
+
+        let groups = collect_board_test_groups(root.path(), &group_dir).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        let group = &groups[0];
+        assert_eq!(group.name, "sg2002-usb-msc");
+        assert_eq!(group.board_name, "aka-00-sg2002");
+        assert!(group.is_axtest);
+        assert_eq!(
+            board_extra_rustflags(group),
+            ["--cfg", "axtest", "--check-cfg", "cfg(axtest)"]
+        );
     }
 }

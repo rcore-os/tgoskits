@@ -293,6 +293,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-axtest-sg2002-usb-msc"
+version = "0.1.0"
+dependencies = [
+ "ax-driver",
+ "ax-hal",
+ "ax-runtime",
+ "ax-std",
+ "ax-task",
+ "axplat-dyn",
+ "axtest",
+ "crab-usb",
+ "rdrive",
+]
+
+[[package]]
 name = "arceos-axtest-suit"
 version = "0.1.0"
 dependencies = [
@@ -701,6 +716,7 @@ dependencies = [
  "sdhci-host",
  "sdio-host-cv1800",
  "sdmmc-protocol",
+ "sg200x-bsp",
  "simple-ahci",
  "some-serial",
  "spin",

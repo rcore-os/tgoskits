@@ -113,6 +113,7 @@ members = [
     "os/axvisor",
     "scripts/axbuild",
     "test-suit/arceos/axtest/smoke",
+    "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
     "apps/arceos/*",
     "apps/starry/qemu/rust-hello/rust",

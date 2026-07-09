@@ -4,7 +4,7 @@ use std::{
     process::Command as StdCommand,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use log::warn;
 use ostool::{
@@ -407,11 +407,25 @@ impl ArceOS {
         board_config_path: Option<PathBuf>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        self.run_board_request_with_extra_rustflags(request, board_config_path, options, &[])
+            .await
+    }
+
+    pub(super) async fn run_board_request_with_extra_rustflags(
+        &mut self,
+        request: ResolvedBuildRequest,
+        board_config_path: Option<PathBuf>,
+        options: RunBoardOptions,
+        extra_rustflags: &[&str],
+    ) -> anyhow::Result<()> {
         Self::validate_board_request(&request)?;
         self.app.set_debug_mode(request.debug)?;
         match build::load_arceos_build_mode(&request.build_info_path)? {
             build::ArceosBuildMode::RustStd => {
-                let cargo = build::load_cargo_config(&request)?;
+                let mut cargo = build::load_cargo_config(&request)?;
+                if !extra_rustflags.is_empty() {
+                    crate::build::append_encoded_rustflags(&mut cargo, extra_rustflags);
+                }
                 let board_config = self
                     .load_board_config(&cargo, board_config_path.as_deref())
                     .await?;
@@ -420,6 +434,9 @@ impl ArceOS {
                     .await
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
+                if !extra_rustflags.is_empty() {
+                    bail!("ArceOS board extra rustflags are only supported for RustStd packages");
+                }
                 let request = c_app_internal_request(&request);
                 let cargo = build::load_c_app_cargo_config(&request)?;
                 let board_config = self
