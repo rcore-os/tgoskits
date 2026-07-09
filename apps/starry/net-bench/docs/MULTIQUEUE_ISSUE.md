@@ -142,10 +142,8 @@ setup_tap() {
    - 根据场景决定是否启用多队列
 
 2. **提供多队列专用配置**
-   ```
-   qemu/vhost-smp4-x86_64-kvm.toml  # 多队列 + 多核
-   qemu/vhost-x86_64-kvm.toml       # 单队列（兼容性）
-   ```
+   - `vhost-smp4-<arch>-<accel>.toml` 已存在（多核，但当前仍为单队列）
+   - 在其基础上追加 `mq=on,queues=N`，与现有单队列配置共存
 
 3. **自动检测内核支持**
    ```bash

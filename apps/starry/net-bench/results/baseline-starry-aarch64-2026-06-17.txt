@@ -1,6 +1,6 @@
 # StarryOS 网络性能基线 — 2026-06-17
 # 环境：WSL2 (Linux 5.15.167.4-microsoft-standard-WSL2), QEMU aarch64 (cortex-a53), usermode 网络
-# StarryOS: wt-feat-net-enhance 分支, smp=1, iperf3 3.19.1 (Alpine apk)
+# StarryOS: feat/net-enhance 分支, smp=1, iperf3 3.19.1 (Alpine apk)
 # 测试：Starry guest 作为 iperf3 client → host iperf3 server (10.0.2.2:5201)
 
 ## TCP 单流 (1 stream, 10s)
@@ -21,7 +21,7 @@ retransmits: 0
 sender bitrate: 70.9 Mbit/s  (88.9 MB, 60867 packets)
 lost: 0 / 60867 (0%)
 jitter: 0.031 ms
-备注: 目标 1Gbps，实际只达到 70.9 Mbps，受 SLURP 用户模式网络栈限制
+备注: 目标 1Gbps，实际只达到 70.9 Mbps，受 SLIRP 用户模式网络栈限制
 
 ## 结论
 - QEMU usermode 网络上限约 93 Mbit/s (TCP) / 71 Mbit/s (UDP)

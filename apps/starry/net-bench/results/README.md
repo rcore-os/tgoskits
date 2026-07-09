@@ -12,19 +12,19 @@
 
 ```sh
 # 默认 SLIRP/smp=1
-bash apps/starry/net-bench/run.sh aarch64 slirp
+bash apps/starry/net-bench/run.sh --scenario slirp --arch aarch64
 
-# SLIRP/smp=4
-bash apps/starry/net-bench/run.sh aarch64 slirp-smp4
+# vhost 多核扩展
+bash apps/starry/net-bench/run.sh --scenario vhost-smp4 --arch aarch64
 
-# TAP/smp=1，需提前配置 tap0
-bash apps/starry/net-bench/run.sh aarch64 tap
+# TAP/smp=1，需提前用 bin/setup 配置 tap0
+bash apps/starry/net-bench/run.sh --scenario tap --arch aarch64
 ```
 
-若 host 已配置好 `tap0=192.168.100.1/24`，也可以运行：
+若 host 已用 `bin/setup` 配好 TAP + vhost 网络，也可以运行主力性能场景：
 
 ```sh
-bash apps/starry/net-bench/run.sh aarch64 all
+bash apps/starry/net-bench/run.sh --scenario vhost --arch aarch64
 ```
 
 ## 汇总模板
@@ -44,9 +44,9 @@ bash apps/starry/net-bench/run.sh aarch64 all
 ## 命令
 
 ```sh
-bash apps/starry/net-bench/run.sh aarch64 slirp
-bash apps/starry/net-bench/run.sh aarch64 slirp-smp4
-bash apps/starry/net-bench/run.sh aarch64 tap
+bash apps/starry/net-bench/run.sh --scenario slirp --arch aarch64
+bash apps/starry/net-bench/run.sh --scenario vhost-smp4 --arch aarch64
+bash apps/starry/net-bench/run.sh --scenario tap --arch aarch64
 ```
 
 ## 结果
@@ -54,7 +54,7 @@ bash apps/starry/net-bench/run.sh aarch64 tap
 | 场景 | TCP 1流 | TCP 4流 | UDP (target 1G) | 通过 |
 |------|---------|---------|-----------------|------|
 | slirp | | | | |
-| slirp-smp4 | | | | |
+| vhost-smp4 | | | | |
 | tap | | | | |
 
 ## 备注

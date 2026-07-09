@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # monitor-compilation.sh — 监控 Starry 编译进度
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/tmp/starry-vhost-test.log"
-RESULT_DIR="/home/asta/tgoskits/wt-feat-net-enhance/apps/starry/net-bench/results"
+RESULT_DIR="$SCRIPT_DIR/results"
 
 echo "=== Monitoring Starry compilation and test ==="
 echo "Log file: $LOG_FILE"
