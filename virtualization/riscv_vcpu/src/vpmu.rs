@@ -720,7 +720,7 @@ where
 
     /// Notify the backend that the owning vCPU is being bound to a hart.
     ///
-    /// Must be called at the end of `VmArchVcpuOps::bind()` after all VS-mode
+    /// Must be called at the end of vCPU bind after all VS-mode
     /// CSRs have been restored. A real-hardware backend uses this hook to
     /// restore `mhpmevent*` and `hpmcounter*` state so the guest counter view
     /// is consistent on the newly scheduled hart.
@@ -731,7 +731,7 @@ where
 
     /// Notify the backend that the owning vCPU is being unbound from a hart.
     ///
-    /// Must be called at the beginning of `VmArchVcpuOps::unbind()` before
+    /// Must be called at the beginning of vCPU unbind before
     /// VS-mode CSRs are saved. A real-hardware backend uses this hook to save
     /// `mhpmevent*` and `hpmcounter*` state so it can be restored by the next
     /// `backend_bind` call.

@@ -5,16 +5,16 @@ use alloc::{format, vec::Vec};
 use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axaddrspace::NestedPageTableOps;
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
-use axvm_types::VmExit;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+use axvm_types::SysRegAddr;
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, NestedPagingConfig, PassThroughPortConfig, SysRegAddr,
-    VMInterruptMode, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
+    AccessWidth, GuestPhysAddr, NestedPagingConfig, PassThroughPortConfig, VMInterruptMode,
+    VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
 };
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 use axvm_types::{MappingFlags, Port};
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
 use crate::CpuMask;
 use crate::StopReason;
 
@@ -94,18 +94,12 @@ pub(crate) enum BoundVcpuExit<D> {
     Defer(D),
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LegacyDeferredRunWork {
-    ExternalInterrupt {
-        vector: usize,
-    },
+    ExternalInterrupt { vector: usize },
     PreemptionTimer,
-    InterruptEnd {
-        vector: Option<u8>,
-    },
-    #[cfg(not(target_arch = "x86_64"))]
-    Idle,
+    InterruptEnd { vector: Option<u8> },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,14 +119,14 @@ pub(crate) struct MmioWriteExit {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) struct IoReadExit {
     pub(crate) port: Port,
     pub(crate) width: AccessWidth,
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) struct IoWriteExit {
     pub(crate) port: Port,
     pub(crate) width: AccessWidth,
@@ -140,19 +134,21 @@ pub(crate) struct IoWriteExit {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) struct SysRegReadExit {
     pub(crate) addr: SysRegAddr,
     pub(crate) reg: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) struct SysRegWriteExit {
     pub(crate) addr: SysRegAddr,
     pub(crate) value: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) struct NestedPageFaultExit {
     pub(crate) addr: GuestPhysAddr,
     pub(crate) access_flags: MappingFlags,
@@ -173,7 +169,7 @@ pub(crate) struct CpuUpExit {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
 pub(crate) struct SendIpiExit {
     pub(crate) target_cpu: u64,
     pub(crate) target_cpu_aux: u64,
@@ -262,7 +258,7 @@ pub(crate) trait ArchOps {
         default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     fn ipi_targets(
         vm: &crate::AxVMRef,
         current_vcpu_id: usize,
@@ -299,7 +295,7 @@ pub(crate) trait ArchOps {
         vcpu.set_gpr(0, 0);
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn set_io_read_result(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, val: usize) {
         vcpu.set_gpr(0, val);
     }
@@ -352,12 +348,12 @@ pub(crate) trait ArchOps {
         crate::check_timer_events();
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn after_preemption_timer(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::check_timer_events();
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     fn after_interrupt_end(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -365,8 +361,7 @@ pub(crate) trait ArchOps {
     ) {
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "loongarch64")]
     fn handle_idle(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::check_timer_events();
     }
@@ -481,7 +476,7 @@ pub(crate) fn handle_mmio_write<A: ArchOps>(
     Ok(BoundVcpuExit::Continue)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn handle_io_read<A: ArchOps>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
@@ -492,7 +487,7 @@ pub(crate) fn handle_io_read<A: ArchOps>(
     Ok(BoundVcpuExit::Continue)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn handle_io_write<D>(
     vm: &crate::AxVM,
     exit: IoWriteExit,
@@ -502,6 +497,7 @@ pub(crate) fn handle_io_write<D>(
     Ok(BoundVcpuExit::Continue)
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) fn handle_sys_reg_read<V: VmArchVcpuOps, D>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<V>,
@@ -516,6 +512,7 @@ pub(crate) fn handle_sys_reg_read<V: VmArchVcpuOps, D>(
     Ok(BoundVcpuExit::Continue)
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) fn handle_sys_reg_write<D>(
     vm: &crate::AxVM,
     exit: SysRegWriteExit,
@@ -523,45 +520,6 @@ pub(crate) fn handle_sys_reg_write<D>(
     vm.get_devices()?
         .handle_sys_reg_write(exit.addr, AccessWidth::Qword, exit.value as usize)?;
     Ok(BoundVcpuExit::Continue)
-}
-
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
-pub(crate) fn handle_nested_page_fault<A>(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
-    exit: NestedPageFaultExit,
-) -> AxResult<BoundVcpuExit<A::DeferredRunWork>>
-where
-    A: ArchOps<DeferredRunWork = LegacyDeferredRunWork>,
-{
-    if vm.get_devices()?.find_mmio_dev(exit.addr).is_some() {
-        let Some(decoded) = vcpu
-            .get_arch_vcpu()
-            .decode_mmio_fault(exit.addr, exit.access_flags)
-        else {
-            warn!(
-                "VM[{}] VCpu[{}] nested page fault at {:#x} maps MMIO but cannot be decoded",
-                vm.id(),
-                vcpu.id(),
-                exit.addr.as_usize()
-            );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield));
-        };
-        return handle_transitional_vm_exit::<A>(vm, vcpu, decoded);
-    }
-
-    if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
-        Ok(BoundVcpuExit::Continue)
-    } else {
-        warn!(
-            "VM[{}] VCpu[{}] unhandled nested page fault at {:#x}, access={:?}",
-            vm.id(),
-            vcpu.id(),
-            exit.addr.as_usize(),
-            exit.access_flags
-        );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
-    }
 }
 
 pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
@@ -625,7 +583,7 @@ pub(crate) fn handle_cpu_up<A: ArchOps>(
     Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn handle_send_ipi<A: ArchOps>(
     vm: &crate::AxVMRef,
     vcpu_id: usize,
@@ -670,134 +628,7 @@ pub(crate) fn handle_send_ipi<A: ArchOps>(
     Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
 }
 
-/// Transitional handler for architecture backends that still return the legacy
-/// common `VmExit` while their raw exit enums are being split out.
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
-pub(crate) fn handle_transitional_vm_exit<A>(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
-    exit: VmExit,
-) -> AxResult<BoundVcpuExit<LegacyDeferredRunWork>>
-where
-    A: ArchOps<DeferredRunWork = LegacyDeferredRunWork>,
-{
-    match exit {
-        VmExit::Hypercall { nr, args } => handle_hypercall(vm, vcpu, HypercallExit { nr, args }),
-        VmExit::MmioRead {
-            addr,
-            width,
-            reg,
-            reg_width,
-            signed_ext,
-        } => handle_mmio_read(
-            vm,
-            vcpu,
-            MmioReadExit {
-                addr,
-                width,
-                reg,
-                reg_width,
-                signed_ext,
-            },
-        ),
-        VmExit::MmioWrite { addr, width, data } => {
-            handle_mmio_write::<A>(vm, MmioWriteExit { addr, width, data })
-        }
-        VmExit::IoRead { port, width } => handle_io_read::<A>(vm, vcpu, IoReadExit { port, width }),
-        VmExit::IoWrite { port, width, data } => {
-            handle_io_write(vm, IoWriteExit { port, width, data })
-        }
-        VmExit::SysRegRead { addr, reg } => {
-            handle_sys_reg_read(vm, vcpu, SysRegReadExit { addr, reg })
-        }
-        VmExit::SysRegWrite { addr, value } => {
-            handle_sys_reg_write(vm, SysRegWriteExit { addr, value })
-        }
-        VmExit::NestedPageFault { addr, access_flags } => {
-            handle_nested_page_fault::<A>(vm, vcpu, NestedPageFaultExit { addr, access_flags })
-        }
-        VmExit::ExternalInterrupt { vector } => {
-            debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-            Ok(BoundVcpuExit::Defer(
-                LegacyDeferredRunWork::ExternalInterrupt {
-                    vector: vector as usize,
-                },
-            ))
-        }
-        VmExit::PreemptionTimer => Ok(BoundVcpuExit::Defer(LegacyDeferredRunWork::PreemptionTimer)),
-        VmExit::InterruptEnd { vector } => {
-            Ok(BoundVcpuExit::Defer(LegacyDeferredRunWork::InterruptEnd {
-                vector,
-            }))
-        }
-        VmExit::Halt => {
-            debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-            Ok(BoundVcpuExit::Complete(A::handle_halt()))
-        }
-        VmExit::Idle => {
-            trace!("VM[{}] run VCpu[{}] Idle", vm.id(), vcpu.id());
-            Ok(BoundVcpuExit::Defer(LegacyDeferredRunWork::Idle))
-        }
-        VmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
-        VmExit::CpuDown { _state } => {
-            warn!(
-                "VM[{}] run VCpu[{}] CpuDown state {_state:#x}",
-                vm.id(),
-                vcpu.id()
-            );
-            Ok(BoundVcpuExit::Complete(VcpuRunAction::Wait))
-        }
-        VmExit::CpuUp {
-            target_cpu,
-            entry_point,
-            arg,
-        } => handle_cpu_up::<A>(
-            vm,
-            vcpu,
-            CpuUpExit {
-                target_cpu,
-                entry_point,
-                arg,
-            },
-        ),
-        VmExit::SystemDown => {
-            warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-            Ok(BoundVcpuExit::Complete(VcpuRunAction::Stop(
-                StopReason::SystemDown,
-            )))
-        }
-        VmExit::FailEntry {
-            hardware_entry_failure_reason,
-        } => {
-            warn!(
-                "VM[{}] VCpu[{}] run failed with exit code {hardware_entry_failure_reason}",
-                vm.id(),
-                vcpu.id()
-            );
-            Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
-        }
-        VmExit::SendIPI {
-            target_cpu,
-            target_cpu_aux,
-            send_to_all,
-            send_to_self,
-            vector,
-        } => handle_send_ipi::<A>(
-            vm,
-            vcpu.id(),
-            SendIpiExit {
-                target_cpu,
-                target_cpu_aux,
-                send_to_all,
-                send_to_self,
-                vector,
-            },
-        ),
-        _ => ax_err!(Unsupported, "unsupported legacy VM exit"),
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn finish_legacy_deferred_run_work<A>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
@@ -815,10 +646,6 @@ where
         }
         LegacyDeferredRunWork::InterruptEnd { vector } => {
             A::after_interrupt_end(vm, vcpu, vector);
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        LegacyDeferredRunWork::Idle => {
-            A::handle_idle(vm, vcpu);
         }
     }
     Ok(VcpuRunAction::Yield)
