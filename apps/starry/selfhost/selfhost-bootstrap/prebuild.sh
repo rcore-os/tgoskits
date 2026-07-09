@@ -39,17 +39,19 @@ git -C "$repo_root" archive --format=tar HEAD -o "$overlay_dir/opt/starryos-src.
 git -C "$repo_root" rev-parse HEAD > "$overlay_dir/opt/.source-commit" 2>/dev/null || true
 
 # ── Stage AIC8800 firmware blobs (gitignored; absent from git archive) ─────────
-# This host-side staging copy is optional/best-effort.  Firmware itself is NOT
-# optional: the in-guest inner script (see below) unconditionally downloads all
-# 8 AIC8800 blobs from the pinned upstream commit and SHA-256-verifies them
-# (hard-fail on download error or hash mismatch), so the later offline
-# self-compile finds them.  Bootstrap does not COMPILE the kernel; it only
-# provisions the toolchain and fetches+verifies firmware.  Staging them here
-# just lets the guest skip the download when the host already has them.
+# Firmware is NOT optional: the in-guest inner script needs all 8 AIC8800 blobs
+# for the offline self-compile.  Stage host copies (when present) directly into
+# the guest cache path the inner script checks — /opt/starryos/components/aic8800/
+# firmware/ — so its SHA-256 cache check hits and the download is skipped.  The
+# source tarball (extracted on top later) does not carry these gitignored blobs,
+# so the staged files survive.  When the host has none, the inner script
+# downloads them from the pinned upstream commit and SHA-256-verifies.  Bootstrap
+# does not COMPILE the kernel; it only provisions the toolchain + firmware.
+fw_stage_dir="$overlay_dir/opt/starryos/components/aic8800/firmware"
 if ls "$repo_root"/components/aic8800/firmware/*.bin >/dev/null 2>&1; then
-    mkdir -p "$overlay_dir/opt/firmware-blobs"
-    cp "$repo_root"/components/aic8800/firmware/*.bin "$overlay_dir/opt/firmware-blobs/"
-    info "Staged $(ls "$overlay_dir"/opt/firmware-blobs/*.bin | wc -l) AIC8800 firmware blob(s)."
+    mkdir -p "$fw_stage_dir"
+    cp "$repo_root"/components/aic8800/firmware/*.bin "$fw_stage_dir/"
+    info "Staged $(ls "$fw_stage_dir"/*.bin | wc -l) AIC8800 firmware blob(s) into the guest cache path."
 else
     info "AIC8800 firmware blobs not staged from host (gitignored) — the in-guest inner script will download + SHA-256-verify them."
 fi
@@ -77,7 +79,7 @@ fail() {
 if [ -f /bin/bash ] && [ -f /usr/bin/gcc ] && [ -f /usr/bin/git ]; then
     echo "[bootstrap] Build toolchain already installed — skipping apk."
 else
-echo "[bootstrap] apk add build toolchain (cached index)..."
+echo "[bootstrap] apk add build toolchain (--no-cache, fresh index each run)..."
 apk add --no-cache --no-scripts \
     build-base clang clang-dev cmake pkgconf git curl python3 \
     linux-headers openssl-dev perl bash tar xz musl-dev \
@@ -169,12 +171,12 @@ for _ in 1 2 3 4 5; do
     rustup component add rust-src llvm-tools-preview && break
     echo "[bootstrap] rustup component add failed, retrying..."
     sleep 5
-done || fail "rustup component add failed after 3 attempts"
+done || fail "rustup component add failed after 5 attempts"
 for _ in 1 2 3 4 5; do
     rustup target add x86_64-unknown-none && break
     echo "[bootstrap] rustup target add failed, retrying..."
     sleep 5
-done || fail "rustup target add failed after 3 attempts"
+done || fail "rustup target add failed after 5 attempts"
 echo "[bootstrap] $(rustc --version)"
 
 
