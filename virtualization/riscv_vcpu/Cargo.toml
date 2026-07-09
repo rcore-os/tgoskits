@@ -31,5 +31,6 @@ riscv-decode = "0.2.3"
 rustsbi = { version = "0.4.0", features = ["forward"] }
 sbi-rt = { workspace = true, features = ["integer-impls"] }
 sbi-spec = { version = "0.0.9", features = ["legacy"] }
+thiserror = { workspace = true }
 tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }

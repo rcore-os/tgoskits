@@ -6629,6 +6629,7 @@ dependencies = [
  "rustsbi",
  "sbi-rt",
  "sbi-spec",
+ "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
 

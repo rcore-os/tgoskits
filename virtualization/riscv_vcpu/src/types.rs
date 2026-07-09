@@ -1,42 +1,30 @@
 //! OS-neutral value types exposed by the RISC-V vCPU core.
 
-use core::fmt::{Display, Formatter};
-
 /// RISC-V vCPU result type.
 pub type RiscvVcpuResult<T = ()> = Result<T, RiscvVcpuError>;
 
 /// Errors reported by the RISC-V vCPU core.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RiscvVcpuError {
     /// Caller supplied an invalid value.
+    #[error("invalid RISC-V vCPU input")]
     InvalidInput,
     /// The requested operation is not supported by this backend.
+    #[error("unsupported RISC-V vCPU operation")]
     Unsupported,
     /// The vCPU state does not allow the requested operation.
+    #[error("invalid RISC-V vCPU state")]
     BadState,
     /// Hardware or emulation state contained an invalid trap.
+    #[error("invalid RISC-V trap state")]
     InvalidTrap,
     /// Guest instruction decoding failed.
+    #[error("failed to decode guest instruction")]
     DecodeFailed,
     /// Guest memory access failed while emulating an instruction.
+    #[error("guest memory access failed")]
     GuestMemoryFault,
 }
-
-impl Display for RiscvVcpuError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let msg = match self {
-            Self::InvalidInput => "invalid RISC-V vCPU input",
-            Self::Unsupported => "unsupported RISC-V vCPU operation",
-            Self::BadState => "invalid RISC-V vCPU state",
-            Self::InvalidTrap => "invalid RISC-V trap state",
-            Self::DecodeFailed => "failed to decode guest instruction",
-            Self::GuestMemoryFault => "guest memory access failed",
-        };
-        f.write_str(msg)
-    }
-}
-
-impl core::error::Error for RiscvVcpuError {}
 
 macro_rules! riscv_addr_type {
     ($(#[$meta:meta])* $name:ident) => {

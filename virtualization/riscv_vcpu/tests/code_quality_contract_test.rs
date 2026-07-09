@@ -36,6 +36,25 @@ fn vpmu_comments_do_not_reference_axvm_trait_hooks() {
 }
 
 #[test]
+fn public_error_uses_thiserror_derive() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let content = fs::read_to_string(manifest_dir.join("src/types.rs")).unwrap();
+
+    assert!(
+        content.contains("thiserror::Error"),
+        "RiscvVcpuError should derive thiserror::Error instead of hand-writing error traits"
+    );
+    assert!(
+        !content.contains("impl Display for RiscvVcpuError"),
+        "RiscvVcpuError should not hand-write Display when thiserror is available"
+    );
+    assert!(
+        !content.contains("impl core::error::Error for RiscvVcpuError"),
+        "RiscvVcpuError should not hand-write core::error::Error when thiserror is available"
+    );
+}
+
+#[test]
 fn tests_scan_only_existing_runtime_files() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for file in [

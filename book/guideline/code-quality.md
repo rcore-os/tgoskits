@@ -499,6 +499,21 @@ fn main() -> anyhow::Result<()> {
 
 公共错误类型应实现 `std::error::Error`、`Display`、`Debug`，并尽可能满足 `Send + Sync + 'static`。Rust API Guidelines 明确建议公共 `Result<T, E>` 的错误类型要有意义、可表现良好，并且不要使用 `()` 作为错误类型。([Rust语言][9])
 
+库 crate、组件 crate、领域 crate 和硬件抽象 crate 的非平凡 public error enum，默认使用 workspace 里的 `thiserror` 派生 `Error`，把用户可读错误消息写在 `#[error("...")]` 上。只有极小、强依赖敏感或无法接受 proc-macro 依赖的 crate，才手写 `Display` 和 `core::error::Error`。
+
+```rust
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum UserParseError {
+    #[error("user id is empty")]
+    EmptyId,
+
+    #[error("invalid user age")]
+    InvalidAge,
+}
+```
+
+不要在可使用 `thiserror` 的 lib 类型 crate 中重复手写机械的 `Display` match；这会让错误消息、文档和变体维护分散到多个位置。
+
 ## 5.4 `panic!` 只用于程序员错误或不可恢复不变量破坏
 
 允许：
