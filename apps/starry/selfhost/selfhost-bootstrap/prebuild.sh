@@ -188,10 +188,27 @@ echo "[bootstrap] AIC8800 firmware ready."
 echo "[bootstrap] Installing Rust toolchain..."
 CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-toolchain.toml 2>/dev/null) || true
 [ -n "$CHANNEL" ] || CHANNEL=nightly-2026-05-28
+# The host-side prebuild script may have pre-staged the entire toolchain into
+# /root/.rustup/toolchains/… via the overlay.  If that directory exists, set
+# up RUSTUP_HOME / CARGO_HOME and skip the rustup installer download entirely
+# (QEMU user-mode networking is ~10-30 KiB/s — downloading the installer and
+# toolchain would take hours).
+TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
 if ! command -v rustup >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
-        || fail "rustup install failed"
+    if [ -d "$TOOLCHAIN_DIR" ]; then
+        echo "[bootstrap] Rust nightly toolchain pre-staged from host — setting up rustup environment."
+        export RUSTUP_HOME="$HOME/.rustup"
+        export CARGO_HOME="$HOME/.cargo"
+        mkdir -p "$CARGO_HOME"
+        # rustup is NOT in PATH yet (it lives under the toolchain dir); the
+        # toolchain binaries are at $TOOLCHAIN_DIR/bin/.  Export PATH so the
+        # subsequent 'rustup component add', 'cargo install' etc. find rustup.
+        export PATH="$TOOLCHAIN_DIR/bin:$CARGO_HOME/bin:$PATH"
+    else
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
+            || fail "rustup install failed"
+    fi
 fi
 . "$HOME/.cargo/env"
 
