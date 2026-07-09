@@ -6620,13 +6620,7 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 name = "riscv_vcpu"
 version = "0.5.17"
 dependencies = [
- "ax-crate-interface",
- "ax-errno 0.6.1",
- "ax-memory-addr",
- "axvm-types",
- "bit_field",
  "bitflags 2.13.0",
- "cfg-if",
  "log",
  "memoffset",
  "riscv",
