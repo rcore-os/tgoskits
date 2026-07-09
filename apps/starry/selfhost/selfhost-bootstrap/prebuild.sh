@@ -111,87 +111,6 @@ else
     info "Host Rust components not found; in-guest downloads will run (may be slow)."
 fi
 
-# ── Pre-download rustup toolchain tarballs into the overlay download cache ──────
-# rustup caches downloads at $RUSTUP_HOME/downloads/<YYYY-MM-DD>/; if the cache
-# is pre-populated before the guest runs `rustup toolchain install`, rustup skips
-# the network download entirely.  Download the musl toolchain tarballs (rustc,
-# cargo, rust-std) on the host at full speed (~seconds) instead of over QEMU
-# user-net (~48 min at 50 KiB/s).  The guest needs x86_64-unknown-linux-musl
-# (Alpine's host triple), NOT x86_64-unknown-linux-gnu.
-RUSTUP_DIST="https://static.rust-lang.org/dist"
-RUSTUP_CHANNEL="2026-05-28"
-RUSTUP_HOST="x86_64-unknown-linux-musl"
-
-info "Pre-downloading rustup toolchain tarballs into overlay download cache..."
-mkdir -p "$overlay_dir/root/.rustup/downloads/$RUSTUP_CHANNEL"
-
-for component in rustc cargo rust-std; do
-    tarball="${component}-nightly-${RUSTUP_HOST}.tar.xz"
-    url="${RUSTUP_DIST}/${RUSTUP_CHANNEL}/${tarball}"
-    dest="$overlay_dir/root/.rustup/downloads/$RUSTUP_CHANNEL/${tarball}"
-
-    if [ -f "$dest" ]; then
-        info "  $tarball (cached in overlay)"
-    else
-        info "  downloading $tarball ..."
-        curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 \
-             -fsSL "$url" -o "$dest" || {
-            info "  WARNING: failed to download $tarball — in-guest rustup will retry"
-            rm -f "$dest"
-            continue
-        }
-    fi
-
-    # Also fetch the SHA-256 hash so rustup can verify the tarball.
-    hash_url="${url}.sha256"
-    hash_dest="${dest}.sha256"
-    if [ -f "$hash_dest" ]; then
-        info "  ${tarball}.sha256 (cached)"
-    else
-        curl --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 60 \
-             -fsSL "$hash_url" -o "$hash_dest" 2>/dev/null || {
-            # If the .sha256 file is missing, rustup will verify against its
-            # built-in hashes — the tarball is still useful.
-            rm -f "$hash_dest"
-        }
-    fi
-done
-info "Rustup download cache staged."
-
-# Directly extract the pre-downloaded tarballs into a complete toolchain
-# directory in the overlay, bypassing rustup entirely.  The rust tarballs
-# are layered: rustc first, then cargo, then rust-std (each adds files
-# to the same directory tree).  The inner script finds a ready-to-use
-# toolchain and skips ALL rustup network steps — zero downloads in QEMU.
-CHANNEL_DIR="nightly-2026-05-28-x86_64-unknown-linux-gnu"
-TOOLCHAIN_OVERLAY="$overlay_dir/root/.rustup/toolchains/$CHANNEL_DIR"
-DOWNLOADS="$overlay_dir/root/.rustup/downloads/$RUSTUP_CHANNEL"
-
-if [ -d "$DOWNLOADS" ]; then
-    info "Extracting rust toolchain tarballs directly into overlay toolchain directory..."
-    mkdir -p "$TOOLCHAIN_OVERLAY"
-
-    # Order matters: rustc, then cargo, then rust-std.
-    for component in rustc cargo rust-std; do
-        tarball="${DOWNLOADS}/${component}-nightly-${RUSTUP_HOST}.tar.xz"
-        if [ -f "$tarball" ]; then
-            info "  Extracting $component ..."
-            # Tarballs have a top-level prefix directory (e.g.
-            # rustc-nightly-x86_64-unknown-linux-musl/rustc/bin/rustc).
-            # Strip 1 component so the contents land directly in the
-            # toolchain directory (rustc/bin/, rustc/lib/, etc.).
-            tar -xJf "$tarball" -C "$TOOLCHAIN_OVERLAY" --strip-components=1 2>&1 || {
-                info "  WARNING: failed to extract $component tarball"
-            }
-        else
-            info "  WARNING: $component tarball missing — skipping"
-        fi
-    done
-    info "Toolchain extracted into overlay: $TOOLCHAIN_OVERLAY"
-else
-    info "No pre-downloaded tarballs found — inner script will fall back to curl | sh"
-fi
-
 # ── In-guest provisioning inner script (Alpine /bin/sh) ─────────────────────────
 cat > "$overlay_dir/usr/bin/self-compile-inner.sh" << 'INNER_EOF'
 #!/bin/sh
@@ -307,31 +226,19 @@ CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-
 # place and skips the network-dependent downloads.
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
 
-# The host-side prebuild may have directly extracted the rust toolchain tarballs
-# into $HOME/.rustup/toolchains/..., creating a complete ready-to-use toolchain.
-# If found, set up the environment from it directly — zero rustup or network steps.
-if [ -d "$TOOLCHAIN_DIR/bin" ] && [ -x "$TOOLCHAIN_DIR/bin/rustc" ]; then
-    echo "[bootstrap] Rust toolchain pre-built from host — setting up environment."
-    mkdir -p "$HOME/.cargo"
-    export RUSTUP_HOME="$HOME/.rustup"
-    export CARGO_HOME="$HOME/.cargo"
-    export PATH="$TOOLCHAIN_DIR/bin:$CARGO_HOME/bin:$PATH"
-else
-    echo "[bootstrap] Pre-built toolchain not found, installing rustup over QEMU user-net..."
-    if ! command -v rustup >/dev/null 2>&1; then
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
-            || fail "rustup install failed"
-    fi
-    . "$HOME/.cargo/env"
+if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
+        || fail "rustup install failed"
 fi
+. "$HOME/.cargo/env"
 
-# If the toolchain was pre-built from host tarballs, it already contains
-# rust-src + target libs.  If components were pre-staged individually from
-# the host toolchain, they're also on disk.  Only download if EVERYTHING is
-# missing.
+# Pre-staged data components (rust-src source tree, target libraries) are
+# placed under $TOOLCHAIN_DIR by the host-side prebuild overlay.  If a
+# component is already on disk, skip the network download.
+# rust-src: check for the library source tree
 if [ -d "$TOOLCHAIN_DIR/lib/rustlib/src/rust" ]; then
-    echo "[bootstrap] rust-src already present (pre-built or pre-staged) — skipping download."
+    echo "[bootstrap] rust-src pre-staged from host — skipping download."
 else
     for _ in 1 2 3 4 5; do
         rustup component add rust-src && break
@@ -340,8 +247,9 @@ else
     done || fail "rustup component add rust-src failed after 5 attempts"
 fi
 
+# llvm-tools-preview: check for the llvm-objcopy binary in the toolchain
 if [ -f "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy" ]; then
-    echo "[bootstrap] llvm-tools already present (pre-built or pre-staged) — skipping download."
+    echo "[bootstrap] llvm-tools-preview pre-staged from host — skipping download."
 else
     for _ in 1 2 3 4 5; do
         rustup component add llvm-tools-preview && break
@@ -350,10 +258,11 @@ else
     done || fail "rustup component add llvm-tools-preview failed after 5 attempts"
 fi
 
-if [ -d "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-none" ]; then
-    echo "[bootstrap] target x86_64-unknown-none already present (pre-built or pre-staged)."
-elif command -v rustup >/dev/null 2>&1 && rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-none; then
+# x86_64-unknown-none target
+if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-none; then
     echo "[bootstrap] target x86_64-unknown-none already installed."
+elif [ -d "$TOOLCHAIN_DIR/lib/rustlib/x86_64-unknown-none" ]; then
+    echo "[bootstrap] target x86_64-unknown-none pre-staged from host."
 else
     for _ in 1 2 3 4 5; do
         rustup target add x86_64-unknown-none && break
@@ -361,7 +270,7 @@ else
         sleep 5
     done || fail "rustup target add failed after 5 attempts"
 fi
-echo "[bootstrap] $(rustc --version)" 2>/dev/null || echo "[bootstrap] rustc: $(rustc --version 2>&1)"
+echo "[bootstrap] $(rustc --version)"
 
 
 # kallsyms tools: rust-nm / rust-objcopy (from cargo-binutils or llvm-tools-preview)
