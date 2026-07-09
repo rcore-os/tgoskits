@@ -82,9 +82,11 @@ async fn download_file_restarts_when_range_is_invalid() {
 
 #[tokio::test]
 async fn download_file_retries_transient_http_status() {
-    let server =
-        TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::GATEWAY_TIMEOUT])
-            .await;
+    let server = TestServer::start_with_failures(
+        b"abcdef".to_vec(),
+        vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
+    )
+    .await;
     let workspace = tempdir().unwrap();
     let output_path = workspace.path().join("rootfs.img.tar.gz");
 
@@ -94,7 +96,7 @@ async fn download_file_retries_transient_http_status() {
         .unwrap();
 
     assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-    assert_eq!(server.request_count(), 2);
+    assert_eq!(server.request_count(), 3);
 }
 
 #[tokio::test]
