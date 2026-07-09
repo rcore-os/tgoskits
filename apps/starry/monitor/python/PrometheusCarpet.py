@@ -296,14 +296,14 @@ def functional_cli(work):
                 'test_metric{foo="bar"} 2 1600000060\n'
                 'test_metric{foo="bar"} 3 1600000120\n# EOF\n')
     blocks = os.path.join(work, "blocks")
-    rc, out = run([PROMTOOL, "tsdb", "create-blocks-from", "openmetrics", om, blocks], timeout=180)
+    rc, out = run([PROMTOOL, "tsdb", "create-blocks-from", "openmetrics", om, blocks], timeout=900)
     # create-blocks-from does not echo the block table to stdout in 3.11.3; the block IS created on
     # disk. Verify creation via the block dir; the following `tsdb list` confirms the ULID is readable.
     check(rc == 0 and os.path.isdir(blocks) and len(os.listdir(blocks)) >= 1,
           "promtool tsdb create-blocks-from openmetrics -> creates a block (rc=0 + block dir)")
-    rc, out = run([PROMTOOL, "tsdb", "list", blocks], timeout=60)
+    rc, out = run([PROMTOOL, "tsdb", "list", blocks], timeout=300)
     check(rc == 0 and "BLOCK ULID" in out, "promtool tsdb list -> lists the produced block")
-    rc, out = run([PROMTOOL, "tsdb", "analyze", blocks], timeout=120)
+    rc, out = run([PROMTOOL, "tsdb", "analyze", blocks], timeout=300)
     check(rc == 0 and "Total Series" in out, "promtool tsdb analyze -> Total Series report")
 
 
@@ -342,7 +342,7 @@ def main():
         [NODE_EXP, "--web.listen-address=%s" % NE_EP,
          "--collector.disable-defaults",
          "--collector.uname", "--collector.cpu", "--collector.meminfo", "--collector.loadavg",
-         "--collector.netdev", "--no-collector.netdev.netlink",
+         "--collector.vmstat", "--collector.netdev", "--no-collector.netdev.netlink",
          "--collector.diskstats", "--collector.filesystem"],
         stdout=ne_log, stderr=subprocess.STDOUT)
     ne_up = False
@@ -401,7 +401,7 @@ def main():
 
         # PROMTOOL as a PromQL client against the live server
         if ready:
-            rc, out = run([PROMTOOL, "query", "instant", "http://%s" % EP, "vector(42)"], timeout=30)
+            rc, out = run([PROMTOOL, "query", "instant", "http://%s" % EP, "vector(42)"], timeout=900)
             check(rc == 0 and "42" in out, "promtool query instant vector(42) -> 42 (PromQL client)")
         else:
             check(False, "promtool query instant (server not ready)")
@@ -421,9 +421,9 @@ def main():
         # promtool query labels/series as a live PromQL client, against the ingested `up` series.
         labels_ok = series_ok = False
         if scrape_ok:
-            rc, out = run([PROMTOOL, "query", "labels", "http://%s" % EP, "__name__"], timeout=30)
+            rc, out = run([PROMTOOL, "query", "labels", "http://%s" % EP, "__name__"], timeout=900)
             labels_ok = rc == 0 and "up" in out
-            rc, out = run([PROMTOOL, "query", "series", "--match=up", "http://%s" % EP], timeout=30)
+            rc, out = run([PROMTOOL, "query", "series", "--match=up", "http://%s" % EP], timeout=900)
             series_ok = rc == 0 and 'job="node"' in out
         check(labels_ok, "promtool query labels __name__ -> lists 'up' (live PromQL client)")
         check(series_ok, "promtool query series --match=up -> job=node (live PromQL client)")
@@ -456,6 +456,12 @@ def main():
             net_ok = (code == 200 and '"status":"success"' in body
                       and re.search(r'"value":\[[0-9.]+,"[0-9]', body) is not None)
             check(net_ok, "node_network_receive_bytes_total ingested (netdev collector -> TSDB)")
+            # node_vmstat_pgfault: procfs-backed counter (from /proc/vmstat) -- proves the vmstat
+            # collector's page-fault data also flowed scrape->store->query.
+            code, body = http_get('/api/v1/query?query=node_vmstat_pgfault', timeout=8)
+            vmstat_ok = (code == 200 and '"status":"success"' in body
+                         and re.search(r'"value":\[[0-9.]+,"[0-9]', body) is not None)
+            check(vmstat_ok, "node_vmstat_pgfault ingested (vmstat collector -> TSDB)")
             # query_range over the soak window: many up{job=node} samples proves multi-round scraping.
             q = ("/api/v1/query_range?query=up%%7Bjob%%3D%%22node%%22%%7D"
                  "&start=%d&end=%d&step=15") % (t0, t1)

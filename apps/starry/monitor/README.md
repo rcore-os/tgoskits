@@ -1,12 +1,12 @@
-# monitor - Prometheus 监控栈 + Grafana + glances 系统监控器（StarryOS 四架构地毯测试）
+# monitor - Prometheus 监控栈 + Grafana + 系统监控 TUI（StarryOS 四架构地毯测试）
 
-本 app 在 StarryOS 四架构（x86_64 / aarch64 / riscv64 / loongarch64）单核 qemu 上，对三大监控软件做工业级、端到端、逐断言的地毯测试（非 “进程能起来” 的冒烟）：
+本 app 在 StarryOS 四架构（x86_64 / aarch64 / riscv64 / loongarch64）单核 qemu 上，对主流监控软件做工业级、端到端、逐断言的地毯测试（非 “进程能起来” 的冒烟）：
 
 - **Prometheus**（CNCF 监控系统：拉取式指标抓取 + TSDB + PromQL 引擎；`prometheus` 3.11.3 + `promtool`，CGO-free 纯静态 Go 二进制）＋ **node_exporter** 1.11.1（最简 exporter，作为真实抓取目标）。
 - **Grafana**（观测/可视化 web 应用，13.0.1；单个 CGO-free 纯静态 Go 二进制 + 内嵌前端 SPA + 内嵌 SQLite） - headless 起 server + HTTP 断言（无浏览器、无 TUI）。
 - **glances**（基于 psutil 的 Python 系统监控器，4.4.1）的全部五种运行形态：CLI / headless / **TUI（pyte 真实断言）** / client-server / web。
 
-单次启动运行 8 个子 carpet，全过才由 `run_monitor.py` 输出唯一门控锚点 `MONITOR_OK=8/8` + `TEST PASSED`。
+单次启动逐个隔离运行子 carpet，全过才由 `run_monitor.py` 输出唯一门控锚点 `MONITOR_OK=9/9` + `TEST PASSED`。
 
 ## 测试维度
 
@@ -17,9 +17,9 @@
 4. **promtool tsdb 功能腿**：`tsdb create-blocks-from openmetrics`（从 OpenMetrics 造块）→ `tsdb list`（打印块 ULID 验创建成功）→ `tsdb analyze`（读块统计）。全在 `/root`（ext4 磁盘）而非 `/tmp`：TSDB 与临时目录落磁盘既是生产正确做法，也规避 starry tmpfs 的 mmap read-back 返零页问题（analyze 经 mmap 读块 meta/index 会得 `\x00`；`tsdb list` 走 `read()` 不受影响）。此 tmpfs mmap 缺陷单列内核跟进。
 5. **ready**：headless 拉起 prometheus server 于 loopback `:9090`，断言日志 `Server is ready to receive web requests.` 且 `/-/ready` 返回 `Ready`（HTTP 服务起来 + TSDB 打开）。
 6. **PromQL 引擎**：`/api/v1/query?query=vector(42)` 返回 `status:success` + 值 `42`。
-7. **scrape + 端到端集成测**：前台拉起 node_exporter 于 `:9100/metrics`（启 `--collector.uname/cpu/meminfo/loadavg/netdev/diskstats/filesystem`，覆盖 starry 现渲染的全部 procfs 源）作为真实抓取目标，prometheus 配 `prometheus.yml` scrape job `node`。先断言 `/api/v1/query?query=up{job="node"}` 返回 `1`（真抓到 + 入库），再经 **180s soak**（2s 抓取间隔多轮）后断言 `node_cpu_seconds_total`、`node_memory_MemTotal_bytes` 与 `node_network_receive_bytes_total`（netdev collector 产）均已以数值样本入 TSDB、且 `query_range` 在时窗内返回多个数据点。这是 scrape→store→query 全链路的工业级端到端验证：node_exporter 真读 starry `/proc/stat`·`/proc/meminfo`·`/proc/loadavg`·`/proc/net/dev`·`/proc/diskstats`·`/proc/mounts` 暴露指标，prometheus 真抓真存真查。
+7. **scrape + 端到端集成测**：前台拉起 node_exporter 于 `:9100/metrics`（启 `--collector.uname/cpu/meminfo/loadavg/vmstat/netdev/diskstats/filesystem`，覆盖 starry 现渲染的全部 procfs 源）作为真实抓取目标，prometheus 配 `prometheus.yml` scrape job `node`。先断言 `/api/v1/query?query=up{job="node"}` 返回 `1`（真抓到 + 入库），再经 **180s soak**（2s 抓取间隔多轮）后断言 `node_cpu_seconds_total`、`node_memory_MemTotal_bytes`、`node_network_receive_bytes_total`（netdev collector 产）与 `node_vmstat_pgfault`（vmstat collector 产）均已以数值样本入 TSDB、且 `query_range` 在时窗内返回多个数据点。这是 scrape→store→query 全链路的工业级端到端验证：node_exporter 真读 starry `/proc/stat`·`/proc/meminfo`·`/proc/loadavg`·`/proc/vmstat`·`/proc/net/dev`·`/proc/diskstats`·`/proc/mounts` 暴露指标，prometheus 真抓真存真查。
 
-验证内核面：Go runtime（M:N 调度 / GC / futex 停泊 / getrandom）、loopback TCP/HTTP 双向、磁盘（ext4）TSDB 块写读 + mmap（analyze）、定时器 / WAL、procfs（`/proc/stat`·`/proc/meminfo`·`/proc/loadavg`·`/proc/net/dev`·`/proc/diskstats`·`/proc/mounts` 喂 node_exporter collector）。
+验证内核面：Go runtime（M:N 调度 / GC / futex 停泊 / getrandom）、loopback TCP/HTTP 双向、磁盘（ext4）TSDB 块写读 + mmap（analyze）、定时器 / WAL、procfs（`/proc/stat`·`/proc/meminfo`·`/proc/loadavg`·`/proc/vmstat`·`/proc/net/dev`·`/proc/diskstats`·`/proc/mounts` 喂 node_exporter collector）。
 
 ### Grafana（`GrafanaCarpet.py`）
 Grafana 是单个纯静态 Go 二进制（`grafana server` 子命令），serve 内嵌前端 SPA + REST API 于 loopback `:3000`，后端为内嵌 SQLite - 故像 glances web / prometheus 一样 **headless 起 server + HTTP 断言**，不测 TUI。
@@ -53,7 +53,7 @@ glances 是全屏 curses 程序。本 carpet 用**离线终端仿真（pyte）**
 5. **大区域重绘**：`-2`（左侧栏）/ `-3`（quicklook）开关来回，断言 **core 骨架**重绘回来、无残影。
 6. **内容驱动捕获（跨 arch 时序鲁棒）**：每次交互（启动 / 发 `m`/`c`/`a`/方向键 / 开关）后，驱动器持续把 PTY 输出增量喂给一块 live pyte 屏，**轮询等到预期内容真渲染出来再捕获断言帧**（启动等进程表头 `CPU%`/`MEM%`/`PID`；排序热键等排序指示行真出现 `by memory`/`by CPU`/`automatically`），设慷慨的 per-arch 上限（settle 90s、每步 45s，`MONITOR_TUI_SETTLE_WAIT`/`MONITOR_TUI_STEP_WAIT` 可调）+ 每步最小停留（保持真 soak）。快 arch（x86）立即满足即捕获，慢 arch（aa/rv/loong TCG）会等到渲染完成 - **捕获时机由内容驱动而非固定延时**，故同一脚本在四架构都稳；到上限仍无预期内容则**据实失败**（捕获帧缺内容，下游断言真报错，绝不静默放过）。
 
-> **glances CLI 版本感知说明**：`--print-completion`（shell 补全）由可选依赖 `shtab` 提供；交付版 Alpine glances 4.4.1-r1 的 apk 闭包**不含 shtab**，故该选项本就不提供 - carpet 对它做**能力探测**（存在则测其产出补全脚本，缺失则据实记为 documented SKIP），不假设 host 版本。其余全部 `--help` 选项按**交付版 4.4.1-r1 实测选项全集**逐项硬断言。
+> **glances CLI shell 补全**：`--print-completion`（shell 补全）由可选依赖 `shtab` 提供，overlay 已把 `py3-shtab` 装进闭包，故 glances 提供该选项且 carpet **硬断言**它对 `bash` / `zsh` / `tcsh` 均真产出补全脚本（脚本内含 `glances` 命令名）。全部 `--help` 选项按**交付版 4.4.1-r1 实测选项全集**逐项硬断言。
 
 ## 四架构来源（provenance，据实注明）
 
@@ -65,7 +65,7 @@ glances 是全屏 curses 程序。本 carpet 用**离线终端仿真（pyte）**
 | glances + psutil + FastAPI/uvicorn 栈 | 4.4.1 | apk | apk | apk | apk |
 
 - prometheus / node_exporter / grafana 为 CGO-free 纯静态 Go 二进制，在 musl/StarryOS 直接跑，无需 libc；四架构均运行，无任何 SKIP。amd64/arm64/riscv64 走官方 release（prometheus/node_exporter 的 URL + sha256 与上游 `sha256sums.txt` 逐字一致；grafana 与 dl.grafana.com `*.tar.gz.sha256` 一致），loong64 从源码 Go 交叉编译（`assets/build-loong-binaries.sh`）。逐档 URL/sha256 见 `assets/MANIFEST.md`。
-- glances 及其闭包（psutil native、FastAPI/Starlette/pydantic、jinja2）由 `apk add` 解析当前版本 + 目标架构 musl `.so` 全闭包，四架构均有；Alpine v3.23 未收录的 `pyte` / `uvicorn` 为纯 python（noarch）wheel，按钉死 URL + sha256 取回校验后解包进 site-packages。
+- glances 及其闭包（psutil native、FastAPI/Starlette/pydantic、jinja2、shtab）由 `apk add` 解析当前版本 + 目标架构 musl `.so` 全闭包，四架构均有；Alpine v3.23 未收录的 `pyte` / `uvicorn` 为纯 python（noarch）wheel，按钉死 URL + sha256 取回校验后解包进 site-packages。
 - **无任何二进制入 git**；全部构建期抓取 + 校验（见 `prebuild.sh`）。
 
 ## 运行
@@ -76,13 +76,13 @@ glances 是全屏 curses 程序。本 carpet 用**离线终端仿真（pyte）**
 # 2) 运行（单核）
 source <仓库根>/.starry-env.sh          # 使用 qemu-10
 cargo xtask starry app qemu -t monitor --arch <x86_64|aarch64|riscv64|loongarch64>
-# 成功判据：rc=0 + 日志 SUCCESS PATTERN MATCHED + ^MONITOR_OK=8/8 + TEST PASSED
+# 成功判据：rc=0 + 日志 SUCCESS PATTERN MATCHED + ^MONITOR_OK=9/9 + TEST PASSED
 ```
 
 ## 确定性与说明
 
 - **网络/容器探测插件**：TUI/headless/web/cs carpet 均禁用会在离线 SLIRP guest 上阻塞首帧的环境探测插件（`ip` 公网 IP 查询、`cloud` 169.254 元数据、`containers`/`docker` socket、`ports`/`folders`/`connections`/`sensors` 扫描）。核心仪表盘（cpu/mem/load/quicklook/uptime/processlist）照常渲染，正是 golden 所硬断言的对象。golden 全为结构性（标签/列位），从不钉死宿主相关的数值。
-- **左侧栏 procfs 区块（硬断言，据实真渲染）**：TUI/headless carpet 的 NETWORK/DISK I/O/FILE SYS 区块读 `/proc/net/dev`·`/proc/diskstats`·`/proc/mounts`+statfs。StarryOS 现真实渲染这三个源（`/proc/net/dev` 真 RX/TX 计数、`/proc/diskstats` 根盘 `vda` 真请求/扇区计数、`/proc/mounts` 真挂载表 + `statfs` 真容量），故三区块**硬门控**断言其真渲染 + 携带真数据：TUI 断言三区块标签 + `vda`/`eth0` 数据 token 出现，headless 断言 `lo` 累计字节 >0、`vda` 累计 read_bytes >0、根 fs size >0；node_exporter 同时启 netdev/diskstats/filesystem collector 并断言 `node_network_receive_bytes_total{lo}>0`、`node_disk_reads_completed_total{vda}>0`、`node_filesystem_size_bytes{"/"}>0`。core 区块（进程表 + MEM/LOAD/TASKS）一并硬断言。仍是长 soak + 三态 + 四不变量，非降级 smoke。
+- **左侧栏 procfs 区块（硬断言，据实真渲染）**：TUI/headless carpet 的 NETWORK/DISK I/O/FILE SYS 区块读 `/proc/net/dev`·`/proc/diskstats`·`/proc/mounts`+statfs。StarryOS 现真实渲染这三个源（`/proc/net/dev` 真 RX/TX 计数、`/proc/diskstats` 根盘 `vda` 真请求/扇区计数、`/proc/mounts` 真挂载表 + `statfs` 真容量），故三区块**硬门控**断言其真渲染 + 携带真数据：TUI 断言三区块标签 + `vda`/`eth0` 数据 token 出现，headless 断言 `lo` 累计字节 >0、`vda` 累计 read_bytes >0、根 fs size >0；node_exporter 同时启 vmstat/netdev/diskstats/filesystem collector 并断言 `node_vmstat_pgfault>0`、`node_network_receive_bytes_total{lo}>0`、`node_disk_reads_completed_total{vda}>0`、`node_filesystem_size_bytes{"/"}>0`。core 区块（进程表 + MEM/LOAD/TASKS）一并硬断言。仍是长 soak + 三态 + 四不变量，非降级 smoke。
 - **loopback**：grafana / glances web（uvicorn/ASGI）/ client-server（XML-RPC）均在 guest 内 loopback 上 bind/listen/accept，压 StarryOS 网络栈。
 - **grafana SQLite 迁移**：grafana 首启要跑 709 个 SQLite 迁移（重压 ext4/fsync）。prebuild **构建期尽力预迁移**架构无关的 `grafana.db` 播种，on-target 跳过这 709 个迁移；carpet 用 WAL 模式 + 对前端端点做退避重试化解启动期 `SQLITE_BUSY` 争用。若预迁移未成，on-target 现场迁移（更慢但仍能过）。
 - **超时**：本 app 单次启动跑 prometheus 冷启动 + scrape + grafana server（SQLite 迁移/启动）+ glances 五形态（含 TUI soak + web + c/s），故 `timeout` 取较大值（慢架构 TCG 下 Go/SQLite 冷启动需足够长，非真 hang）。

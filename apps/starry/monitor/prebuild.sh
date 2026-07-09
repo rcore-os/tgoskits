@@ -35,7 +35,7 @@ APK_CACHE="${MONITOR_APK_CACHE:-}"
 #   $MONITOR_BINS_DIR/grafana/<arch>/grafana-13.0.1.linux-<goarch>.tar.gz
 #   $MONITOR_BINS_DIR/grafana/grafana-13.0.1.db   (optional pre-migrated, arch-independent seed)
 BINS_DIR="${MONITOR_BINS_DIR:-}"
-GRAFANA_PREMIGRATE="${MONITOR_GRAFANA_PREMIGRATE:-1}"  # best-effort build-time SQLite migration (skips 709 on-target)
+GRAFANA_PREMIGRATE="${MONITOR_GRAFANA_PREMIGRATE:-1}"  # opportunistic build-time SQLite migration (skips 709 on-target)
 
 PROM_VER="3.11.3"
 NE_VER="1.11.1"
@@ -126,14 +126,17 @@ install_glances_closure() {
     local cache_args=(); [[ -n "$APK_CACHE" ]] && { mkdir -p "$APK_CACHE"; cache_args=(--cache-dir "$APK_CACHE"); }
     # glances + psutil (core) + the FastAPI/Starlette/pydantic/uvicorn web-server closure that
     # `glances -w` needs (py3-uvicorn is not in Alpine -> vendored as a wheel below) + py3-wcwidth
-    # (pyte's only dep) + jinja2 (web templates). apk resolves the full musl .so closure per arch.
-    local pkgs="glances python3 py3-psutil py3-fastapi py3-starlette py3-pydantic py3-anyio py3-sniffio py3-h11 py3-click py3-wcwidth py3-jinja2"
+    # (pyte's only dep) + jinja2 (web templates) + py3-shtab (enables glances --print-completion) +
+    # htop (the ncurses process-monitor TUI, pulls its ncurses .so + terminfo closure). apk resolves
+    # the full musl .so closure per arch.
+    local pkgs="glances htop python3 py3-psutil py3-fastapi py3-starlette py3-pydantic py3-anyio py3-sniffio py3-h11 py3-click py3-wcwidth py3-jinja2 py3-shtab"
     echo "prebuild: apk add ($APK_BRANCH) via $qemu_runner: $pkgs"
     QEMU_LD_PREFIX="$staging_root" LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
         "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" --root "$staging_root" \
             --repositories-file "$staging_root/etc/apk/repositories" --keys-dir "$staging_root/etc/apk/keys" \
             "${cache_args[@]}" --update-cache --no-progress --no-scripts add $pkgs
     [[ -e "$staging_root/usr/bin/glances" ]] || { echo "prebuild: glances not provisioned" >&2; exit 3; }
+    [[ -e "$staging_root/usr/bin/htop" ]] || { echo "prebuild: htop not provisioned" >&2; exit 3; }
     local pyver; pyver="$(ls -d "$staging_root"/usr/lib/python3.* 2>/dev/null | grep -oE 'python3\.[0-9]+' | head -1)"
     case "$pyver" in python3.1[2-9]|python3.2[0-9]) echo "prebuild: provisioned glances + $pyver" ;;
         *) echo "prebuild: need CPython>=3.12, got '$pyver'" >&2; exit 3 ;; esac
@@ -247,7 +250,7 @@ install_grafana() {
              "$gdir/provisioning/access-control" "$gdir/provisioning/notifiers"
     rm -rf "$staging_root/tmp/$topdir" "$tb"
 
-    # --- best-effort BUILD-TIME pre-migration of the arch-independent grafana.db (skips the 709
+    # --- opportunistic BUILD-TIME pre-migration of the arch-independent grafana.db (skips the 709
     #     first-run SQLite migrations on-target). Prefer a staged db, else run the target grafana
     #     (native for x86; qemu-user otherwise), bounded; on any failure ship un-seeded (the carpet
     #     migrates on the spot). grafana.db is arch-independent, so a db built for ANY arch is valid.

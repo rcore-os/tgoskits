@@ -156,8 +156,13 @@ def main():
     print("  diskio disks: %s" % sorted(x for x in disks if x))
     vda = next((d for d in (dio or []) if d.get("disk_name") == "vda"), None)
     check(vda is not None, "diskio plugin exposes the 'vda' root disk (from /proc/diskstats)")
-    check(vda is not None and int(vda.get("read_bytes", 0)) > 0,
-          "vda has non-zero cumulative read_bytes (boot reads): %r" % (vda.get("read_bytes") if vda else None))
+    # glances flags the diskio byte/count fields rate=True: the cumulative /proc/diskstats counter is
+    # carried in `<field>_gauge`, while the bare `<field>` is only the delta since the previous
+    # refresh (legitimately 0 when no I/O lands in the sub-second sampling window). The boot-reads
+    # proof is the cumulative gauge -- the diskio analogue of the network plugin's bytes_all_gauge.
+    read_bytes = int(vda.get("read_bytes_gauge", vda.get("read_bytes", 0))) if vda else 0
+    check(read_bytes > 0,
+          "vda has non-zero cumulative read_bytes (boot reads): %r" % (read_bytes if vda else None))
 
     # fs: /proc/mounts + statfs -> the ext4 root filesystem with a real total size.
     fs = parse_list("fs")
