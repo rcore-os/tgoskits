@@ -253,20 +253,34 @@ CHANNEL=$(awk -F'"' '/channel[[:space:]]*=/{print $2; exit}' /opt/starryos/rust-
 
 # rustup/cargo/rustc from the host are glibc-linked — they CANNOT run on the
 # Alpine musl guest.  The guest MUST install rustup natively via curl|sh.
-# What the host-side prebuild CAN pre-stage are DATA components (rust-src,
-# target libs, llvm-tools binaries) placed into the toolchain directory so
-# that once rustup is installed natively, it finds the components already in
-# place and skips the network-dependent downloads.
+#
+# PERFORMANCE: rsext4 (the Rust ext4 backend) writes small files at ~1-4 KiB/s
+# during tar extraction.  To bypass this bottleneck, install rustup to /tmp
+# (MemoryFs / tmpfs, RAM-backed, fast) then copy the result to the ext4 rootfs
+# in one bulk operation (which rsext4 handles at normal throughput).
+#
+# Before switching to tmpfs, save the pre-staged data components (rust-src,
+# target libs) that the host-side prebuild placed on the ext4 rootfs.  Copy them
+# to the tmpfs installation so rustup finds them and skips network downloads.
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu"
 
-# Populate rustup download cache before running curl|sh.
-# rustup stores cached downloads as $RUSTUP_HOME/downloads/<sha256-hash>
-# (from rustup/src/dist/download.rs: target_file = download_dir.join(hash)).
-# The hashes are xz_hash values from the channel manifest.
-if ! command -v rustup >/dev/null 2>&1; then
-    CACHE_DIR="$HOME/.rustup/downloads"
+if [ -d "$TOOLCHAIN_DIR/bin" ] && [ -x "$TOOLCHAIN_DIR/bin/rustc" ]; then
+    echo "[bootstrap] Rust toolchain already installed — skipping."
+else
+    # 1. Ensure /tmp is usable (StarryOS mounts it as MemoryFs)
+    mkdir -p /tmp/rustup-home /tmp/cargo-home
+
+    # 2. Copy pre-staged data components to tmpfs (fast, RAM-backed)
+    if [ -d "$HOME/.rustup" ]; then
+        cp -a "$HOME/.rustup/." /tmp/rustup-home/ 2>/dev/null || true
+    fi
+    if [ -d "$HOME/.cargo" ]; then
+        cp -a "$HOME/.cargo/." /tmp/cargo-home/ 2>/dev/null || true
+    fi
+
+    # 3. Populate rustup download cache (hash-named files from host-side pre-download)
+    CACHE_DIR="/tmp/rustup-home/downloads"
     mkdir -p "$CACHE_DIR"
-    # component → xz_hash
     for pair in \
         "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
         "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
@@ -280,11 +294,25 @@ if ! command -v rustup >/dev/null 2>&1; then
         fi
     done
     if ls "$CACHE_DIR"/???????????????????????????????????????????????????????????????? 2>/dev/null | grep -q .; then
-        echo "[bootstrap] Component tarballs pre-staged in rustup download cache."
+        echo "[bootstrap] Component tarballs pre-staged in rustup download cache (tmpfs)."
     fi
+
+    # 4. Install rustup to tmpfs (fast — no rsext4 bottleneck)
+    echo "[bootstrap] Installing rustup on tmpfs (MemoryFs, RAM-backed, fast)..."
+    export RUSTUP_HOME=/tmp/rustup-home
+    export CARGO_HOME=/tmp/cargo-home
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain "$CHANNEL" --profile minimal \
         || fail "rustup install failed"
+    echo "[bootstrap] rustup installed on tmpfs."
+
+    # 5. Copy the completed toolchain back to the ext4 rootfs
+    echo "[bootstrap] Copying toolchain from tmpfs to ext4 rootfs..."
+    mkdir -p "$HOME/.rustup" "$HOME/.cargo"
+    cp -a /tmp/rustup-home/. "$HOME/.rustup/" 2>/dev/null || fail "copy rustup from tmpfs failed"
+    cp -a /tmp/cargo-home/. "$HOME/.cargo/" 2>/dev/null || fail "copy cargo from tmpfs failed"
+    echo "[bootstrap] Toolchain copied to ext4 rootfs."
+    rm -rf /tmp/rustup-home /tmp/cargo-home
 fi
 . "$HOME/.cargo/env"
 
