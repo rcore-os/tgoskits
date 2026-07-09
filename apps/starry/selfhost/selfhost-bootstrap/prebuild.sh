@@ -74,8 +74,14 @@ if [ -d "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" ] 
     mkdir -p "$overlay_dir/root/.rustup/toolchains"
     cp -a "$RUSTUP_HOME/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" \
           "$overlay_dir/root/.rustup/toolchains/"
+    # Create ~/.cargo/env in the overlay so the inner script's
+    # `. "$HOME/.cargo/env"` succeeds even when the host doesn't have a
+    # rustup-installed cargo env (the toolchain directory itself is the
+    # important part; this just prevents a 'can't open' error).
     mkdir -p "$overlay_dir/root/.cargo"
-    cp -a "$CARGO_HOME/env" "$overlay_dir/root/.cargo/env" 2>/dev/null || true
+    printf 'export PATH="%s/bin:$PATH"\n' \
+           "\$HOME/.rustup/toolchains/nightly-2026-05-28-x86_64-unknown-linux-gnu" \
+           > "$overlay_dir/root/.cargo/env"
     info "Rust nightly toolchain staged — guest will skip rustup downloads."
 else
     info "Host Rust nightly toolchain not fully populated (missing rust-src or x86_64-unknown-none target)."
