@@ -139,6 +139,18 @@ if [ "$ARCH" = "x86_64" ]; then
     # See apps/starry/selfhost/selfhost-bootstrap/prebuild.sh.
     SELFHOST_BLUEPRINT="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img"
 
+    # --bootstrap only provisions when the blueprint is ABSENT.  If one already
+    # exists, provisioning is skipped and its baked source may be from an older
+    # commit (the in-guest source-identity guard will then reject the build).
+    # Make that reuse loud so a stale blueprint is not mistaken for a fresh
+    # re-provision.
+    if [ "$BOOTSTRAP" = "true" ] && [ -f "$SELFHOST_BLUEPRINT" ]; then
+        info "NOTE: --bootstrap requested but blueprint already exists — reusing AS-IS:"
+        info "        $SELFHOST_BLUEPRINT"
+        info "      To re-provision from scratch (e.g. for a new commit), first remove:"
+        info "        rm -f $SELFHOST_BLUEPRINT tmp/selfhost/rootfs-x86_64-selfhost-bootstrap.img"
+    fi
+
     if [ ! -f "$SELFHOST_BLUEPRINT" ] && [ "$BOOTSTRAP" = "true" ]; then
         info "=== Bootstrapping selfhost rootfs via QEMU (no host sudo) ==="
         info "This creates an Alpine-based selfhost rootfs with build tools + Rust."
