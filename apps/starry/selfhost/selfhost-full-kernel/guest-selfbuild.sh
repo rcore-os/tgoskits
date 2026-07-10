@@ -7,7 +7,6 @@ HOST_TRIPLE="x86_64-unknown-linux-musl"
 SOURCE_TAR="${SELFHOST_SOURCE_TAR:-/opt/tgoskits-src.tar}"
 SOURCE_META="${SELFHOST_SOURCE_META:-/opt/tgoskits-src.meta}"
 SOURCE_DIR="${SELFHOST_SOURCE_DIR:-/tmp/tgoskits-src}"
-TARGET_DIR="${SELFHOST_TARGET_DIR:-/tmp/tgoskits-target}"
 ARTIFACT="${SELFHOST_ARTIFACT:-/opt/starryos-selfbuilt}"
 FAILURE_REASON="guest command failed"
 
@@ -102,8 +101,8 @@ install_kallsyms_tools() {
 
 prepare_source_tree() {
     [ -f "$SOURCE_TAR" ] || fail "source archive is missing: $SOURCE_TAR"
-    rm -rf "$SOURCE_DIR" "$TARGET_DIR"
-    mkdir -p "$SOURCE_DIR" "$TARGET_DIR"
+    rm -rf "$SOURCE_DIR"
+    mkdir -p "$SOURCE_DIR"
     tar -xf "$SOURCE_TAR" -C "$SOURCE_DIR"
     [ -f "$SOURCE_DIR/Cargo.toml" ] || fail "source archive does not contain Cargo.toml"
 
@@ -121,14 +120,13 @@ build_with_canonical_xtask() {
     echo "SELF_COMPILE_RUST_HOST=$detected_host"
 
     cd "$SOURCE_DIR"
-    export CARGO_TARGET_DIR="$TARGET_DIR"
     export CARGO_BUILD_JOBS="${SELFHOST_CARGO_BUILD_JOBS:-4}"
     export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
     unset CARGO_BUILD_TARGET
 
     RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= \
         cargo build --locked -p tg-xtask --target "$detected_host"
-    xtask="$TARGET_DIR/$detected_host/debug/tg-xtask"
+    xtask="$SOURCE_DIR/target/$detected_host/debug/tg-xtask"
     [ -x "$xtask" ] || fail "tg-xtask was not built for $detected_host"
 
     "$xtask" starry build \

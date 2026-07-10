@@ -254,6 +254,29 @@ fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
 }
 
 #[test]
+fn selfhost_guest_runner_publishes_the_canonical_source_target_artifact() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let guest_runner_path =
+        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
+    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
+
+    assert!(
+        !guest_runner.contains("export CARGO_TARGET_DIR"),
+        "{} must leave the canonical xtask build in the extracted source target directory",
+        guest_runner_path.display()
+    );
+    assert!(
+        guest_runner.contains("$SOURCE_DIR/target/x86_64-unknown-linux-musl/release/starryos"),
+        "{} must publish the artifact produced by the canonical xtask build",
+        guest_runner_path.display()
+    );
+}
+
+#[test]
 fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
     let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
     let qemu_config_path = case_dir.join("qemu-x86_64.toml");
