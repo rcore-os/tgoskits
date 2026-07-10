@@ -72,6 +72,10 @@ install_rust() {
     export RUSTUP_HOME=/root/.rustup
     export CARGO_HOME=/root/.cargo
     export PATH="$CARGO_HOME/bin:/usr/local/bin:/usr/bin:/bin"
+    # StarryOS reports a conservatively small memory budget to Rustup even when
+    # QEMU provides the app's configured 16 GiB. Avoid Rustup's unusably slow
+    # single-threaded fallback while keeping the value configurable for debug.
+    export RUSTUP_IO_THREADS="${SELFHOST_RUSTUP_IO_THREADS:-4}"
 
     if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
