@@ -10,30 +10,38 @@ cargo xtask starry app qemu -t nix --arch x86_64
 cargo xtask starry app qemu -t nix --arch aarch64
 ```
 
-## Nixpkgs Phase Activated (default path)
+## Nixpkgs Package-Manager Phase (default path)
 
 The nix app test runs **two** phases on every invocation:
 
 1. `nix-nosandbox` — `builtins.toFile` store-path write (CI gate since 002)
-2. `nix-nixpkgs` — `nixpkgs.stdenv.mkDerivation` source build of a minimal C
-   `hello` program (activated by 003)
+2. `nix-nixpkgs` — imports pinned nixpkgs, evaluates its `hello` derivation,
+   realizes it, and runs `hello` (activated by 003)
 
-Both phases use `--option sandbox false` (see `nix-nixpkgs.sh` and
-`nix-nosandbox.sh`). The default nixpkgs path allows binary cache
-(`cache.nixos.org`) for stdenv build inputs so the test completes in a
-reasonable CI window; the target derivation's `buildPhase` (the `hello.c` →
-`hello` compile step) still runs locally on StarryOS, exercising nixpkgs
-evaluation, the builder protocol, and stdenv usage.
+Both phases run with sandboxing disabled: `nix-nixpkgs.sh` passes
+`--option sandbox false`, while `nix-nosandbox.sh` uses the `sandbox = false`
+setting generated in `nix.conf`. The nixpkgs phase tests nixpkgs as a package
+manager: it imports `/opt/nixpkgs`, evaluates a package derivation, realizes it
+with binary substitution allowed, and executes the resulting program. In the
+default path, Nix may substitute both `stdenv` and `hello` from
+`cache.nixos.org`; it does not claim that `hello` is compiled locally.
+
+### Local source builds are optional
+
+The default CI path intentionally does not use `--no-substitute`. Downloading
+or building the nixpkgs `stdenv` closure before a local source build is slow,
+so the standard test uses the prebuilt binary-cache closure first. Local source
+builds remain supported when no matching substitute is available, but they are
+an optional capability rather than a required CI assertion.
 
 ### Why `sandbox = false` is the default
 
 StarryOS now supports all seven namespace flags including `CLONE_NEWNS`
 (landed via PR #981), so the build sandbox path is no longer blocked at the
 kernel level. The default path keeps `sandbox = false` by design (research.md
-R3/R4): the default nixpkgs workflow (binary cache + local `buildPhase`)
-does not need the sandbox, and keeping it off avoids pulling the full sandbox
-closure. The sandboxed variant (`nix.sh`, FR-017) remains an optional stretch
-target.
+R3/R4): the substitution-allowed nixpkgs workflow does not need the sandbox,
+and keeping it off avoids pulling the full sandbox closure. The sandboxed
+variant (`nix.sh`, FR-017) remains optional support.
 
 ### Sandboxed builds (optional, not yet CI)
 
@@ -48,7 +56,7 @@ sandbox were silently auto-disabled, so it is intentionally excluded from
 | Script | Mode | Runs? |
 |--------|------|-------|
 | `nix-nosandbox` | `builtins.toFile` store-path write (no builder) | ✅ CI |
-| `nix-nixpkgs` | `pkgs.stdenv.mkDerivation` source build (binary cache allowed) | ✅ CI (003) |
+| `nix-nixpkgs` | nixpkgs import/evaluation, substitution-allowed realization, and `hello` execution | ✅ CI (003) |
 | `nix` | `nix-build --option sandbox true` (full sandboxed derivation builder) | ❌ optional (FR-017, not yet CI) |
 
 `test_nix.sh` runs `nix-nosandbox` then `nix-nixpkgs`. The sandbox test
@@ -74,12 +82,12 @@ curl -L -o nixpkgs.tar.gz https://github.com/NixOS/nixpkgs/archive/<commit>.tar.
 sha256sum nixpkgs.tar.gz
 ```
 
-Binary cache for stdenv inputs is allowed by default (FR-003); only the
-target derivation's `buildPhase` (the `hello.c` → `hello` compile step)
-runs locally on StarryOS.
+Binary substitution is allowed by default (FR-003). This makes the standard
+test reproducible without requiring a slow local `stdenv` download or source
+build; it does not prove that a local `buildPhase` ran.
 
 - Install the official Nix closure → `nix --version` gate → store-path write via `builtins.toFile`
-- nixpkgs: import `/opt/nixpkgs` → evaluate `stdenv.mkDerivation` → `nix-build` → verify `hello` output
+- nixpkgs: import `/opt/nixpkgs` → evaluate `hello` → realize it with substitution allowed → verify `hello` output
 - Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 
 ## Kernel Regression Tests
@@ -99,15 +107,15 @@ See `test-suit/starryos/qemu-smp1/system/`.
 
 ## Nix Sandbox Debug Regression Suite (003)
 
-The `qemu-smp1/nix-sandbox-debug` grouped suite (`test-suit/starryos/qemu-smp1/nix-sandbox-debug/`)
+The `qemu/nix-sandbox-debug` grouped suite (`test-suit/starryos/qemu/nix-sandbox-debug/`)
 is a CI-tracked regression suite added by the 003-starryos-nixpkgs feature.
-It contains ten focused C tests, one per Linux-semantics blocker fixed in
+It contains eleven focused C tests, one per Linux-semantics blocker fixed in
 003, plus integration coverage for `pivot_root`. The suite runs under
 `sandbox=off` (it does **not** exercise the nix sandbox builder; it only
 verifies kernel semantics that the nix sandbox path depends on).
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/nix-sandbox-debug
+cargo xtask starry test qemu --arch x86_64 -c qemu/nix-sandbox-debug
 ```
 
 The runner emits `NIX_SANDBOX_DEBUG_TESTS_PASSED` on success. Each test
@@ -123,7 +131,8 @@ prints its own `<NAME>_PASSED` marker.
 | `test-remount-flags` | `mount(MS_REMOUNT|MS_NOSUID)` reflected in mountinfo options | `TEST_REMOUNT_FLAGS_PASSED` |
 | `test-mount-bind` | `mount --bind` and `--rbind` semantics | `TEST_MOUNT_BIND_PASSED` |
 | `test-mount-propagation` | Shared peer group unmount propagation | `TEST_MOUNT_PROPAGATION_PASSED` |
-| `test-pivot-root` | `pivot_root` workaround path with absolute `new_root`/`put_old` | `TEST_PIVOT_ROOT_PASSED` |
+| `test-pivot-root` | resolved-location `pivot_root(".", "old")` and old-root detach | `TEST_PIVOT_ROOT_PASSED` |
+| `test-pivot-root-namespace` | private mount-namespace pivot does not change the parent namespace | `TEST_PIVOT_ROOT_NAMESPACE_PASSED` |
 | `test-cgroup-ns` | `unshare`/`clone`/`setns` for `CLONE_NEWCGROUP` + `/proc/self/ns/cgroup` | `TEST_CGROUP_NS_PASSED` |
 | `test-max-ns-entries` | All seven `/proc/sys/user/max_*_namespaces` files | `TEST_MAX_NS_ENTRIES_PASSED` |
 | `test-proc-environ` | `/proc/<pid>/environ` NUL-separated envp | `TEST_PROC_ENVIRON_PASSED` |
@@ -145,9 +154,9 @@ success/fail regexes.
 ```
 apps/starry/nix/
 ├── prebuild.sh          # inject official Nix and pinned nixpkgs source
-├── nix.sh               # sandbox-enabled nix-build (blocked, not CI)
-├── nix-nosandbox.sh     # builtins.derivation (CI gate, ~30s)
-├── nix-nixpkgs.sh       # stdenv.mkDerivation (CI gate, binary cache allowed)
+├── nix.sh               # optional sandbox-enabled nix-build (not CI)
+├── nix-nosandbox.sh     # builtins.toFile (CI gate, ~30s)
+├── nix-nixpkgs.sh       # nixpkgs realization and hello execution (CI gate)
 ├── test_nix.sh          # nosandbox + nixpkgs phases
 ├── build-x86_64-unknown-none.toml
 ├── build-aarch64-unknown-none-softfloat.toml
@@ -160,4 +169,4 @@ apps/starry/nix/
 
 - Nix 2.34.0 official binary closure, architecture-pinned in `prebuild.sh`
 - Host network access to GitHub during prebuild and guest access to
-  `cache.nixos.org` for stdenv inputs (allowed by default per FR-003)
+  `cache.nixos.org` for substitution-allowed nixpkgs derivations (FR-003)
