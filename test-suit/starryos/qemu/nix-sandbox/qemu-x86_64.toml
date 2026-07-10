@@ -5,7 +5,7 @@
 # and verifies sandbox was active (no auto-disable).
 #
 # Run:
-#   cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/nix-sandbox
+#   cargo xtask starry test qemu --arch x86_64 -c qemu/nix-sandbox
 #
 # Memory: 2G minimum for nix + sandbox builder overhead.
 # Timeout: 600s to allow apk download and nix build.
@@ -37,7 +37,7 @@ fail() { echo "NIX_SANDBOX_ERROR: $1"; echo "NIX_SANDBOX_TEST_FAILED"; exit 1; }
 # ---------------------------------------------------------------------------
 echo 'NIX_SANDBOX_PHASE_APK_BEGIN'
 for mirror in \
-    https://mirrors.cernet.edu.cn/alpine \
+    https://mirrors.tuna.tsinghua.edu.cn/alpine \
     https://dl-cdn.alpinelinux.org/alpine; do
     cat > /etc/apk/repositories <<EOF
 $mirror/v3.22/main
