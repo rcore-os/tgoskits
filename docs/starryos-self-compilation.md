@@ -280,7 +280,7 @@ apps/starry/selfhost/
 # 自编译构建离线运行，故需预热离线缓存的 rootfs。
 # 维护者路径（需 sudo，预热离线缓存）：sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 # 免 sudo（制备工具链 + 固件 + 预热缓存，产出可直接自编译的 rootfs）：./scripts/self-compile.sh --arch x86_64 --bootstrap
-# 可下载的预热蓝图已规划但尚未发布（下载 URL/SHA-256 仅为 self-compile.sh 注释中的占位符）。
+# 免下载（自动从 tgosimages release 拉取预热蓝图，SHA-256 校验，约 913 MiB）：无需额外操作，self-compile.sh 首次运行自动下载。
 
 # 运行自编译（x86_64 KVM, SMP=4）
 ./scripts/self-compile.sh --arch x86_64 --smp 4
