@@ -76,6 +76,7 @@ install_rust() {
     # QEMU provides the app's configured 16 GiB. Avoid Rustup's unusably slow
     # single-threaded fallback while keeping the value configurable for debug.
     export RUSTUP_IO_THREADS="${SELFHOST_RUSTUP_IO_THREADS:-4}"
+    export RUSTUP_MAX_RETRIES="${SELFHOST_RUSTUP_MAX_RETRIES:-5}"
 
     if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
