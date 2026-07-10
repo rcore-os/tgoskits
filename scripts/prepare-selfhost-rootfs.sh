@@ -404,11 +404,9 @@ info "Copying source tree into rootfs at $DEST_PATH..."
 
 # Bind-mount the source into the container so it's visible inside.
 # Use mktemp to avoid concurrent-invocation collisions on a fixed path.
+# cleanup_temp (registered above) handles $STABLE on EXIT.
 STABLE=$(mktemp -d /tmp/starryos-src-stable.XXXXXX)
 cp -r "$TEMP_SRC" "$STABLE"
-# Register cleanup so the temp dir is removed on exit.
-trap_cleanup_stable() { rm -rf "$STABLE" 2>/dev/null; }
-trap trap_cleanup_stable EXIT
 
 nspawn_args=(--image="$OUTPUT_IMG" --bind="$STABLE:$STABLE" --quiet)
 if [ "$NEED_QEMU" -eq 1 ] && [ -f "/usr/bin/$QEMU_STATIC" ]; then

@@ -236,8 +236,9 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
 #    免 sudo 路径（在 QEMU 内制备工具链 + 下载固件 + 预热离线缓存——
 #    产出的 rootfs 可直接用于自编译，无需 sudo、无需预置固件）：
 #    ./scripts/self-compile.sh --arch x86_64 --bootstrap
-#    可下载的预热蓝图已规划但尚未发布。
-#    self-compile.sh 每次运行从 blueprint 克隆临时工作副本，不会污染 blueprint。
+#    免下载（自动从 tgosimages release 拉取预热蓝图，约 913 MiB）：无需额外操作，
+#    self-compile.sh 首次运行自动下载并 SHA-256 校验。
+#    每次运行从 blueprint 克隆临时工作副本，不会污染 blueprint。
 
 # 2. 自编译（产物自动缓存到 tmp/starryos-selfbuilt-<arch>）
 ./scripts/self-compile.sh --arch x86_64 --smp 4
@@ -272,7 +273,7 @@ apps/starry/selfhost/
     └── qemu-riscv64.toml            # QEMU 配置（12G, smp 1; shell_init_cmd=/usr/bin/self-compile.sh）
 ```
 
-**CI 不运行的原因**: selfhost rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包），当前 CI 容器资源不足以运行完整 QEMU provisioning。可下载的预热 blueprint 镜像尚未上传到 tgosimages release（维护者托管待发布）。`--bootstrap` 可在免 sudo 下在 QEMU 内完成工具链制备 + 固件下载（SHA-256 验证）+ `cargo fetch` 离线缓存预热，已通过本地运行时验证（2026-07），其产出的 rootfs 可直接用于自编译。
+**CI 不运行的原因**: selfhost rootfs 镜像制备后约 8-12GB（含 rustup nightly 工具链 ~6.9GB、预缓存 crate、系统包），当前 CI 容器资源不足以运行完整 QEMU provisioning。预热 blueprint 镜像已上传至 tgosimages release（`seek-hope/tgosimages` v0.0.7，SHA-256 验证），`self-compile.sh` 首次运行自动下载。`--bootstrap` 可在免 sudo 下在 QEMU 内完成工具链制备 + 固件下载（SHA-256 验证）+ `cargo fetch` 离线缓存预热，已通过本地运行时验证（2026-07），其产出的 rootfs 可直接用于自编译。
 
 **手动运行**:
 ```bash
