@@ -5,10 +5,6 @@ use alloc::vec::Vec;
 use ax_errno::AxResult;
 use axdevice::AxVmDevices;
 use axdevice_base::Resource;
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use axvm_types::GuestPhysAddr;
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use x86_vcpu::X86_APIC_ACCESS_GPA;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
@@ -53,15 +49,7 @@ pub(super) fn map_guest_address_space(
     }
     resources.address_layout = Some(address_layout);
 
-    #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-    resources.address_space.map_linear(
-        GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
-        crate::arch::x86_apic_access_page_addr(),
-        ax_memory_addr::PAGE_SIZE_4K,
-        axvm_types::MappingFlags::DEVICE
-            | axvm_types::MappingFlags::READ
-            | axvm_types::MappingFlags::WRITE,
-    )?;
+    crate::arch::map_arch_address_space(&mut resources.address_space)?;
 
     Ok(())
 }
@@ -93,12 +81,7 @@ fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
             }),
     );
 
-    #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-    regions.push(GuestOwnedRegion::new(
-        X86_APIC_ACCESS_GPA,
-        ax_memory_addr::PAGE_SIZE_4K,
-        VmRegionKind::Reserved,
-    ));
+    crate::arch::append_arch_owned_regions(&mut regions);
 
     regions
 }

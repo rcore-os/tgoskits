@@ -14,18 +14,11 @@
 
 pub(crate) mod hvc;
 mod ivc;
-
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch_irq;
 pub(crate) mod vcpus;
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod x86_irq;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_errno::{AxResult, ax_err, ax_err_type};
-#[cfg(target_arch = "x86_64")]
-use axvm_types::InterruptTriggerMode;
 
 use crate::{StopReason, VmStatus};
 
@@ -132,26 +125,6 @@ pub fn register_vm(vm: VMRef) -> bool {
     crate::manager::push_existing_vm(vm)
 }
 
-/// Register a native host IRQ as the source for one x86 guest IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_route(
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-) {
-    x86_irq::register_ioapic_irq_forwarding_route(guest_gsi, host_irq);
-}
-
-/// Register a native host IRQ and trigger mode as the source for one x86 guest
-/// IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_route_with_trigger(
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-    trigger: InterruptTriggerMode,
-) {
-    x86_irq::register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,11 +144,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
-/// programmed a usable virtual IOAPIC route for it.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
-    x86_irq::register_ioapic_irq_forwarding_activator(guest_gsi, activator);
 }

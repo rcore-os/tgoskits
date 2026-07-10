@@ -21,6 +21,7 @@ use super::{
 };
 use crate::host::{HostMemory, HostTime, default_host};
 
+pub(crate) mod irq;
 mod npt;
 
 pub(crate) struct LoongArch64Arch;
@@ -85,7 +86,7 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn register_platform_irq_injector() {
-        crate::runtime::loongarch_irq::register_platform_irq_injector();
+        irq::register_platform_irq_injector();
     }
 
     fn inject_pending_interrupt(

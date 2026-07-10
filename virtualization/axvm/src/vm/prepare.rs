@@ -20,23 +20,12 @@ impl AxVM {
         let mut factories = DeviceFactoryRegistry::new();
         register_builtin_factories(&mut factories)?;
         let interrupt_mode = self.interrupt_mode();
-        #[cfg(target_arch = "riscv64")]
-        let interrupt_fabric = {
-            let machine = self.machine.lock();
-            let resources = machine.resources().ok_or_else(|| {
-                ax_err_type!(
-                    BadState,
-                    "VM resources are not available for RISC-V IRQ setup"
-                )
-            })?;
-            crate::irq::riscv::configure(
-                &mut factories,
-                interrupt_mode,
-                resources.config.emu_devices(),
-            )?
-        };
-        #[cfg(not(target_arch = "riscv64"))]
-        let interrupt_fabric = InterruptFabric::new(interrupt_mode);
+        let emulated_devices = self.with_config(|config| config.emu_devices().clone());
+        let interrupt_fabric = crate::arch::configure_interrupt_fabric(
+            &mut factories,
+            interrupt_mode,
+            &emulated_devices,
+        )?;
 
         self.prepare_with_factories(&factories, interrupt_fabric)
     }

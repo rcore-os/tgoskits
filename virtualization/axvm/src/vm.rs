@@ -171,7 +171,10 @@ impl VmRuntimeHandle {
         Ok(task.cpu_id() as usize)
     }
 
-    #[cfg(target_arch = "loongarch64")]
+    #[expect(
+        dead_code,
+        reason = "only the LoongArch IRQ backend queues physical interrupts"
+    )]
     pub(crate) fn queue_external_interrupt(
         &self,
         vcpu_id: usize,
@@ -841,7 +844,6 @@ impl AxVM {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn handle_nested_page_fault(
         &self,
         addr: GuestPhysAddr,
@@ -857,7 +859,6 @@ impl AxVM {
         .unwrap_or(false)
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     fn debug_nested_page_fault(
         vm_id: usize,
         resources: &AxVMResources,

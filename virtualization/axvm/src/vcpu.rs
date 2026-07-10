@@ -19,8 +19,6 @@ use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(target_arch = "x86_64")]
-use axvm_types::InterruptTriggerMode;
 use axvm_types::{
     GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
 };
@@ -201,7 +199,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Sets the guest entry point.
-    #[cfg(not(target_arch = "x86_64"))]
+    #[expect(
+        dead_code,
+        reason = "only non-x86 guest firmware updates secondary vCPU entries"
+    )]
     pub fn set_entry(&self, entry: GuestPhysAddr) -> AxResult {
         self.get_arch_vcpu().set_entry(entry)
     }
@@ -214,17 +215,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Injects an interrupt into the vCPU.
     pub fn inject_interrupt(&self, vector: usize) -> AxResult {
         self.get_arch_vcpu().inject_interrupt(vector)
-    }
-
-    /// Injects an interrupt with trigger-mode metadata.
-    #[cfg(target_arch = "x86_64")]
-    pub fn inject_interrupt_with_trigger(
-        &self,
-        vector: usize,
-        trigger: InterruptTriggerMode,
-    ) -> AxResult {
-        self.get_arch_vcpu()
-            .inject_interrupt_with_trigger(vector, trigger)
     }
 
     /// Sets the guest return value.

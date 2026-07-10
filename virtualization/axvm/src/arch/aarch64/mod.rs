@@ -25,8 +25,9 @@ use super::{
     SysRegReadExit, SysRegWriteExit, VcpuCreateContext, VcpuRunAction, VcpuSetupContext,
     target_phys_cpu_ids,
 };
-use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
+use crate::host::{HostCpu, HostMemory, HostTime, default_host};
 
+mod gic;
 mod npt;
 
 pub(crate) struct Aarch64Arch;

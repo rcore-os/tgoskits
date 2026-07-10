@@ -17,13 +17,11 @@ use alloc::format;
 use ax_errno::{AxResult, ax_err_type};
 
 use crate::{
-    AsVCpuTask, StopReason, VCpuTask, VmStatus,
+    AsVCpuTask, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
 };
-#[cfg(not(target_arch = "x86_64"))]
-use crate::{GuestPhysAddr, VmVcpuState};
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
 
@@ -105,7 +103,10 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     Ok(())
 }
 
-#[cfg(target_arch = "loongarch64")]
+#[expect(
+    dead_code,
+    reason = "only the LoongArch IRQ backend queues physical interrupts"
+)]
 pub(crate) fn queue_external_interrupt(
     vm_id: usize,
     vcpu_id: usize,
@@ -190,7 +191,10 @@ fn mark_vcpu_running(vm: &VMRef) {
 /// * `vcpu_id` - The ID of the VCpu to be booted.
 /// * `entry_point` - The entry point of the VCpu.
 /// * `arg` - The argument to be passed to the VCpu.
-#[cfg(not(target_arch = "x86_64"))]
+#[expect(
+    dead_code,
+    reason = "only non-x86 guest firmware boots secondary vCPUs"
+)]
 pub(crate) fn vcpu_on(
     vm: VMRef,
     vcpu_id: usize,
@@ -220,7 +224,10 @@ pub(crate) fn vcpu_on(
     Ok(())
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[expect(
+    dead_code,
+    reason = "only non-x86 guest firmware boots secondary vCPUs"
+)]
 pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
     crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
 }

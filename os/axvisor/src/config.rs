@@ -35,11 +35,11 @@ use axvm::{
 use axvmconfig::{AxVMCrateConfig, VMType};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use axvm::boot::handle_fdt_operations;
+use axvm::boot::fdt::handle_fdt_operations;
+#[cfg(target_arch = "loongarch64")]
+use axvm::boot::fdt::{handle_fdt_operations, init_guest_boot_resources};
 #[cfg(target_arch = "x86_64")]
 use axvm::boot::is_x86_linux_image_config;
-#[cfg(target_arch = "loongarch64")]
-use axvm::boot::{handle_fdt_operations, init_guest_boot_resources};
 
 /// Default BIOS load GPA for x86_64 built-in BIOS.
 #[cfg(target_arch = "x86_64")]

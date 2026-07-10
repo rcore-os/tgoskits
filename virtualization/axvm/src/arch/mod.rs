@@ -20,6 +20,14 @@ use crate::StopReason;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
+#[path = "x86_64/host.rs"]
+pub mod arceos;
+#[path = "aarch64/boot/fdt/mod.rs"]
+pub mod fdt;
+#[path = "loongarch64/boot/guest_platform/mod.rs"]
+pub mod guest_platform;
+#[path = "x86_64/boot/images/mod.rs"]
+pub mod images;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
 mod npt;
@@ -27,6 +35,35 @@ mod npt;
 mod riscv64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
+
+/// Architecture-specific public compatibility exports.
+///
+/// The parent crate re-exports this module so legacy AxVM API paths remain
+/// stable while target selection stays contained within `arch`.
+pub mod platform {
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "loongarch64"),
+        any(feature = "fs", feature = "host-fs")
+    ))]
+    pub use super::arceos::shutdown_host_filesystems;
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "loongarch64",
+        target_arch = "riscv64"
+    ))]
+    pub use super::arceos::{host_fdt_bootarg, phys_to_virt as host_phys_to_virt};
+    #[cfg(target_arch = "loongarch64")]
+    pub use super::loongarch64::irq::{
+        register_guest_irq_route as register_loongarch_guest_irq_route,
+        unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
+    };
+    #[cfg(target_arch = "x86_64")]
+    pub use super::x86_64::irq::{
+        register_ioapic_irq_forwarding_activator as register_x86_ioapic_irq_forwarding_activator,
+        register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
+        register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
+    };
+}
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) type CurrentArch = aarch64::Aarch64Arch;
@@ -51,25 +88,167 @@ pub(crate) fn new_nested_page_table(levels: usize) -> AxResult<ArchNestedPageTab
     CurrentArch::new_nested_page_table(levels)
 }
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_arch_device(
-    config: &axvm_types::EmulatedDeviceConfig,
-    devices: &mut axdevice::AxVmDevices,
-) -> AxResult {
-    x86_64::register_arch_device(config, devices)
-}
-
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-pub(crate) fn x86_apic_access_page_addr() -> axvm_types::HostPhysAddr {
-    x86_64::x86_apic_access_page_addr()
-}
-
 pub(crate) fn nested_paging_config(
     root_paddr: PhysAddr,
     levels: usize,
     vcpu_mappings: &[(usize, Option<usize>, usize)],
 ) -> AxResult<NestedPagingConfig> {
     CurrentArch::nested_paging_config(root_paddr, levels, vcpu_mappings)
+}
+
+/// Creates the VM interrupt fabric and registers architecture-owned factories.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn configure_interrupt_fabric(
+    factories: &mut axdevice::DeviceFactoryRegistry,
+    mode: VMInterruptMode,
+    configs: &[axvm_types::EmulatedDeviceConfig],
+) -> AxResult<crate::InterruptFabric> {
+    riscv64::irq::configure(factories, mode, configs)
+}
+
+/// Creates the VM interrupt fabric when no architecture-owned backend is needed.
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+))]
+pub(crate) fn configure_interrupt_fabric(
+    _factories: &mut axdevice::DeviceFactoryRegistry,
+    mode: VMInterruptMode,
+    _configs: &[axvm_types::EmulatedDeviceConfig],
+) -> AxResult<crate::InterruptFabric> {
+    Ok(crate::InterruptFabric::new(mode))
+}
+
+/// Adds architecture-owned guest physical ranges to the address-layout planner.
+#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+pub(crate) fn append_arch_owned_regions(regions: &mut Vec<crate::layout::GuestOwnedRegion>) {
+    regions.push(crate::layout::GuestOwnedRegion::new(
+        x86_vcpu::X86_APIC_ACCESS_GPA,
+        ax_memory_addr::PAGE_SIZE_4K,
+        crate::layout::VmRegionKind::Reserved,
+    ));
+}
+
+/// Adds no additional guest physical ranges for this architecture configuration.
+#[cfg(not(all(target_arch = "x86_64", feature = "vmx")))]
+pub(crate) fn append_arch_owned_regions(_regions: &mut Vec<crate::layout::GuestOwnedRegion>) {}
+
+/// Installs architecture-owned stage-2 mappings after the generic layout.
+#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
+pub(crate) fn map_arch_address_space(
+    address_space: &mut axaddrspace::AddrSpace<ArchNestedPageTable>,
+) -> AxResult {
+    address_space.map_linear(
+        axvm_types::GuestPhysAddr::from(x86_vcpu::X86_APIC_ACCESS_GPA),
+        x86_64::x86_apic_access_page_addr(),
+        ax_memory_addr::PAGE_SIZE_4K,
+        axvm_types::MappingFlags::DEVICE
+            | axvm_types::MappingFlags::READ
+            | axvm_types::MappingFlags::WRITE,
+    )
+}
+
+/// Installs no additional stage-2 mappings for this architecture configuration.
+#[cfg(not(all(target_arch = "x86_64", feature = "vmx")))]
+pub(crate) fn map_arch_address_space(
+    _address_space: &mut axaddrspace::AddrSpace<ArchNestedPageTable>,
+) -> AxResult {
+    Ok(())
+}
+
+/// Registers the host timer callback required by the active architecture.
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn register_timer_callback() {
+    ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| crate::check_timer_events());
+}
+
+/// Registers no timer callback when the host timer interrupts directly.
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
+pub(crate) fn register_timer_callback() {}
+
+/// Registers devices and passthrough resources owned by the active architecture.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn register_arch_devices(
+    vm: &crate::AxVM,
+    config: &crate::config::AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+) -> AxResult {
+    use alloc::sync::Arc;
+
+    use ax_errno::ax_err_type;
+    use axdevice_base::DeviceRegistry as _;
+
+    if config.interrupt_mode() == VMInterruptMode::Passthrough {
+        let cpu_id = vm.id() - 1; // FIXME: get the real CPU id.
+        let mut gicd_found = false;
+        for device in devices.devices() {
+            if let Some(gicd) = device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>() {
+                for spi in config.pass_through_spis() {
+                    gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _));
+                }
+                gicd_found = true;
+                break;
+            }
+        }
+        if !gicd_found {
+            warn!("Failed to assign SPIs: No VGicD found in device list");
+        }
+    } else {
+        for device in axdevice::create_vtimer_devices() {
+            devices
+                .register(Arc::from(device) as Arc<dyn axdevice_base::Device>)
+                .map_err(|err| ax_err_type!(InvalidInput, format!("register vtimer: {err:?}")))?;
+        }
+    }
+    Ok(())
+}
+
+/// Registers devices and passthrough resources owned by the active architecture.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn register_arch_devices(
+    _vm: &crate::AxVM,
+    config: &crate::config::AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+) -> AxResult {
+    use alloc::{format, sync::Arc};
+
+    use ax_errno::ax_err_type;
+    use axdevice_base::{BaseDeviceOps, DeviceRegistry as _, PortDeviceAdapter};
+
+    for port in config.pass_through_ports() {
+        let passthrough = Arc::new(x86_64::port::HostPortPassthrough::new(
+            port.base,
+            port.length,
+        )?);
+        let range = passthrough.address_range();
+        debug!(
+            "PT port region: [{:#x}~{:#x}]",
+            range.start.number(),
+            range.end.number(),
+        );
+        devices
+            .register(PortDeviceAdapter::from_arc(passthrough))
+            .map_err(|err| ax_err_type!(InvalidInput, format!("register PT port: {err:?}")))?;
+    }
+    for config in config.emu_devices() {
+        x86_64::register_arch_device(config, devices)?;
+    }
+    Ok(())
+}
+
+/// Registers devices and passthrough resources owned by the active architecture.
+#[cfg(any(target_arch = "loongarch64", target_arch = "riscv64"))]
+pub(crate) fn register_arch_devices(
+    _vm: &crate::AxVM,
+    _config: &crate::config::AxVMConfig,
+    _devices: &mut axdevice::AxVmDevices,
+) -> AxResult {
+    Ok(())
 }
 
 /// Runtime scheduler action selected after an architecture-local vCPU exit.
@@ -286,12 +465,15 @@ pub(crate) trait ArchOps {
         targets
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[expect(
+        dead_code,
+        reason = "secondary vCPU boot is unsupported on the x86 build"
+    )]
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(0, arg);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[expect(dead_code, reason = "CPU-up exits are unsupported on the x86 build")]
     fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         vcpu.set_gpr(0, 0);
     }

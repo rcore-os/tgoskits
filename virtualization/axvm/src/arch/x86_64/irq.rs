@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRaw as Mutex;
+use axvm_types::VmArchVcpuOps;
 
 use crate::{
     InterruptTriggerMode,
@@ -106,15 +107,16 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     };
 
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    vcpu.get_arch_vcpu()
+        .inject_interrupt_with_trigger(
+            irq.vector as _,
+            if irq.level_triggered {
+                InterruptTriggerMode::LevelTriggered
+            } else {
+                InterruptTriggerMode::EdgeTriggered
+            },
+        )
+        .unwrap();
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
@@ -135,15 +137,16 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    vcpu.get_arch_vcpu()
+        .inject_interrupt_with_trigger(
+            irq.vector as _,
+            if irq.level_triggered {
+                InterruptTriggerMode::LevelTriggered
+            } else {
+                InterruptTriggerMode::EdgeTriggered
+            },
+        )
+        .unwrap();
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -170,15 +173,16 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    vcpu.get_arch_vcpu()
+        .inject_interrupt_with_trigger(
+            irq.vector as _,
+            if irq.level_triggered {
+                InterruptTriggerMode::LevelTriggered
+            } else {
+                InterruptTriggerMode::EdgeTriggered
+            },
+        )
+        .unwrap();
 }
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
@@ -436,15 +440,16 @@ fn forward_passthrough_gsi(
         return false;
     };
 
-    vcpu.inject_interrupt_with_trigger(
-        guest_irq.vector as _,
-        if guest_irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    vcpu.get_arch_vcpu()
+        .inject_interrupt_with_trigger(
+            guest_irq.vector as _,
+            if guest_irq.level_triggered {
+                InterruptTriggerMode::LevelTriggered
+            } else {
+                InterruptTriggerMode::EdgeTriggered
+            },
+        )
+        .unwrap();
     true
 }
 

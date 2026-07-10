@@ -24,6 +24,7 @@ use crate::{
     host::{HostMemory, default_host},
 };
 
+mod irq;
 mod npt;
 
 pub(crate) struct Riscv64Arch;
@@ -113,7 +114,7 @@ impl ArchOps for Riscv64Arch {
             return;
         };
         let irq_sources = vm.with_config(|config| config.pass_through_irqs().to_vec());
-        crate::irq::set_riscv_virtual_irq_targets(cpu_id, &irq_sources);
+        irq::set_virtual_irq_targets(cpu_id, &irq_sources);
     }
 
     fn vcpu_affinities(
@@ -459,7 +460,7 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
 }
 
 fn register_platform_irq_injector() {
-    crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
+    irq::register_virtual_irq_injector(inject_virtual_irq);
 }
 
 fn first_cpu_in_mask(mask: usize) -> Option<usize> {

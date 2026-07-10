@@ -34,7 +34,9 @@ use crate::{
     vcpu::get_current_vcpu,
 };
 
+pub(crate) mod irq;
 mod npt;
+pub(crate) mod port;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
@@ -95,12 +97,12 @@ impl ArchOps for X86_64Arch {
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        crate::runtime::x86_irq::enable_ioapic_irq_forwarding(vm, vcpu);
+        irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        crate::runtime::x86_irq::drain_pending_ioapic_irqs(vm, vcpu);
-        crate::runtime::x86_irq::activate_ready_ioapic_forwarding_routes(vm);
+        irq::drain_pending_ioapic_irqs(vm, vcpu);
+        irq::activate_ready_ioapic_forwarding_routes(vm);
     }
 
     fn after_external_interrupt(
@@ -110,13 +112,13 @@ impl ArchOps for X86_64Arch {
     ) {
         crate::host::arceos::dispatch_host_irq(vector);
         crate::check_timer_events();
-        crate::runtime::x86_irq::inject_pending_serial_irq(vm, vcpu);
+        irq::inject_pending_serial_irq(vm, vcpu);
     }
 
     fn after_preemption_timer(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         crate::timer::check_events();
-        crate::runtime::x86_irq::inject_due_pit_irq0(vm, vcpu);
-        crate::runtime::x86_irq::inject_pending_serial_irq(vm, vcpu);
+        irq::inject_due_pit_irq0(vm, vcpu);
+        irq::inject_pending_serial_irq(vm, vcpu);
     }
 
     fn after_interrupt_end(
@@ -125,7 +127,7 @@ impl ArchOps for X86_64Arch {
         vector: Option<u8>,
     ) {
         if let Some(vector) = vector {
-            crate::runtime::x86_irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
+            irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
         }
     }
 
@@ -134,7 +136,7 @@ impl ArchOps for X86_64Arch {
     }
 
     fn on_last_vcpu_exit(vm_id: usize) {
-        crate::runtime::x86_irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
+        irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
     }
 
     fn handle_vcpu_exit_bound(
