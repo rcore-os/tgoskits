@@ -55,7 +55,7 @@ go version
 # GOPROXY is overridable for mirrors.
 mkdir -p "$overlay_dir/usr/local/bin" "$overlay_dir/root"
 ( cd "$app_dir/go" && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
-    GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}" GOFLAGS=-mod=readonly \
+    GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}" GOFLAGS="-mod=readonly -buildvcs=false" \
     go build -trimpath -o "$overlay_dir/usr/local/bin/golang-lang" . )
 
 # Stage the host golden for the byte-exact on-target compare.

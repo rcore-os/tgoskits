@@ -1,0 +1,2 @@
+# close_range01 # TBROK: LTP taint check requires /proc/sys/kernel/tainted, missing in current environment
+# close_range02 # TBROK: LTP taint check requires /proc/sys/kernel/tainted, missing in current environment

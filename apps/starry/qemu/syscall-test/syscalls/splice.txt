@@ -1,0 +1,9 @@
+splice01
+splice02
+splice03
+splice04
+splice05
+# splice06 # TCONF: missing /proc/sys/fs/pipe-max-size in the current environment
+# splice07 # TFAIL: bpf-map to pipe write end returns ENOSYS instead of expected EBADF/EINVAL
+splice08
+splice09

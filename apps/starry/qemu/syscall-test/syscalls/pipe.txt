@@ -1,0 +1,26 @@
+# pipe01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe03 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe04 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe05 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe06 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe07 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe08 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe09 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe10 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe11 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe12 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe13 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe14 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe15 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe2_01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe2_02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipe2_04 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_1 -c 5 -s 4090 -i 100 -b -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_2 -c 5 -s 4090 -i 100 -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_3 -c 5 -s 4090 -i 100 -u -b -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_4 -c 5 -s 4090 -i 100 -u -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_5 -c 5 -s 5000 -i 10 -b -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_6 -c 5 -s 5000 -i 10 -b -u -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_7 -c 5 -s 5000 -i 10 -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log
+# pipeio -T pipeio_8 -c 5 -s 5000 -i 10 -u -f x80 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/pipe.log

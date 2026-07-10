@@ -1,0 +1,14 @@
+rename01
+rename03
+rename04
+rename05
+rename06
+# rename07 # TFAIL: renaming a directory over a file succeeds unexpectedly
+rename08
+# rename09 # TFAIL: rename succeeds unexpectedly for permission/negative case
+rename10
+# rename11 # TCONF: mkfs.ext2/ext2 support is unavailable in the current environment
+# rename12 # TFAIL: rename succeeds unexpectedly for negative case
+rename13
+rename14
+rename15

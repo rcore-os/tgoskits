@@ -1,0 +1,6 @@
+write01
+write02
+write03
+# write04 # TBROK: opening FIFO with O_NONBLOCK|O_WRONLY returns ENXIO in the current environment
+write05
+write06

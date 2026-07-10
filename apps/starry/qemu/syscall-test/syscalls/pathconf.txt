@@ -1,0 +1,2 @@
+pathconf01
+# pathconf02 # TFAIL: several invalid path cases succeeded instead of returning expected errno

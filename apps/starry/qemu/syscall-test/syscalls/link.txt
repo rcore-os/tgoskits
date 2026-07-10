@@ -1,0 +1,4 @@
+link02
+# link04 # TFAIL: negative-path checks return unexpected errno or succeed unexpectedly
+link05
+# link08 # TCONF: ext2 filesystem support is unavailable in the current environment

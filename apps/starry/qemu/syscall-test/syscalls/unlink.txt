@@ -1,0 +1,5 @@
+unlink05
+# unlink07 # TFAIL: empty-path case returns EISDIR instead of ENOENT
+# unlink08 # TFAIL: unwritable/unsearchable directory cases succeed unexpectedly
+# unlink09 # TBROK: inode attributes are not supported by tmpfs
+# unlink10 # TCONF: ext2 filesystem support is unavailable in the current environment

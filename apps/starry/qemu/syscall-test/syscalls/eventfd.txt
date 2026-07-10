@@ -1,0 +1,6 @@
+# eventfd01 # TBROK: kernel .config is unavailable in the current environment
+# eventfd02 # TBROK: kernel .config is unavailable in the current environment
+# eventfd03 # TBROK: kernel .config is unavailable in the current environment
+# eventfd04 # TBROK: kernel .config is unavailable in the current environment
+# eventfd05 # TBROK: kernel .config is unavailable in the current environment
+# eventfd06 # TCONF: libaio is unavailable in the current environment

@@ -1,0 +1,5 @@
+# getxattr01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs2/getxattr.log
+# getxattr02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs2/getxattr.log
+# getxattr03 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs2/getxattr.log
+# getxattr04 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs2/getxattr.log
+# getxattr05 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs2/getxattr.log

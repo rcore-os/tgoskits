@@ -15,6 +15,6 @@ uefi = false
 to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/syscall_count"
-success_regex = []
+success_regex = ["SYSCALL_COUNT_PASS"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 240

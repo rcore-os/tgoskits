@@ -1,0 +1,3 @@
+# Non-comment lines are executed. Plain # lines document disabled cases.
+close01
+close02

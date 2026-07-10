@@ -100,7 +100,8 @@ type grpc_EchoServerIface interface {
 // grpc_EchoServerIface, so RegisterService accepts it.
 type grpc_echoServer struct {
 	// hooks let individual tests change behavior deterministically.
-	unaryHook func(ctx context.Context, req *grpc_EchoReq) (*grpc_EchoResp, error)
+	unaryHook        func(ctx context.Context, req *grpc_EchoReq) (*grpc_EchoResp, error)
+	serverStreamHook func(req *grpc_EchoReq, stream grpc.ServerStream) error
 }
 
 // Interface methods so *grpc_echoServer implements grpc_EchoServerIface. The actual RPC
@@ -154,6 +155,9 @@ func grpc_serverStreamHandler(srv any, stream grpc.ServerStream) error {
 	// header/trailer via the ServerStream methods (not the free funcs).
 	_ = stream.SetHeader(metadata.Pairs("x-ss-hdr", "h"))
 	stream.SetTrailer(metadata.Pairs("x-ss-trl", "t"))
+	if hook := srv.(*grpc_echoServer).serverStreamHook; hook != nil {
+		return hook(in, stream)
+	}
 	ss := &grpc.GenericServerStream[grpc_EchoReq, grpc_EchoResp]{ServerStream: stream}
 	for i := 0; i < in.N; i++ {
 		select {
@@ -1025,7 +1029,18 @@ func cat10_deadline_cancel() {
 	}
 
 	// (c) Cancellation of a server-streaming RPC mid-flight.
-	implCancel := &grpc_echoServer{}
+	implCancel := &grpc_echoServer{serverStreamHook: func(req *grpc_EchoReq, stream grpc.ServerStream) error {
+		ss := &grpc.GenericServerStream[grpc_EchoReq, grpc_EchoResp]{ServerStream: stream}
+		if err := ss.Send(&grpc_EchoResp{Msg: req.Msg, N: 0}); err != nil {
+			return err
+		}
+		select {
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
+		case <-time.After(5 * time.Second):
+			return status.Error(codes.DeadlineExceeded, "cancel stream did not observe client cancellation")
+		}
+	}}
 	h3, err3 := grpc_newHarness(nil, nil, func(s *grpc.Server) {
 		s.RegisterService(grpc_echoServiceDesc(implCancel), implCancel)
 	})
