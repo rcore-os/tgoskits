@@ -41,7 +41,7 @@
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -186,6 +186,12 @@ pub struct SampleSlot {
     /// before the first sample, when the period is left at its initial estimate.
     /// Mutated in place by the handler as the period adapts.
     pub last_time: u64,
+    /// Raw pointer to the owning event's lost-sample `AtomicU64`, bumped each time
+    /// a `PERF_RECORD_SAMPLE` is dropped because the ring is full. Read back by
+    /// `read(perf_fd)` for `PERF_FORMAT_LOST`. Kept alive by the event for as long
+    /// as the slot is registered (teardown unregisters first), exactly like
+    /// [`notify`](Self::notify). Null when the event tracks no lost count.
+    pub lost: *const (),
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -346,6 +352,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let sample_type = slot.sample_type;
         let id = slot.id;
         let notify_ptr = slot.notify;
+        let lost_ptr = slot.lost;
         let ring_vaddr = slot.ring_vaddr;
         let ring_len = slot.ring_len;
         let cur_period = slot.period;
@@ -375,7 +382,13 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
         // as long as the slot is registered (the event pins them, and teardown
         // unregisters before freeing). `ring_write` only touches that region.
-        unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+        let wrote = unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+        if !wrote && !lost_ptr.is_null() {
+            // The ring was full; account the dropped sample for PERF_FORMAT_LOST.
+            // SAFETY: `lost_ptr` points at the owning event's `AtomicU64`, kept
+            // alive while the slot is registered (teardown unregisters first).
+            unsafe { (*(lost_ptr as *const AtomicU64)).fetch_add(1, Ordering::Relaxed) };
+        }
 
         // Frequency mode: adapt the period toward the target rate and persist it
         // (plus the sample timestamp) in the slot for the next interval. Fixed
@@ -519,9 +532,10 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// then `data_head` is published with a release fence so a userspace reader that
 /// observes the new `data_head` also observes the bytes.
 ///
-/// If the record would overwrite still-unread bytes
-/// (`data_head - data_tail + len > data_size`) it is dropped: `data_head` is not
-/// advanced. Lost-record accounting is intentionally omitted for M2.
+/// Returns `true` if the record was written, `false` if it was dropped because it
+/// would overwrite still-unread bytes (`data_head - data_tail + len > data_size`);
+/// on drop `data_head` is not advanced and the caller bumps the event's
+/// `PERF_FORMAT_LOST` counter so `perf record` can report the loss.
 ///
 /// # Safety
 ///
@@ -530,12 +544,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// `HwPerfEvent::device_mmap`. The caller must ensure no concurrent kernel
 /// writer touches the same ring (guaranteed here: one counter ⇒ one writer, and
 /// the handler runs with local IRQs masked).
-unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
+unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) -> bool {
     // Guard the enable-before-mmap case (slot registered with a zero ring) and
     // any ring too small to even hold the header page: there is nowhere to
     // write, and the header pointer would be null/out of bounds.
     if ring_vaddr == 0 || ring_len < core::mem::size_of::<perf_event_mmap_page>() {
-        return;
+        return false;
     }
 
     let header = ring_vaddr as *mut perf_event_mmap_page;
@@ -548,12 +562,12 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     // Defensive: a malformed/zero header (no data region, or a data window that
     // does not fit in the buffer) means there is nowhere safe to write.
     if data_size == 0 || data_offset > ring_len || data_offset + data_size > ring_len {
-        return;
+        return false;
     }
 
     let len = record.len();
     if len > data_size {
-        return;
+        return false;
     }
 
     // SAFETY: header page is initialized; these are plain u64 fields.
@@ -561,9 +575,10 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     let tail = unsafe { core::ptr::addr_of!((*header).data_tail).read_volatile() };
 
     // Would this record overwrite bytes the reader has not consumed yet? Drop it
-    // if so (back-pressure; no lost-record accounting in M2).
+    // if so (back-pressure). Returning `false` lets the caller bump the event's
+    // lost-sample counter (`PERF_FORMAT_LOST`).
     if head.wrapping_sub(tail).wrapping_add(len as u64) > data_size as u64 {
-        return;
+        return false;
     }
 
     let data_base = ring_vaddr + data_offset;
@@ -590,6 +605,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     unsafe {
         core::ptr::addr_of_mut!((*header).data_head).write_volatile(head.wrapping_add(len as u64));
     }
+    true
 }
 
 /// Write one record into a sampling ring from **process context** (the side-band

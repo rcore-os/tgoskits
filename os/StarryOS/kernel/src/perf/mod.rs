@@ -206,6 +206,12 @@ const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
 const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 /// `read_format` bit selecting the per-event `id` in `read(perf_fd)`.
 const PERF_FORMAT_ID: u64 = 1 << 2;
+/// `read_format` bit selecting the per-event lost-sample count in `read(perf_fd)`
+/// (`PERF_FORMAT_LOST`, Linux 5.19+). `perf record` sets it so its
+/// `record__read_lost_samples` can total samples the ring dropped; the `u64` is
+/// appended last, after `id`. Without it, `perf record` prints "read LOST count
+/// failed" because the read returns a short buffer.
+const PERF_FORMAT_LOST: u64 = 1 << 4;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -224,6 +230,9 @@ pub struct PerfReadValues {
     /// The `PERF_FORMAT_ID` value itself comes from the owning [`PerfEvent`]'s
     /// id (so `read` and `PERF_EVENT_IOC_ID` agree), not from this snapshot.
     pub read_format: u64,
+    /// Samples the ring dropped for this event (`PERF_FORMAT_LOST`). `0` for
+    /// counting-only events (no sampling ring).
+    pub lost: u64,
 }
 
 /// File-like handle returned by `perf_event_open(2)`. Locks a
@@ -320,7 +329,7 @@ impl FileLike for PerfEvent {
         let values = self.event.lock().read_values()?;
 
         // Build the field sequence gated by `read_format`, in Linux order.
-        let mut fields = [0u64; 4];
+        let mut fields = [0u64; 5];
         let mut n = 0;
         fields[n] = values.value;
         n += 1;
@@ -336,6 +345,10 @@ impl FileLike for PerfEvent {
             // The id is the wrapper's, so `read(perf_fd)` reports the same value
             // `PERF_EVENT_IOC_ID` handed userspace (the inner snapshot has none).
             fields[n] = self.id;
+            n += 1;
+        }
+        if values.read_format & PERF_FORMAT_LOST != 0 {
+            fields[n] = values.lost;
             n += 1;
         }
 

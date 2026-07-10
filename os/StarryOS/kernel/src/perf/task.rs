@@ -155,6 +155,10 @@ pub struct PerTaskCounter {
     running: AtomicBool,
     /// Sum of completed-slice deltas (raw event count).
     accumulated: AtomicU64,
+    /// Samples the ring dropped because it was full (`PERF_FORMAT_LOST`). Bumped
+    /// by the overflow handler through the per-task [`SampleSlot`]'s `lost` pointer
+    /// at this field; read back by `read(perf_fd)`.
+    lost: AtomicU64,
     /// Accumulated enabled time across past windows (ns).
     time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Strictly `<=
@@ -342,6 +346,7 @@ impl PerTaskCounter {
             last_in_ns: AtomicU64::new(0),
             run_since_ns: AtomicU64::new(0),
             enabled_at_ns: AtomicU64::new(0),
+            lost: AtomicU64::new(0),
             dead: AtomicBool::new(false),
             hw_freed: AtomicBool::new(false),
             is_sampling: cfg.sample_period > 0,
@@ -605,6 +610,7 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64) {
                 freq: ptc.freq,
                 target_freq: ptc.freq_target,
                 last_time: 0,
+                lost: &ptc.lost as *const AtomicU64 as *const (),
             },
         );
         ax_cpu::pmu::overflow::enable_irq(n);
@@ -1340,4 +1346,11 @@ pub fn read_values(ptc: &PerTaskCounter) -> (u64, u64, u64) {
         }
     }
     (value, time_enabled, time_running)
+}
+
+/// Lost-sample count for this per-task event (`PERF_FORMAT_LOST`), bumped by the
+/// overflow handler when the ring is full. Paired with the handler's `Relaxed`
+/// `fetch_add`; a monotonic best-effort total is all `perf record` needs.
+pub fn read_lost(ptc: &PerTaskCounter) -> u64 {
+    ptc.lost.load(Ordering::Acquire)
 }
