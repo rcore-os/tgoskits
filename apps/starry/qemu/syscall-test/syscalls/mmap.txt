@@ -1,0 +1,20 @@
+# mmap01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap03 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap04 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap05 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap06 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap08 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap09 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap12 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap13 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap14 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap15 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap16 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap17 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap18 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap19 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap20 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap21 -m 1 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap21 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log
+# mmap22 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/mmap.log

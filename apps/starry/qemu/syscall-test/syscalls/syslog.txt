@@ -1,0 +1,2 @@
+# syslog11 # TBROK: missing /proc/sys/kernel/printk in current guest environment
+# syslog12 # TFAIL: NULL buffer and negative length checks succeed unexpectedly

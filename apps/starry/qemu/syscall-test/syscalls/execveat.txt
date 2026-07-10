@@ -1,0 +1,3 @@
+execveat01
+# execveat02 # TBROK: helper script exits with syntax error in current guest environment
+# execveat03 # TCONF: ext2 filesystem prerequisite is unavailable in current guest environment

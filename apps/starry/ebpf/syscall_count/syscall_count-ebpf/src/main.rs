@@ -2,12 +2,10 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::bpf_ktime_get_ns,
     macros::{kprobe, map},
     maps::HashMap,
     programs::ProbeContext,
 };
-use aya_log_ebpf::info;
 
 #[kprobe]
 pub fn syscall_ebpf(ctx: ProbeContext) -> u32 {
@@ -27,8 +25,6 @@ fn try_syscall_ebpf(ctx: ProbeContext) -> Result<u32, u32> {
                 SYSCALL_LIST.insert(&(syscall_num as u32), &1, 0).unwrap();
             }
         }
-        let time = unsafe { bpf_ktime_get_ns() };
-        info!(&ctx, "[{}] invoke syscall {}", time, syscall_num);
     }
     Ok(0)
 }

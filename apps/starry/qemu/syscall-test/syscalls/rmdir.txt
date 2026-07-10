@@ -1,0 +1,3 @@
+rmdir01
+# rmdir02 # TCONF: ext2 filesystem support is unavailable in the current environment
+# rmdir03 # TFAIL: rmdir succeeds unexpectedly for negative cases

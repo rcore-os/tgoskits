@@ -12,12 +12,18 @@ fi
 case "$STARRY_ARCH" in
     aarch64)
         GCC_PREFIX="aarch64-linux-gnu"
+        GCC_PACKAGE="gcc-aarch64-linux-gnu"
+        LIBC_DEV_PACKAGE="libc6-dev-arm64-cross"
         ;;
     riscv64)
         GCC_PREFIX="riscv64-linux-gnu"
+        GCC_PACKAGE="gcc-riscv64-linux-gnu"
+        LIBC_DEV_PACKAGE="libc6-dev-riscv64-cross"
         ;;
     x86_64)
         GCC_PREFIX="x86_64-linux-gnu"
+        GCC_PACKAGE="gcc-x86-64-linux-gnu"
+        LIBC_DEV_PACKAGE="libc6-dev"
         ;;
     *)
         echo "ERROR: unsupported arch: $STARRY_ARCH" >&2
@@ -25,8 +31,32 @@ case "$STARRY_ARCH" in
         ;;
 esac
 
-command -v "${GCC_PREFIX}-gcc" >/dev/null 2>&1 || { echo "ERROR: ${GCC_PREFIX}-gcc not found" >&2; exit 1; }
-command -v readelf >/dev/null 2>&1 || { echo "ERROR: readelf not found" >&2; exit 1; }
+ensure_host_packages() {
+    local missing=()
+
+    if ! command -v "${GCC_PREFIX}-gcc" >/dev/null 2>&1; then
+        missing+=("$GCC_PACKAGE" "$LIBC_DEV_PACKAGE")
+    elif ! printf "#include <stdio.h>\n" | "${GCC_PREFIX}-gcc" -E -x c - >/dev/null 2>&1; then
+        missing+=("$LIBC_DEV_PACKAGE")
+    fi
+    command -v readelf >/dev/null 2>&1 || missing+=(binutils)
+    command -v install >/dev/null 2>&1 || missing+=(coreutils)
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "ERROR: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
+        exit 1
+    fi
+
+    echo "installing missing host packages: ${missing[*]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+ensure_host_packages
 
 "${GCC_PREFIX}-gcc" -o "$app_dir/glibc-dynamic-smoke" "$app_dir/glibc-dynamic-smoke.c"
 "${GCC_PREFIX}-gcc" -o "$app_dir/proc-self-exe-test" "$app_dir/proc-self-exe-test.c"

@@ -7,7 +7,6 @@ edition.workspace = true
 syscall_count-common = { path = "../syscall_count-common" }
 
 aya-ebpf = { workspace = true }
-aya-log-ebpf = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

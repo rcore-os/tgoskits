@@ -1,0 +1,4 @@
+geteuid01
+# geteuid01_16 # TCONF: 16-bit geteuid is not supported on x86_64
+geteuid02
+# geteuid02_16 # TCONF: 16-bit geteuid is not supported on x86_64
