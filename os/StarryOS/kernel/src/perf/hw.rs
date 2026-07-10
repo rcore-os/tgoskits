@@ -27,7 +27,7 @@
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_arch = "aarch64")]
 use ax_alloc::GlobalPage;
@@ -237,6 +237,11 @@ struct SamplingState {
     /// events in one mmap buffer. `anchor` pins the target ring's pages for as
     /// long as this event may write into them.
     redirect: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
+    /// Samples dropped because the ring was full. The overflow handler bumps it
+    /// through the registered [`SampleSlot`]'s `lost` pointer at this `Arc`, and
+    /// `read` returns it for `PERF_FORMAT_LOST`. The `Arc` keeps the counter alive
+    /// for that raw pointer; it drops only after teardown unregisters the slot.
+    lost: Arc<AtomicU64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -411,6 +416,14 @@ impl HwPerfEvent {
             Counter::Programmable(n) => Some(n),
             Counter::Cycle => None,
         }
+    }
+
+    /// Samples the sampling ring dropped for this event (`0` for a non-sampling
+    /// event), for `read`'s `PERF_FORMAT_LOST` field.
+    fn sampling_lost(&self) -> u64 {
+        self.sampling
+            .as_ref()
+            .map_or(0, |s| s.lost.load(Ordering::Relaxed))
     }
 
     /// Tears down the overflow-IRQ sampling path for this event, in the strict
@@ -618,6 +631,7 @@ impl HwPerfEvent {
                 }
             };
             let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
+            let lost_ptr = Arc::as_ptr(&sampling.lost) as *const ();
             sampling::ensure_pmu_irq_registered();
             ax_cpu::pmu::counter::preload(n, period);
             sampling::register(
@@ -632,6 +646,7 @@ impl HwPerfEvent {
                     freq,
                     target_freq,
                     last_time: 0,
+                    lost: lost_ptr,
                 },
             );
             ax_cpu::pmu::overflow::enable_irq(n);
@@ -1074,6 +1089,7 @@ impl PerfEventOps for HwPerfEvent {
                 time_enabled,
                 time_running,
                 read_format: ptc.read_format(),
+                lost: super::task::read_lost(ptc),
             });
         }
         // Cpu-bound system event: read the counter from its target core (IPI if
@@ -1093,6 +1109,7 @@ impl PerfEventOps for HwPerfEvent {
                 time_enabled,
                 time_running,
                 read_format: self.read_format,
+                lost: self.sampling_lost(),
             });
         }
         // Self/system-wide event: read the counter from its `home_cpu` (IPI if the
@@ -1111,6 +1128,7 @@ impl PerfEventOps for HwPerfEvent {
             time_enabled,
             time_running,
             read_format: self.read_format,
+            lost: self.sampling_lost(),
         })
     }
 
@@ -1480,6 +1498,7 @@ pub fn perf_event_open_hw(
             poll_alive,
             ring: None,
             redirect: None,
+            lost: Arc::new(AtomicU64::new(0)),
         })
     } else {
         None
