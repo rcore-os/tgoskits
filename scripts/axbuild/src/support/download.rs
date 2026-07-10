@@ -8,7 +8,8 @@ use std::{
 use anyhow::{Context, anyhow, bail};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::{StatusCode, header};
+use reqwest::{StatusCode, Url, header};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
@@ -64,12 +65,13 @@ pub(crate) async fn download_file_verified_sha256(
 ) -> anyhow::Result<()> {
     let _lock = acquire_path_lock(path).await?;
     if path.exists() {
-        match verify_file_sha256(path, expected_sha256) {
-            Ok(true) => {
+        match verify_download_sha256(client, url, path, expected_sha256, true).await {
+            Ok(VerifyOutcome::MatchedRegistry) => {
                 println!("file already exists and passed checksum verification");
                 return Ok(());
             }
-            Ok(false) => {
+            Ok(VerifyOutcome::MatchedGitHubAsset) => return Ok(()),
+            Ok(VerifyOutcome::Mismatched { .. }) => {
                 println!("existing file checksum mismatch, re-downloading...");
             }
             Err(err) => {
@@ -82,17 +84,144 @@ pub(crate) async fn download_file_verified_sha256(
     }
 
     download_file_with_retries(client, url, path).await?;
-    match verify_file_sha256(path, expected_sha256) {
-        Ok(true) => Ok(()),
-        Ok(false) => {
+    match verify_download_sha256(client, url, path, expected_sha256, false).await? {
+        VerifyOutcome::MatchedRegistry | VerifyOutcome::MatchedGitHubAsset => Ok(()),
+        VerifyOutcome::Mismatched { actual_sha256 } => {
             let _ = tokio_fs::remove_file(path).await;
-            bail!("downloaded file checksum mismatch for {url}");
-        }
-        Err(err) => {
-            let _ = tokio_fs::remove_file(path).await;
-            Err(err)
+            bail!(
+                "downloaded file checksum mismatch for {url}: expected {expected_sha256}, got \
+                 {actual_sha256}"
+            );
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VerifyOutcome {
+    MatchedRegistry,
+    MatchedGitHubAsset,
+    Mismatched { actual_sha256: String },
+}
+
+async fn verify_download_sha256(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    expected_sha256: &str,
+    ignore_remote_digest_error: bool,
+) -> anyhow::Result<VerifyOutcome> {
+    let actual_sha256 = file_sha256(path)?;
+    if actual_sha256 == expected_sha256 {
+        return Ok(VerifyOutcome::MatchedRegistry);
+    }
+
+    match github_release_asset_sha256(client, url).await {
+        Ok(Some(asset_sha256))
+            if classify_download_sha256(&actual_sha256, expected_sha256, Some(&asset_sha256))
+                == VerifyOutcome::MatchedGitHubAsset =>
+        {
+            eprintln!(
+                "warning: registry checksum for {url} is stale: expected {expected_sha256}, \
+                 GitHub release asset digest is {asset_sha256}; accepting verified asset digest"
+            );
+            Ok(VerifyOutcome::MatchedGitHubAsset)
+        }
+        Ok(_) => Ok(VerifyOutcome::Mismatched { actual_sha256 }),
+        Err(err) if ignore_remote_digest_error => {
+            eprintln!("warning: failed to check GitHub release asset digest for {url}: {err}");
+            Ok(VerifyOutcome::Mismatched { actual_sha256 })
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn classify_download_sha256(
+    actual_sha256: &str,
+    expected_sha256: &str,
+    asset_sha256: Option<&str>,
+) -> VerifyOutcome {
+    if actual_sha256 == expected_sha256 {
+        return VerifyOutcome::MatchedRegistry;
+    }
+    if asset_sha256 == Some(actual_sha256) {
+        return VerifyOutcome::MatchedGitHubAsset;
+    }
+    VerifyOutcome::Mismatched {
+        actual_sha256: actual_sha256.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubReleaseAssetRef {
+    api_url: String,
+    asset_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    digest: Option<String>,
+}
+
+async fn github_release_asset_sha256(
+    client: &reqwest::Client,
+    download_url: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(asset_ref) = github_release_asset_ref(download_url) else {
+        return Ok(None);
+    };
+
+    let release: GitHubRelease = client
+        .get(&asset_ref.api_url)
+        .header(header::USER_AGENT, "tgoskits-axbuild")
+        .send()
+        .await
+        .with_context(|| format!("failed to request {}", asset_ref.api_url))?
+        .error_for_status()
+        .with_context(|| format!("failed to fetch {}", asset_ref.api_url))?
+        .json()
+        .await
+        .with_context(|| format!("failed to parse {}", asset_ref.api_url))?;
+
+    let digest = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_ref.asset_name)
+        .and_then(|asset| asset.digest)
+        .and_then(|digest| digest.strip_prefix("sha256:").map(str::to_owned));
+    Ok(digest)
+}
+
+fn github_release_asset_ref(download_url: &str) -> Option<GitHubReleaseAssetRef> {
+    let url = Url::parse(download_url).ok()?;
+    if url.host_str()? != "github.com" {
+        return None;
+    }
+
+    let segments: Vec<_> = url.path_segments()?.collect();
+    if segments.len() != 6
+        || segments[0].is_empty()
+        || segments[1].is_empty()
+        || segments[2] != "releases"
+        || segments[3] != "download"
+        || segments[4].is_empty()
+        || segments[5].is_empty()
+    {
+        return None;
+    }
+
+    Some(GitHubReleaseAssetRef {
+        api_url: format!(
+            "https://api.github.com/repos/{}/{}/releases/tags/{}",
+            segments[0], segments[1], segments[4]
+        ),
+        asset_name: segments[5].to_string(),
+    })
 }
 
 async fn download_file_with_retries(
@@ -136,10 +265,6 @@ pub(crate) fn file_sha256(path: &Path) -> anyhow::Result<String> {
     }
 
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-pub(crate) fn verify_file_sha256(path: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
-    Ok(file_sha256(path)? == expected_sha256)
 }
 
 async fn download_file_inner(

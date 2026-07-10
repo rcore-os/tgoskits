@@ -31,6 +31,37 @@ fn all_qemu_selection_skips_apps_without_matching_arch_config() {
 }
 
 #[test]
+fn all_qemu_selection_skips_ignored_nested_app() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "ebpf/kret",
+        "qemu-loongarch64.toml",
+        "args = []\n",
+    );
+    write_case_file(
+        root.path(),
+        "apache",
+        "qemu-loongarch64.toml",
+        "args = []\n",
+    );
+    fs::write(root.path().join("apps/.ignore"), "apps/starry/ebpf/kret\n").unwrap();
+    let args = ArgsAppQemu {
+        all: true,
+        test_case: None,
+        caps: Vec::new(),
+        arch: Some("loongarch64".to_string()),
+        qemu_config: None,
+        debug: false,
+    };
+
+    let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+    let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["apache"]);
+}
+
+#[test]
 fn selected_qemu_case_allows_ignored_app_when_explicit() {
     let root = tempdir().unwrap();
     write_case_file(root.path(), "gdb-smoke", "qemu-riscv64.toml", "args = []\n");

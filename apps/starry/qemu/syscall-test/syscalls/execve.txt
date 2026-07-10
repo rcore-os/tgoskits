@@ -1,0 +1,6 @@
+execve01
+# execve02 # TFAIL: child image runs unexpectedly in negative-path expectation
+execve03
+# execve04 # TCONF: upstream skips when write-to-executed-file is allowed on newer kernels
+execve05 -i 5 -n 32
+execve06

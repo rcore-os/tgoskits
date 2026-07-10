@@ -1,0 +1,4 @@
+getegid01
+# getegid01_16 # TCONF: 16-bit getegid is not supported on x86_64
+getegid02
+# getegid02_16 # TCONF: 16-bit getegid is not supported on x86_64

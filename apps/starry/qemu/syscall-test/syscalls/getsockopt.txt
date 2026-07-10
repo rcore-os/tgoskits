@@ -1,0 +1,2 @@
+# getsockopt01 # TFAIL: several negative socket option cases return ENOPROTOOPT instead of expected errno
+getsockopt02

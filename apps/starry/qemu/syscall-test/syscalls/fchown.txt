@@ -1,0 +1,10 @@
+fchown01
+# fchown01_16 # TCONF: 16-bit fchown is not supported on this platform
+fchown02
+# fchown02_16 # TCONF: 16-bit fchown is not supported on this platform
+fchown03
+# fchown03_16 # TCONF: 16-bit fchown is not supported on this platform
+# fchown04 # TCONF: ext2 filesystem support is unavailable in the current environment
+# fchown04_16 # TCONF: ext2 filesystem support is unavailable in the current environment
+fchown05
+# fchown05_16 # TCONF: 16-bit fchown is not supported on this platform

@@ -81,8 +81,8 @@ https://mirrors.aliyun.com/alpine/edge/community
 REPO
 
     echo "[ffplay prebuild] installing weston and ffplay via qemu-user apk..."
-    QEMU_LD_PREFIX="$staging_root" \
-    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
+    env -u LD_LIBRARY_PATH \
+        QEMU_LD_PREFIX="$staging_root" \
         "$qemu_runner" -L "$staging_root" \
             "$staging_root/sbin/apk" \
             --root "$staging_root" \
@@ -120,7 +120,7 @@ find_library_path() {
     local library="$1"
     local dir
 
-    for dir in lib usr/lib usr/local/lib usr/lib/pulseaudio usr/lib/dri; do
+    for dir in lib usr/lib usr/local/lib usr/libexec usr/lib/weston usr/lib/pulseaudio usr/lib/dri; do
         if [[ -e "$staging_root/$dir/$library" ]]; then
             printf '/%s/%s\n' "$dir" "$library"
             return 0
@@ -128,6 +128,29 @@ find_library_path() {
     done
 
     return 1
+}
+
+append_musl_search_path() {
+    local dir="$1"
+    local target="$2"
+
+    if ! grep -Fxq "$dir" "$target"; then
+        printf "%s\n" "$dir" >> "$target"
+    fi
+}
+
+stage_musl_search_path() {
+    local musl_path="/etc/ld-musl-${arch}.path"
+    local target="$overlay_dir$musl_path"
+
+    mkdir -p "$(dirname "$target")"
+    if [[ -f "$staging_root$musl_path" ]]; then
+        cp -f "$staging_root$musl_path" "$target"
+    else
+        printf "/lib\n/usr/lib\n/usr/local/lib\n" > "$target"
+    fi
+    append_musl_search_path /usr/libexec "$target"
+    append_musl_search_path /usr/lib/weston "$target"
 }
 
 copy_runtime_dependencies() {
@@ -186,6 +209,9 @@ populate_overlay() {
 
     # Resolve runtime .so dependencies for weston binary
     copy_runtime_dependencies /usr/bin/weston
+
+    # Make Weston private libexec libraries visible to musl's DT_NEEDED lookup.
+    stage_musl_search_path
 
     # Weston example clients (weston-simple-shm, weston-simple-egl, etc.)
     # In Alpine they live under /usr/libexec/weston/ — copy to /usr/bin/ for convenience.

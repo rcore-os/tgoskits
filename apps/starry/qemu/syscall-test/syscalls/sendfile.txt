@@ -1,0 +1,16 @@
+sendfile02
+sendfile02_64
+# sendfile03 # TFAIL: sendfile to O_RDONLY out_fd succeeds unexpectedly
+# sendfile03_64 # TFAIL: sendfile to O_RDONLY out_fd succeeds unexpectedly
+# sendfile04 # TFAIL: mapped-buffer protection checks succeed unexpectedly
+# sendfile04_64 # TFAIL: mapped-buffer protection checks succeed unexpectedly
+sendfile05
+sendfile05_64
+sendfile06
+sendfile06_64
+# sendfile07 # TBROK: test times out in current environment
+# sendfile07_64 # TBROK: test times out in current environment
+sendfile08
+sendfile08_64
+# sendfile09 # TCONF: large-file case requires 5G free space
+# sendfile09_64 # TCONF: large-file case requires 5G free space

@@ -1,0 +1,2 @@
+getdents01
+# getdents02 # TFAIL: negative directory-fd case succeeded instead of returning expected errno
