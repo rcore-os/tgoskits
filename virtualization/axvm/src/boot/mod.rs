@@ -7,9 +7,19 @@ pub mod fdt;
 pub mod guest_platform;
 pub mod images;
 mod policy;
+mod prepared;
 
 pub use images::*;
-pub use policy::{GuestAcpiTables, GuestBootDescription, GuestDeviceTree, GuestFdtBuilder};
+pub use policy::{
+    GuestAcpiTables, GuestBootDescription, GuestDeviceTree, GuestFdtBuilder,
+    boot_firmware_load_gpa, guest_boot_policy,
+};
+pub use prepared::{PreparedGuestBoot, prepare_guest_boot};
+
+/// Initializes architecture-owned guest firmware resources.
+pub fn init_guest_boot_resources() {
+    crate::arch::init_guest_boot_resources();
+}
 
 /// Build-time image bytes supplied by the hypervisor application.
 #[derive(Clone, Copy, Debug)]

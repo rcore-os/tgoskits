@@ -1,8 +1,5 @@
 //! Internal host capability traits used by the AxVM runtime.
 
-extern crate alloc;
-
-use alloc::boxed::Box;
 use core::time::Duration;
 
 use ax_errno::AxResult;
@@ -35,21 +32,11 @@ pub trait HostMemory {
 
 /// Host time and timer operations.
 pub trait HostTime {
-    /// Timer cancellation token.
-    type CancelToken: Copy + Send + Sync + 'static;
-
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
     /// Program the host one-shot timer.
     fn set_oneshot_timer(&self, deadline_ns: u64);
-
-    /// Register a VM timer callback.
-    fn register_timer(
-        &self,
-        deadline_ns: u64,
-        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> Self::CancelToken;
 }
 
 /// Host CPU topology and affinity operations.

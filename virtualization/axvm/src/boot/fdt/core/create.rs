@@ -12,25 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "riscv64")]
-use alloc::format;
 use alloc::{string::String, vec::Vec};
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use core::ptr::NonNull;
 
 use ax_errno::{AxResult, ax_err_type};
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
 use axvmconfig::AxVMCrateConfig;
 use fdt_edit::{Fdt, Node, NodeId};
 
-use super::tree::FdtTree;
-#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
-use super::tree::GuestMemorySpec;
-#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::VMMemoryRegion;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::{AxVMRef, GuestPhysAddr, boot::images::load_vm_image_from_memory};
+use super::tree::{FdtTree, GuestMemorySpec};
+use crate::{AxVMRef, GuestPhysAddr, VMMemoryRegion, boot::images::load_vm_image_from_memory};
 
 pub fn create_guest_fdt(
     fdt: &Fdt,
@@ -115,7 +106,12 @@ fn cpu_reg_address(fdt: &Fdt, node_id: NodeId) -> Option<usize> {
         .and_then(|node| node.regs().first().map(|reg| reg.address as usize))
 }
 
-fn need_cpu_node(phys_cpu_ids: &[usize], fdt: &Fdt, node_id: NodeId, node_path: &str) -> bool {
+pub(crate) fn need_cpu_node(
+    phys_cpu_ids: &[usize],
+    fdt: &Fdt,
+    node_id: NodeId,
+    node_path: &str,
+) -> bool {
     if !node_path.starts_with("/cpus/cpu@") {
         return true;
     }
@@ -130,7 +126,6 @@ fn need_cpu_node(phys_cpu_ids: &[usize], fdt: &Fdt, node_id: NodeId, node_path: 
     })
 }
 
-#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 fn guest_memory_specs(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -167,71 +162,31 @@ fn guest_memory_specs(
         .collect()
 }
 
-#[cfg(any(test, target_arch = "aarch64"))]
-fn initrd_start_size_from_image_config(
-    ramdisk: Option<&crate::config::RamdiskInfo>,
-) -> Option<(u64, u64)> {
-    let rd = ramdisk?;
-    let start = rd.load_gpa.as_usize() as u64;
-    let size = rd.size? as u64;
-    Some((start, size))
-}
-
 #[cfg(test)]
 fn initrd_range_from_image_config(
     ramdisk: Option<&crate::config::RamdiskInfo>,
 ) -> Option<(u64, u64)> {
-    let (start, size) = initrd_start_size_from_image_config(ramdisk)?;
+    let ramdisk = ramdisk?;
+    let start = ramdisk.load_gpa.as_usize() as u64;
+    let size = ramdisk.size? as u64;
     Some((start, start.saturating_add(size)))
 }
 
-#[cfg(target_arch = "aarch64")]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
     vm: AxVMRef,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult {
+    let patch_runtime = super::selected_guest_fdt_policy().patch_runtime;
+    // SAFETY: `fdt_src` originates from `GuestDtbImage::as_bytes`, and the
+    // caller supplies the exact slice length while the image remains borrowed.
     let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let initrd_start_size = vm.with_config(|config| {
-        initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
-    });
-    let new_fdt_bytes = patch_guest_fdt_for_runtime(
-        fdt_bytes,
-        &vm.memory_regions(),
-        crate_config,
-        initrd_start_size,
-        true,
-    )?;
+    let new_fdt_bytes = patch_runtime(fdt_bytes, &vm, crate_config)?;
 
     load_patched_fdt(vm, new_fdt_bytes)
 }
 
-#[cfg(target_arch = "riscv64")]
-pub fn update_fdt(
-    fdt_src: NonNull<u8>,
-    dtb_size: usize,
-    vm: AxVMRef,
-    crate_config: &AxVMCrateConfig,
-) -> AxResult {
-    let fdt_bytes = unsafe { core::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let host_fdt = super::try_get_host_fdt()
-        .map(Fdt::from_bytes)
-        .transpose()
-        .map_err(|e| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse host FDT while updating guest FDT: {e:#?}")
-            )
-        })?;
-    let new_fdt_bytes =
-        patch_guest_fdt_for_runtime(fdt_bytes, &vm.memory_regions(), crate_config, None, false)?;
-    let new_fdt_bytes = ensure_chosen_from_host(new_fdt_bytes, host_fdt.as_ref())?;
-
-    load_patched_fdt(vm, new_fdt_bytes)
-}
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxResult {
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
     debug!(
@@ -243,8 +198,7 @@ fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxResult {
     vm.set_guest_device_tree(dest_addr, new_fdt_bytes)
 }
 
-#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
-pub(crate) fn patch_guest_fdt_for_runtime(
+pub fn patch_guest_fdt_for_runtime(
     fdt_bytes: &[u8],
     memory_regions: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
@@ -263,23 +217,6 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     Ok(tree.finish())
 }
 
-#[cfg(target_arch = "riscv64")]
-fn ensure_chosen_from_host(guest_dtb: Vec<u8>, host_fdt: Option<&Fdt>) -> AxResult<Vec<u8>> {
-    let Some(host_fdt) = host_fdt else {
-        return Ok(guest_dtb);
-    };
-    let mut guest = FdtTree::from_bytes(&guest_dtb)?;
-    if guest.inner().get_by_path_id("/chosen").is_some() {
-        return Ok(guest.finish());
-    }
-    let Some(host_chosen) = host_fdt.get_by_path_id("/chosen") else {
-        return Ok(guest.finish());
-    };
-    guest.copy_subtree_from(host_fdt, host_chosen, guest.inner().root_id(), false)?;
-    Ok(guest.finish())
-}
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
@@ -292,8 +229,12 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
         let use_configured_dtb_addr =
             config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
 
-        let dtb_addr = if use_configured_dtb_addr {
-            config.image_config.dtb_load_gpa.unwrap()
+        let dtb_addr = if let Some(configured) = config
+            .image_config
+            .dtb_load_gpa
+            .filter(|_| use_configured_dtb_addr)
+        {
+            configured
         } else {
             let main_memory_size = main_memory.size().min(512 * MB);
             let addr = (main_memory.gpa + main_memory_size - fdt_size).align_down(2 * MB);
@@ -307,53 +248,6 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<
     });
 
     Ok(dtb_addr)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn update_cpu_node(
-    fdt: &Fdt,
-    host_fdt: Option<&Fdt>,
-    crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
-    let Some(host_fdt) = host_fdt else {
-        return Ok(fdt.encode().as_ref().to_vec());
-    };
-
-    let phys_cpu_ids = crate_config
-        .base
-        .phys_cpu_ids
-        .as_deref()
-        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
-    let mut tree = FdtTree::from_fdt(fdt.clone());
-    tree.inner_mut().remove_by_path("/cpus");
-
-    if let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") {
-        let cpus_id =
-            tree.copy_subtree_from(host_fdt, host_cpus_id, tree.inner().root_id(), true)?;
-        let cpu_paths = tree
-            .node_paths()
-            .into_iter()
-            .filter_map(|(id, path)| {
-                (path.starts_with("/cpus/cpu@")
-                    && !need_cpu_node(phys_cpu_ids, tree.inner(), id, &path))
-                .then_some(path)
-            })
-            .collect::<Vec<_>>();
-        for path in cpu_paths {
-            tree.inner_mut().remove_by_path(&path);
-        }
-        if let Some(cpus) = tree.inner_mut().node_mut(cpus_id) {
-            for prop in [
-                "riscv,cbop-block-size",
-                "riscv,cboz-block-size",
-                "riscv,cbom-block-size",
-            ] {
-                cpus.remove_property(prop);
-            }
-        }
-    }
-
-    Ok(tree.finish())
 }
 
 #[cfg(test)]

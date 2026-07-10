@@ -23,6 +23,7 @@ use crate::host::{HostMemory, HostTime, default_host};
 
 pub(crate) mod boot;
 mod capabilities;
+pub(crate) mod fdt;
 mod idle;
 pub(crate) mod irq;
 mod npt;
@@ -344,7 +345,7 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> usize {
-        default_host().register_timer(deadline.as_nanos() as u64, callback)
+        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
     }
 
     fn cancel_timer(token: usize) {

@@ -116,6 +116,88 @@ fn common_domains_live_outside_architecture_directories() {
     }
 }
 
+#[test]
+fn common_modules_do_not_include_architecture_sources() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut violations = Vec::new();
+    find_source_files(&source_root, &mut |path, source| {
+        if !path.starts_with(source_root.join("arch"))
+            && source.contains("#[path")
+            && source.contains("arch/")
+        {
+            violations.push(source_relative_path(&source_root, path));
+        }
+    });
+
+    assert!(
+        violations.is_empty(),
+        "common modules must not include implementations from src/arch: {}",
+        violations.join(", ")
+    );
+}
+
+#[test]
+fn architecture_directories_only_select_their_own_target() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let arch_root = source_root.join("arch");
+    let architectures = ["aarch64", "loongarch64", "riscv64", "x86_64"];
+    let mut violations = Vec::new();
+
+    for architecture in architectures {
+        find_source_files(&arch_root.join(architecture), &mut |path, source| {
+            for other_architecture in architectures {
+                if other_architecture != architecture
+                    && source.contains(&format!("target_arch = \"{other_architecture}\""))
+                {
+                    violations.push(format!(
+                        "{} selects {other_architecture}",
+                        source_relative_path(&source_root, path)
+                    ));
+                }
+            }
+        });
+    }
+
+    assert!(
+        violations.is_empty(),
+        "an architecture directory must not select another target: {}",
+        violations.join(", ")
+    );
+}
+
+#[test]
+fn axvisor_vm_creation_uses_unified_guest_boot_facade() {
+    let axvisor_config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/axvisor/src/config.rs");
+    let source = std::fs::read_to_string(&axvisor_config)
+        .expect("Axvisor VM creation source must be readable");
+
+    for legacy_call in [
+        "handle_fdt_operations",
+        "ImageLoader::new",
+        "x86_linux_direct_boot_config",
+        "DEFAULT_X86_BIOS_LOAD_GPA",
+    ] {
+        assert!(
+            !source.contains(legacy_call),
+            "Axvisor VM creation must use the unified AxVM boot facade: {legacy_call}"
+        );
+    }
+}
+
+#[test]
+fn host_time_trait_only_exposes_common_clock_capabilities() {
+    let host_traits = include_str!("../src/host/traits.rs");
+
+    for architecture_specific_detail in ["CancelToken", "fn register_timer"] {
+        assert!(
+            !host_traits.contains(architecture_specific_detail),
+            "HostTime must not expose architecture-specific timer details: \
+             {architecture_specific_detail}"
+        );
+    }
+}
+
 fn find_target_arch_cfg_outside_arch(
     source_root: &std::path::Path,
     directory: &std::path::Path,
@@ -145,4 +227,24 @@ fn find_target_arch_cfg_outside_arch(
         }
     }
     violations
+}
+
+fn find_source_files(directory: &std::path::Path, visit: &mut impl FnMut(&std::path::Path, &str)) {
+    for entry in std::fs::read_dir(directory).expect("AxVM source directory must be readable") {
+        let entry = entry.expect("AxVM source directory entry must be readable");
+        let path = entry.path();
+        if path.is_dir() {
+            find_source_files(&path, visit);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let source = std::fs::read_to_string(&path).expect("AxVM source file must be readable");
+            visit(&path, &source);
+        }
+    }
+}
+
+fn source_relative_path(source_root: &std::path::Path, path: &std::path::Path) -> String {
+    path.strip_prefix(source_root)
+        .expect("source path must be below src")
+        .display()
+        .to_string()
 }

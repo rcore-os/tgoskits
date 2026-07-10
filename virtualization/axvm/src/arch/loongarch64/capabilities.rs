@@ -1,11 +1,34 @@
 //! LoongArch64 implementations of AxVM platform capability hooks.
 
 use super::LoongArch64Arch;
-use crate::architecture::{AddressSpacePlatform, DevicePlatform, HostTimePlatform};
+use crate::architecture::{
+    AddressSpacePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
+};
 
 impl DevicePlatform for LoongArch64Arch {}
 
 impl AddressSpacePlatform for LoongArch64Arch {}
+
+impl GuestBootPlatform for LoongArch64Arch {
+    fn init_guest_boot_resources() {
+        super::boot::init();
+    }
+
+    fn prepare_guest_boot(
+        vm_config: &mut crate::config::AxVMConfig,
+        vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+        _provider: &dyn crate::boot::BootImageProvider,
+    ) -> ax_errno::AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+        if vm_create_config.kernel.effective_boot_protocol() != axvmconfig::VMBootProtocol::Uefi {
+            return ax_errno::ax_err!(
+                Unsupported,
+                "LoongArch AxVisor guests currently require UEFI boot"
+            );
+        }
+        super::boot::prepare_uefi_fdt_config(vm_config, vm_create_config)?;
+        Ok(None)
+    }
+}
 
 impl HostTimePlatform for LoongArch64Arch {
     fn set_oneshot_timer(_deadline_ns: u64) {}

@@ -6,7 +6,9 @@ use ax_errno::{AxResult, ax_err_type};
 use axdevice_base::{BaseDeviceOps, DeviceRegistry as _, PortDeviceAdapter};
 
 use super::X86_64Arch;
-use crate::architecture::{AddressSpacePlatform, DevicePlatform, HostTimePlatform};
+use crate::architecture::{
+    AddressSpacePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
+};
 
 impl DevicePlatform for X86_64Arch {
     fn register_devices(
@@ -62,3 +64,5 @@ impl AddressSpacePlatform for X86_64Arch {
 }
 
 impl HostTimePlatform for X86_64Arch {}
+
+impl GuestBootPlatform for X86_64Arch {}

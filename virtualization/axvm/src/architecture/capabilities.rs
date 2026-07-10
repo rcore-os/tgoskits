@@ -4,8 +4,27 @@ use ax_errno::AxResult;
 
 use super::ArchOps;
 
+/// Guest firmware preparation performed before common VM memory loading.
+pub(crate) trait GuestBootPlatform {
+    fn init_guest_boot_resources() {}
+
+    fn prepare_guest_boot(
+        _vm_config: &mut crate::config::AxVMConfig,
+        _vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+        _provider: &dyn crate::boot::BootImageProvider,
+    ) -> AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+        Ok(None)
+    }
+}
+
 /// Architecture-specific guest image planning layered over common byte loading.
 pub(crate) trait BootImagePlatform {
+    fn default_boot_firmware_load_gpa(
+        _config: &axvmconfig::AxVMCrateConfig,
+    ) -> Option<axvm_types::GuestPhysAddr> {
+        None
+    }
+
     fn load_images_from_memory(
         loader: &mut crate::boot::images::ImageLoaderCore<'_>,
         images: crate::boot::StaticVmImage,

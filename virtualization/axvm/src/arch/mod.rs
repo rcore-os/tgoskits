@@ -6,7 +6,7 @@ use axvm_types::NestedPagingConfig;
 
 pub(crate) use crate::architecture::*;
 use crate::architecture::{
-    AddressSpacePlatform, BootImagePlatform, DevicePlatform, HostTimePlatform,
+    AddressSpacePlatform, BootImagePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -22,12 +22,16 @@ mod x86_64;
 pub(crate) use aarch64::Aarch64Arch as CurrentArch;
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::ImageLoader;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::fdt;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::LoongArch64Arch as CurrentArch;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::boot as guest_platform;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::boot::ImageLoader;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) use loongarch64::fdt;
 #[cfg(not(target_arch = "loongarch64"))]
 pub(crate) mod guest_platform {
     #[doc(hidden)]
@@ -37,10 +41,14 @@ pub(crate) mod guest_platform {
 pub use riscv64::ImageLoader;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use riscv64::Riscv64Arch as CurrentArch;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use riscv64::fdt;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86_64::X86_64Arch as CurrentArch;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::boot::ImageLoader;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86_64::fdt;
 
 /// Architecture-specific public compatibility exports.
 pub mod platform {
@@ -126,6 +134,18 @@ pub(crate) fn set_oneshot_timer(deadline_ns: u64) {
     CurrentArch::set_oneshot_timer(deadline_ns);
 }
 
+pub(crate) fn init_guest_boot_resources() {
+    CurrentArch::init_guest_boot_resources();
+}
+
+pub(crate) fn prepare_guest_boot(
+    vm_config: &mut crate::config::AxVMConfig,
+    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    provider: &dyn crate::boot::BootImageProvider,
+) -> AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+    CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)
+}
+
 pub(crate) fn load_images_from_memory(
     loader: &mut crate::boot::images::ImageLoaderCore<'_>,
     images: crate::boot::StaticVmImage,
@@ -145,4 +165,10 @@ pub(crate) fn is_x86_linux_image_config(
     provider: &dyn crate::boot::BootImageProvider,
 ) -> bool {
     CurrentArch::is_x86_linux_image_config(config, provider)
+}
+
+pub(crate) fn default_boot_firmware_load_gpa(
+    config: &axvmconfig::AxVMCrateConfig,
+) -> Option<axvm_types::GuestPhysAddr> {
+    CurrentArch::default_boot_firmware_load_gpa(config)
 }

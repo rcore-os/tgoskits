@@ -45,6 +45,16 @@ impl<'a> ImageLoader<'a> {
 }
 
 impl BootImagePlatform for X86_64Arch {
+    fn default_boot_firmware_load_gpa(
+        config: &axvmconfig::AxVMCrateConfig,
+    ) -> Option<GuestPhysAddr> {
+        const BUILT_IN_BIOS_LOAD_GPA: usize = 0x8000;
+
+        (config.kernel.boot_firmware_path().is_none()
+            && config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot)
+            .then_some(GuestPhysAddr::from(BUILT_IN_BIOS_LOAD_GPA))
+    }
+
     fn load_images_from_memory(
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,

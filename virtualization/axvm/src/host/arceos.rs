@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -81,22 +80,12 @@ impl HostMemory for ArceOsHost {
 }
 
 impl HostTime for ArceOsHost {
-    type CancelToken = usize;
-
     fn monotonic_time(&self) -> Duration {
         modules::ax_hal::time::monotonic_time()
     }
 
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         crate::arch::set_oneshot_timer(deadline_ns);
-    }
-
-    fn register_timer(
-        &self,
-        deadline_ns: u64,
-        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> Self::CancelToken {
-        crate::timer::register_timer(deadline_ns, callback)
     }
 }
 

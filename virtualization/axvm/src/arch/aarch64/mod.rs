@@ -32,6 +32,7 @@ use crate::{
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
+pub(crate) mod fdt;
 mod gic;
 mod images;
 mod ipi;
@@ -499,7 +500,7 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     }
 
     fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = default_host().register_timer(deadline.as_nanos() as u64, callback);
+        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
     }
 
     fn read_vgicd_iidr() -> u32 {

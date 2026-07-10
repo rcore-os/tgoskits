@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! FDT parsing and processing functionality.
+//! Architecture-neutral FDT parsing and guest configuration enrichment.
 
 use alloc::{
     format,
@@ -27,21 +27,18 @@ use axvmconfig::{
 };
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
-#[cfg(target_arch = "aarch64")]
-use super::create::update_cpu_node;
 use crate::{MappingFlags, config::AxVMConfig};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
-    let bootarg: usize = crate::host_fdt_bootarg();
+    let bootarg = super::super::host_fdt_bootarg();
     if bootarg == 0 {
         warn!("Boot argument does not contain a host FDT pointer");
         return None;
     }
 
-    let fdt_vaddr = crate::host_phys_to_virt(bootarg.into());
+    let fdt_vaddr = super::super::host_phys_to_virt(bootarg.into());
     super::tree::host_fdt_bytes_from_ptr(fdt_vaddr.as_ptr()).inspect(|bytes| {
         trace!("Host FDT size: 0x{:x}", bytes.len());
     })
@@ -584,8 +581,8 @@ pub fn parse_passthrough_devices_address(
     Ok(())
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
+    let decode_interrupt = super::selected_guest_fdt_policy().decode_interrupt;
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
             InvalidData,
@@ -610,7 +607,7 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
             continue;
         };
         for interrupt in view.interrupts() {
-            if let Some(irq) = passthrough_irq_from_interrupt_specifier(&interrupt.specifier) {
+            if let Some(irq) = decode_interrupt(&interrupt.specifier) {
                 trace!("node: {name}, passthrough interrupt id: 0x{irq:x}");
                 vm_cfg.add_pass_through_irq(irq);
             }
@@ -620,58 +617,13 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
     Ok(())
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-fn passthrough_irq_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
-    #[cfg(target_arch = "aarch64")]
-    {
-        aarch64_gic_spi_from_interrupt_specifier(specifier)
-    }
-    #[cfg(target_arch = "riscv64")]
-    {
-        riscv_plic_source_from_interrupt_specifier(specifier)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn aarch64_gic_spi_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
-    (specifier.first().copied() == Some(0))
-        .then(|| specifier.get(1).copied())
-        .flatten()
-}
-
-#[cfg(any(target_arch = "riscv64", test))]
-fn riscv_plic_source_from_interrupt_specifier(specifier: &[u32]) -> Option<u32> {
-    specifier.first().copied().filter(|source| *source != 0)
-}
-
-#[cfg(target_arch = "riscv64")]
-pub fn update_provided_fdt(
-    provided_dtb: &[u8],
-    _host_dtb: Option<&[u8]>,
-    _crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
-    Ok(provided_dtb.to_vec())
-}
-
-#[cfg(target_arch = "aarch64")]
 pub fn update_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
     crate_config: &AxVMCrateConfig,
 ) -> AxResult<Vec<u8>> {
-    let provided_fdt = Fdt::from_bytes(provided_dtb).map_err(|e| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse provided DTB image: {e:#?}")
-        )
-    })?;
-    let host_fdt = host_dtb.map(Fdt::from_bytes).transpose().map_err(|e| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse host DTB image: {e:#?}")
-        )
-    })?;
-    update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)
+    let patch_provided = super::selected_guest_fdt_policy().patch_provided;
+    patch_provided(provided_dtb, host_dtb, crate_config)
 }
 
 #[cfg(test)]
@@ -802,22 +754,5 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].base_gpa, 0x1000_1000);
         assert_eq!(ranges[0].length, 0x1000);
-    }
-
-    #[test]
-    fn riscv_plic_interrupt_uses_first_fdt_cell() {
-        assert_eq!(
-            super::riscv_plic_source_from_interrupt_specifier(&[8]),
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn riscv_plic_interrupt_rejects_reserved_source_zero() {
-        assert_eq!(
-            super::riscv_plic_source_from_interrupt_specifier(&[0]),
-            None
-        );
-        assert_eq!(super::riscv_plic_source_from_interrupt_specifier(&[]), None);
     }
 }

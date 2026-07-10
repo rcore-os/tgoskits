@@ -6,7 +6,7 @@ pub(crate) mod ops;
 mod types;
 
 pub(crate) use capabilities::{
-    AddressSpacePlatform, BootImagePlatform, DevicePlatform, HostTimePlatform,
+    AddressSpacePlatform, BootImagePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
 };
 pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 pub(crate) use ops::ArchOps;

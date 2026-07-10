@@ -27,6 +27,7 @@ use crate::{
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
+pub(crate) mod fdt;
 mod images;
 mod irq;
 mod npt;

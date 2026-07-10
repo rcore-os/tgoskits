@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     StopReason,
-    host::{HostMemory, HostTime, default_host},
+    host::{HostMemory, default_host},
     manager,
     vcpu::get_current_vcpu,
 };
@@ -36,6 +36,7 @@ use crate::{
 pub(crate) mod boot;
 mod capabilities;
 mod exit;
+pub(crate) mod fdt;
 mod host_irq;
 pub(crate) mod irq;
 mod npt;
@@ -299,7 +300,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-        Some(default_host().register_timer(
+        Some(crate::timer::register_timer(
             deadline_nanos,
             Box::new(move |deadline: Duration| callback(deadline.as_nanos() as u64)),
         ))
