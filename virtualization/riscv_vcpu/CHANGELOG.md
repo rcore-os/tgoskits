@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.17...riscv_vcpu-v0.5.18) - 2026-07-10
+
+### Other
+
+- *(riscv_vcpu)* decouple AxVM adapter and clean exits ([#1556](https://github.com/rcore-os/tgoskits/pull/1556))
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.16...riscv_vcpu-v0.5.17) - 2026-07-07
 
 ### Other

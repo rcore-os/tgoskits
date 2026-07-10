@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.3...axdevice-v0.5.4) - 2026-07-10
+
+### Other
+
+- *(x86_vcpu)* make x86 virtualization OS-neutral ([#1550](https://github.com/rcore-os/tgoskits/pull/1550))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.2...axdevice-v0.5.3) - 2026-07-08
 
 ### Other

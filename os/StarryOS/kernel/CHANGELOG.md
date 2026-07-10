@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.3...starry-kernel-v0.7.4) - 2026-07-10
+
+### Added
+
+- *(crab-usb)* add SG2002 DWC2 host axtest ([#1496](https://github.com/rcore-os/tgoskits/pull/1496))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.2...starry-kernel-v0.7.3) - 2026-07-08
 
 ### Other

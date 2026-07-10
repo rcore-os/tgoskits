@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.8...somehal-v0.8.0) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.7...somehal-v0.7.8) - 2026-07-08
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.11...loongarch_vcpu-v0.5.12) - 2026-07-10
+
+### Other
+
+- *(loongarch_vcpu)* decouple AxVM adapter and typed registers ([#1553](https://github.com/rcore-os/tgoskits/pull/1553))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.10...loongarch_vcpu-v0.5.11) - 2026-07-08
 
 ### Other

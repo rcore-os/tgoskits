@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-sync
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.2...ax-fs-ng-v0.8.3) - 2026-07-08
 
 ### Other

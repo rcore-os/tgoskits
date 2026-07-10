@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "bitflags 2.13.0",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.8.11"
+version = "0.8.12"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-kspin",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "ax-alloc",
  "ax-display",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
  "aic8800",
  "anyhow",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-io",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.26"
+version = "0.5.27"
 dependencies = [
  "ax-hal",
  "ax-kspin",
@@ -849,7 +849,7 @@ version = "0.4.8"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.1",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ax-crate-interface",
  "ax-kernel-guard",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.28"
+version = "0.5.29"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.4.19"
+version = "0.4.20"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "arm_vgic",
  "ax-errno 0.6.1",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "axklib"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -1353,7 +1353,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.7.11"
+version = "0.7.12"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "anyhow",
  "ax-crate-interface",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "aarch64-cpu-ext",
  "arm-gic-driver",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "crab-usb"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "ax-kspin",
@@ -4806,7 +4806,7 @@ dependencies = [
 
 [[package]]
 name = "loongarch_vcpu"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "bitflags 2.13.0",
  "log",
@@ -5262,7 +5262,7 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
 name = "nvme-driver"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "dma-api",
  "log",
@@ -5500,7 +5500,7 @@ dependencies = [
 
 [[package]]
 name = "pcie"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "bit_field",
  "bitflags 2.13.0",
@@ -6314,7 +6314,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-msi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "irq-framework",
  "rdif-base",
@@ -6398,7 +6398,7 @@ dependencies = [
 
 [[package]]
 name = "rdrive"
-version = "0.23.5"
+version = "0.23.6"
 dependencies = [
  "acpi",
  "ax-kspin",
@@ -6634,7 +6634,7 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 
 [[package]]
 name = "riscv_vcpu"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "bitflags 2.13.0",
  "log",
@@ -7289,7 +7289,7 @@ dependencies = [
 
 [[package]]
 name = "sg2002-tpu"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "ax-dma",
  "ax-errno 0.6.1",
@@ -7507,7 +7507,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7550,7 +7550,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.7.8"
+version = "0.8.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7644,7 +7644,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -7775,7 +7775,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "anyhow",
  "ax-driver",
@@ -9641,7 +9641,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vcpu"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "bit_field",
  "bitflags 2.13.0",
@@ -9659,7 +9659,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vlapic"
-version = "0.4.19"
+version = "0.5.0"
 dependencies = [
  "bit",
  "log",
