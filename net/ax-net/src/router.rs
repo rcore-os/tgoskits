@@ -1390,12 +1390,7 @@ mod l2_counter_tests {
             self.recv_returns
         }
 
-        fn send(
-            &mut self,
-            _next_hop: IpAddress,
-            _packet: &[u8],
-            _timestamp: Instant,
-        ) -> usize {
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
             self.send_returns
         }
     }
@@ -1500,7 +1495,10 @@ mod l2_counter_tests {
         }));
 
         // Simulate what device_tx_worker does
-        let frame_len = device.inner.lock().send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        let frame_len = device
+            .inner
+            .lock()
+            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
         assert_eq!(frame_len, 1514);
         if frame_len > 0 {
             device.count_tx(frame_len);
@@ -1520,7 +1518,10 @@ mod l2_counter_tests {
             recv_returns: 0,
         }));
 
-        let frame_len = device.inner.lock().send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        let frame_len = device
+            .inner
+            .lock()
+            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
         assert_eq!(frame_len, 0);
         // Worker skips count_tx when frame_len == 0
         if frame_len > 0 {
