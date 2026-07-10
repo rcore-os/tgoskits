@@ -27,5 +27,6 @@ fail_regex = [
   '(?i)SIGSEGV',
   'exit with code: 139',
 ]
-# SMP-ROTATE / SMP-MIGRATE / RDPMC-3 loops are long on real silicon.
-timeout = 600
+# SMP-ROTATE / SMP-MIGRATE / RDPMC-3 loops are long on real silicon; the smp8
+# ymodem transfer + full-matrix run needs headroom over the smp1 anchor.
+timeout = 900
