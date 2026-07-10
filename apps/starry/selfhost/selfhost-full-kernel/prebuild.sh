@@ -194,6 +194,10 @@ if [ "${arch}" = "x86_64" ]; then
         # with an absolute symlink at runtime so the offline build finds cargo.
         [ -L /root/.cargo/bin/cargo ] && ln -sf /root/.cargo/bin/rustup /root/.cargo/bin/cargo 2>/dev/null || true
         [ -L /root/.cargo/bin/rustc ] && ln -sf /root/.cargo/bin/rustup /root/.cargo/bin/rustc 2>/dev/null || true
+        # xtask generates a bash linker script (arrays, (( )), local); dash is
+        # the Debian default /bin/sh and chokes on bash syntax.  Point /bin/sh
+        # to bash so the linker script executes correctly.
+        [ -x /usr/bin/bash ] && ln -sf /usr/bin/bash /bin/sh 2>/dev/null || true
         RUSTFLAGS="" cargo build -p tg-xtask --target x86_64-unknown-linux-gnu
         XTASK=/tmp/build/x86_64-unknown-linux-gnu/debug/tg-xtask
         if [ -x "\$XTASK" ]; then
