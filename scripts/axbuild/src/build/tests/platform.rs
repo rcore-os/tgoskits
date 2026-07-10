@@ -68,3 +68,14 @@ fn build_cargo_args_uses_target_stem_as_rustflags_key() {
         "config key must not use a removed spec path"
     );
 }
+
+#[test]
+fn build_cargo_args_disables_loongarch64_unaligned_access() {
+    let args = BuildInfo::build_cargo_args("loongarch64-unknown-none-softfloat", &[]);
+
+    assert!(args.windows(2).any(|pair| {
+        pair[0] == "--config"
+            && pair[1].starts_with("target.loongarch64-unknown-none-softfloat.rustflags=")
+            && pair[1].contains("\"-Ctarget-feature=-ual\"")
+    }));
+}

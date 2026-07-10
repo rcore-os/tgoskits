@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.24...starryos-v0.5.25) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, ax-hal, ax-runtime, starry-kernel, axbuild, ax-std
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.23...starryos-v0.5.24) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axplat-dyn, ax-hal, ax-runtime, axbuild, ax-driver, ax-std, starry-kernel
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.22...starryos-v0.5.23) - 2026-07-08
+
+### Other
+
+- updated the following local packages: starry-kernel, axbuild, ax-driver, axplat-dyn, ax-hal, ax-runtime, ax-std
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.21...starryos-v0.5.22) - 2026-07-08
+
+### Other
+
+- updated the following local packages: starry-kernel, ax-driver, axplat-dyn, ax-hal, ax-runtime, ax-std
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.20...starryos-v0.5.21) - 2026-07-07
+
+### Added
+
+- *(starry-kernel)* add RK3588 PWM sysfs support ([#1468](https://github.com/rcore-os/tgoskits/pull/1468))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.19...starryos-v0.5.20) - 2026-07-02
 
 ### Added

@@ -105,7 +105,19 @@ impl PreparedDevices {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    fn register_arch_devices(
+        _vm: &AxVM,
+        resources: &AxVMResources,
+        devices: &mut AxVmDevices,
+    ) -> AxResult {
+        for config in resources.config.emu_devices() {
+            crate::arch::register_x86_arch_device(config, devices)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     fn register_arch_devices(
         _vm: &AxVM,
         _resources: &AxVMResources,

@@ -46,6 +46,7 @@ model_register!(
 mod binding_info;
 mod binding_resolver;
 pub mod error;
+mod irq_binding;
 pub mod mmio;
 #[cfg(any(
     feature = "block",
@@ -104,3 +105,4 @@ pub use binding_resolver::{
     binding_irq_from_named_fdt_interrupt,
 };
 pub use error::{Error, Result};
+pub use irq_binding::IrqBindingLease;

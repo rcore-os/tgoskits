@@ -5,12 +5,12 @@ use alloc::format;
 use log::{info, warn};
 use rdif_pwm::{DriverGeneric, Interface as PwmInterface, Pwm, PwmError, PwmPolarity, PwmState};
 use rdrive::{
-    probe::{OnProbeError, fdt::NodeType},
-    register::ProbeFdt,
+    probe::{OnProbeError, fdt::ClockLine},
+    register::{FdtInfo, ProbeFdt},
 };
 use rockchip_pwm::{RK_PWM_CLOCK_HZ, RK_PWM_MMIO_SIZE, RockchipPwm};
 
-use crate::{mmio::iomap, soc};
+use crate::mmio::iomap;
 
 const PWM_CHANNELS_PER_CHIP: usize = 1;
 
@@ -28,8 +28,8 @@ crate::model_register!(
 
 struct RockchipPwmDevice {
     inner: RockchipPwm,
-    pwm_clock: u32,
-    pclk: u32,
+    pwm_clock: ClockLine,
+    pclk: ClockLine,
     initialized: bool,
 }
 
@@ -64,7 +64,7 @@ impl RockchipPwmDevice {
         if self.initialized {
             return Ok(());
         }
-        if let Err(err) = configure_clocks(self.pwm_clock, self.pclk) {
+        if let Err(err) = configure_clocks(&self.pwm_clock, &self.pclk) {
             warn!("failed to enable Rockchip PWM clocks: {err}");
             return Err(PwmError::InvalidPeriod);
         }
@@ -82,7 +82,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let (pwm_clock, pclk) = pwm_clock_ids(info.node)?;
+    let (pwm_clock, pclk) = pwm_clock_lines(&info)?;
 
     let base = iomap(
         reg.address as usize,
@@ -104,24 +104,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn pwm_clock_ids(node: NodeType<'_>) -> Result<(u32, u32), OnProbeError> {
-    let mut pwm_clock = None;
-    let mut pclk = None;
-    for clock in node.clocks() {
-        match clock.name.as_deref() {
-            Some("pwm") => pwm_clock = clock.select(),
-            Some("pclk") => pclk = clock.select(),
-            _ => {}
-        }
-    }
-    pwm_clock
-        .zip(pclk)
-        .ok_or_else(|| OnProbeError::other(format!("[{}] missing pwm/pclk clocks", node.name())))
+fn pwm_clock_lines(info: &FdtInfo<'_>) -> Result<(ClockLine, ClockLine), OnProbeError> {
+    let pwm_clock = info
+        .find_clock_line_by_name("pwm")?
+        .ok_or_else(|| OnProbeError::other(format!("[{}] missing pwm clock", info.node.name())))?;
+    let pclk = info
+        .find_clock_line_by_name("pclk")?
+        .ok_or_else(|| OnProbeError::other(format!("[{}] missing pclk clock", info.node.name())))?;
+    Ok((pwm_clock, pclk))
 }
 
-fn configure_clocks(pwm_clock: u32, pclk: u32) -> Result<(), OnProbeError> {
-    soc::rk3588_set_clock_rate(pwm_clock, RK_PWM_CLOCK_HZ)?;
-    soc::rk3588_enable_clock(pwm_clock)?;
-    soc::rk3588_enable_clock(pclk)?;
+fn configure_clocks(pwm_clock: &ClockLine, pclk: &ClockLine) -> Result<(), OnProbeError> {
+    pwm_clock.set_rate(RK_PWM_CLOCK_HZ)?;
+    pwm_clock.enable()?;
+    pclk.enable()?;
     Ok(())
 }

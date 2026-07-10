@@ -39,8 +39,8 @@ pub fn detect_h_extension() -> bool {
     let ans = with_detect_trap(0, || unsafe {
         asm!("csrr  {}, 0x680", out(reg) _, options(nomem, nostack)); // 0x680 => hgatp
     });
-    // return the answer from output flag. 0 => success, 2 => failed, illegal instruction
-    ans != 2
+    // return the answer from output flag. 0 => success; any trap means unsupported.
+    ans == 0
 }
 
 /// Returns the maximum supported RISC-V G-stage page-table levels.
@@ -93,13 +93,9 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
 
     let trap: Trap<Interrupt, Exception> = match trap_frame.scause.cause().try_into() {
         Err(_) => {
-            // This instruction detection handler expects only known trap types.
-            // Unknown trap causes indicate either hardware issues or unsupported
-            // RISC-V extensions that this specialized handler cannot process.
-            panic!(
-                "Unknown trap cause in instruction detector: scause={:#x}",
-                trap_frame.scause.bits()
-            );
+            trap_frame.tp = usize::MAX;
+            trap_frame.sepc = trap_frame.sepc.wrapping_add(4);
+            return;
         }
         Ok(trap) => trap,
     };
@@ -115,8 +111,10 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
             // skip current instruction
             trap_frame.sepc = trap_frame.sepc.wrapping_add(insn_bits);
         }
-        Trap::Exception(_) => unreachable!(), // FIXME: unexpected instruction errors
-        Trap::Interrupt(_) => unreachable!(), // filtered out for sie == false
+        Trap::Exception(_) | Trap::Interrupt(_) => {
+            trap_frame.tp = usize::MAX;
+            trap_frame.sepc = trap_frame.sepc.wrapping_add(4);
+        }
     }
 }
 
@@ -132,7 +130,7 @@ fn riscv_illegal_insn_bits(insn: u16) -> usize {
     if insn & 0b11100 != 0b11100 {
         return 4; // 32-bit
     }
-    // FIXME: add >= 48-bit instructions in the future if we need to detect such instrucions
+    // >= 48-bit instructions can be added here if the detector needs them.
     // >= 48-bit, unknown from this function by now
     0
 }

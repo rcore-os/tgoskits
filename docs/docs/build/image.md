@@ -71,7 +71,7 @@ https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/d
 
 ```toml
 [[includes]]
-url = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.6.toml"
+url = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.8.toml"
 ```
 
 版本化注册表中的每个 `[[images]]` 条目才是实际镜像元数据。rootfs 的远端归档通常位于 GitHub Release，例如：
@@ -79,15 +79,15 @@ url = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/reg
 ```toml
 [[images]]
 name = "rootfs-riscv64-alpine.img"
-version = "0.0.6"
+version = "0.0.8"
 description = "Alpine rootfs image for riscv64"
-sha256 = "32741d425ffb817aa3a63d639af6accd2a560b2c13c36516c3e1fd0fa77c60e8"
+sha256 = "f5b9f94f3be7200b66550ccd6d57d163b5e9f83dd4fa8a82fa8e4225eb865348"
 arch = "riscv64"
-url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.6/rootfs-riscv64-alpine.img.tar.xz"
-released_at = "2026-04-27T03:13:58Z"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.8/rootfs-riscv64-alpine.img.tar.xz"
+released_at = "2026-07-03T01:15:50Z"
 ```
 
-注意两个版本字符串的区别：Release tag 带 `v`，镜像条目的 `version` 当前不带 `v`。因此显式指定版本时使用 `rootfs-riscv64-alpine.img:0.0.6`。
+注意两个版本字符串的区别：Release tag 带 `v`，镜像条目的 `version` 当前不带 `v`。因此显式指定版本时使用 `rootfs-riscv64-alpine.img:0.0.8`。
 
 ### 本地存储
 

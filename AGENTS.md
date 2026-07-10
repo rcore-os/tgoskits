@@ -27,6 +27,7 @@
 
 ## Rust Coding Standards
 
+- Before writing, modifying, or reviewing code, fully read (完整阅读) every file under `book/guideline/` and treat those documents as mandatory coding standards. If the conversation context is compacted, resumed from a summary, or you cannot confidently recall the guideline contents, re-read all files under `book/guideline/` before continuing so the coding rules are not forgotten.
 - Use the pinned Rust 2024 nightly toolchain and the repository rustfmt configuration as the formatting source of truth; do not restate rustfmt-owned layout rules in prose.
 - Prefer `#![no_std]` for reusable kernel, component, memory, virtualization, and portable driver crates; add `alloc`, `std`, or feature-gated support only where the crate boundary requires it.
 - Keep crate and module boundaries aligned with TGOSKits layers: reusable logic belongs in `components/`, `drivers/`, `memory/`, or `virtualization/`; OS glue belongs near the consuming ArceOS, StarryOS, Axvisor, or platform layer.
@@ -43,7 +44,7 @@
 - Do not force callers to reach through nested objects to perform work. Keep internal parts private when they are implementation details, and expose small methods that express the boundary action, state transition, or query the caller actually needs.
 - Keep driver cores independent from OS runtime glue. MMIO, DMA, IRQ, queue, wake, poll, and task-scheduling contracts should cross explicit capability boundaries such as `mmio-api`, `dma-api`, `rdif-*`, or runtime adapter layers.
 - Use workspace package names and `[workspace.dependencies]` where available. Prefer workspace metadata, disable default features for `no_std` dependencies unless required, and avoid ad hoc git/path/registry overrides.
-- Library and domain crates should expose typed errors that callers can match and translate. Prefer `thiserror` for nontrivial error enums when the dependency is acceptable; tiny or dependency-sensitive crates may implement `Display` and `core::error::Error` manually.
+- Library and domain crates should expose typed errors that callers can match and translate. Nontrivial public error enums in library, component, domain, and hardware-abstraction crates should derive `thiserror::Error` from the workspace `thiserror` dependency and put display text in `#[error(...)]`; only tiny, strongly dependency-sensitive crates should hand-write `Display` and `core::error::Error`.
 - Host-side `bin` and tool crates should use `anyhow::Result`, `Context`, `anyhow!`, and `bail!` for top-level orchestration and human-facing error reports. Do not leak `anyhow::Error` into reusable library APIs; translate typed domain errors to `ax_errno::{AxError, AxResult}` at ArceOS or kernel integration boundaries.
 - Return explicit unsupported or error variants for unimplemented platform, firmware, hardware, guest, user-memory, filesystem, and network paths. Do not silently fall back, guess a default device/IRQ/address, or stringify structured metadata when callers need to make a decision.
 - Use `unwrap`, `expect`, and `panic` only in tests, impossible-state assertions, one-time initialization failures, or documented invariants. Recoverable runtime failures should return `Result` or `Option` with enough context for translation or retry.

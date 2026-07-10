@@ -31,12 +31,18 @@ use crate::{
 };
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
+const RING_BUFFER_MAX_SIZE: usize = 1024 * 1024; // 1 MiB
 
 struct Shared {
-    buffer: Mutex<HeapRb<u8>>,
+    state: Mutex<PipeState>,
     poll_rx: PollSet,
     poll_tx: PollSet,
-    poll_close: PollSet,
+}
+
+struct PipeState {
+    buffer: HeapRb<u8>,
+    readers: usize,
+    writers: usize,
 }
 
 pub struct Pipe {
@@ -46,18 +52,43 @@ pub struct Pipe {
 }
 impl Drop for Pipe {
     fn drop(&mut self) {
-        // Peer close is visible through Arc strong count before this wake.
-        unsafe { self.shared.poll_close.wake(IoEvents::HUP | IoEvents::ERR) };
+        if self.read_side {
+            let wake_writers = {
+                let mut state = self.shared.state.lock();
+                debug_assert!(state.readers > 0);
+                state.readers = state.readers.saturating_sub(1);
+                state.readers == 0
+            };
+            if wake_writers {
+                // Reader count is published before waking blocked writers.
+                unsafe { self.shared.poll_tx.wake(IoEvents::ERR | IoEvents::OUT) };
+            }
+            return;
+        }
+
+        let wake_readers = {
+            let mut state = self.shared.state.lock();
+            debug_assert!(state.writers > 0);
+            state.writers = state.writers.saturating_sub(1);
+            state.writers == 0
+        };
+        if wake_readers {
+            // Writer count is published before waking blocked readers.
+            unsafe { self.shared.poll_rx.wake(IoEvents::HUP | IoEvents::IN) };
+        }
     }
 }
 
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Arc::new(Shared {
-            buffer: Mutex::new(HeapRb::new(RING_BUFFER_INIT_SIZE)),
+            state: Mutex::new(PipeState {
+                buffer: HeapRb::new(RING_BUFFER_INIT_SIZE),
+                readers: 1,
+                writers: 1,
+            }),
             poll_rx: PollSet::new(),
             poll_tx: PollSet::new(),
-            poll_close: PollSet::new(),
         });
         let read_end = Pipe {
             read_side: true,
@@ -80,30 +111,79 @@ impl Pipe {
         !self.read_side
     }
 
-    pub fn closed(&self) -> bool {
-        Arc::strong_count(&self.shared) == 1
-    }
-
     pub fn capacity(&self) -> usize {
-        self.shared.buffer.lock().capacity().get()
+        self.shared.state.lock().buffer.capacity().get()
     }
 
     pub fn resize(&self, new_size: usize) -> AxResult<()> {
-        let new_size = new_size.div_ceil(PAGE_SIZE_4K).max(1) * PAGE_SIZE_4K;
+        let new_size = rounded_pipe_size(new_size)?;
 
-        let mut buffer = self.shared.buffer.lock();
-        if new_size == buffer.capacity().get() {
-            return Ok(());
+        let expanded = {
+            let mut state = self.shared.state.lock();
+            let old_size = state.buffer.capacity().get();
+            if new_size == old_size {
+                return Ok(());
+            }
+            if new_size < state.buffer.occupied_len() {
+                return Err(AxError::ResourceBusy);
+            }
+            let old_buffer = mem::replace(
+                &mut state.buffer,
+                HeapRb::try_new(new_size).map_err(|_| AxError::NoMemory)?,
+            );
+            let (left, right) = old_buffer.as_slices();
+            let copied = state.buffer.push_slice(left) + state.buffer.push_slice(right);
+            debug_assert_eq!(copied, left.len() + right.len());
+            new_size > old_size
+        };
+
+        if expanded {
+            // Newly freed capacity is visible before waking writers.
+            unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
         }
-        if new_size < buffer.occupied_len() {
-            return Err(AxError::ResourceBusy);
-        }
-        let old_buffer = mem::replace(&mut *buffer, HeapRb::new(new_size));
-        let (left, right) = old_buffer.as_slices();
-        buffer.push_slice(left);
-        buffer.push_slice(right);
         Ok(())
     }
+
+    #[cfg(axtest)]
+    fn duplicate_read_end_for_test(&self) -> Pipe {
+        assert!(self.is_read());
+        self.shared.state.lock().readers += 1;
+        Pipe {
+            read_side: true,
+            shared: self.shared.clone(),
+            non_blocking: AtomicBool::new(false),
+        }
+    }
+}
+
+fn rounded_pipe_size(size: usize) -> AxResult<usize> {
+    let page_count = size.div_ceil(PAGE_SIZE_4K).max(1);
+    let page_count = page_count
+        .checked_next_power_of_two()
+        .ok_or(AxError::InvalidInput)?;
+    let size = page_count
+        .checked_mul(PAGE_SIZE_4K)
+        .ok_or(AxError::InvalidInput)?;
+    if size > RING_BUFFER_MAX_SIZE {
+        return Err(AxError::OperationNotPermitted);
+    }
+    Ok(size)
+}
+
+#[cfg(axtest)]
+pub(crate) fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
+    let (read_end, write_end) = Pipe::new();
+    let second_reader = read_end.duplicate_read_end_for_test();
+
+    drop(write_end);
+
+    read_end.poll().contains(IoEvents::HUP) && second_reader.poll().contains(IoEvents::HUP)
+}
+
+#[cfg(axtest)]
+pub(crate) fn resize_rejects_oversized_pipe_for_test() -> bool {
+    let (read_end, _write_end) = Pipe::new();
+    read_end.resize(1024 * 1024 + 1).is_err()
 }
 
 fn raise_pipe() {
@@ -125,21 +205,21 @@ impl FileLike for Pipe {
         }
 
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let read = {
-                let cons = self.shared.buffer.lock();
-                let (left, right) = cons.as_slices();
+            let (read, writers) = {
+                let state = self.shared.state.lock();
+                let (left, right) = state.buffer.as_slices();
                 let mut count = dst.write(left)?;
                 if count >= left.len() {
                     count += dst.write(right)?;
                 }
-                unsafe { cons.advance_read_index(count) };
-                count
+                unsafe { state.buffer.advance_read_index(count) };
+                (count, state.writers)
             };
             if read > 0 {
                 // Pipe capacity was freed before waking writers.
                 unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
                 Ok(read)
-            } else if self.closed() {
+            } else if writers == 0 {
                 Ok(0)
             } else {
                 Err(AxError::WouldBlock)
@@ -159,21 +239,34 @@ impl FileLike for Pipe {
         let mut total_written = 0;
 
         block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-            if self.closed() {
-                raise_pipe();
-                return Err(AxError::BrokenPipe);
+            enum WriteStep {
+                Closed,
+                Wrote(usize),
             }
 
-            let written = {
-                let mut prod = self.shared.buffer.lock();
-                let (left, right) = prod.vacant_slices_mut();
-                let mut count = src.read(unsafe { left.assume_init_mut() })?;
-                if count >= left.len() {
-                    count += src.read(unsafe { right.assume_init_mut() })?;
+            let step = {
+                let mut state = self.shared.state.lock();
+                if state.readers == 0 {
+                    WriteStep::Closed
+                } else {
+                    let (left, right) = state.buffer.vacant_slices_mut();
+                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                    if count >= left.len() {
+                        count += src.read(unsafe { right.assume_init_mut() })?;
+                    }
+                    unsafe { state.buffer.advance_write_index(count) };
+                    WriteStep::Wrote(count)
                 }
-                unsafe { prod.advance_write_index(count) };
-                count
             };
+
+            let WriteStep::Wrote(written) = step else {
+                if total_written > 0 {
+                    return Ok(total_written);
+                }
+                raise_pipe();
+                return Err(AxError::BrokenPipe);
+            };
+
             if written > 0 {
                 // Pipe bytes were committed before waking readers.
                 unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
@@ -213,7 +306,7 @@ impl FileLike for Pipe {
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         match cmd {
             FIONREAD => {
-                (arg as *mut u32).vm_write(self.shared.buffer.lock().occupied_len() as u32)?;
+                (arg as *mut u32).vm_write(self.shared.state.lock().buffer.occupied_len() as u32)?;
                 Ok(0)
             }
             _ => Err(AxError::NotATty),
@@ -224,32 +317,41 @@ impl FileLike for Pipe {
 impl Pollable for Pipe {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        let buf = self.shared.buffer.lock();
+        let state = self.shared.state.lock();
         if self.read_side {
-            let closed = self.closed();
-            events.set(IoEvents::IN, buf.occupied_len() > 0);
-            events.set(IoEvents::HUP, closed);
+            events.set(IoEvents::IN, state.buffer.occupied_len() > 0);
+            events.set(IoEvents::HUP, state.writers == 0);
         } else {
-            events.set(IoEvents::ERR, self.closed());
-            events.set(IoEvents::OUT, buf.vacant_len() > 0);
+            events.set(IoEvents::ERR, state.readers == 0);
+            events.set(
+                IoEvents::OUT,
+                state.readers > 0 && state.buffer.vacant_len() > 0,
+            );
         }
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_rx.register(context.waker(), IoEvents::IN) };
-        }
-        if events.contains(IoEvents::OUT) {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_tx.register(context.waker(), IoEvents::OUT) };
-        }
-        // Close/error notifications are always observable poll events.
-        unsafe {
-            self.shared
-                .poll_close
-                .register(context.waker(), IoEvents::HUP | IoEvents::ERR)
+        let mut interests = if self.read_side {
+            events & (IoEvents::IN | IoEvents::HUP)
+        } else {
+            events & (IoEvents::OUT | IoEvents::ERR)
         };
+        if self.read_side && events.contains(IoEvents::IN) {
+            interests.insert(IoEvents::HUP);
+        }
+        if !self.read_side && events.contains(IoEvents::OUT) {
+            interests.insert(IoEvents::ERR);
+        }
+        if interests.is_empty() {
+            return;
+        }
+        if self.read_side {
+            // Registration happens from file poll task context.
+            unsafe { self.shared.poll_rx.register(context.waker(), interests) };
+        } else {
+            // Registration happens from file poll task context.
+            unsafe { self.shared.poll_tx.register(context.waker(), interests) };
+        }
     }
 }

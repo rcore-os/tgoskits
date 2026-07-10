@@ -39,8 +39,8 @@ static PRIMARY_ITS: AtomicU64 = AtomicU64::new(INVALID_DEVICE_ID);
 
 module_driver!(
     name: "GICv3 ITS",
-    level: ProbeLevel::PostKernel,
-    priority: ProbePriority::DEFAULT,
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::MSI,
     probe_kinds: &[
         ProbeKind::Fdt {
             compatibles: &["arm,gic-v3-its"],
@@ -121,6 +121,8 @@ struct GicItsProvider {
     lpis: BTreeMap<u32, LpiRoute>,
     collection_target: u64,
     gic_domain: irq_framework::IrqDomainId,
+    _msi_domain: irq_framework::IrqDomainId,
+    msix_domain: irq_framework::IrqDomainId,
     itt_entry_size: usize,
 }
 
@@ -133,6 +135,22 @@ impl GicItsProvider {
     ) -> Result<Self, OnProbeError> {
         let gic_domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
             .ok_or_else(|| OnProbeError::other("AArch64 GIC IRQ domain is not registered"))?;
+        let msi_domain = crate::irq::alloc_child_irq_domain(
+            owner,
+            gic_domain,
+            crate::irq::IrqDomainKind::MsiParent,
+        )
+        .map_err(|err| {
+            OnProbeError::other(format!("failed to allocate ITS MSI IRQ domain: {err:?}"))
+        })?;
+        let msix_domain = crate::irq::alloc_child_irq_domain(
+            owner,
+            msi_domain,
+            crate::irq::IrqDomainKind::PciMsix,
+        )
+        .map_err(|err| {
+            OnProbeError::other(format!("failed to allocate PCI MSI-X IRQ domain: {err:?}"))
+        })?;
         let property_table = AlignedMemory::new(LPI_PROPERTY_BYTES, 4096)
             .ok_or_else(|| OnProbeError::other("failed to allocate LPI property table"))?;
         property_table.fill(LPI_DEFAULT_PRIORITY);
@@ -187,6 +205,8 @@ impl GicItsProvider {
             lpis: BTreeMap::new(),
             collection_target,
             gic_domain,
+            _msi_domain: msi_domain,
+            msix_domain,
             itt_entry_size: 16,
         };
         provider.itt_entry_size = provider.its.itt_entry_size().max(8);
@@ -290,12 +310,23 @@ impl Interface for GicItsProvider {
             self.next_lpi = self.next_lpi.checked_add(1).ok_or(IrqError::NoMemory)?;
             self.set_property_enabled(lpi, false)?;
             self.send_command(ItsCommand::mapti(device.0, event.0, lpi, COLLECTION_ID))?;
-            self.lpis.insert(lpi, LpiRoute { device, event });
+            let parent_irq = IrqId::new(self.gic_domain, HwIrq(lpi));
+            let leaf_irq = IrqId::new(self.msix_domain, HwIrq(lpi - LPI_INTID_BASE));
+            crate::irq::map_irq_route(parent_irq, leaf_irq)?;
+            self.lpis.insert(
+                lpi,
+                LpiRoute {
+                    device,
+                    event,
+                    leaf_irq,
+                },
+            );
             LPI_OWNER.lock().insert(lpi, self.owner);
-            vectors.push(MsiVector::new(
+            vectors.push(MsiVector::with_parent(
                 MsiVectorIndex(index),
                 event,
-                IrqId::new(self.gic_domain, HwIrq(lpi)),
+                leaf_irq,
+                parent_irq,
             ));
         }
         self.send_command(ItsCommand::sync(self.collection_target))?;
@@ -310,7 +341,7 @@ impl Interface for GicItsProvider {
     }
 
     fn set_vector_enabled(&mut self, vector: &MsiVector, enabled: bool) -> Result<(), IrqError> {
-        self.set_lpi_enabled_by_intid(vector.irq.hwirq.0, enabled)
+        self.set_lpi_enabled_by_intid(vector.parent_irq.hwirq.0, enabled)
     }
 
     fn set_vector_affinity(
@@ -326,8 +357,13 @@ impl Interface for GicItsProvider {
 
     fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), IrqError> {
         for vector in allocation.vectors() {
-            let intid = vector.irq.hwirq.0;
+            let intid = vector.parent_irq.hwirq.0;
+            let route = *self.lpis.get(&intid).ok_or(IrqError::InvalidIrq)?;
+            if route.leaf_irq != vector.irq {
+                return Err(IrqError::InvalidIrq);
+            }
             self.set_lpi_enabled_by_intid(intid, false)?;
+            crate::irq::unmap_irq_route(vector.parent_irq, vector.irq)?;
             self.lpis.remove(&intid);
             LPI_OWNER.lock().remove(&intid);
         }
@@ -345,6 +381,7 @@ struct ItsDevice {
 struct LpiRoute {
     device: MsiDeviceId,
     event: MsiEventId,
+    leaf_irq: IrqId,
 }
 
 struct CommandQueue {

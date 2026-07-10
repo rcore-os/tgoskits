@@ -162,6 +162,7 @@ impl UnixCredentials {
 define_options! {
     // ---- Socket level options (SO_*) ----
     ReuseAddress(bool),
+    ReusePort(bool),
     Error(i32),
     DontRoute(bool),
     SendBuffer(usize),

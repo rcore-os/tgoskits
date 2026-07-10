@@ -1,10 +1,5 @@
 use core::ptr::NonNull;
-use std::{
-    string::{String, ToString},
-    sync::Mutex,
-    vec,
-    vec::Vec,
-};
+use std::{string::String, sync::Mutex, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 use rdrive::{
@@ -97,7 +92,7 @@ static CONSUMER_REGISTER: DriverRegister = DriverRegister {
 };
 
 #[test]
-fn fdt_resource_prepare_uses_id_zero_for_zero_cell_clock_provider() {
+fn fdt_resource_prepare_skips_zero_cell_clock_provider() {
     CLOCK_CALLS.lock().unwrap().clear();
     *PREPARED_CLOCK.lock().unwrap() = None;
 
@@ -139,15 +134,8 @@ fn fdt_resource_prepare_uses_id_zero_for_zero_cell_clock_provider() {
 
     probe_all(true).expect("zero-cell clock prepare should succeed");
 
-    assert_eq!(
-        *CLOCK_CALLS.lock().unwrap(),
-        vec![
-            "set:0:50000000".to_string(),
-            "enable:0".to_string(),
-            "rate:0".to_string(),
-        ]
-    );
-    assert_eq!(*PREPARED_CLOCK.lock().unwrap(), Some(50_000_000));
+    assert!(CLOCK_CALLS.lock().unwrap().is_empty());
+    assert_eq!(*PREPARED_CLOCK.lock().unwrap(), None);
     assert!(rdrive::get_one::<ResourceConsumer>().is_some());
 }
 

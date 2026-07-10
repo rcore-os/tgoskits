@@ -94,11 +94,12 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn secondary_init_intc(cpu_idx: usize) {
-        plic::secondary_init_intc(cpu_idx);
+    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) {
+        match role {
+            crate::irq::CpuBootRole::Primary => {}
+            crate::irq::CpuBootRole::Secondary => plic::secondary_init_intc(cpu_idx),
+        }
     }
-
-    fn secondary_init_systick() {}
 
     fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
         if irq != Self::ipi_irq() {

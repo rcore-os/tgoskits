@@ -1,0 +1,11 @@
+# ioctl01 # TFAIL: termio invalid address and NULL buffer checks return ENOTTY instead of EFAULT
+# test_ioctl # TFAIL: helper script cannot find tst_exit in the current environment
+# ioctl03 # TCONF: TUN support is missing in the current environment
+# ioctl04 # TCONF: ext2 filesystem support is unavailable in the current environment
+# ioctl05 # TCONF: ext2 filesystem support is unavailable in the current environment
+# ioctl06 # TCONF: ext2 filesystem support is unavailable in the current environment
+# ioctl07 # TBROK: ioctl probe returns ENOTTY in the current environment
+# ioctl08 # TCONF: btrfs filesystem support is unavailable in the current environment
+# ioctl09 # TBROK: kernel .config is unavailable in the current environment
+# ioctl10 # TFAIL: PROCMAP_QUERY returns ENOTTY or mismatched VMA fields in the current environment
+# ioctl_fionbio_int # Removed legacy hand-written directory; no equivalent LTP case currently covers FIONBIO reading the full int value.

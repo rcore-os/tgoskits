@@ -1,0 +1,4 @@
+getrusage01
+getrusage02
+# getrusage03 # TCONF: requires at least 512MB MemAvailable; qemu-smp1 has less available memory
+# getrusage04 # TCONF: not supported on a virtual machine

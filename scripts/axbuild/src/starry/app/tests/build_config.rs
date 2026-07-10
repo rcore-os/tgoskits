@@ -93,32 +93,32 @@ fn qemu_build_config_can_come_from_nearest_parent() {
     let root = tempdir().unwrap();
     let outer = write_case_file(
         root.path(),
-        "qemu-smp1",
+        "qemu",
         "build-x86_64-unknown-none.toml",
         "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     let inner = write_case_file(
         root.path(),
-        "qemu-smp1/nested",
+        "qemu/nested",
         "build-x86_64-unknown-none.toml",
         "target = \"x86_64-unknown-none\"\nfeatures = [\"nearest\"]\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),
-        "qemu-smp1/nested/codex-cli",
+        "qemu/nested/codex-cli",
         "prebuild.sh",
         "#!/usr/bin/env bash\n",
     );
     write_case_file(
         root.path(),
-        "qemu-smp1/nested/codex-cli",
+        "qemu/nested/codex-cli",
         "qemu-x86_64.toml",
         "args = []\n",
     );
     let app = discover_apps(root.path())
         .unwrap()
         .into_iter()
-        .find(|app| app.name == "qemu-smp1/nested/codex-cli")
+        .find(|app| app.name == "qemu/nested/codex-cli")
         .unwrap();
 
     let selected = discover_optional_build_config(&app.case_dir, "x86_64-unknown-none")

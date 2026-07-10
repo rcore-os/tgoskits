@@ -20,6 +20,37 @@ fn lock_path_uses_dot_lock_suffix() {
     );
 }
 
+#[test]
+fn github_release_asset_ref_parses_release_download_url() {
+    let asset_ref = github_release_asset_ref(
+        "https://github.com/rcore-os/tgosimages/releases/download/v0.0.8/rootfs-loongarch64-alpine.img.tar.xz",
+    )
+    .unwrap();
+
+    assert_eq!(
+        asset_ref.api_url,
+        "https://api.github.com/repos/rcore-os/tgosimages/releases/tags/v0.0.8"
+    );
+    assert_eq!(asset_ref.asset_name, "rootfs-loongarch64-alpine.img.tar.xz");
+}
+
+#[test]
+fn github_release_asset_ref_rejects_non_release_download_url() {
+    assert!(github_release_asset_ref("https://example.com/rootfs.tar.xz").is_none());
+    assert!(github_release_asset_ref("https://github.com/rcore-os/tgosimages").is_none());
+}
+
+#[test]
+fn classify_download_sha256_accepts_matching_github_asset_digest() {
+    let actual = "25443ad55c76d810532f24f6868ce66923f58b423b3d6253cec03e8c4cc4c882";
+    let stale_registry = "67dd38677005c55bd5e27062bb885cb3962061729d3ca933faa146dc5d17f6b9";
+
+    assert_eq!(
+        classify_download_sha256(actual, stale_registry, Some(actual)),
+        VerifyOutcome::MatchedGitHubAsset
+    );
+}
+
 #[tokio::test]
 async fn recoverable_lock_accepts_dead_process_pid() {
     let workspace = tempdir().unwrap();
@@ -82,9 +113,11 @@ async fn download_file_restarts_when_range_is_invalid() {
 
 #[tokio::test]
 async fn download_file_retries_transient_http_status() {
-    let server =
-        TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::GATEWAY_TIMEOUT])
-            .await;
+    let server = TestServer::start_with_failures(
+        b"abcdef".to_vec(),
+        vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
+    )
+    .await;
     let workspace = tempdir().unwrap();
     let output_path = workspace.path().join("rootfs.img.tar.gz");
 
@@ -94,7 +127,7 @@ async fn download_file_retries_transient_http_status() {
         .unwrap();
 
     assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-    assert_eq!(server.request_count(), 2);
+    assert_eq!(server.request_count(), 3);
 }
 
 #[tokio::test]

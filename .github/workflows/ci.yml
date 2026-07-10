@@ -166,6 +166,7 @@ jobs:
               - "scripts/**"
               - "test-suit/**"
               - "xtask/**"
+              - "apps/starry/aka00-tennis-yolo/**"
             base_container_publish:
               - "container/Dockerfile"
               - "rust-toolchain.toml"

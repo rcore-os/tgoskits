@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.15...axaddrspace-v0.5.16) - 2026-07-07
+
+### Other
+
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.14...axaddrspace-v0.5.15) - 2026-07-02
 
 ### Other

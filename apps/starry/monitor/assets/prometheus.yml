@@ -1,0 +1,13 @@
+# Prometheus scrape config for the StarryOS `monitor` app carpet.
+# A single `node` job points at the in-guest node_exporter on loopback :9100 so the case exercises
+# the CORE scrape -> ingest -> query pipeline (up{job="node"} == 1), not just a synthetic scalar.
+# scrape_interval 2s => the first scrape lands fast under TCG.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: node
+    scrape_interval: 2s
+    scrape_timeout: 2s
+    static_configs:
+      - targets: ['127.0.0.1:9100']

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.20](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.19...axbuild-v0.4.20) - 2026-07-10
+
+### Added
+
+- *(crab-usb)* add SG2002 DWC2 host axtest ([#1496](https://github.com/rcore-os/tgoskits/pull/1496))
+
+### Other
+
+- *(x86_vcpu)* make x86 virtualization OS-neutral ([#1550](https://github.com/rcore-os/tgoskits/pull/1550))
+
+## [0.4.19](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.18...axbuild-v0.4.19) - 2026-07-08
+
+### Other
+
+- *(starry)* unify qemu-smp1 and qemu-smp4 into single qemu test ([#1544](https://github.com/rcore-os/tgoskits/pull/1544))
+
+## [0.4.18](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.17...axbuild-v0.4.18) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.16...axbuild-v0.4.17) - 2026-07-07
+
+### Fixed
+
+- *(axbuild)* relativize absolute symlinks in extracted qemu-user staging sysroot ([#1503](https://github.com/rcore-os/tgoskits/pull/1503))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- *(repo)* remove vendored spin crate ([#1421](https://github.com/rcore-os/tgoskits/pull/1421))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.4.16](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.15...axbuild-v0.4.16) - 2026-07-02
 
 ### Added

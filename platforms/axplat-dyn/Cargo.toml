@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.7.7"
+version = "0.7.12"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -32,6 +32,7 @@ log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu = { workspace = true, features = ["custom-base"] }
 rdrive.workspace = true
+someboot.workspace = true
 somehal.workspace = true
 spin = { workspace = true }
 

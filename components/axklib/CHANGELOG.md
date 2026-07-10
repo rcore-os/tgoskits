@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.4...axklib-v0.7.5) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-alloc
+
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.3...axklib-v0.7.4) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.2...axklib-v0.7.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-alloc
+
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.1...axklib-v0.7.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api, ax-alloc
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.0...axklib-v0.7.1) - 2026-07-07
+
+### Other
+
+- updated the following local packages: dma-api, ax-alloc
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axklib-v0.6.6...axklib-v0.7.0) - 2026-07-02
 
 ### Added

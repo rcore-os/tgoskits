@@ -144,6 +144,10 @@ impl ArchTrait for Arch {
         elx::flush_tlb(None);
     }
 
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        false
+    }
+
     fn irq_is_enabled(_irq: crate::irq::IrqId) -> bool {
         unimplemented!()
     }
@@ -216,11 +220,35 @@ impl ArchTrait for Arch {
         aarch64_cpu_ext::cache::dcache_range(op.into(), addr, size);
     }
 
+    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+        Self::dcache_range(crate::DCacheOp::CleanInvalidate, addr, size);
+        aarch64_dsb_sy();
+    }
+
+    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {
+        aarch64_dsb_sy();
+    }
+
+    fn dma_coherent_after_mapping_update() {
+        aarch64_dsb_sy();
+        aarch64_isb_sy();
+    }
+
     // Safety: the EFI stub guarantees the same contract as the trait docs.
     unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
         unsafe { crate::arch::entry::kernel_entry(0) };
         unreachable!()
     }
+}
+
+#[inline]
+fn aarch64_dsb_sy() {
+    aarch64_cpu::asm::barrier::dsb(aarch64_cpu::asm::barrier::SY);
+}
+
+#[inline]
+fn aarch64_isb_sy() {
+    aarch64_cpu::asm::barrier::isb(aarch64_cpu::asm::barrier::SY);
 }
 
 impl From<crate::DCacheOp> for aarch64_cpu_ext::cache::CacheOp {

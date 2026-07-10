@@ -18,7 +18,7 @@ use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
     probe::{
         OnProbeError,
-        fdt::{NodeType, ResetLine},
+        fdt::{ClockLine, NodeType, ResetLine, clock_lines},
     },
     register::{FdtInfo, ProbeFdt},
 };
@@ -26,7 +26,7 @@ use rk3588_pci::{Delay, HostConfig, IatuMode, ResetControl, Rk3588PcieHost};
 
 use super::{
     clocks_reset_gpio::{
-        assert_resets, clock_specs, deassert_resets, enable_clocks, parse_reset_gpio, parse_resets,
+        assert_resets, deassert_resets, enable_clocks, parse_reset_gpio, parse_resets,
     },
     phy::{init_phys, parse_phys},
     register_fdt_legacy_irq,
@@ -172,13 +172,6 @@ impl RegMmio {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct ClockSpec {
-    pub(super) name: Option<String>,
-    pub(super) id: u32,
-    pub(super) assigned_rate: Option<u32>,
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct GpioSpec {
     pub(super) bank: u8,
@@ -196,7 +189,7 @@ pub(super) struct HostResources<'a> {
     pub(super) ranges: Vec<PciRange>,
     pub(super) bus_base: u8,
     pub(super) logical_bus_end: u8,
-    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) clocks: Vec<ClockLine>,
     pub(super) resets: Vec<ResetLine>,
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) reset_gpio: Option<GpioSpec>,
@@ -217,7 +210,7 @@ pub(super) struct Pcie3PhyResources {
     pub(super) phy_grf: Phandle,
     pub(super) pipe_grf: Option<Phandle>,
     pub(super) pcie30_phymode: u32,
-    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) clocks: Vec<ClockLine>,
     pub(super) resets: Vec<ResetLine>,
 }
 
@@ -228,7 +221,7 @@ pub(super) struct CombphyResources {
     pub(super) pipe_phy_grf: Phandle,
     pub(super) pcie1ln_sel_bits: Option<[u32; 4]>,
     pub(super) refclk_rate: u32,
-    pub(super) clocks: Vec<ClockSpec>,
+    pub(super) clocks: Vec<ClockLine>,
     pub(super) resets: Vec<ResetLine>,
 }
 
@@ -415,7 +408,7 @@ fn parse_host_resources<'a>(
         ranges,
         bus_base,
         logical_bus_end,
-        clocks: clock_specs(node.clocks()),
+        clocks: clock_lines(node_type)?,
         resets: parse_resets(node_type)?,
         pipe_grf: prop_phandle(raw_node, "rockchip,pipe-grf"),
         reset_gpio: parse_reset_gpio(info, apb.address)?,

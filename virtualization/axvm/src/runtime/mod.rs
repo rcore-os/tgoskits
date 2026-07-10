@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod hvc;
+pub(crate) mod hvc;
 mod ivc;
 
 #[cfg(target_arch = "loongarch64")]

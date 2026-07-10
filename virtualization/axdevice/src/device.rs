@@ -22,8 +22,6 @@ use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
-#[cfg(target_arch = "x86_64")]
-use axdevice_base::PortDeviceAdapter;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
     DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError, Resource,
@@ -33,7 +31,7 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
-use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicEoi, IoApicInterrupt};
+use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, FwCfg,
@@ -41,6 +39,8 @@ use crate::{
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
+#[cfg(target_arch = "x86_64")]
+use crate::{X86IoApicDeviceOps, X86PitDeviceOps, X86SerialDeviceOps};
 
 #[inline]
 #[allow(dead_code)]
@@ -75,13 +75,13 @@ pub struct AxVmDevices {
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// x86 IOAPIC — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
-    x86_ioapic: Option<Arc<EmulatedIoApic>>,
+    x86_ioapic: Option<Arc<dyn X86IoApicDeviceOps>>,
     /// x86 PIT — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
-    x86_pit: Option<Arc<EmulatedPit>>,
+    x86_pit: Option<Arc<dyn X86PitDeviceOps>>,
     /// x86 16550 serial port — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
-    x86_serial: Option<Arc<EmulatedSerialPort>>,
+    x86_serial: Option<Arc<dyn X86SerialDeviceOps>>,
     /// LoongArch PCH-PIC — kept for type-specific access.
     #[cfg(target_arch = "loongarch64")]
     loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
@@ -353,14 +353,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::Console => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let serial = Arc::new(EmulatedSerialPort::new());
-                        this.register(PortDeviceAdapter::from_arc(serial.clone())
-                            as Arc<dyn Device + Send + Sync + 'static>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, format!("register x86 serial: {e:?}"))
-                            })?;
-                        this.x86_serial = Some(serial);
-                        info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
+                        debug!("x86 console device registration is owned by AxVM arch adapter");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
                     {
@@ -373,20 +366,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::X86IoApic => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let ioapic = Arc::new(EmulatedIoApic::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                        ));
-                        this.register(MmioDeviceAdapter::from_arc(ioapic.clone())
-                            as Arc<dyn Device + Send + Sync + 'static>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, format!("register x86 ioapic: {e:?}"))
-                            })?;
-                        this.x86_ioapic = Some(ioapic);
-                        info!(
-                            "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
-                        );
+                        debug!("x86 IOAPIC device registration is owned by AxVM arch adapter");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
                     {
@@ -399,13 +379,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::X86Pit => {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let pit = Arc::new(EmulatedPit::new());
-                        this.register(PortDeviceAdapter::from_arc(pit.clone()) as Arc<dyn Device>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, format!("register x86 pit: {e:?}"))
-                            })?;
-                        this.x86_pit = Some(pit);
-                        info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
+                        debug!("x86 PIT device registration is owned by AxVM arch adapter");
                     }
                     #[cfg(not(target_arch = "x86_64"))]
                     {
@@ -963,6 +937,42 @@ impl AxVmDevices {
         self.x86_serial
             .as_ref()
             .is_some_and(|serial| serial.poll_irq())
+    }
+
+    /// Add an x86 IOAPIC device to the generic registry and x86 runtime handle.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_x86_ioapic_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    where
+        D: Device + X86IoApicDeviceOps + 'static,
+    {
+        self.register(dev.clone() as Arc<dyn Device>)
+            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 ioapic: {e:?}")))?;
+        self.x86_ioapic = Some(dev);
+        Ok(())
+    }
+
+    /// Add an x86 PIT device to the generic registry and x86 runtime handle.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_x86_pit_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    where
+        D: Device + X86PitDeviceOps + 'static,
+    {
+        self.register(dev.clone() as Arc<dyn Device>)
+            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 pit: {e:?}")))?;
+        self.x86_pit = Some(dev);
+        Ok(())
+    }
+
+    /// Add an x86 COM1 device to the generic registry and x86 runtime handle.
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_x86_serial_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    where
+        D: Device + X86SerialDeviceOps + 'static,
+    {
+        self.register(dev.clone() as Arc<dyn Device>)
+            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 serial: {e:?}")))?;
+        self.x86_serial = Some(dev);
+        Ok(())
     }
 
     /// Add a QEMU fw_cfg MMIO device to the device list.

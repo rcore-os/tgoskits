@@ -1,9 +1,10 @@
 mod binding;
+mod irq_bound;
 
 #[allow(unused)]
 mod shared;
 
-#[cfg(feature = "ahci")]
+#[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
 pub mod ahci;
 #[cfg(feature = "bcm2835-sdhci")]
 pub mod bcm2835;
@@ -28,6 +29,7 @@ use alloc::{boxed::Box, sync::Arc};
 #[cfg(sync_block_dev)]
 use ax_kspin::SpinRaw as Mutex;
 pub use binding::*;
+pub use irq_bound::IrqBoundBlock;
 #[cfg(sync_block_dev)]
 use rdif_block::{
     BlkError, DeviceInfo, DriverGeneric, IQueue, Interface, QueueInfo, QueueLimits, Request,

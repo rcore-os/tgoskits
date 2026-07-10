@@ -23,8 +23,9 @@ use rdif_block::{
 };
 use rdrive::{Device, probe::OnProbeError};
 
+use super::IrqBoundBlock;
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, IrqBindingLease, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -644,6 +645,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
 pub trait PlatformDeviceBlock {
     fn register_block<T: Interface>(self, dev: T) -> Option<usize>;
     fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize>;
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        Self: Sized,
+        T: Interface,
+        L: IrqBindingLease;
 }
 
 impl PlatformDeviceBlock for rdrive::PlatformDevice {
@@ -653,6 +659,15 @@ impl PlatformDeviceBlock for rdrive::PlatformDevice {
 
     fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize> {
         register_block_with_info(self, dev, info)
+    }
+
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        T: Interface,
+        L: IrqBindingLease,
+    {
+        let info = irq_lease.binding_info();
+        self.register_block_with_info(IrqBoundBlock::new(dev, irq_lease), info)
     }
 }
 

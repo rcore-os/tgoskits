@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.3.0...axnsproxy-v0.3.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.2.5...axnsproxy-v0.3.0) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
 ## [0.2.5](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.2.4...axnsproxy-v0.2.5) - 2026-07-02
 
 ### Other

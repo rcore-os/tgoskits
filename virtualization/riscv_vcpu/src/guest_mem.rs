@@ -14,10 +14,13 @@
 
 use core::arch::riscv64::hfence_vvma_all;
 
-use axvm_types::{GuestPhysAddr, GuestVirtAddr};
 use riscv_h::register::vsatp::Vsatp;
 
-use crate::trap::Exception;
+use crate::{
+    registers::guest_page_fault_addr,
+    trap::Exception,
+    types::{RiscvGuestPhysAddr, RiscvGuestVirtAddr},
+};
 
 // Notes about this file:
 //
@@ -64,13 +67,13 @@ struct GuestInstructionFetchFaultRaw {
 #[derive(Debug)]
 pub(crate) enum GuestInstructionFetchFault {
     /// Guest VS-stage translation denied or missed the instruction address.
-    PageFault { addr: GuestVirtAddr },
+    PageFault { addr: RiscvGuestVirtAddr },
     /// Guest instruction access fault after translation.
-    AccessFault { addr: GuestVirtAddr },
+    AccessFault { addr: RiscvGuestVirtAddr },
     /// Guest instruction address was misaligned.
-    Misaligned { addr: GuestVirtAddr },
+    Misaligned { addr: RiscvGuestVirtAddr },
     /// G-stage translation fault while resolving the instruction access.
-    GuestPageFault { addr: GuestPhysAddr },
+    GuestPageFault { addr: RiscvGuestPhysAddr },
     /// A trap cause that is not expected from HLVX instruction fetching.
     Unhandled {
         scause: usize,
@@ -80,9 +83,9 @@ pub(crate) enum GuestInstructionFetchFault {
 }
 
 impl GuestInstructionFetchFaultRaw {
-    fn into_fetch_fault(self, gva: GuestVirtAddr) -> GuestInstructionFetchFault {
+    fn into_fetch_fault(self, gva: RiscvGuestVirtAddr) -> GuestInstructionFetchFault {
         let exception = self.scause & !(1usize << (usize::BITS - 1));
-        let fault_gva = GuestVirtAddr::from_usize(self.stval);
+        let fault_gva = RiscvGuestVirtAddr::from_usize(self.stval);
 
         match exception {
             // HLVX reports these as load faults even though the guest-visible
@@ -107,7 +110,7 @@ impl GuestInstructionFetchFaultRaw {
             {
                 // For guest-page faults, htval holds GPA[XLEN-1:2] and stval
                 // supplies the low two bits of the faulting guest physical address.
-                let fault_gpa = GuestPhysAddr::from((self.htval << 2) | (self.stval & 0b11));
+                let fault_gpa = guest_page_fault_addr(self.htval, self.stval);
                 GuestInstructionFetchFault::GuestPageFault { addr: fault_gpa }
             }
             _ => GuestInstructionFetchFault::Unhandled {
@@ -121,26 +124,26 @@ impl GuestInstructionFetchFaultRaw {
 
 /// Copies data from guest virtual address to host memory.
 #[inline(always)]
-pub(crate) fn copy_from_guest_va(dst: &mut [u8], gva: GuestVirtAddr) -> usize {
+pub(crate) fn copy_from_guest_va(dst: &mut [u8], gva: RiscvGuestVirtAddr) -> usize {
     unsafe { _copy_from_guest(dst.as_mut_ptr(), gva.as_usize(), dst.len()) }
 }
 
 /// Copies data from host memory to guest virtual address.
 #[inline(always)]
-pub(crate) fn copy_to_guest_va(src: &[u8], gva: GuestVirtAddr) -> usize {
+pub(crate) fn copy_to_guest_va(src: &[u8], gva: RiscvGuestVirtAddr) -> usize {
     unsafe { _copy_to_guest(gva.as_usize(), src.as_ptr(), src.len()) }
 }
 
 /// Copies data from guest physical address to host memory.
 #[inline(always)]
-pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: GuestPhysAddr) -> usize {
+pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: RiscvGuestPhysAddr) -> usize {
     let old_vsatp = riscv_h::register::vsatp::read().bits();
     unsafe {
         // Set vsatp to 0 to disable guest virtual address translation.
         Vsatp::from_bits(0).write();
         hfence_vvma_all();
         // Now GVA is the same as GPA.
-        let ret = copy_from_guest_va(dst, GuestVirtAddr::from(gpa.as_usize()));
+        let ret = copy_from_guest_va(dst, RiscvGuestVirtAddr::from(gpa.as_usize()));
         // Restore the original vsatp.
         Vsatp::from_bits(old_vsatp).write();
         hfence_vvma_all();
@@ -150,14 +153,14 @@ pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: GuestPhysAddr) -> usize {
 
 ///  Copies data from host memory to guest physical address.
 #[inline(always)]
-pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
+pub(crate) fn copy_to_guest(src: &[u8], gpa: RiscvGuestPhysAddr) -> usize {
     let old_vsatp = riscv_h::register::vsatp::read().bits();
     unsafe {
         // Set vsatp to 0 to disable guest virtual address translation.
         Vsatp::from_bits(0).write();
         hfence_vvma_all();
         // Now GVA is the same as GPA.
-        let ret = copy_to_guest_va(src, GuestVirtAddr::from_usize(gpa.as_usize()));
+        let ret = copy_to_guest_va(src, RiscvGuestVirtAddr::from_usize(gpa.as_usize()));
         // Restore the original vsatp.
         Vsatp::from_bits(old_vsatp).write();
         hfence_vvma_all();
@@ -172,7 +175,7 @@ pub(crate) fn copy_to_guest(src: &[u8], gpa: GuestPhysAddr) -> usize {
 /// into guest instruction-fetch categories.
 #[inline(always)]
 pub(crate) fn fetch_guest_instruction(
-    gva: GuestVirtAddr,
+    gva: RiscvGuestVirtAddr,
 ) -> Result<u32, GuestInstructionFetchFault> {
     let mut inst = 0u32;
     let mut fault = GuestInstructionFetchFaultRaw::default();

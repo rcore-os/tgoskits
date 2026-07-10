@@ -1,6 +1,6 @@
 <h1 align="center">riscv_vcpu</h1>
 
-<p align="center">ArceOS-Hypervisor RISC-V vCPU module</p>
+<p align="center">OS-neutral RISC-V vCPU core</p>
 
 <div align="center">
 
@@ -15,66 +15,44 @@
 
 # 介绍
 
-`riscv_vcpu` 提供了 ArceOS-Hypervisor RISC-V vCPU module。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`riscv_vcpu` 提供 Axvisor 使用的 RISC-V Hypervisor Extension vCPU core。
+该 crate 负责 VM entry/exit、CSR 状态、SBI 处理、guest page fault 解码、
+timer pending state，以及本 crate 专用的 RISC-V exit/error/value types。
 
-## 快速开始
+该 crate 是 OS-neutral 功能库。宿主侧能力通过 `RiscvHostOps` 注入；
+AxVM trait、错误转换、设备策略和运行时 IRQ 处理都位于 AxVM 的 RISC-V adapter。
 
-### 添加依赖
+# 目标架构
 
-在 `Cargo.toml` 中加入：
+该 crate 只在 `target_arch = "riscv64"` 下编译；其他 target 下为空 crate。
+消费者应使用 target-specific dependency：
 
 ```toml
-[dependencies]
-riscv_vcpu = "0.5.0"
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_vcpu = "0.5"
 ```
 
-### 检查与测试
+# 公共 API
+
+- `RiscvVcpu<H>` / `RiscvVCpu<H>` / `RISCVVCpu<H>`
+- `RiscvPerCpu` / `RISCVPerCpu`
+- `RiscvHostOps`
+- `RiscvVmExit`
+- `RiscvVcpuError` / `RiscvVcpuResult`
+- `RiscvGuestPhysAddr`, `RiscvGuestVirtAddr`, `RiscvHostPhysAddr`, `RiscvHostVirtAddr`
+- `RiscvAccessWidth`, `RiscvAccessFlags`, `RiscvNestedPagingConfig`
+
+# 验证
+
+常用本地检查从 workspace root 执行：
 
 ```bash
-# 进入 crate 目录
-cd virtualization/riscv_vcpu
-
-# 代码格式化
-cargo fmt --all
-
-# 运行 clippy
-cargo clippy --all-targets --all-features
-
-# 运行测试
-cargo test --all-features
-
-# 生成文档
-cargo doc --no-deps
+cargo test -p riscv_vcpu --tests
+cargo check -p riscv_vcpu --target riscv64gc-unknown-none-elf
+cargo xtask clippy --package riscv_vcpu
 ```
 
-## 集成方式
-
-### 示例
-
-```rust
-use riscv_vcpu as _;
-
-fn main() {
-    // 在这里将 `riscv_vcpu` 集成到你的项目中。
-}
-```
-
-### 文档
-
-生成并查看 API 文档：
-
-```bash
-cargo doc --no-deps --open
-```
-
-在线文档：[docs.rs/riscv_vcpu](https://docs.rs/riscv_vcpu)
-
-# 贡献
-
-1. Fork 仓库并创建分支
-2. 在本地运行格式化与检查
-3. 运行与该 crate 相关的测试
-4. 提交 PR 并确保 CI 通过
+端到端行为通过 Axvisor RISC-V smoke tests 验证。
 
 # 许可证
 

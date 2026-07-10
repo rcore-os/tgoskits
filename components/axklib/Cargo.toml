@@ -1,6 +1,6 @@
 [package]
 name = "axklib"
-version = "0.7.0"
+version = "0.7.5"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 description = "Small kernel-helper abstractions used across the microkernel"
@@ -17,6 +17,7 @@ ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 dma-api = { workspace = true }
 irq-framework = { workspace = true }
+mbarrier = "0.1"
 mmio-api = { workspace = true }
 trait-ffi = "0.2"
 

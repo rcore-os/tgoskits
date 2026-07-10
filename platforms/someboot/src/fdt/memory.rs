@@ -13,13 +13,13 @@ pub fn init_memory_map() -> Option<()> {
 
     for memory in fdt.memory() {
         for region in memory.regions() {
-            if region.size == 0 {
+            let Some(region) = normalize_region(region.address, region.size) else {
                 continue;
-            }
+            };
 
             add_memory_descriptor(MemoryDescriptor {
-                physical_start: region.address as usize,
-                size_in_bytes: region.size as _,
+                physical_start: region.start,
+                size_in_bytes: region.end - region.start,
                 memory_type: MemoryType::Free,
             })
             .unwrap();
@@ -27,9 +27,12 @@ pub fn init_memory_map() -> Option<()> {
     }
 
     for reserved in fdt.memory_reservations() {
+        let Some(region) = normalize_region(reserved.address, reserved.size) else {
+            continue;
+        };
         add_memory_descriptor(MemoryDescriptor::new_aligned(
-            reserved.address as usize,
-            reserved.size as usize,
+            region.start,
+            region.end - region.start,
             MemoryType::Reserved,
             PAGE_SIZE,
         ))
@@ -40,11 +43,11 @@ pub fn init_memory_map() -> Option<()> {
         if let Some(mut itr) = reserved.reg()
             && let Some(reg) = itr.next()
             && let Some(size) = reg.size
-            && size > 0
+            && let Some(region) = normalize_region(reg.address, size)
         {
             add_memory_descriptor(MemoryDescriptor {
-                physical_start: reg.address as usize,
-                size_in_bytes: size as usize,
+                physical_start: region.start,
+                size_in_bytes: region.end - region.start,
                 memory_type: MemoryType::Reserved,
             })
             .unwrap();
@@ -59,10 +62,26 @@ pub fn memories() -> impl Iterator<Item = Range<usize>> {
     if let Some(fdt) = fdt_base() {
         for memory in fdt.memory() {
             for region in memory.regions() {
-                res.push(region.address as usize..(region.address + region.size) as usize)
-                    .ok();
+                if let Some(region) = normalize_region(region.address, region.size) {
+                    res.push(region).ok();
+                }
             }
         }
     }
     res.into_iter()
+}
+
+fn normalize_region(address: u64, size: u64) -> Option<Range<usize>> {
+    if size == 0 {
+        return None;
+    }
+
+    let start = normalize_fdt_address(address as usize);
+    let size = size as usize;
+    let end = start.checked_add(size)?;
+    Some(start..end)
+}
+
+fn normalize_fdt_address(address: usize) -> usize {
+    <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(address)
 }

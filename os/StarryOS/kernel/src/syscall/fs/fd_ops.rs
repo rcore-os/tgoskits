@@ -680,8 +680,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         }
         F_SETPIPE_SZ => {
             let pipe = Pipe::from_fd(fd)?;
-            pipe.resize(arg)?;
-            Ok(0)
+            set_pipe_size(&pipe, arg)
         }
         F_GET_SEALS => {
             let memfd = Memfd::from_fd(fd)?;
@@ -724,6 +723,17 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Err(AxError::InvalidInput)
         }
     }
+}
+
+fn set_pipe_size(pipe: &Pipe, size: usize) -> AxResult<isize> {
+    pipe.resize(size)?;
+    Ok(pipe.capacity() as _)
+}
+
+#[cfg(axtest)]
+pub(crate) fn fcntl_setpipe_size_returns_capacity_for_test() -> bool {
+    let (read_end, _write_end) = Pipe::new();
+    set_pipe_size(&read_end, 4097) == Ok(8192)
 }
 
 pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {

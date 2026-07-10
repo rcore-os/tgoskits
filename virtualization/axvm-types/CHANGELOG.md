@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.6.0...axvm-types-v0.7.0) - 2026-07-07
+
+### Other
+
+- *(axvm)* handle vCPU exits in arch adapters ([#1528](https://github.com/rcore-os/tgoskits/pull/1528))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.5.13...axvm-types-v0.6.0) - 2026-07-02
 
 ### Added

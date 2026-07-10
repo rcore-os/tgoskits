@@ -11,19 +11,15 @@ use core::ptr::NonNull;
 
 use log::info;
 use rdrive::{
-    probe::{OnProbeError, fdt::ResetLine},
+    probe::{
+        OnProbeError,
+        fdt::{ClockLine, ResetLine},
+    },
     register::ProbeFdt,
 };
 use rockchip_jpeg::RockchipJpeg;
 
-use crate::{mmio::iomap, soc::rk3588_enable_clock};
-
-// Synthetic `ClkId` keys into the rockchip-soc gate table — NOT the DT binding
-// numbers. The canonical `ACLK/HCLK_JPEG_DECODER` = 421/422 are already taken by
-// the USB3OTG1 entries in that crate, so 436/437 are used as unique keys instead.
-// The actual hardware gate is the verified `CLKGATE_CON(45)` bit 2/3 in gate.rs.
-const CLK_ACLK_JPEG_DECODER: u32 = 436;
-const CLK_HCLK_JPEG_DECODER: u32 = 437;
+use crate::mmio::iomap;
 
 // The per-block Rockchip IOMMU v2 sits 0x480 into the same register page.
 const IOMMU_OFFSET: usize = 0x480;
@@ -61,9 +57,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let size_raw = reg.size.unwrap_or(0x400) as usize;
     let (start, size, offset) = page_aligned_region(start_raw, size_raw);
     let base = unsafe { iomap(start, size)?.add(offset) };
+    let clocks = info.clock_lines()?;
     let resets = info.reset_lines()?;
 
-    bring_up_clocks_and_resets(&resets);
+    bring_up_clocks_and_resets(&clocks, &resets);
     bypass_iommu(base);
 
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
@@ -91,10 +88,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 /// Bring the engine out of reset. All steps are best-effort and idempotent; the
 /// shared VDPU root clocks are left enabled by the bootloader (as for RGA2), so
 /// failures here are logged but not fatal.
-fn bring_up_clocks_and_resets(resets: &[ResetLine]) {
-    for clk in [CLK_ACLK_JPEG_DECODER, CLK_HCLK_JPEG_DECODER] {
-        if let Err(e) = rk3588_enable_clock(clk) {
-            info!("JPEG: enable clock {clk} failed (continuing): {e:?}");
+fn bring_up_clocks_and_resets(clocks: &[ClockLine], resets: &[ResetLine]) {
+    for clock in clocks {
+        if let Err(e) = clock.enable() {
+            info!(
+                "JPEG: enable clock {:?} ({:#x}) failed (continuing): {e}",
+                clock.name(),
+                clock.id().raw()
+            );
         }
     }
     for reset in resets {

@@ -1,0 +1,6 @@
+preadv201
+preadv201_64
+preadv202
+preadv202_64
+# preadv203 # TCONF: preadv2 returns EOPNOTSUPP for RWF_NOWAIT in the current environment
+# preadv203_64 # TCONF: preadv2 returns EOPNOTSUPP for RWF_NOWAIT in the current environment

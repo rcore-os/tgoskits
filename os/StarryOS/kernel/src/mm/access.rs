@@ -5,7 +5,7 @@ use core::{
     hint::{spin_loop, unlikely},
     mem::{MaybeUninit, transmute},
     ptr, slice,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -236,6 +236,14 @@ macro_rules! nullable {
 
 pub(crate) use nullable;
 
+/// Cumulative count of user page faults dispatched to the demand-paging handler.
+///
+/// Every fault that reaches the address-space `handle_page_fault` call is counted, matching the
+/// Linux `pgfault` event in mm/vmstat.c (all minor + major faults, regardless of resolution).
+/// Exposed through `/proc/vmstat` so node_exporter's vmstat collector can surface
+/// `node_vmstat_pgfault`.
+pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 #[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
@@ -282,6 +290,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         );
         return false;
     }
+    PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
 }
 

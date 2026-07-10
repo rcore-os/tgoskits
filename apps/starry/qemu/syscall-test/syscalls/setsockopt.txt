@@ -1,0 +1,10 @@
+# setsockopt01 # TFAIL: invalid optbuf/optlen checks return ENOPROTOOPT instead of expected errno
+# setsockopt02 # TCONF: socket(17, 3, 768) fails with ESOCKTNOSUPPORT in current environment
+setsockopt03
+# setsockopt04 # TBROK: setup returns ENOPROTOOPT instead of expected vulnerability probe behavior
+# setsockopt05 # TBROK: kernel .config is unavailable in current environment
+# setsockopt06 # TBROK: kernel .config is unavailable in current environment
+# setsockopt07 # TBROK: kernel .config is unavailable in current environment
+# setsockopt08 # TBROK: kernel .config is unavailable in current environment
+# setsockopt09 # TBROK: kernel .config is unavailable in current environment
+# setsockopt10 # TBROK: kernel .config is unavailable in current environment

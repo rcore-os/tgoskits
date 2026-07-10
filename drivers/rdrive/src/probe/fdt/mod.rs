@@ -16,7 +16,7 @@ use crate::{
     Descriptor, Device, DeviceId, PlatformDevice,
     error::DriverError,
     probe::OnProbeError,
-    register::{DriverRegister, ProbeKind},
+    register::{DriverRegister, ProbeKind, ProbePriority},
 };
 
 static SYSTEM: Once<System> = Once::new();
@@ -40,10 +40,13 @@ pub fn probe_register(
     sys.probe_register(register)
 }
 
-pub(crate) fn try_probe_register(
-    register: &DriverRegister,
+pub(crate) fn try_probe_registers_by_fdt_order(
+    registers: &[DriverRegister],
+    priority: ProbePriority,
 ) -> Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>> {
-    SYSTEM.get().map(|system| system.probe_register(register))
+    SYSTEM
+        .get()
+        .map(|system| system.probe_registers_by_fdt_order(registers, priority))
 }
 
 pub(crate) fn system() -> &'static System {
@@ -72,7 +75,7 @@ pub struct ResourcePrepareConfig {
 impl Default for ResourcePrepareConfig {
     fn default() -> Self {
         Self {
-            apply_assigned_clocks: true,
+            apply_assigned_clocks: false,
             enable_clocks: true,
             deassert_resets: true,
             enable_power_domains: false,
@@ -85,6 +88,11 @@ impl Default for ResourcePrepareConfig {
 impl ResourcePrepareConfig {
     pub fn without_assigned_clocks(mut self) -> Self {
         self.apply_assigned_clocks = false;
+        self
+    }
+
+    pub fn with_assigned_clocks(mut self) -> Self {
+        self.apply_assigned_clocks = true;
         self
     }
 
@@ -132,95 +140,6 @@ impl ResourcePrepareReport {
     fn insert_clock_rate(&mut self, name: String, rate: u64) {
         self.clock_rates.insert(name, rate);
     }
-}
-
-#[derive(Clone)]
-struct ClockLine {
-    node_name: String,
-    clock_name: Option<String>,
-    device: Device<rdif_clk::Clk>,
-    id: rdif_clk::ClockId,
-}
-
-impl ClockLine {
-    fn from_ref(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<Self, OnProbeError> {
-        let clock_id = clock_selector(info, clock)?;
-        let device_id = info.phandle_to_device_id(clock.phandle).ok_or_else(|| {
-            OnProbeError::other(format!(
-                "[{}] clock {:?} phandle {:?} has no device id",
-                info.node.name(),
-                clock.name,
-                clock.phandle
-            ))
-        })?;
-        let device = crate::get::<rdif_clk::Clk>(device_id).map_err(|err| {
-            OnProbeError::other(format!(
-                "[{}] clock {:?} provider {:?} has no rdif-clk interface: {err}",
-                info.node.name(),
-                clock.name,
-                clock.phandle
-            ))
-        })?;
-        Ok(Self {
-            node_name: info.node.name().to_string(),
-            clock_name: clock.name.clone(),
-            device,
-            id: rdif_clk::ClockId::from(clock_id as usize),
-        })
-    }
-
-    fn enable(&self) -> Result<(), OnProbeError> {
-        let mut clock = self.lock()?;
-        clock.enable(self.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "[{}] failed to enable clock {:?} ({:?}): {err:?}",
-                self.node_name, self.clock_name, self.id
-            ))
-        })
-    }
-
-    fn set_rate(&self, rate: u64) -> Result<(), OnProbeError> {
-        let mut clock = self.lock()?;
-        clock.set_rate(self.id, rate).map_err(|err| {
-            OnProbeError::other(format!(
-                "[{}] failed to set clock {:?} ({:?}) to {} Hz: {err:?}",
-                self.node_name, self.clock_name, self.id, rate
-            ))
-        })
-    }
-
-    fn rate(&self) -> Result<u64, OnProbeError> {
-        let clock = self.lock()?;
-        clock.get_rate(self.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "[{}] failed to read clock {:?} ({:?}): {err:?}",
-                self.node_name, self.clock_name, self.id
-            ))
-        })
-    }
-
-    fn lock(&self) -> Result<crate::DeviceGuard<rdif_clk::Clk>, OnProbeError> {
-        self.device.lock().map_err(|err| {
-            OnProbeError::other(format!(
-                "[{}] failed to lock clock {:?} ({:?}): {err}",
-                self.node_name, self.clock_name, self.id
-            ))
-        })
-    }
-}
-
-fn clock_selector(info: &FdtInfo<'_>, clock: &ClockRef) -> Result<u32, OnProbeError> {
-    if clock.cells == 0 {
-        return Ok(0);
-    }
-    clock.select().ok_or_else(|| {
-        OnProbeError::other(format!(
-            "[{}] clock {:?} provider {:?} has no selector",
-            info.node.name(),
-            clock.name,
-            clock.phandle
-        ))
-    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -477,6 +396,123 @@ impl PowerDomainLine {
     }
 }
 
+#[derive(Clone)]
+pub struct ClockLine {
+    node_name: String,
+    name: Option<String>,
+    device: Device<rdif_clk::Clk>,
+    id: rdif_clk::ClockId,
+}
+
+impl ClockLine {
+    fn from_refs(node_name: &str, refs: Vec<ClockRef>) -> Result<Vec<Self>, OnProbeError> {
+        refs.into_iter()
+            .filter_map(|clock| match clock.cells {
+                0 => None,
+                _ => Some(Self::from_ref(node_name, &clock)),
+            })
+            .collect()
+    }
+
+    fn from_ref(node_name: &str, clock: &ClockRef) -> Result<Self, OnProbeError> {
+        if clock.cells != 1 {
+            return Err(OnProbeError::other(format!(
+                "[{node_name}] clock {} uses {} cells, only one-cell clock selectors are supported",
+                clock_label(clock),
+                clock.cells
+            )));
+        }
+        let selector = clock.select().ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{node_name}] clock {} has no selector",
+                clock_label(clock)
+            ))
+        })?;
+        let provider_id = system()
+            .phandle_to_device_id(clock.phandle)
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{node_name}] clock provider phandle {:?} is not populated",
+                    clock.phandle
+                ))
+            })?;
+        let device = crate::get::<rdif_clk::Clk>(provider_id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{node_name}] clock provider {:?} has no rdif-clk interface: {err}",
+                clock.phandle
+            ))
+        })?;
+
+        Ok(Self {
+            node_name: node_name.to_string(),
+            name: clock.name.clone(),
+            device,
+            id: rdif_clk::ClockId::from(selector as usize),
+        })
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn id(&self) -> rdif_clk::ClockId {
+        self.id
+    }
+
+    pub fn enable(&self) -> Result<(), OnProbeError> {
+        self.with_clock("enable", |clock, id| clock.enable(id))
+    }
+
+    pub fn set_rate(&self, rate: u64) -> Result<(), OnProbeError> {
+        self.with_clock("set rate", |clock, id| clock.set_rate(id, rate))
+    }
+
+    pub fn rate(&self) -> Result<u64, OnProbeError> {
+        let clock = self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock clock {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })?;
+        clock.get_rate(self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to read clock {}: {err:?}",
+                self.node_name,
+                self.label()
+            ))
+        })
+    }
+
+    fn with_clock(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(&mut rdif_clk::Clk, rdif_clk::ClockId) -> Result<(), rdif_clk::KError>,
+    ) -> Result<(), OnProbeError> {
+        let mut clock = self.device.lock().map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to lock clock {}: {err}",
+                self.node_name,
+                self.label()
+            ))
+        })?;
+        f(&mut clock, self.id).map_err(|err| {
+            OnProbeError::other(format!(
+                "[{}] failed to {operation} clock {}: {err:?}",
+                self.node_name,
+                self.label()
+            ))
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.name() {
+            Some(name) => format!("{name}({:#x})", self.id.raw()),
+            None => format!("{:#x}", self.id.raw()),
+        }
+    }
+}
+
 fn reset_label(reset: &ResetRef) -> String {
     match reset.name.as_deref() {
         Some(name) => name.to_string(),
@@ -488,6 +524,13 @@ fn power_domain_label(domain: &PowerDomainRef) -> String {
     match domain.name.as_deref() {
         Some(name) => name.to_string(),
         None => format!("phandle {:?}", domain.phandle),
+    }
+}
+
+fn clock_label(clock: &ClockRef) -> String {
+    match clock.name.as_deref() {
+        Some(name) => name.to_string(),
+        None => format!("phandle {:?}", clock.phandle),
     }
 }
 
@@ -620,9 +663,90 @@ pub fn power_domain_refs(node: NodeType<'_>) -> Result<Vec<PowerDomainRef>, OnPr
     })
 }
 
+fn clock_refs_from_node(
+    node: NodeType<'_>,
+    property: &str,
+    names_property: Option<&str>,
+    mut provider_cells: impl FnMut(Phandle) -> Result<(String, u32), OnProbeError>,
+) -> Result<Vec<ClockRef>, OnProbeError> {
+    let Some(prop) = node.as_node().get_property(property) else {
+        return Ok(Vec::new());
+    };
+    let clock_names = names_property
+        .and_then(|name| node.as_node().get_property(name))
+        .map(|prop| {
+            prop.as_str_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut reader = prop.as_reader();
+    let mut refs = Vec::new();
+    let mut index = 0;
+    while let Some(phandle_raw) = reader.read_u32() {
+        if phandle_raw == 0 {
+            index += 1;
+            continue;
+        }
+
+        let phandle = Phandle::from(phandle_raw);
+        let (_provider_name, cells) = provider_cells(phandle)?;
+
+        let mut specifier = Vec::with_capacity(cells as usize);
+        for _ in 0..cells {
+            let value = reader.read_u32().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] has truncated {property} entry for phandle {phandle:?}",
+                    node.name()
+                ))
+            })?;
+            specifier.push(value);
+        }
+
+        refs.push(ClockRef {
+            name: clock_names.get(index).cloned(),
+            phandle,
+            cells,
+            specifier,
+        });
+        index += 1;
+    }
+    Ok(refs)
+}
+
+pub fn clock_refs(node: NodeType<'_>) -> Result<Vec<ClockRef>, OnProbeError> {
+    clock_refs_from_node(node, "clocks", Some("clock-names"), |phandle| {
+        let provider = system().get_by_phandle(phandle).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{}] clock provider phandle {phandle:?} not found",
+                node.name()
+            ))
+        })?;
+        let cells = provider
+            .as_node()
+            .get_property("#clock-cells")
+            .and_then(|prop| prop.get_u32())
+            .ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] clock provider {} has no #clock-cells",
+                    node.name(),
+                    provider.name()
+                ))
+            })?;
+
+        Ok((provider.name().to_string(), cells))
+    })
+}
+
 pub fn reset_lines(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
     let refs = reset_refs(node)?;
     ResetLine::from_refs(node.name(), refs)
+}
+
+pub fn clock_lines(node: NodeType<'_>) -> Result<Vec<ClockLine>, OnProbeError> {
+    let refs = clock_refs(node)?;
+    ClockLine::from_refs(node.name(), refs)
 }
 
 pub fn power_domain_lines(node: NodeType<'_>) -> Result<Vec<PowerDomainLine>, OnProbeError> {
@@ -672,7 +796,7 @@ impl<'a> FdtInfo<'a> {
         config: ResourcePrepareConfig,
     ) -> Result<ResourcePrepareReport, OnProbeError> {
         if config.apply_assigned_clocks {
-            apply_assigned_clocks(self)?;
+            apply_assigned_clocks_for_info(self)?;
         }
         apply_supply_regulators(self, &config.supply_names)?;
         if config.enable_power_domains {
@@ -681,8 +805,8 @@ impl<'a> FdtInfo<'a> {
             }
         }
         if config.enable_clocks {
-            for clock in self.node.clocks() {
-                ClockLine::from_ref(self, &clock)?.enable()?;
+            for clock in self.clock_lines()? {
+                clock.enable()?;
             }
         }
         if config.deassert_resets {
@@ -693,13 +817,38 @@ impl<'a> FdtInfo<'a> {
 
         let mut report = ResourcePrepareReport::default();
         for name in config.clock_rates {
-            let Some(clock) = self.find_clk_by_name(&name) else {
+            let Some(clock) = self.find_clock_line_by_name(&name)? else {
                 continue;
             };
-            let clock = ClockLine::from_ref(self, &clock)?;
             report.insert_clock_rate(name, clock.rate()?);
         }
         Ok(report)
+    }
+
+    pub fn clocks(&self) -> Result<Vec<ClockRef>, OnProbeError> {
+        clock_refs(self.node)
+    }
+
+    pub fn clock_lines(&self) -> Result<Vec<ClockLine>, OnProbeError> {
+        clock_lines(self.node)
+    }
+
+    pub fn clock_line(&self, clock: &ClockRef) -> Result<ClockLine, OnProbeError> {
+        ClockLine::from_ref(self.node.name(), clock)
+    }
+
+    pub fn find_clock_line_by_name(&self, name: &str) -> Result<Option<ClockLine>, OnProbeError> {
+        let Some(clock) = self
+            .clocks()?
+            .into_iter()
+            .find(|clock| clock.name.as_deref() == Some(name))
+        else {
+            return Ok(None);
+        };
+        if clock.cells == 0 {
+            return Ok(None);
+        }
+        self.clock_line(&clock).map(Some)
     }
 
     pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {
@@ -757,22 +906,64 @@ impl<'a> FdtInfo<'a> {
     }
 }
 
-fn apply_assigned_clocks(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+pub fn apply_assigned_clocks(node: NodeType<'_>) -> Result<(), OnProbeError> {
+    let info = FdtInfo {
+        node,
+        phandle_2_device_id: system().phandle_2_device_id.clone(),
+    };
+    apply_assigned_clocks_for_info(&info)
+}
+
+fn apply_assigned_clocks_for_info(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    let node = info.node;
+    if node.as_node().get_property("#clock-cells").is_some() {
+        return Ok(());
+    }
+
     let clocks = clock_refs_from_property(info, "assigned-clocks")?;
-    let rates = info
-        .node
+    let rates = node
         .as_node()
         .get_property("assigned-clock-rates")
         .map(|prop| prop.get_u32_iter().map(u64::from).collect::<Vec<_>>())
         .unwrap_or_default();
+    let node_phandle = node.as_node().phandle();
     for (index, clock) in clocks.into_iter().enumerate() {
         let Some(rate) = rates.get(index).copied() else {
             continue;
         };
-        if rate == 0 {
+        if rate == 0 || clock.cells == 0 || Some(clock.phandle) == node_phandle {
             continue;
         }
-        ClockLine::from_ref(info, &clock)?.set_rate(rate)?;
+        if clock.cells != 1 {
+            return Err(OnProbeError::other(format!(
+                "[{}] assigned clock {} uses {} cells, only one-cell clock selectors are supported",
+                node.name(),
+                clock_label(&clock),
+                clock.cells
+            )));
+        }
+        let Some(provider_id) = info.phandle_to_device_id(clock.phandle) else {
+            return Err(OnProbeError::other(format!(
+                "[{}] assigned clock provider phandle {:?} is not populated",
+                node.name(),
+                clock.phandle
+            )));
+        };
+        match crate::get::<rdif_clk::Clk>(provider_id) {
+            Ok(_) => {}
+            Err(crate::GetDeviceError::TypeNotMatch | crate::GetDeviceError::NotFound) => {
+                continue;
+            }
+            Err(err) => {
+                return Err(OnProbeError::other(format!(
+                    "[{}] assigned clock provider {:?} has no rdif-clk interface: {err}",
+                    node.name(),
+                    clock.phandle
+                )));
+            }
+        }
+
+        ClockLine::from_ref(node.name(), &clock)?.set_rate(rate)?;
     }
     Ok(())
 }
@@ -781,39 +972,27 @@ fn clock_refs_from_property(
     info: &FdtInfo<'_>,
     property_name: &'static str,
 ) -> Result<Vec<ClockRef>, OnProbeError> {
-    let Some(prop) = info.node.as_node().get_property(property_name) else {
-        return Ok(Vec::new());
-    };
-    let mut reader = prop.as_reader();
-    let mut refs = Vec::new();
-    while let Some(phandle_raw) = reader.read_u32() {
-        let phandle = Phandle::from(phandle_raw);
+    clock_refs_from_node(info.node, property_name, None, |phandle| {
         let provider = info.get_by_phandle(phandle).ok_or_else(|| {
             OnProbeError::other(format!(
-                "[{}] {property_name} provider phandle {:?} not found",
-                info.node.name(),
-                phandle
+                "[{}] {property_name} provider phandle {phandle:?} not found",
+                info.node.name()
             ))
         })?;
         let cells = provider
             .as_node()
             .get_property("#clock-cells")
             .and_then(|prop| prop.get_u32())
-            .unwrap_or(1);
-        let mut specifier = Vec::with_capacity(cells as usize);
-        for _ in 0..cells {
-            let value = reader.read_u32().ok_or_else(|| {
+            .ok_or_else(|| {
                 OnProbeError::other(format!(
-                    "[{}] has truncated {property_name} entry for phandle {:?}",
+                    "[{}] {property_name} provider {} has no #clock-cells",
                     info.node.name(),
-                    phandle
+                    provider.name()
                 ))
             })?;
-            specifier.push(value);
-        }
-        refs.push(ClockRef::new(phandle, cells, specifier));
-    }
-    Ok(refs)
+
+        Ok((provider.name().to_string(), cells))
+    })
 }
 
 fn apply_supply_regulators(
@@ -1026,11 +1205,79 @@ impl System {
         out
     }
 
+    fn get_fdt_match_nodes_by_fdt_order<'a>(
+        &'a self,
+        registers: &[DriverRegister],
+        priority: ProbePriority,
+    ) -> Vec<ProbeFdtInfo<'a>> {
+        let mut out = Vec::new();
+        for node in self.ordered_probe_nodes(priority) {
+            if matches!(node.as_node().status(), Some(Status::Disabled)) {
+                continue;
+            }
+
+            if self.populated_nodes.lock().contains(&node.id()) {
+                continue;
+            }
+
+            let node_compatibles = node.as_node().compatibles().collect::<Vec<_>>();
+            for register in registers {
+                for probe in register.probe_kinds {
+                    let &ProbeKind::Fdt {
+                        compatibles,
+                        on_probe,
+                    } = probe
+                    else {
+                        continue;
+                    };
+
+                    if node_compatibles
+                        .iter()
+                        .any(|compatible| compatibles.contains(compatible))
+                    {
+                        out.push(ProbeFdtInfo {
+                            name: register.name,
+                            node,
+                            on_probe,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn ordered_probe_nodes(&self, priority: ProbePriority) -> Vec<NodeType<'_>> {
+        let nodes = self.fdt.all_nodes().collect::<Vec<_>>();
+        if priority == ProbePriority::INTC {
+            parent_first_interrupt_controllers(nodes)
+        } else {
+            nodes
+        }
+    }
+
     fn probe_register(
         &self,
         register: &DriverRegister,
     ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let node_ls = self.get_fdt_match_nodes(register);
+        self.probe_fdt_matches(node_ls)
+    }
+
+    fn probe_registers_by_fdt_order(
+        &self,
+        registers: &[DriverRegister],
+        priority: ProbePriority,
+    ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
+        let node_ls = self.get_fdt_match_nodes_by_fdt_order(registers, priority);
+        self.probe_fdt_matches(node_ls)
+    }
+
+    fn probe_fdt_matches(
+        &self,
+        node_ls: Vec<ProbeFdtInfo<'_>>,
+    ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let mut out = Vec::new();
         for node_info in node_ls {
             let node_id = node_info.node.id();
@@ -1049,7 +1296,8 @@ impl System {
             let phandle_map = self.phandle_2_device_id.clone();
 
             debug!("Probe [{}]->[{}]", node.name(), node_info.name);
-            let res = apply_power_domains(node)
+            let res = apply_assigned_clocks(node)
+                .and_then(|()| apply_power_domains(node))
                 .and_then(|()| apply_default_pinctrl(node))
                 .and_then(|()| {
                     let descriptor = Descriptor {
@@ -1076,6 +1324,64 @@ impl System {
         }
 
         Ok(out)
+    }
+}
+
+fn parent_first_interrupt_controllers(nodes: Vec<NodeType<'_>>) -> Vec<NodeType<'_>> {
+    let mut pending = nodes;
+    let known_controllers = pending
+        .iter()
+        .filter(|node| is_interrupt_controller(node))
+        .filter_map(|node| node.as_node().phandle())
+        .collect::<BTreeSet<_>>();
+    let mut ready_controllers = BTreeSet::new();
+    let mut ordered = Vec::new();
+
+    while !pending.is_empty() {
+        let mut progressed = false;
+        let mut index = 0;
+        while index < pending.len() {
+            let node = &pending[index];
+            if !is_interrupt_controller(node)
+                || interrupt_parent_ready(node, &known_controllers, &ready_controllers)
+            {
+                let node = pending.remove(index);
+                if let Some(phandle) = node.as_node().phandle()
+                    && is_interrupt_controller(&node)
+                {
+                    ready_controllers.insert(phandle);
+                }
+                ordered.push(node);
+                progressed = true;
+            } else {
+                index += 1;
+            }
+        }
+
+        if !progressed {
+            ordered.append(&mut pending);
+        }
+    }
+
+    ordered
+}
+
+fn is_interrupt_controller(node: &NodeType<'_>) -> bool {
+    matches!(node, NodeType::InterruptController(_))
+}
+
+fn interrupt_parent_ready(
+    node: &NodeType<'_>,
+    known_controllers: &BTreeSet<Phandle>,
+    ready_controllers: &BTreeSet<Phandle>,
+) -> bool {
+    let node_phandle = node.as_node().phandle();
+    let parent = node
+        .interrupt_parent()
+        .filter(|parent| Some(*parent) != node_phandle);
+    match parent {
+        Some(parent) if known_controllers.contains(&parent) => ready_controllers.contains(&parent),
+        _ => true,
     }
 }
 
@@ -1174,6 +1480,111 @@ mod tests {
 
         assert!(format!("{err}").contains("truncated power-domains entry"));
         assert_eq!(fdt.node(consumer).unwrap().name(), "jpeg@fdba0000");
+    }
+
+    #[test]
+    fn clock_refs_parse_names_and_provider_cells() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props(
+                "clock-controller",
+                &[
+                    prop_u32s("phandle", &[0x44]),
+                    prop_u32s("#clock-cells", &[1]),
+                ],
+            ),
+        );
+        let consumer = fdt.add_node(
+            root,
+            node_with_props(
+                "usb@fcd00000",
+                &[
+                    prop_u32s("clocks", &[0x44, 11, 0x44, 12]),
+                    prop_strs("clock-names", &["bus", "ref"]),
+                ],
+            ),
+        );
+
+        let refs = clock_refs_from_node(
+            fdt.get_by_path("/usb@fcd00000").unwrap(),
+            "clocks",
+            Some("clock-names"),
+            |phandle| {
+                fdt.get_by_phandle(phandle)
+                    .and_then(|provider| {
+                        provider
+                            .as_node()
+                            .get_property("#clock-cells")
+                            .and_then(|prop| prop.get_u32())
+                            .map(|cells| (provider.name().to_string(), cells))
+                    })
+                    .ok_or_else(|| OnProbeError::other(format!("missing provider {phandle:?}")))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name.as_deref(), Some("bus"));
+        assert_eq!(refs[0].phandle, Phandle::from(0x44));
+        assert_eq!(refs[0].cells, 1);
+        assert_eq!(refs[0].specifier, vec![11]);
+        assert_eq!(refs[1].name.as_deref(), Some("ref"));
+        assert_eq!(refs[1].specifier, vec![12]);
+        assert_eq!(fdt.node(consumer).unwrap().name(), "usb@fcd00000");
+    }
+
+    #[test]
+    fn clock_refs_reject_truncated_provider_specifier() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let consumer = fdt.add_node(
+            root,
+            node_with_props("pcie@fe150000", &[prop_u32s("clocks", &[0x44])]),
+        );
+
+        let err = clock_refs_from_node(
+            fdt.get_by_path("/pcie@fe150000").unwrap(),
+            "clocks",
+            Some("clock-names"),
+            |_| Ok(("clock-controller".into(), 1)),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err}").contains("truncated clocks entry"));
+        assert_eq!(fdt.node(consumer).unwrap().name(), "pcie@fe150000");
+    }
+
+    #[test]
+    fn clock_lines_reject_multi_cell_provider() {
+        let clock = ClockRef {
+            name: Some("core".into()),
+            phandle: Phandle::from(0x44),
+            cells: 2,
+            specifier: vec![11, 0],
+        };
+
+        let err = match ClockLine::from_refs("device@2000", vec![clock]) {
+            Ok(_) => panic!("multi-cell clock provider should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(format!("{err}").contains("only one-cell clock selectors are supported"));
+    }
+
+    #[test]
+    fn clock_lines_skip_zero_cell_provider() {
+        let clock = ClockRef {
+            name: Some("utmi".into()),
+            phandle: Phandle::from(0x44),
+            cells: 0,
+            specifier: Vec::new(),
+        };
+
+        let lines = ClockLine::from_refs("usb@fc800000", vec![clock]).unwrap();
+
+        assert!(lines.is_empty());
     }
 
     fn node_with_props(name: &str, props: &[Property]) -> Node {

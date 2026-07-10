@@ -87,6 +87,31 @@ pub fn dcache_range(op: DCacheOp, addr: *const u8, size: usize) {
     Arch::dcache_range(op, addr as _, size);
 }
 
+pub fn dma_coherent_before_make_uncached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_make_uncached(addr as _, size);
+}
+
+pub fn dma_coherent_before_restore_cached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_restore_cached(addr as _, size);
+}
+
+pub fn dma_coherent_after_mapping_update() {
+    Arch::dma_coherent_after_mapping_update();
+}
+
+#[cfg(any(test, all(target_arch = "riscv64", feature = "thead-mae")))]
+pub(crate) fn cache_line_range(
+    addr: usize,
+    size: usize,
+    line_size: usize,
+) -> Option<(usize, usize)> {
+    if size == 0 || line_size == 0 || !line_size.is_power_of_two() {
+        return None;
+    }
+    let end = addr.checked_add(size)?;
+    Some((addr & !(line_size - 1), end))
+}
+
 /// 物理RAM实际转换为的内核虚拟地址
 pub fn phys_to_virt(paddr: usize) -> *mut u8 {
     if mmu::is_kernel_relocated() {
@@ -109,7 +134,7 @@ pub fn virt_to_phys(vaddr: *const u8) -> usize {
 }
 
 pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
-    if mmu::is_kernel_relocated() {
+    if mmu::is_kernel_relocated() || cfg!(target_arch = "loongarch64") {
         __io(paddr)
     } else {
         paddr as *mut u8
@@ -226,4 +251,23 @@ pub(crate) fn add_memory_descriptor(
 
 pub fn kernel_space() -> Range<usize> {
     Arch::kernel_space()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_line_range_covers_unaligned_buffer() {
+        assert_eq!(cache_line_range(0x1003, 1, 64), Some((0x1000, 0x1004)));
+        assert_eq!(cache_line_range(0x103f, 2, 64), Some((0x1000, 0x1041)));
+    }
+
+    #[test]
+    fn cache_line_range_skips_empty_invalid_line_and_overflow() {
+        assert_eq!(cache_line_range(0x1000, 0, 64), None);
+        assert_eq!(cache_line_range(0x1000, 1, 0), None);
+        assert_eq!(cache_line_range(0x1000, 1, 63), None);
+        assert_eq!(cache_line_range(usize::MAX, 2, 64), None);
+    }
 }

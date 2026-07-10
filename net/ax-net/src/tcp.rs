@@ -25,7 +25,7 @@
 //! - `LISTEN_TABLE` owns passive-open child sockets and accept wakeups.
 //! - `orphan` keeps dropped sockets alive long enough for FIN/TIME-WAIT cleanup.
 
-use alloc::{sync::Arc, vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
@@ -36,7 +36,7 @@ use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
@@ -479,7 +479,10 @@ impl SocketOps for TcpSocket {
                     },
                     port: local_addr.port(),
                 };
-                if !self.general.reuse_address() && !LISTEN_TABLE.can_listen(endpoint) {
+                if !self.general.reuse_address()
+                    && !self.general.reuse_port()
+                    && !LISTEN_TABLE.can_listen(endpoint)
+                {
                     return Err(AxError::AddrInUse);
                 }
                 let binding = get_control().local_binding_for(&endpoint)?;
@@ -524,7 +527,7 @@ impl SocketOps for TcpSocket {
                 }
                 let binding = get_control().local_binding_for(&bound_endpoint)?;
                 self.with_bound_endpoint_registered(bound_endpoint, || {
-                    LISTEN_TABLE.listen(bound_endpoint, backlog)
+                    LISTEN_TABLE.listen(bound_endpoint, backlog, self.general.reuse_port())
                 })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
                 self.sync_egress_ip_tos();
@@ -569,12 +572,17 @@ impl SocketOps for TcpSocket {
         })
     }
 
-    fn send(&self, mut src: impl Read, options: SendOptions) -> AxResult<usize> {
+    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
+        let target_len = src.remaining();
+        if target_len == 0 {
+            return Ok(0);
+        }
+        let mut total_sent = 0;
         let result = self.general.send_poller_with(self, extra_nb, || {
             request_poll();
-            self.with_smol_socket(|socket| {
+            let step = self.with_smol_socket(|socket| {
                 if !socket.is_active() {
                     Err(AxError::NotConnected)
                 } else if !socket.can_send() {
@@ -590,7 +598,11 @@ impl SocketOps for TcpSocket {
                         .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
                     Ok(len)
                 }
-            })
+            });
+            if step.as_ref().is_ok_and(|sent| *sent > 0) {
+                request_poll();
+            }
+            finish_tcp_send_step(&mut total_sent, target_len, extra_nb, step)
         });
         if result.is_ok() {
             request_poll();
@@ -980,7 +992,7 @@ impl TcpSocket {
     /// Registers the public TCP bind side table if not already registered.
     fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> AxResult {
         if !self.bound_registered.load(Ordering::Acquire) {
-            register_tcp_bound(endpoint)?;
+            register_tcp_bound(endpoint, self.general.reuse_port())?;
             self.bound_registered.store(true, Ordering::Release);
         }
         Ok(())
@@ -993,7 +1005,7 @@ impl TcpSocket {
     ) -> AxResult<R> {
         let register_bound = !self.bound_registered.load(Ordering::Acquire);
         if register_bound {
-            register_tcp_bound(endpoint)?;
+            register_tcp_bound(endpoint, self.general.reuse_port())?;
         }
         match f() {
             Ok(value) => {
@@ -1019,37 +1031,57 @@ impl TcpSocket {
     }
 }
 
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, HashSet<Option<smoltcp::wire::IpAddress>>>>> =
+/// One TCP bind ownership record. Several records may share a port only when
+/// every binder requested SO_REUSEPORT on the identical local address, mirroring
+/// Linux's reuseport group semantics.
+struct TcpBoundEntry {
+    addr: Option<smoltcp::wire::IpAddress>,
+    reuse_port: bool,
+}
+
+static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<TcpBoundEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
-fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
+///
+/// A binder joins an existing reuseport group only when it and every colliding
+/// owner requested SO_REUSEPORT on the exact same local address; any other
+/// address overlap on the port is rejected with `EADDRINUSE`.
+fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> AxResult {
     if endpoint.port == 0 {
         return Ok(());
     }
 
     let mut bound_ports = TCP_BOUND_PORTS.lock();
-    let bound_addrs = bound_ports.entry(endpoint.port).or_default();
-    if bound_addrs
-        .iter()
-        .any(|&addr| listen_addrs_conflict(addr, endpoint.addr))
-    {
-        return Err(AxError::AddrInUse);
+    let entries = bound_ports.entry(endpoint.port).or_default();
+    for entry in entries.iter() {
+        if listen_addrs_conflict(entry.addr, endpoint.addr)
+            && !(reuse_port && entry.reuse_port && entry.addr == endpoint.addr)
+        {
+            return Err(AxError::AddrInUse);
+        }
     }
-    bound_addrs.insert(endpoint.addr);
+    entries.push(TcpBoundEntry {
+        addr: endpoint.addr,
+        reuse_port,
+    });
     Ok(())
 }
 
 /// Removes one TCP bind registration.
 fn unregister_tcp_bound(endpoint: IpListenEndpoint) {
-    if endpoint.port != 0 {
-        let mut bound_ports = TCP_BOUND_PORTS.lock();
-        if let Some(bound_addrs) = bound_ports.get_mut(&endpoint.port) {
-            bound_addrs.remove(&endpoint.addr);
-            if bound_addrs.is_empty() {
-                bound_ports.remove(&endpoint.port);
-            }
-        }
+    if endpoint.port == 0 {
+        return;
+    }
+    let mut bound_ports = TCP_BOUND_PORTS.lock();
+    let Some(entries) = bound_ports.get_mut(&endpoint.port) else {
+        return;
+    };
+    if let Some(index) = entries.iter().position(|entry| entry.addr == endpoint.addr) {
+        entries.swap_remove(index);
+    }
+    if entries.is_empty() {
+        bound_ports.remove(&endpoint.port);
     }
 }
 
@@ -1059,6 +1091,28 @@ fn tcp_port_available(port: u16) -> bool {
     // listener or bound socket on any local address.
     LISTEN_TABLE.can_listen(IpListenEndpoint { addr: None, port })
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
+}
+
+fn finish_tcp_send_step(
+    total_sent: &mut usize,
+    target_len: usize,
+    extra_nonblocking: bool,
+    step: AxResult<usize>,
+) -> AxResult<usize> {
+    match step {
+        Ok(sent) => {
+            *total_sent += sent;
+            if *total_sent >= target_len || extra_nonblocking {
+                Ok(*total_sent)
+            } else {
+                Err(AxError::WouldBlock)
+            }
+        }
+        Err(AxError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
+        Err(AxError::WouldBlock) => Err(AxError::WouldBlock),
+        Err(_) if *total_sent > 0 => Ok(*total_sent),
+        Err(err) => Err(err),
+    }
 }
 
 fn get_ephemeral_port() -> AxResult<u16> {
@@ -1076,6 +1130,49 @@ mod tests {
             LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
         },
     };
+
+    #[test]
+    fn blocking_tcp_send_waits_after_partial_write() {
+        let mut total = 0;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Ok(4)),
+            Err(AxError::WouldBlock),
+        );
+        assert_eq!(total, 4);
+        assert_eq!(finish_tcp_send_step(&mut total, 10, false, Ok(6)), Ok(10),);
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn dontwait_tcp_send_returns_first_partial_write() {
+        let mut total = 0;
+
+        assert_eq!(finish_tcp_send_step(&mut total, 10, true, Ok(4)), Ok(4),);
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn tcp_send_returns_partial_count_after_later_error() {
+        let mut total = 4;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Err(AxError::NotConnected)),
+            Ok(4),
+        );
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn blocking_tcp_send_keeps_waiting_after_partial_wouldblock() {
+        let mut total = 4;
+
+        assert_eq!(
+            finish_tcp_send_step(&mut total, 10, false, Err(AxError::WouldBlock)),
+            Err(AxError::WouldBlock),
+        );
+        assert_eq!(total, 4);
+    }
 
     #[test]
     fn tcp_info_reports_default_socket_metrics() {
@@ -1196,5 +1293,42 @@ mod tests {
                 bound_if: Some(LOCAL_IF)
             }
         );
+    }
+
+    #[test]
+    fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
+        let _guard = network_test_guard();
+
+        let endpoint = IpListenEndpoint {
+            addr: None,
+            port: 0xB70F,
+        };
+
+        // A plain binder owns the port exclusively.
+        register_tcp_bound(endpoint, false).unwrap();
+        assert_eq!(
+            register_tcp_bound(endpoint, false).unwrap_err(),
+            AxError::AddrInUse
+        );
+        // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
+        assert_eq!(
+            register_tcp_bound(endpoint, true).unwrap_err(),
+            AxError::AddrInUse
+        );
+        unregister_tcp_bound(endpoint);
+
+        // Two reuseport binders share the port, mirroring Linux's group model.
+        register_tcp_bound(endpoint, true).unwrap();
+        register_tcp_bound(endpoint, true).unwrap();
+        // A plain binder still cannot steal a reuseport-owned port.
+        assert_eq!(
+            register_tcp_bound(endpoint, false).unwrap_err(),
+            AxError::AddrInUse
+        );
+
+        // Each unregister drops exactly one group member.
+        unregister_tcp_bound(endpoint);
+        unregister_tcp_bound(endpoint);
+        assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
     }
 }

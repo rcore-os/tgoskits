@@ -1,12 +1,11 @@
 use aya::{maps::HashMap, programs::KProbe};
-#[rustfmt::skip]
-use log::{debug, warn};
+use log::debug;
 use std::{
     fs,
     io::{BufRead, BufReader},
 };
 
-use tokio::{signal, task::yield_now, time};
+use tokio::time;
 
 // Resolve the (possibly mangled) kallsyms entry for
 // `starry_kernel::syscall::sysno`, the `#[inline(never)]` helper whose first
@@ -61,56 +60,34 @@ async fn main() -> anyhow::Result<()> {
         "/syscall_count"
     )))?;
 
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => {
-            // This can happen if you remove all log statements from your eBPF program.
-            warn!("failed to initialize eBPF logger: {e}");
-        }
-        Ok(logger) => {
-            let mut logger =
-                tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)?;
-            tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
-                }
-            });
-        }
-    }
-
     let program: &mut KProbe = ebpf.program_mut("syscall_ebpf").unwrap().try_into()?;
     program.load()?;
     program.attach(target_syscall_entry, 0)?;
     log::info!("attacch the kprobe to syscall_entry ok");
 
-    // print the value of the blocklist per 5 seconds
-    tokio::spawn(async move {
-        let blocklist: HashMap<_, u32, u32> =
-            HashMap::try_from(ebpf.map("SYSCALL_LIST").unwrap()).unwrap();
-        let mut now = time::Instant::now();
-        loop {
-            let new_now = time::Instant::now();
-            let duration = new_now.duration_since(now);
-            if duration.as_secs() >= 5 {
-                println!("------------SYSCALL_LIST----------------");
-                let iter = blocklist.iter();
-                for item in iter {
-                    if let Ok((key, value)) = item {
-                        println!("syscall: {:?}, count: {:?}", key, value);
-                    }
-                }
-                println!("----------------------------------------");
-                now = new_now;
-            }
-            yield_now().await;
+    for _ in 0..64 {
+        unsafe {
+            libc::getpid();
         }
-    });
+        time::sleep(time::Duration::from_millis(10)).await;
+    }
 
-    let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
-    println!("Exiting...");
+    let syscall_list: HashMap<_, u32, u32> =
+        HashMap::try_from(ebpf.map("SYSCALL_LIST").unwrap())?;
+    let mut total = 0u32;
+    let mut distinct = 0u32;
+    for item in syscall_list.iter() {
+        let (key, value) = item?;
+        println!("syscall: {key}, count: {value}");
+        total = total.saturating_add(value);
+        distinct += 1;
+    }
+
+    if total == 0 {
+        anyhow::bail!("SYSCALL_COUNT_FAIL: no syscall records were captured");
+    }
+
+    println!("SYSCALL_COUNT_PASS: {total} records across {distinct} syscall ids");
 
     Ok(())
 }

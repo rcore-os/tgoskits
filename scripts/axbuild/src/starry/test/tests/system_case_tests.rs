@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
     let case_dir = system_dir.join("bugfix-bug-ext4-dir-ops");
     assert!(
         case_dir.join("CMakeLists.txt").is_file(),
@@ -58,88 +58,79 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 #[test]
 fn starry_system_grouped_qemu_configs_report_subcase_timing() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
 
-    for (group, arches) in [
-        (
-            "qemu-smp1",
-            &["aarch64", "loongarch64", "riscv64", "x86_64"][..],
-        ),
-        ("qemu-smp4", &["aarch64", "loongarch64", "x86_64"][..]),
-    ] {
-        let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
-        for arch in arches {
-            let path = system_dir.join(format!("qemu-{arch}.toml"));
-            let content = fs::read_to_string(&path).unwrap();
-            let config: toml::Value = toml::from_str(&content).unwrap();
-            let test_commands = config
-                .get("test_commands")
-                .and_then(toml::Value::as_array)
-                .unwrap();
-            let command = test_commands
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .next()
-                .unwrap_or_default();
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let path = system_dir.join(format!("qemu-{arch}.toml"));
+        let content = fs::read_to_string(&path).unwrap();
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let test_commands = config
+            .get("test_commands")
+            .and_then(toml::Value::as_array)
+            .unwrap();
+        let command = test_commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .next()
+            .unwrap_or_default();
 
-            assert!(
-                command.contains("STARRY_SYSTEM_TEST_TIMING_BEGIN"),
-                "{} must start a grouped subcase timing section",
+        assert!(
+            command.contains("STARRY_SYSTEM_TEST_TIMING_BEGIN"),
+            "{} must start a grouped subcase timing section",
+            path.display()
+        );
+        assert!(
+            command.contains("STARRY_SYSTEM_TEST_TIMING: elapsed_s="),
+            "{} must report per-subcase elapsed seconds",
+            path.display()
+        );
+        assert!(
+            command.contains("status=passed bin=") && command.contains("status=failed bin="),
+            "{} must include pass/fail status in timing lines",
+            path.display()
+        );
+        assert!(
+            command.contains("STARRY_SYSTEM_TEST_TIMING_END"),
+            "{} must end a grouped subcase timing section",
+            path.display()
+        );
+        assert!(
+            !command.contains("sort -nr") && !command.contains("head -n"),
+            "{} must not depend on external sort/head pipelines in the final timing summary",
+            path.display()
+        );
+        assert!(
+            command.contains("done < \"$timing_file\""),
+            "{} must read grouped subcase timing from the timing file, not from stdin",
+            path.display()
+        );
+        let failure_branch = command.find("else\n").unwrap_or_else(|| {
+            panic!(
+                "{} must contain a failure branch for grouped subcases",
                 path.display()
-            );
-            assert!(
-                command.contains("STARRY_SYSTEM_TEST_TIMING: elapsed_s="),
-                "{} must report per-subcase elapsed seconds",
+            )
+        });
+        let failure_command = &command[failure_branch..];
+        let exit_status_position = failure_command.find("exit_status=$?").unwrap_or_else(|| {
+            panic!(
+                "{} must preserve grouped subcase exit status",
                 path.display()
-            );
-            assert!(
-                command.contains("status=passed bin=") && command.contains("status=failed bin="),
-                "{} must include pass/fail status in timing lines",
-                path.display()
-            );
-            assert!(
-                command.contains("STARRY_SYSTEM_TEST_TIMING_END"),
-                "{} must end a grouped subcase timing section",
-                path.display()
-            );
-            assert!(
-                !command.contains("sort -nr") && !command.contains("head -n"),
-                "{} must not depend on external sort/head pipelines in the final timing summary",
-                path.display()
-            );
-            assert!(
-                command.contains("done < \"$timing_file\""),
-                "{} must read grouped subcase timing from the timing file, not from stdin",
-                path.display()
-            );
-            let failure_branch = command.find("else\n").unwrap_or_else(|| {
-                panic!(
-                    "{} must contain a failure branch for grouped subcases",
-                    path.display()
-                )
-            });
-            let failure_command = &command[failure_branch..];
-            let exit_status_position =
-                failure_command.find("exit_status=$?").unwrap_or_else(|| {
-                    panic!(
-                        "{} must preserve grouped subcase exit status",
-                        path.display()
-                    )
-                });
-            let status_failed_position = failure_command
-                .find("status=failed")
-                .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
-            assert!(
-                exit_status_position < status_failed_position,
-                "{} must capture `$?` before assigning shell variables in the failure branch",
-                path.display()
-            );
-            assert!(
-                command.contains("STARRY_GROUPED_TESTS_PASSED")
-                    && command.contains("STARRY_GROUPED_TEST_FAILED"),
-                "{} must keep existing grouped success/fail markers",
-                path.display()
-            );
-        }
+            )
+        });
+        let status_failed_position = failure_command
+            .find("status=failed")
+            .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
+        assert!(
+            exit_status_position < status_failed_position,
+            "{} must capture `$?` before assigning shell variables in the failure branch",
+            path.display()
+        );
+        assert!(
+            command.contains("STARRY_GROUPED_TESTS_PASSED")
+                && command.contains("STARRY_GROUPED_TEST_FAILED"),
+            "{} must keep existing grouped success/fail markers",
+            path.display()
+        );
     }
 }
 
@@ -147,7 +138,7 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
 fn signal_interrupt_eintr_subcase_bounds_child_wait() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source_path = workspace_root
-        .join("test-suit/starryos/qemu-smp1/system/test-signal-interrupt-eintr/src/main.c");
+        .join("test-suit/starryos/qemu/system/test-signal-interrupt-eintr/src/main.c");
     let source = fs::read_to_string(&source_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
 
@@ -178,7 +169,7 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
 #[test]
 fn tty_console_input_burst_uses_injected_guest_script() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let case_dir = workspace_root.join("test-suit/starryos/qemu-smp1/tty-console-input-burst");
+    let case_dir = workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst");
     let script_path = case_dir.join("sh/tty-input-burst.sh");
     assert!(
         script_path.is_file(),
@@ -219,43 +210,36 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 }
 
 #[test]
-fn riscv64_smp4_system_case_is_disabled() {
+fn qemu_system_case_has_riscv64_runtime_config() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let smp1_config = workspace_root.join("test-suit/starryos/qemu-smp1/system/qemu-riscv64.toml");
-    let smp4_config = workspace_root.join("test-suit/starryos/qemu-smp4/system/qemu-riscv64.toml");
+    let config = workspace_root.join("test-suit/starryos/qemu/system/qemu-riscv64.toml");
 
     assert!(
-        smp1_config.is_file(),
-        "{} must keep riscv64 system smoke coverage",
-        smp1_config.display()
-    );
-    assert!(
-        !smp4_config.exists(),
-        "{} must remain disabled until riscv64 qemu-smp4 system probes stop consuming the grouped \
-         QEMU timeout in CI",
-        smp4_config.display()
+        config.is_file(),
+        "{} must keep riscv64 coverage in the unified SMP4 qemu/system case",
+        config.display()
     );
 }
 
 #[test]
-fn smp4_affinity_flaky_arches_are_filtered() {
+fn qemu_affinity_flaky_arches_are_filtered() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let cases = [
         (
             "affinity-bug-sched-affinity-migrate",
             "^(aarch64|x86_64)",
-            "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu-smp4",
+            "bug-sched-affinity-migrate skipped on loongarch64/riscv64 qemu",
         ),
         (
             "affinity-bug-sched-affinity-pid",
             "^(aarch64|x86_64)",
-            "bug-sched-affinity-pid skipped on loongarch64/riscv64 qemu-smp4",
+            "bug-sched-affinity-pid skipped on loongarch64/riscv64 qemu",
         ),
     ];
 
     for (case, arch_regex, skip_message) in cases {
         let cmake_path = workspace_root
-            .join("test-suit/starryos/qemu-smp4/system")
+            .join("test-suit/starryos/qemu/system")
             .join(case)
             .join("CMakeLists.txt");
         let cmake = fs::read_to_string(&cmake_path)
@@ -265,8 +249,8 @@ fn smp4_affinity_flaky_arches_are_filtered() {
             cmake.contains("starry_arch_filtered_executable")
                 && cmake.contains(arch_regex)
                 && cmake.contains(skip_message),
-            "{} must skip flaky qemu-smp4 affinity probes instead of letting them consume the \
-             grouped QEMU timeout",
+            "{} must skip flaky qemu affinity probes instead of letting them consume the grouped \
+             QEMU timeout",
             cmake_path.display()
         );
     }
@@ -275,7 +259,7 @@ fn smp4_affinity_flaky_arches_are_filtered() {
 #[test]
 fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
     let zombie_commands = [
         "/usr/bin/bug-kill-zombie-esrch",
         "/usr/bin/bug-kill-zombie-perm",
@@ -317,7 +301,7 @@ fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
 #[test]
 fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
     let tty_commands = [
         "/usr/bin/bug-raw-terminal-polling",
         "/usr/bin/bug-tty-cursor-report",
@@ -357,7 +341,7 @@ fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
 #[test]
 fn apk_curl_equivalence_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu-smp1/system");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
     let subcase_dir = system_dir.join("apk-curl-equivalence");
     let cmake_path = subcase_dir.join("CMakeLists.txt");
     let prebuild_path = system_dir.join("prebuild.sh");
@@ -385,7 +369,7 @@ fn apk_curl_equivalence_is_in_system_grouped_qemu_case() {
     );
     assert!(
         !subcase_dir.join("qemu-x86_64.toml").exists(),
-        "{} must not carry its own qemu config; qemu-smp1/system owns runtime config",
+        "{} must not carry its own qemu config; qemu/system owns runtime config",
         subcase_dir.display()
     );
     assert!(

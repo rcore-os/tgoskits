@@ -320,10 +320,15 @@ unsafe extern "C" fn save_fp_registers(fpu: &mut FpuState) {
         SAVE_FP $a0
         addi.d $t8, $a0, {fp_high_offset}
         SAVE_FP_HIGH $t8
+
+        csrrd $t0, 0x2
+        andi $t0, $t0, 0x4
+        beqz $t0, 1f
         addi.d $t8, $a0, {fp_lasx_hi0_offset}
         SAVE_FP_LASX_HI0 $t8
         addi.d $t8, $a0, {fp_lasx_hi1_offset}
         SAVE_FP_LASX_HI1 $t8
+1:
         addi.d $t8, $a0, {fcc_offset}
         SAVE_FCC $t8
         addi.d $t8, $a0, {fcsr_offset}
@@ -346,10 +351,15 @@ unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
         RESTORE_FP $a0
         addi.d $t8, $a0, {fp_high_offset}
         RESTORE_FP_HIGH $t8
+
+        csrrd $t0, 0x2
+        andi $t0, $t0, 0x4
+        beqz $t0, 1f
         addi.d $t8, $a0, {fp_lasx_hi0_offset}
         RESTORE_FP_LASX_HI0 $t8
         addi.d $t8, $a0, {fp_lasx_hi1_offset}
         RESTORE_FP_LASX_HI1 $t8
+1:
         addi.d $t8, $a0, {fcc_offset}
         RESTORE_FCC $t8
         addi.d $t8, $a0, {fcsr_offset}

@@ -139,7 +139,7 @@ fn std_target_specs_keep_kernel_fields_with_std_identity() {
     )
     .unwrap();
     assert_eq!(loongarch["llvm-abiname"], "lp64s");
-    assert_eq!(loongarch["features"], "-f,-d");
+    assert_eq!(loongarch["features"], "-f,-d,-ual");
 }
 
 #[test]

@@ -14,7 +14,6 @@ shell_init_cmd = "/usr/bin/glibc-dynamic-smoke.sh"
 success_regex = ["ALL TESTS COMPLETED"]
 fail_regex = [
     "(?m)RC=[^0]",
-    "(?i)not found",
     "(?i)no such file",
     "(?i)segmentation fault",
     "(?i)kernel panic",

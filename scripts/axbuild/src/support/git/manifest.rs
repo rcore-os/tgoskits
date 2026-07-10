@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, bail};
 use toml::Value;
@@ -8,6 +13,7 @@ use super::refs::git_safe_directory_args;
 pub(super) const ROOT_MANIFEST: &str = "Cargo.toml";
 const WORKSPACE_TABLE: &str = "workspace";
 const WORKSPACE_DEPENDENCIES_TABLE: &str = "dependencies";
+const WORKSPACE_MEMBERS: &str = "members";
 const WORKSPACE_PACKAGE_TABLE: &str = "package";
 const WORKSPACE_METADATA_TABLE: &str = "metadata";
 const PROFILE_TABLE: &str = "profile";
@@ -15,7 +21,13 @@ const PROFILE_TABLE: &str = "profile";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RootManifestChange {
     Hard,
-    LocalWorkspaceDependencies(BTreeSet<String>),
+    LocalWorkspace(LocalRootManifestChange),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct LocalRootManifestChange {
+    pub(super) dependencies: BTreeSet<String>,
+    pub(super) members: BTreeSet<PathBuf>,
 }
 
 pub(super) fn root_manifest_change_since(
@@ -70,6 +82,10 @@ pub(super) fn classify_root_manifest_change(
     let old: Value = toml::from_str(old_manifest).context("failed to parse old root Cargo.toml")?;
     let new: Value = toml::from_str(new_manifest).context("failed to parse new root Cargo.toml")?;
 
+    let Some(changed_members) = changed_literal_workspace_members(&old, &new) else {
+        return Ok(RootManifestChange::Hard);
+    };
+
     if dependency_resolution_surface(old.clone()) != dependency_resolution_surface(new.clone()) {
         return Ok(RootManifestChange::Hard);
     }
@@ -100,7 +116,12 @@ pub(super) fn classify_root_manifest_change(
         changed.extend(new_package);
     }
 
-    Ok(RootManifestChange::LocalWorkspaceDependencies(changed))
+    Ok(RootManifestChange::LocalWorkspace(
+        LocalRootManifestChange {
+            dependencies: changed,
+            members: changed_members,
+        },
+    ))
 }
 
 fn dependency_resolution_surface(mut manifest: Value) -> Value {
@@ -109,6 +130,7 @@ fn dependency_resolution_surface(mut manifest: Value) -> Value {
         .and_then(Value::as_table_mut)
     {
         workspace.remove(WORKSPACE_DEPENDENCIES_TABLE);
+        workspace.remove(WORKSPACE_MEMBERS);
         workspace.remove(WORKSPACE_PACKAGE_TABLE);
         workspace.remove(WORKSPACE_METADATA_TABLE);
     }
@@ -116,6 +138,66 @@ fn dependency_resolution_surface(mut manifest: Value) -> Value {
         .as_table_mut()
         .map(|table| table.remove(PROFILE_TABLE));
     manifest
+}
+
+fn changed_literal_workspace_members(old: &Value, new: &Value) -> Option<BTreeSet<PathBuf>> {
+    let old_members = workspace_members(old);
+    let new_members = workspace_members(new);
+    if old_members == new_members {
+        return Some(BTreeSet::new());
+    }
+
+    let old_members = workspace_member_strings(old)?;
+    let new_members = workspace_member_strings(new)?;
+
+    old_members
+        .symmetric_difference(&new_members)
+        .map(|member| normalize_literal_workspace_member(member))
+        .collect()
+}
+
+fn workspace_members(manifest: &Value) -> Option<&Value> {
+    manifest
+        .get(WORKSPACE_TABLE)
+        .and_then(|workspace| workspace.get(WORKSPACE_MEMBERS))
+}
+
+fn workspace_member_strings(manifest: &Value) -> Option<BTreeSet<String>> {
+    let Some(members) = workspace_members(manifest) else {
+        return Some(BTreeSet::new());
+    };
+    let members = members.as_array()?;
+
+    let mut member_strings = BTreeSet::new();
+    for member in members {
+        let member = member.as_str()?;
+        member_strings.insert(member.to_string());
+    }
+    Some(member_strings)
+}
+
+fn normalize_literal_workspace_member(member: &str) -> Option<PathBuf> {
+    if member
+        .bytes()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
+    {
+        return None;
+    }
+
+    let path = Path::new(member);
+    if path.is_absolute() {
+        return None;
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(normalized)
 }
 
 fn workspace_dependencies(manifest: &Value) -> toml::Table {

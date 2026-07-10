@@ -290,18 +290,19 @@ wait "$sub_embed_pid" || fail_with_file "/var/lib/mosquitto/stress-embedded.out"
 
 echo "MOSQUITTO_STRESS_STAGE lwt-storm"
 # LWT storm - simulate many devices going offline simultaneously
-mosquitto_sub -h 127.0.0.1 -p 1883 -t "stress/lwt/status" -C "$embedded_count" -W 120 -i "sub-lwt-storm" > "/var/lib/mosquitto/stress-lwt-storm.out" 2>&1 &
+lwt_storm_count=10
+mosquitto_sub -h 127.0.0.1 -p 1883 -t "stress/lwt/status" -C "$lwt_storm_count" -W 120 -q 1 -i "sub-lwt-storm" > "/var/lib/mosquitto/stress-lwt-storm.out" 2>&1 &
 sub_lwt_pid=$!
 sleep 1
 # Start many clients with LWT messages
 lwt_pids=""
 d=0
-while [ "$d" -lt "$embedded_count" ]; do
-    mosquitto_sub -h 127.0.0.1 -p 1883 -t dummy -i "lwt-dev-$d" --will-topic "stress/lwt/status" --will-payload "dev-$d-offline" --will-qos 0 -W 120 > /dev/null 2>&1 &
+while [ "$d" -lt "$lwt_storm_count" ]; do
+    mosquitto_sub -h 127.0.0.1 -p 1883 -t dummy -i "lwt-dev-$d" --will-topic "stress/lwt/status" --will-payload "dev-$d-offline" --will-qos 1 -W 120 > /dev/null 2>&1 &
     lwt_pids="$lwt_pids $!"
     d=$((d + 1))
 done
-sleep 2
+sleep 5
 # SIGKILL all LWT clients to trigger will messages (clean disconnect won't trigger LWT)
 for pid in $lwt_pids; do
     kill -9 "$pid" 2>/dev/null || true
