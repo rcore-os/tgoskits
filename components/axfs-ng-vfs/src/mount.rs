@@ -310,13 +310,23 @@ impl Mountpoint {
     /// at `put_old` under `new_root_mp`, which becomes the global root.
     ///
     /// This implements the mount-tree portion of Linux `pivot_root(2)`.
+    ///
+    /// The mutation acquires one mount-tree lock at a time: first detach the
+    /// new root from the old root, then attach the old root below `put_old`.
+    /// Do not hold these locks in the inverse order elsewhere, or path walkers
+    /// can deadlock while observing a partially rearranged tree.
     pub fn pivot_mount(
         self: &Arc<Self>,        // old root mountpoint
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        // put_old must belong to the new root's mountpoint tree.
-        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp) {
+        let new_root = new_root_mp.root_location();
+        // put_old must be strictly below the new root in the resolved mount
+        // tree. This rejects both sibling locations and new_root itself.
+        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
+            || put_old.ptr_eq(&new_root)
+            || !put_old.is_descendant_of(&new_root)
+        {
             return Err(VfsError::InvalidInput);
         }
         // put_old must be a directory and not already a mountpoint.
@@ -330,7 +340,11 @@ impl Mountpoint {
         {
             let mut new_root_loc = new_root_mp.location.lock();
             if let Some(ref old_loc) = *new_root_loc {
-                self.children.lock().remove(&old_loc.entry.key());
+                old_loc
+                    .mountpoint
+                    .children
+                    .lock()
+                    .remove(&old_loc.entry.key());
             }
             // new_root becomes the global root.
             *new_root_loc = None;
@@ -794,6 +808,22 @@ impl Location {
         Arc::ptr_eq(&self.mountpoint, &other.mountpoint) && self.entry.ptr_eq(&other.entry)
     }
 
+    /// Returns whether this resolved location is equal to or below `ancestor`.
+    ///
+    /// The walk follows [`Self::parent`], which crosses from a mount root into
+    /// the location where that mount is attached. This keeps containment checks
+    /// correct across mount boundaries instead of relying on path spelling.
+    pub fn is_descendant_of(&self, ancestor: &Self) -> bool {
+        let mut current = Some(self.clone());
+        while let Some(location) = current {
+            if location.ptr_eq(ancestor) {
+                return true;
+            }
+            current = location.parent();
+        }
+        false
+    }
+
     pub fn is_mountpoint(&self) -> bool {
         self.entry.as_dir().is_ok()
             && self
@@ -1130,11 +1160,152 @@ mod tests {
     }
 
     fn make_dir_entry(name: &str) -> DirEntry {
+        make_child_dir_entry(None, name)
+    }
+
+    fn make_child_dir_entry(parent: Option<DirEntry>, name: &str) -> DirEntry {
         let node: Arc<dyn DirNodeOps> = Arc::new(MockNode);
         DirEntry::new_dir(
             |_| DirNode::new(node),
-            Reference::new(None, name.to_string()),
+            Reference::new(parent, name.to_string()),
         )
+    }
+
+    #[test]
+    fn location_descendant_checks_resolved_parent_chain() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_loc = root.root_location();
+        let child_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "child");
+        let sibling_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "sibling");
+        let child = Location::new(root.clone(), child_entry);
+        let sibling = Location::new(root.clone(), sibling_entry);
+
+        assert!(root_loc.is_descendant_of(&root_loc));
+        assert!(child.is_descendant_of(&root_loc));
+        assert!(!sibling.is_descendant_of(&child));
+        assert!(!root_loc.is_descendant_of(&child));
+    }
+
+    #[test]
+    fn location_descendant_crosses_mount_boundary_and_stops_at_root() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_loc = root.root_location();
+        let mount_target_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "mounted");
+        let mount_target = Location::new(root.clone(), mount_target_entry);
+        let mounted_root_entry = make_dir_entry("mounted-root");
+        let mounted = Mountpoint::new_with_root(
+            mounted_root_entry.clone(),
+            Some(mount_target),
+            root.device() + 1,
+        );
+        let nested_entry = make_child_dir_entry(Some(mounted_root_entry), "nested");
+        let nested = Location::new(mounted.clone(), nested_entry);
+
+        assert!(nested.is_descendant_of(&mounted.root_location()));
+        assert!(nested.is_descendant_of(&root_loc));
+        assert!(!root_loc.is_descendant_of(&nested));
+    }
+
+    #[test]
+    fn pivot_mount_reparents_old_root_below_put_old() {
+        let fs = mock_filesystem();
+        let old_root = Mountpoint::new_root(&fs);
+        let old_root_loc = old_root.root_location();
+        let new_root_target_entry = make_child_dir_entry(Some(old_root_loc.entry().clone()), "new");
+        let new_root_target = Location::new(old_root.clone(), new_root_target_entry.clone());
+        let new_root_entry = make_dir_entry("new-root");
+        let new_root = Mountpoint::new_with_root(
+            new_root_entry.clone(),
+            Some(new_root_target),
+            old_root.device() + 1,
+        );
+        let put_old_entry = make_child_dir_entry(Some(new_root_entry), "old");
+        let put_old = Location::new(new_root.clone(), put_old_entry.clone());
+
+        old_root
+            .children
+            .lock()
+            .insert(new_root_target_entry.key(), new_root.clone());
+
+        old_root
+            .pivot_mount(&new_root, &put_old)
+            .expect("pivot mount succeeds");
+
+        assert!(new_root.is_root());
+        assert!(
+            old_root
+                .location()
+                .is_some_and(|location| location.ptr_eq(&put_old))
+        );
+        assert!(
+            !old_root
+                .children
+                .lock()
+                .contains_key(&new_root_target_entry.key())
+        );
+        assert!(
+            new_root
+                .children
+                .lock()
+                .get(&put_old_entry.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &old_root))
+        );
+    }
+
+    #[test]
+    fn pivot_mount_detaches_new_root_from_its_immediate_parent() {
+        let fs = mock_filesystem();
+        let old_root = Mountpoint::new_root(&fs);
+        let old_root_loc = old_root.root_location();
+        let intermediate_target_entry =
+            make_child_dir_entry(Some(old_root_loc.entry().clone()), "intermediate");
+        let intermediate_target =
+            Location::new(old_root.clone(), intermediate_target_entry.clone());
+        let intermediate_entry = make_dir_entry("intermediate-root");
+        let intermediate = Mountpoint::new_with_root(
+            intermediate_entry.clone(),
+            Some(intermediate_target),
+            old_root.device() + 1,
+        );
+        let new_root_target_entry = make_child_dir_entry(Some(intermediate_entry), "new-root");
+        let new_root_target = Location::new(intermediate.clone(), new_root_target_entry.clone());
+        let new_root_entry = make_dir_entry("new-root");
+        let new_root = Mountpoint::new_with_root(
+            new_root_entry.clone(),
+            Some(new_root_target),
+            old_root.device() + 2,
+        );
+        let put_old_entry = make_child_dir_entry(Some(new_root_entry), "old");
+        let put_old = Location::new(new_root.clone(), put_old_entry.clone());
+
+        old_root
+            .children
+            .lock()
+            .insert(intermediate_target_entry.key(), intermediate.clone());
+        intermediate
+            .children
+            .lock()
+            .insert(new_root_target_entry.key(), new_root.clone());
+
+        old_root
+            .pivot_mount(&new_root, &put_old)
+            .expect("pivot mount succeeds");
+
+        assert!(
+            !intermediate
+                .children
+                .lock()
+                .contains_key(&new_root_target_entry.key())
+        );
+        assert!(
+            new_root
+                .children
+                .lock()
+                .get(&put_old_entry.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &old_root))
+        );
     }
 
     #[test]

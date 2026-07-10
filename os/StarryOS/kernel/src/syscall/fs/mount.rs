@@ -384,18 +384,6 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         new_root, put_old
     );
 
-    // Validate: put_old must be at or under new_root (path-separator-aware
-    // so that "/new" does not falsely match "/newroot/old").
-    let nr = new_root.trim_end_matches('/');
-    let nr_slash = alloc::format!("{}/", nr);
-    if !(put_old == nr || put_old.starts_with(&nr_slash)) {
-        return Err(AxError::InvalidInput);
-    }
-    // new_root cannot be "/"
-    if new_root == "/" {
-        return Err(AxError::InvalidInput);
-    }
-
     let mut ctx = FS_CONTEXT.lock();
 
     // The caller's current root must itself be a mount point (Linux
@@ -404,22 +392,24 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         return Err(AxError::InvalidInput);
     }
 
-    // Resolve paths
+    // Resolve both paths before checking their VFS relationship. Linux permits
+    // callers to enter new_root and use pivot_root(".", "old").
     let new_root_loc = ctx.resolve(&new_root)?;
-
-    // Both must be directories
     new_root_loc.check_is_dir()?;
     let put_old_loc = ctx.resolve(&put_old)?;
     put_old_loc.check_is_dir()?;
 
-    // new_root must be the root of a non-root mount (i.e. the root of a
-    // filesystem mounted somewhere, not the global root).  Because path
-    // resolution crosses mount boundaries transparently, the resolved
-    // Location is the *root entry* of the mounted filesystem, so we check
-    // is_root_of_mount + the mountpoint is not the global root.
-    if !(new_root_loc.is_root_of_mount() && !new_root_loc.mountpoint().is_root()) {
+    if !put_old_loc.is_descendant_of(&new_root_loc) {
+        return Err(AxError::InvalidInput);
+    }
+
+    // `pivot_root` rearranges mounts rather than arbitrary directories.
+    if new_root_loc.is_root()
+        || !new_root_loc.is_root_of_mount()
+        || new_root_loc.ptr_eq(ctx.root_dir())
+    {
         warn!(
-            "sys_pivot_root: new_root {:?} is not the root of a mounted filesystem",
+            "sys_pivot_root: new_root {:?} is not a distinct non-global mount root",
             new_root
         );
         return Err(AxError::InvalidInput);
@@ -431,6 +421,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // dentry) rather than just the mountpoint, so that tasks chroot'd
     // into a subdirectory of the old root are not incorrectly updated.
     let old_root = ctx.root_dir().clone();
+    let mount_namespace = ctx.mount_namespace().clone();
 
     // Perform pivot: swap the root mount (updates this task's FsContext).
     ctx.pivot_root(new_root_loc, put_old_loc)?;
@@ -441,7 +432,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // Propagate root / cwd to all other tasks whose root_dir or current_dir
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
-    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
+    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
 
     Ok(0)
 }
