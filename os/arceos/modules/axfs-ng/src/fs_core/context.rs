@@ -333,6 +333,59 @@ impl FsContext {
         }
     }
 
+    /// Resolves a relative path's parent without following intermediate
+    /// symbolic links or allowing the walk to escape above `current_dir`.
+    ///
+    /// This provides the path-walk guarantees required by Linux openat2's
+    /// `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` combination.
+    pub fn resolve_parent_beneath_no_symlinks<'a>(
+        &self,
+        path: &'a Path,
+    ) -> VfsResult<(Location, Cow<'a, str>)> {
+        let mut components = path.components().peekable();
+        let mut dir = self.current_dir.clone();
+        let mut depth = 0usize;
+
+        while let Some(component) = components.next() {
+            let is_last = components.peek().is_none();
+            match component {
+                Component::RootDir => return Err(VfsError::CrossesDevices),
+                Component::CurDir if is_last => {
+                    if let Some(parent) = dir.parent() {
+                        return Ok((parent, dir.name().into_owned().into()));
+                    }
+                    return Ok((dir, Cow::Borrowed(".")));
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if depth == 0 {
+                        return Err(VfsError::CrossesDevices);
+                    }
+                    dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
+                    depth -= 1;
+                    if is_last {
+                        if let Some(parent) = dir.parent() {
+                            return Ok((parent, dir.name().into_owned().into()));
+                        }
+                        return Ok((dir, Cow::Borrowed(".")));
+                    }
+                }
+                Component::Normal(name) if is_last => return Ok((dir, Cow::Borrowed(name))),
+                Component::Normal(name) => {
+                    let next = dir.lookup_no_follow(name)?;
+                    if next.node_type() == NodeType::Symlink {
+                        return Err(VfsError::FilesystemLoop);
+                    }
+                    next.check_is_dir()?;
+                    dir = next;
+                    depth += 1;
+                }
+            }
+        }
+
+        Err(VfsError::NotFound)
+    }
+
     /// Taking current node as root directory, resolves a path starting from
     /// `current_dir`.
     ///
