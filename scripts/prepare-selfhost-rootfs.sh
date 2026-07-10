@@ -306,6 +306,16 @@ if [ "$ARCH" = "x86_64" ]; then
         ln -sf /usr/bin/ar      /usr/local/bin/x86_64-linux-musl-ar
     "
     info "musl toolchain ready (musl-tools + x86_64-linux-musl-{cc,gcc,ar} symlinks)."
+
+    # The self-compile guest runs inside QEMU user-mode networking (slirp),
+    # which provides DNS at 10.0.2.3.  Override the host's resolver.
+    info "Setting QEMU slirp DNS (10.0.2.3) in rootfs..."
+    nspawn_run "$OUTPUT_IMG" "echo 'nameserver 10.0.2.3' > /etc/resolv.conf"
+
+    # xtask generates a linker script with bash arrays/arithmetic that dash
+    # cannot parse.  Point /bin/sh to bash so the linker script works.
+    info "Linking /bin/sh to bash for xtask linker compatibility..."
+    nspawn_run "$OUTPUT_IMG" "ln -sf /usr/bin/bash /bin/sh"
 fi
 
 # ─── Install nightly rustc via rustup ─────────────────────────────────────────
