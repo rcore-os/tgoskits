@@ -279,22 +279,13 @@ impl VirtualApicRegs {
         }
     }
 
-    fn x2apic_logical_dest_matches(dest: u32, target_apic_id: u32) -> bool {
-        let dest_cluster = dest >> 16;
-        let dest_mask = dest & 0xffff;
-        let target_cluster = target_apic_id >> 4;
-        let target_logical_id = 1u32 << (target_apic_id & 0xf);
-
-        dest_cluster == target_cluster && (dest_mask & target_logical_id) != 0
-    }
-
-    fn is_dest_field_matched(&self, dest: u32, target_apic_id: u32) -> AxResult<bool> {
+    fn is_dest_field_matched(&self, dest: u32) -> AxResult<bool> {
         let mut ret = false;
 
         let ldr = self.regs().LDR.get();
 
         if self.is_x2apic_enabled() {
-            return Ok(Self::x2apic_logical_dest_matches(dest, target_apic_id));
+            return Ok(true);
         } else {
             match self
                 .regs()
@@ -356,7 +347,7 @@ impl VirtualApicRegs {
             let vcpu_mask = self.active_vcpu_mask();
             for i in 0..u64::BITS as usize {
                 if vcpu_mask & (1 << i) != 0 {
-                    if !self.is_dest_field_matched(dest, i as u32)? {
+                    if !self.is_dest_field_matched(dest)? {
                         continue;
                     }
                     dmask |= 1 << i;
