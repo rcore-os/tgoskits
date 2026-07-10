@@ -507,22 +507,41 @@ gh pr view <pr> --json number,reviewDecision,latestReviews
 
 After review submission, request reviewers only when the PR still needs domain follow-up. Base the choice on the actual changed surface, review findings, validation risk, and remaining follow-up.
 
-Read `.github/MAINTAINERS.md` before choosing reviewers. Treat it as the local reviewer source of truth: match PR title, body, changed paths, public APIs, tests, validation commands, and review findings against each entry's `F:` path hints and `K:` keyword hints; request only the matching `R:` logins. Normalize only obvious aliases that map to `.github/MAINTAINERS.md` entries.
+Keep this reviewer request step aligned with `reassign-pr-reviewers`. Read `.github/MAINTAINERS.md` before choosing reviewers. Treat it as the local reviewer source of truth and the strict automatic human reviewer allowlist: only `R:` lines are requestable automatic human reviewers. `M:` lines are ownership metadata and are not reviewer targets unless the same login also appears on `R:`. Do not request, retain as an ownership target, or infer a new human reviewer outside the `R:` allowlist.
 
-Choose at most two reviewers: one for the highest-risk domain and, when useful, one for integration or test coverage. Prefer the most specific matching entry over broad architecture ownership such as `@ZR233`; request `@ZR233` only when broad architecture/platform risk is the primary review need or no more specific entry owns the changed surface. Drop the PR author. Preserve existing bot requests and unrelated human requests unless the user asks to rebalance. If no `.github/MAINTAINERS.md` entry matches, no listed login is requestable, or the mapping is ambiguous, do not invent a reviewer; report the ambiguity.
+Match maintainer sections with `F:` path hints and `K:` keyword hints from the PR title, body, changed paths, public APIs, tests, validation commands, review findings, crate/config/feature names, and obvious diff-visible identifiers. If multiple sections match, target all matched `R:` reviewers. Prefer explicit `K:` evidence for ambiguous PRs, but valid `F:` path evidence is sufficient when the changed files clearly fall under a section.
+
+If no `K:` or `F:` evidence matches a non-draft PR, default the target reviewer to `ZR233`, after confirming `ZR233` appears on an `R:` line. Report this as a fallback assignment, not as ownership evidence.
+
+Skip reviewer request updates for draft PRs unless the user explicitly asks to include drafts. Reviewing a draft is allowed by this skill, but reviewer reassignment for drafts is not.
+
+Preserve all existing reviewer requests by default. Existing human reviewers may have been assigned manually by an administrator, including reviewers outside `.github/MAINTAINERS.md`; carry them forward and do not remove them in the default flow. Existing bot reviewer requests must also be preserved unless the user explicitly says to change bot requests. Bot reviewers are not ownership targets and do not need to appear in `.github/MAINTAINERS.md`.
+
+The default reviewer request update is add-only: compute ownership targets from `.github/MAINTAINERS.md`, union the existing reviewer requests into the final desired reviewer state, and add only missing target reviewers. `reviewers to remove` must be empty unless the user explicitly asks to remove or rebalance reviewer requests. If the user does request removals, still preserve bot reviewers unless bot removal was explicitly requested.
+
+Drop the PR author from new reviewer requests because GitHub cannot request review from the author. Also drop the current GitHub user from new reviewer requests because this workflow just submitted the review.
 
 Before writing reviewer requests, check current reviewer state and permissions:
 
 ```bash
-gh api repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers
-gh api repos/rcore-os/tgoskits/collaborators/<login>/permission
+gh api repos/<owner>/<repo>/pulls/<pr>/requested_reviewers
+gh api repos/<owner>/<repo>/collaborators/<login>/permission
 ```
 
-Use the REST requested-reviewers API instead of `gh pr edit`, because `gh pr edit` can fail in this repository while querying deprecated Projects classic fields:
+Before applying reviewer request updates, record a single-PR dry run with current reviewers, target reviewers, preserved existing reviewers, preserved bot reviewers, reviewers to add, reviewers to remove, matched `K:`/`F:` evidence or fallback reason, and skipped reason.
+
+Use the REST requested-reviewers API instead of `gh pr edit`, because `gh pr edit` can fail in this repository while querying deprecated Projects classic fields. In the default add-only flow, do not call the DELETE endpoint:
 
 ```bash
 printf '%s\n' '{"reviewers":["<login1>","<login2>"]}' |
-  gh api -X POST repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers --input -
+  gh api -X POST repos/<owner>/<repo>/pulls/<pr>/requested_reviewers --input -
+```
+
+If the user explicitly requested removals or a rebalance, apply allowed removals before additions for each PR, while still preserving bot reviewers unless bot removal was explicitly requested:
+
+```bash
+printf '%s\n' '{"reviewers":["<login>"]}' |
+  gh api -X DELETE repos/<owner>/<repo>/pulls/<pr>/requested_reviewers --input -
 ```
 
 After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone outside `.github/MAINTAINERS.md`.
@@ -530,7 +549,8 @@ After assigning, re-query `requested_reviewers` and confirm the intended reviewe
 In the final user summary, state:
 
 - which `.github/MAINTAINERS.md` entries matched the PR;
-- which reviewers were requested, already present, skipped, or rejected;
+- which reviewers were requested, already present, preserved, skipped, or rejected;
+- any fallback assignment to `ZR233`;
 - any permission/API limitation;
 - that only GitHub reviewer metadata was changed, when no code files were edited by the assignment step.
 
