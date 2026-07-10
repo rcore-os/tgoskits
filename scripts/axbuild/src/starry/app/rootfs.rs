@@ -35,16 +35,6 @@ pub(super) async fn prepare_qemu_app_rootfs(
     }
 
     let default_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
-    if rootfs_path != default_rootfs && !rootfs_path.exists() {
-        anyhow::bail!(
-            "Custom rootfs not found: {}\nThe app '{}' requires a specific rootfs image that \
-             cannot be substituted with the default managed rootfs.\nHint: run the app's \
-             preparation steps first (e.g. prepare-selfhost-rootfs.sh), or use the app's wrapper \
-             script (e.g. self-compile.sh).",
-            rootfs_path.display(),
-            app.name
-        );
-    }
     if let Some(parent) = rootfs_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;

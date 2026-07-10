@@ -263,10 +263,6 @@ impl Starry {
                 &rootfs_path,
                 rootfs::RootfsPatchMode::EnsureDiskBootNet,
             );
-            // Prebuild app cases run guest workloads that produce output
-            // (e.g. self-compile writes /opt/starryos-selfbuilt), so they
-            // leave `case.snapshot` unset and must not boot with -snapshot,
-            // otherwise the guest writes would be discarded on exit.
             if case.snapshot && !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
             }

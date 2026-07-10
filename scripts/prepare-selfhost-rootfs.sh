@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
 #
-# prepare-selfhost-rootfs.sh — Maintainer tool to create a selfhost Debian rootfs
-# blueprint with rustc, cargo, and the full StarryOS source tree for offline
-# x86_64 self-compilation inside QEMU.
-#
-# This script requires sudo, debootstrap and systemd-nspawn.  It is NOT the
-# primary verification path for reviewers; the produced blueprint image is
-# reused by self-compile.sh (for x86_64 it is cloned to a working copy each
-# run so the blueprint stays pristine; the riscv64 blueprint is used in place).
+# prepare-selfhost-rootfs.sh — Prepare a Debian rootfs image with rustc, cargo,
+# and the full StarryOS source tree for offline self-compilation inside QEMU.
 #
 # Usage:
-#   sudo ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
+#   ./scripts/prepare-selfhost-rootfs.sh --arch riscv64|x86_64|aarch64 [--force]
 #
 #   --arch    Target architecture (required):
 #               riscv64 — RISC-V 64-bit (needs existing Debian base image)
@@ -19,15 +13,13 @@
 #   --force   Overwrite existing output image.
 #
 # Prerequisites (auto-checked):
-#   All:     debugfs, resize2fs, dd, git, cargo, systemd-nspawn
+#   All:     debugfs, resize2fs, git, cargo, systemd-nspawn
 #   riscv64: qemu-riscv64-static, base Debian riscv64 image
 #   x86_64:  debootstrap (pacman -S debootstrap)
 #   aarch64: qemu-aarch64-static, debootstrap (pacman -S debootstrap qemu-user-static-binfmt)
 #
 # Output:
-#   riscv64  — tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img
-#   x86_64   — tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img
-#   aarch64  — tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img
+#   tmp/axbuild/rootfs/rootfs-<arch>-debian-selfhost.img
 #
 # Example:
 #   sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
@@ -49,7 +41,6 @@ die()   { printf "[%s] ERROR: %s\n" "$SCRIPT_NAME" "$*" >&2; exit 1; }
 
 ARCH=""
 FORCE=0
-ORIGINAL_ARGS="$*"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
@@ -91,7 +82,7 @@ case "$ARCH" in
         NSPAWN_MACHINE=""
         DEBIAN_ARCH="amd64"
         BASE_IMG=""
-        OUTPUT_IMG="$ROOTFS_DIR/rootfs-x86_64-selfhost.img"
+        OUTPUT_IMG="$ROOTFS_DIR/rootfs-x86_64-debian-selfhost.img"
         NEED_QEMU=0
         ;;
     arm)
@@ -112,24 +103,9 @@ info "Arch: $ARCH | Target: $TARGET | Dest: $DEST_PATH"
 
 # ─── Prerequisite checks ────────────────────────────────────────────────────────
 
-# When invoked under sudo, the user's PATH (including ~/.cargo/bin) is
-# stripped by sudo's secure_path.  Restore it from the invoking user's
-# home so that `cargo` and other Rust toolchain binaries are findable.
-if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
-    USER_HOME="$(eval echo ~$SUDO_USER)"
-    export PATH="$USER_HOME/.cargo/bin:$PATH"
-fi
-
 info "Checking prerequisites..."
 for cmd in debugfs resize2fs dd git cargo systemd-nspawn; do
-    if ! command -v "$cmd" &>/dev/null; then
-        if [ "$cmd" = "cargo" ] && [ -n "${SUDO_USER:-}" ]; then
-            die "cargo not found in sudo PATH. Install rustup as the invoking user,"\
-                " then retry with: sudo env PATH=\"\$PATH\" $0"\
-                " ${ORIGINAL_ARGS:-}"
-        fi
-        die "$cmd not found"
-    fi
+    command -v "$cmd" &>/dev/null || die "$cmd not found"
 done
 
 if [ "$NEED_QEMU" -eq 1 ]; then
@@ -285,51 +261,16 @@ nspawn_run "$OUTPUT_IMG" "
     export DEBIAN_FRONTEND=noninteractive && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        rustc cargo libstd-rust-dev build-essential ca-certificates curl \
-        libclang-dev clang pkgconf libudev-dev && \
+        rustc cargo libstd-rust-dev build-essential ca-certificates curl && \
     apt-get clean
 "
 info "Toolchain ready."
 
-# x86_64 self-compile drives the ArceOS std/PIE flow (cargo xtask starry build),
-# whose effective target is x86_64-unknown-linux-musl.  Provide a musl C toolchain
-# via Debian's standard musl-tools package (lightweight; no custom cross toolchain)
-# and the cc/ar/gcc names the std build + lwprintf-rs build.rs expect.
-if [ "$ARCH" = "x86_64" ]; then
-    info "Installing musl-tools for the x86_64 std build target..."
-    nspawn_run "$OUTPUT_IMG" "
-        export DEBIAN_FRONTEND=noninteractive && \
-        apt-get install -y -qq --no-install-recommends musl-tools musl-dev && \
-        apt-get clean && \
-        ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-cc && \
-        ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc && \
-        ln -sf /usr/bin/ar      /usr/local/bin/x86_64-linux-musl-ar
-    "
-    info "musl toolchain ready (musl-tools + x86_64-linux-musl-{cc,gcc,ar} symlinks)."
-
-    # The self-compile guest runs inside QEMU user-mode networking (slirp),
-    # which provides DNS at 10.0.2.3.  Override the host's resolver.
-    info "Setting QEMU slirp DNS (10.0.2.3) in rootfs..."
-    nspawn_run "$OUTPUT_IMG" "echo 'nameserver 10.0.2.3' > /etc/resolv.conf"
-
-    # xtask generates a linker script with bash arrays/arithmetic that dash
-    # cannot parse.  Point /bin/sh to bash so the linker script works.
-    info "Linking /bin/sh to bash for xtask linker compatibility..."
-    nspawn_run "$OUTPUT_IMG" "ln -sf /usr/bin/bash /bin/sh"
-fi
-
 # ─── Install nightly rustc via rustup ─────────────────────────────────────────
 
 RUSTUP_HOST="riscv64gc-unknown-linux-gnu"
-if [ "$NEED_QEMU" -eq 0 ]; then
-    RUSTUP_HOST="x86_64-unknown-linux-gnu"
-elif [ "$ARCH" = "arm" ]; then
-    RUSTUP_HOST="aarch64-unknown-linux-gnu"
-fi
-# Derive the toolchain version from rust-toolchain.toml so it stays in sync
-# with the host build.  Fall back to a known-good nightly if the file cannot
-# be parsed.
-RUSTUP_TOOLCHAIN="$(grep -oP 'channel\s*=\s*"\K[^"]+' "$REPO_ROOT/rust-toolchain.toml" 2>/dev/null || echo 'nightly-2026-05-28')"
+[ "$NEED_QEMU" -eq 0 ] && RUSTUP_HOST="x86_64-unknown-linux-gnu"
+RUSTUP_TOOLCHAIN="nightly-2026-04-27"
 
 info "Installing rustup + $RUSTUP_TOOLCHAIN (host: $RUSTUP_HOST)..."
 nspawn_run "$OUTPUT_IMG" "
@@ -343,16 +284,6 @@ nspawn_run "$OUTPUT_IMG" "
         -y
 "
 info "Nightly rustc installed (via host rustup)."
-
-# x86_64 self-compile drives the xtask flow, whose kallsyms post-step needs
-# gen_ksym + cargo-binutils (rust-nm/rust-objcopy) + llvm-tools.  Pre-install them
-# guest-native during the bake (network available) so the offline guest never
-# attempts the network auto-install (the inner script also disables that).
-if [ "$ARCH" = "x86_64" ]; then
-    info "Installing kallsyms tools (llvm-tools-preview, cargo-binutils, ksym)..."
-    nspawn_run "$OUTPUT_IMG" "export RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo PATH=/root/.cargo/bin:\$PATH CARGO_NET_OFFLINE=false && rustup component add llvm-tools-preview && cargo install --locked cargo-binutils && cargo install --locked ksym"
-    info "kallsyms tools installed."
-fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 3: Expand image for source tree + cargo registry (~4-6 GB)
@@ -378,24 +309,7 @@ trap cleanup_temp EXIT
 
 git archive HEAD | tar -x -C "$TEMP_SRC/"
 [ -f "$TEMP_SRC/Cargo.toml" ] || die "Cargo.toml missing from git archive"
-
-# git archive has no .git directory, so git rev-parse won't work in the
-# guest.  Embed the current HEAD SHA so the guest can verify source identity
-# without requiring a git repository.
-git rev-parse HEAD > "$TEMP_SRC/.source-commit" 2>/dev/null || \
-    die "failed to resolve HEAD — ensure you are in the repo root"
 [ -f "$TEMP_SRC/os/StarryOS/kernel/Cargo.toml" ] || die "Kernel Cargo.toml missing"
-
-# The AIC8800 firmware blobs are gitignored (absent from git archive), but xtask
-# SHA-256-hashes them before every Starry build and fetches them online if missing.
-# Stage the host's blobs into the source tree so the offline guest has them.
-if compgen -G "$REPO_ROOT/components/aic8800/firmware/*.bin" >/dev/null 2>&1; then
-    mkdir -p "$TEMP_SRC/components/aic8800/firmware"
-    cp "$REPO_ROOT"/components/aic8800/firmware/*.bin "$TEMP_SRC/components/aic8800/firmware/"
-    info "Staged $(ls "$TEMP_SRC"/components/aic8800/firmware/*.bin | wc -l) AIC8800 firmware blob(s) for offline build."
-else
-    warn "AIC8800 firmware blobs not found on host; x86_64 self-compile may attempt an online fetch."
-fi
 chmod -R a+rX "$TEMP_SRC"
 
 info "Copying source tree into rootfs at $DEST_PATH..."
@@ -413,8 +327,7 @@ fi
 
 systemd-nspawn "${nspawn_args[@]}" /usr/bin/bash -c "
     mkdir -p $DEST_PATH && \
-    cp -a $STABLE/. $DEST_PATH/ && \
-    cp $STABLE/.source-commit $DEST_PATH/.source-commit && \
+    cp -r $STABLE/* $DEST_PATH/ && \
     chown -R root:root $DEST_PATH && \
     chmod -R a+rX $DEST_PATH
 "
@@ -448,38 +361,41 @@ CONFIG_EOF
 # Step 6: Pre-fetch cargo dependencies
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Pre-fetch cargo deps for the offline guest build.
-#
-# Fetch the FULL closure of the committed Cargo.lock with `--locked`, against
-# the unfiltered workspace.  The cache must be a superset of whatever the guest
-# resolves: the full-closure fetch is a superset of whatever the guest
-# resolves.  The riscv64 guest builds `cargo build -p starryos` (a subset);
-# x86_64 builds via xtask against the full workspace — either way the
-# full --locked fetch covers all needed crates.
-#
-# Do NOT regenerate the lockfile from a filtered manifest: that re-resolves to
-# different versions than the baked lock (e.g. getrandom 0.3.x instead of the
-# locked 0.4.2 -> wasip3 -> wit-bindgen subtree), leaving the offline build
-# unable to resolve crates the baked lock references.  `--locked` forbids any
-# lock change, so fetch and build see the same graph; the baked Cargo.toml /
-# Cargo.lock stay byte-identical to HEAD (source identity is preserved).
+# Pre-fetch cargo deps for offline build (all architectures).
+# The full workspace contains arch-specific crates that don't resolve for
+# other targets (e.g., arm_vcpu → aarch64-cpu on x86_64).  Temporarily
+# filter the workspace members to only those relevant to this target,
+# run cargo fetch, then restore the original Cargo.toml.
 info "Pre-fetching cargo dependencies for ${TARGET} (~10-30 min)..."
+
+# Build a sed pattern to remove arch-incompatible workspace members.
+# Each arch keeps its own prefix + common crates.
+case "$ARCH" in
+    riscv64) EXCLUDE_ARCH="arm_vcpu\|aarch64\|x86_64\|loongarch64\|kasm-aarch64\|arm_vgic" ;;
+    x86_64)  EXCLUDE_ARCH="arm_vcpu\|aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi" ;;
+    arm)     EXCLUDE_ARCH="riscv\|x86_64\|loongarch64\|sg2002\|bsta1000b" ;;
+esac
 
 nspawn_run "$OUTPUT_IMG" "
     export PATH=/root/.cargo/bin:\$PATH && \
     cd $DEST_PATH && \
+    cp Cargo.toml Cargo.toml.orig && \
+    sed -i '/^[[:space:]]*\"components\//{/'"$EXCLUDE_ARCH"'/d}' Cargo.toml && \
+    sed -i '/^[[:space:]]*\"drivers\/usb\/usb-device\/uvc\"/d' Cargo.toml && \
+    rm -f Cargo.lock && \
     cp /root/.cargo/config.toml /root/.cargo/config.toml.bak && \
     printf '[net]\noffline = false\n' > /root/.cargo/config.toml && \
-        cargo fetch --locked 2>&1 && \
-        cargo fetch --locked --target ${TARGET} 2>&1; \
+	    cargo generate-lockfile --ignore-rust-version --manifest-path Cargo.toml 2>&1 && \
+	    cargo fetch --manifest-path Cargo.toml 2>&1 && cargo fetch --manifest-path Cargo.toml --target ${TARGET} 2>&1; \
     RET=\$?; \
     mv /root/.cargo/config.toml.bak /root/.cargo/config.toml; \
+    rm -f Cargo.toml.orig; \
     exit \$RET
 "
-info "Cargo dependencies pre-fetched (full --locked closure; QEMU filters at build time)."
+info "Cargo dependencies pre-fetched (--ignore-rust-version)."; info "Workspace pre-filtered — QEMU will skip filtering."
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Step 7: Pre-extract all .crate files to registry/src
+# Step 8: Pre-extract all .crate files to registry/src
 # ═══════════════════════════════════════════════════════════════════════════════
 # On StarryOS rsext4, reading the registry index (thousands of small files)
 # and extracting .crate tarballs is extremely slow due to single-block I/O.
@@ -514,7 +430,7 @@ nspawn_run "$OUTPUT_IMG" "
 info "Registry pre-extraction complete."
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Step 8: Verify
+# Step 9: Verify
 # ═══════════════════════════════════════════════════════════════════════════════
 
 info "Verifying rootfs..."

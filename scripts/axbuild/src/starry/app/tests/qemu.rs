@@ -196,6 +196,64 @@ fail_regex = []
 }
 
 #[test]
+fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let app_dir = repo.join("apps/starry/selfhost/selfhost-full-kernel");
+    let config_path = app_dir.join("qemu-x86_64.toml");
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(
+        config.get("snapshot").and_then(toml::Value::as_bool),
+        Some(false),
+        "{} must persist the guest-built kernel",
+        config_path.display()
+    );
+    assert_eq!(
+        config.get("shell_init_cmd").and_then(toml::Value::as_str),
+        Some("/bin/sh /opt/starry-selfhost-run.sh"),
+        "{} must use the staged non-interactive guest runner",
+        config_path.display()
+    );
+    assert!(
+        fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("rootfs-x86_64-selfhost.img"),
+        "{} must select a managed per-app rootfs",
+        config_path.display()
+    );
+
+    let prebuild_path = app_dir.join("prebuild.sh");
+    let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+    assert!(
+        prebuild.contains("tgoskits-src.tar")
+            && prebuild.contains("starry-selfhost-run.sh")
+            && prebuild.contains("cargo xtask image resize")
+            && prebuild.contains("stage_guest_resolver")
+            && prebuild.contains("/run/systemd/resolve/resolv.conf"),
+        "{} must stage source, the guest runner, and a usable resolver into a resized rootfs",
+        prebuild_path.display()
+    );
+
+    let guest_runner_path = app_dir.join("guest-selfbuild.sh");
+    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
+    assert!(
+        guest_runner.contains("x86_64-unknown-linux-musl")
+            && guest_runner.contains("rustc -vV")
+            && guest_runner.contains("cargo-binutils --version 0.4.0 --locked")
+            && guest_runner.contains("ksym --version 0.6.0 --locked")
+            && guest_runner.contains("tg-xtask")
+            && guest_runner.contains("SELF_COMPILE_SUCCESS")
+            && !guest_runner.contains("x86_64-unknown-linux-gnu"),
+        "{} must build the canonical x86_64 path with a native musl host toolchain",
+        guest_runner_path.display()
+    );
+}
+
+#[test]
 fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
     let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
     let qemu_config_path = case_dir.join("qemu-x86_64.toml");

@@ -4,16 +4,12 @@ args = [
     "-smp", "1",
     "-m", "12G",
     "-device", "virtio-blk-pci,drive=disk0",
-    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img,file.locking=off",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]
 uefi = false
 to_bin = true
-# Self-compilation writes /opt/starryos-selfbuilt into the rootfs and the host
-# extracts it via debugfs after QEMU exits; snapshot must stay off so the guest
-# writes persist (the app runner defaults snapshot to true).
-snapshot = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/self-compile.sh"
 success_regex = ["(?m)^SELFHOST_SUCCESS\\s*$"]

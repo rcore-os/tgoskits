@@ -4,16 +4,16 @@
 # boot it in QEMU.
 #
 # Prerequisites:
-#   - scripts/self-compile.sh (must complete successfully first)
+#   - cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
+#     (for the x86_64 app rootfs)
 #   - qemu-system-<arch>, debugfs
 #
 # Usage:
 #   ./scripts/run-selfbuilt-kernel.sh [OPTIONS] [rootfs-image]
 #
 #   --arch <arch>   Target architecture: riscv64 (default), x86_64.  Must match
-#                   the arch used during self-compile.sh.  aarch64 is boot-capable
-#                   here but self-compile.sh cannot yet produce an aarch64 kernel
-#                   (no qemu-aarch64.toml), so supply one via --kernel / rootfs.
+#                   the self-built artifact.  aarch64 is boot-capable here but
+#                   requires an explicit --kernel or rootfs artifact.
 #   --smp <N>       Number of QEMU CPUs (default: 4).
 #   --kernel <path> Self-compiled kernel binary (default: tmp/starryos-selfbuilt-<arch>).
 #                   Rootfs defaults to the arch-specific image unless specified.
@@ -93,7 +93,10 @@ esac
 if [ -z "$ROOTFS_IMG" ]; then
     case "$ARCH" in
         riscv64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img" ;;
-        x86_64)   ROOTFS_IMG="tmp/selfhost/rootfs-x86_64-selfhost-working.img" ;;
+        x86_64)
+            ROOTFS_STORAGE="${TGOS_IMAGE_LOCAL_STORAGE:-$REPO_ROOT/tmp/axbuild/rootfs}"
+            ROOTFS_IMG="$ROOTFS_STORAGE/rootfs-x86_64-selfhost.img/rootfs-x86_64-selfhost.img"
+            ;;
         aarch64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img" ;;
     esac
 fi
@@ -122,18 +125,14 @@ if [ -n "$KERNEL_PATH" ]; then
     fi
     CACHED_KERNEL="$KERNEL_PATH"
     info "Using specified kernel: $CACHED_KERNEL"
-elif [ -f "$CACHED_KERNEL" ] && [ -s "$CACHED_KERNEL" ]; then
-    EXISTING_SIZE=$(stat -c%s "$CACHED_KERNEL" 2>/dev/null || echo "0")
-    info "Using cached kernel: $CACHED_KERNEL (${EXISTING_SIZE} bytes)"
-    info "Delete this file to force re-extraction from rootfs."
 else
     info "Extracting self-compiled kernel from rootfs..."
     mkdir -p "$(dirname "$CACHED_KERNEL")"
-
+    rm -f "$CACHED_KERNEL"
     debugfs -R "dump /opt/starryos-selfbuilt $CACHED_KERNEL" "$ROOTFS_IMG" 2>/dev/null || true
 
     if [ ! -f "$CACHED_KERNEL" ] || [ ! -s "$CACHED_KERNEL" ]; then
-        error "Failed to extract kernel from rootfs. Did you run scripts/self-compile.sh first?"
+        error "Failed to extract kernel from rootfs. Run: cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64"
     fi
 
     KERNEL_SIZE=$(stat -c%s "$CACHED_KERNEL")
@@ -161,7 +160,7 @@ case "$ARCH" in
     x86_64)
         info "Booting self-compiled kernel via UEFI / OVMF ..."
 
-        [ -f "$CACHED_KERNEL" ] || error "Self-compiled kernel not found: $CACHED_KERNEL (run scripts/self-compile.sh first)"
+        [ -f "$CACHED_KERNEL" ] || error "Self-compiled kernel not found: $CACHED_KERNEL"
 
         # The self-compiled kernel is an x86_64-unknown-none ELF whose
         # EFI stub (axplat-dyn/efi) makes it an EFI application.  Strip
