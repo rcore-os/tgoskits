@@ -206,9 +206,11 @@ _loopback_chroot() {
 expand_image() {
     local img="$1" mb="$2"
     info "Expanding by ${mb} MiB..."
-    dd if=/dev/zero bs=1M count="$mb" >> "$img" 2>/dev/null
+    dd if=/dev/zero bs=1M count="$mb" >> "$img" 2>/dev/null \
+        || die "Failed to expand $img with dd (disk full?)"
     e2fsck -fy "$img" >/dev/null 2>&1 || true
-    resize2fs "$img" >/dev/null 2>&1
+    resize2fs "$img" >/dev/null 2>&1 \
+        || die "Failed to resize filesystem in $img"
     info "Size: $(($(stat --format=%s "$img") / 1024 / 1024)) MiB"
 }
 
@@ -400,10 +402,13 @@ chmod -R a+rX "$TEMP_SRC"
 
 info "Copying source tree into rootfs at $DEST_PATH..."
 
-# Bind-mount the source into the container so it's visible inside
-STABLE="/tmp/starryos-src-stable"
-rm -rf "$STABLE" 2>/dev/null || true
+# Bind-mount the source into the container so it's visible inside.
+# Use mktemp to avoid concurrent-invocation collisions on a fixed path.
+STABLE=$(mktemp -d /tmp/starryos-src-stable.XXXXXX)
 cp -r "$TEMP_SRC" "$STABLE"
+# Register cleanup so the temp dir is removed on exit.
+trap_cleanup_stable() { rm -rf "$STABLE" 2>/dev/null; }
+trap trap_cleanup_stable EXIT
 
 nspawn_args=(--image="$OUTPUT_IMG" --bind="$STABLE:$STABLE" --quiet)
 if [ "$NEED_QEMU" -eq 1 ] && [ -f "/usr/bin/$QEMU_STATIC" ]; then
@@ -520,20 +525,24 @@ info "Registry pre-extraction complete."
 info "Verifying rootfs..."
 PASS=0
 
-check_file() { local label="$1" path="$2"
+check_file() { local label="$1" path="$2" fatal="${3:-0}"
     if nspawn_run "$OUTPUT_IMG" "test -f $path" &>/dev/null; then
         info "  [OK] $label"
         PASS=$((PASS + 1))
     else
-        warn "  [FAIL] $label ($path)"
+        if [ "$fatal" -eq 1 ]; then
+            die "[FAIL] $label ($path) — rootfs is incomplete"
+        else
+            warn "  [FAIL] $label ($path)"
+        fi
     fi
 }
 
 check_file "workspace Cargo.toml"    "$DEST_PATH/Cargo.toml"
 check_file "kernel Cargo.toml"       "$DEST_PATH/os/StarryOS/kernel/Cargo.toml"
 check_file "cargo config"            "/root/.cargo/config.toml"
-check_file "rustc"                   "/usr/bin/rustc"
-check_file "cargo"                   "/usr/bin/cargo"
+check_file "rustc"                   "/usr/bin/rustc" 1
+check_file "cargo"                   "/usr/bin/cargo" 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Done

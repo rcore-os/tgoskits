@@ -8,16 +8,13 @@
 # parsing, env-var forwarding, and post-QEMU binary extraction.
 #
 # Prerequisites:
-#   - Rootfs (run once to create the selfhost rootfs).  The self-compile build
-#     runs OFFLINE (CARGO_NET_OFFLINE / --offline), so it needs a rootfs whose
-#     dependency cache is already warmed.  Two ways to produce one:
-#       (1) Maintainer tool (Debian, requires sudo, warms the offline cache):
+#   - Rootfs (run once to create the selfhost rootfs).  Three ways to get one:
+#       (1) Auto-download (no sudo, default): the script downloads a pre-built
+#           Debian rootfs from tgosimages releases (~913 MiB, SHA-256 verified).
+#       (2) Maintainer tool (Debian, requires sudo):
 #             sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-#       (2) --bootstrap (Alpine, no host sudo): provisions the toolchain (musl,
-#           Rust nightly, kallsyms tools, source, firmware) inside QEMU, then warms
-#           the offline dependency cache with `cargo fetch`.  The resulting rootfs
-#           IS self-compile-capable — no sudo, no pre-baked image download needed.
-#     A downloadable pre-warmed blueprint is planned but not yet available.
+#       (3) --bootstrap (Alpine, no host sudo): provisions the toolchain inside
+#           QEMU, then warms the offline dependency cache with `cargo fetch`.
 #   - qemu-system-<arch>, debugfs (from e2fsprogs)
 #
 # Usage:
@@ -185,7 +182,8 @@ Run: cargo xtask starry rootfs --arch x86_64"
             # force the grow with truncate.
             MIN_RESIZED_BYTES=3000000000  # ~2.8 GiB: well above the Alpine base, well below 16 GB
             if [ "$(stat -c%s "$BOOTSTRAP_IMG")" -lt "$MIN_RESIZED_BYTES" ]; then
-                truncate -s 16G "$BOOTSTRAP_IMG"
+                truncate -s 16G "$BOOTSTRAP_IMG" \
+                    || error "Failed to enlarge bootstrap image with truncate"
             fi
             info "Bootstrap image: $BOOTSTRAP_IMG ($(stat -c%s "$BOOTSTRAP_IMG") bytes)"
 

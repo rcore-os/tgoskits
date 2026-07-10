@@ -231,7 +231,13 @@ aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin|fmacfw_8800d80_u02.bin|ffb49ede600
 aic8800_and_aic8800D80/fw_patch_8800d80_u02.bin|fw_patch_8800d80_u02.bin|f0e2f5bbc17bc327ca7f1574ff55370dfd863d931514347bb4abc18a74f6218f
 aic8800_and_aic8800D80/fw_patch_table_8800d80_u02.bin|fw_patch_table_8800d80_u02.bin|9decb77435b7e9713e33e32da483d683b7329ed93b672b2d1b134031d7da5f67"
 
-echo "$FW_FILES" | while IFS="|" read -r remote name expected; do
+# Write firmware list to a temp file so the while-read loop runs in the
+# parent shell.  A pipe (`echo | while`) would put the while body in a
+# subshell where `fail`'s `exit 1` only exits the child — the parent
+# wouldn't see the failure and would silently continue to "firmware ready."
+FW_LIST=$(mktemp /tmp/fw-list.XXXXXX)
+echo "$FW_FILES" > "$FW_LIST"
+while IFS="|" read -r remote name expected; do
     dest="/opt/starryos/components/aic8800/firmware/$name"
     if [ -f "$dest" ] && echo "$expected  $dest" | sha256sum -c - >/dev/null 2>&1; then
         echo "[bootstrap]   $name (cached)"
@@ -244,7 +250,8 @@ echo "$FW_FILES" | while IFS="|" read -r remote name expected; do
         fail "sha256 mismatch for $name: expected $expected, got $actual"
     fi
     echo "[bootstrap]   $name OK"
-done
+done < "$FW_LIST"
+rm -f "$FW_LIST"
 echo "[bootstrap] AIC8800 firmware ready."
 
 echo "[bootstrap] Installing Rust toolchain..."
