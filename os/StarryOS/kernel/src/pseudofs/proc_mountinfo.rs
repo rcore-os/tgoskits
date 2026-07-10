@@ -33,24 +33,25 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let optional_fields = if mp.is_shared() {
             let gid = mp.peer_group_id();
             if gid != 0 {
-                format!("shared:{gid}")
+                Some(format!("shared:{gid}"))
             } else {
-                "-".into()
+                None
             }
         } else if mp.is_slave() {
-            match mp.first_master_peer_group_id() {
-                Some(gid) => format!("master:{gid}"),
-                None => "-".into(),
-            }
+            mp.first_master_peer_group_id()
+                .map(|gid| format!("master:{gid}"))
         } else if mp.is_unbindable() {
-            "unbindable".into()
+            Some("unbindable".into())
         } else {
-            "-".into()
+            None
         };
+        let optional_fields = optional_fields
+            .as_deref()
+            .map_or(String::new(), |fields| format!(" {fields}"));
 
         let _ = writeln!(
             &mut buf,
-            "{mount_id} {parent_id} {}:{} / {mount_point} {options} {optional_fields} - {fstype} \
+            "{mount_id} {parent_id} {}:{} / {mount_point} {options}{optional_fields} - {fstype} \
              {fstype} {options}",
             dev.major(),
             dev.minor(),
