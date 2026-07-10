@@ -161,7 +161,7 @@ if [ "${arch}" = "x86_64" ]; then
     # by the canonical xtask flow (musl-PIE std target + -Zbuild-std + the rust-lld
     # linker wrapper that groups archives via --start-group/--end-group and forces
     # -pie).  A hand-rolled bare-metal cargo build cannot link someboot's _head/kernel_entry.
-    export CARGO_NET_OFFLINE=true
+    export CARGO_NET_OFFLINE=false
     export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
 
     # ostool forces --target-dir=<workspace>/target and ignores CARGO_TARGET_DIR, so
