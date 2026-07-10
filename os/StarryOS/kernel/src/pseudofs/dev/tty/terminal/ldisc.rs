@@ -604,12 +604,13 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             }
             return Ok(read);
         }
-        if matches!(self.processor, Processor::Passive(_, _)) {
+        if let Processor::Passive(reader, _) = &mut self.processor {
+            reader.poll();
             let read = self.buf_rx.pop_slice(buf);
             return if read == 0 {
                 // Buffer drained: if the peer writer has closed, report EOF;
                 // otherwise the read would block.
-                if matches!(&self.processor, Processor::Passive(reader, _) if reader.closed()) {
+                if reader.closed() {
                     Ok(0)
                 } else {
                     Err(AxError::WouldBlock)
@@ -672,10 +673,23 @@ mod tests {
     struct MockReader {
         data: Vec<u8>,
         pos: usize,
+        closed: bool,
     }
     impl MockReader {
         fn new(data: Vec<u8>) -> Self {
-            Self { data, pos: 0 }
+            Self {
+                data,
+                pos: 0,
+                closed: false,
+            }
+        }
+
+        fn closed(data: Vec<u8>) -> Self {
+            Self {
+                data,
+                pos: 0,
+                closed: true,
+            }
         }
     }
     impl TtyRead for MockReader {
@@ -685,6 +699,10 @@ mod tests {
             buf[..n].copy_from_slice(&remaining[..n]);
             self.pos += n;
             n
+        }
+
+        fn closed(&self) -> bool {
+            self.closed
         }
     }
 
@@ -1039,5 +1057,23 @@ mod tests {
         let mut buf = [0; 6];
         assert_eq!(ldisc.read(&mut buf), Ok(6));
         assert_eq!(&buf, b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn passive_read_drains_source_before_reporting_peer_eof() {
+        let payload = b"data before eof";
+        let mut ldisc = LineDiscipline::new(
+            Arc::new(Terminal::default()),
+            TtyConfig {
+                reader: MockReader::closed(payload.to_vec()),
+                writer: MockWriter,
+                process_mode: ProcessMode::Passive(Arc::new(PollSet::new())),
+            },
+        );
+
+        let mut buf = [0; 15];
+        assert_eq!(ldisc.read(&mut buf), Ok(payload.len()));
+        assert_eq!(&buf, payload);
+        assert_eq!(ldisc.read(&mut buf), Ok(0));
     }
 }
