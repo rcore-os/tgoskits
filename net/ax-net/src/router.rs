@@ -79,8 +79,9 @@ const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Per-interface cumulative RX/TX byte and packet counters.
 ///
 /// Populated from the router data paths and read by `/proc/net/dev`. Byte
-/// counts use the IP packet length carried on the `Medium::Ip` links exposed by
-/// this stack.
+/// counts use L2 frame length (IP payload plus per-device L2 framing
+/// overhead, excluding trailing FCS), aligned with Linux `/proc/net/dev`
+/// semantics.
 #[derive(Debug, Clone)]
 pub struct NetDevStats {
     pub interface_id: InterfaceId,
@@ -275,7 +276,8 @@ struct DeviceHandle {
     /// must be preserved here until the worker observes it.
     rx_ready: AtomicBool,
     /// Cumulative bytes/packets received on and transmitted by this interface,
-    /// exposed through `/proc/net/dev`.
+    /// exposed through `/proc/net/dev`. Byte counts use L2 frame length (IP
+    /// payload plus per-device L2 header), aligned with Linux semantics.
     rx_bytes: AtomicU64,
     rx_packets: AtomicU64,
     tx_bytes: AtomicU64,
@@ -309,12 +311,19 @@ impl DeviceHandle {
     }
 
     /// Records `len` bytes received on this interface.
+    ///
+    /// `rx_packets` is incremented for every call regardless of `len`. Callers
+    /// must ensure `len > 0` when counting a real reception; a zero `len` only
+    /// makes sense for testing or diagnostic paths.
     fn count_rx(&self, len: usize) {
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records `len` bytes transmitted by this interface.
+    ///
+    /// `tx_packets` is incremented for every call regardless of `len`. Callers
+    /// must ensure `len > 0` when counting a real transmission.
     fn count_tx(&self, len: usize) {
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
@@ -358,7 +367,6 @@ impl DeviceHandle {
             );
             return false;
         }
-        self.count_tx(packet.len());
         self.tx_wake.notify_one(true);
         true
     }
@@ -934,13 +942,13 @@ fn inject_loopback_rx(
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
         if let Some(packet) = device.tx_queue.pop() {
-            let poll_next =
+            let frame_len =
                 device
                     .inner
                     .lock()
                     .send(packet.next_hop, packet.bytes.as_slice(), now());
-            if poll_next {
-                crate::request_poll();
+            if frame_len > 0 {
+                device.count_tx(frame_len);
             }
         } else {
             device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
@@ -954,21 +962,37 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
+    // Number of L2 frame bytes returned by each `recv()` call in the batch.
+    // Indexed in the same order that packets are dequeued from the buffer.
+    let mut frame_lens = [0usize; DEVICE_RX_WORKER_BATCH];
 
     loop {
         let mut received = false;
+        let mut n_rx = 0;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while !rx_buffer.is_full()
-                && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
-            {
+            while !rx_buffer.is_full() && n_rx < DEVICE_RX_WORKER_BATCH {
+                let frame_len =
+                    device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop);
+                if frame_len == 0 {
+                    break;
+                }
+                frame_lens[n_rx] = frame_len;
+                n_rx += 1;
                 received = true;
+            }
+            // Count TX bytes from packets sent asynchronously during recv()
+            // (e.g. pending ARP sends inside process_arp()).
+            for frame_len in device_inner.drain_async_tx() {
+                device.count_tx(frame_len);
             }
         }
 
-        while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
-            let packet_len = packet.len();
+        for &frame_len in frame_lens[..n_rx].iter() {
+            let Ok((interface_id, packet)) = rx_buffer.dequeue() else {
+                break;
+            };
             let rx = RxPacket {
                 interface_id,
                 bytes: match QueuedPacket::new(packet) {
@@ -989,9 +1013,8 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
                 ax_task::yield_now();
                 break;
             }
-            device.count_rx(packet_len);
+            device.count_rx(frame_len);
             crate::request_poll();
-            received = true;
         }
 
         if !received {
@@ -1139,12 +1162,12 @@ mod tests {
             _buffer: &mut PacketBuffer<InterfaceId>,
             _timestamp: Instant,
             _snoop: &mut dyn FnMut(&[u8]),
-        ) -> bool {
-            false
+        ) -> usize {
+            0
         }
 
-        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-            false
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            0
         }
     }
 
@@ -1330,5 +1353,251 @@ mod tests {
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), None);
         assert!(queue.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod l2_counter_tests {
+    use smoltcp::{
+        storage::{PacketBuffer, PacketMetadata},
+        time::Instant,
+        wire::{IpAddress, Ipv4Address},
+    };
+
+    use super::*;
+
+    const IF0: InterfaceId = InterfaceId::new(2);
+
+    /// Configurable mock device for L2 frame-length counter tests.
+    struct CountingMockDevice {
+        name: &'static str,
+        send_returns: usize,
+        recv_returns: usize,
+    }
+
+    impl Device for CountingMockDevice {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> usize {
+            self.recv_returns
+        }
+
+        fn send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> usize {
+            self.send_returns
+        }
+    }
+
+    fn test_device_handle(device: Box<dyn Device>) -> Arc<DeviceHandle> {
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        DeviceHandle::new(IF0, device, &queues)
+    }
+
+    fn test_ip() -> IpAddress {
+        IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
+    }
+
+    fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
+        PacketBuffer::new(
+            vec![PacketMetadata::EMPTY; 1],
+            vec![0u8; super::STANDARD_MTU],
+        )
+    }
+
+    // ── count_rx / count_tx ────────────────────────────────────────────
+
+    #[test]
+    fn count_rx_accumulates_bytes_and_packets() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0,
+        }));
+
+        device.count_rx(100);
+        assert_eq!(device.stats().rx_bytes, 100);
+        assert_eq!(device.stats().rx_packets, 1);
+
+        device.count_rx(200);
+        assert_eq!(device.stats().rx_bytes, 300);
+        assert_eq!(device.stats().rx_packets, 2);
+    }
+
+    #[test]
+    fn count_tx_accumulates_bytes_and_packets() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0,
+        }));
+
+        device.count_tx(64);
+        assert_eq!(device.stats().tx_bytes, 64);
+        assert_eq!(device.stats().tx_packets, 1);
+
+        device.count_tx(1500);
+        assert_eq!(device.stats().tx_bytes, 1564);
+        assert_eq!(device.stats().tx_packets, 2);
+    }
+
+    // ── stats snapshot ─────────────────────────────────────────────────
+
+    #[test]
+    fn stats_starts_at_zero() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0,
+        }));
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 0);
+        assert_eq!(snap.rx_packets, 0);
+        assert_eq!(snap.tx_bytes, 0);
+        assert_eq!(snap.tx_packets, 0);
+    }
+
+    #[test]
+    fn stats_reflects_current_counters_after_counting() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0,
+        }));
+
+        device.count_rx(100);
+        device.count_tx(64);
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 100);
+        assert_eq!(snap.rx_packets, 1);
+        assert_eq!(snap.tx_bytes, 64);
+        assert_eq!(snap.tx_packets, 1);
+    }
+
+    // ── frame-length contract: send ────────────────────────────────────
+
+    #[test]
+    fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
+            recv_returns: 0,
+        }));
+
+        // Simulate what device_tx_worker does
+        let frame_len = device.inner.lock().send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        assert_eq!(frame_len, 1514);
+        if frame_len > 0 {
+            device.count_tx(frame_len);
+        }
+
+        let snap = device.stats();
+        // Byte counter reflects L2 frame length, NOT the IP payload (100 bytes)
+        assert_eq!(snap.tx_bytes, 1514);
+        assert_eq!(snap.tx_packets, 1);
+    }
+
+    #[test]
+    fn send_returns_zero_no_tx_counted() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0, // ARP pending or send failure
+            recv_returns: 0,
+        }));
+
+        let frame_len = device.inner.lock().send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        assert_eq!(frame_len, 0);
+        // Worker skips count_tx when frame_len == 0
+        if frame_len > 0 {
+            device.count_tx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.tx_bytes, 0);
+        assert_eq!(snap.tx_packets, 0);
+    }
+
+    // ── frame-length contract: recv ────────────────────────────────────
+
+    #[test]
+    fn recv_returns_frame_len_rx_counts_it() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 1514,
+        }));
+
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        assert_eq!(frame_len, 1514);
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 1514);
+        assert_eq!(snap.rx_packets, 1);
+    }
+
+    #[test]
+    fn recv_returns_zero_no_rx_counted() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0, // no packet available
+        }));
+
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        assert_eq!(frame_len, 0);
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 0);
+        assert_eq!(snap.rx_packets, 0);
+    }
+
+    // ── drain_async_tx default ─────────────────────────────────────────
+
+    #[test]
+    fn drain_async_tx_default_returns_empty_vec() {
+        let mut device = CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            recv_returns: 0,
+        };
+
+        // Default trait implementation returns Vec::new().
+        let drained = device.drain_async_tx();
+        assert!(drained.is_empty());
+
+        // Second call is also empty (no side effects).
+        let drained = device.drain_async_tx();
+        assert!(drained.is_empty());
     }
 }
