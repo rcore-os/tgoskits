@@ -39,7 +39,6 @@ impl FdtTree {
         &self.fdt
     }
 
-    #[cfg(any(test, target_arch = "aarch64"))]
     pub(crate) fn inner_mut(&mut self) -> &mut Fdt {
         &mut self.fdt
     }

@@ -1,0 +1,91 @@
+//! Architecture-neutral vCPU contexts and normalized runtime actions.
+
+use axvm_types::{AccessWidth, GuestPhysAddr, PassThroughPortConfig, VMInterruptMode};
+
+use crate::StopReason;
+
+/// Scheduler effects selected after an architecture-local vCPU exit.
+#[derive(Debug)]
+pub(crate) struct VcpuRunAction {
+    pub(crate) waits_for_event: bool,
+    pub(crate) stop_reason: Option<StopReason>,
+}
+
+/// Result of handling one exit while the vCPU is still bound to the host CPU.
+#[derive(Debug)]
+pub(crate) enum BoundVcpuExit<D> {
+    /// The exit was handled completely; re-enter the guest in the current run slice.
+    Continue,
+    /// The run slice is complete and can return this scheduler action after unbind.
+    Complete(VcpuRunAction),
+    /// Finish architecture-local work after unbinding the vCPU.
+    Defer(D),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MmioReadExit {
+    pub(crate) addr: GuestPhysAddr,
+    pub(crate) width: AccessWidth,
+    pub(crate) reg: usize,
+    pub(crate) reg_width: AccessWidth,
+    pub(crate) signed_ext: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MmioWriteExit {
+    pub(crate) addr: GuestPhysAddr,
+    pub(crate) width: AccessWidth,
+    pub(crate) data: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HypercallExit {
+    pub(crate) nr: u64,
+    pub(crate) args: [u64; 6],
+}
+
+pub(crate) struct VcpuCreateContext {
+    pub(crate) vcpu_id: usize,
+    pub(crate) phys_cpu_id: usize,
+    pub(crate) dtb_addr: Option<GuestPhysAddr>,
+    pub(crate) firmware_boot: bool,
+}
+
+impl VcpuCreateContext {
+    pub(crate) fn into_parts(self) -> (usize, usize, Option<GuestPhysAddr>, bool) {
+        (
+            self.vcpu_id,
+            self.phys_cpu_id,
+            self.dtb_addr,
+            self.firmware_boot,
+        )
+    }
+}
+
+pub(crate) struct VcpuSetupContext<'a> {
+    pub(crate) interrupt_mode: VMInterruptMode,
+    pub(crate) emulates_console: bool,
+    pub(crate) passthrough_ports: &'a [PassThroughPortConfig],
+    pub(crate) memory_regions: &'a [crate::vm::VMMemoryRegion],
+    pub(crate) firmware_boot: bool,
+}
+
+impl<'a> VcpuSetupContext<'a> {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        VMInterruptMode,
+        bool,
+        &'a [PassThroughPortConfig],
+        &'a [crate::vm::VMMemoryRegion],
+        bool,
+    ) {
+        (
+            self.interrupt_mode,
+            self.emulates_console,
+            self.passthrough_ports,
+            self.memory_regions,
+            self.firmware_boot,
+        )
+    }
+}

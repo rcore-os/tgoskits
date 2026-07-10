@@ -59,7 +59,7 @@ fn production_sources_keep_architecture_cfg_inside_arch_module() {
 }
 
 #[test]
-fn arch_root_contains_only_architectures_and_shared_dispatch_modules() {
+fn arch_root_contains_only_architecture_directories_and_dispatch_page() {
     let arch_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/arch");
     let mut unexpected_entries = std::fs::read_dir(&arch_root)
         .expect("AxVM architecture directory must be readable")
@@ -68,7 +68,7 @@ fn arch_root_contains_only_architectures_and_shared_dispatch_modules() {
         .filter(|name| {
             !matches!(
                 name.as_str(),
-                "aarch64" | "loongarch64" | "riscv64" | "x86_64" | "mod.rs" | "npt.rs"
+                "aarch64" | "loongarch64" | "riscv64" | "x86_64" | "mod.rs"
             )
         })
         .collect::<Vec<_>>();
@@ -76,10 +76,44 @@ fn arch_root_contains_only_architectures_and_shared_dispatch_modules() {
 
     assert!(
         unexpected_entries.is_empty(),
-        "arch root must contain only architecture directories and shared dispatch modules; found: \
-         {}",
+        "arch root must contain only architecture directories and the dispatch page; found: {}",
         unexpected_entries.join(", ")
     );
+}
+
+#[test]
+fn arch_dispatch_page_does_not_own_common_implementations() {
+    let dispatch = include_str!("../src/arch/mod.rs");
+
+    for forbidden in [
+        "#[path",
+        "trait ArchOps",
+        "struct MmioReadExit",
+        "fn handle_mmio_read",
+        "fn default_vcpu_affinities",
+    ] {
+        assert!(
+            !dispatch.contains(forbidden),
+            "arch/mod.rs must only select and export the current architecture: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn common_domains_live_outside_architecture_directories() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    for relative_path in [
+        "boot/fdt/mod.rs",
+        "boot/images/mod.rs",
+        "host/arceos.rs",
+        "npt.rs",
+    ] {
+        assert!(
+            source_root.join(relative_path).is_file(),
+            "common AxVM domain must use its canonical source path: {relative_path}"
+        );
+    }
 }
 
 fn find_target_arch_cfg_outside_arch(

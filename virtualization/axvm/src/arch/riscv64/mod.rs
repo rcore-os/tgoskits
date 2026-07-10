@@ -15,23 +15,37 @@ use riscv_vcpu::{
 use riscv_vplic::host::RiscvVplicHostIf;
 
 use super::{
-    ArchOps, BoundVcpuExit, CpuUpExit, HypercallExit, MmioReadExit, MmioWriteExit,
-    VcpuCreateContext, VcpuRunAction, VcpuSetupContext, default_vcpu_affinities,
-    target_phys_cpu_ids,
+    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
+    VcpuRunAction, VcpuSetupContext,
 };
 use crate::{
     StopReason,
+    architecture::ops::{default_vcpu_affinities, target_phys_cpu_ids},
     host::{HostMemory, default_host},
 };
 
+mod capabilities;
+#[path = "../../architecture/cpu_up.rs"]
+mod cpu_up;
+mod images;
 mod irq;
 mod npt;
+
+pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+use cpu_up::{CpuUpExit, CpuUpOps};
+pub use images::ImageLoader;
 
 pub(crate) struct Riscv64Arch;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RiscvDeferredRunWork {
     ExternalInterrupt { vector: usize },
+}
+
+impl CpuUpOps for Riscv64Arch {
+    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
+    }
 }
 
 impl ArchOps for Riscv64Arch {
@@ -85,15 +99,17 @@ impl ArchOps for Riscv64Arch {
         _state: &Self::VcpuCreateState,
         ctx: VcpuCreateContext,
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
+        let (vcpu_id, _phys_cpu_id, dtb_addr, _firmware_boot) = ctx.into_parts();
         Ok(RiscvVcpuCreateConfig {
-            hart_id: ctx.vcpu_id,
-            dtb_addr: ctx.dtb_addr.unwrap_or_default().as_usize(),
+            hart_id: vcpu_id,
+            dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
         })
     }
 
     fn build_vcpu_setup_config(
-        _ctx: VcpuSetupContext<'_>,
+        ctx: VcpuSetupContext<'_>,
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
+        let _ = ctx.into_parts();
         Ok(())
     }
 
@@ -114,7 +130,7 @@ impl ArchOps for Riscv64Arch {
             return;
         };
         let irq_sources = vm.with_config(|config| config.pass_through_irqs().to_vec());
-        irq::set_virtual_irq_targets(cpu_id, &irq_sources);
+        crate::irq::set_riscv_virtual_irq_targets(cpu_id, &irq_sources);
     }
 
     fn vcpu_affinities(
@@ -134,10 +150,6 @@ impl ArchOps for Riscv64Arch {
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
-    }
-
-    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
     }
 
     fn after_external_interrupt(
@@ -201,7 +213,7 @@ impl ArchOps for Riscv64Arch {
                 target_cpu,
                 entry_point,
                 arg,
-            } => super::handle_cpu_up::<Self>(
+            } => cpu_up::handle::<Self>(
                 vm,
                 vcpu,
                 CpuUpExit {
@@ -216,19 +228,29 @@ impl ArchOps for Riscv64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Wait))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
             RiscvVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(Self::handle_halt()))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
             RiscvVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Stop(
-                    StopReason::SystemDown,
-                )))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: false,
+                    stop_reason: Some(StopReason::SystemDown),
+                }))
             }
-            RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
+            RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            })),
         }
     }
 
@@ -242,7 +264,10 @@ impl ArchOps for Riscv64Arch {
                 Self::after_external_interrupt(vm, vcpu, vector);
             }
         }
-        Ok(VcpuRunAction::Yield)
+        Ok(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        })
     }
 }
 
@@ -261,7 +286,10 @@ fn handle_riscv_nested_page_fault(
                 vcpu.id(),
                 ax_addr.as_usize()
             );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield));
+            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            }));
         };
         return Riscv64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
     }
@@ -277,7 +305,10 @@ fn handle_riscv_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        }))
     }
 }
 
@@ -460,7 +491,7 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
 }
 
 fn register_platform_irq_injector() {
-    irq::register_virtual_irq_injector(inject_virtual_irq);
+    crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
 }
 
 fn first_cpu_in_mask(mask: usize) -> Option<usize> {

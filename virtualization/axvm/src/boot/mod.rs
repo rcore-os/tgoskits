@@ -3,11 +3,13 @@
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 use ax_errno::ax_err_type;
 
+pub mod fdt;
+pub mod guest_platform;
+pub mod images;
 mod policy;
+
 pub use images::*;
 pub use policy::{GuestAcpiTables, GuestBootDescription, GuestDeviceTree, GuestFdtBuilder};
-
-pub use crate::arch::{fdt, guest_platform, images};
 
 /// Build-time image bytes supplied by the hypervisor application.
 #[derive(Clone, Copy, Debug)]

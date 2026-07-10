@@ -4,7 +4,7 @@ use ax_errno::{AxResult, ax_err_type};
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
-use crate::boot::guest_platform::loongarch64::GuestPlatform;
+use crate::arch::guest_platform::GuestPlatform;
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;

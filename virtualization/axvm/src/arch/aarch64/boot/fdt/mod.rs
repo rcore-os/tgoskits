@@ -20,21 +20,23 @@
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 mod create;
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
+#[path = "../../../../boot/fdt/device.rs"]
 mod device;
-#[cfg(target_arch = "loongarch64")]
-pub(crate) mod loongarch64;
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
 mod parser;
+#[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
+#[path = "../../../../boot/fdt/print.rs"]
 mod print;
 #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
+#[path = "../../../../boot/fdt/tree.rs"]
 mod tree;
 
 #[cfg(test)]
+#[path = "../../../../boot/fdt/tree_tests.rs"]
 mod tree_tests;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use alloc::format;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use alloc::vec::Vec;
 
 #[cfg(any(
@@ -67,13 +69,11 @@ use crate::boot::BootImageProvider;
 use crate::config::AxVMConfig;
 
 /// Guest DTB artifact produced or patched by the monitor before AxVM owns it.
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[derive(Debug, Clone)]
 pub struct GuestDtbImage {
     bytes: Vec<u8>,
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 impl GuestDtbImage {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self { bytes }
@@ -87,7 +87,7 @@ impl GuestDtbImage {
 /// Initialize LoongArch guest firmware resource handling.
 #[cfg(target_arch = "loongarch64")]
 pub fn init_guest_boot_resources() {
-    crate::boot::guest_platform::loongarch64::init();
+    crate::arch::guest_platform::init();
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -95,7 +95,7 @@ fn handle_uefi_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
 ) -> AxResult {
-    crate::boot::guest_platform::loongarch64::prepare_uefi_fdt_config(vm_config, vm_create_config)
+    crate::arch::guest_platform::prepare_uefi_fdt_config(vm_config, vm_create_config)
 }
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]

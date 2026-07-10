@@ -24,12 +24,14 @@ extern crate alloc;
 extern crate log;
 
 mod arch;
+mod architecture;
 pub mod boot;
 mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
 mod manager;
+mod npt;
 mod percpu;
 mod runtime;
 mod task;

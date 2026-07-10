@@ -315,14 +315,20 @@ fn vcpu_run() {
         CurrentArch::before_vcpu_run(&vm, &vcpu);
 
         match CurrentArch::run_vcpu(&vm, &vcpu) {
-            Ok(VcpuRunAction::Yield) => {}
-            Ok(VcpuRunAction::Wait) => wait(&runtime),
-            Ok(VcpuRunAction::Stop(reason)) => {
+            Ok(VcpuRunAction {
+                stop_reason: Some(reason),
+                ..
+            }) => {
                 if let Err(err) = vm.stop(reason) {
                     warn!("VM[{vm_id}] shutdown failed: {err:?}");
                 }
                 notify_all_vcpus(vm_id);
             }
+            Ok(VcpuRunAction {
+                waits_for_event: true,
+                ..
+            }) => wait(&runtime),
+            Ok(VcpuRunAction { .. }) => {}
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {

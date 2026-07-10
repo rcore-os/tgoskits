@@ -28,7 +28,7 @@ use axvmconfig::{
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
 #[cfg(target_arch = "aarch64")]
-use crate::boot::fdt::create::update_cpu_node;
+use super::create::update_cpu_node;
 use crate::{MappingFlags, config::AxVMConfig};
 
 const PAGE_SIZE_4K: usize = 0x1000;

@@ -38,9 +38,6 @@ pub trait HostTime {
     /// Timer cancellation token.
     type CancelToken: Copy + Send + Sync + 'static;
 
-    /// Convert nanoseconds to hardware ticks.
-    fn nanos_to_ticks(&self, nanos: u64) -> u64;
-
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
@@ -53,9 +50,6 @@ pub trait HostTime {
         deadline_ns: u64,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> Self::CancelToken;
-
-    /// Cancel a VM timer callback.
-    fn cancel_timer(&self, token: Self::CancelToken);
 }
 
 /// Host CPU topology and affinity operations.
@@ -68,15 +62,6 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
-}
-
-/// Host console operations.
-pub trait HostConsole {
-    /// Write raw bytes to host console.
-    fn write_bytes(&self, bytes: &[u8]);
-
-    /// Read raw bytes from host console.
-    fn read_bytes(&self, bytes: &mut [u8]) -> usize;
 }
 
 /// Host platform lifecycle and virtualization controls.

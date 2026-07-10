@@ -197,12 +197,8 @@ impl ptg::TableMeta for LoongArchPagingMetaDataL4 {
     }
 }
 
-pub(crate) type NestedPageTable<H> = crate::arch::npt::LeveledPageTable<
-    LoongArchPagingMetaDataL3,
-    LoongArchPagingMetaDataL4,
-    H,
-    true,
->;
+pub(crate) type NestedPageTable<H> =
+    crate::npt::LeveledPageTable<LoongArchPagingMetaDataL3, LoongArchPagingMetaDataL4, H, true>;
 
 fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
     let mut flags = MappingFlags::empty();

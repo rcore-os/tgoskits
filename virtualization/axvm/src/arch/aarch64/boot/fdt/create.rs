@@ -362,8 +362,10 @@ mod tests {
     use fdt_edit::{Fdt, Node, Property};
     use fdt_raw::RegInfo;
 
-    use super::{cpu_node_id, initrd_range_from_image_config, need_cpu_node};
-    use crate::{GuestPhysAddr, boot::fdt::tree::sanitize_bootargs, config::RamdiskInfo};
+    use super::{
+        super::tree::sanitize_bootargs, cpu_node_id, initrd_range_from_image_config, need_cpu_node,
+    };
+    use crate::{GuestPhysAddr, config::RamdiskInfo};
 
     fn prop_u32(name: &str, value: u32) -> Property {
         let mut prop = Property::new(name, alloc::vec![]);

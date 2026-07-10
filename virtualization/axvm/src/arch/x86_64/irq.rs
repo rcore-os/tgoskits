@@ -5,8 +5,8 @@ use axvm_types::VmArchVcpuOps;
 
 use crate::{
     InterruptTriggerMode,
+    arch::x86_64::host_irq::{self as irq, IrqSource},
     config::VMInterruptMode,
-    host::irq::{self, IrqSource},
     runtime::{VCpuRef, VMRef},
 };
 
@@ -94,7 +94,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    let now_ns = crate::host::arceos::monotonic_time_nanos();
+    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
     let Ok(devices) = vm.get_devices() else {
         return;
     };
@@ -626,7 +626,7 @@ mod tests {
         IOAPIC_IRQ_PENDING_LEVEL.store(0, Ordering::Release);
         IOAPIC_IRQ_MASKED.store(0, Ordering::Release);
         IOAPIC_IRQ_ACTIVATED.store(0, Ordering::Release);
-        crate::host::irq::reset_test_irq_enable_state();
+        crate::arch::x86_64::host_irq::reset_test_irq_enable_state();
         for activator in IOAPIC_IRQ_ACTIVATORS.iter() {
             *activator.lock() = None;
         }
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn host_irq_storage_preserves_domain_and_hwirq() {
-        let irq = crate::host::irq::make_irq_id(2, 18);
+        let irq = crate::arch::x86_64::host_irq::make_irq_id(2, 18);
         assert_eq!(raw_to_host_irq(host_irq_to_raw(irq)), irq);
     }
 
@@ -678,7 +678,7 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let fallback_guest_gsi = 7;
             let explicit_guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 7);
+            let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 7);
             IOAPIC_HOST_IRQS[fallback_guest_gsi]
                 .store(host_irq_to_raw(host_irq), Ordering::Release);
 
@@ -693,7 +693,7 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let fallback_guest_gsi = 10;
             let explicit_guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 10);
+            let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
             IOAPIC_HOST_IRQS[fallback_guest_gsi]
                 .store(host_irq_to_raw(host_irq), Ordering::Release);
 
@@ -715,8 +715,8 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let low_level_gsi = COM1_GSI;
             let high_edge_gsi = 18;
-            let low_host_irq = crate::host::irq::make_irq_id(2, low_level_gsi as u32);
-            let high_host_irq = crate::host::irq::make_irq_id(2, high_edge_gsi as u32);
+            let low_host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, low_level_gsi as u32);
+            let high_host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, high_edge_gsi as u32);
 
             register_ioapic_irq_forwarding_route_with_trigger(
                 low_level_gsi,
@@ -760,7 +760,7 @@ mod tests {
     fn forwarding_activator_drops_pre_activation_pending_state() {
         with_clean_forwarding_routes(|| {
             let guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 10);
+            let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
             ACTIVATION_COUNT.store(0, Ordering::Release);
             register_ioapic_irq_forwarding_route(guest_gsi, host_irq);
             register_ioapic_irq_forwarding_activator(guest_gsi, count_activation);
@@ -773,7 +773,7 @@ mod tests {
                 forwarded_ioapic_gsi_state_for_test(guest_gsi),
                 (false, false, false)
             );
-            assert!(crate::host::irq::test_irq_is_enabled(host_irq));
+            assert!(crate::arch::x86_64::host_irq::test_irq_is_enabled(host_irq));
         });
     }
 
