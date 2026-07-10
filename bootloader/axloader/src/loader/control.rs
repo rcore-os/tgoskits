@@ -39,7 +39,15 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
     crate::logln!("serial_control_wait: waiting for AXLOADER BOOT");
     announce_ready();
     loop {
-        let line = read_boot_line()?;
+        let line = match read_boot_line() {
+            Ok(line) => line,
+            Err(ControlError::Timeout) => return Err(ControlError::Timeout),
+            Err(err) => {
+                crate::logln!("serial_control_ignored: read_error={err:?}");
+                announce_ready();
+                continue;
+            }
+        };
         match parse_boot_offer(&line) {
             Ok(offer) if valid_kernel_url(&offer.kernel_url) => return Ok(offer),
             Ok(offer) => {
@@ -47,8 +55,12 @@ pub fn fetch_boot_offer() -> Result<BootOffer, ControlError> {
                     "serial_control_ignored: invalid kernel_url {}",
                     offer.kernel_url
                 );
+                announce_ready();
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                crate::logln!("serial_control_ignored: parse_error={err:?}");
+                announce_ready();
+            }
         }
     }
 }
@@ -133,7 +145,22 @@ fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
 }
 
 fn valid_kernel_url(url: &str) -> bool {
-    url.starts_with("http://") && url.contains("/kernel.elf")
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    if rest
+        .bytes()
+        .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n' | b' ' | b'\t'))
+    {
+        return false;
+    }
+
+    let Some(path_start) = rest.find('/') else {
+        return false;
+    };
+    let authority = &rest[..path_start];
+    let path = &rest[path_start..];
+    !authority.is_empty() && path.ends_with("/kernel.elf")
 }
 
 fn json_string_field<'a>(input: &'a str, key: &str) -> Option<&'a str> {
