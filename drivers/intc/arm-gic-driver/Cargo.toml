@@ -1,6 +1,6 @@
 [package]
 name = "arm-gic-driver"
-version = "0.17.8"
+version = "0.17.9"
 edition = "2024"
 license = "MIT"
 description = "A driver for the Arm Generic Interrupt Controller."

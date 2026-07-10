@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.22...axvm-v0.5.23) - 2026-07-10
+
+### Other
+
+- *(riscv_vcpu)* decouple AxVM adapter and clean exits ([#1556](https://github.com/rcore-os/tgoskits/pull/1556))
+- *(x86_vcpu)* make x86 virtualization OS-neutral ([#1550](https://github.com/rcore-os/tgoskits/pull/1550))
+- *(loongarch_vcpu)* decouple AxVM adapter and typed registers ([#1553](https://github.com/rcore-os/tgoskits/pull/1553))
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.21...axvm-v0.5.22) - 2026-07-08
 
 ### Other

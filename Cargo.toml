@@ -134,68 +134,68 @@ arm-scmi-rs = { version = "0.1.7", path = "drivers/firmware/arm-scmi-rs" }
 arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5.16", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.3", path = "virtualization/arm_vgic" }
-ax-alloc = { version = "0.8.11", path = "os/arceos/modules/axalloc", default-features = false }
+ax-alloc = { version = "0.8.12", path = "os/arceos/modules/axalloc", default-features = false }
 ax-allocator = { version = "0.5.5", path = "memory/axallocator" }
-ax-api = { version = "0.7.3", path = "os/arceos/api/arceos_api" }
+ax-api = { version = "0.7.4", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 ax-cpu = { version = "0.8.3", path = "components/axcpu" }
 ax-cpumask = { version = "0.3.5", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
 ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
-ax-display = { version = "0.6.4", path = "os/arceos/modules/axdisplay" }
-ax-dma = { version = "0.6.11", path = "os/arceos/modules/axdma" }
-ax-driver = { version = "0.11.3", path = "drivers/ax-driver" }
+ax-display = { version = "0.6.5", path = "os/arceos/modules/axdisplay" }
+ax-dma = { version = "0.6.12", path = "os/arceos/modules/axdma" }
+ax-driver = { version = "0.12.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.1", path = "components/axerrno" }
-ax-fs-ng = { version = "0.8.3", path = "os/arceos/modules/axfs-ng" }
-ax-hal = { version = "0.5.27", path = "os/arceos/modules/axhal" }
+ax-fs-ng = { version = "0.8.4", path = "os/arceos/modules/axfs-ng" }
+ax-hal = { version = "0.5.28", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.3.0", path = "components/irq-framework" }
-ax-input = { version = "0.6.4", path = "os/arceos/modules/axinput" }
+ax-input = { version = "0.6.5", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.1", path = "components/axio" }
-ax-ipi = { version = "0.5.26", path = "os/arceos/modules/axipi" }
+ax-ipi = { version = "0.5.27", path = "os/arceos/modules/axipi" }
 ax-kernel-guard = { version = "0.3.11", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.2.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.15", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.8", path = "components/ax-lazyinit" }
-ax-libc = { version = "0.5.27", path = "os/arceos/ulib/axlibc" }
+ax-libc = { version = "0.5.28", path = "os/arceos/ulib/axlibc" }
 libc = { version = "0.2", default-features = false }
 ax-linked-list-r4l = { version = "0.5.6", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.18", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.6.9", path = "memory/memory_addr" }
 ax-memory-set = { version = "0.6.12", path = "memory/memory_set" }
 axpanic = { version = "0.1.1", path = "components/axpanic" }
-ax-mm = { version = "0.5.27", path = "os/arceos/modules/axmm" }
-ax-net = { version = "0.12.3", path = "net/ax-net" }
+ax-mm = { version = "0.5.28", path = "os/arceos/modules/axmm" }
+ax-net = { version = "0.12.4", path = "net/ax-net" }
 ax-page-table-entry = { version = "0.8.10", path = "memory/page_table_entry" }
 ax-page-table-multiarch = { version = "0.8.13", path = "memory/page_table_multiarch" }
 ax-percpu = { version = "0.4.14", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
-ax-plat = { version = "0.11.0", path = "platforms/ax-plat" }
+ax-plat = { version = "0.12.0", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3.9", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.5.28", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.5.29", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.9", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.10.3", path = "os/arceos/modules/axruntime" }
+ax-runtime = { version = "0.10.4", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.8", path = "components/axsched" }
-ax-std = { version = "0.5.27", path = "os/arceos/ulib/axstd" }
-ax-sync = { version = "0.5.27", path = "os/arceos/modules/axsync" }
-ax-task = { version = "0.6.3", path = "os/arceos/modules/axtask" }
+ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd" }
+ax-sync = { version = "0.5.28", path = "os/arceos/modules/axsync" }
+ax-task = { version = "0.6.4", path = "os/arceos/modules/axtask" }
 axtest = { version = "0.5.12", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5.12", path = "components/axtest/axtest_macros" }
 xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }
 ax-timer-list = { version = "0.3.5", path = "components/timer_list" }
 axaddrspace = { version = "0.5.16", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4.5", path = "components/axbacktrace" }
-axbuild = { version = "0.4.19", path = "scripts/axbuild" }
-axdevice = { version = "0.5.3", path = "virtualization/axdevice" }
+axbuild = { version = "0.4.20", path = "scripts/axbuild" }
+axdevice = { version = "0.5.4", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.6.1", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.5.5", path = "components/axfs-ng-vfs" }
 axhvc = { version = "0.4.10", path = "virtualization/axhvc" }
-axklib = { version = "0.7.4", path = "components/axklib" }
-axplat-dyn = { version = "0.7.11", path = "platforms/axplat-dyn", default-features = false }
+axklib = { version = "0.7.5", path = "components/axklib" }
+axplat-dyn = { version = "0.7.12", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.5.1", path = "components/axpoll" }
-axvisor = { version = "0.5.20", path = "os/axvisor" }
-axvm = { version = "0.5.22", path = "virtualization/axvm", default-features = false }
+axvisor = { version = "0.5.21", path = "os/axvisor" }
+axvm = { version = "0.5.23", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.7.0", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8.1", path = "virtualization/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }
@@ -207,16 +207,16 @@ fxmac_rs = { version = "0.6.0", path = "drivers/net/fxmac_rs" }
 impl-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/impl-weak-traits" }
-arm-gic-driver = { version = "0.17.8", path = "drivers/intc/arm-gic-driver" }
+arm-gic-driver = { version = "0.17.9", path = "drivers/intc/arm-gic-driver" }
 enumerate = { version = "0.1.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.1.11", path = "drivers/net/eth-intel" }
-loongarch_vcpu = { version = "0.5.11", path = "virtualization/loongarch_vcpu" }
+loongarch_vcpu = { version = "0.5.12", path = "virtualization/loongarch_vcpu" }
 mingo = { version = "0.8.3", path = "os/arceos/tools/raspi4/chainloader" }
 riscv-h = { version = "0.4.8", path = "virtualization/riscv-h" }
-riscv_vcpu = { version = "0.5.17", path = "virtualization/riscv_vcpu" }
+riscv_vcpu = { version = "0.5.18", path = "virtualization/riscv_vcpu" }
 riscv_vplic = { version = "0.4.20", path = "virtualization/riscv_vplic" }
-nvme-driver = { version = "0.7.1", path = "drivers/blk/nvme-driver" }
-pcie = { version = "0.6.6", path = "drivers/pci/pcie" }
+nvme-driver = { version = "0.7.2", path = "drivers/blk/nvme-driver" }
+pcie = { version = "0.6.7", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.10", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.2.2", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.3", path = "drivers/interface/rdif-base" }
@@ -227,7 +227,7 @@ rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
 rdif-eth = { version = "0.3.8", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.2.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.15.0", path = "drivers/interface/rdif-intc" }
-rdif-msi = { version = "0.1.0", path = "drivers/interface/rdif-msi" }
+rdif-msi = { version = "0.2.0", path = "drivers/interface/rdif-msi" }
 rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.1.2", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.1.0", path = "drivers/interface/rdif-pwm" }
@@ -246,8 +246,8 @@ k230-kpu = { version = "0.1.0", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.2.9", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.6", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.4.1", path = "drivers/soc/rockchip/rockchip-soc" }
-sg2002-tpu = { version = "0.3.6", path = "drivers/tpu/sg2002-tpu" }
-rdrive = { version = "0.23.5", path = "drivers/rdrive" }
+sg2002-tpu = { version = "0.3.7", path = "drivers/tpu/sg2002-tpu" }
+rdrive = { version = "0.23.6", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.5", path = "components/rsext4" }
 scope-local = { version = "0.4.2", path = "components/scope-local" }
@@ -255,7 +255,7 @@ sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "component
 sdio-host2 = { version = "0.1.4", path = "components/sdio-host2" }
 sdhci-cv1800 = { version = "0.1.1", path = "components/sdhci-cv1800" }
 aic8800 = { version = "0.2.4", path = "components/aic8800" }
-crab-usb = { version = "0.10.1", path = "drivers/usb/usb-host" }
+crab-usb = { version = "0.10.2", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.7.3", path = "drivers/usb/usb-if" }
@@ -268,27 +268,27 @@ sdmmc-protocol = { version = "0.4.1", path = "drivers/blk/sdmmc-protocol", defau
 starfive-jh7110-dwmmc = { version = "0.1.2", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.3.1", path = "os/StarryOS/axnsproxy" }
-starry-kernel = { version = "0.7.3", path = "os/StarryOS/kernel" }
+starry-kernel = { version = "0.7.4", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.14", path = "components/starry-process" }
 starry-signal = { version = "0.8.10", path = "components/starry-signal" }
 starry-vm = { version = "0.5.11", path = "components/starry-vm" }
-starryos = { version = "0.5.24", path = "os/StarryOS/starryos" }
+starryos = { version = "0.5.25", path = "os/StarryOS/starryos" }
 test-simple = { version = "0.3.4", path = "components/crate_interface/test_crates/test-simple" }
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
 test-weak-partial = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak-partial" }
 tg-xtask = { version = "0.5.11", path = "xtask" }
 axloader = { version = "0.5.11", path = "bootloader/axloader" }
 httpboot-protocol = { version = "0.1.0", default-features = false }
-x86_vcpu = { version = "0.5.18", path = "virtualization/x86_vcpu", default-features = false }
-x86_vlapic = { version = "0.4.19", path = "virtualization/x86_vlapic" }
+x86_vcpu = { version = "0.5.19", path = "virtualization/x86_vcpu", default-features = false }
+x86_vlapic = { version = "0.5.0", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.7.4", path = "memory/page-table-generic" }
-someboot = { version = "0.3.4", path = "platforms/someboot" }
+someboot = { version = "0.3.5", path = "platforms/someboot" }
 some-serial = { version = "0.7.0", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.2.2" }
 ranges-ext = { version = "0.6.4", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1.5" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
-somehal = { version = "0.7.8", path = "platforms/somehal" }
+somehal = { version = "0.8.0", path = "platforms/somehal" }
 
 # External crates
 anyhow = { version = "1.0", default-features = false }

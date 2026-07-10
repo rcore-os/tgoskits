@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.11.0...ax-plat-v0.12.0) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.10.0...ax-plat-v0.11.0) - 2026-07-08
 
 ### Fixed
