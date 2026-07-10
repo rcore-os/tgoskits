@@ -498,7 +498,7 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
         drain_vcpu_interrupts(&vm, &vcpu);
         #[cfg(target_arch = "x86_64")]
         super::devices::x86::drain_pending_ioapic_irqs(&vm, &vcpu);
-        #[cfg(target_arch = "riscv64")]
+        #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
         rearm_vcpu_timeslice();
         #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
         rearm_passthrough_poll_timer(&vm);
@@ -506,7 +506,11 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => {
                 match exit_reason {
-                    exit_reason if handle_internal_exit(&vm, &vcpu, &exit_reason) => {}
+                    exit_reason if handle_internal_exit(&vm, &vcpu, &exit_reason) => {
+                        if matches!(exit_reason, AxVCpuExitReason::PreemptionTimer) {
+                            axvisor_api::task::yield_now();
+                        }
+                    }
                     AxVCpuExitReason::Hypercall { nr, args } => {
                         debug!("Hypercall [{nr}] args {args:x?}");
                         use crate::vmm::hvc::HyperCall;
@@ -565,13 +569,10 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
                         };
 
                         #[cfg(target_arch = "x86_64")]
-                        if let Some(target_vcpu) = vm.vcpu(target_vcpu_id)
-                            && target_vcpu.state() != VCpuState::Free
-                        {
+                        if with_vcpu_task(vm_id, target_vcpu_id, |_| ()).is_some() {
                             debug!(
                                 "Ignoring duplicate x86 CPU-up request for VM[{vm_id}] \
-                                 VCpu[{target_vcpu_id}] in state {:?}",
-                                target_vcpu.state()
+                                 VCpu[{target_vcpu_id}] with an existing task"
                             );
                             continue;
                         }
@@ -689,7 +690,7 @@ fn rearm_passthrough_poll_timer(vm: &VMRef) {
     axvisor_api::time::set_oneshot_timer(deadline);
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 fn rearm_vcpu_timeslice() {
     const TIMESLICE_NANOS: u64 = 1_000_000;
     let deadline = axvisor_api::time::current_time()
