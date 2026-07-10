@@ -226,34 +226,65 @@ Run: cargo xtask starry rootfs --arch x86_64"
         fi
     fi
 
-    # ─── Blueprint provisioning guidance ────────────────────────────────────
+    # ─── Blueprint auto-download ───────────────────────────────────────────
     #
-    # The self-compile build runs offline (CARGO_NET_OFFLINE / --offline), so it
-    # needs a rootfs with a warmed dependency cache.  Both paths below produce one:
-    #   (1) maintainer tool (sudo prepare-selfhost-rootfs.sh, Debian-based)
-    #   (2) --bootstrap (no sudo, Alpine-based — provisions toolchain + warms
-    #       the offline cache with `cargo fetch`)
-    #
-    # A downloadable pre-built blueprint is planned (tgosimages release) but is
-    # not yet published.  When the release is available, uncomment and update:
-    #
-    #   SELFHOST_URL="<tgosimages release asset URL>"
-    #   SELFHOST_SHA256="<SHA-256 of the .xz compressed image>"
-    #
-    # See docs/starryos-self-compilation.md.
+    # The self-compile build requires a selfhost rootfs with a pre-warmed
+    # offline dependency cache.  Three paths to get one:
+    #   (1) Auto-download (no sudo) from rcore-os/tgosimages releases
+    #   (2) --bootstrap (no sudo, builds toolchain inside QEMU/Alpine)
+    #   (3) Maintainer tool (requires sudo, Debian-based)
+
+    SELFHOST_URL="https://github.com/seek-hope/tgosimages/releases/download/v0.0.7/selfhost-rootfs-x86_64.tar.xz"
+    SELFHOST_SHA256="c06f252a77a72a007781809dbcd44286a54dd22d1a3a653b2cf8e117990869a6"
+
+    if [ ! -f "$SELFHOST_BLUEPRINT" ]; then
+        mkdir -p "$(dirname "$SELFHOST_BLUEPRINT")"
+
+        # Download cached tarball to tmp/axbuild/rootfs/ (same directory as
+        # the Alpine base, so it's cleaned by rm -rf tmp/axbuild/rootfs).
+        TARBALL="tmp/axbuild/rootfs/rootfs-x86_64-selfhost.tar.xz"
+        if [ ! -f "$TARBALL" ] || [ "$(stat -c%s "$TARBALL" 2>/dev/null)" -lt 100000000 ]; then
+            info "Downloading pre-built selfhost rootfs (~619 MiB, no sudo)..."
+            info "  $SELFHOST_URL"
+            curl -fsSL --retry 3 --connect-timeout 30 --max-time 3600 \
+                "$SELFHOST_URL" -o "${TARBALL}.tmp" 2>/dev/null || true
+            if [ -f "${TARBALL}.tmp" ] && [ "$(stat -c%s "${TARBALL}.tmp" 2>/dev/null)" -gt 100000000 ]; then
+                info "Verifying SHA-256..."
+                actual=$(sha256sum "${TARBALL}.tmp" | cut -d' ' -f1)
+                if [ "$actual" = "$SELFHOST_SHA256" ]; then
+                    mv "${TARBALL}.tmp" "$TARBALL"
+                    info "Download verified ($(du -h "$TARBALL" | cut -f1))."
+                else
+                    rm -f "${TARBALL}.tmp"
+                    error "SHA-256 mismatch: expected $SELFHOST_SHA256, got $actual"
+                fi
+            else
+                rm -f "${TARBALL}.tmp"
+            fi
+        fi
+
+        if [ -f "$TARBALL" ] && [ "$(stat -c%s "$TARBALL")" -gt 100000000 ]; then
+            info "Extracting selfhost rootfs..."
+            tar xf "$TARBALL" -C "$(dirname "$SELFHOST_BLUEPRINT")" 2>/dev/null || true
+            if [ ! -f "$SELFHOST_BLUEPRINT" ]; then
+                error "Extraction failed — selfhost rootfs not found at $SELFHOST_BLUEPRINT"
+            fi
+            info "Selfhost rootfs ready: $SELFHOST_BLUEPRINT ($(stat -c%s "$SELFHOST_BLUEPRINT") bytes)"
+        fi
+    fi
 
     [ -f "$SELFHOST_BLUEPRINT" ] || error "Selfhost rootfs not found: $SELFHOST_BLUEPRINT
 
-No selfhost blueprint found.  The self-compile build runs offline, so it needs a
-rootfs with a warmed dependency cache.  Two ways to produce one (no sudo):
+No selfhost blueprint found.  Three ways to produce one:
 
-    # Path A: Bootstrap (no host sudo, ~15-20 min in QEMU)
+    # Path A: Auto-download (no host sudo, ~619 MiB download)
+    # (the script tries this automatically — just re-run if it failed)
+
+    # Path B: Bootstrap (no host sudo, provisions toolchain inside QEMU)
     ./scripts/self-compile.sh --arch x86_64 --bootstrap
 
-    # Path B: Maintainer tool (requires sudo, Debian-based)
+    # Path C: Maintainer tool (requires sudo, Debian-based)
     sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64 --force
-
-A downloadable pre-warmed blueprint is planned but not yet available.
 
 See docs/starryos-self-compilation.md for details."
 
