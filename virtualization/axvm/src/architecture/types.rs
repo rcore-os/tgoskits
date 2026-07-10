@@ -1,6 +1,6 @@
 //! Architecture-neutral vCPU contexts and normalized runtime actions.
 
-use axvm_types::{AccessWidth, GuestPhysAddr, PassThroughPortConfig, VMInterruptMode};
+use axvm_types::{AccessWidth, GuestPhysAddr};
 
 use crate::StopReason;
 
@@ -57,34 +57,6 @@ impl VcpuCreateContext {
             self.vcpu_id,
             self.phys_cpu_id,
             self.dtb_addr,
-            self.firmware_boot,
-        )
-    }
-}
-
-pub(crate) struct VcpuSetupContext<'a> {
-    pub(crate) interrupt_mode: VMInterruptMode,
-    pub(crate) emulates_console: bool,
-    pub(crate) passthrough_ports: &'a [PassThroughPortConfig],
-    pub(crate) memory_regions: &'a [crate::vm::VMMemoryRegion],
-    pub(crate) firmware_boot: bool,
-}
-
-impl<'a> VcpuSetupContext<'a> {
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        VMInterruptMode,
-        bool,
-        &'a [PassThroughPortConfig],
-        &'a [crate::vm::VMMemoryRegion],
-        bool,
-    ) {
-        (
-            self.interrupt_mode,
-            self.emulates_console,
-            self.passthrough_ports,
-            self.memory_regions,
             self.firmware_boot,
         )
     }

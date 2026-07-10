@@ -7,7 +7,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{NestedPagingConfig, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
-use super::{BoundVcpuExit, VcpuCreateContext, VcpuRunAction, VcpuSetupContext};
+use super::{BoundVcpuExit, VcpuCreateContext, VcpuRunAction};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -60,7 +60,8 @@ pub(crate) trait ArchOps {
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig>;
 
     fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
+        config: &crate::config::AxVMConfig,
+        memory_regions: &[crate::vm::VMMemoryRegion],
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig>;
 
     fn register_platform_irq_injector() {}

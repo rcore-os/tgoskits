@@ -24,7 +24,7 @@ use x86_vlapic::{
 
 use super::{
     ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction, VcpuSetupContext,
+    VcpuRunAction,
 };
 use crate::{
     StopReason,
@@ -81,17 +81,14 @@ impl ArchOps for X86_64Arch {
     }
 
     fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
+        vm_config: &crate::config::AxVMConfig,
+        memory_regions: &[crate::vm::VMMemoryRegion],
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let (
-            _interrupt_mode,
-            emulates_console,
-            passthrough_ports,
-            memory_regions,
-            _firmware_boot,
-        ) = ctx.into_parts();
-        let mut config = X86VCpuSetupConfig {
-            emulate_com1: emulates_console,
+        let mut setup_config = X86VCpuSetupConfig {
+            emulate_com1: vm_config
+                .emu_devices()
+                .iter()
+                .any(|device| device.emu_type == EmulatedDeviceType::Console),
             guest_memory_regions: memory_regions
                 .iter()
                 .map(|region| x86_vcpu::X86GuestMemoryRegion {
@@ -102,10 +99,10 @@ impl ArchOps for X86_64Arch {
                 .collect(),
             ..Default::default()
         };
-        for port in passthrough_ports {
-            x86_result(config.add_passthrough_port_range(port.base, port.length))?;
+        for port in vm_config.pass_through_ports() {
+            x86_result(setup_config.add_passthrough_port_range(port.base, port.length))?;
         }
-        Ok(config)
+        Ok(setup_config)
     }
 
     fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {

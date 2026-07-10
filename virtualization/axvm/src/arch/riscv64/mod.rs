@@ -16,7 +16,7 @@ use riscv_vplic::host::RiscvVplicHostIf;
 
 use super::{
     ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction, VcpuSetupContext,
+    VcpuRunAction,
 };
 use crate::{
     StopReason,
@@ -108,9 +108,9 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
+        _config: &crate::config::AxVMConfig,
+        _memory_regions: &[crate::vm::VMMemoryRegion],
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let _ = ctx.into_parts();
         Ok(())
     }
 

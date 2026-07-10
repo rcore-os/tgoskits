@@ -3,13 +3,10 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use ax_errno::AxResult;
-use axvm_types::{EmulatedDeviceType, GuestPhysAddr};
+use axvm_types::GuestPhysAddr;
 
 use super::super::{AxVCpuRef, AxVMResources, VCpu};
-use crate::{
-    arch::{ArchOps, CurrentArch, VcpuCreateContext, VcpuSetupContext},
-    config::{GuestBootPolicy, VMBootProtocol},
-};
+use crate::arch::{ArchOps, CurrentArch, VcpuCreateContext};
 
 pub(super) struct PreparedVcpus {
     vcpus: Vec<AxVCpuRef>,
@@ -23,7 +20,7 @@ impl PreparedVcpus {
     ) -> AxResult<Self> {
         let vcpu_id_pcpu_sets = resources.config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let create_state = CurrentArch::new_vcpu_create_state(&vcpu_id_pcpu_sets)?;
-        let firmware_boot = guest_uses_firmware_boot(resources);
+        let firmware_boot = resources.config.uses_firmware_boot();
 
         debug!("dtb_load_gpa: {dtb_addr:?}");
         debug!("id: {vm_id}, VCpuIdPCpuSets: {vcpu_id_pcpu_sets:#x?}");
@@ -57,17 +54,8 @@ impl PreparedVcpus {
 
     pub(super) fn setup(&self, resources: &AxVMResources) -> AxResult {
         for vcpu in &self.vcpus {
-            let setup_config = CurrentArch::build_vcpu_setup_config(VcpuSetupContext {
-                interrupt_mode: resources.config.interrupt_mode(),
-                emulates_console: resources
-                    .config
-                    .emu_devices()
-                    .iter()
-                    .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
-                passthrough_ports: resources.config.pass_through_ports(),
-                memory_regions: &resources.memory_regions,
-                firmware_boot: guest_uses_firmware_boot(resources),
-            })?;
+            let setup_config =
+                CurrentArch::build_vcpu_setup_config(&resources.config, &resources.memory_regions)?;
 
             let entry = if vcpu.id() == 0 {
                 resources.config.bsp_entry()
@@ -85,13 +73,4 @@ impl PreparedVcpus {
     pub(super) fn into_boxed_slice(self) -> Box<[AxVCpuRef]> {
         self.vcpus.into_boxed_slice()
     }
-}
-
-fn guest_uses_firmware_boot(resources: &AxVMResources) -> bool {
-    matches!(
-        resources.config.boot_policy(),
-        GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: VMBootProtocol::Uefi,
-        }
-    )
 }

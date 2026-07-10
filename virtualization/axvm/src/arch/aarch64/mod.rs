@@ -22,7 +22,7 @@ use axvm_types::{
 
 use super::{
     ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction, VcpuSetupContext,
+    VcpuRunAction,
 };
 use crate::{
     architecture::ops::target_phys_cpu_ids,
@@ -147,11 +147,10 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
+        config: &crate::config::AxVMConfig,
+        _memory_regions: &[crate::vm::VMMemoryRegion],
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let (interrupt_mode, _console, _ports, _memory_regions, _firmware_boot) =
-            ctx.into_parts();
-        let passthrough = interrupt_mode == axvm_types::VMInterruptMode::Passthrough;
+        let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
         Ok(ArmVcpuSetupConfig {
             passthrough_interrupt: passthrough,
             passthrough_timer: passthrough,

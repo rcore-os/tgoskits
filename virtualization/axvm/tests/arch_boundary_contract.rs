@@ -14,7 +14,7 @@
 
 #[test]
 fn vm_core_does_not_handle_arch_local_exits() {
-    let vm_rs = include_str!("../src/vm.rs");
+    let vm_rs = include_str!("../src/vm/mod.rs");
 
     for forbidden in [
         "CurrentArch",
@@ -25,7 +25,7 @@ fn vm_core_does_not_handle_arch_local_exits() {
     ] {
         assert!(
             !vm_rs.contains(forbidden),
-            "vm.rs must not contain architecture-local exit handling detail: {forbidden}"
+            "vm/mod.rs must not contain architecture-local exit handling detail: {forbidden}"
         );
     }
 }
@@ -117,6 +117,20 @@ fn common_domains_live_outside_architecture_directories() {
 }
 
 #[test]
+fn vm_domain_uses_a_canonical_directory_module() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    assert!(
+        source_root.join("vm/mod.rs").is_file(),
+        "the VM domain with child modules must use vm/mod.rs as its directory page"
+    );
+    assert!(
+        !source_root.join("vm.rs").exists(),
+        "vm.rs must not coexist with the vm child-module directory"
+    );
+}
+
+#[test]
 fn common_modules_do_not_include_architecture_sources() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
@@ -196,6 +210,20 @@ fn host_time_trait_only_exposes_common_clock_capabilities() {
              {architecture_specific_detail}"
         );
     }
+}
+
+#[test]
+fn vcpu_setup_context_keeps_named_capabilities() {
+    let types = include_str!("../src/architecture/types.rs");
+    let ops = include_str!("../src/architecture/ops.rs");
+    let preparation = include_str!("../src/vm/prepare/vcpus.rs");
+
+    assert!(
+        [&types, &ops, &preparation]
+            .into_iter()
+            .all(|source| !source.contains("VcpuSetupContext")),
+        "vCPU setup must pass named configuration and memory sources without a union context"
+    );
 }
 
 fn find_target_arch_cfg_outside_arch(

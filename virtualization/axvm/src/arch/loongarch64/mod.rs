@@ -17,7 +17,7 @@ use loongarch_vcpu::{
 
 use super::{
     ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction, VcpuSetupContext,
+    VcpuRunAction,
 };
 use crate::host::{HostMemory, HostTime, default_host};
 
@@ -76,17 +76,16 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
+        config: &crate::config::AxVMConfig,
+        _memory_regions: &[crate::vm::VMMemoryRegion],
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let (interrupt_mode, _console, _ports, _memory_regions, firmware_boot) =
-            ctx.into_parts();
-        let passthrough = interrupt_mode == axvm_types::VMInterruptMode::Passthrough;
+        let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
         Ok(LoongArchVCpuSetupConfig {
             passthrough_interrupt: passthrough,
             passthrough_timer: passthrough,
             boot_args: [0; 3],
             boot_stack_top: 0,
-            firmware_boot,
+            firmware_boot: config.uses_firmware_boot(),
         })
     }
 
