@@ -288,15 +288,35 @@ impl<G: BaseGuard, T: ?Sized> BaseSpinRwLock<G, T> {
     ///
     /// This is unsafe if called without a corresponding leaked read guard or if
     /// any normal read guard is still expected to release that reader count.
+    /// If the reader count is already zero, this returns without changing the
+    /// state so a stale cleanup hook cannot underflow the lock and block future
+    /// writers permanently.
     #[inline(always)]
     pub unsafe fn force_read_decrement(&self) {
-        debug_assert!(self.reader_count() > 0);
-        #[cfg(feature = "lockdep")]
-        {
-            let _lockdep_irq_guard = IrqSave::new();
-            crate::lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr());
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            let readers = state & !(WRITER | MAX_READER);
+            if readers == 0 {
+                return;
+            }
+
+            match self.state.compare_exchange_weak(
+                state,
+                state - READER,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    #[cfg(feature = "lockdep")]
+                    {
+                        let _lockdep_irq_guard = IrqSave::new();
+                        crate::lockdep::release_trace_only::<G>("spin-rwlock", self.lock_addr());
+                    }
+                    return;
+                }
+                Err(observed) => state = observed,
+            }
         }
-        self.state.fetch_sub(READER, Ordering::Release);
     }
 
     /// Force unlock exclusive write access.
@@ -469,6 +489,20 @@ mod tests {
 
         assert_eq!(lock.reader_count(), 1);
         assert!(lock.try_write().is_none());
+
+        unsafe { lock.force_read_decrement() };
+        assert_eq!(lock.reader_count(), 0);
+        assert!(lock.try_write().is_some());
+    }
+
+    #[test]
+    fn force_read_decrement_without_reader_does_not_poison_state() {
+        let lock = RwLock::new(());
+        let guard = lock.read();
+        core::mem::forget(guard);
+
+        unsafe { lock.force_read_decrement() };
+        assert_eq!(lock.reader_count(), 0);
 
         unsafe { lock.force_read_decrement() };
         assert_eq!(lock.reader_count(), 0);

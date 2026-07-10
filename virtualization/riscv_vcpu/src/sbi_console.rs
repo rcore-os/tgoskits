@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::VirtAddr;
 use sbi_spec::binary::{Physical, SbiRet};
 
-use crate::host;
+use crate::{host::RiscvHostOps, types::RiscvHostVirtAddr};
 
 pub const EID_DBCN: usize = 0x4442434e;
 pub const FID_CONSOLE_WRITE: usize = 0;
@@ -30,21 +29,21 @@ pub const RET_ERR_FAILED: usize = -1isize as _;
 pub const RET_ERR_NOT_SUPPORTED: usize = -2isize as _;
 
 /// Writes bytes to the console using SBI byte-wise API.
-pub fn console_write(buf: &[u8]) -> SbiRet {
+pub fn console_write<H: RiscvHostOps>(buf: &[u8]) -> SbiRet {
     let ptr = buf.as_ptr();
     sbi_rt::console_write(Physical::new(
         buf.len(),
-        host::virt_to_phys(VirtAddr::from_ptr_of(ptr)).as_usize(),
+        H::virt_to_phys(RiscvHostVirtAddr::from(ptr)).as_usize(),
         0,
     ))
 }
 
 /// Reads bytes from the console into a buffer using SBI byte-wise API.
-pub fn console_read(buf: &mut [u8]) -> SbiRet {
+pub fn console_read<H: RiscvHostOps>(buf: &mut [u8]) -> SbiRet {
     let ptr = buf.as_mut_ptr();
     sbi_rt::console_read(Physical::new(
         buf.len(),
-        host::virt_to_phys(VirtAddr::from_ptr_of(ptr)).as_usize(),
+        H::virt_to_phys(RiscvHostVirtAddr::from(ptr)).as_usize(),
         0,
     ))
 }
@@ -52,15 +51,15 @@ pub fn console_read(buf: &mut [u8]) -> SbiRet {
 /// Writes a full string to console using SBI byte-wise API (no log prefix).
 #[inline(always)]
 #[allow(dead_code)]
-pub fn print_str(s: &str) {
-    console_write(s.as_bytes());
+pub fn print_str<H: RiscvHostOps>(s: &str) {
+    console_write::<H>(s.as_bytes());
 }
 
 /// Writes a full string + newline to console (no log prefix).
 #[inline(always)]
 #[allow(dead_code)]
-pub fn println_str(s: &str) {
-    print_str(s);
+pub fn println_str<H: RiscvHostOps>(s: &str) {
+    print_str::<H>(s);
     sbi_rt::console_write_byte(b'\n');
 }
 

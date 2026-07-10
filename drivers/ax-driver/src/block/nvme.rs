@@ -1,13 +1,10 @@
 extern crate alloc;
 
-use alloc::{boxed::Box, format};
+use alloc::format;
 
 use log::{info, warn};
 use nvme_driver::{Config, Nvme, NvmeBlockDriver};
 use pcie::{CommandRegister, DeviceType};
-use rdif_block::{
-    BQueue, DeviceInfo, Interface, IrqHandler, IrqSourceList, QueueHandle, QueueLimits,
-};
 use rdrive::probe::{
     OnProbeError,
     pci::{FnOnProbe, ProbePci},
@@ -16,7 +13,7 @@ use rdrive::probe::{
 use crate::{
     PciIrqRequirement,
     block::{PlatformDeviceBlock, ProbePciBlock},
-    pci::PciMsixAllocation,
+    pci::PciIrqLease,
 };
 
 pub const DEVICE_NAME: &str = "nvme";
@@ -53,7 +50,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let msix_result = {
         let info = probe.info();
         let endpoint = probe.endpoint_mut();
-        PciMsixAllocation::allocate(endpoint, info, DEFAULT_IO_QUEUE_PAIRS as u16)
+        PciIrqLease::allocate(endpoint, info, DEFAULT_IO_QUEUE_PAIRS as u16)
     };
     match msix_result {
         Ok(msix) => {
@@ -95,10 +92,9 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
 fn register_msix_block(
     mut probe: ProbePci<'_>,
     bar: core::ops::Range<usize>,
-    msix: PciMsixAllocation,
+    irq_lease: PciIrqLease,
 ) -> Result<Option<usize>, OnProbeError> {
-    let irq_info = msix.binding_info();
-    let vectors = msix.vector_indices();
+    let vectors = irq_lease.vector_indices();
 
     probe.endpoint_mut().update_command(|mut cmd| {
         cmd.insert(
@@ -123,70 +119,5 @@ fn register_msix_block(
     })?;
 
     let (_, _, plat_dev) = probe.into_parts();
-    Ok(plat_dev.register_block_with_info(MsixBlockDriver::new(driver, msix), irq_info))
-}
-
-struct MsixBlockDriver<T> {
-    inner: T,
-    msix: PciMsixAllocation,
-}
-
-impl<T> MsixBlockDriver<T> {
-    const fn new(inner: T, msix: PciMsixAllocation) -> Self {
-        Self { inner, msix }
-    }
-}
-
-impl<T: Interface> rdif_block::DriverGeneric for MsixBlockDriver<T> {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn raw_any(&self) -> Option<&dyn core::any::Any> {
-        self.inner.raw_any()
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
-        self.inner.raw_any_mut()
-    }
-}
-
-impl<T: Interface> Interface for MsixBlockDriver<T> {
-    fn device_info(&self) -> DeviceInfo {
-        self.inner.device_info()
-    }
-
-    fn queue_limits(&self) -> QueueLimits {
-        self.inner.queue_limits()
-    }
-
-    fn create_queue(&mut self) -> Option<BQueue> {
-        self.inner.create_queue()
-    }
-
-    fn create_owned_queue(&mut self) -> Option<QueueHandle> {
-        self.inner.create_owned_queue()
-    }
-
-    fn enable_irq(&self) {
-        self.msix.enable();
-        self.inner.enable_irq();
-    }
-
-    fn disable_irq(&self) {
-        self.inner.disable_irq();
-        self.msix.disable();
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.inner.is_irq_enabled()
-    }
-
-    fn irq_sources(&self) -> IrqSourceList {
-        self.inner.irq_sources()
-    }
-
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        self.inner.take_irq_handler(source_id)
-    }
+    Ok(plat_dev.register_irq_bound_block(driver, irq_lease))
 }

@@ -552,11 +552,23 @@ impl TrapFrame {
     /// This function uses raw pointers and inline assembly to handle unaligned memory accesses,
     /// so it must only be called in a valid trap context with a properly initialized TrapFrame.
     pub unsafe fn emulate_unaligned(&mut self) -> Result<(), UnalignedError> {
+        unsafe { self.emulate_unaligned_at(badv::read().vaddr() as u64) }
+    }
+
+    /// Emulates an unaligned memory access using the fault address captured at trap entry.
+    ///
+    /// # Safety
+    /// This function uses raw pointers and inline assembly to handle unaligned memory accesses,
+    /// so it must only be called in a valid trap context with a properly initialized TrapFrame.
+    pub unsafe fn emulate_unaligned_at(&mut self, fault_addr: u64) -> Result<(), UnalignedError> {
         let mut value: u64 = 0;
 
-        let badv = badv::read().vaddr() as u64;
+        let badv = fault_addr;
         let badi = unsafe { core::ptr::read(self.era as *const u32) };
         let rd = (badi & 0x1f) as usize;
+        let op22 = badi >> 22;
+        let op24 = badi >> 24;
+        let op15 = badi >> 15;
 
         let regs = unsafe {
             core::mem::transmute::<&mut GeneralRegisters, &mut [usize; 32]>(&mut self.regs)
@@ -599,6 +611,17 @@ impl TrapFrame {
             value = read_fpr(rd);
             unaligned_write(badv, value, 4)?;
         } else {
+            log::warn!(
+                "loongarch64 unaligned unknown op: era={:#x}, badv={:#x}, badi={:#010x}, \
+                 op22={:#x}, op24={:#x}, op15={:#x}, rd={}",
+                self.era,
+                badv,
+                badi,
+                op22,
+                op24,
+                op15,
+                rd,
+            );
             return Err(UnalignedError {
                 addr: badv,
                 n: None,

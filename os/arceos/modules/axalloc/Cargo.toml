@@ -1,6 +1,6 @@
 [package]
 name = "ax-alloc"
-version = "0.8.7"
+version = "0.8.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

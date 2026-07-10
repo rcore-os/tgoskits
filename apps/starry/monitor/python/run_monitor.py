@@ -32,6 +32,7 @@ CARPETS = [
     ("glances-web",      "GlancesWebCarpet.py",      "GWEB_DONE"),
     ("prometheus",       "PrometheusCarpet.py",      "PROM_DONE"),
     ("glances-tui",      "GlancesTuiCarpet.py",      "GTUI_DONE"),
+    ("htop",             "HtopCarpet.py",            "HTOP_DONE"),
 ]
 
 print("=== python3 %s ===" % sys.version.split()[0])

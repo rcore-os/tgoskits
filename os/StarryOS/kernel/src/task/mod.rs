@@ -21,6 +21,7 @@ use core::{
 };
 
 use ax_errno::AxResult;
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
@@ -979,7 +980,10 @@ impl ProcessData {
     /// `TaskExt::on_enter` leaves the current task's active scope installed by
     /// holding one read count on [`Self::scope`]. A syscall running in that task
     /// must temporarily release that read count before taking the write side.
+    /// The closure runs with preemption and local IRQs disabled, so it should
+    /// only install already-prepared scope entries.
     pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+        let _guard = NoPreemptIrqSave::new();
         ActiveScope::set_global();
         unsafe { self.scope.force_read_decrement() };
         let mut scope = self.scope.write();

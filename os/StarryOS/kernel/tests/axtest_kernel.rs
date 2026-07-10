@@ -49,4 +49,9 @@ mod tests {
     fn fcntl_setpipe_size_returns_capacity() {
         ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
     }
+
+    #[test]
+    fn private_mmap_rejects_fault_at_file_eof() {
+        ax_assert!(axtest_exports::private_mmap_rejects_fault_at_file_eof());
+    }
 }

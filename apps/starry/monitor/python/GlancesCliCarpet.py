@@ -46,8 +46,8 @@ def main():
     # --- EXHAUSTIVE --help OPTION TREE: assert every option of the DELIVERED build (Alpine glances
     #     4.4.1-r1) is listed. Ground truth = the actual `glances --help` of the musl apk (captured
     #     under qemu-user-static from the delivery closure), NOT a host pip build. `--print-completion`
-    #     is deliberately NOT here: it is shtab-gated and Alpine glances 4.4.1-r1 ships without shtab,
-    #     so the option is legitimately absent -> handled as a capability probe below, never a red-line.
+    #     (shtab-gated) is included: the overlay bundles shtab, so glances offers it and it is
+    #     hard-asserted below.
     rc, help_out = run(["--help"])
     check(rc == 0, "`glances --help` exits 0")
     REQUIRED_OPTS = [
@@ -97,19 +97,15 @@ def main():
     check(all(p in out for p in ("cpu", "mem", "load", "network")),
           "--modules-list enumerates core plugins (cpu/mem/load/network)")
 
-    # --- shell completion is CAPABILITY-AWARE. glances only offers `--print-completion` when the
-    #     optional `shtab` dependency is importable; the delivery build (Alpine glances 4.4.1-r1)
-    #     ships WITHOUT shtab (it is not in the apk closure), so the option is legitimately absent.
-    #     If a build DOES offer it, assert the generator emits a script (gate on CONTENT, not rc:
-    #     shtab exits non-zero on some builds even after printing the script). If absent -> a
-    #     documented capability SKIP, never a failure (据实按交付版本, not the host build).
-    if "--print-completion" in help_out:
-        rc, out = run(["--print-completion", "bash"])
-        check(len(out) > 20 and ("shtab" in out or "_glances" in out or "complete" in out.lower()),
-              "`--print-completion bash` emits a completion script (shtab present in this build)")
-    else:
-        print("  SKIP --print-completion -- shtab not bundled in this glances build (Alpine 4.4.1-r1); "
-              "the option is not offered (capability absent by design, not a failure)")
+    # --- shell completion (HARD). glances exposes `--print-completion` via its optional `shtab`
+    #     dependency, which the overlay bundles, so the option is offered and generates a real
+    #     completion script for each supported shell. Gate on CONTENT (the completion always names
+    #     the `glances` command) rather than rc, since shtab can exit non-zero after printing.
+    check("--print-completion" in help_out, "--help offers --print-completion (shtab bundled)")
+    for shell in ("bash", "zsh", "tcsh"):
+        rc, out = run(["--print-completion", shell])
+        check(len(out) > 50 and "glances" in out,
+              "`--print-completion %s` emits a completion script naming glances" % shell)
 
     print("GCLI_RESULT ok=%d fail=%d" % (_ok, _fail))
     if _fail == 0:

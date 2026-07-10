@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.6](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.5...rdrive-v0.23.6) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.23.5](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.4...rdrive-v0.23.5) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.23.4](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.3...rdrive-v0.23.4) - 2026-07-07
+
+### Added
+
+- *(rdrive)* apply assigned clocks before FDT probe ([#1527](https://github.com/rcore-os/tgoskits/pull/1527))
+- *(starfive-jh7110-dwmmc)* add IRQ-driven host ([#1524](https://github.com/rcore-os/tgoskits/pull/1524))
+- *(rdrive)* add FDT power-domain probing ([#1515](https://github.com/rcore-os/tgoskits/pull/1515))
+
+### Fixed
+
+- *(rdrive)* use preempt-safe registry locks ([#1510](https://github.com/rcore-os/tgoskits/pull/1510))
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
 ## [0.23.3](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.2...rdrive-v0.23.3) - 2026-07-02
 
 ### Added

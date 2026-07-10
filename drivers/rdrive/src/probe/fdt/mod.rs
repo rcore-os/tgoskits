@@ -16,7 +16,7 @@ use crate::{
     Descriptor, Device, DeviceId, PlatformDevice,
     error::DriverError,
     probe::OnProbeError,
-    register::{DriverRegister, ProbeKind},
+    register::{DriverRegister, ProbeKind, ProbePriority},
 };
 
 static SYSTEM: Once<System> = Once::new();
@@ -40,10 +40,13 @@ pub fn probe_register(
     sys.probe_register(register)
 }
 
-pub(crate) fn try_probe_register(
-    register: &DriverRegister,
+pub(crate) fn try_probe_registers_by_fdt_order(
+    registers: &[DriverRegister],
+    priority: ProbePriority,
 ) -> Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>> {
-    SYSTEM.get().map(|system| system.probe_register(register))
+    SYSTEM
+        .get()
+        .map(|system| system.probe_registers_by_fdt_order(registers, priority))
 }
 
 pub(crate) fn system() -> &'static System {
@@ -1202,11 +1205,79 @@ impl System {
         out
     }
 
+    fn get_fdt_match_nodes_by_fdt_order<'a>(
+        &'a self,
+        registers: &[DriverRegister],
+        priority: ProbePriority,
+    ) -> Vec<ProbeFdtInfo<'a>> {
+        let mut out = Vec::new();
+        for node in self.ordered_probe_nodes(priority) {
+            if matches!(node.as_node().status(), Some(Status::Disabled)) {
+                continue;
+            }
+
+            if self.populated_nodes.lock().contains(&node.id()) {
+                continue;
+            }
+
+            let node_compatibles = node.as_node().compatibles().collect::<Vec<_>>();
+            for register in registers {
+                for probe in register.probe_kinds {
+                    let &ProbeKind::Fdt {
+                        compatibles,
+                        on_probe,
+                    } = probe
+                    else {
+                        continue;
+                    };
+
+                    if node_compatibles
+                        .iter()
+                        .any(|compatible| compatibles.contains(compatible))
+                    {
+                        out.push(ProbeFdtInfo {
+                            name: register.name,
+                            node,
+                            on_probe,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn ordered_probe_nodes(&self, priority: ProbePriority) -> Vec<NodeType<'_>> {
+        let nodes = self.fdt.all_nodes().collect::<Vec<_>>();
+        if priority == ProbePriority::INTC {
+            parent_first_interrupt_controllers(nodes)
+        } else {
+            nodes
+        }
+    }
+
     fn probe_register(
         &self,
         register: &DriverRegister,
     ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let node_ls = self.get_fdt_match_nodes(register);
+        self.probe_fdt_matches(node_ls)
+    }
+
+    fn probe_registers_by_fdt_order(
+        &self,
+        registers: &[DriverRegister],
+        priority: ProbePriority,
+    ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
+        let node_ls = self.get_fdt_match_nodes_by_fdt_order(registers, priority);
+        self.probe_fdt_matches(node_ls)
+    }
+
+    fn probe_fdt_matches(
+        &self,
+        node_ls: Vec<ProbeFdtInfo<'_>>,
+    ) -> Result<Vec<Result<(), OnProbeError>>, ProbeError> {
         let mut out = Vec::new();
         for node_info in node_ls {
             let node_id = node_info.node.id();
@@ -1253,6 +1324,64 @@ impl System {
         }
 
         Ok(out)
+    }
+}
+
+fn parent_first_interrupt_controllers(nodes: Vec<NodeType<'_>>) -> Vec<NodeType<'_>> {
+    let mut pending = nodes;
+    let known_controllers = pending
+        .iter()
+        .filter(|node| is_interrupt_controller(node))
+        .filter_map(|node| node.as_node().phandle())
+        .collect::<BTreeSet<_>>();
+    let mut ready_controllers = BTreeSet::new();
+    let mut ordered = Vec::new();
+
+    while !pending.is_empty() {
+        let mut progressed = false;
+        let mut index = 0;
+        while index < pending.len() {
+            let node = &pending[index];
+            if !is_interrupt_controller(node)
+                || interrupt_parent_ready(node, &known_controllers, &ready_controllers)
+            {
+                let node = pending.remove(index);
+                if let Some(phandle) = node.as_node().phandle()
+                    && is_interrupt_controller(&node)
+                {
+                    ready_controllers.insert(phandle);
+                }
+                ordered.push(node);
+                progressed = true;
+            } else {
+                index += 1;
+            }
+        }
+
+        if !progressed {
+            ordered.append(&mut pending);
+        }
+    }
+
+    ordered
+}
+
+fn is_interrupt_controller(node: &NodeType<'_>) -> bool {
+    matches!(node, NodeType::InterruptController(_))
+}
+
+fn interrupt_parent_ready(
+    node: &NodeType<'_>,
+    known_controllers: &BTreeSet<Phandle>,
+    ready_controllers: &BTreeSet<Phandle>,
+) -> bool {
+    let node_phandle = node.as_node().phandle();
+    let parent = node
+        .interrupt_parent()
+        .filter(|parent| Some(*parent) != node_phandle);
+    match parent {
+        Some(parent) if known_controllers.contains(&parent) => ready_controllers.contains(&parent),
+        _ => true,
     }
 }
 

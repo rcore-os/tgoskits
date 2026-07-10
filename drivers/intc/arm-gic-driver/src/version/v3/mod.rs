@@ -257,6 +257,12 @@ pub struct Gic {
 
 unsafe impl Send for Gic {}
 
+#[derive(Clone, Copy)]
+pub struct CpuInterfaceInit {
+    gicr: VirtAddr,
+    security_state: SecurityState,
+}
+
 impl Gic {
     /// Create a new GICv3 driver instance.
     ///
@@ -302,6 +308,14 @@ impl Gic {
     pub fn gicd_addr(&self) -> VirtAddr {
         self.gicd
     }
+
+    pub fn cpu_interface_init(&self) -> CpuInterfaceInit {
+        CpuInterfaceInit {
+            gicr: self.gicr,
+            security_state: self.security_state,
+        }
+    }
+
     /// Initialize the GICv3 Distributor according to ARM GIC Architecture Specification v3/v4
     ///
     /// This function implements the initialization sequence described in section 12.9.4
@@ -465,7 +479,7 @@ impl Gic {
     }
 
     fn rd_slice(&self) -> RDv3Slice {
-        RDv3Slice::new(unsafe { NonNull::new_unchecked(self.gicr.as_ptr()) })
+        rd_slice_from(self.gicr)
     }
 
     fn current_rd_ref(&self) -> &RedistributorV3 {
@@ -473,18 +487,7 @@ impl Gic {
     }
 
     fn current_rd(&self) -> NonNull<RedistributorV3> {
-        let want = (MPIDR_EL1.get() & 0xFFFFFF) as u32;
-
-        for rd in self.rd_slice().iter() {
-            let affi = unsafe { rd.as_ref() }
-                .lpi_ref()
-                .TYPER
-                .read(gicr::TYPER::Affinity) as u32;
-            if affi == want {
-                return rd;
-            }
-        }
-        panic!("No current redistributor")
+        current_rd_from(self.gicr)
     }
 
     /// Get a CPU interface for the current CPU.
@@ -507,7 +510,7 @@ impl Gic {
     /// ```
     pub fn cpu_interface(&self) -> CpuInterface {
         CpuInterface {
-            rd: self.current_rd().as_ptr(),
+            rd: current_rd_from(self.gicr).as_ptr(),
             security_state: self.security_state,
         }
     }
@@ -878,6 +881,34 @@ impl Gic {
     pub fn max_cpu_num(&self) -> usize {
         self.gicd().max_cpu_num() as _
     }
+}
+
+impl CpuInterfaceInit {
+    pub fn cpu_interface(&self) -> CpuInterface {
+        CpuInterface {
+            rd: current_rd_from(self.gicr).as_ptr(),
+            security_state: self.security_state,
+        }
+    }
+}
+
+fn rd_slice_from(gicr: VirtAddr) -> RDv3Slice {
+    RDv3Slice::new(unsafe { NonNull::new_unchecked(gicr.as_ptr()) })
+}
+
+fn current_rd_from(gicr: VirtAddr) -> NonNull<RedistributorV3> {
+    let want = (MPIDR_EL1.get() & 0xFFFFFF) as u32;
+
+    for rd in rd_slice_from(gicr).iter() {
+        let affi = unsafe { rd.as_ref() }
+            .lpi_ref()
+            .TYPER
+            .read(gicr::TYPER::Affinity) as u32;
+        if affi == want {
+            return rd;
+        }
+    }
+    panic!("No current redistributor")
 }
 
 /// Every CPU interface has its own GICC registers

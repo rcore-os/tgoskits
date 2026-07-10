@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.0...rockchip-soc-v0.4.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.5...rockchip-soc-v0.4.0) - 2026-07-07
+
+### Added
+
+- *(rdrive)* apply assigned clocks before FDT probe ([#1527](https://github.com/rcore-os/tgoskits/pull/1527))
+- *(starry-kernel)* add RK3588 PWM sysfs support ([#1468](https://github.com/rcore-os/tgoskits/pull/1468))
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.3.4...rockchip-soc-v0.3.5) - 2026-07-02
 
 ### Added

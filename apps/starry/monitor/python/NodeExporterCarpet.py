@@ -17,21 +17,20 @@
 #                own surface -- this is the guard that keeps every asserted flag a REAL one).
 #   LIVE      -- start the exporter headless on loopback with a curated collector set whose data comes
 #                from the /proc files StarryOS renders: cpu/stat (/proc/stat), meminfo (/proc/meminfo),
-#                loadavg (/proc/loadavg), netdev (/proc/net/dev), diskstats (/proc/diskstats),
-#                filesystem (/proc/mounts + statfs) plus the pure-syscall collectors uname/time. GET the
-#                metrics path and assert the documented node_* families are exposed AND carry real,
-#                non-zero values: node_cpu_seconds_total, node_memory_*, node_load1,
-#                node_network_receive_bytes_total{device="lo"} (loopback scrape traffic),
-#                node_disk_reads_completed_total{device="vda"} (root virtio-blk), and
-#                node_filesystem_size_bytes{mountpoint="/"} (ext4 root via statfs). A custom
-#                --web.telemetry-path is honored (moved off /metrics) and the landing page is served;
-#                then stop it.
+#                loadavg (/proc/loadavg), vmstat (/proc/vmstat), netdev (/proc/net/dev),
+#                diskstats (/proc/diskstats), filesystem (/proc/mounts + statfs) plus the pure-syscall
+#                collectors uname/time. GET the metrics path and assert the documented node_* families
+#                are exposed AND carry real, non-zero values: node_cpu_seconds_total, node_memory_*,
+#                node_load1, node_vmstat_pgfault (page-fault counter), node_network_receive_bytes_total
+#                {device="lo"} (loopback scrape traffic), node_disk_reads_completed_total{device="vda"}
+#                (root virtio-blk), and node_filesystem_size_bytes{mountpoint="/"} (ext4 root via
+#                statfs). A custom --web.telemetry-path is honored (moved off /metrics) and the landing
+#                page is served; then stop it.
 #
 # The vast majority of collectors (nvme/zfs/systemd/perf/ntp/supervisord/...) drive hardware, daemons
 # or subsystems that do not exist on-target, so their flag surface is asserted from `--help` only --
 # the help tree is the arch/kernel-independent ground truth. The live run enables exactly the /proc-
-# and syscall-backed collectors that StarryOS genuinely serves; vmstat is intentionally left out
-# because StarryOS renders no /proc/vmstat, so that collector would have no data to export.
+# and syscall-backed collectors that StarryOS genuinely serves.
 #
 # Exercises the Go runtime (M:N scheduler, GC, futex, getrandom), the loopback net stack
 # (bind/listen/accept), block-device I/O accounting and the procfs reads on the StarryOS image. Emits
@@ -140,12 +139,12 @@ CONFIG_BOOL = [
 ]
 
 # node_* metric families that the LIVE curated collector set exposes on-target. The first group is
-# backed by /proc/stat, /proc/meminfo, /proc/loadavg or pure syscalls; the second group is backed by
-# the /proc/net/dev, /proc/diskstats and /proc/mounts (+statfs) sources.
+# backed by /proc/stat, /proc/meminfo, /proc/loadavg, /proc/vmstat or pure syscalls; the second group
+# is backed by the /proc/net/dev, /proc/diskstats and /proc/mounts (+statfs) sources.
 LIVE_NODE_METRICS = [
     "node_cpu_seconds_total", "node_memory_MemTotal_bytes", "node_memory_MemFree_bytes",
     "node_load1", "node_boot_time_seconds", "node_context_switches_total", "node_intr_total",
-    "node_time_seconds", "node_uname_info", "node_scrape_collector_success",
+    "node_time_seconds", "node_uname_info", "node_scrape_collector_success", "node_vmstat_pgfault",
     "node_network_receive_bytes_total", "node_network_transmit_bytes_total",
     "node_network_receive_packets_total", "node_disk_reads_completed_total",
     "node_disk_read_bytes_total", "node_disk_writes_completed_total",
@@ -253,9 +252,10 @@ def main():
 
     # --- LIVE: headless exporter with /proc- and syscall-backed collectors only ---
     # These are the collectors whose data StarryOS genuinely provides: cpu/stat/meminfo/loadavg read
-    # /proc files the kernel renders; netdev reads /proc/net/dev (procfs mode -- the netlink backend
-    # is disabled because StarryOS's rtnetlink does not carry per-link rtnl_link_stats64); diskstats
-    # reads /proc/diskstats; filesystem reads /proc/self/mountinfo and statfs()es each mount;
+    # /proc files the kernel renders; vmstat reads /proc/vmstat (its default field filter matches
+    # pgfault, so node_vmstat_pgfault surfaces); netdev reads /proc/net/dev (procfs mode -- the netlink
+    # backend is disabled because StarryOS's rtnetlink does not carry per-link rtnl_link_stats64);
+    # diskstats reads /proc/diskstats; filesystem reads /proc/self/mountinfo and statfs()es each mount;
     # uname/time are pure syscalls. Custom telemetry path + accepted log/path/limit flags (server
     # coming up == those flags accepted).
     log = open("/tmp/node_exporter_carpet.log", "w")
@@ -265,7 +265,7 @@ def main():
          "--web.telemetry-path=%s" % TELEMETRY,
          "--collector.disable-defaults",
          "--collector.cpu", "--collector.stat", "--collector.meminfo",
-         "--collector.loadavg", "--collector.uname", "--collector.time",
+         "--collector.loadavg", "--collector.vmstat", "--collector.uname", "--collector.time",
          "--collector.netdev", "--no-collector.netdev.netlink",
          "--collector.diskstats", "--collector.filesystem",
          "--log.level=info", "--log.format=logfmt",
@@ -318,6 +318,10 @@ def main():
         vda_rbytes = metric_value(body, "node_disk_read_bytes_total", 'device="vda"')
         check(vda_rbytes is not None and vda_rbytes > 0,
               'node_disk_read_bytes_total{device="vda"} > 0 from /proc/diskstats (got %r)' % vda_rbytes)
+        # vmstat: /proc/vmstat's pgfault counter -- demand paging has serviced faults by scrape time.
+        pgfault = metric_value(body, "node_vmstat_pgfault")
+        check(pgfault is not None and pgfault > 0,
+              "node_vmstat_pgfault > 0 from /proc/vmstat (got %r)" % pgfault)
         # filesystem: statfs() on the ext4 root returns a real total size.
         root_size = metric_value(body, "node_filesystem_size_bytes", 'mountpoint="/"')
         check(root_size is not None and root_size > 0,

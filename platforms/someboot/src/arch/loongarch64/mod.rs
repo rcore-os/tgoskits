@@ -53,6 +53,18 @@ impl ArchTrait for Arch {
         (paddr + addrspace::IO_BASE) as *mut u8
     }
 
+    fn ioremap_device(addr: usize, size: usize) -> Option<*mut u8> {
+        if size == 0 {
+            return None;
+        }
+        let paddr = addrspace::to_phys(addr);
+        let end = paddr.checked_add(size)?;
+        if end > (1usize << addrspace::PABITS) {
+            return None;
+        }
+        Some(Self::_io(paddr))
+    }
+
     fn post_allocator() {}
 
     fn init_boot_tls() {
@@ -248,6 +260,14 @@ impl ArchTrait for Arch {
         } else {
             addrspace::to_phys(vaddr)
         }
+    }
+
+    fn canonicalize_paddr(addr: usize) -> usize {
+        addrspace::to_phys(addr)
+    }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        false
     }
 
     #[cfg(uspace)]

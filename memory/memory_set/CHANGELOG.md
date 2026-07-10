@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.6.11...ax-memory-set-v0.6.12) - 2026-07-07
+
+### Fixed
+
+- *(starry)* tighten LTP-derived syscall compatibility guards ([#1488](https://github.com/rcore-os/tgoskits/pull/1488))
+
 ## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.6.10...ax-memory-set-v0.6.11) - 2026-07-02
 
 ### Other

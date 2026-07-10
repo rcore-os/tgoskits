@@ -175,8 +175,15 @@ impl PackagePathIndex {
                     .unwrap_or(RootManifestChange::Hard)
                 {
                     RootManifestChange::Hard => return Ok(ChangedPackages::Full { path }),
-                    RootManifestChange::LocalWorkspaceDependencies(dependencies) => {
-                        packages.extend(dependencies);
+                    RootManifestChange::LocalWorkspace(change) => {
+                        packages.extend(change.dependencies);
+                        packages.extend(
+                            change
+                                .members
+                                .into_iter()
+                                .filter_map(|member| self.package_for_path(&member))
+                                .map(ToString::to_string),
+                        );
                     }
                 }
                 continue;

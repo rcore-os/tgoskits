@@ -410,6 +410,186 @@ fn render_diskstats() -> String {
     )
 }
 
+fn render_proc_bus_usb_devices() -> String {
+    let mut snapshots = crate::pseudofs::usbfs::usb_device_snapshots();
+    snapshots.sort_by_key(|snapshot| (snapshot.bus_num, snapshot.device_num));
+    render_proc_bus_usb_devices_from_snapshots(&snapshots)
+}
+
+fn render_proc_bus_usb_devices_from_snapshots(
+    snapshots: &[crate::pseudofs::usbfs::UsbDeviceSnapshotInfo],
+) -> String {
+    let mut out = String::new();
+    for snapshot in snapshots {
+        render_proc_bus_usb_device(snapshot, &mut out);
+    }
+    out
+}
+
+fn render_proc_bus_usb_device(
+    snapshot: &crate::pseudofs::usbfs::UsbDeviceSnapshotInfo,
+    out: &mut String,
+) {
+    let blob = &snapshot.descriptor_blob;
+    if blob.len() < 18 || descriptor_u8(blob, 0) < 18 || descriptor_u8(blob, 1) != 0x01 {
+        return;
+    }
+
+    let device_class = descriptor_u8(blob, 4);
+    let device_subclass = descriptor_u8(blob, 5);
+    let device_protocol = descriptor_u8(blob, 6);
+    let max_packet_size = descriptor_u8(blob, 7);
+    let vendor_id = descriptor_u16(blob, 8);
+    let product_id = descriptor_u16(blob, 10);
+    let device_version = descriptor_u16(blob, 12);
+    let config_count = descriptor_u8(blob, 17);
+    let max_child_count = if device_class == 0x09 { 1 } else { 0 };
+
+    let _ = writeln!(
+        out,
+        "T:  Bus={:02} Lev=00 Prnt=00 Port=00 Cnt=00 Dev#={:3} Spd=480  MxCh={:2}",
+        snapshot.bus_num, snapshot.device_num, max_child_count
+    );
+    let _ = writeln!(
+        out,
+        "D:  Ver={} Cls={:02x}({:<5}) Sub={:02x} Prot={:02x} MxPS={:2} #Cfgs={:3}",
+        usb_bcd(descriptor_u16(blob, 2)),
+        device_class,
+        usb_class_label(device_class),
+        device_subclass,
+        device_protocol,
+        max_packet_size,
+        config_count
+    );
+    let _ = writeln!(
+        out,
+        "P:  Vendor={:04x} ProdID={:04x} Rev={}",
+        vendor_id,
+        product_id,
+        usb_bcd(device_version)
+    );
+    let _ = writeln!(out);
+
+    let mut offset = 18usize;
+    while offset + 2 <= blob.len() {
+        let len = descriptor_u8(blob, offset) as usize;
+        let ty = descriptor_u8(blob, offset + 1);
+        if len == 0 {
+            break;
+        }
+        if ty != 0x02 || len < 9 || offset + len > blob.len() {
+            offset = offset.saturating_add(len);
+            continue;
+        }
+
+        let total = descriptor_u16(blob, offset + 2) as usize;
+        let config_end = offset.saturating_add(total).min(blob.len());
+        let active = descriptor_u8(blob, offset + 5);
+        let _ = writeln!(
+            out,
+            "C:* #Ifs={:2} Cfg#={:2} Atr={:02x} MxPwr={:3}mA",
+            descriptor_u8(blob, offset + 4),
+            active,
+            descriptor_u8(blob, offset + 7),
+            u16::from(descriptor_u8(blob, offset + 8)) * 2
+        );
+
+        let mut desc = offset + len;
+        while desc + 2 <= config_end {
+            let desc_len = descriptor_u8(blob, desc) as usize;
+            let desc_ty = descriptor_u8(blob, desc + 1);
+            if desc_len == 0 || desc + desc_len > config_end {
+                break;
+            }
+            match desc_ty {
+                0x04 if desc_len >= 9 => {
+                    render_proc_bus_usb_interface(&blob[desc..desc + desc_len], out);
+                }
+                0x05 if desc_len >= 7 => {
+                    render_proc_bus_usb_endpoint(&blob[desc..desc + desc_len], out);
+                }
+                _ => {}
+            }
+            desc += desc_len;
+        }
+
+        let _ = writeln!(out);
+        offset = config_end.max(offset + len);
+    }
+}
+
+fn render_proc_bus_usb_interface(desc: &[u8], out: &mut String) {
+    let class = descriptor_u8(desc, 5);
+    let _ = writeln!(
+        out,
+        "I:* If#={:2} Alt={:2} #EPs={:2} Cls={:02x}({:<5}) Sub={:02x} Prot={:02x} Driver={}",
+        descriptor_u8(desc, 2),
+        descriptor_u8(desc, 3),
+        descriptor_u8(desc, 4),
+        class,
+        usb_class_label(class),
+        descriptor_u8(desc, 6),
+        descriptor_u8(desc, 7),
+        if class == 0x09 { "hub" } else { "(none)" }
+    );
+}
+
+fn render_proc_bus_usb_endpoint(desc: &[u8], out: &mut String) {
+    let address = descriptor_u8(desc, 2);
+    let attributes = descriptor_u8(desc, 3);
+    let max_packet_size = descriptor_u16(desc, 4) & 0x07ff;
+    let _ = writeln!(
+        out,
+        "E:  Ad={:02x}({}) Atr={:02x}({:<5}) MxPS={:4} Ivl={}ms",
+        address,
+        if address & 0x80 != 0 { "I" } else { "O" },
+        attributes,
+        usb_endpoint_type_label(attributes & 0x03),
+        max_packet_size,
+        descriptor_u8(desc, 6)
+    );
+}
+
+fn descriptor_u8(blob: &[u8], offset: usize) -> u8 {
+    blob.get(offset).copied().unwrap_or_default()
+}
+
+fn descriptor_u16(blob: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([descriptor_u8(blob, offset), descriptor_u8(blob, offset + 1)])
+}
+
+fn usb_bcd(value: u16) -> String {
+    format!(
+        "{:2x}.{:x}{:x}",
+        (value >> 8) & 0xff,
+        (value >> 4) & 0x0f,
+        value & 0x0f
+    )
+}
+
+fn usb_class_label(class: u8) -> &'static str {
+    match class {
+        0x00 => ">ifc",
+        0x03 => "HID",
+        0x08 => "stor.",
+        0x09 => "hub",
+        0x0e => "video",
+        0xe0 => "wlcon",
+        0xef => "misc",
+        0xff => "vend.",
+        _ => "unk.",
+    }
+}
+
+fn usb_endpoint_type_label(ty: u8) -> &'static str {
+    match ty {
+        0 => "Ctrl",
+        1 => "Isoc",
+        2 => "Bulk",
+        3 => "Int.",
+        _ => "Unk.",
+    }
+}
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -1656,6 +1836,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
 
+    root.add("bus", {
+        let mut bus = DirMapping::new();
+        bus.add("usb", {
+            let mut usb = DirMapping::new();
+            usb.add(
+                "devices",
+                SimpleFile::new_regular(fs.clone(), || Ok(render_proc_bus_usb_devices())),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(usb))
+        });
+        SimpleDir::new_maker(fs.clone(), Arc::new(bus))
+    });
+
     // /proc/device-tree/{compatible,model} — minimal Open Firmware view from the
     // live FDT, so SoC-detecting userspace (e.g. librockchip_mpp's read_soc_name)
     // can identify the chip. Built only for the JPU/MPP path (`jpeg` feature) and
@@ -1766,9 +1959,10 @@ mod tests {
 
     use super::{
         TaskStatusBase, TaskStatusFields, collect_cpu_presence, format_cpu_presence_hex,
-        format_cpu_presence_list, render_task_status_fields,
+        format_cpu_presence_list, render_proc_bus_usb_devices_from_snapshots,
+        render_task_status_fields,
     };
-    use crate::{mm::ProcessMemStats, task::Cred};
+    use crate::{mm::ProcessMemStats, pseudofs::usbfs::UsbDeviceSnapshotInfo, task::Cred};
 
     fn sample_mem_stats() -> ProcessMemStats {
         ProcessMemStats {
@@ -1806,6 +2000,30 @@ mod tests {
             cpus_allowed_list: &cpus_allowed_list,
             mem: &sample_mem_stats(),
         })
+    }
+
+    fn high_speed_root_hub_snapshot() -> UsbDeviceSnapshotInfo {
+        UsbDeviceSnapshotInfo {
+            bus_num: 1,
+            device_num: 1,
+            descriptor_blob: alloc::vec![
+                18, 0x01, 0x00, 0x02, 0x09, 0x00, 0x01, 64, 0x6b, 0x1d, 0x02, 0x00, 0x00, 0x06, 0,
+                0, 0, 1, 9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0, 9, 0x04, 0, 0, 1, 0x09, 0, 0, 0, 7,
+                0x05, 0x81, 0x03, 4, 0, 12,
+            ],
+        }
+    }
+
+    #[test]
+    fn proc_bus_usb_devices_renders_busybox_lsusb_id_lines() {
+        let text = render_proc_bus_usb_devices_from_snapshots(&[high_speed_root_hub_snapshot()]);
+
+        assert!(text.contains("T:  Bus=01"));
+        assert!(text.contains("Dev#=  1"));
+        assert!(text.contains("P:  Vendor=1d6b ProdID=0002 Rev= 6.00"));
+        assert!(text.contains("I:* If#= 0"));
+        assert!(text.contains("Driver=hub"));
+        assert!(text.contains("E:  Ad=81(I)"));
     }
 
     #[test]

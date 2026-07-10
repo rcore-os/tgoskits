@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.20...axvisor-v0.5.21) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, axplat-dyn, ax-hal, axvm, axbuild, ax-std
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.19...axvisor-v0.5.20) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axplat-dyn, axplat-dyn, ax-hal, axbuild, ax-driver, ax-std, axvm
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.18...axvisor-v0.5.19) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axbuild, ax-driver, axplat-dyn, axplat-dyn, ax-hal, ax-std, axvm
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.17...axvisor-v0.5.18) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, axplat-dyn, ax-hal, ax-std, axvm
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.16...axvisor-v0.5.17) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.15...axvisor-v0.5.16) - 2026-07-02
 
 ### Added

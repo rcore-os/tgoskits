@@ -230,6 +230,26 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 break 'exc;
                             }
                         }
+                        if matches!(kind, ExceptionKind::Misaligned) {
+                            #[cfg(target_arch = "loongarch64")]
+                            match unsafe { uctx.emulate_unaligned_at(exc_info.badv as u64) } {
+                                Ok(()) => break 'exc,
+                                Err(err) => {
+                                    let exe_path = thr.proc_data.exe_path.read().clone();
+                                    warn!(
+                                        "loongarch64 unaligned emulation failed: task={}, pid={}, \
+                                         exe='{}', ip={:#x}, fault_addr={:#x}, err={}, info={:?}",
+                                        curr.id_name(),
+                                        thr.proc_data.proc.pid(),
+                                        exe_path,
+                                        uctx.ip(),
+                                        exc_info.fault_addr().unwrap_or(0),
+                                        err,
+                                        exc_info,
+                                    );
+                                }
+                            }
+                        }
                         let syndrome = exc_info.syndrome();
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
@@ -243,13 +263,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             exc_info
                         );
                         let sig_info = match kind {
-                            ExceptionKind::Misaligned => {
-                                #[cfg(target_arch = "loongarch64")]
-                                if unsafe { uctx.emulate_unaligned() }.is_ok() {
-                                    break 'exc;
-                                }
-                                SignalInfo::new_kernel(Signo::SIGBUS)
-                            }
+                            ExceptionKind::Misaligned => SignalInfo::new_kernel(Signo::SIGBUS),
                             ExceptionKind::Breakpoint => SignalInfo::new_kernel(Signo::SIGTRAP),
                             ExceptionKind::IllegalInstruction => {
                                 // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature

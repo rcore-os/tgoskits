@@ -48,11 +48,30 @@ pub(crate) fn toolchain_rustflags_for_features(
 
 pub(crate) fn append_encoded_rustflags(cargo: &mut Cargo, flags: &[&str]) {
     const KEY: &str = "CARGO_ENCODED_RUSTFLAGS";
+    let encoded = flags.join("\x1f");
+    if encoded.is_empty() {
+        return;
+    }
     let value = cargo.env.entry(KEY.to_string()).or_default();
+    if encoded_rustflags_contains_sequence(value, &encoded) {
+        return;
+    }
     if !value.is_empty() {
         value.push('\x1f');
     }
-    value.push_str(&flags.join("\x1f"));
+    value.push_str(&encoded);
+}
+
+fn encoded_rustflags_contains_sequence(value: &str, encoded: &str) -> bool {
+    let needle: Vec<_> = encoded.split('\x1f').collect();
+    if needle.is_empty() {
+        return true;
+    }
+    value
+        .split('\x1f')
+        .collect::<Vec<_>>()
+        .windows(needle.len())
+        .any(|window| window == needle.as_slice())
 }
 
 /// Whether the build config enables target backtrace support (frame pointers / unwind).
@@ -353,21 +372,21 @@ impl BuildInfo {
 
     pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
         let mut args = vec!["-Z".to_string(), "build-std=core,alloc".to_string()];
+        let target_key = Path::new(target)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(target);
 
-        if !extra_rustflags.is_empty() {
-            let target_key = Path::new(target)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or(target);
+        let mut rustflags = extra_rustflags.to_vec();
+        if target_key.starts_with("loongarch64-") {
+            rustflags.push("-Ctarget-feature=-ual".to_string());
+        }
+
+        if !rustflags.is_empty() {
             args.push("--config".to_string());
-            let rustflags_toml = toml::Value::Array(
-                extra_rustflags
-                    .iter()
-                    .cloned()
-                    .map(toml::Value::String)
-                    .collect(),
-            )
-            .to_string();
+            let rustflags_toml =
+                toml::Value::Array(rustflags.into_iter().map(toml::Value::String).collect())
+                    .to_string();
             args.push(format!("target.{target_key}.rustflags={rustflags_toml}"));
         }
         args

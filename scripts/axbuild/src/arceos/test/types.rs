@@ -42,6 +42,7 @@ pub(crate) struct ArceosBoardTestGroup {
     pub(crate) target: String,
     pub(crate) build_config_path: PathBuf,
     pub(crate) board_test_config_path: PathBuf,
+    pub(crate) is_axtest: bool,
 }
 
 impl board_test::BoardTestGroupInfo for ArceosBoardTestGroup {
