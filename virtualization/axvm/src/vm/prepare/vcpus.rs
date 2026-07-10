@@ -65,6 +65,7 @@ impl PreparedVcpus {
                     .iter()
                     .any(|dev| dev.emu_type == EmulatedDeviceType::Console),
                 passthrough_ports: resources.config.pass_through_ports(),
+                memory_regions: &resources.memory_regions,
                 firmware_boot: guest_uses_firmware_boot(resources),
             })?;
 

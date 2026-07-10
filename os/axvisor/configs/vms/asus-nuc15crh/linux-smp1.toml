@@ -1,0 +1,78 @@
+# Vm base info configs
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "linux-asus-nuc15crh"
+# Virtualization type.
+vm_type = 1
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu sets.
+phys_cpu_sets = [1]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+# Linux direct boot uses the Linux-specific boot stub at this GPA.
+entry_point = 0x8000
+# The location of image: "memory" | "fs".
+# The ASUS NUC15CRH HTTP Boot flow embeds the Linux guest images into AxVisor.
+image_location = "memory"
+# The file path of the kernel image.
+kernel_path = "../../../../../tmp/qemu-x86_64/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x20_0000
+# Whether to enable BIOS boot flow.
+enable_bios = false
+# The file path of the initramfs image.
+ramdisk_path = "../../../../../tmp/initramfs-x86_64-busybox.cpio"
+# The load address of the initramfs image.
+ramdisk_load_addr = 0x0600_0000
+# Linux kernel command line.
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 ignore_loglevel loglevel=8 rdinit=/init devtmpfs.mount=1 acpi=off pci=off nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+  [0x0000_0000, 0x0800_0000, 0x7, 0], # System RAM 128M
+]
+
+#
+# Device specifications
+#
+[devices]
+# The interrupt mode.
+interrupt_mode = "passthrough"
+
+# Emu_devices.
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+emu_devices = [
+  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
+  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
+  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
+]
+
+# Pass-through devices.
+# Name Base-Ipa Base-Pa Length Alloc-Irq.
+passthrough_devices = [
+  [
+    "HPET",
+    0xfed0_0000,
+    0xfed0_0000,
+    0x1000,
+    0x1,
+  ],
+]
+
+# Passthrough addresses.
+# Base-GPA  Length.
+passthrough_addresses = [
+  [0xfe00_0000, 0x00c0_0000],
+]
+
+# Devices that are not desired to be passed through to the guest
+excluded_devices = []

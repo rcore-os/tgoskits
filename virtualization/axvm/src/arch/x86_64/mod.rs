@@ -73,6 +73,15 @@ impl ArchOps for X86_64Arch {
     ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
         let mut config = X86VCpuSetupConfig {
             emulate_com1: ctx.emulates_console,
+            guest_memory_regions: ctx
+                .memory_regions
+                .iter()
+                .map(|region| x86_vcpu::X86GuestMemoryRegion {
+                    gpa: X86GuestPhysAddr::from_usize(region.gpa.as_usize()),
+                    hva: X86HostVirtAddr::from_usize(region.hva.as_usize()),
+                    size: region.size(),
+                })
+                .collect(),
             ..Default::default()
         };
         for port in ctx.passthrough_ports {

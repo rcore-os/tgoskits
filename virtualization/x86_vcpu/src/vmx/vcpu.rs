@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     arch::naked_asm,
     fmt::{Debug, Formatter, Result},
@@ -40,9 +40,9 @@ use super::{
     },
 };
 use crate::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps,
-    X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
-    X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit,
+    X86AccessFlags, X86AccessWidth, X86GuestMemoryRegion, X86GuestPhysAddr, X86GuestVirtAddr,
+    X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig,
+    X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit,
     ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
     x86_real_mode_entry_state, xstate::XState,
 };
@@ -127,6 +127,8 @@ pub struct VmxVcpu<H: X86HostOps> {
     vlapic: EmulatedLocalApic<H>,
     /// Guest CR2 is not saved or restored by VMX hardware.
     guest_cr2: usize,
+    /// Guest RAM regions used to read guest instructions and page tables.
+    guest_memory_regions: Vec<X86GuestMemoryRegion>,
 
     // Extra states
     /// The XState of the VCpu. Both host and guest.
@@ -156,6 +158,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
+            guest_memory_regions: Vec::new(),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
             guest_regs_exiting: GeneralRegisters::default(),
@@ -519,6 +522,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         nested_page_table_root: X86HostPhysAddr,
         config: X86VCpuSetupConfig,
     ) -> X86VcpuResult {
+        self.guest_memory_regions = config.guest_memory_regions.clone();
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
@@ -633,7 +637,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         is_guest: bool,
         config: X86VCpuSetupConfig,
     ) -> X86VcpuResult {
-        // Intercept NMI and external interrupts.
+        // Intercept external interrupts and use the VMX preemption timer.
         use PinbasedControls as PinCtrl;
 
         use super::vmcs::controls::*;
@@ -643,10 +647,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             VmcsControl32::PINBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PINBASED_CTLS,
             Msr::IA32_VMX_PINBASED_CTLS.read() as u32,
-            (PinCtrl::NMI_EXITING
-                | PinCtrl::EXTERNAL_INTERRUPT_EXITING
-                | PinCtrl::VMX_PREEMPTION_TIMER)
-                .bits(),
+            (PinCtrl::EXTERNAL_INTERRUPT_EXITING | PinCtrl::VMX_PREEMPTION_TIMER).bits(),
             0,
         )?;
 
@@ -751,8 +752,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         // VmcsControlNW::CR4_GUEST_HOST_MASK.write(0)?;
         VmcsControl32::CR3_TARGET_COUNT.write(0)?;
 
-        // Pass-through exceptions (except #UD(6)), don't use I/O bitmap, set MSR bitmaps.
-        let exception_bitmap: u32 = 1 << 6;
+        // Pass through guest exceptions. Linux uses #UD (`ud2`) for BUG/WARN handling.
+        let exception_bitmap: u32 = 0;
 
         self.setup_io_bitmap(config)?;
 
@@ -850,18 +851,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         })()
         .expect("Failed to read guest control register")
     }
-}
-
-// The current VMX APIC-access decode path is used only with Axvisor's
-// identity-mapped guest RAM layout, so the guest physical address is also
-// the host physical address. A non-identity guest memory backend should
-// replace this helper with an explicit GPA-to-HVA translation.
-fn read_guest_phys_u64<H: X86HostOps>(gpa: usize) -> X86VcpuResult<u64> {
-    let mut bytes = [0u8; 8];
-    for (offset, byte) in bytes.iter_mut().enumerate() {
-        *byte = host::read_guest_u8::<H>(X86GuestPhysAddr::from_usize(gpa + offset))?;
-    }
-    Ok(u64::from_le_bytes(bytes))
 }
 
 /// Get ready then vmlaunch or vmresume.
@@ -1321,7 +1310,49 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
     fn read_guest_u8(&self, gva: X86GuestVirtAddr) -> X86VcpuResult<u8> {
         let gpa = self.translate_guest_linear(gva)?;
-        host::read_guest_u8::<H>(gpa)
+        self.read_guest_phys_u8(gpa)
+    }
+
+    fn guest_phys_to_host_virt(&self, gpa: X86GuestPhysAddr) -> X86VcpuResult<usize> {
+        let gpa = gpa.as_usize();
+        self.guest_memory_regions
+            .iter()
+            .find_map(|region| {
+                let start = region.gpa.as_usize();
+                let offset = gpa.checked_sub(start)?;
+                if offset < region.size {
+                    region.hva.as_usize().checked_add(offset)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                x86_err_type!(
+                    InvalidInput,
+                    format_args!("guest physical address {gpa:#x} is not backed by RAM")
+                )
+            })
+    }
+
+    fn read_guest_phys_u8(&self, gpa: X86GuestPhysAddr) -> X86VcpuResult<u8> {
+        if self.guest_memory_regions.is_empty() {
+            return host::read_guest_u8::<H>(gpa);
+        }
+
+        let hva = self.guest_phys_to_host_virt(gpa)?;
+        Ok(unsafe { core::ptr::read_volatile(hva as *const u8) })
+    }
+
+    fn read_guest_phys_u64(&self, gpa: X86GuestPhysAddr) -> X86VcpuResult<u64> {
+        let mut bytes = [0u8; 8];
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            let addr = gpa
+                .as_usize()
+                .checked_add(offset)
+                .ok_or(X86VcpuError::InvalidInput)?;
+            *byte = self.read_guest_phys_u8(X86GuestPhysAddr::from_usize(addr))?;
+        }
+        Ok(u64::from_le_bytes(bytes))
     }
 
     fn translate_guest_linear(&self, gva: X86GuestVirtAddr) -> X86VcpuResult<X86GuestPhysAddr> {
@@ -1353,7 +1384,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         ];
 
         for (level, index) in indexes.into_iter().enumerate() {
-            let entry = read_guest_phys_u64::<H>(table + index * size_of::<u64>())?;
+            let entry =
+                self.read_guest_phys_u64(X86GuestPhysAddr::from(table + index * size_of::<u64>()))?;
             if entry & PRESENT == 0 {
                 return x86_err!(
                     InvalidInput,
