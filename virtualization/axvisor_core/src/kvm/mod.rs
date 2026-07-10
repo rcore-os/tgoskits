@@ -141,6 +141,24 @@ pub(crate) fn queue_control_vcpu_interrupt(route: InterruptRoute) -> AxResult {
     Ok(())
 }
 
+pub(crate) fn control_vcpu_mask(vm_id: usize) -> Option<usize> {
+    let control_files = CONTROL_FILES.lock();
+    let vm = control_files.iter().find_map(|(_, state)| match state {
+        ControlFileState::Vm(vm) if vm.vm.id() == vm_id => Some(vm),
+        _ => None,
+    })?;
+
+    let mut mask = 0usize;
+    for &vcpu_id in vm.vcpu_files.keys() {
+        let vcpu_id = vcpu_id as usize;
+        if vcpu_id >= usize::BITS as usize {
+            return Some(usize::MAX);
+        }
+        mask |= 1usize << vcpu_id;
+    }
+    Some(mask)
+}
+
 fn control_vcpu_file_by_vm_id(
     control_files: &BTreeMap<api_control::ControlFileId, ControlFileState>,
     vm_id: usize,

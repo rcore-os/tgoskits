@@ -161,6 +161,11 @@ impl api_vmm::VmmIf for VmmIfImpl {
     }
 
     fn active_vcpus(vm_id: VMId) -> Option<usize> {
+        #[cfg(feature = "control")]
+        if let Some(mask) = crate::kvm::control_vcpu_mask(vm_id) {
+            return Some(mask);
+        }
+
         with_vm(vm_id, |vm| {
             let vcpu_num = vm.vcpu_num();
             if vcpu_num >= usize::BITS as usize {

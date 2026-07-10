@@ -20,14 +20,20 @@ use axvisor_api::{
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
-use x86_64::registers::control::{Cr0Flags, Cr4Flags, EferFlags};
+use x86_64::registers::{
+    control::{Cr0Flags, Cr4Flags, EferFlags},
+    rflags::RFlags,
+};
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{
     definitions::{SvmExitCode, SvmIntercept},
     flags::{InterruptType, VmcbIntInfo},
     structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
+    vmcb::{
+        InterceptCrRw, InterceptExceptions, InterceptVec3, NestedCtl, VmcbTlbControl,
+        set_vmcb_segment,
+    },
 };
 use crate::{
     X86RealModeEntryState, X86VCpuCreateConfig, X86VCpuSetupConfig, msr::Msr,
@@ -89,6 +95,9 @@ const SVM_INT_CTL_V_INTR_PRIO_SHIFT: u32 = 16;
 const SVM_INT_CTL_V_INTR_PRIO_MASK: u32 = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
 const SVM_INT_CTL_V_IGN_TPR: u32 = 1 << 20;
 const SVM_INT_CTL_V_INTR_MASKING: u32 = 1 << 24;
+const SVM_INT_CTL_V_IRQ_INJECTION_BITS: u32 =
+    SVM_INT_CTL_V_IRQ | SVM_INT_CTL_V_INTR_PRIO_MASK | SVM_INT_CTL_V_IGN_TPR;
+const SVM_INT_STATE_INTERRUPT_SHADOW: u32 = 1;
 
 macro_rules! save_regs_no_rax {
     () => {
@@ -212,6 +221,8 @@ pub struct SvmVcpu {
     msrpm: MSRPm,
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
+    /// Event handed to EVENTINJ for the current VMRUN and awaiting completion.
+    injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic,
     /// Whether HLT exits should be returned to the VMM instead of used as poll points.
@@ -237,6 +248,7 @@ impl SvmVcpu {
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
+            injecting_event: None,
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             hlt_exiting: false,
             xstate: XState::new(),
@@ -568,9 +580,8 @@ impl SvmVcpu {
             }
             self.launched = true;
 
+            self.complete_event_injection();
             self.clear_event_inj();
-            self.reinject_interrupted_event();
-            self.sync_virtual_interrupt_delivery();
 
             let exit_info = self.exit_info()?;
 
@@ -611,6 +622,7 @@ impl SvmVcpu {
             {
                 Some(self.handle_ignored_msr_access(exit_info))
             }
+            Ok(SvmExitCode::VINTR) => Some(self.handle_interrupt_window()),
             _ => None,
         }
     }
@@ -942,47 +954,125 @@ impl SvmVcpu {
         self.advance_rip(VM_EXIT_INSTR_LEN_RDTSC)
     }
 
-    fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
+    fn allow_interrupt(&self) -> bool {
+        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
+        vmcb.state.rflags.get() & RFlags::INTERRUPT_FLAG.bits() != 0
+            && vmcb.control.int_state.get() & SVM_INT_STATE_INTERRUPT_SHADOW == 0
+    }
+
+    fn set_interrupt_window(&mut self, enable: bool) {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
-        let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
-        let int_control = (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
-            | SVM_INT_CTL_V_IRQ
-            | SVM_INT_CTL_V_IGN_TPR
-            | SVM_INT_CTL_V_INTR_MASKING
-            | priority;
-        vmcb.control.int_vector.set(event.vector as u32);
-        vmcb.control.int_control.set(int_control);
+        if enable {
+            let priority = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+            let int_control = (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
+                | SVM_INT_CTL_V_IRQ
+                | priority
+                | SVM_INT_CTL_V_INTR_MASKING;
+            vmcb.control.int_vector.set(0);
+            vmcb.control.int_control.set(int_control);
+            vmcb.control.set_intercept(SvmIntercept::VINTR);
+        } else {
+            vmcb.control
+                .int_control
+                .set(vmcb.control.int_control.get() & !SVM_INT_CTL_V_IRQ_INJECTION_BITS);
+            vmcb.control
+                .intercept_vector3
+                .modify(InterceptVec3::VINTR::CLEAR);
+        }
         vmcb.control.clean_bits.set(0);
     }
 
-    fn sync_virtual_interrupt_delivery(&mut self) {
-        let Some(event) = self.pending_events.front().copied() else {
+    fn handle_interrupt_window(&mut self) -> AxResult {
+        self.set_interrupt_window(false);
+        self.inject_pending_events()
+    }
+
+    fn complete_event_injection(&mut self) {
+        let Some(injected) = self.injecting_event.take() else {
             return;
         };
-        if event.vector < 32 || self.virtual_interrupt_vector().is_some() {
+
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let exit_int_info = vmcb.control.exit_int_info.get();
+        let exit_int_info_err = vmcb.control.exit_int_info_err.get();
+
+        if let Some(interrupted) =
+            Self::interrupted_injected_event(exit_int_info, exit_int_info_err, injected)
+        {
+            self.pending_events.push_front(interrupted);
+            vmcb.control.exit_int_info.set(0);
+            vmcb.control.exit_int_info_err.set(0);
+            vmcb.control.clean_bits.set(0);
             return;
         }
 
-        self.vlapic
-            .accept_interrupt(event.vector, event.level_triggered);
-        self.pending_events.pop_front();
+        if injected.vector >= 32 {
+            self.vlapic
+                .accept_interrupt(injected.vector, injected.level_triggered);
+        }
+    }
+
+    fn interrupted_injected_event(
+        info: u32,
+        err: u32,
+        injected: PendingEvent,
+    ) -> Option<PendingEvent> {
+        let int_info = VmcbIntInfo::from_bits_retain(info);
+        if !int_info.contains(VmcbIntInfo::VALID) {
+            return None;
+        }
+
+        let vector = (info & 0xff) as u8;
+        let int_type = (info >> 8) & 0b111;
+        let expected_type = if injected.vector < 32 {
+            InterruptType::Exception as u32
+        } else {
+            InterruptType::External as u32
+        };
+        if vector != injected.vector || int_type != expected_type {
+            return None;
+        }
+
+        let err_code = if int_type == InterruptType::Exception as u32 {
+            if int_info.contains(VmcbIntInfo::ERROR_CODE) {
+                Some(err)
+            } else {
+                injected.err_code
+            }
+        } else {
+            None
+        };
+
+        Some(PendingEvent {
+            vector,
+            err_code,
+            level_triggered: injected.level_triggered,
+        })
     }
 
     fn inject_pending_events(&mut self) -> AxResult {
+        if self.injecting_event.is_some() {
+            return Ok(());
+        }
+
         let Some(event) = self.pending_events.front().copied() else {
             return Ok(());
         };
 
         if event.vector >= 32 {
-            if self.virtual_interrupt_vector() == Some(event.vector) {
-                return Ok(());
+            if self.allow_interrupt() {
+                self.set_interrupt_window(false);
+                self.inject_event(event.vector, None)?;
+                self.injecting_event = Some(event);
+                self.pending_events.pop_front();
+            } else {
+                self.set_interrupt_window(true);
             }
-
-            self.arm_virtual_interrupt(event);
             return Ok(());
         }
 
         self.inject_event(event.vector, event.err_code)?;
+        self.injecting_event = Some(event);
         self.pending_events.pop_front();
         Ok(())
     }
@@ -991,24 +1081,6 @@ impl SvmVcpu {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
         vmcb.control.event_inj.set(0);
         vmcb.control.event_inj_err.set(0);
-        vmcb.control.clean_bits.set(0);
-    }
-
-    fn reinject_interrupted_event(&mut self) {
-        let vmcb = unsafe { self.vmcb.as_vmcb() };
-        let exit_int_info = vmcb.control.exit_int_info.get();
-        if !exit_int_info.get_bit(31) {
-            return;
-        }
-
-        vmcb.control.event_inj.set(exit_int_info);
-        vmcb.control
-            .event_inj_err
-            .set(if exit_int_info.get_bit(11) {
-                vmcb.control.exit_int_info_err.get()
-            } else {
-                0
-            });
         vmcb.control.clean_bits.set(0);
     }
 
