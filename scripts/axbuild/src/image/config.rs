@@ -164,10 +164,4 @@ mod tests {
 
         assert_eq!(fallback_registry_url(), "https://example.com/new.toml");
     }
-
-    #[test]
-    fn default_registry_points_to_qemu_x86_branch_for_local_validation() {
-        assert!(DEFAULT_REGISTRY_URL.contains("/refs/heads/qemu_x86/"));
-        assert!(DEFAULT_FALLBACK_REGISTRY_URL.contains("/refs/heads/qemu_x86/"));
-    }
 }

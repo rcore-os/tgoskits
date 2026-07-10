@@ -200,6 +200,13 @@ fn allocate_load_region(
     ) {
         Ok(target) => Ok((target, preferred_load_addr)),
         Err(_) => {
+            // This is only a load-bias fallback: axloader moves PT_LOAD segments as a
+            // whole and adjusts the handoff entry point, but it does not process ELF
+            // relocation records or rewrite absolute references embedded in the image.
+            // It is therefore valid only for images that are already known to tolerate
+            // this placement model, such as the current AxVisor UEFI stub. A generic
+            // non-PIE ET_EXEC kernel may still dereference its original physical
+            // addresses and fail early after being loaded at AnyPages.
             crate::logln!(
                 "elf_load_relocate: preferred={:#x} pages={}",
                 preferred_load_addr,

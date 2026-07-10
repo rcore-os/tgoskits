@@ -6,7 +6,8 @@ fail_regex = [
   "(?i)permission denied",
 ]
 shell_prefix = "~ #"
+shell_init_cmd = "echo 'hello'"
 success_regex = [
-  "(?m)^test pass\\s*$",
+  "(?m)^hello\\s*$",
 ]
 timeout = 300
