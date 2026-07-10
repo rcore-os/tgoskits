@@ -49,6 +49,75 @@ static ssize_t read_line_timeout(int fd, char *buf, size_t len, int timeout_ms)
     return (ssize_t)off;
 }
 
+static void check_data_before_eof_without_poll(void)
+{
+    static const char payload[] = "DATA_BEFORE_EOF";
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0) {
+        fail("no-poll posix_openpt");
+        return;
+    }
+    if (grantpt(master) != 0 || unlockpt(master) != 0) {
+        fail("no-poll grantpt/unlockpt");
+        close(master);
+        return;
+    }
+    char *slave_name = ptsname(master);
+    if (slave_name == NULL) {
+        fail("no-poll ptsname");
+        close(master);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fail("no-poll fork");
+        close(master);
+        return;
+    }
+    if (pid == 0) {
+        int slave = open(slave_name, O_RDWR | O_NOCTTY);
+        if (slave < 0) {
+            _exit(111);
+        }
+        if (write(slave, payload, sizeof(payload) - 1) !=
+            (ssize_t)(sizeof(payload) - 1)) {
+            _exit(112);
+        }
+        close(slave);
+        _exit(0);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0) {
+        fail("no-poll child writes and exits cleanly");
+        close(master);
+        return;
+    }
+    pass("no-poll child writes and exits cleanly");
+
+    char buf[sizeof(payload)] = {0};
+    errno = 0;
+    ssize_t n = read(master, buf, sizeof(buf) - 1);
+    if (n != (ssize_t)(sizeof(payload) - 1) ||
+        memcmp(buf, payload, sizeof(payload) - 1) != 0) {
+        fail("master drains queued data before EOF without poll");
+        close(master);
+        return;
+    }
+    pass("master drains queued data before EOF without poll");
+
+    errno = 0;
+    n = read(master, buf, sizeof(buf) - 1);
+    if (n == 0 || (n < 0 && errno == EIO)) {
+        pass("master reports EOF only after queued data drains");
+    } else {
+        fail("master reports EOF only after queued data drains");
+    }
+    close(master);
+}
+
 static void check_nix_like_child(void)
 {
     int master = posix_openpt(O_RDWR | O_NOCTTY);
@@ -272,6 +341,7 @@ int main(void)
     }
 
     check_nix_like_child();
+    check_data_before_eof_without_poll();
 
 out_slave_dup:
     if (slave_dup >= 0) {
