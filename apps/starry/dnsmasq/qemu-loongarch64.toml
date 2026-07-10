@@ -1,0 +1,18 @@
+# dnsmasq loongarch64 - DNS/DHCP carpet. Platform: dynamic (axplat-dyn), same as
+# aarch64/riscv64 - build-loongarch64*.toml carries no ax-hal/plat-static / plat_dyn=false;
+# uefi=false / to_bin=true is the dynamic platform's raw-binary boot path, and the build
+# pulls ax-driver/serial so the console works. The gate provisions dnsmasq on-target with
+# `apk add` (v3.23 ships loongarch64 packages) then drives every DNS session over 127.0.0.1.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-dnsmasq.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 7200
