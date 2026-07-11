@@ -49,6 +49,102 @@ pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     dwarf::init();
 }
 
+/// The kernel instruction (text) range passed to [`init`] — i.e. `[_stext, _etext)`.
+///
+/// `None` before [`init`]. Reading a [`spin::Once`] is a lock-free acquire load
+/// with no spinning, so this is safe to call from hard-IRQ context (e.g. the PMU
+/// sampling call-graph unwinder, which reuses these ranges as the walker's IP
+/// filter).
+pub fn ip_range() -> Option<Range<usize>> {
+    IP_RANGE.get().cloned()
+}
+
+/// The kernel frame-pointer range passed to [`init`] — i.e. the kernel address
+/// space `[kernel_space_start, kernel_space_end)`.
+///
+/// `None` before [`init`]. Lock-free and IRQ-safe (see [`ip_range`]).
+pub fn fp_range() -> Option<Range<usize>> {
+    FP_RANGE.get().cloned()
+}
+
+/// Allocation-free frame-pointer stack walk into a caller-supplied buffer.
+///
+/// Writes the leaf `pc` as `out[0]`, then walks the AAPCS64 / frame-record chain
+/// (`[fp]` = caller fp, `[fp + 8]` = saved return address) appending each return
+/// address that lies in `ip_range`, and returns the number of `u64` entries
+/// written (`>= 1`). Unlike [`unwind_stack`]/`unwind_core`, this allocates
+/// nothing, terminates at `out.len()`, and reads memory through the injected
+/// `read` closure instead of dereferencing directly — so a caller in hard-IRQ
+/// context can supply a fault-safe reader (a direct deref for always-mapped
+/// kernel frames, a no-fault page-table walk for user frames).
+///
+/// The guard set mirrors [`unwind_core`]: `fp` must stay within `fp_range` and be
+/// word-aligned, must advance monotonically (a non-advancing or backward `fp`
+/// ends the walk), and a jump of 8 MiB or more between adjacent frames ends it.
+/// A return address outside `ip_range` is skipped (not recorded) but the walk
+/// continues, since a single bad IP does not imply the whole chain is corrupt.
+/// `read(va)` returns the machine word at `va`, or `None` if it cannot be read
+/// safely; a failed read ends the walk. These guards bound the walk so a
+/// corrupted chain can neither loop nor run past the depth cap.
+pub fn walk_fp(
+    pc: usize,
+    mut fp: usize,
+    ip_range: &Range<usize>,
+    fp_range: &Range<usize>,
+    read: impl Fn(usize) -> Option<usize>,
+    out: &mut [u64],
+) -> usize {
+    /// AAPCS64 frame record: the saved return address sits one word above the
+    /// saved caller frame pointer.
+    const FP_TO_LR_OFFSET: usize = core::mem::size_of::<usize>();
+    /// Largest plausible gap between adjacent frame pointers; a larger jump means
+    /// the chain is corrupt (mirrors `unwind_core`'s 8 MiB guard).
+    const MAX_FRAME_GAP: usize = 8 * 1024 * 1024;
+
+    if out.is_empty() {
+        return 0;
+    }
+    out[0] = pc as u64;
+    let mut n = 1;
+
+    while n < out.len() {
+        // The frame record must be inside the stack range and word-aligned.
+        if !fp_range.contains(&fp) || !fp.is_multiple_of(core::mem::align_of::<usize>()) {
+            break;
+        }
+        let Some(caller_fp) = read(fp) else { break };
+        let Some(lr) = read(fp.wrapping_add(FP_TO_LR_OFFSET)) else {
+            break;
+        };
+
+        // A non-advancing / backward frame pointer would revisit the same frame.
+        if caller_fp != 0 && caller_fp <= fp {
+            break;
+        }
+
+        // Skip a return address outside the code range but keep unwinding: one
+        // bad IP does not necessarily mean the FP chain itself is broken.
+        if !ip_range.contains(&lr) {
+            if caller_fp == 0 {
+                break;
+            }
+            fp = caller_fp;
+            continue;
+        }
+
+        out[n] = lr as u64;
+        n += 1;
+
+        // Top of the chain, or an implausibly large jump — stop after recording.
+        if caller_fp == 0 || caller_fp - fp >= MAX_FRAME_GAP {
+            break;
+        }
+        fp = caller_fp;
+    }
+
+    n
+}
+
 /// Represents a single stack frame in the unwound stack.
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -454,11 +550,28 @@ impl fmt::Debug for Backtrace {
 mod tests {
     use alloc::{boxed::Box, format, vec::Vec};
 
+    extern crate std;
+
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
 
-    fn init_for_tests() {
+    /// Serializes tests that read or mutate the process-global `MAX_DEPTH`
+    /// (`set_max_depth`/`max_depth`). Without it, a test that lowers the depth
+    /// (e.g. `stress_deep_chain_truncation` -> 16) races the depth its neighbours
+    /// assume (`init_for_tests` -> 32), which flakes under `cargo test`'s parallel
+    /// harness. Every depth-sensitive test holds this for its whole body via the
+    /// guard returned from `init_for_tests`.
+    static DEPTH_SERIAL: Mutex<()> = Mutex::new(());
+
+    #[must_use]
+    fn init_for_tests() -> MutexGuard<'static, ()> {
+        // Tolerate poisoning: a panicking (failing) test must not cascade-poison
+        // every later test into a spurious failure — we only need mutual exclusion.
+        let guard = DEPTH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         init(0..usize::MAX, 0..usize::MAX);
         set_max_depth(32);
+        guard
     }
 
     fn boxed_frame_chain(ips: &[usize]) -> (Box<[Frame]>, usize) {
@@ -529,7 +642,7 @@ mod tests {
 
     #[test]
     fn unwind_stack_collects_fake_frames() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
         let out = unwind_stack(start_fp);
         assert_eq!(out, frames.as_ref());
@@ -537,7 +650,7 @@ mod tests {
 
     #[test]
     fn unwind_core_callback_stop_early() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (_chain, start_fp) = boxed_frame_chain(&[0x1, 0x2, 0x3, 0x4, 0x5]);
         let mut count = 0;
         unwind_core(start_fp, |_| {
@@ -549,7 +662,7 @@ mod tests {
 
     #[test]
     fn unwind_stack_stops_on_non_advancing_frame_pointer() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let mut frames = [Frame { fp: 0, ip: 0x1111 }, Frame { fp: 0, ip: 0x2222 }];
         let base = frames.as_mut_ptr();
         frames[0].fp = unsafe { base.add(1) as usize };
@@ -566,11 +679,145 @@ mod tests {
         assert!(Frame::read(3).is_none());
     }
 
+    // --- walk_fp (alloc-free, reader-injected) internal tests ---
+
+    /// Reads a machine word straight out of the synthetic in-memory chain.
+    fn mem_reader(va: usize) -> Option<usize> {
+        Some(unsafe { *(va as *const usize) })
+    }
+
+    #[test]
+    fn walk_fp_leaf_plus_full_chain() {
+        let (_chain, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
+        let mut out = [0u64; 8];
+        let n = walk_fp(
+            0xF00,
+            start_fp,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut out,
+        );
+        assert_eq!(n, 4);
+        assert_eq!(&out[..4], &[0xF00, 0x1111, 0x2222, 0x3333]);
+    }
+
+    #[test]
+    fn walk_fp_skips_ip_outside_range_but_keeps_walking() {
+        let (_chain, start_fp) = boxed_frame_chain(&[0x1111, 0x2222]);
+        let mut out = [0u64; 8];
+        // Only 0x2222 falls in the IP filter; 0x1111 is skipped, not recorded,
+        // yet the walk continues to the next frame.
+        let n = walk_fp(
+            0xF00,
+            start_fp,
+            &(0x2000..0x3000),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut out,
+        );
+        assert_eq!(n, 2);
+        assert_eq!(&out[..2], &[0xF00, 0x2222]);
+    }
+
+    #[test]
+    fn walk_fp_stops_on_non_advancing_fp() {
+        // frames[0].fp -> frames[1]; frames[1].fp -> frames[0] (backward).
+        let mut frames = [Frame { fp: 0, ip: 0x1111 }, Frame { fp: 0, ip: 0x2222 }];
+        let base = frames.as_mut_ptr();
+        frames[0].fp = unsafe { base.add(1) as usize };
+        frames[1].fp = base as usize; // backward: read by the walk via `base`
+        let mut out = [0u64; 8];
+        let n = walk_fp(
+            0xF00,
+            base as usize,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut out,
+        );
+        // frames[1] points back to frames[0], so the walk must stop there.
+        assert_eq!(frames[1].fp, base as usize);
+        // Records the leaf and frames[0].ip, then the backward fp ends it.
+        assert_eq!(n, 2);
+        assert_eq!(&out[..2], &[0xF00, 0x1111]);
+    }
+
+    #[test]
+    fn walk_fp_honors_out_capacity() {
+        let (_chain, start_fp) = boxed_frame_chain(&[0x1, 0x2, 0x3, 0x4, 0x5]);
+        let mut out = [0u64; 3]; // room for the leaf + 2 return addresses only
+        let n = walk_fp(
+            0xF00,
+            start_fp,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut out,
+        );
+        assert_eq!(n, 3);
+        assert_eq!(&out[..3], &[0xF00, 0x1, 0x2]);
+    }
+
+    #[test]
+    fn walk_fp_stops_when_reader_fails() {
+        let mut out = [0u64; 8];
+        // An aligned, in-range fp whose read fails yields the leaf only.
+        let n = walk_fp(
+            0xF00,
+            0x1000,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            |_| None,
+            &mut out,
+        );
+        assert_eq!(n, 1);
+        assert_eq!(out[0], 0xF00);
+    }
+
+    #[test]
+    fn walk_fp_rejects_out_of_range_or_misaligned_fp() {
+        let mut out = [0u64; 8];
+        // fp outside fp_range -> leaf only.
+        let n = walk_fp(
+            0xF00,
+            0x9000,
+            &(0..usize::MAX),
+            &(0..0x1000),
+            mem_reader,
+            &mut out,
+        );
+        assert_eq!(n, 1);
+        // misaligned fp -> leaf only (odd address is never a valid frame record).
+        let n = walk_fp(
+            0xF00,
+            0x1001,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut out,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn walk_fp_empty_out_returns_zero() {
+        let n = walk_fp(
+            0xF00,
+            0x1000,
+            &(0..usize::MAX),
+            &(0..usize::MAX),
+            mem_reader,
+            &mut [],
+        );
+        assert_eq!(n, 0);
+    }
+
     // --- capture_trap with Inner::Captured verification ---
 
     #[test]
     fn capture_trap_ra_not_substituted_with_wide_range() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (_chain, start_fp) = boxed_frame_chain(&[0xDEAD]);
         let bt = Backtrace::capture_trap(start_fp, 0x1000, 0xBEEF);
         let Inner::Captured(frames) = &bt.inner else {
@@ -586,7 +833,7 @@ mod tests {
     /// Then unwind and verify every frame is collected.
     #[test]
     fn stress_fill_buffer_exactly() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let ips: Vec<usize> = (0..CAPTURE_CAPACITY).map(|i| 0xA000 + i).collect();
         let (chain, start_fp) = boxed_frame_chain(&ips);
         let out = unwind_stack(start_fp);
@@ -598,7 +845,7 @@ mod tests {
     /// The trap frame is inserted at front, total = CAPTURE_CAPACITY, no eviction.
     #[test]
     fn stress_trap_near_capacity() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let n = CAPTURE_CAPACITY - 1;
         let ips: Vec<usize> = (0..n).map(|i| 0xB000 + i).collect();
         let (_chain, start_fp) = boxed_frame_chain(&ips);
@@ -620,7 +867,7 @@ mod tests {
     /// The trap insert_front evicts the deepest frame.
     #[test]
     fn stress_trap_overflow_evicts_deepest() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let ips: Vec<usize> = (0..CAPTURE_CAPACITY).map(|i| 0xD000 + i).collect();
         let (_chain, start_fp) = boxed_frame_chain(&ips);
 
@@ -641,7 +888,7 @@ mod tests {
     /// Build a chain deeper than max_depth and verify truncation.
     #[test]
     fn stress_deep_chain_truncation() {
-        init_for_tests();
+        let _serial = init_for_tests();
         set_max_depth(16);
         let ips: Vec<usize> = (0..64).map(|i| 0xF000 + i).collect();
         let (chain, start_fp) = boxed_frame_chain(&ips);
@@ -658,7 +905,7 @@ mod tests {
     /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
     #[test]
     fn stress_repeated_create_drop() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
         for _ in 0..500 {
             let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
@@ -675,7 +922,7 @@ mod tests {
     /// Interleave capture, Display formatting, and drop to verify no side effects.
     #[test]
     fn stress_interleaved_capture_format() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
 
         for i in 0..100 {
@@ -701,7 +948,7 @@ mod tests {
     /// Repeatedly clone a Backtrace and verify equality.
     #[test]
     fn stress_repeated_clone() {
-        init_for_tests();
+        let _serial = init_for_tests();
         let (chain, start_fp) = boxed_frame_chain(&[0x800, 0x900, 0xA00]);
         let original = Backtrace::capture_trap(start_fp, 0xB00, 0);
 
