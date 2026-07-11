@@ -279,43 +279,31 @@ impl VirtualApicRegs {
         }
     }
 
-    fn is_dest_field_matched(&self, dest: u32) -> AxResult<bool> {
-        let mut ret = false;
-
-        let ldr = self.regs().LDR.get();
-
+    fn is_dest_field_matched(&self, dest: u32, target_apic_id: u32) -> AxResult<bool> {
         if self.is_x2apic_enabled() {
-            return Ok(true);
-        } else {
-            match self
-                .regs()
-                .DFR
-                .read_as_enum::<APICDestinationFormat>(DESTINATION_FORMAT::Model)
-                .ok_or(AxError::InvalidData)?
-            {
-                APICDestinationFormat::Flat => {
-                    // In the "Flat Model" the MDA is interpreted as an 8-bit wide
-                    // bitmask. This model is available in the xAPIC mode only.
-                    let logical_id = ldr >> 24;
-                    let dest_logical_id = dest & 0xff;
-                    if logical_id & dest_logical_id != 0 {
-                        ret = true;
-                    }
+            let target_cluster = target_apic_id >> 4;
+            let target_logical_id = 1u32 << (target_apic_id & 0xf);
+            return Ok(dest >> 16 == target_cluster && dest & target_logical_id != 0);
+        }
+
+        match self
+            .regs()
+            .DFR
+            .read_as_enum::<APICDestinationFormat>(DESTINATION_FORMAT::Model)
+            .ok_or(AxError::InvalidData)?
+        {
+            APICDestinationFormat::Flat => {
+                if target_apic_id >= 8 {
+                    return Ok(false);
                 }
-                APICDestinationFormat::Cluster => {
-                    // In the "Cluster Model" the MDA is used to identify a
-                    // specific cluster and a set of APICs in that cluster.
-                    let logical_id = (ldr >> 24) & 0xf;
-                    let cluster_id = ldr >> 28;
-                    let dest_logical_id = dest & 0xf;
-                    let dest_cluster_id = (dest >> 4) & 0xf;
-                    if (cluster_id == dest_cluster_id) && ((logical_id & dest_logical_id) != 0) {
-                        ret = true;
-                    }
-                }
+                Ok(dest & (1u32 << target_apic_id) != 0)
+            }
+            APICDestinationFormat::Cluster => {
+                let target_cluster = target_apic_id >> 2;
+                let target_logical_id = 1u32 << (target_apic_id & 0x3);
+                Ok((dest >> 4) == target_cluster && dest & target_logical_id != 0)
             }
         }
-        Ok(ret)
     }
 
     /// This function populates 'dmask' with the set of vcpus that match the
@@ -347,7 +335,7 @@ impl VirtualApicRegs {
             let vcpu_mask = self.active_vcpu_mask();
             for i in 0..u64::BITS as usize {
                 if vcpu_mask & (1 << i) != 0 {
-                    if !self.is_dest_field_matched(dest)? {
+                    if !self.is_dest_field_matched(dest, i as u32)? {
                         continue;
                     }
                     dmask |= 1 << i;

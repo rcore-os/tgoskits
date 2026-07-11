@@ -20,20 +20,14 @@ use axvisor_api::{
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
-use x86_64::registers::{
-    control::{Cr0Flags, Cr4Flags, EferFlags},
-    rflags::RFlags,
-};
+use x86_64::registers::control::{Cr0Flags, Cr4Flags, EferFlags};
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{
     definitions::{SvmExitCode, SvmIntercept},
     flags::{InterruptType, VmcbIntInfo},
     structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{
-        InterceptCrRw, InterceptExceptions, InterceptVec3, NestedCtl, VmcbTlbControl,
-        set_vmcb_segment,
-    },
+    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{
     X86RealModeEntryState, X86VCpuCreateConfig, X86VCpuSetupConfig, msr::Msr,
@@ -95,9 +89,6 @@ const SVM_INT_CTL_V_INTR_PRIO_SHIFT: u32 = 16;
 const SVM_INT_CTL_V_INTR_PRIO_MASK: u32 = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
 const SVM_INT_CTL_V_IGN_TPR: u32 = 1 << 20;
 const SVM_INT_CTL_V_INTR_MASKING: u32 = 1 << 24;
-const SVM_INT_CTL_V_IRQ_INJECTION_BITS: u32 =
-    SVM_INT_CTL_V_IRQ | SVM_INT_CTL_V_INTR_PRIO_MASK | SVM_INT_CTL_V_IGN_TPR;
-const SVM_INT_STATE_INTERRUPT_SHADOW: u32 = 1;
 
 macro_rules! save_regs_no_rax {
     () => {
@@ -221,8 +212,6 @@ pub struct SvmVcpu {
     msrpm: MSRPm,
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
-    /// External IRQ armed through V_IRQ for the current guest entry.
-    injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic,
     /// Whether HLT exits should be returned to the VMM instead of used as poll points.
@@ -248,7 +237,6 @@ impl SvmVcpu {
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
-            injecting_event: None,
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             hlt_exiting: false,
             xstate: XState::new(),
@@ -325,6 +313,10 @@ impl SvmVcpu {
         control.nested_ctl.modify(NestedCtl::NP_ENABLE::SET);
         control.guest_asid.set(1);
         control.nested_cr3.set(npt_root.as_usize() as u64);
+        // Keep host physical interrupts independent of the guest IF/TPR state.
+        // Otherwise a guest running with IF=0 can prevent the host timer from
+        // producing an INTR exit and monopolize a shared physical CPU.
+        control.int_control.set(SVM_INT_CTL_V_INTR_MASKING);
         control.clean_bits.set(0);
         control
             .tlb_control
@@ -354,6 +346,9 @@ impl SvmVcpu {
             SvmIntercept::STGI,
             SvmIntercept::CLGI,
             SvmIntercept::SKINIT,
+            SvmIntercept::MONITOR,
+            SvmIntercept::MWAIT,
+            SvmIntercept::MWAIT_CONDITIONAL,
             SvmIntercept::XSETBV,
         ] {
             control.set_intercept(intercept);
@@ -580,9 +575,9 @@ impl SvmVcpu {
             }
             self.launched = true;
 
-            self.complete_virtual_interrupt_delivery();
             self.clear_event_inj();
             self.reinject_interrupted_event();
+            self.sync_virtual_interrupt_delivery();
 
             let exit_info = self.exit_info()?;
 
@@ -623,7 +618,6 @@ impl SvmVcpu {
             {
                 Some(self.handle_ignored_msr_access(exit_info))
             }
-            Ok(SvmExitCode::VINTR) => Some(self.handle_interrupt_window()),
             _ => None,
         }
     }
@@ -788,12 +782,9 @@ impl SvmVcpu {
                 res.ebx |= (self.vcpu_id as u32 & 0xff) << 24;
                 res
             }
-            0xb | 0x1f => CpuIdResult {
-                eax: 0,
-                ebx: 0,
-                ecx: regs_clone.rcx as u32,
-                edx: 0,
-            },
+            0xb | 0x1f => {
+                crate::virtual_topology_cpuid(self.vcpu_id, self.vcpu_count, regs_clone.rcx as u32)
+            }
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if regs_clone.rcx == 0 {
@@ -955,35 +946,6 @@ impl SvmVcpu {
         self.advance_rip(VM_EXIT_INSTR_LEN_RDTSC)
     }
 
-    fn allow_interrupt(&self) -> bool {
-        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
-        vmcb.state.rflags.get() & RFlags::INTERRUPT_FLAG.bits() != 0
-            && vmcb.control.int_state.get() & SVM_INT_STATE_INTERRUPT_SHADOW == 0
-    }
-
-    fn set_interrupt_window(&mut self, enable: bool) {
-        let vmcb = unsafe { self.vmcb.as_vmcb() };
-        if enable {
-            let priority = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
-            vmcb.control.int_vector.set(0);
-            vmcb.control.int_control.set(
-                (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
-                    | SVM_INT_CTL_V_IRQ
-                    | priority
-                    | SVM_INT_CTL_V_INTR_MASKING,
-            );
-            vmcb.control.set_intercept(SvmIntercept::VINTR);
-        } else {
-            vmcb.control
-                .int_control
-                .set(vmcb.control.int_control.get() & !SVM_INT_CTL_V_IRQ_INJECTION_BITS);
-            vmcb.control
-                .intercept_vector3
-                .modify(InterceptVec3::VINTR::CLEAR);
-        }
-        vmcb.control.clean_bits.set(0);
-    }
-
     fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
         let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
@@ -998,39 +960,30 @@ impl SvmVcpu {
         vmcb.control.clean_bits.set(0);
     }
 
-    fn handle_interrupt_window(&mut self) -> AxResult {
-        self.set_interrupt_window(false);
-        self.inject_pending_events()
-    }
-
-    fn complete_virtual_interrupt_delivery(&mut self) {
-        let Some(event) = self.injecting_event.take() else {
+    fn sync_virtual_interrupt_delivery(&mut self) {
+        let Some(event) = self.pending_events.front().copied() else {
             return;
         };
+        if event.vector < 32 || self.virtual_interrupt_vector().is_some() {
+            return;
+        }
 
-        self.set_interrupt_window(false);
         self.vlapic
             .accept_interrupt(event.vector, event.level_triggered);
+        self.pending_events.pop_front();
     }
 
     fn inject_pending_events(&mut self) -> AxResult {
-        if self.injecting_event.is_some() {
-            return Ok(());
-        }
-
         let Some(event) = self.pending_events.front().copied() else {
             return Ok(());
         };
 
         if event.vector >= 32 {
-            if self.allow_interrupt() {
-                self.set_interrupt_window(false);
-                self.arm_virtual_interrupt(event);
-                self.injecting_event = Some(event);
-                self.pending_events.pop_front();
-            } else {
-                self.set_interrupt_window(true);
+            if self.virtual_interrupt_vector() == Some(event.vector) {
+                return Ok(());
             }
+
+            self.arm_virtual_interrupt(event);
             return Ok(());
         }
 
@@ -1393,7 +1346,15 @@ impl SvmVcpu {
         let rax = self.regs().rax;
         unsafe {
             super::instructions::clgi();
-            self.vmcb.as_vmcb().state.rax.set(rax);
+            let vmcb = self.vmcb.as_vmcb();
+            vmcb.state.rax.set(rax);
+            // All SVM vCPUs currently share one guest ASID. A vCPU switch on
+            // the same host CPU must therefore invalidate translations left
+            // by the previously running VMCB.
+            vmcb.control
+                .tlb_control
+                .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
+            vmcb.control.clean_bits.set(0);
         }
         self.load_save_states.save();
         unsafe {
@@ -1402,8 +1363,32 @@ impl SvmVcpu {
     }
 
     fn after_vmrun(&mut self) {
+        let (rip, rsp, rflags, cr0, cr3, cr4, efer, rax) = unsafe {
+            let state = &self.vmcb.as_vmcb_ref().state;
+            (
+                state.rip.get(),
+                state.rsp.get(),
+                state.rflags.get(),
+                state.cr0.get(),
+                state.cr3.get(),
+                state.cr4.get(),
+                state.efer.get(),
+                state.rax.get(),
+            )
+        };
         unsafe {
+            // VMSAVE restores host hidden state after VMLOAD, but also writes
+            // the host return state into the supplied VMCB.
             let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
+            let state = &self.vmcb.as_vmcb().state;
+            state.rip.set(rip);
+            state.rsp.set(rsp);
+            state.rflags.set(rflags);
+            state.cr0.set(cr0);
+            state.cr3.set(cr3);
+            state.cr4.set(cr4);
+            state.efer.set(efer);
+            state.rax.set(rax);
         }
         self.load_save_states.load();
         self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
@@ -1511,7 +1496,6 @@ impl AxArchVCpu for SvmVcpu {
                     return Ok(AxVCpuExitReason::Halt);
                 }
             };
-
             Ok(match exit_code {
                 SvmExitCode::INVALID | SvmExitCode::BUSY => AxVCpuExitReason::FailEntry {
                     hardware_entry_failure_reason: match exit_code {
@@ -1536,7 +1520,7 @@ impl AxArchVCpu for SvmVcpu {
                 }
                 SvmExitCode::RDTSC => {
                     self.handle_rdtsc()?;
-                    AxVCpuExitReason::PreemptionTimer
+                    AxVCpuExitReason::Nothing
                 }
                 SvmExitCode::IOIO => {
                     let (is_in, is_string, is_repeat, width, port) =
@@ -1608,6 +1592,14 @@ impl AxArchVCpu for SvmVcpu {
                 }
                 SvmExitCode::PAUSE => {
                     self.advance_rip(2)?;
+                    AxVCpuExitReason::PreemptionTimer
+                }
+                SvmExitCode::MONITOR => {
+                    self.advance_rip(3)?;
+                    AxVCpuExitReason::Nothing
+                }
+                SvmExitCode::MWAIT | SvmExitCode::MWAIT_CONDITIONAL => {
+                    self.advance_rip(3)?;
                     AxVCpuExitReason::PreemptionTimer
                 }
                 SvmExitCode::SHUTDOWN => AxVCpuExitReason::SystemDown,

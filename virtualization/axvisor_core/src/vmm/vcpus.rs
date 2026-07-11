@@ -502,7 +502,6 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
         rearm_vcpu_timeslice();
         #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
         rearm_passthrough_poll_timer(&vm);
-
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => {
                 match exit_reason {
@@ -564,6 +563,7 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
 
                         let Some(target_vcpu_id) = cpu_up_target_vcpu_id(&vm, target_cpu) else {
                             warn!("Physical CPU ID {target_cpu} not found in VM configuration");
+                            #[cfg(not(target_arch = "x86_64"))]
                             vcpu.set_return_value(usize::MAX);
                             continue;
                         };
@@ -579,10 +579,12 @@ fn vcpu_run(vm_id: usize, vcpu_id: usize) {
 
                         match vcpu_on(vm.clone(), target_vcpu_id, entry_point, arg as _) {
                             Ok(()) => {
+                                #[cfg(not(target_arch = "x86_64"))]
                                 vcpu.set_return_value(0);
                             }
                             Err(err) => {
                                 warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
+                                #[cfg(not(target_arch = "x86_64"))]
                                 vcpu.set_return_value(usize::MAX);
                             }
                         }
