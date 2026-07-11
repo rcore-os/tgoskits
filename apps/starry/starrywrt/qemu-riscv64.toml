@@ -1,0 +1,17 @@
+# StarryWRT riscv64 - OpenWrt-userland distribution on StarryOS. Platform: dynamic (uefi=false /
+# to_bin=true). prebuild cross-compiles uci + opkg and provisions dropbear + dnsmasq from Alpine
+# (v3.23 ships riscv64 packages) over virtio-net; the boot gate verifies every software stack
+# under TCG.
+args = [
+    "-nographic", "-m", "1024M", "-smp", "1", "-cpu", "rv64",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-starrywrt.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 6000
