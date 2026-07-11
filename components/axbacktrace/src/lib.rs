@@ -82,10 +82,12 @@ pub fn fp_range() -> Option<Range<usize>> {
 /// word-aligned, must advance monotonically (a non-advancing or backward `fp`
 /// ends the walk), and a jump of 8 MiB or more between adjacent frames ends it.
 /// A return address outside `ip_range` is skipped (not recorded) but the walk
-/// continues, since a single bad IP does not imply the whole chain is corrupt.
-/// `read(va)` returns the machine word at `va`, or `None` if it cannot be read
-/// safely; a failed read ends the walk. These guards bound the walk so a
-/// corrupted chain can neither loop nor run past the depth cap.
+/// continues, since a single bad IP does not imply the whole chain is corrupt;
+/// a bounded *total*-iteration budget (a small multiple of `out.len()`) caps that
+/// skip path so a chain of all-skipped frames cannot spin. `read(va)` returns the
+/// machine word at `va`, or `None` if it cannot be read safely; a failed read
+/// ends the walk. These guards bound the walk so a corrupted chain can neither
+/// loop nor run past the depth cap.
 pub fn walk_fp(
     pc: usize,
     mut fp: usize,
@@ -100,16 +102,34 @@ pub fn walk_fp(
     /// Largest plausible gap between adjacent frame pointers; a larger jump means
     /// the chain is corrupt (mirrors `unwind_core`'s 8 MiB guard).
     const MAX_FRAME_GAP: usize = 8 * 1024 * 1024;
+    /// Total-iteration budget as a multiple of the recorded-frame cap. A frame
+    /// whose return address is outside `ip_range` is skipped without consuming a
+    /// recorded slot, so `n < out.len()` alone does not bound the loop; this caps
+    /// *total* iterations so a crafted all-skip chain (every `[fp+8]` out of range)
+    /// cannot spin the walk — which matters when `read` does real work per step
+    /// (two no-fault page-table walks in the user reader).
+    const MAX_STEP_FACTOR: usize = 4;
 
     if out.is_empty() {
         return 0;
     }
     out[0] = pc as u64;
     let mut n = 1;
+    let mut steps = 0usize;
+    let max_steps = out.len().saturating_mul(MAX_STEP_FACTOR);
 
-    while n < out.len() {
-        // The frame record must be inside the stack range and word-aligned.
-        if !fp_range.contains(&fp) || !fp.is_multiple_of(core::mem::align_of::<usize>()) {
+    while n < out.len() && steps < max_steps {
+        steps += 1;
+        // The whole frame record ([fp] = caller fp, [fp + 8] = saved LR) must sit
+        // inside the stack range and `fp` be word-aligned. Bounding `fp + 8` (not
+        // just `fp`) keeps the saved-LR read below from touching one word past
+        // `fp_range.end` — which matters for a direct-deref reader.
+        let record_end = fp.wrapping_add(2 * FP_TO_LR_OFFSET);
+        if !fp_range.contains(&fp)
+            || record_end > fp_range.end
+            || record_end < fp
+            || !fp.is_multiple_of(core::mem::align_of::<usize>())
+        {
             break;
         }
         let Some(caller_fp) = read(fp) else { break };
@@ -117,27 +137,26 @@ pub fn walk_fp(
             break;
         };
 
-        // A non-advancing / backward frame pointer would revisit the same frame.
-        if caller_fp != 0 && caller_fp <= fp {
+        // The top of the chain (fp == 0) or a non-advancing / backward / wildly
+        // distant caller ends the walk. Checked here so it bounds BOTH the skip and
+        // record paths — a small-gap all-skip chain must still be step-capped above.
+        if caller_fp == 0 {
+            // Record a final in-range leaf return address before stopping.
+            if ip_range.contains(&lr) {
+                out[n] = lr as u64;
+                n += 1;
+            }
+            break;
+        }
+        if caller_fp <= fp || caller_fp - fp >= MAX_FRAME_GAP {
             break;
         }
 
         // Skip a return address outside the code range but keep unwinding: one
         // bad IP does not necessarily mean the FP chain itself is broken.
-        if !ip_range.contains(&lr) {
-            if caller_fp == 0 {
-                break;
-            }
-            fp = caller_fp;
-            continue;
-        }
-
-        out[n] = lr as u64;
-        n += 1;
-
-        // Top of the chain, or an implausibly large jump — stop after recording.
-        if caller_fp == 0 || caller_fp - fp >= MAX_FRAME_GAP {
-            break;
+        if ip_range.contains(&lr) {
+            out[n] = lr as u64;
+            n += 1;
         }
         fp = caller_fp;
     }
@@ -811,6 +830,28 @@ mod tests {
             &mut [],
         );
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn walk_fp_step_cap_terminates_all_skip_chain() {
+        // An ever-advancing chain where every return address (`[fp+8]`) is out of
+        // `ip_range`, so nothing is ever recorded and `n` never grows. The reader
+        // fabricates `[fp] = fp + 16` (a monotonic, always-mapped caller) and
+        // `[fp+8] = 0`. Without the total-step cap the loop would spin forever (a
+        // hang here would be the DoS the cap prevents); with it, the walk
+        // terminates and records only the leaf.
+        let reader = |va: usize| Some(if va.is_multiple_of(16) { va + 16 } else { 0 });
+        let mut out = [0u64; 4];
+        let n = walk_fp(
+            0xF00,
+            0x1000,
+            &(1..usize::MAX),
+            &(0..usize::MAX),
+            reader,
+            &mut out,
+        );
+        assert_eq!(n, 1);
+        assert_eq!(out[0], 0xF00);
     }
 
     // --- capture_trap with Inner::Captured verification ---
