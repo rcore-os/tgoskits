@@ -86,7 +86,7 @@
             ++ optionalPackageByPath [ "qemu-user-static" ]
             ++ optionalPackageByPath [ "xorriso" ];
 
-          crossPackages =
+          crossCompilers =
             optionalPackageByPath [
               "pkgsCross"
               "aarch64-multiplatform-musl"
@@ -112,15 +112,87 @@
               "cc"
             ];
 
+          mkCrossCompilerAliases =
+            {
+              name,
+              packagePath,
+              sourcePrefix,
+              aliasPrefix,
+            }:
+            let
+              crossCompiler = lib.attrByPath packagePath null pkgs;
+              tools = [
+                "ar"
+                "c++"
+                "cc"
+                "cpp"
+                "g++"
+                "gcc"
+                "ld"
+                "nm"
+                "objcopy"
+                "objdump"
+                "ranlib"
+                "readelf"
+                "strip"
+              ];
+              aliases = map (
+                tool:
+                pkgs.writeShellScriptBin "${aliasPrefix}-${tool}" ''
+                  exec "${crossCompiler}/bin/${sourcePrefix}-${tool}" \
+                    ${
+                      lib.optionalString (builtins.elem tool [
+                        "c++"
+                        "cc"
+                        "g++"
+                        "gcc"
+                      ]) "-fno-stack-protector"
+                    } "$@"
+                ''
+              ) tools;
+            in
+            lib.optional (crossCompiler != null) (
+              pkgs.symlinkJoin {
+                inherit name;
+                paths = aliases;
+              }
+            );
+
+          crossCompilerAliases =
+            mkCrossCompilerAliases {
+              name = "x86_64-linux-musl-toolchain-aliases";
+              packagePath = [
+                "pkgsCross"
+                "musl64"
+                "stdenv"
+                "cc"
+              ];
+              sourcePrefix = "x86_64-unknown-linux-musl";
+              aliasPrefix = "x86_64-linux-musl";
+            }
+            ++ mkCrossCompilerAliases {
+              name = "aarch64-linux-musl-toolchain-aliases";
+              packagePath = [
+                "pkgsCross"
+                "aarch64-multiplatform-musl"
+                "stdenv"
+                "cc"
+              ];
+              sourcePrefix = "aarch64-unknown-linux-musl";
+              aliasPrefix = "aarch64-linux-musl";
+            };
+
+          crossCompilerPath = lib.makeBinPath (crossCompilerAliases ++ crossCompilers);
+
           mkTgoskitsShell =
             {
               name,
-              extraPackages ? [ ],
+              withCrossCompilers ? false,
             }:
             pkgs.mkShell {
               inherit name;
 
-              packages = commonPackages ++ extraPackages;
+              packages = commonPackages;
 
               LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
 
@@ -131,6 +203,16 @@
                 export CARGO_HOME="$project_root/.cargo"
                 export PATH="$CARGO_HOME/bin:$PATH"
 
+                ${lib.optionalString withCrossCompilers ''
+                  export PATH="${crossCompilerPath}:$PATH"
+                ''}
+
+                unset CC CXX AR RANLIB
+                unset CC_x86_64_unknown_linux_gnu
+                unset CXX_x86_64_unknown_linux_gnu
+                unset AR_x86_64_unknown_linux_gnu
+                unset RANLIB_x86_64_unknown_linux_gnu
+
                 # mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
                 mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
 
@@ -138,8 +220,9 @@
                 # echo "  RUSTUP_HOME=$RUSTUP_HOME"
                 echo "  CARGO_HOME=$CARGO_HOME"
                 echo "  Rust toolchain: rust-overlay from rust-toolchain.toml"
-
-                exec fish
+                ${lib.optionalString withCrossCompilers ''
+                  echo "  Cross compilers: available by target-prefixed command name"
+                ''}
               '';
             };
         in
@@ -150,7 +233,7 @@
 
           devShells.full = mkTgoskitsShell {
             name = "tgoskits-dev-full";
-            extraPackages = crossPackages;
+            withCrossCompilers = true;
           };
 
           formatter = pkgs.nixfmt;
