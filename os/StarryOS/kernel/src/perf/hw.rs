@@ -242,6 +242,9 @@ struct SamplingState {
     /// `read` returns it for `PERF_FORMAT_LOST`. The `Arc` keeps the counter alive
     /// for that raw pointer; it drops only after teardown unregisters the slot.
     lost: Arc<AtomicU64>,
+    /// How many of [`lost`](Self::lost) have been emitted as `PERF_RECORD_LOST`
+    /// records, so the handler only reports newly-dropped samples in-band.
+    lost_reported: Arc<AtomicU64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -608,6 +611,7 @@ impl HwPerfEvent {
             };
             let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
             let lost_ptr = Arc::as_ptr(&sampling.lost) as *const ();
+            let lost_reported_ptr = Arc::as_ptr(&sampling.lost_reported) as *const ();
             sampling::ensure_pmu_irq_registered();
             ax_cpu::pmu::counter::preload(n, period);
             sampling::register(
@@ -623,6 +627,7 @@ impl HwPerfEvent {
                     target_freq,
                     last_time: 0,
                     lost: lost_ptr,
+                    lost_reported: lost_reported_ptr,
                     // System-wide sampling: attribute to the interrupted
                     // `current()` in the handler (it matches the sampled IP).
                     owner_ids: None,
@@ -1462,6 +1467,7 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
             ring: None,
             redirect: None,
             lost: Arc::new(AtomicU64::new(0)),
+            lost_reported: Arc::new(AtomicU64::new(0)),
         })
     } else {
         None

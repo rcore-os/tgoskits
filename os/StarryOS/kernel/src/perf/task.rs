@@ -159,6 +159,9 @@ pub struct PerTaskCounter {
     /// by the overflow handler through the per-task [`SampleSlot`]'s `lost` pointer
     /// at this field; read back by `read(perf_fd)`.
     lost: AtomicU64,
+    /// How many of [`lost`](Self::lost) have been reported in-band as
+    /// `PERF_RECORD_LOST` records (the handler's `lost_reported` pointer).
+    lost_reported: AtomicU64,
     /// Accumulated enabled time across past windows (ns).
     time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Strictly `<=
@@ -347,6 +350,7 @@ impl PerTaskCounter {
             run_since_ns: AtomicU64::new(0),
             enabled_at_ns: AtomicU64::new(0),
             lost: AtomicU64::new(0),
+            lost_reported: AtomicU64::new(0),
             dead: AtomicBool::new(false),
             hw_freed: AtomicBool::new(false),
             is_sampling: cfg.sample_period > 0,
@@ -617,6 +621,7 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64, owner_pid: u32, owner_tid
                 target_freq: ptc.freq_target,
                 last_time: 0,
                 lost: &ptc.lost as *const AtomicU64 as *const (),
+                lost_reported: &ptc.lost_reported as *const AtomicU64 as *const (),
                 // Per-task event: attribute samples to the monitored thread even
                 // if the overflow IRQ lands after a switch away from it.
                 owner_ids: Some((owner_pid, owner_tid)),
