@@ -23,7 +23,7 @@ use linux_raw_sys::{
     ioctl::{
         FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
         SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
-        SIOCGIFTXQLEN,
+        SIOCGIFTXQLEN, SIOCSIFFLAGS,
     },
     net::{AF_INET, ifreq},
 };
@@ -113,6 +113,12 @@ fn read_ifreq_interface(arg: usize) -> AxResult<InterfaceInfo> {
 
 fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
     Ok(vm_write_slice((arg + IFREQ_DATA_OFFSET) as *mut u8, data)?)
+}
+
+fn read_ifreq_flags(arg: usize) -> AxResult<i16> {
+    Ok(i16::from_ne_bytes(read_user_bytes::<2>(
+        (arg + IFREQ_DATA_OFFSET) as *const u8,
+    )?))
 }
 
 fn sockaddr_in_bytes(ip: [u8; 4]) -> [u8; 16] {
@@ -286,6 +292,12 @@ impl FileLike for Socket {
             SIOCGIFFLAGS => {
                 let info = read_ifreq_interface(arg)?;
                 write_ifreq_data(arg, &linux_flags(&info).to_ne_bytes())?;
+            }
+            SIOCSIFFLAGS => {
+                let info = read_ifreq_interface(arg)?;
+                if read_ifreq_flags(arg)? != linux_flags(&info) {
+                    return Err(AxError::OperationNotSupported);
+                }
             }
             SIOCGIFADDR => {
                 let info = read_ifreq_interface(arg)?;
