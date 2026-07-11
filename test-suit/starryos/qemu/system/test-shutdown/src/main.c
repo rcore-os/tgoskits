@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -10,6 +11,10 @@ int main(void)
 
     /* ================================================================
      * 1. shutdown connected socket with SHUT_WR
+     *
+     * Verify that SHUT_WR makes the peer pollable and returns EOF from
+     * recv. Nix sandbox builders rely on this control-socket transition;
+     * missing peer EOF leaves the builder and its supervisor blocked.
      * ================================================================ */
     {
         int sv[2];
@@ -17,6 +22,21 @@ int main(void)
                   "create socketpair");
         CHECK_RET(shutdown(sv[0], SHUT_WR), 0,
                   "shutdown SHUT_WR returns 0");
+
+        struct pollfd peer = {
+            .fd = sv[1],
+            .events = POLLIN | POLLRDHUP,
+        };
+        CHECK_RET(poll(&peer, 1, 1000), 1,
+                  "peer observes SHUT_WR readiness");
+        CHECK((peer.revents & (POLLIN | POLLRDHUP)) != 0,
+              "peer reports readable EOF or read hangup");
+
+        CHECK_RET(fcntl(sv[1], F_SETFL, O_NONBLOCK), 0,
+                  "set peer nonblocking before EOF recv");
+        char byte;
+        CHECK_RET((int)recv(sv[1], &byte, sizeof(byte), 0), 0,
+                  "peer recv returns EOF after SHUT_WR");
         close(sv[0]);
         close(sv[1]);
     }
