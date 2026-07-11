@@ -103,6 +103,14 @@ fn next_freq_period(cur: u32, target_freq: u32, delta_ns: u64) -> u32 {
 
 /// `PERF_RECORD_SAMPLE` discriminant (`perf_event_type::PERF_RECORD_SAMPLE`).
 const PERF_RECORD_SAMPLE: u32 = 9;
+/// `PERF_RECORD_LOST` discriminant: an in-band record telling `perf report`/
+/// `perf script` how many samples the ring dropped, so they show "LOST n events!"
+/// and place the gap on the timeline (the read-only `PERF_FORMAT_LOST` total is a
+/// coarser substitute).
+const PERF_RECORD_LOST: u32 = 2;
+/// Byte length of a `PERF_RECORD_LOST`: `perf_event_header` (8) + `u64 id` +
+/// `u64 lost`.
+const PERF_RECORD_LOST_LEN: usize = 8 + 8 + 8;
 /// `PERF_RECORD_MISC_KERNEL`: the sample landed in kernel (EL1) context.
 const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
@@ -215,6 +223,12 @@ pub struct SampleSlot {
     /// as the slot is registered (teardown unregisters first), exactly like
     /// [`notify`](Self::notify). Null when the event tracks no lost count.
     pub lost: *const (),
+    /// Raw pointer to the owning event's *reported* lost `AtomicU64`: how many of
+    /// [`lost`](Self::lost) have already been emitted as `PERF_RECORD_LOST`
+    /// records. The handler flushes `lost - lost_reported` as an in-band record
+    /// before a sample whenever the ring has room. Kept alive exactly like
+    /// [`lost`](Self::lost); null when the event emits no in-band lost records.
+    pub lost_reported: *const (),
     /// Real userspace `(tgid, tid)` of the event owner for a **per-task** sampling
     /// event, captured at slice-arm time when the monitored [`Thread`] is known.
     /// The overflow handler prefers this over `current()` so a sample is
@@ -387,6 +401,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let id = slot.id;
         let notify_ptr = slot.notify;
         let lost_ptr = slot.lost;
+        let lost_reported_ptr = slot.lost_reported;
         let ring_vaddr = slot.ring_vaddr;
         let ring_len = slot.ring_len;
         let cur_period = slot.period;
@@ -444,6 +459,30 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             callchain: &chain[..nchain],
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
+
+        // Flush any not-yet-reported dropped samples as an in-band
+        // `PERF_RECORD_LOST` before this sample, so `perf report` shows
+        // "LOST n events!" on the timeline. Emitted only when the ring has room
+        // (it was full when the drops happened); otherwise it stays pending and
+        // is retried at the next sample, once userspace has drained the ring.
+        if !lost_ptr.is_null() && !lost_reported_ptr.is_null() {
+            // SAFETY: both pointers target the owning event's `AtomicU64`s, kept
+            // alive while the slot is registered (teardown unregisters first).
+            let total = unsafe { (*(lost_ptr as *const AtomicU64)).load(Ordering::Relaxed) };
+            let reported =
+                unsafe { (*(lost_reported_ptr as *const AtomicU64)).load(Ordering::Relaxed) };
+            if total > reported {
+                let mut lost_rec = [0u8; PERF_RECORD_LOST_LEN];
+                build_lost_record(&mut lost_rec, id, total - reported);
+                // SAFETY: as for the sample write below.
+                if unsafe { ring_write(ring_vaddr, ring_len, &lost_rec) } {
+                    // SAFETY: as above.
+                    unsafe {
+                        (*(lost_reported_ptr as *const AtomicU64)).store(total, Ordering::Relaxed)
+                    };
+                }
+            }
+        }
 
         // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
         // as long as the slot is registered (the event pins them, and teardown
@@ -578,6 +617,17 @@ struct SampleData<'a> {
     /// the `nr` count followed by the entries. Borrows the handler's fixed on-stack
     /// chain buffer.
     callchain: &'a [u64],
+}
+
+/// Serialize a `PERF_RECORD_LOST` into `buf`: `perf_event_header` (`type`,
+/// `misc = 0`, `size`) followed by the event `id` and the `lost` count, all
+/// native-endian — the layout `perf report` expects for a type-2 record.
+fn build_lost_record(buf: &mut [u8; PERF_RECORD_LOST_LEN], id: u64, lost: u64) {
+    buf[0..4].copy_from_slice(&PERF_RECORD_LOST.to_ne_bytes());
+    buf[4..6].copy_from_slice(&0u16.to_ne_bytes()); // misc
+    buf[6..8].copy_from_slice(&(PERF_RECORD_LOST_LEN as u16).to_ne_bytes());
+    buf[8..16].copy_from_slice(&id.to_ne_bytes());
+    buf[16..24].copy_from_slice(&lost.to_ne_bytes());
 }
 
 fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData<'_>) -> usize {
