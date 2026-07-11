@@ -12,6 +12,8 @@
 
 use core::arch::asm;
 
+use super::TrapFrame;
+
 /// Information probed from the PMU.
 pub struct PmuInfo {
     /// `PMCR_EL0.N`: number of programmable event counters.
@@ -691,4 +693,87 @@ pub fn interrupted_is_user() -> bool {
         asm!("mrs {}, SPSR_EL1", out(reg) spsr);
     }
     (spsr & 0xf) == 0
+}
+
+/// Per-CPU pointer to the [`TrapFrame`] of the context interrupted by the IRQ
+/// currently being dispatched, or `0` when not inside an IRQ dispatch.
+///
+/// Published at the two IRQ-entry sites (EL1 kernel interrupt, EL0 user
+/// interrupt) immediately before `dispatch_irq` and cleared immediately after,
+/// so the PMU overflow handler — which runs *inside* `dispatch_irq` — can read
+/// the interrupted frame pointer (`x29`) for `PERF_SAMPLE_CALLCHAIN` unwinding.
+/// The live `ELR_EL1`/`SPSR_EL1` (see [`interrupted_pc`]/[`interrupted_is_user`])
+/// still describe the interrupted PC and EL, but `x29` survives only in the
+/// saved frame — the handler's own frames have long since clobbered the GPR.
+#[ax_percpu::def_percpu]
+static PMU_TRAP_FRAME: usize = 0;
+
+/// Publishes `tf` as the interrupted trap frame for the current CPU.
+///
+/// Called at IRQ entry, immediately before `dispatch_irq`, and paired with
+/// [`clear_trap_frame`] immediately after it returns. A single per-CPU store
+/// (TPIDR-relative) that cannot fault and does not touch the register
+/// save/restore path.
+///
+/// # Safety
+/// `tf` must point to a valid [`TrapFrame`] that stays alive until
+/// [`clear_trap_frame`] runs on this CPU (i.e. for the duration of the IRQ
+/// dispatch). Interrupts must remain masked across the publish → dispatch →
+/// clear window so no nested IRQ observes this CPU's pointer for a frame that
+/// has already returned.
+#[inline]
+pub unsafe fn set_trap_frame(tf: *const TrapFrame) {
+    PMU_TRAP_FRAME.write_current(tf as usize);
+}
+
+/// Clears the published interrupted trap frame for the current CPU.
+///
+/// Called immediately after `dispatch_irq` returns, so no later sampling
+/// interrupt can observe a stale (already-returned) frame.
+#[inline]
+pub fn clear_trap_frame() {
+    PMU_TRAP_FRAME.write_current(0);
+}
+
+/// The interrupted frame pointer (`x29`), from the trap frame published at IRQ
+/// entry.
+///
+/// Returns `None` when no frame is published — e.g. the overflow was taken on a
+/// path that does not plumb the frame (synchronous exceptions), or before the
+/// plumbing ran. Callers must fall back to a leaf-only callchain in that case
+/// rather than skipping the sample.
+pub fn interrupted_fp() -> Option<usize> {
+    let p = PMU_TRAP_FRAME.read_current();
+    if p == 0 {
+        return None;
+    }
+    // SAFETY: `p` was published from a live `&TrapFrame` by `set_trap_frame` and
+    // is only non-zero for the duration of the IRQ dispatch on this CPU, during
+    // which we are running.
+    let tf = p as *const TrapFrame;
+    Some(unsafe { (*tf).x[29] as usize })
+}
+
+/// The interrupted stack pointer.
+///
+/// For a user (EL0) interrupt the interrupted SP lives in `SP_EL0`, which the
+/// kernel never overwrites (it runs on `SP_EL1`), so it still holds the user SP
+/// and is read live. For a kernel (EL1) interrupt it is the pre-trap SP saved in
+/// the published frame. Returns `None` if no frame is published on the kernel
+/// path. Used only to bound the user-stack unwind window.
+pub fn interrupted_sp() -> Option<usize> {
+    if interrupted_is_user() {
+        let sp: u64;
+        unsafe {
+            asm!("mrs {}, SP_EL0", out(reg) sp);
+        }
+        return Some(sp as usize);
+    }
+    let p = PMU_TRAP_FRAME.read_current();
+    if p == 0 {
+        return None;
+    }
+    // SAFETY: see `interrupted_fp`.
+    let tf = p as *const TrapFrame;
+    Some(unsafe { (*tf).sp as usize })
 }
