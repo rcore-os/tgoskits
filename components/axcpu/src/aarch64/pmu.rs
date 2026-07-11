@@ -343,6 +343,52 @@ pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
     }
 }
 
+/// Maps a `PERF_TYPE_HW_CACHE` config to an ARM PMUv3 event number, or `None`
+/// for a combination ARM PMUv3 does not define (matching Linux's
+/// `CACHE_OP_UNSUPPORTED`, which rejects the event at open).
+///
+/// The config packs `cache_id | (op << 8) | (result << 16)`: `cache_id` is
+/// L1D(0)/L1I(1)/LL(2)/DTLB(3)/ITLB(4)/BPU(5)/NODE(6), `op` is READ(0)/WRITE(1)/
+/// PREFETCH(2), `result` is ACCESS(0)/MISS(1). ARM's basic cache events do not
+/// split read vs write, so both map to the same event; PREFETCH and NODE have no
+/// architectural counterpart and are rejected.
+pub fn hw_cache_to_arm(config: u64) -> Option<u16> {
+    const READ: u8 = 0;
+    const WRITE: u8 = 1;
+    const ACCESS: u8 = 0;
+    const MISS: u8 = 1;
+
+    let cache_id = (config & 0xff) as u8;
+    let op = ((config >> 8) & 0xff) as u8;
+    let result = ((config >> 16) & 0xff) as u8;
+
+    Some(match (cache_id, op, result) {
+        // L1D: L1D_CACHE / L1D_CACHE_REFILL.
+        (0, READ | WRITE, ACCESS) => 0x04,
+        (0, READ | WRITE, MISS) => 0x03,
+        // L1I: L1I_CACHE / L1I_CACHE_REFILL.
+        (1, READ, ACCESS) => 0x14,
+        (1, READ, MISS) => 0x01,
+        // LL (last level): LL_CACHE_RD / LL_CACHE_MISS_RD for reads, else
+        // LL_CACHE / LL_CACHE_MISS.
+        (2, READ, ACCESS) => 0x36,
+        (2, READ, MISS) => 0x37,
+        (2, WRITE, ACCESS) => 0x32,
+        (2, WRITE, MISS) => 0x33,
+        // DTLB: L1D_TLB / L1D_TLB_REFILL.
+        (3, READ | WRITE, ACCESS) => 0x25,
+        (3, READ | WRITE, MISS) => 0x05,
+        // ITLB: L1I_TLB / L1I_TLB_REFILL.
+        (4, READ, ACCESS) => 0x26,
+        (4, READ, MISS) => 0x02,
+        // BPU (branch prediction): BR_PRED / BR_MIS_PRED.
+        (5, READ | WRITE, ACCESS) => 0x12,
+        (5, READ | WRITE, MISS) => 0x10,
+        // PREFETCH ops, NODE cache, and every other combination are unsupported.
+        _ => return None,
+    })
+}
+
 /// The generic programmable event counters (`PMEVCNTRn_EL0` / `PMEVTYPERn_EL0`).
 ///
 /// `n` is the logical counter index in `0..num_counters` (from

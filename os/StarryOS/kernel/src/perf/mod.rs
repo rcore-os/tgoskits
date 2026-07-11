@@ -514,6 +514,7 @@ pub fn perf_event_open(
     // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
     // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_HW_CACHE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
         || attr.type_ == hw::ARMV8_CORTEX_A55_TYPE
