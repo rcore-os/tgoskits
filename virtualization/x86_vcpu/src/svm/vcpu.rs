@@ -20,14 +20,20 @@ use axvisor_api::{
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use x86::controlregs::Xcr0;
-use x86_64::registers::control::{Cr0Flags, Cr4Flags, EferFlags};
+use x86_64::registers::{
+    control::{Cr0Flags, Cr4Flags, EferFlags},
+    rflags::RFlags,
+};
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{
     definitions::{SvmExitCode, SvmIntercept},
     flags::{InterruptType, VmcbIntInfo},
     structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
+    vmcb::{
+        InterceptCrRw, InterceptExceptions, InterceptVec3, NestedCtl, VmcbTlbControl,
+        set_vmcb_segment,
+    },
 };
 use crate::{
     X86RealModeEntryState, X86VCpuCreateConfig, X86VCpuSetupConfig, msr::Msr,
@@ -89,6 +95,9 @@ const SVM_INT_CTL_V_INTR_PRIO_SHIFT: u32 = 16;
 const SVM_INT_CTL_V_INTR_PRIO_MASK: u32 = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
 const SVM_INT_CTL_V_IGN_TPR: u32 = 1 << 20;
 const SVM_INT_CTL_V_INTR_MASKING: u32 = 1 << 24;
+const SVM_INT_CTL_V_IRQ_INJECTION_BITS: u32 =
+    SVM_INT_CTL_V_IRQ | SVM_INT_CTL_V_INTR_PRIO_MASK | SVM_INT_CTL_V_IGN_TPR;
+const SVM_INT_STATE_INTERRUPT_SHADOW: u32 = 1;
 
 macro_rules! save_regs_no_rax {
     () => {
@@ -212,6 +221,8 @@ pub struct SvmVcpu {
     msrpm: MSRPm,
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
+    /// External IRQ armed through V_IRQ for the current guest entry.
+    injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic,
     /// Whether HLT exits should be returned to the VMM instead of used as poll points.
@@ -237,6 +248,7 @@ impl SvmVcpu {
             iopm: IOPm::passthrough_all()?,
             msrpm: MSRPm::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
+            injecting_event: None,
             vlapic: EmulatedLocalApic::new(vm_id, vcpu_id),
             hlt_exiting: false,
             xstate: XState::new(),
@@ -568,9 +580,9 @@ impl SvmVcpu {
             }
             self.launched = true;
 
+            self.complete_virtual_interrupt_delivery();
             self.clear_event_inj();
             self.reinject_interrupted_event();
-            self.sync_virtual_interrupt_delivery();
 
             let exit_info = self.exit_info()?;
 
@@ -611,6 +623,7 @@ impl SvmVcpu {
             {
                 Some(self.handle_ignored_msr_access(exit_info))
             }
+            Ok(SvmExitCode::VINTR) => Some(self.handle_interrupt_window()),
             _ => None,
         }
     }
@@ -942,43 +955,82 @@ impl SvmVcpu {
         self.advance_rip(VM_EXIT_INSTR_LEN_RDTSC)
     }
 
-    fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
+    fn allow_interrupt(&self) -> bool {
+        let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
+        vmcb.state.rflags.get() & RFlags::INTERRUPT_FLAG.bits() != 0
+            && vmcb.control.int_state.get() & SVM_INT_STATE_INTERRUPT_SHADOW == 0
+    }
+
+    fn set_interrupt_window(&mut self, enable: bool) {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
-        let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
-        let int_control = (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
-            | SVM_INT_CTL_V_IRQ
-            | SVM_INT_CTL_V_IGN_TPR
-            | SVM_INT_CTL_V_INTR_MASKING
-            | priority;
-        vmcb.control.int_vector.set(event.vector as u32);
-        vmcb.control.int_control.set(int_control);
+        if enable {
+            let priority = 0xf << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+            vmcb.control.int_vector.set(0);
+            vmcb.control.int_control.set(
+                (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
+                    | SVM_INT_CTL_V_IRQ
+                    | priority
+                    | SVM_INT_CTL_V_INTR_MASKING,
+            );
+            vmcb.control.set_intercept(SvmIntercept::VINTR);
+        } else {
+            vmcb.control
+                .int_control
+                .set(vmcb.control.int_control.get() & !SVM_INT_CTL_V_IRQ_INJECTION_BITS);
+            vmcb.control
+                .intercept_vector3
+                .modify(InterceptVec3::VINTR::CLEAR);
+        }
         vmcb.control.clean_bits.set(0);
     }
 
-    fn sync_virtual_interrupt_delivery(&mut self) {
-        let Some(event) = self.pending_events.front().copied() else {
+    fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
+        let vmcb = unsafe { self.vmcb.as_vmcb() };
+        let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+        vmcb.control.int_vector.set(event.vector as u32);
+        vmcb.control.int_control.set(
+            (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
+                | SVM_INT_CTL_V_IRQ
+                | SVM_INT_CTL_V_IGN_TPR
+                | SVM_INT_CTL_V_INTR_MASKING
+                | priority,
+        );
+        vmcb.control.clean_bits.set(0);
+    }
+
+    fn handle_interrupt_window(&mut self) -> AxResult {
+        self.set_interrupt_window(false);
+        self.inject_pending_events()
+    }
+
+    fn complete_virtual_interrupt_delivery(&mut self) {
+        let Some(event) = self.injecting_event.take() else {
             return;
         };
-        if event.vector < 32 || self.virtual_interrupt_vector().is_some() {
-            return;
-        }
 
+        self.set_interrupt_window(false);
         self.vlapic
             .accept_interrupt(event.vector, event.level_triggered);
-        self.pending_events.pop_front();
     }
 
     fn inject_pending_events(&mut self) -> AxResult {
+        if self.injecting_event.is_some() {
+            return Ok(());
+        }
+
         let Some(event) = self.pending_events.front().copied() else {
             return Ok(());
         };
 
         if event.vector >= 32 {
-            if self.virtual_interrupt_vector() == Some(event.vector) {
-                return Ok(());
+            if self.allow_interrupt() {
+                self.set_interrupt_window(false);
+                self.arm_virtual_interrupt(event);
+                self.injecting_event = Some(event);
+                self.pending_events.pop_front();
+            } else {
+                self.set_interrupt_window(true);
             }
-
-            self.arm_virtual_interrupt(event);
             return Ok(());
         }
 
