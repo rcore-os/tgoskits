@@ -48,6 +48,8 @@ use ax_kernel_guard::NoPreemptIrqSave;
 use ax_task::IrqNotify;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
+use crate::task::AsThread;
+
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
 }
@@ -213,6 +215,17 @@ pub struct SampleSlot {
     /// as the slot is registered (teardown unregisters first), exactly like
     /// [`notify`](Self::notify). Null when the event tracks no lost count.
     pub lost: *const (),
+    /// Real userspace `(tgid, tid)` of the event owner for a **per-task** sampling
+    /// event, captured at slice-arm time when the monitored [`Thread`] is known.
+    /// The overflow handler prefers this over `current()` so a sample is
+    /// attributed to the monitored task even when the overflow IRQ is serviced
+    /// after a context switch away from it (per-task skid). `None` for
+    /// **system-wide** slots, where the handler attributes the sample to the
+    /// interrupted `current()` — matching the sampled IP (Linux `perf record -a`
+    /// semantics).
+    ///
+    /// [`Thread`]: crate::task::Thread
+    pub owner_ids: Option<(u32, u32)>,
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -377,13 +390,35 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let ring_vaddr = slot.ring_vaddr;
         let ring_len = slot.ring_len;
         let cur_period = slot.period;
+        let owner_ids = slot.owner_ids;
 
         // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
-        // (validated at open to set IP and only supported bits). pid/tid are
-        // best-effort: the interrupted task's scheduler id (non-zero, stable per
-        // task) — enough for perf to parse + count samples; precise user TID is a
-        // future refinement. time/cpu are the real interrupt-time values.
-        let tid = ax_task::current().id().as_u64() as u32;
+        // (validated at open to set IP and only supported bits). pid/tid are the
+        // real userspace (tgid, tid) so a sample keys on the SAME ids the
+        // COMM/MMAP2 side-band records carry (process tgid + thread tid) and
+        // `perf report` can join it to the right process/DSO map. For a per-task
+        // event use the owner ids captured at slice-arm time: the overflow IRQ
+        // can be serviced after a context switch away from the monitored task, so
+        // `current()` would misattribute the sample; the captured owner is always
+        // the right task. For a system-wide event (`owner_ids == None`) attribute
+        // to the interrupted `current()`, which matches the sampled IP. The
+        // `current()` reads are IRQ-safe: `try_as_thread` is a lock-free
+        // `task_ext` downcast, `Process::pid` is a plain field read, and
+        // `Thread::tid` is an atomic load; a kernel task has no `Thread`, so fall
+        // back to the scheduler id. time/cpu are the real interrupt-time values.
+        let (pid, tid) = match owner_ids {
+            Some(ids) => ids,
+            None => {
+                let curr = ax_task::current();
+                match curr.try_as_thread() {
+                    Some(thr) => (thr.proc_data.proc.pid() as u32, thr.tid()),
+                    None => {
+                        let id = curr.id().as_u64() as u32;
+                        (id, id)
+                    }
+                }
+            }
+        };
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
         // Call stack for PERF_SAMPLE_CALLCHAIN (alloc-free, fixed on-stack buffer;
@@ -398,7 +433,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
-            pid: tid, // best-effort: same scheduler id for pid and tid
+            pid,
             tid,
             time,
             addr: 0,
