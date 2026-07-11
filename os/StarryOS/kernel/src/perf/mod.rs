@@ -33,6 +33,11 @@ pub mod task;
 #[cfg(target_arch = "aarch64")]
 pub mod tick;
 pub mod tracepoint;
+/// Frame-pointer call-graph unwinding for PMU sampling (`PERF_SAMPLE_CALLCHAIN`).
+/// ARM PMUv3 only; consumes the interrupted frame pointer plumbed through
+/// `ax_cpu::pmu` and the alloc-free `axbacktrace::walk_fp` engine.
+#[cfg(target_arch = "aarch64")]
+pub mod unwind;
 pub mod uprobe;
 
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
