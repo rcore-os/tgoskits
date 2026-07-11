@@ -219,6 +219,17 @@ pub struct SampleSlot {
     /// as the slot is registered (teardown unregisters first), exactly like
     /// [`notify`](Self::notify). Null when the event tracks no lost count.
     pub lost: *const (),
+    /// Real userspace `(tgid, tid)` of the event owner for a **per-task** sampling
+    /// event, captured at slice-arm time when the monitored [`Thread`] is known.
+    /// The overflow handler prefers this over `current()` so a sample is
+    /// attributed to the monitored task even when the overflow IRQ is serviced
+    /// after a context switch away from it (per-task skid). `None` for
+    /// **system-wide** slots, where the handler attributes the sample to the
+    /// interrupted `current()` — matching the sampled IP (Linux `perf record -a`
+    /// semantics).
+    ///
+    /// [`Thread`]: crate::task::Thread
+    pub owner_ids: Option<(Option<TgidNumber>, Option<TidNumber>)>,
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -403,14 +414,20 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             let ring_vaddr = slot.ring_vaddr;
             let ring_len = slot.ring_len;
             let cur_period = slot.period;
+            let owner_ids = slot.owner_ids;
 
             // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
-            // (validated at open to set IP and only supported bits). PID fields
-            // use the view captured by the perf event; the scheduler TaskId
-            // never crosses the Linux perf ABI boundary. A system-wide counter
-            // can overflow while a kernel task is running, in which case there
-            // is no Linux PID identity and the wire fields remain zero.
-            let (pid, tid) = current_sample_ids(slot.observer);
+            // (validated at open to set IP and only supported bits). Attribute
+            // to the real userspace (tgid, tid) in the perf event's namespace view
+            // so a sample keys on the SAME ids the COMM/MMAP2 side-band records
+            // carry and `perf report` can join it to the right process/DSO map. A
+            // per-task event uses the owner ids resolved + captured at slice-arm:
+            // the overflow IRQ can be serviced after a switch away from the
+            // monitored task, so `current()` would misattribute; the captured owner
+            // is always the right task. A system-wide event (`owner_ids == None`)
+            // attributes to the interrupted `current()` in the event's view.
+            // time/cpu are the real interrupt-time values.
+            let (pid, tid) = owner_ids.unwrap_or_else(|| current_sample_ids(slot.observer));
             let time = ax_runtime::hal::time::monotonic_time_nanos();
             let cpu = ax_hal::percpu::this_cpu_id() as u32;
             // Call stack for PERF_SAMPLE_CALLCHAIN (alloc-free, fixed on-stack buffer;

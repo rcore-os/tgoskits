@@ -699,7 +699,20 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 /// (counting) or configure + preload + register a [`SampleSlot`] (sampling),
 /// enable, and mark it running from `now`. IRQ-off, alloc-free. Shared by
 /// [`perf_sched_in`] and [`perf_rotate_current`].
-fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64) {
+///
+/// `owner_pid`/`owner_tid` are the monitored thread's userspace tgid/tid,
+/// resolved in the event's PID namespace (`None` if not visible there); both
+/// callers hold the [`Thread`]. They are stamped into the sampling
+/// [`SampleSlot`] so the overflow handler attributes each sample to the
+/// monitored task rather than to `current()`, which can differ when the overflow
+/// IRQ is serviced after a context switch away from the task.
+fn arm_slice(
+    ptc: &PerTaskCounter,
+    n: usize,
+    now: u64,
+    owner_pid: Option<TgidNumber>,
+    owner_tid: Option<TidNumber>,
+) {
     if ptc.is_sampling {
         // Make sure the PMU overflow handler is installed + the PPI enabled.
         sampling::ensure_pmu_irq_registered();
@@ -719,6 +732,9 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64) {
                 target_freq: ptc.freq_target,
                 last_time: 0,
                 lost: &ptc.lost as *const AtomicU64 as *const (),
+                // Per-task event: attribute samples to the monitored thread even
+                // if the overflow IRQ lands after a switch away from it.
+                owner_ids: Some((owner_pid, owner_tid)),
             },
         );
         ax_cpu::pmu::overflow::enable_irq(n);
@@ -825,7 +841,18 @@ pub fn perf_sched_in(thr: &Thread) {
         // ([`perf_rotate_current`]) cycles the slots among the over-subscribed
         // events so each takes a turn on hardware.
         if let Some(n) = super::percpu::alloc_programmable_counter() {
-            arm_slice(ptc, n, now);
+            arm_slice(
+                ptc,
+                n,
+                now,
+                thr.proc_data
+                    .identity()
+                    .visible_number_in(ptc.observer)
+                    .map(TgidNumber::from),
+                thr.pid_identity()
+                    .visible_number_in(ptc.observer)
+                    .map(TidNumber::from),
+            );
         }
     }
 }
@@ -985,7 +1012,18 @@ pub fn perf_rotate_current() {
             && !ptc.running.load(Ordering::Acquire)
             && let Some(n) = super::percpu::alloc_programmable_counter()
         {
-            arm_slice(ptc, n, now);
+            arm_slice(
+                ptc,
+                n,
+                now,
+                thr.proc_data
+                    .identity()
+                    .visible_number_in(ptc.observer)
+                    .map(TgidNumber::from),
+                thr.pid_identity()
+                    .visible_number_in(ptc.observer)
+                    .map(TidNumber::from),
+            );
         }
         if !ptc.is_sampling {
             ptc.publish_rdpmc_page(false);
