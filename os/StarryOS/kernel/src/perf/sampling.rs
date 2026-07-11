@@ -465,26 +465,35 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 /// returning the number of `u64` entries written.
 ///
 /// The layout mirrors Linux: a `PERF_CONTEXT_*` region marker followed by that
-/// region's instruction pointers, leaf first. For a **kernel** sample the region
-/// is `[PERF_CONTEXT_KERNEL, ip, ra0, ra1, …]`, unwound from the interrupted
-/// `x29` via [`super::unwind::kernel_callchain`]; if no frame pointer was
-/// published it degrades to `[PERF_CONTEXT_KERNEL, ip]` (never empty, so the
-/// sample is never dropped). For a **user** sample it is `[PERF_CONTEXT_USER,
-/// ip]` — the user frame-pointer walk is added in M4b. Allocation-free and safe
-/// from the overflow handler.
+/// region's instruction pointers, leaf first — `[PERF_CONTEXT_KERNEL, ip, ra0,
+/// …]` for a kernel sample, `[PERF_CONTEXT_USER, ip, ra0, …]` for a user sample.
+/// Kernel frames are unwound from the interrupted `x29` via
+/// [`super::unwind::kernel_callchain`], user frames via
+/// [`super::unwind::user_callchain`] (through the IRQ-safe no-fault `TTBR0`
+/// reader). If no frame pointer was published the region degrades to
+/// `[marker, ip]` (never empty, so the sample is never dropped). Deep frames
+/// appear only when the sampled code keeps frame pointers (the kernel when built
+/// with `-Cforce-frame-pointers`, user binaries built `-fno-omit-frame-pointer`).
+/// Allocation-free and safe from the overflow handler.
 fn build_callchain(ip: u64, is_user: bool, chain: &mut [u64]) -> usize {
     // `chain` is the handler's fixed `[u64; 2 + 2 * MAX_STACK_DEPTH]` buffer, so
-    // the leading fixed-index writes below are always in bounds.
-    if is_user {
-        // M4a: user context marker + leaf IP only (user FP unwind is M4b).
-        chain[0] = PERF_CONTEXT_USER;
-        chain[1] = ip;
-        return 2;
-    }
-    chain[0] = PERF_CONTEXT_KERNEL;
+    // the leading fixed-index writes below are always in bounds. Each region is
+    // capped at `MAX_STACK_DEPTH` frames (plus its one-word marker).
+    chain[0] = if is_user {
+        PERF_CONTEXT_USER
+    } else {
+        PERF_CONTEXT_KERNEL
+    };
     let region_end = (1 + MAX_STACK_DEPTH).min(chain.len());
+    let region = &mut chain[1..region_end];
     match ax_cpu::pmu::interrupted_fp() {
-        Some(fp) => 1 + super::unwind::kernel_callchain(ip as usize, fp, &mut chain[1..region_end]),
+        Some(fp) if is_user => {
+            // Bound the user walk to the interrupted user stack (SP_EL0); fall back
+            // to the frame pointer itself as the window anchor if unavailable.
+            let sp = ax_cpu::pmu::interrupted_sp().unwrap_or(fp);
+            1 + super::unwind::user_callchain(ip as usize, fp, sp, region)
+        }
+        Some(fp) => 1 + super::unwind::kernel_callchain(ip as usize, fp, region),
         None => {
             // No frame pointer published (e.g. sampled on a path that does not
             // plumb it): emit the leaf IP alone rather than dropping the region.
