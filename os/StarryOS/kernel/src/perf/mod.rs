@@ -28,6 +28,11 @@ pub mod sampling;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Software events (`PERF_TYPE_SOFTWARE`) as real per-task counters — the default
+/// `perf stat` rows (cpu-clock / task-clock / context-switches / cpu-migrations /
+/// page-faults). Pure accounting driven by the scheduler + fault hooks, no PMU,
+/// so it is arch-independent.
+pub mod sw;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
 /// `sampling`.
@@ -64,7 +69,7 @@ pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
     linux_bpf::{PERF_FLAG_FD_CLOEXEC, perf_event_attr},
-    perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
+    perf::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig, PerfTypeId},
 };
 
 use crate::{
@@ -527,7 +532,16 @@ pub fn perf_event_open(
         .into_ax_result()?;
         match args.type_ {
             PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+            // The five counting software events (`perf stat`'s default rows) become
+            // real per-task counters; every other software config (e.g.
+            // `PERF_COUNT_SW_DUMMY`, `perf record`'s tracking event) keeps the
+            // BPF/ring path.
+            PerfTypeId::PERF_TYPE_SOFTWARE => match &args.config {
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(*sw_id) => {
+                    Box::new(sw::perf_event_open_sw(attr, *sw_id, pid)?)
+                }
+                _ => Box::new(bpf::perf_event_open_bpf(args)),
+            },
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
                 Box::new(tracepoint::perf_event_open_tracepoint(args)?)
             }
