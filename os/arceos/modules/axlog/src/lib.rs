@@ -58,8 +58,6 @@ pub use log::{debug, error, info, trace, warn};
 
 #[cfg(all(feature = "kmsg", not(feature = "std")))]
 pub mod ring;
-#[cfg(all(feature = "kmsg", not(feature = "std")))]
-mod prb;
 
 /// Prints to the console.
 ///

@@ -1,7 +1,7 @@
 //! High-level kernel log ring: the public read/write view over the lockless
-//! [`crate::prb`] ring buffer.
+//! [`ax_printk`] ring buffer.
 //!
-//! `prb` provides the low-level reserve/commit/read primitives; this module
+//! `ax_printk` provides the low-level reserve/commit/read primitives; this module
 //! renders them into the two consumer-facing shapes:
 //!
 //! - the **write side** ([`push`], [`push_fmt`]) — reserve a record, copy the
@@ -14,9 +14,13 @@
 //! The `SYSLOG_ACTION_CLEAR` floor is tracked here (`CLEAR_SEQ`), not in `prb`:
 //! it is a property of the syslog reader, not of the ring buffer itself.
 
+// TEMPORARILY DISABLED while `ax-printk` is being rewritten (Blocks 2-7).
+// Re-enable once its public API (prb_reserve/set_info/read_valid/first_valid_seq/
+// next_seq/capacity/ReadInfo/...) is available again.
+/*
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use crate::prb::{self, ReadInfo};
+use ax_printk::{self as prb, ReadInfo};
 
 /// Maximum stored message length. Longer messages are truncated on store.
 pub const MSG_MAX: usize = prb::MSG_MAX;
@@ -233,3 +237,4 @@ impl<const N: usize> core::fmt::Write for ByteBuf<N> {
         Ok(())
     }
 }
+*/

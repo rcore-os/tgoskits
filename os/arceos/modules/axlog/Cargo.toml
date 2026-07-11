@@ -9,7 +9,7 @@ license.workspace = true
 
 [features]
 std = ["dep:chrono"]
-kmsg = []
+kmsg = ["dep:ax-printk"]
 default = []
 
 [dependencies]
@@ -18,4 +18,5 @@ cfg-if.workspace = true
 chrono = { workspace = true, default-features = true, optional = true }
 ax-crate-interface.workspace = true
 ax-kspin.workspace = true
+ax-printk = { workspace = true, optional = true }
 log.workspace = true
