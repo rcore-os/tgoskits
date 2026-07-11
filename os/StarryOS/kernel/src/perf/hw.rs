@@ -623,6 +623,9 @@ impl HwPerfEvent {
                     target_freq,
                     last_time: 0,
                     lost: lost_ptr,
+                    // System-wide sampling: attribute to the interrupted
+                    // `current()` in the handler (it matches the sampled IP).
+                    owner_ids: None,
                 },
             );
             ax_cpu::pmu::overflow::enable_irq(n);
