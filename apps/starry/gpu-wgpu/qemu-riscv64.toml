@@ -1,0 +1,17 @@
+# gpu-wgpu riscv64 - WebGPU compute (wgpu crate -> ash Vulkan backend -> Mesa lavapipe, the software
+# Vulkan driver over the llvmpipe LLVM JIT) operator carpet. Provisioned from Alpine edge as musl
+# packages; no host GPU. Alpine builds mesa-vulkan-swrast for riscv64, so lavapipe runs the compute
+# queue here. -smp 1: single vCPU. 4096M: the LLVM JIT + wgpu device buffers are heap-heavy.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000
