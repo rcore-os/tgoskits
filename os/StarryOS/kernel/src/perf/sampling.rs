@@ -106,14 +106,17 @@ const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
 const PERF_RECORD_MISC_USER: u16 = 2;
 
-/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
-/// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
-/// of this size and returns the actual length.
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
+/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header, at most
+/// nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
+/// STREAM_ID, CPU(cpu+res), PERIOD), then an optional callchain block — a `u64
+/// nr` count followed by up to two `PERF_CONTEXT_*` markers and `2 *
+/// MAX_STACK_DEPTH` instruction pointers (a kernel region + a user region).
+/// [`build_sample`] writes into a stack buffer of this size and returns the
+/// actual length.
+const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
 
-// `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
-// fields below are supported; every other bit (READ, CALLCHAIN, RAW,
+// `perf_event_sample_format` bits (see `man perf_event_open`). The scalar fields
+// below plus `PERF_SAMPLE_CALLCHAIN` are supported; every other bit (READ, RAW,
 // BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
 // PHYS_ADDR, …) is rejected at open time.
 /// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
@@ -134,11 +137,28 @@ const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
 const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
 /// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
 const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
+/// `PERF_SAMPLE_CALLCHAIN`: per-sample call stack — a `u64 nr` count then `nr`
+/// u64 instruction pointers, split into kernel/user regions by the
+/// `PERF_CONTEXT_*` markers below. Set by `perf record -g` / `--call-graph fp`.
+const PERF_SAMPLE_CALLCHAIN: u64 = 1 << 5;
+
+/// Callchain marker: the entries that follow are kernel (EL1) instruction
+/// pointers (Linux `PERF_CONTEXT_KERNEL`). Counts as one callchain entry.
+const PERF_CONTEXT_KERNEL: u64 = (-128i64) as u64;
+/// Callchain marker: the entries that follow are user (EL0) instruction pointers
+/// (Linux `PERF_CONTEXT_USER`). Counts as one callchain entry.
+const PERF_CONTEXT_USER: u64 = (-512i64) as u64;
+
+/// Per-region cap on callchain depth (the kernel and user regions are bounded
+/// separately). Sizes the fixed on-stack chain and record buffers, so it stays
+/// allocation-free in the overflow handler.
+const MAX_STACK_DEPTH: usize = 64;
 
 /// Every `sample_type` bit the sampling backend can emit a well-formed
 /// `PERF_RECORD_SAMPLE` for. A sampling event whose `sample_type` sets any bit
 /// outside this mask is rejected at open ([`super::hw`] reuses this constant);
-/// real `perf record` sets `IP|TID|TIME|PERIOD`, all within the mask.
+/// real `perf record` sets `IP|TID|TIME|PERIOD`, and `-g` adds `CALLCHAIN`, all
+/// within the mask.
 pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_TID
     | PERF_SAMPLE_TIME
@@ -147,7 +167,8 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
-    | PERF_SAMPLE_IDENTIFIER;
+    | PERF_SAMPLE_IDENTIFIER
+    | PERF_SAMPLE_CALLCHAIN;
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
 /// alloc-free `Copy` POD.
@@ -365,6 +386,15 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let tid = ax_task::current().id().as_u64() as u32;
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
+        // Call stack for PERF_SAMPLE_CALLCHAIN (alloc-free, fixed on-stack buffer;
+        // empty unless the event requested it). Kernel frames are unwound from the
+        // interrupted x29; the user region is the leaf IP in M4a.
+        let mut chain = [0u64; 2 + 2 * MAX_STACK_DEPTH];
+        let nchain = if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+            build_callchain(ip, is_user, &mut chain)
+        } else {
+            0
+        };
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
@@ -376,6 +406,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             stream_id: 0,
             cpu,
             period: cur_period as u64,
+            callchain: &chain[..nchain],
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
 
@@ -430,6 +461,39 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     IrqReturn::Handled
 }
 
+/// Fills `chain` with the interrupted call stack for `PERF_SAMPLE_CALLCHAIN`,
+/// returning the number of `u64` entries written.
+///
+/// The layout mirrors Linux: a `PERF_CONTEXT_*` region marker followed by that
+/// region's instruction pointers, leaf first. For a **kernel** sample the region
+/// is `[PERF_CONTEXT_KERNEL, ip, ra0, ra1, …]`, unwound from the interrupted
+/// `x29` via [`super::unwind::kernel_callchain`]; if no frame pointer was
+/// published it degrades to `[PERF_CONTEXT_KERNEL, ip]` (never empty, so the
+/// sample is never dropped). For a **user** sample it is `[PERF_CONTEXT_USER,
+/// ip]` — the user frame-pointer walk is added in M4b. Allocation-free and safe
+/// from the overflow handler.
+fn build_callchain(ip: u64, is_user: bool, chain: &mut [u64]) -> usize {
+    // `chain` is the handler's fixed `[u64; 2 + 2 * MAX_STACK_DEPTH]` buffer, so
+    // the leading fixed-index writes below are always in bounds.
+    if is_user {
+        // M4a: user context marker + leaf IP only (user FP unwind is M4b).
+        chain[0] = PERF_CONTEXT_USER;
+        chain[1] = ip;
+        return 2;
+    }
+    chain[0] = PERF_CONTEXT_KERNEL;
+    let region_end = (1 + MAX_STACK_DEPTH).min(chain.len());
+    match ax_cpu::pmu::interrupted_fp() {
+        Some(fp) => 1 + super::unwind::kernel_callchain(ip as usize, fp, &mut chain[1..region_end]),
+        None => {
+            // No frame pointer published (e.g. sampled on a path that does not
+            // plumb it): emit the leaf IP alone rather than dropping the region.
+            chain[1] = ip;
+            2
+        }
+    }
+}
+
 /// Lays out one `PERF_RECORD_SAMPLE` into `buf` per `sample_type`, returning its
 /// total length in bytes.
 ///
@@ -447,13 +511,15 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 /// 8. `STREAM_ID` → `u64 stream_id`
 /// 9. `CPU` → `u32 cpu`, `u32 res = 0`
 /// 10. `PERIOD` → `u64 period`
+/// 11. `CALLCHAIN` → `u64 nr`, then `nr` u64 entries (`PERF_CONTEXT_*` markers +
+///     instruction pointers) from `d.callchain`
 ///
 /// `buf` must be at least [`SAMPLE_RECORD_MAX_LEN`] bytes. With
 /// `sample_type == PERF_SAMPLE_IP` exactly, the result is the original 16-byte
 /// IP-only record (8-byte header + `u64 ip`).
-/// The per-sample scalar values [`build_sample`] may emit (those not implied by
+/// The per-sample values [`build_sample`] may emit (those not implied by
 /// `sample_type` alone). Gathered by the overflow handler at interrupt time.
-struct SampleData {
+struct SampleData<'a> {
     ip: u64,
     pid: u32,
     tid: u32,
@@ -463,11 +529,17 @@ struct SampleData {
     stream_id: u64,
     cpu: u32,
     period: u64,
+    /// The `PERF_SAMPLE_CALLCHAIN` entries (`PERF_CONTEXT_*` markers + IPs), or an
+    /// empty slice when the event did not request a callchain. Emitted verbatim as
+    /// the `nr` count followed by the entries. Borrows the handler's fixed on-stack
+    /// chain buffer.
+    callchain: &'a [u64],
 }
 
-fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> usize {
+fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData<'_>) -> usize {
     // Cursor into `buf`. All offsets stay within `SAMPLE_RECORD_MAX_LEN` because
-    // at most the header + 9 u64-sized fields are written and the caller passes a
+    // at most the header + 9 u64 scalar fields + the callchain block (`nr` plus at
+    // most `2 + 2*MAX_STACK_DEPTH` entries) are written, and the caller passes a
     // buffer of that size. `put!` appends a native-endian scalar and advances the
     // cursor (a macro, not a closure, so it never holds a borrow of `off`).
     let mut off = 0usize;
@@ -516,6 +588,14 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     }
     if sample_type & PERF_SAMPLE_PERIOD != 0 {
         put!(d.period);
+    }
+    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+        // `u64 nr` count (the `PERF_CONTEXT_*` markers count as entries) followed
+        // by the entries themselves, exactly as Linux lays out the block.
+        put!(d.callchain.len() as u64);
+        for &entry in d.callchain {
+            put!(entry);
+        }
     }
 
     // Back-patch the header's `size` field now that the total length is known.
