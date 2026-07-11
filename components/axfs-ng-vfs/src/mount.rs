@@ -872,12 +872,10 @@ impl Location {
     }
 
     pub fn is_mountpoint(&self) -> bool {
-        self.entry.as_dir().is_ok()
-            && self
-                .mountpoint
-                .children
-                .lock()
-                .contains_key(&self.entry.key())
+        self.mountpoint
+            .children
+            .lock()
+            .contains_key(&self.entry.key())
     }
 
     /// See [`Mountpoint::effective_mountpoint`].
@@ -1050,8 +1048,10 @@ impl Location {
         if source.mountpoint().is_unbindable() {
             return Err(VfsError::InvalidInput);
         }
+        if self.entry.is_dir() != source.entry.is_dir() {
+            return Err(VfsError::NotADirectory);
+        }
 
-        self.check_is_dir()?;
         let mut children = self.mountpoint.children.lock();
         if children.contains_key(&self.entry.key()) {
             return Err(VfsError::ResourceBusy);
@@ -1090,7 +1090,9 @@ impl Location {
         self.filesystem().flush()?;
         self.mountpoint.clear_expired();
 
-        self.entry.as_dir()?.forget();
+        if let Ok(directory) = self.entry.as_dir() {
+            directory.forget();
+        }
         self.mountpoint.detach()
     }
 
