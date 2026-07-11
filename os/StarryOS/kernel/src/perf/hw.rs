@@ -134,6 +134,8 @@ fn resolve_hw_event(hw_id: u32) -> Option<u16> {
 fn decode_arm_event(type_: u32, config: u64) -> Option<u16> {
     if type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
         resolve_hw_event(config as u32)
+    } else if type_ == perf_type_id::PERF_TYPE_HW_CACHE as u32 {
+        ax_cpu::pmu::hw_cache_to_arm(config)
     } else if type_ == perf_type_id::PERF_TYPE_RAW as u32
         || type_ == ARMV8_PMUV3_PERF_TYPE
         || type_ == ARMV8_CORTEX_A55_TYPE
@@ -1416,6 +1418,17 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
             };
             alloc_programmable(event, exclude_user, exclude_kernel)?
         }
+    } else if attr.type_ == perf_type_id::PERF_TYPE_HW_CACHE as u32 {
+        // Combinatorial cache events (`perf stat -e L1-dcache-load-misses` etc.):
+        // decode `config` (cache_id | op<<8 | result<<16) to an ARM PMUv3 event.
+        let Some(event) = ax_cpu::pmu::hw_cache_to_arm(attr.config) else {
+            warn!(
+                "perf_event_open: unsupported HW_CACHE config {:#x}",
+                attr.config
+            );
+            return Err(AxError::Unsupported);
+        };
+        alloc_programmable(event, exclude_user, exclude_kernel)?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
         || attr.type_ == ARMV8_CORTEX_A55_TYPE
