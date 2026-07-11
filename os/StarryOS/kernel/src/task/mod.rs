@@ -260,6 +260,13 @@ pub struct Thread {
     /// where no per-task perf event targets this thread.
     #[cfg(target_arch = "aarch64")]
     pub(crate) perf_counters: IrqMutex<Vec<Arc<crate::perf::task::PerTaskCounter>>>,
+
+    /// Per-task software perf counters (`PERF_TYPE_SOFTWARE`) attached by
+    /// `perf_event_open`. Driven by the scheduler + fault hooks
+    /// ([`crate::perf::sw::sched_in`] / `sched_out` / `on_page_fault`). Empty for
+    /// the common case where no software perf event targets this thread. Software
+    /// events are pure accounting (no PMU), so this is arch-independent.
+    pub(crate) perf_sw_counters: IrqMutex<Vec<Arc<crate::perf::sw::SwPerTaskCounter>>>,
 }
 
 impl Thread {
@@ -320,6 +327,7 @@ impl Thread {
 
             #[cfg(target_arch = "aarch64")]
             perf_counters: IrqMutex::new(Vec::new()),
+            perf_sw_counters: IrqMutex::new(Vec::new()),
         })
     }
 
@@ -716,6 +724,9 @@ impl TaskExt for Box<Thread> {
         // no per-task perf event exists anywhere.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
+        // Open the software counters' slice (task-clock / cpu-migrations); cheap
+        // no-op when no software perf event exists.
+        crate::perf::sw::sched_in(self);
     }
 
     fn on_leave(&self) {
@@ -723,6 +734,9 @@ impl TaskExt for Box<Thread> {
         // before the scope is torn down. Same hot-path constraints as on_enter.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
+        // Fold the software counters' slice (task-clock) and count the deschedule
+        // (context-switches); cheap no-op when no software perf event exists.
+        crate::perf::sw::sched_out(self);
         ActiveScope::set_global();
         unsafe { self.scope.release_context_switch_reader() };
     }
