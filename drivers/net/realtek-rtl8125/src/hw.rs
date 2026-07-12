@@ -9,6 +9,17 @@ const CSI_PCIE_ZRXDC_NONCOMPL: u32 = 1 << 20;
 const CSI_L1_ENTRY_LATENCY: u32 = 0x0719;
 const CSI_L1_ENTRY_LATENCY_DEFAULT: u8 = 0x27;
 
+const MII_BMCR: u32 = 0x00;
+const MII_CTRL1000: u32 = 0x09;
+
+const BMCR_ANRESTART: u16 = 0x0200;
+const BMCR_ANENABLE: u16 = 0x1000;
+const BMCR_AUTONEG_MASK: u16 = BMCR_ANENABLE | BMCR_ANRESTART;
+
+const ADVERTISE_1000HALF: u16 = 0x0100;
+const ADVERTISE_1000FULL: u16 = 0x0200;
+const ADVERTISE_1000_MASK: u16 = ADVERTISE_1000HALF | ADVERTISE_1000FULL;
+
 impl Rtl8125 {
     pub(crate) fn hw_init_8125(&self) -> Result<()> {
         self.enable_rxdv_gate();
@@ -334,7 +345,12 @@ impl Rtl8125 {
         match self.chip {
             ChipVersion::Rtl8125A => self.hw_phy_config_8125a(),
             ChipVersion::Rtl8125B | ChipVersion::Unknown(_) => self.hw_phy_config_8125b(),
-        }
+        }?;
+        // Standard MII registers are available from the default PHY page.
+        self.phy_write(0x1f, 0)?;
+        self.phy_modify(MII_CTRL1000, ADVERTISE_1000_MASK, ADVERTISE_1000FULL)?;
+        // Restart negotiation only after the gigabit mode is advertised.
+        self.phy_modify(MII_BMCR, BMCR_AUTONEG_MASK, BMCR_ANENABLE | BMCR_ANRESTART)
     }
 
     fn hw_phy_config_8125a(&mut self) -> Result<()> {
@@ -525,3 +541,18 @@ const RTL8125B_EPHY: [EphyInfo; 6] = [
         bits: 0x0020,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_copper_autoneg_advertises_gigabit_full_and_restarts() {
+        assert_eq!(ADVERTISE_1000FULL & ADVERTISE_1000_MASK, ADVERTISE_1000FULL);
+        assert_eq!(ADVERTISE_1000FULL & ADVERTISE_1000HALF, 0);
+        assert_eq!(
+            (BMCR_ANENABLE | BMCR_ANRESTART) & BMCR_AUTONEG_MASK,
+            BMCR_AUTONEG_MASK
+        );
+    }
+}
