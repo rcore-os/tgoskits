@@ -260,6 +260,17 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::trap::set_page_fault_handler(runtime_page_fault_handler);
     }
 
+    // TLS must be set up before any code that can panic runs: on RISC-V the
+    // std panic runtime reads a `#[thread_local]` panic counter via `tp`, and
+    // `tp` is still the raw hart id left by the bootloader until `init_tls`
+    // points it at a real TLS block. Platform-device init below can panic
+    // (e.g. an FDT probe error), so initialize TLS first.
+    #[cfg(all(feature = "tls", not(feature = "multitask")))]
+    {
+        info!("Initialize thread local storage...");
+        init_tls();
+    }
+
     info!("Initialize platform devices...");
     ax_hal::init_later(cpu_id, arg);
     if rdrive::is_initialized() {
@@ -322,12 +333,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);
-
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    {
-        info!("Initialize thread local storage...");
-        init_tls();
-    }
 
     ax_ctor_bare::call_ctors();
 

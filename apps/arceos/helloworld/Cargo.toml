@@ -13,4 +13,4 @@ arceos = ["dep:ax-std"]
 ax-std = { workspace = true, optional = true }
 
 [package.metadata.axstd]
-features = ["log-level-debug"]
+features = ["log-level-debug", "paging"]
