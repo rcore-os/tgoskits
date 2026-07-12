@@ -154,7 +154,7 @@ cargo starry build \
   --config os/StarryOS/configs/board/ls2k1000.toml
 ```
 
-默认 release 构建生成 `starryos` ELF 及同目录的 `starryos.bin`。文件通常位于 `target/loongarch64-unknown-linux-musl/release/`；U-Boot/TFTP 使用的是对应的 `starryos.bin`。
+`ls2k1000.toml` 中的 `loongarch64-unknown-none-softfloat` 是 StarryOS 用于选择架构和平台配置的逻辑 target。实际构建时，`axbuild` 会将它映射到 `scripts/targets/std/pie/loongarch64-unknown-linux-musl.json`，因此默认 release 产物位于 `target/loongarch64-unknown-linux-musl/release/`。该目录包含 `starryos` ELF 和 `starryos.bin`，U-Boot/TFTP 使用其中的 `starryos.bin`。
 
 实板启动前还需要准备：
 
@@ -172,6 +172,13 @@ cargo starry build \
 setenv ipaddr 192.168.99.20
 setenv serverip 192.168.99.10
 setenv netmask 255.255.255.0
+```
+
+[PR #1368](https://github.com/rcore-os/tgoskits/pull/1368) 实板验证使用下面的镜像和 FDT 地址。换用不同 U-Boot 或内存布局时，应先确认地址不会覆盖 U-Boot、FDT、内核或其它保留内存：
+
+```bash
+setenv loadaddr 0x9000000098000000
+setenv fdt_addr 0x900000000a000000
 ```
 
 可以一次性保存下面的启动脚本：
