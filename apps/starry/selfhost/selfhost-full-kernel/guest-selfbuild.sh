@@ -73,9 +73,23 @@ load_run_id() {
 }
 
 install_build_packages() {
+    # Ensure busybox symlinks exist BEFORE apk touches the rootfs.  The
+    # base image's busybox is statically linked and known-good; after apk
+    # upgrades musl libc / libcrypto / libssl, exec-ing the new busybox
+    # binary may SIGSEGV when the dynamic linker loads the just-upgraded
+    # shared libraries.  Running this step first avoids that crash.
+    /bin/busybox --install -s /bin 2>/dev/null || true
+
     apk add --no-cache --no-scripts \
         bash build-base ca-certificates clang clang-dev cmake curl git libudev-zero-dev \
         linux-headers musl-dev openssl-dev perl pkgconf python3 tar xz
+
+    # After apk writes new .so files (libcrypto, libssl, libc) flush
+    # every cache layer to disk so the next command that execs a
+    # dynamically-linked binary sees coherent data.
+    sync
+
+    # Re-create busybox symlinks in case apk replaced busybox itself.
     /bin/busybox --install -s /bin 2>/dev/null || true
     update-ca-certificates 2>/dev/null || true
 }
