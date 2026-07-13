@@ -135,6 +135,25 @@ cd /akars_tennis
   --iou 0.5
 ```
 
+需要采集稳定的分阶段性能数据时，可以先预热 1 轮，再测量 5 轮：
+
+```sh
+./akars-tennis-validator \
+  model/yolov8n_tennis_v2.cvimodel \
+  validation/images.txt \
+  validation/expected.txt \
+  --classes 1 \
+  --conf 0.5 \
+  --iou 0.5 \
+  --warmup 1 \
+  --repeat 5
+```
+
+`--warmup` 的结果不进入统计；`--repeat` 必须大于 0，且每一轮测量都会
+重新与 `expected.txt` 比较，避免用错误的检测结果换取更好看的耗时。
+不传这两个参数时仍执行原来的单轮校验，成功标记和检测语义不变；输出行末会
+增加轮次与分阶段耗时字段，并额外输出汇总行。
+
 ## 结果判定
 
 测试通过时会打印：
@@ -147,13 +166,14 @@ STARRY_AKA00_TENNIS_DETECT_OK
 每张图片会打印检测结果：
 
 ```text
-AKARS_TENNIS_RESULT image=0 path=validation/tennis-ball-close.jpg detections=1
-AKARS_TENNIS_DET image=0 cls=0 class=tennis_ball score_q10000=9531 confidence_percent=95.31 left=482 top=704 right=776 bottom=1002
+AKARS_TENNIS_RESULT image=0 path=validation/tennis-ball-close.jpg detections=1 run=1
+AKARS_TENNIS_DET image=0 cls=0 class=tennis_ball score_q10000=9531 confidence_percent=95.31 left=482 top=704 right=776 bottom=1002 run=1
 ```
 
 检测结果字段含义：
 
 - `image`：图片序号，对应 `validation/images.txt` 中的顺序。
+- `run`：从 1 开始的测量轮次；预热轮次不打印逐图结果。
 - `cls`：模型输出类别 id。当前模型只识别网球，`cls=0` 表示 `tennis_ball`。
 - `class`：类别名称，便于直接阅读日志。
 - `score_q10000`：模型置信度乘以 10000 后的整数表示，`9531` 表示约 `0.9531`。
@@ -163,21 +183,42 @@ AKARS_TENNIS_DET image=0 cls=0 class=tennis_ball score_q10000=9531 confidence_pe
 每张图片也会打印耗时：
 
 ```text
-AKARS_TENNIS_TIMING image=0 preprocess_us=... forward_us=... postprocess_us=... total_us=...
+AKARS_TENNIS_TIMING image=0 preprocess_us=... forward_us=... postprocess_us=... total_us=... run=1 decode_us=... resize_us=...
 ```
 
 字段含义：
 
+- `decode_us`：纯 Rust JPEG 解码耗时。
+- `resize_us`：双线性 resize、letterbox padding 清零和 RGB planar tensor 打包耗时。
 - `preprocess_us`：CPU 侧预处理耗时，包含 JPEG 解码、resize、letterbox padding 和 RGB planar tensor 打包。
 - `forward_us`：TPU 侧模型前向推理耗时，对应 CVI runtime 的 `CVI_NN_Forward` 调用。
 - `postprocess_us`：CPU 侧 YOLOv8 后处理耗时，包含输出解析、分数筛选、NMS 和 bbox 坐标还原。
 - `total_us`：单张图片端到端耗时，从开始处理图片到得到最终 detection 结果。
 
-其中 `total_us` 包含 `preprocess_us`、`forward_us`、`postprocess_us` 以及少量函数调用和统计开销；性能观察时优先看 `forward_us` 判断 TPU 推理耗时，优先看 `total_us` 判断单张图片完整链路耗时。
+其中 `preprocess_us` 包含 `decode_us`、`resize_us` 以及少量调用开销；
+`total_us` 包含 `preprocess_us`、`forward_us`、`postprocess_us` 以及少量函数
+调用和统计开销。性能观察时可以用 `decode_us` 判断 JPU 等硬件解码路径的
+潜在收益，用 `resize_us` 判断 resize/pack 是否仍是瓶颈，用 `forward_us`
+判断 TPU 推理耗时。
+
+全部测量轮次通过 golden 校验后，还会打印一行汇总：
+
+```text
+AKARS_TENNIS_BENCH_RESULT measured_runs=5 images=3 samples=15 decode_us_avg=... decode_us_p50=... decode_us_p95=... resize_us_avg=... resize_us_p50=... resize_us_p95=... preprocess_us_avg=... preprocess_us_p50=... preprocess_us_p95=... forward_us_avg=... forward_us_p50=... forward_us_p95=... postprocess_us_avg=... postprocess_us_p50=... postprocess_us_p95=... total_us_avg=... total_us_p50=... total_us_p95=...
+```
+
+`samples` 等于测量轮数乘图片数。p50/p95 使用 nearest-rank 定义，并只对
+测量轮次统计；所有数值单位均为微秒。该行适合从串口日志提取，比较同一
+硬件、模型、图片和运行参数下的 StarryOS 与 Linux 数据。
 
 ## Linux 实测耗时参考
 
-以下数据来自 CI 环境 AKA-00/SG2002 板端 Linux，部署路径为 `/akars_tennis`。每轮都会顺序识别同一组 3 张固定图片。该表用于后续性能对比，CI 是否通过仍以检测结果和成功标记为准。
+以下数据来自 CI 环境 AKA-00/SG2002 板端 Linux，部署路径为
+`/akars_tennis`。每轮都会顺序识别同一组 3 张固定图片。这是加入分阶段
+自动汇总前记录的 aggregate 基线，因此没有单独的 `decode_us` 和
+`resize_us`。后续可以用 `--warmup 1 --repeat 5` 自动复现相同轮数并获得
+更细的瓶颈数据。该表用于后续性能对比，CI 是否通过仍以检测结果和成功
+标记为准。
 
 | 轮次 | 图片 | preprocess_us | forward_us | postprocess_us | total_us |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -225,6 +266,9 @@ export LD_LIBRARY_PATH=/akars_tennis/lib:${LD_LIBRARY_PATH:-}
   --write-expected
 sync
 ```
+
+`--write-expected` 要求 `--warmup 0 --repeat 1`（也是默认值），避免把多轮
+benchmark 参数误用于更新 golden 数据。
 
 然后把板端生成的 `/akars_tennis/validation/expected.txt` 更新回仓库中的
 `apps/starry/aka00-tennis-yolo/validation/expected.txt`，再重新运行
