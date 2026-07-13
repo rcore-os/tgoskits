@@ -52,29 +52,6 @@ impl Default for X86VCpuCreateConfig {
 }
 
 #[cfg(any(feature = "vmx", feature = "svm"))]
-fn virtual_topology_cpuid(
-    vcpu_id: usize,
-    vcpu_count: usize,
-    subleaf: u32,
-) -> raw_cpuid::CpuIdResult {
-    let vcpu_count = vcpu_count.max(1).min(u16::MAX as usize);
-    let package_shift = usize::BITS - (vcpu_count - 1).leading_zeros();
-    let (eax, ebx, level_type) = match subleaf {
-        // One thread per virtual core.
-        0 => (0, 1, 1),
-        // All virtual cores belong to one package.
-        1 => (package_shift, vcpu_count as u32, 2),
-        _ => (0, 0, 0),
-    };
-    raw_cpuid::CpuIdResult {
-        eax,
-        ebx,
-        ecx: subleaf | (level_type << 8),
-        edx: vcpu_id as u32,
-    }
-}
-
-#[cfg(any(feature = "vmx", feature = "svm"))]
 pub(crate) mod kvm;
 pub(crate) mod msr;
 #[cfg(feature = "vmx")]

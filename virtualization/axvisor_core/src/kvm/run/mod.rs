@@ -136,8 +136,8 @@ pub(in crate::kvm) fn run_vcpu_file(control_file: api_control::ControlFileId) ->
         }
 
         match exit_reason {
-            AxVCpuExitReason::Nothing
-            | AxVCpuExitReason::PreemptionTimer
+            AxVCpuExitReason::Nothing => {}
+            AxVCpuExitReason::PreemptionTimer
             | AxVCpuExitReason::ExternalInterrupt { .. }
             | AxVCpuExitReason::InterruptEnd { .. } => {
                 crate::vmm::vcpus::handle_internal_exit(&vm, &vcpu, &exit_reason);

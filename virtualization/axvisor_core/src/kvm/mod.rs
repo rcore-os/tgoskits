@@ -148,15 +148,9 @@ pub(crate) fn control_vcpu_mask(vm_id: usize) -> Option<usize> {
         _ => None,
     })?;
 
-    let mut mask = 0usize;
-    for &vcpu_id in vm.vcpu_files.keys() {
-        let vcpu_id = vcpu_id as usize;
-        if vcpu_id >= usize::BITS as usize {
-            return Some(usize::MAX);
-        }
-        mask |= 1usize << vcpu_id;
-    }
-    Some(mask)
+    Some(vm.vcpu_files.keys().fold(0usize, |mask, &vcpu_id| {
+        mask | 1usize.checked_shl(vcpu_id).unwrap_or(usize::MAX)
+    }))
 }
 
 fn control_vcpu_file_by_vm_id(

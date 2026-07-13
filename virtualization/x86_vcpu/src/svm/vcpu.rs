@@ -346,7 +346,6 @@ impl SvmVcpu {
             SvmIntercept::STGI,
             SvmIntercept::CLGI,
             SvmIntercept::SKINIT,
-            SvmIntercept::MONITOR,
             SvmIntercept::MWAIT,
             SvmIntercept::MWAIT_CONDITIONAL,
             SvmIntercept::XSETBV,
@@ -782,9 +781,12 @@ impl SvmVcpu {
                 res.ebx |= (self.vcpu_id as u32 & 0xff) << 24;
                 res
             }
-            0xb | 0x1f => {
-                crate::virtual_topology_cpuid(self.vcpu_id, self.vcpu_count, regs_clone.rcx as u32)
-            }
+            0xb | 0x1f => CpuIdResult {
+                eax: 0,
+                ebx: 0,
+                ecx: regs_clone.rcx as u32,
+                edx: 0,
+            },
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if regs_clone.rcx == 0 {
@@ -949,14 +951,13 @@ impl SvmVcpu {
     fn arm_virtual_interrupt(&mut self, event: PendingEvent) {
         let vmcb = unsafe { self.vmcb.as_vmcb() };
         let priority = ((event.vector >> 4) as u32) << SVM_INT_CTL_V_INTR_PRIO_SHIFT;
+        let int_control = (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
+            | SVM_INT_CTL_V_IRQ
+            | SVM_INT_CTL_V_IGN_TPR
+            | SVM_INT_CTL_V_INTR_MASKING
+            | priority;
         vmcb.control.int_vector.set(event.vector as u32);
-        vmcb.control.int_control.set(
-            (vmcb.control.int_control.get() & !SVM_INT_CTL_V_INTR_PRIO_MASK)
-                | SVM_INT_CTL_V_IRQ
-                | SVM_INT_CTL_V_IGN_TPR
-                | SVM_INT_CTL_V_INTR_MASKING
-                | priority,
-        );
+        vmcb.control.int_control.set(int_control);
         vmcb.control.clean_bits.set(0);
     }
 
@@ -1346,15 +1347,7 @@ impl SvmVcpu {
         let rax = self.regs().rax;
         unsafe {
             super::instructions::clgi();
-            let vmcb = self.vmcb.as_vmcb();
-            vmcb.state.rax.set(rax);
-            // All SVM vCPUs currently share one guest ASID. A vCPU switch on
-            // the same host CPU must therefore invalidate translations left
-            // by the previously running VMCB.
-            vmcb.control
-                .tlb_control
-                .modify(VmcbTlbControl::CONTROL::FlushGuestTlb);
-            vmcb.control.clean_bits.set(0);
+            self.vmcb.as_vmcb().state.rax.set(rax);
         }
         self.load_save_states.save();
         unsafe {
@@ -1363,32 +1356,8 @@ impl SvmVcpu {
     }
 
     fn after_vmrun(&mut self) {
-        let (rip, rsp, rflags, cr0, cr3, cr4, efer, rax) = unsafe {
-            let state = &self.vmcb.as_vmcb_ref().state;
-            (
-                state.rip.get(),
-                state.rsp.get(),
-                state.rflags.get(),
-                state.cr0.get(),
-                state.cr3.get(),
-                state.cr4.get(),
-                state.efer.get(),
-                state.rax.get(),
-            )
-        };
         unsafe {
-            // VMSAVE restores host hidden state after VMLOAD, but also writes
-            // the host return state into the supplied VMCB.
             let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
-            let state = &self.vmcb.as_vmcb().state;
-            state.rip.set(rip);
-            state.rsp.set(rsp);
-            state.rflags.set(rflags);
-            state.cr0.set(cr0);
-            state.cr3.set(cr3);
-            state.cr4.set(cr4);
-            state.efer.set(efer);
-            state.rax.set(rax);
         }
         self.load_save_states.load();
         self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
@@ -1496,6 +1465,7 @@ impl AxArchVCpu for SvmVcpu {
                     return Ok(AxVCpuExitReason::Halt);
                 }
             };
+
             Ok(match exit_code {
                 SvmExitCode::INVALID | SvmExitCode::BUSY => AxVCpuExitReason::FailEntry {
                     hardware_entry_failure_reason: match exit_code {
@@ -1593,10 +1563,6 @@ impl AxArchVCpu for SvmVcpu {
                 SvmExitCode::PAUSE => {
                     self.advance_rip(2)?;
                     AxVCpuExitReason::PreemptionTimer
-                }
-                SvmExitCode::MONITOR => {
-                    self.advance_rip(3)?;
-                    AxVCpuExitReason::Nothing
                 }
                 SvmExitCode::MWAIT | SvmExitCode::MWAIT_CONDITIONAL => {
                     self.advance_rip(3)?;

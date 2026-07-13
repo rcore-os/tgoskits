@@ -1492,9 +1492,12 @@ impl VmxVcpu {
                 res.ebx |= (self.vcpu_id as u32 & 0xff) << 24;
                 res
             }
-            0xb | 0x1f => {
-                crate::virtual_topology_cpuid(self.vcpu_id, self.vcpu_count, regs_clone.rcx as u32)
-            }
+            0xb | 0x1f => CpuIdResult {
+                eax: 0,
+                ebx: 0,
+                ecx: regs_clone.rcx as u32,
+                edx: 0,
+            },
             // See SDM Table 3-8. Information Returned by CPUID Instruction (Contd.)
             LEAF_STRUCTURED_EXTENDED_FEATURE_FLAGS_ENUMERATION => {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);

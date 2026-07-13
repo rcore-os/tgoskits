@@ -280,30 +280,26 @@ impl VirtualApicRegs {
     }
 
     fn is_dest_field_matched(&self, dest: u32, target_apic_id: u32) -> AxResult<bool> {
-        if self.is_x2apic_enabled() {
-            let target_cluster = target_apic_id >> 4;
-            let target_logical_id = 1u32 << (target_apic_id & 0xf);
-            return Ok(dest >> 16 == target_cluster && dest & target_logical_id != 0);
-        }
-
-        match self
-            .regs()
-            .DFR
-            .read_as_enum::<APICDestinationFormat>(DESTINATION_FORMAT::Model)
-            .ok_or(AxError::InvalidData)?
+        let (dest_cluster, target_cluster, target_bit, logical_width) = if self.is_x2apic_enabled()
         {
-            APICDestinationFormat::Flat => {
-                if target_apic_id >= 8 {
-                    return Ok(false);
+            (dest >> 16, target_apic_id >> 4, target_apic_id & 0xf, 16)
+        } else {
+            match self
+                .regs()
+                .DFR
+                .read_as_enum::<APICDestinationFormat>(DESTINATION_FORMAT::Model)
+                .ok_or(AxError::InvalidData)?
+            {
+                APICDestinationFormat::Flat => (0, 0, target_apic_id, 8),
+                APICDestinationFormat::Cluster => {
+                    (dest >> 4, target_apic_id >> 2, target_apic_id & 0x3, 4)
                 }
-                Ok(dest & (1u32 << target_apic_id) != 0)
             }
-            APICDestinationFormat::Cluster => {
-                let target_cluster = target_apic_id >> 2;
-                let target_logical_id = 1u32 << (target_apic_id & 0x3);
-                Ok((dest >> 4) == target_cluster && dest & target_logical_id != 0)
-            }
-        }
+        };
+
+        Ok(target_bit < logical_width
+            && dest_cluster == target_cluster
+            && dest & (1u32 << target_bit) != 0)
     }
 
     /// This function populates 'dmask' with the set of vcpus that match the
