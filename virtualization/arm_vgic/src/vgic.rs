@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
 
-use crate::{host, interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
+use crate::{VgicResult, host, interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
 
 /// Virtual Generic Interrupt Controller.
 ///
@@ -37,18 +36,18 @@ impl Vgic {
             vgicd: Mutex::new(Vgicd::new()),
         }
     }
-    pub(crate) fn handle_read8(&self, addr: usize) -> AxResult<usize> {
+    pub(crate) fn handle_read8(&self, addr: usize) -> VgicResult<usize> {
         let value = self.handle_read32(addr)?;
         Ok((value >> (8 * (addr & 0x3))) & 0xff)
     }
 
-    pub(crate) fn handle_read16(&self, addr: usize) -> AxResult<usize> {
+    pub(crate) fn handle_read16(&self, addr: usize) -> VgicResult<usize> {
         let value = self.handle_read32(addr)?;
         Ok((value >> (8 * (addr & 0x3))) & 0xffff)
     }
 
     /// Handles 32-bit read access to VGIC registers.
-    pub fn handle_read32(&self, addr: usize) -> AxResult<usize> {
+    pub fn handle_read32(&self, addr: usize) -> VgicResult<usize> {
         match GicRegister::from_addr(addr as u32) {
             Some(reg) => match reg {
                 GicRegister::GicdCtlr => Ok(self.vgicd.lock().ctrlr as usize),

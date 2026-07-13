@@ -4,6 +4,8 @@ use alloc::{format, string::String};
 use core::fmt::Display;
 
 use axaddrspace::AddrSpaceError;
+use axdevice::DeviceManagerError;
+use axdevice_base::{DeviceError, IrqError, RegistryError};
 
 use crate::{VMId, VmStatus};
 
@@ -199,6 +201,79 @@ impl AxVmError {
             AddrSpaceError::MappingState
             | AddrSpaceError::Unmapped { .. }
             | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),
+        }
+    }
+}
+
+impl From<DeviceError> for AxVmError {
+    fn from(error: DeviceError) -> Self {
+        match error {
+            DeviceError::InvalidInput { operation, detail } => {
+                Self::InvalidInput { operation, detail }
+            }
+            DeviceError::InvalidData { detail, .. } => Self::InvalidConfig { detail },
+            DeviceError::Unsupported { operation, detail } => {
+                Self::Unsupported { operation, detail }
+            }
+            DeviceError::OutOfMemory { operation } => Self::OutOfMemory { operation },
+            DeviceError::ResourceBusy {
+                operation,
+                resource,
+            } => {
+                Self::resource_conflict("device resource", format_args!("{operation}: {resource}"))
+            }
+            error => Self::device("access virtual device", error),
+        }
+    }
+}
+
+impl From<IrqError> for AxVmError {
+    fn from(error: IrqError) -> Self {
+        Self::interrupt("route virtual device interrupt", error)
+    }
+}
+
+impl From<RegistryError> for AxVmError {
+    fn from(error: RegistryError) -> Self {
+        match error {
+            RegistryError::AddressConflict { .. } => {
+                Self::resource_conflict("device address range", error)
+            }
+            RegistryError::InvalidResource { .. } => {
+                Self::invalid_input("register virtual device", error)
+            }
+            RegistryError::BusKindNotSupported { .. } | RegistryError::ArchNotSupported { .. } => {
+                Self::unsupported("register virtual device", error)
+            }
+        }
+    }
+}
+
+impl From<DeviceManagerError> for AxVmError {
+    fn from(error: DeviceManagerError) -> Self {
+        match error {
+            DeviceManagerError::InvalidConfig { detail, .. } => Self::InvalidConfig { detail },
+            DeviceManagerError::InvalidInput { operation, detail } => {
+                Self::InvalidInput { operation, detail }
+            }
+            DeviceManagerError::ResourceNotFound {
+                operation,
+                resource,
+            } => Self::resource_unavailable(
+                "device resource",
+                format_args!("{operation}: {resource}"),
+            ),
+            DeviceManagerError::ResourceConflict { operation, detail } => {
+                Self::resource_conflict("device resource", format_args!("{operation}: {detail}"))
+            }
+            DeviceManagerError::OutOfMemory { operation } => Self::OutOfMemory { operation },
+            DeviceManagerError::Unsupported { operation, detail } => {
+                Self::Unsupported { operation, detail }
+            }
+            DeviceManagerError::Irq(error) => error.into(),
+            DeviceManagerError::Registry(error) => error.into(),
+            DeviceManagerError::Device(error) => error.into(),
+            error => Self::device("manage virtual devices", error),
         }
     }
 }

@@ -29,6 +29,7 @@ extern crate log;
 mod adapter;
 mod config;
 mod device;
+mod error;
 mod factory;
 mod fw_cfg;
 #[cfg(target_arch = "loongarch64")]
@@ -47,6 +48,7 @@ pub use axdevice_base::{
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;
+pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,

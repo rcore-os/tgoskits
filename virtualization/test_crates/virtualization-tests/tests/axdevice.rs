@@ -14,15 +14,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use ax_errno::{AxError, AxResult};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, MmioDeviceAdapter, PollableDeviceOps,
-    PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
+    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
+    register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceRegistry as _, InterruptTriggerMode, IrqLine, Port,
-    PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, DeviceResult, InterruptTriggerMode, IrqError,
+    IrqLine, IrqLineId, Port, PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -30,14 +30,8 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestP
 fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
-) -> AxResult {
-    devices
-        .register(MmioDeviceAdapter::from_arc(dev))
-        .map_err(|e| match e {
-            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
-            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
-            _ => AxError::InvalidInput,
-        })?;
+) -> Result<(), RegistryError> {
+    devices.register(MmioDeviceAdapter::from_arc(dev))?;
     Ok(())
 }
 
@@ -45,14 +39,8 @@ fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
 fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
-) -> AxResult {
-    devices
-        .register(PortDeviceAdapter::from_arc(dev))
-        .map_err(|e| match e {
-            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
-            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
-            _ => AxError::InvalidInput,
-        })?;
+) -> Result<(), RegistryError> {
+    devices.register(PortDeviceAdapter::from_arc(dev))?;
     Ok(())
 }
 
@@ -60,14 +48,8 @@ fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
 fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
     devices: &mut AxVmDevices,
     dev: Arc<T>,
-) -> AxResult {
-    devices
-        .register(SysRegDeviceAdapter::from_arc(dev))
-        .map_err(|e| match e {
-            RegistryError::AddressConflict { .. } => AxError::AddrInUse,
-            RegistryError::InvalidResource { .. } => AxError::InvalidInput,
-            _ => AxError::InvalidInput,
-        })?;
+) -> Result<(), RegistryError> {
+    devices.register(SysRegDeviceAdapter::from_arc(dev))?;
     Ok(())
 }
 
@@ -107,11 +89,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
         EmulatedDeviceType::IVCChannel
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(0xDEAD_BEEF)
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> AxResult {
+    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> DeviceResult {
         println!(
             "[Test] Device {} write: addr={:?}, val={:#x}",
             self.name, addr, val
@@ -144,11 +126,11 @@ impl BaseDeviceOps<PortRange> for MockPortDevice {
         EmulatedDeviceType::Console
     }
 
-    fn handle_read(&self, _addr: Port, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, _addr: Port, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(0)
     }
 
-    fn handle_write(&self, _addr: Port, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: Port, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
@@ -184,17 +166,17 @@ impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioPollableDevice {
         EmulatedDeviceType::IVCChannel
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(0)
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
 
 impl PollableDeviceOps for MockMmioPollableDevice {
-    fn poll(&self, now_ns: u64) -> AxResult {
+    fn poll(&self, now_ns: u64) -> DeviceManagerResult {
         self.polled_at.lock().unwrap().push(now_ns);
         Ok(())
     }
@@ -217,11 +199,11 @@ impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
         EmulatedDeviceType::InterruptController
     }
 
-    fn handle_read(&self, _addr: SysRegAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, _addr: SysRegAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(0)
     }
 
-    fn handle_write(&self, _addr: SysRegAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: SysRegAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
@@ -256,8 +238,17 @@ fn device_config(
 struct RejectingIrqResolver;
 
 impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(&self, _line: usize, _trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
-        Err(AxError::Unsupported)
+    fn resolve_irq(
+        &self,
+        line: usize,
+        _trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine> {
+        Err(IrqError::Unsupported {
+            line: IrqLineId(line),
+            operation: "resolve test IRQ",
+            detail: "test resolver rejects every line".into(),
+        }
+        .into())
     }
 }
 
@@ -272,12 +263,18 @@ impl DeviceFactory for MockMmioFactory {
         &self,
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle> {
+    ) -> DeviceManagerResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(AxError::InvalidInput);
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build mock MMIO device",
+                detail: "device address range overflows".into(),
+            });
         };
         if config.length == 0 {
-            return Err(AxError::InvalidInput);
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build mock MMIO device",
+                detail: "device range is empty".into(),
+            });
         }
 
         Ok(
@@ -357,30 +354,30 @@ fn test_mmio_duplicate_and_overlapping_ranges_are_rejected_without_modification(
     let existing = mmio_device("existing", 0x2000, 0x3000);
 
     assert_eq!(register_mmio(&mut devices, existing.clone()), Ok(()));
-    assert_eq!(
+    assert!(matches!(
         register_mmio(&mut devices, existing),
-        Err(AxError::AddrInUse)
-    );
-    assert_eq!(
+        Err(RegistryError::AddressConflict { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, mmio_device("same-range", 0x2000, 0x3000)),
-        Err(AxError::AddrInUse)
-    );
-    assert_eq!(
+        Err(RegistryError::AddressConflict { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, mmio_device("partial-left", 0x1800, 0x2800)),
-        Err(AxError::AddrInUse)
-    );
-    assert_eq!(
+        Err(RegistryError::AddressConflict { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, mmio_device("partial-right", 0x2800, 0x3800)),
-        Err(AxError::AddrInUse)
-    );
-    assert_eq!(
+        Err(RegistryError::AddressConflict { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, mmio_device("contains", 0x1000, 0x4000)),
-        Err(AxError::AddrInUse)
-    );
-    assert_eq!(
+        Err(RegistryError::AddressConflict { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, mmio_device("contained", 0x2400, 0x2800)),
-        Err(AxError::AddrInUse)
-    );
+        Err(RegistryError::AddressConflict { .. })
+    ));
     assert_eq!(devices.devices().count(), 1);
 }
 
@@ -401,22 +398,22 @@ fn test_empty_and_wrapped_ranges_are_rejected() {
     let invalid_port = Arc::new(MockPortDevice::new(0x400, 0x3ff));
     let invalid_sysreg = Arc::new(MockSysRegDevice::new(0x101, 0x100));
 
-    assert_eq!(
+    assert!(matches!(
         register_mmio(&mut devices, empty_mmio),
-        Err(AxError::InvalidInput)
-    );
-    assert_eq!(
+        Err(RegistryError::InvalidResource { .. })
+    ));
+    assert!(matches!(
         register_mmio(&mut devices, wrapped_mmio),
-        Err(AxError::InvalidInput)
-    );
-    assert_eq!(
+        Err(RegistryError::InvalidResource { .. })
+    ));
+    assert!(matches!(
         register_port(&mut devices, invalid_port),
-        Err(AxError::InvalidInput)
-    );
-    assert_eq!(
+        Err(RegistryError::InvalidResource { .. })
+    ));
+    assert!(matches!(
         register_sysreg(&mut devices, invalid_sysreg),
-        Err(AxError::InvalidInput)
-    );
+        Err(RegistryError::InvalidResource { .. })
+    ));
     assert_eq!(devices.devices().count(), 0);
 }
 
@@ -428,10 +425,10 @@ fn test_port_inclusive_endpoint_overlap_is_rejected() {
         register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))),
         Ok(())
     );
-    assert_eq!(
+    assert!(matches!(
         register_port(&mut devices, Arc::new(MockPortDevice::new(0x3ff, 0x400))),
-        Err(AxError::AddrInUse)
-    );
+        Err(RegistryError::AddressConflict { .. })
+    ));
     assert_eq!(
         register_port(&mut devices, Arc::new(MockPortDevice::new(0x400, 0x400))),
         Ok(())
@@ -447,10 +444,10 @@ fn test_sysreg_inclusive_endpoint_overlap_is_rejected() {
         register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x100, 0x110))),
         Ok(())
     );
-    assert_eq!(
+    assert!(matches!(
         register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x110, 0x120))),
-        Err(AxError::AddrInUse)
-    );
+        Err(RegistryError::AddressConflict { .. })
+    ));
     assert_eq!(
         register_sysreg(&mut devices, Arc::new(MockSysRegDevice::new(0x111, 0x120))),
         Ok(())
@@ -499,15 +496,17 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
         0x1000,
     );
 
-    assert_eq!(
+    assert!(matches!(
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![first, overlap]),
             &factories,
             &context,
         )
         .err(),
-        Some(AxError::AddrInUse)
-    );
+        Some(DeviceManagerError::Registry(
+            RegistryError::AddressConflict { .. }
+        ))
+    ));
 }
 
 #[test]
@@ -539,10 +538,12 @@ fn test_bundle_internal_conflict_is_atomic() {
         Arc::new(MockPortDevice::new(0x500, 0x50f)),
     )));
 
-    assert_eq!(
+    assert!(matches!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::AddrInUse)
-    );
+        Some(DeviceManagerError::Registry(
+            RegistryError::AddressConflict { .. }
+        ))
+    ));
     assert_eq!(devices.devices().count(), 0);
 }
 
@@ -563,10 +564,12 @@ fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
         Arc::new(MockSysRegDevice::new(0x200, 0x210)),
     )));
 
-    assert_eq!(
+    assert!(matches!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::AddrInUse)
-    );
+        Some(DeviceManagerError::Registry(
+            RegistryError::AddressConflict { .. }
+        ))
+    ));
     assert_eq!(devices.devices().count(), count_before);
 }
 
@@ -607,10 +610,10 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
     )));
     bundle.push(DeviceRegistration::Pollable(shared));
 
-    assert_eq!(
+    assert!(matches!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::AlreadyExists)
-    );
+        Some(DeviceManagerError::ResourceConflict { .. })
+    ));
     assert_eq!(devices.devices().count(), 0);
     assert_eq!(devices.iter_pollable_dev().count(), 1);
 }
@@ -629,10 +632,10 @@ fn test_factory_registry_rejects_duplicate_device_type() {
     let mut factories = DeviceFactoryRegistry::new();
 
     assert_eq!(factories.register(Arc::new(MockMmioFactory)), Ok(()));
-    assert_eq!(
+    assert!(matches!(
         factories.register(Arc::new(MockMmioFactory)),
-        Err(AxError::AlreadyExists)
-    );
+        Err(DeviceManagerError::ResourceConflict { .. })
+    ));
 }
 
 #[test]
@@ -647,19 +650,19 @@ fn test_missing_factory_returns_unsupported() {
         0x1000,
     );
 
-    assert_eq!(
+    assert!(matches!(
         factories.build(&config, &context).err(),
-        Some(AxError::Unsupported)
-    );
-    assert_eq!(
+        Some(DeviceManagerError::Unsupported { .. })
+    ));
+    assert!(matches!(
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![config]),
             &factories,
             &context,
         )
         .err(),
-        Some(AxError::Unsupported)
-    );
+        Some(DeviceManagerError::Unsupported { .. })
+    ));
 }
 
 #[test]
@@ -706,10 +709,10 @@ fn test_factory_validation_failure_leaves_devices_unchanged() {
         0,
     );
 
-    assert_eq!(
+    assert!(matches!(
         devices.register_factory_device(&invalid, &factories, &context),
-        Err(AxError::InvalidInput)
-    );
+        Err(DeviceManagerError::InvalidConfig { .. })
+    ));
     assert_eq!(devices.devices().count(), count_before);
 }
 
@@ -744,10 +747,12 @@ fn test_wrapped_native_mmio_resource_is_rejected() {
     bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
         mmio_device("zero-size", 0x1000, 0x1000),
     )));
-    assert_eq!(
+    assert!(matches!(
         devices.register_bundle(bundle).err(),
-        Some(AxError::InvalidInput)
-    );
+        Some(DeviceManagerError::Registry(
+            RegistryError::InvalidResource { .. }
+        ))
+    ));
     assert_eq!(devices.devices().count(), 0);
 }
 

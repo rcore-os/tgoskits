@@ -8,7 +8,7 @@ use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
 use super::{Aarch64Arch, npt};
 use crate::{
-    AxVmResult, ax_err, ax_err_type,
+    AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -96,35 +96,37 @@ fn register_arch_devices(
     devices: &mut axdevice::AxVmDevices,
 ) -> AxVmResult {
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
-        assign_passthrough_spis(vm, config, devices);
+        assign_passthrough_spis(vm, config, devices)?;
     } else {
         register_virtual_timers(devices)?;
     }
     Ok(())
 }
 
-fn assign_passthrough_spis(vm: &AxVM, config: &AxVMConfig, devices: &axdevice::AxVmDevices) {
+fn assign_passthrough_spis(
+    vm: &AxVM,
+    config: &AxVMConfig,
+    devices: &axdevice::AxVmDevices,
+) -> AxVmResult {
     let cpu_id = vm.id() - 1; // FIXME: get the real CPU id.
     let Some(gicd) = devices
         .devices()
         .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
     else {
         warn!("Failed to assign SPIs: No VGicD found in device list");
-        return;
+        return Ok(());
     };
 
     for spi in config.pass_through_spis() {
-        gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _));
+        gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+            .map_err(|error| AxVmError::interrupt("assign passthrough SPI", error))?;
     }
+    Ok(())
 }
 
 fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxVmResult {
     for device in axdevice::create_vtimer_devices() {
-        devices
-            .register(Arc::from(device) as Arc<dyn axdevice_base::Device>)
-            .map_err(|err| {
-                ax_err_type!(InvalidInput, alloc::format!("register vtimer: {err:?}"))
-            })?;
+        devices.register(Arc::from(device) as Arc<dyn axdevice_base::Device>)?;
     }
     Ok(())
 }

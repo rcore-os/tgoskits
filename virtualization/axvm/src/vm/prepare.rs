@@ -10,7 +10,7 @@ use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
+use crate::{AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
 
 pub(crate) enum VmInitRequest<'a> {
     Default,
@@ -55,8 +55,7 @@ impl AxVM {
 
 pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
     let mut factories = DeviceFactoryRegistry::new();
-    register_builtin_factories(&mut factories)
-        .map_err(|error| AxVmError::device("register built-in device factories", error))?;
+    register_builtin_factories(&mut factories)?;
     Ok(factories)
 }
 

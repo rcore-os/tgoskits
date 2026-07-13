@@ -16,13 +16,14 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::AxResult;
 use axdevice_base::Device;
+
+use crate::DeviceManagerResult;
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
     /// Advances the device using the current monotonic time in nanoseconds.
-    fn poll(&self, now_ns: u64) -> AxResult;
+    fn poll(&self, now_ns: u64) -> DeviceManagerResult;
 }
 
 /// One strongly typed capability contributed by a device.

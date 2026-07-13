@@ -1,8 +1,7 @@
 //! Native x86 host I/O port passthrough devices.
 
 use axdevice_base::{
-    AccessWidth, AxError as DeviceError, AxResult as DeviceResult, BaseDeviceOps, EmuDeviceType,
-    Port, PortRange,
+    AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortRange,
 };
 
 use crate::{AxVmResult, ax_err};
@@ -47,7 +46,10 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
             AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
             AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
             AccessWidth::Dword => Ok(unsafe { inl(port.number()) } as usize),
-            AccessWidth::Qword => Err(DeviceError::Unsupported),
+            AccessWidth::Qword => Err(DeviceError::Unsupported {
+                operation: "read host I/O port",
+                detail: "x86 port I/O does not support 64-bit accesses".into(),
+            }),
         }
     }
 
@@ -57,7 +59,10 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
             AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
             AccessWidth::Dword => unsafe { outl(port.number(), value as u32) },
             AccessWidth::Qword => {
-                return Err(DeviceError::Unsupported);
+                return Err(DeviceError::Unsupported {
+                    operation: "write host I/O port",
+                    detail: "x86 port I/O does not support 64-bit accesses".into(),
+                });
             }
         }
         Ok(())
