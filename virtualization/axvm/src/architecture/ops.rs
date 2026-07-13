@@ -3,66 +3,21 @@
 use alloc::{format, vec::Vec};
 
 use ax_errno::{AxResult, ax_err};
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::VirtAddr;
 use axaddrspace::NestedPageTableOps;
-use axvm_types::{NestedPagingConfig, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
+use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
-use super::{BoundVcpuExit, VcpuCreateContext, VcpuRunAction};
+use super::{BoundVcpuExit, VcpuRunAction};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
-    type VcpuCreateState;
     type DeferredRunWork;
     type NestedPageTable: NestedPageTableOps;
 
     fn has_hardware_support() -> bool;
 
-    fn max_guest_page_table_levels() -> usize {
-        4
-    }
-
-    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
-        let mut levels = Self::max_guest_page_table_levels();
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            levels = levels.min(
-                crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                    .unwrap_or_else(Self::max_guest_page_table_levels),
-            );
-        }
-        Ok(levels)
-    }
-
-    fn nested_paging_config(
-        root_paddr: PhysAddr,
-        levels: usize,
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<NestedPagingConfig> {
-        let gpa_bits = match levels {
-            3 => 39,
-            4 => 48,
-            _ => return ax_errno::ax_err!(InvalidInput, "unsupported nested page-table levels"),
-        };
-        Ok(NestedPagingConfig::new(root_paddr, levels, gpa_bits, 0))
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable>;
-
     fn clean_dcache_range(_addr: VirtAddr, _size: usize) {}
-
-    fn new_vcpu_create_state(
-        vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState>;
-
-    fn build_vcpu_create_config(
-        state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig>;
-
-    fn build_vcpu_setup_config(
-        config: &crate::config::AxVMConfig,
-        memory_regions: &[crate::vm::VMMemoryRegion],
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig>;
 
     fn register_platform_irq_injector() {}
 

@@ -9,12 +9,12 @@ use axdevice_base::Resource;
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
 
-pub(super) fn map_guest_address_space(
+pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
     devices: &AxVmDevices,
+    owned_regions: &[GuestOwnedRegion],
 ) -> AxResult {
-    let owned_regions = guest_owned_regions(resources);
     let emulated_resources = devices
         .devices()
         .flat_map(|device| device.resources().iter().cloned())
@@ -25,7 +25,7 @@ pub(super) fn map_guest_address_space(
         VM_ASPACE_SIZE,
         resources.config.pass_through_devices(),
         resources.config.pass_through_addresses(),
-        &owned_regions,
+        owned_regions,
         &emulated_resources,
     )?;
 
@@ -49,12 +49,10 @@ pub(super) fn map_guest_address_space(
     }
     resources.address_layout = Some(address_layout);
 
-    crate::arch::map_arch_address_space(&mut resources.address_space)?;
-
     Ok(())
 }
 
-fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
+pub(crate) fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
     let mut regions = resources
         .memory_regions
         .iter()
@@ -80,8 +78,6 @@ fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
                 GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
             }),
     );
-
-    crate::arch::append_arch_owned_regions(&mut regions);
 
     regions
 }

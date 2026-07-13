@@ -34,7 +34,6 @@ fn can_start_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Running => Err("VM is already running"),
         VmStatus::Paused => Err("VM is suspended, use 'vm resume' instead"),
         VmStatus::Stopping => Err("VM is stopping, wait for it to fully stop"),
-        VmStatus::Uninit => Err("VM is still loading"),
         VmStatus::Pausing => Err("VM is pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
         VmStatus::Failed => Err("VM is failed"),
@@ -54,7 +53,7 @@ fn can_stop_vm(status: VmStatus, force: bool) -> Result<(), &'static str> {
             }
         }
         VmStatus::Stopped => Err("VM is already stopped"),
-        VmStatus::Uninit | VmStatus::Ready => Ok(()), // Allow stopping VMs in these states
+        VmStatus::Ready => Ok(()), // Allow stopping VMs before their first start.
         VmStatus::Pausing => Err("VM is pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
         VmStatus::Failed => Err("VM is failed"),
@@ -68,7 +67,6 @@ fn can_suspend_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Paused => Err("VM is already suspended"),
         VmStatus::Stopped => Err("VM is stopped, cannot suspend"),
         VmStatus::Stopping => Err("VM is stopping, cannot suspend"),
-        VmStatus::Uninit => Err("VM is loading, cannot suspend"),
         VmStatus::Ready => Err("VM is not running, cannot suspend"),
         VmStatus::Pausing => Err("VM is already pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
@@ -83,7 +81,6 @@ fn can_resume_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Running => Err("VM is already running"),
         VmStatus::Stopped => Err("VM is stopped, use 'vm start' instead"),
         VmStatus::Stopping => Err("VM is stopping, cannot resume"),
-        VmStatus::Uninit => Err("VM is loading, cannot resume"),
         VmStatus::Ready => Err("VM is not started yet, use 'vm start' instead"),
         VmStatus::Pausing => Err("VM is pausing, wait before resuming"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
@@ -305,7 +302,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
                     println!("Gracefully stopping VM[{}]...", vm_id);
                 }
             }
-            VmStatus::Uninit | VmStatus::Ready => {
+            VmStatus::Ready => {
                 println!(
                     "⚠ VM[{}] is in {:?} state, stopping anyway...",
                     vm_id, status

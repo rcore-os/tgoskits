@@ -5,21 +5,7 @@ use alloc::{format, vec::Vec};
 use ax_errno::{AxResult, ax_err_type};
 
 use super::Riscv64Arch;
-use crate::architecture::{
-    AddressSpacePlatform, BootImagePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
-};
-
-impl DevicePlatform for Riscv64Arch {
-    fn configure_interrupt_fabric(
-        factories: &mut axdevice::DeviceFactoryRegistry,
-        mode: axvm_types::VMInterruptMode,
-        configs: &[axvm_types::EmulatedDeviceConfig],
-    ) -> AxResult<crate::InterruptFabric> {
-        super::irq::configure(factories, mode, configs)
-    }
-}
-
-impl AddressSpacePlatform for Riscv64Arch {}
+use crate::architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform};
 
 impl HostTimePlatform for Riscv64Arch {}
 

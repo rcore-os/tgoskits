@@ -1,13 +1,9 @@
 //! Target architecture selection and stable internal dispatch.
 
 use ax_errno::AxResult;
-use ax_memory_addr::PhysAddr;
-use axvm_types::NestedPagingConfig;
 
 pub(crate) use crate::architecture::*;
-use crate::architecture::{
-    AddressSpacePlatform, BootImagePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
-};
+use crate::architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform};
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -79,52 +75,6 @@ pub mod platform {
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
-
-pub(crate) fn guest_page_table_levels(
-    vcpu_mappings: &[(usize, Option<usize>, usize)],
-) -> AxResult<usize> {
-    CurrentArch::guest_page_table_levels(vcpu_mappings)
-}
-
-pub(crate) fn new_nested_page_table(levels: usize) -> AxResult<ArchNestedPageTable> {
-    CurrentArch::new_nested_page_table(levels)
-}
-
-pub(crate) fn nested_paging_config(
-    root_paddr: PhysAddr,
-    levels: usize,
-    vcpu_mappings: &[(usize, Option<usize>, usize)],
-) -> AxResult<NestedPagingConfig> {
-    CurrentArch::nested_paging_config(root_paddr, levels, vcpu_mappings)
-}
-
-pub(crate) fn configure_interrupt_fabric(
-    factories: &mut axdevice::DeviceFactoryRegistry,
-    mode: axvm_types::VMInterruptMode,
-    configs: &[axvm_types::EmulatedDeviceConfig],
-) -> AxResult<crate::InterruptFabric> {
-    CurrentArch::configure_interrupt_fabric(factories, mode, configs)
-}
-
-pub(crate) fn register_arch_devices(
-    vm: &crate::AxVM,
-    config: &crate::config::AxVMConfig,
-    devices: &mut axdevice::AxVmDevices,
-) -> AxResult {
-    CurrentArch::register_devices(vm, config, devices)
-}
-
-pub(crate) fn append_arch_owned_regions(
-    regions: &mut alloc::vec::Vec<crate::layout::GuestOwnedRegion>,
-) {
-    CurrentArch::append_owned_regions(regions);
-}
-
-pub(crate) fn map_arch_address_space(
-    address_space: &mut axaddrspace::AddrSpace<ArchNestedPageTable>,
-) -> AxResult {
-    CurrentArch::map_address_space(address_space)
-}
 
 pub(crate) fn register_timer_callback() {
     CurrentArch::register_timer_callback();

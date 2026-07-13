@@ -17,7 +17,6 @@ fn vm_core_does_not_handle_arch_local_exits() {
     let vm_rs = include_str!("../src/vm/mod.rs");
 
     for forbidden in [
-        "CurrentArch",
         "ArchOps",
         "CurrentArch::handle_vcpu_exit",
         "VcpuRunAction",
@@ -28,6 +27,92 @@ fn vm_core_does_not_handle_arch_local_exits() {
             "vm/mod.rs must not contain architecture-local exit handling detail: {forbidden}"
         );
     }
+}
+
+#[test]
+fn common_vm_initialization_only_uses_high_level_arch_entrypoints() {
+    let vm = include_str!("../src/vm/mod.rs");
+    let preparation = include_str!("../src/vm/prepare.rs");
+    let common_sources = [
+        vm,
+        preparation,
+        include_str!("../src/vm/prepare/address_space.rs"),
+        include_str!("../src/vm/prepare/devices.rs"),
+        include_str!("../src/vm/prepare/vcpus.rs"),
+    ];
+
+    assert!(vm.contains("CurrentArch::create_vm_resources(config)"));
+    assert!(preparation.contains("CurrentArch::init_vm"));
+
+    for source in &common_sources {
+        for line in source.lines().filter(|line| line.contains("CurrentArch::")) {
+            assert!(
+                line.contains("CurrentArch::create_vm_resources")
+                    || line.contains("CurrentArch::init_vm"),
+                "common VM initialization calls a fine-grained architecture hook: {line}"
+            );
+        }
+    }
+
+    for forbidden in [
+        "configure_interrupt_fabric",
+        "register_arch_devices",
+        "append_arch_owned_regions",
+        "map_arch_address_space",
+        "new_vcpu_create_state",
+        "build_vcpu_create_config",
+        "build_vcpu_setup_config",
+    ] {
+        assert!(
+            common_sources
+                .iter()
+                .all(|source| !source.contains(forbidden)),
+            "common VM initialization must not call architecture step hook: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn every_architecture_owns_vm_resource_creation_and_initialization() {
+    for source in [
+        include_str!("../src/arch/aarch64/vm.rs"),
+        include_str!("../src/arch/loongarch64/vm.rs"),
+        include_str!("../src/arch/riscv64/vm.rs"),
+        include_str!("../src/arch/x86_64/vm.rs"),
+    ] {
+        assert!(source.contains("fn create_vm_resources"));
+        assert!(source.contains("fn init_vm"));
+    }
+}
+
+#[test]
+fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
+    let preparation = include_str!("../src/vm/prepare.rs");
+    assert!(preparation.contains("VmInitRequest::Provided"));
+    assert!(preparation.contains("factories,"));
+    assert!(preparation.contains("interrupt_fabric,"));
+
+    for source in [
+        include_str!("../src/arch/aarch64/vm.rs"),
+        include_str!("../src/arch/loongarch64/vm.rs"),
+        include_str!("../src/arch/riscv64/vm.rs"),
+        include_str!("../src/arch/x86_64/vm.rs"),
+    ] {
+        assert!(source.contains("VmInitRequest::Provided"));
+        assert!(source.contains("init_vm_with(vm, factories, interrupt_fabric)"));
+    }
+}
+
+#[test]
+fn failed_vm_initialization_resets_transient_resources_before_retry() {
+    let preparation = include_str!("../src/vm/prepare.rs");
+    let initialize = preparation
+        .split_once("let prepared = match initialize")
+        .expect("VM initialization must handle architecture errors")
+        .1;
+
+    assert!(initialize.contains("resources.reset_transient_resources()"));
+    assert!(initialize.contains("return Err(err)"));
 }
 
 #[test]
@@ -224,6 +309,36 @@ fn vcpu_setup_context_keeps_named_capabilities() {
             .all(|source| !source.contains("VcpuSetupContext")),
         "vCPU setup must pass named configuration and memory sources without a union context"
     );
+}
+
+#[test]
+fn vm_init_capability_traits_are_not_reintroduced() {
+    let capabilities = include_str!("../src/architecture/capabilities.rs");
+    let ops = include_str!("../src/architecture/ops.rs");
+
+    for forbidden in [
+        "trait DevicePlatform",
+        "trait AddressSpacePlatform",
+        "VcpuCreateContext",
+        "fn build_vcpu_create_config",
+        "fn build_vcpu_setup_config",
+    ] {
+        assert!(
+            !capabilities.contains(forbidden) && !ops.contains(forbidden),
+            "VM initialization detail must stay behind CurrentArch::init_vm: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn eager_vm_lifecycle_has_no_uninit_state() {
+    let status = include_str!("../src/lifecycle/status.rs");
+    let machine = include_str!("../src/lifecycle/machine.rs");
+    let vm = include_str!("../src/vm/mod.rs");
+
+    assert!(!status.contains("Uninit"));
+    assert!(!machine.contains("Machine::Uninit"));
+    assert!(vm.contains("machine: Mutex::new(Machine::Ready(resources))"));
 }
 
 fn find_target_arch_cfg_outside_arch(

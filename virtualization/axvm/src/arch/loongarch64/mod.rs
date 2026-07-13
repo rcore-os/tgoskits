@@ -9,16 +9,12 @@ use axvm_types::{
 };
 use loongarch_vcpu::{
     LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
-    LoongArchHostPhysAddr, LoongArchHostVirtAddr, LoongArchIocsrStateRef,
-    LoongArchNestedPagingConfig, LoongArchPerCpu, LoongArchVCpuCreateConfig,
-    LoongArchVCpuSetupConfig, LoongArchVcpu, LoongArchVcpuError, LoongArchVcpuResult,
-    LoongArchVmExit,
+    LoongArchHostPhysAddr, LoongArchHostVirtAddr, LoongArchNestedPagingConfig, LoongArchPerCpu,
+    LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig, LoongArchVcpu, LoongArchVcpuError,
+    LoongArchVcpuResult, LoongArchVmExit,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::host::{HostMemory, HostTime, default_host};
 
 pub(crate) mod boot;
@@ -27,6 +23,7 @@ pub(crate) mod fdt;
 mod idle;
 pub(crate) mod irq;
 mod npt;
+mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 
@@ -41,56 +38,11 @@ pub(crate) enum LoongArchDeferredRunWork {
 impl ArchOps for LoongArch64Arch {
     type VCpu = AxvmLoongArchVcpu;
     type PerCpu = AxvmLoongArchPerCpu;
-    type VcpuCreateState = LoongArchIocsrStateRef;
     type DeferredRunWork = LoongArchDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         loongarch_vcpu::has_hardware_support()
-    }
-
-    fn new_vcpu_create_state(
-        vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        let vcpu_state_count = vcpu_mappings
-            .iter()
-            .map(|(vcpu_id, ..)| *vcpu_id)
-            .max()
-            .map_or(0, |vcpu_id| vcpu_id + 1);
-        loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(vcpu_state_count))
-    }
-
-    fn build_vcpu_create_config(
-        state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        let (vcpu_id, _phys_cpu_id, dtb_addr, firmware_boot) = ctx.into_parts();
-        Ok(LoongArchVCpuCreateConfig {
-            cpu_id: vcpu_id,
-            dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-            boot_args: [0; 3],
-            boot_stack_top: 0,
-            firmware_boot,
-            iocsr_state: state.clone(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        config: &crate::config::AxVMConfig,
-        _memory_regions: &[crate::vm::VMMemoryRegion],
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
-        Ok(LoongArchVCpuSetupConfig {
-            passthrough_interrupt: passthrough,
-            passthrough_timer: passthrough,
-            boot_args: [0; 3],
-            boot_stack_top: 0,
-            firmware_boot: config.uses_firmware_boot(),
-        })
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
     }
 
     fn register_platform_irq_injector() {

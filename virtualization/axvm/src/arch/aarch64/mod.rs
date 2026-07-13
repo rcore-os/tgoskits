@@ -20,14 +20,8 @@ use axvm_types::{
     VmArchVcpuOps,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction,
-};
-use crate::{
-    architecture::ops::target_phys_cpu_ids,
-    host::{HostCpu, HostMemory, HostTime, default_host},
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use crate::host::{HostCpu, HostMemory, HostTime, default_host};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
@@ -39,6 +33,7 @@ mod ipi;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
+mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
@@ -58,67 +53,11 @@ impl CpuUpOps for Aarch64Arch {}
 impl ArchOps for Aarch64Arch {
     type VCpu = AxvmArmVcpu;
     type PerCpu = AxvmArmPerCpu;
-    type VcpuCreateState = ();
     type DeferredRunWork = Aarch64DeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         arm_vcpu::has_hardware_support()
-    }
-
-    fn max_guest_page_table_levels() -> usize {
-        arm_vcpu::max_guest_page_table_levels()
-    }
-
-    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
-        let mut selected = usize::MAX;
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            let levels = crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                .unwrap_or_else(arm_vcpu::max_guest_page_table_levels);
-            if levels == 0 {
-                return ax_err!(
-                    Unsupported,
-                    "AArch64 nested paging is not enabled on target CPU"
-                );
-            }
-            selected = selected.min(levels);
-        }
-        if selected == usize::MAX {
-            selected = arm_vcpu::max_guest_page_table_levels();
-        }
-        match selected {
-            3 | 4 => Ok(selected),
-            _ => ax_err!(Unsupported, "unsupported AArch64 stage-2 page-table levels"),
-        }
-    }
-
-    fn nested_paging_config(
-        root_paddr: PhysAddr,
-        levels: usize,
-        vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<NestedPagingConfig> {
-        let mut pa_bits = usize::MAX;
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            let bits =
-                crate::percpu::cpu_guest_phys_addr_bits(cpu_id).unwrap_or_else(arm_vcpu::pa_bits);
-            pa_bits = pa_bits.min(bits);
-        }
-        if pa_bits == usize::MAX {
-            pa_bits = arm_vcpu::pa_bits();
-        }
-
-        let gpa_bits = match levels {
-            3 => 39,
-            4 => 48,
-            _ => return ax_err!(InvalidInput, "unsupported AArch64 stage-2 levels"),
-        };
-        Ok(NestedPagingConfig::new(
-            root_paddr, levels, gpa_bits, pa_bits,
-        ))
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
@@ -127,34 +66,6 @@ impl ArchOps for Aarch64Arch {
             addr.as_usize(),
             size,
         );
-    }
-
-    fn new_vcpu_create_state(
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        Ok(())
-    }
-
-    fn build_vcpu_create_config(
-        _state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        let (_vcpu_id, phys_cpu_id, dtb_addr, _firmware_boot) = ctx.into_parts();
-        Ok(ArmVcpuCreateConfig {
-            mpidr_el1: phys_cpu_id as _,
-            dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        config: &crate::config::AxVMConfig,
-        _memory_regions: &[crate::vm::VMMemoryRegion],
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
-        Ok(ArmVcpuSetupConfig {
-            passthrough_interrupt: passthrough,
-            passthrough_timer: passthrough,
-        })
     }
 
     fn handle_vcpu_exit_bound(

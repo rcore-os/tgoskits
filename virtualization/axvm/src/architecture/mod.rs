@@ -5,11 +5,7 @@ mod exit;
 pub(crate) mod ops;
 mod types;
 
-pub(crate) use capabilities::{
-    AddressSpacePlatform, BootImagePlatform, DevicePlatform, GuestBootPlatform, HostTimePlatform,
-};
+pub(crate) use capabilities::{BootImagePlatform, GuestBootPlatform, HostTimePlatform};
 pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 pub(crate) use ops::ArchOps;
-pub(crate) use types::{
-    BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext, VcpuRunAction,
-};
+pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};

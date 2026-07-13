@@ -22,10 +22,7 @@ use x86_vlapic::{
     X86VlapicResult, X86VmId,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
     StopReason,
     host::{HostMemory, default_host},
@@ -43,6 +40,7 @@ mod npt;
 pub(crate) mod port;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
+mod vm;
 
 use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
@@ -53,60 +51,14 @@ const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
 
-pub(crate) struct X86VcpuCreateState;
-
 impl ArchOps for X86_64Arch {
     type VCpu = AxvmX86Vcpu;
     type PerCpu = AxvmX86PerCpu;
-    type VcpuCreateState = X86VcpuCreateState;
     type DeferredRunWork = DeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         x86_vcpu::has_hardware_support()
-    }
-
-    fn new_vcpu_create_state(
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        Ok(X86VcpuCreateState)
-    }
-
-    fn build_vcpu_create_config(
-        _state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        let _ = ctx.into_parts();
-        Ok(X86VCpuCreateConfig)
-    }
-
-    fn build_vcpu_setup_config(
-        vm_config: &crate::config::AxVMConfig,
-        memory_regions: &[crate::vm::VMMemoryRegion],
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let mut setup_config = X86VCpuSetupConfig {
-            emulate_com1: vm_config
-                .emu_devices()
-                .iter()
-                .any(|device| device.emu_type == EmulatedDeviceType::Console),
-            guest_memory_regions: memory_regions
-                .iter()
-                .map(|region| x86_vcpu::X86GuestMemoryRegion {
-                    gpa: X86GuestPhysAddr::from_usize(region.gpa.as_usize()),
-                    hva: X86HostVirtAddr::from_usize(region.hva.as_usize()),
-                    size: region.size(),
-                })
-                .collect(),
-            ..Default::default()
-        };
-        for port in vm_config.pass_through_ports() {
-            x86_result(setup_config.add_passthrough_port_range(port.base, port.length))?;
-        }
-        Ok(setup_config)
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {

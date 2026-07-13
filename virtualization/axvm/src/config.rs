@@ -240,15 +240,6 @@ impl AxVMConfig {
         self.boot_policy
     }
 
-    pub(crate) fn uses_firmware_boot(&self) -> bool {
-        matches!(
-            self.boot_policy,
-            GuestBootPolicy::AdjustKernelForBootProtocol {
-                protocol: VMBootProtocol::Uefi,
-            }
-        )
-    }
-
     /// Sets the policy used to adjust runtime boot image addresses.
     pub fn set_boot_policy(&mut self, boot_policy: GuestBootPolicy) {
         self.boot_policy = boot_policy;
@@ -434,17 +425,5 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
-    }
-
-    #[test]
-    fn firmware_boot_is_derived_from_the_typed_boot_policy() {
-        let mut config = AxVMConfig::default_for_test(1, "linux");
-        assert!(!config.uses_firmware_boot());
-
-        config.set_boot_policy(GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: VMBootProtocol::Uefi,
-        });
-
-        assert!(config.uses_firmware_boot());
     }
 }

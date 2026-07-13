@@ -43,21 +43,3 @@ pub(crate) struct HypercallExit {
     pub(crate) nr: u64,
     pub(crate) args: [u64; 6],
 }
-
-pub(crate) struct VcpuCreateContext {
-    pub(crate) vcpu_id: usize,
-    pub(crate) phys_cpu_id: usize,
-    pub(crate) dtb_addr: Option<GuestPhysAddr>,
-    pub(crate) firmware_boot: bool,
-}
-
-impl VcpuCreateContext {
-    pub(crate) fn into_parts(self) -> (usize, usize, Option<GuestPhysAddr>, bool) {
-        (
-            self.vcpu_id,
-            self.phys_cpu_id,
-            self.dtb_addr,
-            self.firmware_boot,
-        )
-    }
-}

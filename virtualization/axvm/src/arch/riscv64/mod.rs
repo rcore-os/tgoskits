@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxError, AxResult, ax_err};
+use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
     AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
@@ -14,13 +14,10 @@ use riscv_vcpu::{
 };
 use riscv_vplic::host::RiscvVplicHostIf;
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
     StopReason,
-    architecture::ops::{default_vcpu_affinities, target_phys_cpu_ids},
+    architecture::ops::default_vcpu_affinities,
     host::{HostMemory, default_host},
 };
 
@@ -31,6 +28,7 @@ pub(crate) mod fdt;
 mod images;
 mod irq;
 mod npt;
+mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
@@ -52,66 +50,11 @@ impl CpuUpOps for Riscv64Arch {
 impl ArchOps for Riscv64Arch {
     type VCpu = AxvmRiscvVcpu;
     type PerCpu = AxvmRiscvPerCpu;
-    type VcpuCreateState = ();
     type DeferredRunWork = RiscvDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         riscv_vcpu::has_hardware_support()
-    }
-
-    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
-        let mut levels = riscv_vcpu::max_guest_page_table_levels();
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            levels = levels.min(
-                crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                    .unwrap_or_else(riscv_vcpu::max_guest_page_table_levels),
-            );
-        }
-        match levels {
-            3 | 4 => Ok(levels),
-            _ => ax_err!(Unsupported, "no supported RISC-V G-stage paging mode"),
-        }
-    }
-
-    fn nested_paging_config(
-        root_paddr: PhysAddr,
-        levels: usize,
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<NestedPagingConfig> {
-        match levels {
-            3 => Ok(NestedPagingConfig::new(root_paddr, 3, 41, 8)),
-            4 => Ok(NestedPagingConfig::new(root_paddr, 4, 50, 9)),
-            _ => ax_err!(InvalidInput, "unsupported RISC-V G-stage levels"),
-        }
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
-    }
-
-    fn new_vcpu_create_state(
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        Ok(())
-    }
-
-    fn build_vcpu_create_config(
-        _state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        let (vcpu_id, _phys_cpu_id, dtb_addr, _firmware_boot) = ctx.into_parts();
-        Ok(RiscvVcpuCreateConfig {
-            hart_id: vcpu_id,
-            dtb_addr: dtb_addr.unwrap_or_default().as_usize(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        _config: &crate::config::AxVMConfig,
-        _memory_regions: &[crate::vm::VMMemoryRegion],
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        Ok(())
     }
 
     fn register_platform_irq_injector() {

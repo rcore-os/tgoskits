@@ -2,8 +2,6 @@
 
 use ax_errno::AxResult;
 
-use super::ArchOps;
-
 /// Guest firmware preparation performed before common VM memory loading.
 pub(crate) trait GuestBootPlatform {
     fn init_guest_boot_resources() {}
@@ -51,36 +49,6 @@ pub(crate) trait BootImagePlatform {
         _provider: &dyn crate::boot::BootImageProvider,
     ) -> bool {
         false
-    }
-}
-
-/// Architecture-owned interrupt fabric and device registration hooks.
-pub(crate) trait DevicePlatform {
-    fn configure_interrupt_fabric(
-        _factories: &mut axdevice::DeviceFactoryRegistry,
-        mode: axvm_types::VMInterruptMode,
-        _configs: &[axvm_types::EmulatedDeviceConfig],
-    ) -> AxResult<crate::InterruptFabric> {
-        Ok(crate::InterruptFabric::new(mode))
-    }
-
-    fn register_devices(
-        _vm: &crate::AxVM,
-        _config: &crate::config::AxVMConfig,
-        _devices: &mut axdevice::AxVmDevices,
-    ) -> AxResult {
-        Ok(())
-    }
-}
-
-/// Architecture-owned guest address-space additions.
-pub(crate) trait AddressSpacePlatform: ArchOps {
-    fn append_owned_regions(_regions: &mut alloc::vec::Vec<crate::layout::GuestOwnedRegion>) {}
-
-    fn map_address_space(
-        _address_space: &mut axaddrspace::AddrSpace<Self::NestedPageTable>,
-    ) -> AxResult {
-        Ok(())
     }
 }
 
