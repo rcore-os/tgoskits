@@ -3,8 +3,8 @@ use core::time::Duration;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
-    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, GuestPhysAddr,
-    MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
+    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 use loongarch_vcpu::{
     LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
@@ -417,14 +417,14 @@ impl VmArchPerCpuOps for AxvmLoongArchPerCpu {
 }
 
 fn loongarch_result<T>(result: LoongArchVcpuResult<T>) -> BackendResult<T> {
-    result.map_err(loongarch_error_to_ax)
+    result.map_err(loongarch_error_to_backend)
 }
 
-fn loongarch_error_to_ax(err: LoongArchVcpuError) -> BackendError {
+fn loongarch_error_to_backend(err: LoongArchVcpuError) -> BackendError {
     match err {
         LoongArchVcpuError::InvalidInput => BackendError::InvalidInput,
         LoongArchVcpuError::Unsupported => BackendError::Unsupported,
-        LoongArchVcpuError::BadState => BackendError::BadState,
+        LoongArchVcpuError::BadState => BackendError::InvalidState,
     }
 }
 
@@ -509,18 +509,18 @@ mod tests {
     }
 
     #[test]
-    fn converts_loongarch_vcpu_errors_to_ax_errors() {
+    fn converts_loongarch_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::InvalidInput),
+            loongarch_error_to_backend(LoongArchVcpuError::InvalidInput),
             BackendError::InvalidInput
         );
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::Unsupported),
+            loongarch_error_to_backend(LoongArchVcpuError::Unsupported),
             BackendError::Unsupported
         );
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::BadState),
-            BackendError::BadState
+            loongarch_error_to_backend(LoongArchVcpuError::BadState),
+            BackendError::InvalidState
         );
     }
 

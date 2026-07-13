@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, GuestPhysAddr,
-    MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode, VmArchPerCpuOps,
-    VmArchVcpuOps,
+    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
+    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 use riscv_vcpu::{
     GprIndex as RiscvGprIndex, RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr,
@@ -362,14 +362,14 @@ impl VmArchPerCpuOps for AxvmRiscvPerCpu {
 }
 
 fn riscv_result<T>(result: RiscvVcpuResult<T>) -> BackendResult<T> {
-    result.map_err(riscv_error_to_ax)
+    result.map_err(riscv_error_to_backend)
 }
 
-fn riscv_error_to_ax(err: RiscvVcpuError) -> BackendError {
+fn riscv_error_to_backend(err: RiscvVcpuError) -> BackendError {
     match err {
         RiscvVcpuError::InvalidInput => BackendError::InvalidInput,
         RiscvVcpuError::Unsupported => BackendError::Unsupported,
-        RiscvVcpuError::BadState => BackendError::BadState,
+        RiscvVcpuError::BadState => BackendError::InvalidState,
         RiscvVcpuError::InvalidTrap
         | RiscvVcpuError::DecodeFailed
         | RiscvVcpuError::GuestMemoryFault => BackendError::InvalidData,
@@ -476,21 +476,21 @@ mod tests {
     }
 
     #[test]
-    fn converts_riscv_vcpu_errors_to_ax_errors() {
+    fn converts_riscv_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            riscv_error_to_ax(RiscvVcpuError::InvalidInput),
+            riscv_error_to_backend(RiscvVcpuError::InvalidInput),
             BackendError::InvalidInput
         );
         assert_eq!(
-            riscv_error_to_ax(RiscvVcpuError::Unsupported),
+            riscv_error_to_backend(RiscvVcpuError::Unsupported),
             BackendError::Unsupported
         );
         assert_eq!(
-            riscv_error_to_ax(RiscvVcpuError::BadState),
-            BackendError::BadState
+            riscv_error_to_backend(RiscvVcpuError::BadState),
+            BackendError::InvalidState
         );
         assert_eq!(
-            riscv_error_to_ax(RiscvVcpuError::DecodeFailed),
+            riscv_error_to_backend(RiscvVcpuError::DecodeFailed),
             BackendError::InvalidData
         );
     }

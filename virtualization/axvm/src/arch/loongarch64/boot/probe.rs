@@ -95,7 +95,7 @@ struct HostResources {
 
 fn host_acpi_resources(
     acpi: &ax_driver::probe::acpi::System,
-) -> axvm_types::AxVmResult<HostResources> {
+) -> axvm_types::VmBackendResult<HostResources> {
     let defaults = QemuVirtDefaults::new();
     let interrupt = acpi
         .routing()

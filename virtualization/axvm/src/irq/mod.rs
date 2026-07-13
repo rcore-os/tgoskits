@@ -17,8 +17,11 @@
 use alloc::sync::Arc;
 
 use axdevice::IrqResolver;
-use axdevice_base::{AxResult as DeviceResult, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
-use axvm_types::{AxVmError as BackendError, VMInterruptMode};
+use axdevice_base::{
+    AxError as DeviceError, AxResult as DeviceResult, InterruptTriggerMode, IrqLine, IrqLineId,
+    IrqSink,
+};
+use axvm_types::VMInterruptMode;
 
 use crate::{AxVmError, AxVmResult, ax_err};
 
@@ -96,9 +99,9 @@ impl InterruptFabric {
     fn sink_for_line(&self, _line: usize) -> DeviceResult<&Arc<dyn IrqSink>> {
         let Some(sink) = &self.sink else {
             if self.mode == VMInterruptMode::NoIrq {
-                return Err(BackendError::InvalidInput);
+                return Err(DeviceError::InvalidInput);
             }
-            return Err(BackendError::Unsupported);
+            return Err(DeviceError::Unsupported);
         };
         Ok(sink)
     }

@@ -20,10 +20,8 @@ use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceRegistration,
     MmioDeviceAdapter,
 };
-use axdevice_base::{AxResult as DeviceResult, IrqLineId, IrqSink};
-use axvm_types::{
-    AxVmError as BackendError, EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode,
-};
+use axdevice_base::{AxError as DeviceError, AxResult as DeviceResult, IrqLineId, IrqSink};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };
@@ -69,7 +67,7 @@ impl DeviceFactory for RiscvPlicFactory {
             || config.length != self.length
             || config.cfg_list.as_slice() != [self.contexts_num]
         {
-            return Err(BackendError::InvalidInput);
+            return Err(DeviceError::InvalidInput);
         }
         Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.vplic.clone())).into())
     }

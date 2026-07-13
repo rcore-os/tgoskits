@@ -15,8 +15,8 @@ use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, GuestPhysAddr,
-    NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
+    AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
@@ -297,14 +297,14 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
 }
 
 fn arm_result<T>(result: ArmVcpuResult<T>) -> BackendResult<T> {
-    result.map_err(arm_error_to_ax)
+    result.map_err(arm_error_to_backend)
 }
 
-fn arm_error_to_ax(err: ArmVcpuError) -> BackendError {
+fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
     match err {
         ArmVcpuError::InvalidInput => BackendError::InvalidInput,
         ArmVcpuError::Unsupported => BackendError::Unsupported,
-        ArmVcpuError::BadState => BackendError::BadState,
+        ArmVcpuError::BadState => BackendError::InvalidState,
     }
 }
 
@@ -343,18 +343,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_arm_vcpu_errors_to_ax_errors() {
+    fn converts_arm_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            arm_error_to_ax(ArmVcpuError::InvalidInput),
+            arm_error_to_backend(ArmVcpuError::InvalidInput),
             BackendError::InvalidInput
         );
         assert_eq!(
-            arm_error_to_ax(ArmVcpuError::Unsupported),
+            arm_error_to_backend(ArmVcpuError::Unsupported),
             BackendError::Unsupported
         );
         assert_eq!(
-            arm_error_to_ax(ArmVcpuError::BadState),
-            BackendError::BadState
+            arm_error_to_backend(ArmVcpuError::BadState),
+            BackendError::InvalidState
         );
     }
 

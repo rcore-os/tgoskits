@@ -1533,9 +1533,9 @@ name = "axvm-types"
 version = "0.7.0"
 dependencies = [
  "ax-cpumask",
- "ax-errno 0.6.1",
  "ax-memory-addr",
  "bitflags 2.13.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
