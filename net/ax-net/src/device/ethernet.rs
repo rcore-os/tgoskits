@@ -131,10 +131,15 @@ pub struct EthernetDevice {
     ip: Option<Ipv4Cidr>,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
-    /// Individual L2 frame lengths of packets transmitted asynchronously
+    /// Individual L2 frame lengths of packets transmitted on a side path
     /// during ARP resolution (inside `recv()`/`process_arp()`). Drained by
-    /// the router's RX worker via [`Device::drain_async_tx`].
-    async_tx_frames: Vec<usize>,
+    /// the router's RX worker via [`Device::drain_deferred_tx`].
+    deferred_tx_frame_lens: Vec<usize>,
+    /// Individual L2 frame lengths of non-IP frames (ARP) received during
+    /// `recv()`. These frames are processed internally and never enqueued
+    /// into the IP buffer, but must still count toward RX statistics.
+    /// Drained by the router's RX worker via [`Device::drain_deferred_rx`].
+    pending_rx_frame_lens: Vec<usize>,
 }
 
 fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
@@ -235,7 +240,8 @@ impl EthernetDevice {
             ip,
 
             pending_packets,
-            async_tx_frames: Vec::new(),
+            deferred_tx_frame_lens: Vec::new(),
+            pending_rx_frame_lens: Vec::new(),
         }
     }
 
@@ -330,12 +336,19 @@ impl EthernetDevice {
                 snoop(frame.payload());
                 buffer
                     .enqueue(frame.payload().len(), interface_id)
-                    .unwrap()
+                    .expect(
+                        "recv precondition: buffer checked !rx_buffer.is_full() before calling \
+                         recv()",
+                    )
                     .copy_from_slice(frame.payload());
                 frame_len
             }
             EthernetProtocol::Arp => {
                 self.process_arp(frame.payload(), timestamp);
+                // ARP frames are successfully received L2 frames — record
+                // their length for RX statistics even though they were not
+                // enqueued into the IP buffer.
+                self.pending_rx_frame_lens.push(frame_len);
                 0
             }
             _ => 0,
@@ -362,24 +375,23 @@ impl EthernetDevice {
         };
 
         let mut inner = self.inner.driver.lock();
-        // ARP requests are protocol control frames — their byte count
-        // is intentionally not recorded in TX statistics. However, if the
-        // send fails, the ARP resolution attempt has failed and we should
-        // not register a pending neighbor entry that will never be resolved.
-        if Self::send_to(
+        let arp_frame_len = Self::send_to(
             &mut **inner,
             EthernetAddress::BROADCAST,
             arp_repr.buffer_len(),
             |buf| arp_repr.emit(&mut ArpPacket::new_unchecked(buf)),
             EthernetProtocol::Arp,
-        ) == 0
-        {
+        );
+        if arp_frame_len == 0 {
             warn!(
                 "{}: failed to send ARP request for {}",
                 self.name, target_ipv4
             );
             return false;
         }
+        // ARP requests are successfully transmitted L2 frames — record
+        // their length so the router RX worker can count them in TX stats.
+        self.deferred_tx_frame_lens.push(arp_frame_len);
 
         self.pending_neighbors.insert(
             target_ip,
@@ -454,15 +466,18 @@ impl EthernetDevice {
                 };
 
                 let mut inner = self.inner.driver.lock();
-                // ARP replies are protocol control frames — their byte count
-                // is intentionally not recorded in TX statistics.
-                let _ = Self::send_to(
+                let arp_frame_len = Self::send_to(
                     &mut **inner,
                     source_hardware_addr,
                     response.buffer_len(),
                     |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
                     EthernetProtocol::Arp,
                 );
+                // ARP replies are successfully transmitted L2 frames — record
+                // their length so the router RX worker can count them in TX stats.
+                if arp_frame_len > 0 {
+                    self.deferred_tx_frame_lens.push(arp_frame_len);
+                }
             }
 
             // Drain every entry in the pending queue and either send it (if
@@ -493,7 +508,9 @@ impl EthernetDevice {
                     Some(_) => Action::Refresh(buf.to_vec()),
                     None => Action::Keep(buf.to_vec()),
                 };
-                let _ = self.pending_packets.dequeue();
+                self.pending_packets
+                    .dequeue()
+                    .expect("peek succeeded moments ago; dequeue must succeed");
 
                 match action {
                     Action::Send(mac, payload) => {
@@ -511,7 +528,7 @@ impl EthernetDevice {
                             EthernetProtocol::Ipv4,
                         );
                         if frame_len > 0 {
-                            self.async_tx_frames.push(frame_len);
+                            self.deferred_tx_frame_lens.push(frame_len);
                         }
                     }
                     Action::Refresh(payload) => {
@@ -633,14 +650,25 @@ impl Device for EthernetDevice {
         0
     }
 
-    fn drain_async_tx(&mut self) -> Vec<usize> {
-        core::mem::take(&mut self.async_tx_frames)
+    fn drain_deferred_tx(&mut self) -> Vec<usize> {
+        core::mem::take(&mut self.deferred_tx_frame_lens)
+    }
+
+    fn drain_deferred_rx(&mut self) -> Vec<usize> {
+        core::mem::take(&mut self.pending_rx_frame_lens)
     }
 
     fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {
         self.ip = addr;
         self.neighbors.clear();
         self.pending_neighbors.clear();
+        // Defensive: clear any undrained async frame accumulators so stale
+        // ARP frame lengths from a previous IP context are not applied to
+        // this new context's counters. In practice these are always empty at
+        // initialization time, but runtime reconfiguration could leave
+        // entries if called between recv() and the worker's drain.
+        self.deferred_tx_frame_lens.clear();
+        self.pending_rx_frame_lens.clear();
     }
 
     fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
@@ -673,5 +701,424 @@ impl Device for EthernetDevice {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod arp_counter_tests {
+    use alloc::collections::VecDeque;
+
+    use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
+
+    use super::*;
+    use crate::device::{NetDeviceResult, NetRxBuffer, NetTxBuffer};
+
+    // ── Mock driver infrastructure ─────────────────────────────────────
+
+    struct MockRxBuffer {
+        packet: Vec<u8>,
+    }
+
+    impl NetRxBuffer for MockRxBuffer {
+        fn packet(&self) -> &[u8] {
+            &self.packet
+        }
+    }
+
+    struct MockTxBuffer {
+        packet: Vec<u8>,
+    }
+
+    impl NetTxBuffer for MockTxBuffer {
+        fn packet(&self) -> &[u8] {
+            &self.packet
+        }
+
+        fn packet_mut(&mut self) -> &mut [u8] {
+            &mut self.packet
+        }
+
+        fn packet_len(&self) -> usize {
+            self.packet.len()
+        }
+    }
+
+    /// Minimal mock EthernetDriver for testing EthernetDevice ARP paths.
+    struct MockEthernetDriver {
+        mac: [u8; 6],
+        /// Pre-canned frames returned by `receive()` in FIFO order.
+        rx_frames: VecDeque<Vec<u8>>,
+        /// Frames transmitted through `transmit()`, captured for inspection.
+        tx_frames: Vec<Vec<u8>>,
+    }
+
+    impl MockEthernetDriver {
+        fn new(mac: [u8; 6]) -> Self {
+            Self {
+                mac,
+                rx_frames: VecDeque::new(),
+                tx_frames: Vec::new(),
+            }
+        }
+
+        fn enqueue_rx_frame(&mut self, frame: Vec<u8>) {
+            self.rx_frames.push_back(frame);
+        }
+    }
+
+    impl EthernetDriver for MockEthernetDriver {
+        fn device_name(&self) -> &str {
+            "mock"
+        }
+
+        fn irq_id(&self) -> Option<IrqId> {
+            None
+        }
+
+        fn enable_irq(&mut self) {}
+
+        fn disable_irq(&mut self) {}
+
+        fn mac_address(&self) -> [u8; 6] {
+            self.mac
+        }
+
+        fn alloc_tx_buffer(&mut self, size: usize) -> NetDeviceResult<Box<dyn NetTxBuffer>> {
+            Ok(Box::new(MockTxBuffer {
+                packet: alloc::vec![0; size],
+            }))
+        }
+
+        fn recycle_tx_buffers(&mut self) -> NetDeviceResult {
+            Ok(())
+        }
+
+        fn transmit(&mut self, tx_buf: &mut dyn NetTxBuffer) -> NetDeviceResult {
+            self.tx_frames.push(tx_buf.packet().to_vec());
+            Ok(())
+        }
+
+        fn receive(&mut self) -> NetDeviceResult<Box<dyn NetRxBuffer>> {
+            self.rx_frames
+                .pop_front()
+                .map(|packet| Box::new(MockRxBuffer { packet }) as Box<dyn NetRxBuffer>)
+                .ok_or(NetDeviceError::Again)
+        }
+
+        fn recycle_rx_buffer(&mut self, _rx_buf: &mut dyn NetRxBuffer) -> NetDeviceResult {
+            Ok(())
+        }
+
+        fn handle_irq(&mut self) -> NetIrqEvents {
+            NetIrqEvents::empty()
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────
+
+    const DEV_MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    const REMOTE_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+    const DEV_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 2);
+    const REMOTE_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
+
+    fn device_ip_cidr() -> Ipv4Cidr {
+        Ipv4Cidr::new(DEV_IP, 24)
+    }
+
+    fn make_test_device(mock: MockEthernetDriver) -> EthernetDevice {
+        EthernetDevice::new("mock0".into(), Box::new(mock), Some(device_ip_cidr()))
+    }
+
+    /// Builds a complete Ethernet frame containing an ARP packet.
+    fn build_arp_frame(
+        operation: ArpOperation,
+        src_mac: [u8; 6],
+        dst_mac: [u8; 6],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        target_mac: [u8; 6],
+    ) -> Vec<u8> {
+        let arp_repr = ArpRepr::EthernetIpv4 {
+            operation,
+            source_hardware_addr: EthernetAddress(src_mac),
+            source_protocol_addr: src_ip,
+            target_hardware_addr: EthernetAddress(target_mac),
+            target_protocol_addr: dst_ip,
+        };
+        let eth_repr = EthernetRepr {
+            src_addr: EthernetAddress(src_mac),
+            dst_addr: EthernetAddress(dst_mac),
+            ethertype: EthernetProtocol::Arp,
+        };
+
+        let total_len = eth_repr.buffer_len() + arp_repr.buffer_len();
+        let mut buf = alloc::vec![0u8; total_len];
+        let mut frame = EthernetFrame::new_unchecked(&mut buf);
+        eth_repr.emit(&mut frame);
+        arp_repr.emit(&mut ArpPacket::new_unchecked(frame.payload_mut()));
+        buf
+    }
+
+    fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
+        PacketBuffer::new(vec![PacketMetadata::EMPTY; 4], vec![0u8; STANDARD_MTU * 4])
+    }
+
+    // ── ARP RX: received ARP frames are counted in drain_deferred_rx ─────
+
+    #[test]
+    fn arp_request_rx_is_counted_in_drain_deferred_rx() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let arp_frame = build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            EMPTY_MAC.0,
+        );
+        let frame_len = arp_frame.len();
+        mock.enqueue_rx_frame(arp_frame);
+
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let ts = Instant::from_millis(0);
+
+        // recv() processes the ARP request and returns 0 (no IP packet).
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0);
+
+        // The ARP frame length is recorded in the async RX side-channel.
+        let rx_lens = device.drain_deferred_rx();
+        assert_eq!(rx_lens, &[frame_len]);
+
+        // Second drain is empty.
+        assert!(device.drain_deferred_rx().is_empty());
+    }
+
+    #[test]
+    fn arp_reply_rx_is_counted_in_drain_deferred_rx() {
+        let ts = Instant::from_millis(0);
+
+        // Build a device with both a pending neighbor entry and a
+        // queued ARP reply frame.
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let arp_reply = build_arp_frame(
+            ArpOperation::Reply,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            DEV_MAC,
+        );
+        let frame_len = arp_reply.len();
+        mock.enqueue_rx_frame(arp_reply);
+
+        let mut device = make_test_device(mock);
+        // A pending neighbor is required for process_arp() to handle the
+        // reply as relevant.
+        device.pending_neighbors.insert(
+            IpAddress::Ipv4(REMOTE_IP),
+            PendingNeighbor { requested_at: ts },
+        );
+
+        let mut buffer = test_packet_buffer();
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0); // ARP reply is not an IP packet
+
+        let rx_lens = device.drain_deferred_rx();
+        assert_eq!(rx_lens, &[frame_len]);
+    }
+
+    // ── ARP TX: transmitted ARP frames are counted in drain_deferred_tx ──
+
+    #[test]
+    fn arp_request_tx_is_counted_in_drain_deferred_tx() {
+        let mock = MockEthernetDriver::new(DEV_MAC);
+        let mut device = make_test_device(mock);
+        let ts = Instant::from_millis(0);
+
+        // Sending to an unknown neighbor triggers ARP request.
+        let result = device.send(IpAddress::Ipv4(REMOTE_IP), &[0u8; 64], ts);
+        // Packet is queued pending ARP; send() returns 0.
+        assert_eq!(result, 0);
+
+        // The ARP request frame length should be in drain_deferred_tx.
+        let tx_lens = device.drain_deferred_tx();
+        assert_eq!(tx_lens.len(), 1);
+        // ARP request over Ethernet: 14 (eth hdr) + 28 (ARP) = 42 bytes.
+        // With ETH_ZLEN padding: max(42, 60) = 60.
+        assert_eq!(tx_lens[0], 60);
+    }
+
+    #[test]
+    fn arp_reply_tx_is_counted_in_drain_deferred_tx() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        // ARP request addressed to device from remote.
+        let arp_request = build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            EMPTY_MAC.0,
+        );
+        mock.enqueue_rx_frame(arp_request);
+
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let ts = Instant::from_millis(0);
+
+        // recv() processes the ARP request, which triggers an ARP reply.
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0);
+
+        // Both the ARP request RX and ARP reply TX should be counted.
+        let rx_lens = device.drain_deferred_rx();
+        assert_eq!(rx_lens.len(), 1); // ARP request RX
+
+        let tx_lens = device.drain_deferred_tx();
+        assert_eq!(tx_lens.len(), 1); // ARP reply TX
+        // ARP reply over Ethernet: 14 (eth hdr) + 28 (ARP) = 42 → padded to 60.
+        assert_eq!(tx_lens[0], 60);
+    }
+
+    #[test]
+    fn consecutive_arp_frames_accumulate_in_drain_deferred_rx() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let frame1 = build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            EMPTY_MAC.0,
+        );
+        let frame2 = build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            Ipv4Address::new(10, 0, 0, 3),
+            DEV_IP,
+            EMPTY_MAC.0,
+        );
+        let len1 = frame1.len();
+        let len2 = frame2.len();
+        mock.enqueue_rx_frame(frame1);
+        mock.enqueue_rx_frame(frame2);
+
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let ts = Instant::from_millis(0);
+
+        // First recv() call processes one ARP frame then returns 0 (no IP).
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0);
+
+        // Both ARP frame lengths should be accumulated.
+        let rx_lens = device.drain_deferred_rx();
+        assert_eq!(rx_lens, &[len1, len2]);
+
+        // Drain clears the accumulator.
+        assert!(device.drain_deferred_rx().is_empty());
+    }
+
+    // ── ETH_ZLEN boundary test for send_to() wire_len ──────────────────
+
+    /// Verifies that `send_to()` pads short frames to ETH_ZLEN (60 bytes)
+    /// and returns the actual frame length for longer payloads. Covers
+    /// below-ETH_ZLEN (0), at-ETH_ZLEN (46), and above-ETH_ZLEN (100).
+    #[test]
+    fn send_to_wire_len_respects_eth_zlen_padding() {
+        let dst = EthernetAddress(REMOTE_MAC);
+
+        // 0-byte payload: 14 + 0 = 14 → padded to 60.
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len =
+            EthernetDevice::send_to(&mut mock, dst, 0, |_buf| {}, EthernetProtocol::Ipv4);
+        assert_eq!(wire_len, 60);
+
+        // 46-byte payload: 14 + 46 = 60 → exactly at ETH_ZLEN, no padding needed.
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len = EthernetDevice::send_to(
+            &mut mock,
+            dst,
+            46,
+            |buf| buf.copy_from_slice(&[0xAAu8; 46]),
+            EthernetProtocol::Ipv4,
+        );
+        assert_eq!(wire_len, 60);
+
+        // 100-byte payload: 14 + 100 = 114 → above ETH_ZLEN, no padding.
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        let wire_len = EthernetDevice::send_to(
+            &mut mock,
+            dst,
+            100,
+            |buf| buf.copy_from_slice(&[0xAAu8; 100]),
+            EthernetProtocol::Ipv4,
+        );
+        assert_eq!(wire_len, 114);
+    }
+
+    // ── Integration: combined ARP + IP recv/drain cycle ────────────────
+
+    /// Simulates the router RX worker's inner loop: recv IP frames, drain
+    /// deferred TX (ARP replies/requests), and drain deferred RX (received
+    /// ARP frames). Verifies that all three counting paths produce correct
+    /// byte counts in a single combined cycle.
+    #[test]
+    fn combined_arp_ip_recv_drain_cycle() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+
+        // Preload one ARP request frame addressed to the device.
+        let arp_req = build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            DEV_MAC,
+        );
+        mock.enqueue_rx_frame(arp_req);
+
+        // Preload one IP frame addressed to the device.
+        let eth = EthernetRepr {
+            src_addr: EthernetAddress(REMOTE_MAC),
+            dst_addr: EthernetAddress(DEV_MAC),
+            ethertype: EthernetProtocol::Ipv4,
+        };
+        let ip_payload = [0x11u8; 64];
+        let mut ip_frame = alloc::vec![0u8; eth.buffer_len() + ip_payload.len()];
+        let mut frame = EthernetFrame::new_unchecked(&mut ip_frame);
+        eth.emit(&mut frame);
+        frame.payload_mut().copy_from_slice(&ip_payload);
+        let expected_ip_frame_len = ip_frame.len();
+        mock.enqueue_rx_frame(ip_frame);
+
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let iface = InterfaceId::new(1);
+
+        // recv() loops internally — the ARP request is processed first
+        // (returns 0, loop continues), then the IP packet is enqueued
+        // and its L2 frame length is returned.
+        let frame_len = device.recv(iface, &mut buffer, Instant::from_millis(0), &mut |_| {});
+        assert_eq!(frame_len, expected_ip_frame_len);
+
+        // Drain deferred RX: the received ARP request was stored.
+        // RX uses the raw frame length from the driver (42 bytes); ETH_ZLEN
+        // padding applies only on the TX path.
+        let rx_lens = device.drain_deferred_rx();
+        assert_eq!(rx_lens.len(), 1);
+        assert_eq!(rx_lens[0], 42); // 14 eth hdr + 28 ARP
+
+        // Drain deferred TX: the ARP reply that process_arp() sent.
+        let tx_lens = device.drain_deferred_tx();
+        assert_eq!(tx_lens.len(), 1);
+        assert_eq!(tx_lens[0], 60); // 42-byte ARP reply padded to ETH_ZLEN
+
+        // Second drain is idempotent.
+        assert!(device.drain_deferred_rx().is_empty());
+        assert!(device.drain_deferred_tx().is_empty());
     }
 }

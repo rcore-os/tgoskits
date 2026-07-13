@@ -92,12 +92,24 @@ pub trait Device: Send + Sync {
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> usize;
 
     /// Returns the per-packet L2 frame byte counts for packets transmitted
-    /// asynchronously (e.g. during ARP resolution inside `recv()`) since the
-    /// last call. The internal accumulator is cleared on each call.
+    /// on a side path during `recv()` (e.g. ARP resolution and replies)
+    /// since the last call. The internal accumulator is cleared on each call.
     ///
     /// Each element is the L2 frame byte count of one packet. An empty Vec
-    /// means no async transmissions occurred.
-    fn drain_async_tx(&mut self) -> Vec<usize> {
+    /// means no deferred transmissions occurred.
+    fn drain_deferred_tx(&mut self) -> Vec<usize> {
+        Vec::new()
+    }
+
+    /// Returns the per-packet L2 frame byte counts for non-IP frames
+    /// received during `recv()` (e.g. ARP requests and replies) since the
+    /// last call. The internal accumulator is cleared on each call.
+    ///
+    /// These frames were successfully received and processed at L2, but
+    /// were not enqueued into the IP buffer. Each element is the L2 frame
+    /// byte count of one received frame. An empty Vec means no non-IP
+    /// frames were received.
+    fn drain_deferred_rx(&mut self) -> Vec<usize> {
         Vec::new()
     }
 

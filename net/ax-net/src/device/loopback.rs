@@ -43,11 +43,10 @@ impl Device for LoopbackDevice {
         0
     }
 
-    fn send(&mut self, _next_hop: IpAddress, packet: &[u8], _timestamp: Instant) -> usize {
-        // Fast path: loopback packets are injected directly in Router::dispatch().
-        // Loopback has no L2 header; frame length == IP payload length.
-        // Note: this return value is not consumed for counting — the router's
-        // loopback fast path calls count_tx()/count_rx() directly.
-        packet.len()
+    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+        // Loopback packets are injected directly in Router::dispatch() —
+        // this method is never called. The router's loopback fast path
+        // calls count_tx()/count_rx() directly on the DeviceHandle.
+        unreachable!("loopback Device::send() is never called; router uses fast path")
     }
 }

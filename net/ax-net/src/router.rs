@@ -316,6 +316,8 @@ impl DeviceHandle {
     /// must ensure `len > 0` when counting a real reception; a zero `len` only
     /// makes sense for testing or diagnostic paths.
     fn count_rx(&self, len: usize) {
+        // Relaxed ordering is sufficient: only the owning device worker writes
+        // each counter, and /proc/net/dev readers tolerate slight staleness.
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
     }
@@ -962,62 +964,80 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
-    // Number of L2 frame bytes returned by each `recv()` call in the batch.
-    // Indexed in the same order that packets are dequeued from the buffer.
-    let mut frame_lens = [0usize; DEVICE_RX_WORKER_BATCH];
+    // Persistent FIFO pairing each received packet with its L2 frame length.
+    // Entries that could not be pushed to the shared RX queue due to
+    // backpressure stay here and are retried on the next iteration. This
+    // keeps frame_len paired with its packet regardless of queue state.
+    let mut local_batch: VecDeque<(RxPacket, usize)> =
+        VecDeque::with_capacity(DEVICE_RX_WORKER_BATCH);
 
     loop {
         let mut received = false;
-        let mut n_rx = 0;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while !rx_buffer.is_full() && n_rx < DEVICE_RX_WORKER_BATCH {
+            while local_batch.len() < DEVICE_RX_WORKER_BATCH && !rx_buffer.is_full() {
                 let frame_len =
                     device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop);
                 if frame_len == 0 {
                     break;
                 }
-                frame_lens[n_rx] = frame_len;
-                n_rx += 1;
+                // Dequeue immediately so frame_len stays paired with its
+                // packet — the 1:1 correspondence is established before
+                // any backpressure can desynchronise them.
+                let Ok((interface_id, packet)) = rx_buffer.dequeue() else {
+                    break;
+                };
+                let Some(bytes) = QueuedPacket::new(packet) else {
+                    warn!(
+                        "{}: RX packet exceeds MTU ({} bytes), dropping",
+                        device.name,
+                        packet.len()
+                    );
+                    continue;
+                };
+                local_batch.push_back((
+                    RxPacket {
+                        interface_id,
+                        bytes,
+                    },
+                    frame_len,
+                ));
                 received = true;
             }
             // Count TX bytes from packets sent asynchronously during recv()
-            // (e.g. pending ARP sends inside process_arp()).
-            for frame_len in device_inner.drain_async_tx() {
+            // (e.g. pending ARP sends and ARP replies inside process_arp()).
+            for frame_len in device_inner.drain_deferred_tx() {
                 device.count_tx(frame_len);
             }
-        }
-
-        for &frame_len in frame_lens[..n_rx].iter() {
-            let Ok((interface_id, packet)) = rx_buffer.dequeue() else {
-                break;
-            };
-            let rx = RxPacket {
-                interface_id,
-                bytes: match QueuedPacket::new(packet) {
-                    Some(bytes) => bytes,
-                    None => {
-                        warn!(
-                            "{}: RX packet exceeds MTU ({} bytes), dropping",
-                            device.name,
-                            packet.len()
-                        );
-                        continue;
-                    }
-                },
-            };
-            if device.rx_queue.push(rx).is_err() {
-                warn!("{}: RX queue is full, dropping packet", device.name);
-                crate::request_poll();
-                ax_task::yield_now();
-                break;
+            // Count RX bytes from non-IP frames received during recv()
+            // (e.g. ARP requests processed in handle_frame()).
+            for frame_len in device_inner.drain_deferred_rx() {
+                device.count_rx(frame_len);
             }
-            device.count_rx(frame_len);
-            crate::request_poll();
         }
 
-        if !received {
+        // Push to the shared RX queue outside the device lock.
+        while let Some((rx, frame_len)) = local_batch.pop_front() {
+            match device.rx_queue.push(rx) {
+                Ok(()) => {
+                    device.count_rx(frame_len);
+                    crate::request_poll();
+                }
+                Err(rx) => {
+                    // Queue is full — return the entry to the front and
+                    // retry on the next iteration. The frame_len stays
+                    // paired with its packet.
+                    local_batch.push_front((rx, frame_len));
+                    warn!("{}: RX queue is full, delaying packet", device.name);
+                    crate::request_poll();
+                    ax_task::yield_now();
+                    break;
+                }
+            }
+        }
+
+        if !received && local_batch.is_empty() {
             register_device_poll(&device, &device.rx_waker);
             device
                 .rx_wake
@@ -1373,6 +1393,10 @@ mod l2_counter_tests {
         name: &'static str,
         send_returns: usize,
         recv_returns: usize,
+        /// Pre-canned lengths returned by drain_deferred_tx(), drained on each call.
+        deferred_tx_lens: Vec<usize>,
+        /// Pre-canned lengths returned by drain_deferred_rx(), drained on each call.
+        deferred_rx_lens: Vec<usize>,
     }
 
     impl Device for CountingMockDevice {
@@ -1392,6 +1416,14 @@ mod l2_counter_tests {
 
         fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
             self.send_returns
+        }
+
+        fn drain_deferred_tx(&mut self) -> Vec<usize> {
+            core::mem::take(&mut self.deferred_tx_lens)
+        }
+
+        fn drain_deferred_rx(&mut self) -> Vec<usize> {
+            core::mem::take(&mut self.deferred_rx_lens)
         }
     }
 
@@ -1420,6 +1452,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1437,6 +1471,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1456,6 +1492,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1471,6 +1509,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1491,6 +1531,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1515,6 +1557,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0, // ARP pending or send failure
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         }));
 
@@ -1540,6 +1584,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 1514,
         }));
 
@@ -1564,6 +1610,8 @@ mod l2_counter_tests {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0, // no packet available
         }));
 
@@ -1583,22 +1631,186 @@ mod l2_counter_tests {
         assert_eq!(snap.rx_packets, 0);
     }
 
-    // ── drain_async_tx default ─────────────────────────────────────────
+    // ── drain_deferred_tx default ─────────────────────────────────────────
 
     #[test]
-    fn drain_async_tx_default_returns_empty_vec() {
+    fn drain_deferred_tx_default_returns_empty_vec() {
         let mut device = CountingMockDevice {
             name: "mock",
             send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
             recv_returns: 0,
         };
 
         // Default trait implementation returns Vec::new().
-        let drained = device.drain_async_tx();
+        let drained = device.drain_deferred_tx();
         assert!(drained.is_empty());
 
         // Second call is also empty (no side effects).
-        let drained = device.drain_async_tx();
+        let drained = device.drain_deferred_tx();
         assert!(drained.is_empty());
+    }
+
+    // ── drain_deferred_rx default ─────────────────────────────────────────
+
+    #[test]
+    fn drain_deferred_rx_default_returns_empty_vec() {
+        let mut device = CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        };
+
+        // Default trait implementation returns Vec::new().
+        let drained = device.drain_deferred_rx();
+        assert!(drained.is_empty());
+
+        // Second call is also empty and idempotent.
+        let drained = device.drain_deferred_rx();
+        assert!(drained.is_empty());
+    }
+
+    // ── RX queue backpressure preserves frame_len pairing ──────────────
+
+    #[test]
+    fn rx_backpressure_preserves_frame_len_pairing() {
+        // When the shared RX queue is full, unprocessed (packet, frame_len)
+        // pairs must stay paired for the next drain iteration. This test
+        // mirrors the restructured device_rx_worker's local_batch drain loop.
+        //
+        // Use a queue large enough that backpressure is deliberate (capacity 1)
+        // but the second drain can exercise the full successful path.
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(4)),
+        });
+        let device: Arc<DeviceHandle> = DeviceHandle::new(
+            IF0,
+            Box::new(CountingMockDevice {
+                name: "mock",
+                send_returns: 0,
+                deferred_tx_lens: vec![],
+                deferred_rx_lens: vec![],
+                recv_returns: 0,
+            }),
+            &queues,
+        );
+
+        let mut local_batch: VecDeque<(RxPacket, usize)> = VecDeque::new();
+
+        // Simulate receiving 3 packets with distinct L2 frame lengths.
+        for (i, frame_len) in [100usize, 200, 300].iter().enumerate() {
+            let bytes = QueuedPacket::new(&[i as u8; 64]).unwrap();
+            local_batch.push_back((
+                RxPacket {
+                    interface_id: IF0,
+                    bytes,
+                },
+                *frame_len,
+            ));
+        }
+        assert_eq!(local_batch.len(), 3);
+
+        // Fill the shared RX queue to capacity so pushes fail.
+        for n in 0..4 {
+            let fill = RxPacket {
+                interface_id: IF0,
+                bytes: QueuedPacket::new(&[n as u8; 64]).unwrap(),
+            };
+            assert!(device.rx_queue.push(fill).is_ok());
+        }
+
+        // First drain attempt — no entries can be pushed (queue full).
+        let mut processed = 0usize;
+        while let Some((rx, frame_len)) = local_batch.pop_front() {
+            match device.rx_queue.push(rx) {
+                Ok(()) => {
+                    device.count_rx(frame_len);
+                    processed += 1;
+                }
+                Err(rx) => {
+                    local_batch.push_front((rx, frame_len));
+                    break;
+                }
+            }
+        }
+        // Queue was full; no entries should have been pushed.
+        assert_eq!(processed, 0);
+        // All 3 entries are still paired in local_batch.
+        assert_eq!(local_batch.len(), 3);
+
+        // Drain all fill packets to make room.
+        for _ in 0..4 {
+            assert!(device.rx_queue.pop().is_some());
+        }
+
+        // Second drain — all entries should succeed, each with its original
+        // frame length still paired.
+        while let Some((rx, frame_len)) = local_batch.pop_front() {
+            match device.rx_queue.push(rx) {
+                Ok(()) => {
+                    device.count_rx(frame_len);
+                    processed += 1;
+                }
+                Err(rx) => {
+                    local_batch.push_front((rx, frame_len));
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(processed, 3);
+        assert!(local_batch.is_empty());
+
+        let stats = device.stats();
+        assert_eq!(stats.rx_packets, 3);
+        // 100 + 200 + 300 = 600
+        assert_eq!(stats.rx_bytes, 600);
+    }
+
+    // ── RX worker combined drain integration ──────────────────────────
+
+    /// Verifies that a single recv+drain cycle correctly aggregates counts
+    /// from all three counting paths: recv() return value (IP RX),
+    /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
+    #[test]
+    fn rx_worker_three_path_combined_drain() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![60, 60], // 2 ARP TX frames (42+padding)
+            deferred_rx_lens: vec![42],     // 1 ARP RX frame
+            recv_returns: 1514,             // 1 IP RX frame
+        }));
+
+        // Simulate one iteration of device_rx_worker's inner loop:
+        //   1. recv IP frame → count_rx(frame_len)
+        //   2. drain deferred TX → count_tx(each)
+        //   3. drain deferred RX → count_rx(each)
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+        for len in device.inner.lock().drain_deferred_tx() {
+            device.count_tx(len);
+        }
+        for len in device.inner.lock().drain_deferred_rx() {
+            device.count_rx(len);
+        }
+
+        let snap = device.stats();
+        // RX: 1 IP frame (1514) + 1 ARP frame (42) = 2 packets, 1556 bytes
+        assert_eq!(snap.rx_packets, 2);
+        assert_eq!(snap.rx_bytes, 1556);
+        // TX: 2 ARP frames (60 + 60) = 2 packets, 120 bytes
+        assert_eq!(snap.tx_packets, 2);
+        assert_eq!(snap.tx_bytes, 120);
     }
 }
