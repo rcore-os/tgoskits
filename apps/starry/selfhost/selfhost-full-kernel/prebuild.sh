@@ -123,15 +123,25 @@ stage_rust_download_cache() {
     local cache_dir="$overlay_dir/root/.rustup-dl-cache"
     mkdir -p "$cache_dir"
 
-    # component → sha256 from channel-rust-nightly.toml (x86_64-unknown-linux-musl)
+    # component → sha256 from channel-rust-nightly.toml (x86_64-unknown-linux-musl,
+    # target-independent for rust-src, x86_64-unknown-none for the bare-metal target)
     for pair in \
         "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
         "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
-        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
+        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41" \
+        "rust-src:3ef29c6fe273c9c1fc210a53c461a1f984fc8857be508aa7aa3e8f82f23652b2" \
+        "llvm-tools:13bdcad985200f19188537e629bb80a7cd104237ad4469deebb53eb32b4a29ec" \
+        "rust-std-none:2e67b503d145f68ab474fc7070bac3a1d936d5dd78f96a8bc3a2c5d98baa190d"
     do
         component="${pair%%:*}"
         hash="${pair##*:}"
-        url="${rust_dl}/${component}-nightly-x86_64-unknown-linux-musl.tar.xz"
+        case "$component" in
+            rust-src)        tarball="rust-src-nightly.tar.xz" ;;
+            llvm-tools)      tarball="llvm-tools-nightly-x86_64-unknown-linux-musl.tar.xz" ;;
+            rust-std-none)   tarball="rust-std-nightly-x86_64-unknown-none.tar.xz" ;;
+            *)               tarball="${component}-nightly-x86_64-unknown-linux-musl.tar.xz" ;;
+        esac
+        url="${rust_dl}/${tarball}"
         dest="$cache_dir/$hash"
         if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 10000000 ]; then
             echo "[prebuild] rust ${component} tarball already cached ($(du -h "$dest" | cut -f1))"
