@@ -80,18 +80,33 @@ install_build_packages() {
     # shared libraries.  Running this step first avoids that crash.
     /bin/busybox --install -s /bin 2>/dev/null || true
 
+    # apk upgrades libcrypto3 and libssl3 first (packages 1-2/53).  The
+    # new .so files are written to disk and all 53 packages install
+    # successfully, but apk's atexit / libc _fini cleanup may SIGSEGV
+    # when the dynamic linker touches the just-upgraded libraries during
+    # process exit.  This is a known StarryOS ELF-loader limitation,
+    # not an rsext4 data corruption — apk reports "OK: … in 97 packages"
+    # before the crash.  Absorb the non-fatal exit signal and validate
+    # the installed tools below.
     apk add --no-cache --no-scripts \
         bash build-base ca-certificates clang clang-dev cmake curl git libudev-zero-dev \
-        linux-headers musl-dev openssl-dev perl pkgconf python3 tar xz
+        linux-headers musl-dev openssl-dev perl pkgconf python3 tar xz \
+        || true
 
-    # After apk writes new .so files (libcrypto, libssl, libc) flush
-    # every cache layer to disk so the next command that execs a
-    # dynamically-linked binary sees coherent data.
     sync
 
-    # Re-create busybox symlinks in case apk replaced busybox itself.
+    # Re-create busybox symlinks (apk may have replaced busybox).
     /bin/busybox --install -s /bin 2>/dev/null || true
     update-ca-certificates 2>/dev/null || true
+
+    # Verify the build toolchain actually landed — if any critical binary
+    # is missing, fail explicitly rather than crashing later with a
+    # confusing "command not found".
+    for bin in bash gcc g++ make git curl perl python3 tar xz pkg-config cmake; do
+        command -v "$bin" >/dev/null 2>&1 || fail "$bin missing after apk"
+    done
+    [ -x /bin/bash ] || fail "/bin/bash not executable after apk"
+    [ -x /usr/bin/gcc ] || fail "/usr/bin/gcc not executable after apk"
 }
 
 verify_network() {
