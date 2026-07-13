@@ -2,9 +2,8 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::AxResult;
-
 use crate::{
+    AxVmResult,
     boot::{BootImageProvider, fdt::GuestDtbImage},
     config::AxVMConfig,
 };
@@ -37,7 +36,7 @@ pub(crate) fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_ad
 pub(super) fn ensure_chosen_from_host(
     guest_dtb: Vec<u8>,
     host_fdt: Option<&fdt_edit::Fdt>,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let Some(host_fdt) = host_fdt else {
         return Ok(guest_dtb);
     };
@@ -56,6 +55,6 @@ pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut axvmconfig::AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-) -> AxResult<Option<GuestDtbImage>> {
+) -> AxVmResult<Option<GuestDtbImage>> {
     core::prepare_dtb_guest(vm_config, vm_create_config, provider)
 }

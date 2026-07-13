@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
-    VmArchPerCpuOps, VmArchVcpuOps,
+    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, GuestPhysAddr,
+    MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode, VmArchPerCpuOps,
+    VmArchVcpuOps,
 };
 use riscv_vcpu::{
     GprIndex as RiscvGprIndex, RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr,
@@ -16,7 +16,7 @@ use riscv_vplic::host::RiscvVplicHostIf;
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
-    StopReason,
+    AxVmResult, StopReason,
     architecture::ops::default_vcpu_affinities,
     host::{HostMemory, default_host},
 };
@@ -112,7 +112,7 @@ impl ArchOps for Riscv64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             RiscvVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -202,7 +202,7 @@ impl ArchOps for Riscv64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxVmResult<VcpuRunAction> {
         match work {
             RiscvDeferredRunWork::ExternalInterrupt { vector } => {
                 Self::after_external_interrupt(vm, vcpu, vector);
@@ -220,7 +220,7 @@ fn handle_riscv_nested_page_fault(
     vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
     addr: RiscvGuestPhysAddr,
     access_flags: RiscvAccessFlags,
-) -> AxResult<BoundVcpuExit<RiscvDeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
     let ax_addr = riscv_guest_phys_addr_to_ax(addr);
     if vm.get_devices()?.find_mmio_dev(ax_addr).is_some() {
         let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) else {
@@ -289,34 +289,34 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     type SetupConfig = ();
     type Exit = RiscvVmExit;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         riscv_result(RiscvVCpu::new(vm_id, vcpu_id, config)).map(Self)
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
         riscv_result(self.0.set_entry(ax_guest_phys_addr_to_riscv(entry)))
     }
 
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         riscv_result(
             self.0
                 .set_nested_page_table(ax_nested_paging_to_riscv(config)),
         )
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
         riscv_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> AxResult<Self::Exit> {
+    fn run(&mut self) -> BackendResult<Self::Exit> {
         riscv_result(self.0.run())
     }
 
-    fn bind(&mut self) -> AxResult {
+    fn bind(&mut self) -> BackendResult {
         riscv_result(self.0.bind())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    fn unbind(&mut self) -> BackendResult {
         riscv_result(self.0.unbind())
     }
 
@@ -324,7 +324,7 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         riscv_result(self.0.inject_interrupt(vector))
     }
 
@@ -336,7 +336,7 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
 pub(crate) struct AxvmRiscvPerCpu(RiscvPerCpu);
 
 impl VmArchPerCpuOps for AxvmRiscvPerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> BackendResult<Self> {
         riscv_result(RiscvPerCpu::new(cpu_id)).map(Self)
     }
 
@@ -344,11 +344,11 @@ impl VmArchPerCpuOps for AxvmRiscvPerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> BackendResult {
         riscv_result(self.0.hardware_enable())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> BackendResult {
         riscv_result(self.0.hardware_disable())
     }
 
@@ -361,18 +361,18 @@ impl VmArchPerCpuOps for AxvmRiscvPerCpu {
     }
 }
 
-fn riscv_result<T>(result: RiscvVcpuResult<T>) -> AxResult<T> {
+fn riscv_result<T>(result: RiscvVcpuResult<T>) -> BackendResult<T> {
     result.map_err(riscv_error_to_ax)
 }
 
-fn riscv_error_to_ax(err: RiscvVcpuError) -> AxError {
+fn riscv_error_to_ax(err: RiscvVcpuError) -> BackendError {
     match err {
-        RiscvVcpuError::InvalidInput => AxError::InvalidInput,
-        RiscvVcpuError::Unsupported => AxError::Unsupported,
-        RiscvVcpuError::BadState => AxError::BadState,
+        RiscvVcpuError::InvalidInput => BackendError::InvalidInput,
+        RiscvVcpuError::Unsupported => BackendError::Unsupported,
+        RiscvVcpuError::BadState => BackendError::BadState,
         RiscvVcpuError::InvalidTrap
         | RiscvVcpuError::DecodeFailed
-        | RiscvVcpuError::GuestMemoryFault => AxError::InvalidData,
+        | RiscvVcpuError::GuestMemoryFault => BackendError::InvalidData,
     }
 }
 
@@ -479,19 +479,19 @@ mod tests {
     fn converts_riscv_vcpu_errors_to_ax_errors() {
         assert_eq!(
             riscv_error_to_ax(RiscvVcpuError::InvalidInput),
-            AxError::InvalidInput
+            BackendError::InvalidInput
         );
         assert_eq!(
             riscv_error_to_ax(RiscvVcpuError::Unsupported),
-            AxError::Unsupported
+            BackendError::Unsupported
         );
         assert_eq!(
             riscv_error_to_ax(RiscvVcpuError::BadState),
-            AxError::BadState
+            BackendError::BadState
         );
         assert_eq!(
             riscv_error_to_ax(RiscvVcpuError::DecodeFailed),
-            AxError::InvalidData
+            BackendError::InvalidData
         );
     }
 

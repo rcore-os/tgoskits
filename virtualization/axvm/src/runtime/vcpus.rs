@@ -14,11 +14,10 @@
 
 use alloc::format;
 
-use ax_errno::{AxResult, ax_err_type};
-
 use crate::{
-    AsVCpuTask, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
+    AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
+    ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
 };
@@ -84,7 +83,7 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
     }
 }
 
-pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
     if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
@@ -112,7 +111,7 @@ pub(crate) fn queue_external_interrupt(
     vcpu_id: usize,
     vector: usize,
     physical_irq: usize,
-) -> AxResult {
+) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
     if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
@@ -200,7 +199,7 @@ pub(crate) fn vcpu_on(
     vcpu_id: usize,
     entry_point: GuestPhysAddr,
     arg: usize,
-) -> AxResult {
+) -> AxVmResult {
     let vcpu = vm
         .vcpu_list()
         .get(vcpu_id)

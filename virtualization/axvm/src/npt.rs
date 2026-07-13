@@ -14,14 +14,13 @@
 
 use core::marker::PhantomData;
 
-use ax_errno::{ax_err, ax_err_type};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
 use axaddrspace::{NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 use page_table_generic as ptg;
 
-use crate::host::PagingHandler;
+use crate::{AxVmError, AxVmResult, ax_err, host::PagingHandler};
 
 struct GenericFrameAllocator<H>(PhantomData<fn() -> H>);
 
@@ -197,7 +196,7 @@ where
     M4: ptg::TableMeta,
     H: PagingHandler + 'static,
 {
-    pub(crate) fn new(level: usize) -> ax_errno::AxResult<Self> {
+    pub(crate) fn new(level: usize) -> AxVmResult<Self> {
         match level {
             3 => {
                 if !SUPPORT_L3 {
@@ -444,10 +443,12 @@ where
     }
 }
 
-pub(crate) fn map_new_error(err: ptg::PagingError) -> ax_errno::AxError {
+pub(crate) fn map_new_error(err: ptg::PagingError) -> AxVmError {
     match err {
-        ptg::PagingError::NoMemory => ax_err_type!(NoMemory),
-        _ => ax_err_type!(BadState),
+        ptg::PagingError::NoMemory => AxVmError::OutOfMemory {
+            operation: "allocate nested page table",
+        },
+        _ => AxVmError::memory("create nested page table", err),
     }
 }
 

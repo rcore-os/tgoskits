@@ -1,10 +1,9 @@
 //! Public RISC-V image-loader facade preserving the DTB constructor contract.
 
-use ax_errno::AxResult;
 use axvmconfig::AxVMCrateConfig;
 
 use crate::{
-    AxVMRef, VMMemoryRegion,
+    AxVMRef, AxVmResult, VMMemoryRegion,
     boot::{BootImageProvider, fdt::GuestDtbImage, images::ImageLoaderCore},
 };
 
@@ -27,7 +26,7 @@ impl<'a> ImageLoader<'a> {
         ))
     }
 
-    pub fn load(&mut self) -> AxResult {
+    pub fn load(&mut self) -> AxVmResult {
         self.0.load()
     }
 }

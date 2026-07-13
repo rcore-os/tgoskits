@@ -21,24 +21,26 @@ use core::{
 };
 
 use ax_cpumask::CpuMask;
-use ax_errno::{AxError, AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
+    AxVmError as BackendError, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags,
+    NestedPagingConfig, VmVcpuState,
 };
 
 use crate::{
+    AxVmError, AxVmResult,
     arch::ArchNestedPageTable,
+    ax_err, ax_err_type,
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
     irq::InterruptFabric,
     layout::VmAddressLayout,
-    lifecycle::{Machine, StopReason, VmLifecycleError, VmStatus},
+    lifecycle::{Machine, StopReason, VmStatus},
     vcpu::AxVCpu,
 };
 
@@ -86,7 +88,7 @@ pub(crate) fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
     }
 }
 
-fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxResult {
+fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmResult {
     if data.is_empty() {
         return Ok(());
     }
@@ -158,7 +160,7 @@ impl VmRuntimeHandle {
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
 
-    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxResult<usize> {
+    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
         let task = self
             .vcpu_task_list
             .lock()
@@ -182,7 +184,7 @@ impl VmRuntimeHandle {
         vcpu_id: usize,
         vector: usize,
         physical_irq: usize,
-    ) -> AxResult<usize> {
+    ) -> AxVmResult<usize> {
         let task = self
             .vcpu_task_list
             .lock()
@@ -266,13 +268,14 @@ impl AxVMResources {
     pub(crate) fn from_page_table(
         config: AxVMConfig,
         page_table: ArchNestedPageTable,
-        build_nested_paging: impl FnOnce(HostPhysAddr) -> AxResult<NestedPagingConfig>,
-    ) -> AxResult<Self> {
+        build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
+    ) -> AxVmResult<Self> {
         let address_space = AddrSpace::new_empty(
             page_table,
             GuestPhysAddr::from(VM_ASPACE_BASE),
             VM_ASPACE_SIZE,
-        )?;
+        )
+        .map_err(|error| AxVmError::memory("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
             address_space,
@@ -292,37 +295,39 @@ impl AxVMResources {
         &self.config
     }
 
-    fn vcpu_list(&self) -> AxResult<&[AxVCpuRef]> {
+    fn vcpu_list(&self) -> AxVmResult<&[AxVCpuRef]> {
         self.vcpu_list
             .as_deref()
             .ok_or_else(|| ax_err_type!(BadState, "VM vCPU resources are not prepared"))
     }
 
-    fn devices(&self) -> AxResult<Arc<AxVmDevices>> {
+    fn devices(&self) -> AxVmResult<Arc<AxVmDevices>> {
         self.devices
             .clone()
             .ok_or_else(|| ax_err_type!(BadState, "VM devices are not prepared"))
     }
 
-    fn interrupt_fabric(&self) -> AxResult<&InterruptFabric> {
+    fn interrupt_fabric(&self) -> AxVmResult<&InterruptFabric> {
         self.interrupt_fabric
             .as_ref()
             .ok_or_else(|| ax_err_type!(BadState, "VM interrupt fabric is not prepared"))
     }
 
-    fn reset_transient_resources(&mut self) -> AxResult {
+    fn reset_transient_resources(&mut self) -> AxVmResult {
         let memory_regions = self.memory_regions.clone();
         self.address_space.clear();
         for region in &memory_regions {
-            self.address_space.map_linear(
-                region.gpa,
-                region.host_paddr(),
-                region.size(),
-                MappingFlags::READ
-                    | MappingFlags::WRITE
-                    | MappingFlags::EXECUTE
-                    | MappingFlags::USER,
-            )?;
+            self.address_space
+                .map_linear(
+                    region.gpa,
+                    region.host_paddr(),
+                    region.size(),
+                    MappingFlags::READ
+                        | MappingFlags::WRITE
+                        | MappingFlags::EXECUTE
+                        | MappingFlags::USER,
+                )
+                .map_err(|error| AxVmError::memory("restore guest memory mapping", error))?;
         }
         self.vcpu_list = None;
         self.devices = None;
@@ -401,7 +406,7 @@ impl AxVM {
     ///
     /// Returns an error if nested paging is unsupported for the selected host
     /// CPUs or if the initial stage-2 address space cannot be allocated.
-    pub fn new(config: AxVMConfig) -> AxResult<AxVMRef> {
+    pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
         let resources = crate::arch::CurrentArch::create_vm_resources(config)?;
@@ -439,9 +444,9 @@ impl AxVM {
             .unwrap_or(VMInterruptMode::NoIrq)
     }
 
-    fn with_resources<F, R>(&self, f: F) -> AxResult<R>
+    fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
     where
-        F: FnOnce(&AxVMResources) -> AxResult<R>,
+        F: FnOnce(&AxVMResources) -> AxVmResult<R>,
     {
         let machine = self.machine.lock();
         let resources = machine
@@ -450,9 +455,9 @@ impl AxVM {
         f(resources)
     }
 
-    fn with_resources_mut<F, R>(&self, f: F) -> AxResult<R>
+    fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
     where
-        F: FnOnce(&mut AxVMResources) -> AxResult<R>,
+        F: FnOnce(&mut AxVMResources) -> AxVmResult<R>,
     {
         let mut machine = self.machine.lock();
         let resources = machine
@@ -461,9 +466,9 @@ impl AxVM {
         f(resources)
     }
 
-    pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxResult<R>
+    pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
     where
-        F: FnOnce(&Arc<VmRuntimeHandle>) -> AxResult<R>,
+        F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
     {
         let machine = self.machine.lock();
         let runtime = machine
@@ -510,7 +515,7 @@ impl AxVM {
     }
 
     /// Returns the root address of the nested page table for the VM.
-    pub fn nested_page_table_root(&self) -> AxResult<HostPhysAddr> {
+    pub fn nested_page_table_root(&self) -> AxVmResult<HostPhysAddr> {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
     }
 
@@ -527,7 +532,7 @@ impl AxVM {
     }
 
     /// Stores a guest DTB as VM-owned boot-description state.
-    pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxResult {
+    pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
         self.with_resources_mut(|resources| {
             resources.config.set_dtb_load_gpa(load_gpa);
             resources
@@ -549,7 +554,7 @@ impl AxVM {
         &self,
         image_load_gpa: GuestPhysAddr,
         image_size: usize,
-    ) -> AxResult<Vec<&'static mut [u8]>> {
+    ) -> AxVmResult<Vec<&'static mut [u8]>> {
         let image_load_hva = self.with_resources(|resources| {
             resources
                 .address_space
@@ -562,7 +567,7 @@ impl AxVM {
     }
 
     /// Starts the VM by transitioning to Running state.
-    pub fn start(self: &Arc<Self>) -> AxResult {
+    pub fn start(self: &Arc<Self>) -> AxVmResult {
         if self.status() == VmStatus::Stopped {
             if let Some(runtime) = self.take_stopped_runtime() {
                 runtime.join_all_vcpu_tasks(self.id());
@@ -576,21 +581,18 @@ impl AxVM {
         let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
         let runtime = Arc::new(VmRuntimeHandle::new());
 
-        self.machine
-            .lock()
-            .start_with(|resources| {
-                resources
-                    .vcpu_list()
-                    .map_err(|_| VmLifecycleError::MissingResource("vCPU list"))?;
-                resources
-                    .devices()
-                    .map_err(|_| VmLifecycleError::MissingResource("devices"))?;
-                resources
-                    .interrupt_fabric()
-                    .map_err(|_| VmLifecycleError::MissingResource("interrupt fabric"))?;
-                Ok(runtime.clone())
-            })
-            .map_err(VmLifecycleError::into_ax_error)?;
+        self.machine.lock().start_with(|resources| {
+            resources
+                .vcpu_list()
+                .map_err(|error| AxVmError::resource_unavailable("vCPU list", error))?;
+            resources
+                .devices()
+                .map_err(|error| AxVmError::resource_unavailable("devices", error))?;
+            resources
+                .interrupt_fabric()
+                .map_err(|error| AxVmError::resource_unavailable("interrupt fabric", error))?;
+            Ok(runtime.clone())
+        })?;
 
         let task = crate::host::task::spawn_task(primary_task);
         runtime.add_vcpu_task(0, task);
@@ -618,38 +620,26 @@ impl AxVM {
     }
 
     /// Pauses a running VM.
-    pub fn pause(&self) -> AxResult {
-        self.machine
-            .lock()
-            .pause()
-            .map_err(VmLifecycleError::into_ax_error)
+    pub fn pause(&self) -> AxVmResult {
+        self.machine.lock().pause()
     }
 
     /// Resumes a paused VM.
-    pub fn resume(&self) -> AxResult {
-        self.machine
-            .lock()
-            .resume()
-            .map_err(VmLifecycleError::into_ax_error)
+    pub fn resume(&self) -> AxVmResult {
+        self.machine.lock().resume()
     }
 
     /// Requests a stop. Running vCPUs observe the Stopping state and exit.
-    pub fn stop(&self, reason: StopReason) -> AxResult {
+    pub fn stop(&self, reason: StopReason) -> AxVmResult {
         info!("Stopping VM[{}]: {reason:?}", self.id());
-        self.machine
-            .lock()
-            .request_stop_with(reason, |_, _| Ok(()))
-            .map_err(VmLifecycleError::into_ax_error)
+        self.machine.lock().request_stop_with(reason, |_, _| Ok(()))
     }
 
-    pub(crate) fn finish_stop(&self) -> AxResult {
-        self.machine
-            .lock()
-            .finish_stop()
-            .map_err(VmLifecycleError::into_ax_error)
+    pub(crate) fn finish_stop(&self) -> AxVmResult {
+        self.machine.lock().finish_stop()
     }
 
-    fn wait_until_stopped(&self) -> AxResult {
+    fn wait_until_stopped(&self) -> AxVmResult {
         const MAX_YIELDS: usize = 10_000;
         for _ in 0..MAX_YIELDS {
             match self.status() {
@@ -671,7 +661,7 @@ impl AxVM {
         )
     }
 
-    fn stop_and_join_runtime(&self, reason: StopReason) -> AxResult {
+    fn stop_and_join_runtime(&self, reason: StopReason) -> AxVmResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
                 self.stop(reason)?;
@@ -705,29 +695,26 @@ impl AxVM {
 
     /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
     /// and starting from a fresh `Running` state.
-    pub fn reset(self: &Arc<Self>) -> AxResult {
+    pub fn reset(self: &Arc<Self>) -> AxVmResult {
         info!("Resetting VM[{}]", self.id());
         self.stop_and_join_runtime(StopReason::Forced)?;
 
-        self.machine
-            .lock()
-            .reset_with(|resources| {
-                resources
-                    .reset_transient_resources()
-                    .map_err(|_| VmLifecycleError::MissingResource("reset resources"))
-            })
-            .map_err(VmLifecycleError::into_ax_error)?;
+        self.machine.lock().reset_with(|resources| {
+            resources
+                .reset_transient_resources()
+                .map_err(|error| AxVmError::resource_unavailable("reset resources", error))
+        })?;
         self.prepare()?;
         self.start()
     }
 
     /// Returns this VM's emulated devices.
-    pub fn get_devices(&self) -> AxResult<Arc<AxVmDevices>> {
+    pub fn get_devices(&self) -> AxVmResult<Arc<AxVmDevices>> {
         self.with_resources(|resources| resources.devices())
     }
 
     /// Pulses a prepared VM interrupt fabric line without exposing the fabric.
-    pub fn pulse_interrupt(&self, irq_id: usize) -> AxResult {
+    pub fn pulse_interrupt(&self, irq_id: usize) -> AxVmResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
                 self.with_resources(|resources| resources.interrupt_fabric()?.pulse(irq_id))
@@ -747,7 +734,7 @@ impl AxVM {
     }
 
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
-    pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxResult {
+    pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxVmResult {
         let mut pending = self.pending_fw_cfg.lock();
         if pending.is_some() {
             return ax_err!(
@@ -775,7 +762,7 @@ impl AxVM {
         Ok(())
     }
 
-    fn add_special_emulated_devices(&self, devices: &mut AxVmDevices) -> AxResult {
+    fn add_special_emulated_devices(&self, devices: &mut AxVmDevices) -> AxVmResult {
         if let Some(pending) = self.pending_fw_cfg.lock().take() {
             debug!(
                 "VM[{}] adding fw_cfg MMIO device at [{:#x},{:#x})",
@@ -783,15 +770,17 @@ impl AxVM {
                 pending.base.as_usize(),
                 pending.base.as_usize() + pending.size
             );
-            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(
-                pending.base,
-                pending.size,
-                pending.kernel,
-                pending.initrd,
-                pending.cmdline.as_deref(),
-                pending.cpu_num,
-                pending.platform,
-            )))?;
+            devices
+                .add_fw_cfg_dev(Arc::new(FwCfg::new(
+                    pending.base,
+                    pending.size,
+                    pending.kernel,
+                    pending.initrd,
+                    pending.cmdline.as_deref(),
+                    pending.cpu_num,
+                    pending.platform,
+                )))
+                .map_err(|error| AxVmError::device("register fw_cfg device", error))?;
         }
         Ok(())
     }
@@ -801,20 +790,33 @@ impl AxVM {
         addr: GuestPhysAddr,
         width: AccessWidth,
         data: usize,
-    ) -> AxResult {
+    ) -> AxVmResult {
         let devices = self.get_devices()?;
         if let Some(fw_cfg) = devices.fw_cfg_for_dma_addr(addr) {
-            if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
-                fw_cfg.process_dma(
-                    desc_addr,
-                    |gpa, buffer| self.read_from_guest(gpa, buffer),
-                    |gpa, buffer| self.write_to_guest(gpa, buffer),
-                )?;
+            if let Some(desc_addr) = fw_cfg
+                .write_dma_address(addr, width, data)
+                .map_err(|error| AxVmError::device("write fw_cfg DMA address", error))?
+            {
+                fw_cfg
+                    .process_dma(
+                        desc_addr,
+                        |gpa, buffer| {
+                            self.read_from_guest(gpa, buffer)
+                                .map_err(|_| BackendError::InvalidData)
+                        },
+                        |gpa, buffer| {
+                            self.write_to_guest(gpa, buffer)
+                                .map_err(|_| BackendError::InvalidData)
+                        },
+                    )
+                    .map_err(|error| AxVmError::device("process fw_cfg DMA request", error))?;
             }
             return Ok(());
         }
 
-        devices.handle_mmio_write(addr, width, data)?;
+        devices
+            .handle_mmio_write(addr, width, data)
+            .map_err(|error| AxVmError::device("write guest MMIO", error))?;
         Ok(())
     }
 
@@ -949,7 +951,7 @@ impl AxVM {
         &self,
         targets: CpuMask<TEMP_MAX_VCPU_NUM>,
         irq: usize,
-    ) -> AxResult {
+    ) -> AxVmResult {
         for vcpu in self.vcpu_list() {
             if targets.get(vcpu.id()) {
                 crate::runtime::vcpus::queue_interrupt(self.id(), vcpu.id(), irq)?;
@@ -978,23 +980,29 @@ impl AxVM {
         hpa: HostPhysAddr,
         size: usize,
         flags: MappingFlags,
-    ) -> AxResult {
+    ) -> AxVmResult {
         self.with_resources_mut(|resources| {
-            resources.address_space.map_linear(gpa, hpa, size, flags)?;
+            resources
+                .address_space
+                .map_linear(gpa, hpa, size, flags)
+                .map_err(|error| AxVmError::memory("map guest memory region", error))?;
             Ok(())
         })
     }
 
     /// Unmaps a region of guest physical memory.
-    pub fn unmap_region(&self, gpa: GuestPhysAddr, size: usize) -> AxResult {
+    pub fn unmap_region(&self, gpa: GuestPhysAddr, size: usize) -> AxVmResult {
         self.with_resources_mut(|resources| {
-            resources.address_space.unmap(gpa, size)?;
+            resources
+                .address_space
+                .unmap(gpa, size)
+                .map_err(|error| AxVmError::memory("unmap guest memory region", error))?;
             Ok(())
         })
     }
 
     /// Reads an object of type `T` from the guest physical address.
-    pub fn read_from_guest_of<T>(&self, gpa_ptr: GuestPhysAddr) -> AxResult<T> {
+    pub fn read_from_guest_of<T>(&self, gpa_ptr: GuestPhysAddr) -> AxVmResult<T> {
         let size = core::mem::size_of::<T>();
 
         // Ensure the address is properly aligned for the type.
@@ -1040,7 +1048,7 @@ impl AxVM {
     }
 
     /// Reads raw bytes from guest physical memory.
-    pub fn read_from_guest(&self, gpa_ptr: GuestPhysAddr, buffer: &mut [u8]) -> AxResult {
+    pub fn read_from_guest(&self, gpa_ptr: GuestPhysAddr, buffer: &mut [u8]) -> AxVmResult {
         self.with_resources(|resources| {
             let Some(chunks) = resources
                 .address_space
@@ -1067,7 +1075,7 @@ impl AxVM {
     }
 
     /// Writes an object of type `T` to the guest physical address.
-    pub fn write_to_guest_of<T>(&self, gpa_ptr: GuestPhysAddr, data: &T) -> AxResult {
+    pub fn write_to_guest_of<T>(&self, gpa_ptr: GuestPhysAddr, data: &T) -> AxVmResult {
         let bytes = unsafe {
             core::slice::from_raw_parts(data as *const T as *const u8, core::mem::size_of::<T>())
         };
@@ -1075,7 +1083,7 @@ impl AxVM {
     }
 
     /// Writes raw bytes into guest physical memory.
-    pub fn write_to_guest(&self, gpa_ptr: GuestPhysAddr, data: &[u8]) -> AxResult {
+    pub fn write_to_guest(&self, gpa_ptr: GuestPhysAddr, data: &[u8]) -> AxVmResult {
         if data.is_empty() {
             return Ok(());
         }
@@ -1097,11 +1105,14 @@ impl AxVM {
     /// ## Arguments
     /// * `expected_size` - The expected size of the IVC channel in bytes.
     /// ## Returns
-    /// * `AxResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
-    pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxResult<(GuestPhysAddr, usize)> {
+    /// * `AxVmResult<(GuestPhysAddr, usize)>` - A tuple containing the guest physical address of the allocated IVC channel and its actual size.
+    pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxVmResult<(GuestPhysAddr, usize)> {
         // Ensure the expected size is aligned to 4K.
         let size = align_up_4k(expected_size);
-        let gpa = self.get_devices()?.alloc_ivc_channel(size)?;
+        let gpa = self
+            .get_devices()?
+            .alloc_ivc_channel(size)
+            .map_err(|error| AxVmError::memory("reserve IVC guest address range", error))?;
         Ok((gpa, size))
     }
 
@@ -1110,9 +1121,11 @@ impl AxVM {
     /// * `gpa` - The guest physical address of the IVC channel to release.
     /// * `size` - The size of the IVC channel in bytes.
     /// ## Returns
-    /// * `AxResult<()>` - An empty result indicating success or failure.
-    pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxResult {
-        self.get_devices()?.release_ivc_channel(gpa, size)?;
+    /// * `AxVmResult<()>` - An empty result indicating success or failure.
+    pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxVmResult {
+        self.get_devices()?
+            .release_ivc_channel(gpa, size)
+            .map_err(|error| AxVmError::memory("release IVC guest address range", error))?;
         Ok(())
     }
 
@@ -1121,7 +1134,7 @@ impl AxVM {
         &self,
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
-    ) -> AxResult<&[u8]> {
+    ) -> AxVmResult<&[u8]> {
         assert!(
             layout.size() > 0,
             "Cannot allocate zero-sized memory region"
@@ -1129,7 +1142,9 @@ impl AxVM {
 
         let hva = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if hva.is_null() {
-            return Err(AxError::NoMemory);
+            return Err(AxVmError::OutOfMemory {
+                operation: "allocate IVC channel",
+            });
         }
         let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
         let hva = HostVirtAddr::from_mut_ptr_of(hva);
@@ -1139,15 +1154,18 @@ impl AxVM {
         let gpa = gpa.unwrap_or_else(|| hpa.as_usize().into());
 
         if let Err(err) = self.with_resources_mut(|resources| {
-            resources.address_space.map_linear(
-                gpa,
-                hpa,
-                layout.size(),
-                MappingFlags::READ
-                    | MappingFlags::WRITE
-                    | MappingFlags::EXECUTE
-                    | MappingFlags::USER,
-            )?;
+            resources
+                .address_space
+                .map_linear(
+                    gpa,
+                    hpa,
+                    layout.size(),
+                    MappingFlags::READ
+                        | MappingFlags::WRITE
+                        | MappingFlags::EXECUTE
+                        | MappingFlags::USER,
+                )
+                .map_err(|error| AxVmError::memory("map allocated guest memory", error))?;
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
                 hva,
@@ -1172,7 +1190,7 @@ impl AxVM {
     }
 
     /// Prepares all memory regions configured for this VM.
-    pub fn prepare_memory_layout(&self) -> AxResult<PreparedMemoryLayout> {
+    pub fn prepare_memory_layout(&self) -> AxVmResult<PreparedMemoryLayout> {
         let memory_regions =
             self.with_resources(|resources| Ok(resources.config.memory_regions().to_vec()))?;
         let layout = memory::MemoryLayoutBuilder::new(self, &memory_regions).prepare()?;
@@ -1187,7 +1205,7 @@ impl AxVM {
         &self,
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
-    ) -> AxResult {
+    ) -> AxVmResult {
         assert!(
             layout.size() > 0,
             "Cannot allocate zero-sized memory region"
@@ -1195,15 +1213,18 @@ impl AxVM {
         let gpa =
             gpa.ok_or_else(|| ax_err_type!(InvalidInput, "Reserved memory GPA is required"))?;
         self.with_resources_mut(|resources| {
-            resources.address_space.map_linear(
-                gpa,
-                gpa.as_usize().into(),
-                layout.size(),
-                MappingFlags::READ
-                    | MappingFlags::WRITE
-                    | MappingFlags::EXECUTE
-                    | MappingFlags::USER,
-            )?;
+            resources
+                .address_space
+                .map_linear(
+                    gpa,
+                    gpa.as_usize().into(),
+                    layout.size(),
+                    MappingFlags::READ
+                        | MappingFlags::WRITE
+                        | MappingFlags::EXECUTE
+                        | MappingFlags::USER,
+                )
+                .map_err(|error| AxVmError::memory("map reserved guest memory", error))?;
             let hva = gpa.as_usize().into();
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
@@ -1216,7 +1237,7 @@ impl AxVM {
     }
 
     /// Destroys the VM and releases all lifecycle-owned resources.
-    pub fn destroy(&self) -> AxResult {
+    pub fn destroy(&self) -> AxVmResult {
         let vm_id = self.id();
         match self.status() {
             VmStatus::Running | VmStatus::Paused | VmStatus::Stopping => {
@@ -1232,15 +1253,12 @@ impl AxVM {
                 self.stop_and_join_runtime(StopReason::Forced)?;
             }
         }
-        self.machine
-            .lock()
-            .destroy_with(|resources| {
-                if let Some(mut resources) = resources {
-                    Self::cleanup_resource_set(vm_id, &mut resources);
-                }
-                Ok(())
-            })
-            .map_err(VmLifecycleError::into_ax_error)
+        self.machine.lock().destroy_with(|resources| {
+            if let Some(mut resources) = resources {
+                Self::cleanup_resource_set(vm_id, &mut resources);
+            }
+            Ok(())
+        })
     }
 
     fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) {
@@ -1332,7 +1350,7 @@ mod tests {
 
         let err = write_guest_bytes_to_chunks(&mut chunks, &[1, 2, 3]).unwrap_err();
 
-        assert_eq!(err, AxError::InvalidInput);
+        assert!(matches!(err, AxVmError::InvalidInput { .. }));
         assert_eq!(only, [1, 2]);
     }
 

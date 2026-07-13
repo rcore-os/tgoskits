@@ -63,6 +63,7 @@ spin = { workspace = true }
 ax-crate-interface = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
+anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
@@ -73,7 +74,6 @@ ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
 axvm = { workspace = true, default-features = false }
 axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
-ax-errno = { workspace = true }
 ax-driver.workspace = true
 axplat-dyn.workspace = true
 

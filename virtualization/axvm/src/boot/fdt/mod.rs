@@ -50,7 +50,7 @@ fn test_runtime_patch(
     fdt: &[u8],
     _vm: &crate::AxVMRef,
     _config: &axvmconfig::AxVMCrateConfig,
-) -> ax_errno::AxResult<Vec<u8>> {
+) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
 }
 
@@ -59,6 +59,6 @@ fn test_provided_patch(
     fdt: &[u8],
     _host_fdt: Option<&[u8]>,
     _config: &axvmconfig::AxVMCrateConfig,
-) -> ax_errno::AxResult<Vec<u8>> {
+) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
 }

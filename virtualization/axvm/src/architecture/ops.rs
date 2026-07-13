@@ -2,12 +2,12 @@
 
 use alloc::{format, vec::Vec};
 
-use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::VirtAddr;
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
 use super::{BoundVcpuExit, VcpuRunAction};
+use crate::{AxVmResult, ax_err};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -89,18 +89,18 @@ pub(crate) trait ArchOps {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>>;
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>>;
 
     fn finish_deferred_run_work(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction>;
+    ) -> AxVmResult<VcpuRunAction>;
 
     fn run_vcpu(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> AxResult<VcpuRunAction>
+    ) -> AxVmResult<VcpuRunAction>
     where
         Self: Sized,
     {
@@ -118,7 +118,7 @@ pub(crate) trait ArchOps {
             }
         }
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxResult<_> {
+        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
 

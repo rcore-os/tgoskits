@@ -1,9 +1,7 @@
 //! AArch64 guest IPI target resolution and injection.
 
-use ax_errno::AxResult;
-
 use super::Aarch64DeferredRunWork;
-use crate::architecture::BoundVcpuExit;
+use crate::{AxVmResult, architecture::BoundVcpuExit};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SendIpiExit {
@@ -18,7 +16,7 @@ pub(crate) fn handle(
     vm: &crate::AxVMRef,
     vcpu_id: usize,
     exit: SendIpiExit,
-) -> AxResult<BoundVcpuExit<Aarch64DeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<Aarch64DeferredRunWork>> {
     let vm_id = vm.id();
     debug!(
         "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={:#x}, target_cpu_aux={:#x}, \

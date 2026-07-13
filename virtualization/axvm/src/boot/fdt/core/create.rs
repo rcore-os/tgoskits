@@ -15,19 +15,21 @@
 use alloc::{string::String, vec::Vec};
 use core::ptr::NonNull;
 
-use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::MemoryAddr;
 use axvmconfig::AxVMCrateConfig;
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::tree::{FdtTree, GuestMemorySpec};
-use crate::{AxVMRef, GuestPhysAddr, VMMemoryRegion, boot::images::load_vm_image_from_memory};
+use crate::{
+    AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
+    boot::images::load_vm_image_from_memory,
+};
 
 pub fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
     crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
         .base
         .phys_cpu_ids
@@ -177,7 +179,7 @@ pub fn update_fdt(
     dtb_size: usize,
     vm: AxVMRef,
     crate_config: &AxVMCrateConfig,
-) -> AxResult {
+) -> AxVmResult {
     let patch_runtime = super::selected_guest_fdt_policy().patch_runtime;
     // SAFETY: `fdt_src` originates from `GuestDtbImage::as_bytes`, and the
     // caller supplies the exact slice length while the image remains borrowed.
@@ -187,7 +189,7 @@ pub fn update_fdt(
     load_patched_fdt(vm, new_fdt_bytes)
 }
 
-fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxResult {
+fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
     let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
     debug!(
         "New FDT will be loaded at {:x}, size: 0x{:x}",
@@ -204,7 +206,7 @@ pub fn patch_guest_fdt_for_runtime(
     crate_config: &AxVMCrateConfig,
     initrd_start_size: Option<(u64, u64)>,
     create_chosen: bool,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
@@ -217,7 +219,7 @@ pub fn patch_guest_fdt_for_runtime(
     Ok(tree.finish())
 }
 
-pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<GuestPhysAddr> {
+pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
     let main_memory =

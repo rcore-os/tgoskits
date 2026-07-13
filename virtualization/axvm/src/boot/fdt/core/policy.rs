@@ -2,11 +2,12 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::AxResult;
 use axvmconfig::AxVMCrateConfig;
 
-pub type RuntimeFdtPatch = fn(&[u8], &crate::AxVMRef, &AxVMCrateConfig) -> AxResult<Vec<u8>>;
-pub type ProvidedFdtPatch = fn(&[u8], Option<&[u8]>, &AxVMCrateConfig) -> AxResult<Vec<u8>>;
+use crate::AxVmResult;
+
+pub type RuntimeFdtPatch = fn(&[u8], &crate::AxVMRef, &AxVMCrateConfig) -> AxVmResult<Vec<u8>>;
+pub type ProvidedFdtPatch = fn(&[u8], Option<&[u8]>, &AxVMCrateConfig) -> AxVmResult<Vec<u8>>;
 
 /// Architecture operations required by common guest FDT processing.
 #[derive(Clone, Copy)]

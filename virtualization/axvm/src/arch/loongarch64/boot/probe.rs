@@ -93,7 +93,9 @@ struct HostResources {
     irq_routes: Vec<GuestIrqRoute>,
 }
 
-fn host_acpi_resources(acpi: &ax_driver::probe::acpi::System) -> ax_errno::AxResult<HostResources> {
+fn host_acpi_resources(
+    acpi: &ax_driver::probe::acpi::System,
+) -> axvm_types::AxVmResult<HostResources> {
     let defaults = QemuVirtDefaults::new();
     let interrupt = acpi
         .routing()

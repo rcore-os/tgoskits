@@ -1,10 +1,9 @@
 use alloc::{format, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
-use crate::arch::guest_platform::GuestPlatform;
+use crate::{AxVmResult, arch::guest_platform::GuestPlatform, ax_err_type};
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;
@@ -13,7 +12,7 @@ const PHANDLE_PCH_PIC: u32 = 0x8003;
 const PHANDLE_PCH_MSI: u32 = 0x8004;
 const PHANDLE_GED_SYSCON: u32 = 0x8005;
 
-pub fn build(platform: &GuestPlatform) -> AxResult<Vec<u8>> {
+pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
     set_prop(&mut fdt, root, prop_u32("#address-cells", 2))?;
@@ -38,7 +37,7 @@ pub fn build(platform: &GuestPlatform) -> AxResult<Vec<u8>> {
     Ok(fdt.encode().as_ref().to_vec())
 }
 
-fn set_prop(fdt: &mut Fdt, node: NodeId, prop: fdt_edit::Property) -> AxResult {
+fn set_prop(fdt: &mut Fdt, node: NodeId, prop: fdt_edit::Property) -> AxVmResult {
     fdt.node_mut(node)
         .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?
         .set_property(prop);
@@ -49,7 +48,7 @@ fn add_child(fdt: &mut Fdt, parent: NodeId, name: &str) -> NodeId {
     fdt.add_node(parent, Node::new(name))
 }
 
-fn add_platform_bus(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_platform_bus(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let (bus_base, bus_size) = platform_bus_range(platform);
     let platform_bus = add_child(fdt, root, &format!("platform-bus@{bus_base:x}"));
     set_prop(
@@ -101,7 +100,7 @@ fn platform_bus_range(platform: &GuestPlatform) -> (u64, u64) {
     (base, end.saturating_sub(base).max(PAGE_SIZE))
 }
 
-fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let chosen = add_child(fdt, root, "chosen");
     set_prop(
         fdt,
@@ -113,7 +112,7 @@ fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult
     )
 }
 
-fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxResult {
+fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxVmResult {
     let cpus = add_child(fdt, root, "cpus");
     set_prop(fdt, cpus, prop_u32("#address-cells", 1))?;
     set_prop(fdt, cpus, prop_u32("#size-cells", 0))?;
@@ -134,7 +133,7 @@ fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxResult {
     set_prop(fdt, cpu, prop_u32("phandle", PHANDLE_CPU0))
 }
 
-fn add_memory(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_memory(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     for region in &platform.ram_regions {
         let memory = add_child(fdt, root, &format!("memory@{:x}", region.base));
         set_prop(fdt, memory, prop_string("device_type", "memory"))?;
@@ -143,7 +142,7 @@ fn add_memory(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult
     Ok(())
 }
 
-fn add_interrupt_controllers(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_interrupt_controllers(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let cpuic = add_child(fdt, root, "cpuic");
     set_prop(fdt, cpuic, prop_null("interrupt-controller"))?;
     set_prop(fdt, cpuic, prop_u32("#interrupt-cells", 1))?;
@@ -231,7 +230,7 @@ fn add_interrupt_controllers(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatfo
     set_prop(fdt, msi, prop_u32("phandle", PHANDLE_PCH_MSI))
 }
 
-fn add_power(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_power(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let ged = platform.firmware_devices.ged;
     let ged_node = add_child(fdt, root, &format!("ged@{:x}", ged.mmio.base));
     set_prop(fdt, ged_node, prop_string("compatible", "syscon"))?;
@@ -253,7 +252,7 @@ fn add_power(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult 
     set_prop(fdt, reboot, prop_u32("value", ged.reboot_value))
 }
 
-fn add_rtc(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_rtc(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let rtc = platform.firmware_devices.rtc;
     let rtc_node = add_child(fdt, root, &format!("rtc@{:x}", rtc.mmio.base));
     set_prop(
@@ -266,7 +265,7 @@ fn add_rtc(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
     set_prop(fdt, rtc_node, prop_u32_array("interrupts", &[rtc.irq, 4]))
 }
 
-fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let serial = add_child(
         fdt,
         root,
@@ -292,7 +291,7 @@ fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult
     )
 }
 
-fn add_flash(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_flash(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let flash = platform.firmware_devices.flash;
     let flash_node = add_child(fdt, root, &format!("flash@{:x}", flash.banks[0].base));
     set_prop(fdt, flash_node, prop_string("compatible", "cfi-flash"))?;
@@ -316,14 +315,14 @@ fn add_flash(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult 
     )
 }
 
-fn add_fw_cfg(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxResult {
+fn add_fw_cfg(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let fw_cfg = add_child(fdt, root, &format!("fw_cfg@{:x}", platform.fw_cfg.base));
     set_prop(fdt, fw_cfg, prop_string("compatible", "qemu,fw-cfg-mmio"))?;
     prop_reg(fdt, fw_cfg, platform.fw_cfg.base, platform.fw_cfg.size)?;
     set_prop(fdt, fw_cfg, prop_null("dma-coherent"))
 }
 
-fn prop_reg(fdt: &mut Fdt, node: NodeId, base: u64, size: u64) -> AxResult {
+fn prop_reg(fdt: &mut Fdt, node: NodeId, base: u64, size: u64) -> AxVmResult {
     set_prop(
         fdt,
         node,

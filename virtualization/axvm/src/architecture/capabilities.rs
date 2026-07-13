@@ -1,6 +1,6 @@
 //! Small capability boundaries implemented by the selected guest architecture.
 
-use ax_errno::AxResult;
+use crate::AxVmResult;
 
 /// Guest firmware preparation performed before common VM memory loading.
 pub(crate) trait GuestBootPlatform {
@@ -10,7 +10,7 @@ pub(crate) trait GuestBootPlatform {
         _vm_config: &mut crate::config::AxVMConfig,
         _vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         _provider: &dyn crate::boot::BootImageProvider,
-    ) -> AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+    ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
         Ok(None)
     }
 }
@@ -26,21 +26,21 @@ pub(crate) trait BootImagePlatform {
     fn load_images_from_memory(
         loader: &mut crate::boot::images::ImageLoaderCore<'_>,
         images: crate::boot::StaticVmImage,
-    ) -> AxResult {
+    ) -> AxVmResult {
         loader.load_standard_images_from_memory(images, Self::load_guest_dtb)
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(
         loader: &mut crate::boot::images::ImageLoaderCore<'_>,
-    ) -> AxResult {
+    ) -> AxVmResult {
         loader.load_standard_images_from_filesystem(Self::load_guest_dtb)
     }
 
     fn load_guest_dtb(
         _loader: &crate::boot::images::ImageLoaderCore<'_>,
         _dtb: &crate::boot::fdt::GuestDtbImage,
-    ) -> AxResult {
+    ) -> AxVmResult {
         Ok(())
     }
 

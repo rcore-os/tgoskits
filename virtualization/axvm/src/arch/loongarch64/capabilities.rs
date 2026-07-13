@@ -12,9 +12,9 @@ impl GuestBootPlatform for LoongArch64Arch {
         vm_config: &mut crate::config::AxVMConfig,
         vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         _provider: &dyn crate::boot::BootImageProvider,
-    ) -> ax_errno::AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+    ) -> crate::AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
         if vm_create_config.kernel.effective_boot_protocol() != axvmconfig::VMBootProtocol::Uefi {
-            return ax_errno::ax_err!(
+            return crate::ax_err!(
                 Unsupported,
                 "LoongArch AxVisor guests currently require UEFI boot"
             );

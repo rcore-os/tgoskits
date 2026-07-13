@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
-use axhvc::{HyperCallCode, HyperCallResult};
+use axhvc::HyperCallCode;
 
 use crate::{
-    GuestPhysAddr, MappingFlags,
+    AxVmError, AxVmResult, GuestPhysAddr, MappingFlags, ax_err, ax_err_type,
     runtime::{
         VMRef,
         ivc::{self, IVCChannel},
@@ -30,7 +29,7 @@ pub struct HyperCall {
 }
 
 impl HyperCall {
-    pub fn new(vm: VMRef, code: u64, args: [u64; 6]) -> AxResult<Self> {
+    pub fn new(vm: VMRef, code: u64, args: [u64; 6]) -> AxVmResult<Self> {
         let code = HyperCallCode::try_from(code as u32).map_err(|e| {
             warn!("Invalid hypercall code: {code} e {e:?}");
             ax_err_type!(InvalidInput)
@@ -39,7 +38,7 @@ impl HyperCall {
         Ok(Self { vm, code, args })
     }
 
-    pub fn execute(&self) -> HyperCallResult {
+    pub fn execute(&self) -> AxVmResult<usize> {
         match self.code {
             HyperCallCode::HIVCPublishChannel => {
                 let key = self.args[0] as usize;
@@ -60,7 +59,9 @@ impl HyperCall {
                 let (shm_base_gpa, shm_region_size) = self.vm.alloc_ivc_channel(requested_size)?;
 
                 let ivc_channel =
-                    match IVCChannel::alloc(self.vm.id(), key, shm_region_size, shm_base_gpa) {
+                    match IVCChannel::alloc(self.vm.id(), key, shm_region_size, shm_base_gpa)
+                        .map_err(|error| AxVmError::memory("allocate IVC channel", error))
+                    {
                         Ok(channel) => channel,
                         Err(err) => {
                             if let Err(release_err) =

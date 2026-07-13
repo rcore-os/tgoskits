@@ -21,13 +21,12 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_errno::{AxResult, ax_err_type};
 use axvmconfig::{
     AxVMCrateConfig, PassThroughDeviceConfig, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
 };
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
-use crate::{MappingFlags, config::AxVMConfig};
+use crate::{AxVmResult, MappingFlags, ax_err_type, config::AxVMConfig};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
@@ -48,7 +47,7 @@ pub fn setup_guest_fdt_from_vmm(
     fdt_bytes: &[u8],
     vm_cfg: &mut AxVMConfig,
     crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
@@ -217,7 +216,7 @@ pub fn reserve_excluded_device_ranges(
     vm_cfg: &mut AxVMConfig,
     crate_cfg: &AxVMCrateConfig,
     dtb: &[u8],
-) -> AxResult {
+) -> AxVmResult {
     let excluded_paths = excluded_device_paths(crate_cfg);
     if excluded_paths.is_empty() {
         return Ok(());
@@ -317,7 +316,7 @@ fn should_skip_passthrough_node(
     false
 }
 
-pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]) -> AxResult {
+pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]) -> AxVmResult {
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
             InvalidData,
@@ -368,7 +367,7 @@ pub fn set_phys_cpu_sets(
     vm_cfg: &mut AxVMConfig,
     fdt: &Fdt,
     crate_config: &AxVMCrateConfig,
-) -> AxResult {
+) -> AxVmResult {
     let phys_cpu_ids = crate_config
         .base
         .phys_cpu_ids
@@ -504,7 +503,7 @@ pub fn parse_passthrough_devices_address(
     vm_cfg: &mut AxVMConfig,
     crate_cfg: &AxVMCrateConfig,
     dtb: &[u8],
-) -> AxResult {
+) -> AxVmResult {
     let devices = vm_cfg.pass_through_devices().to_vec();
     if !devices.is_empty() && devices[0].length != 0 {
         for (index, device) in devices.iter().enumerate() {
@@ -581,7 +580,7 @@ pub fn parse_passthrough_devices_address(
     Ok(())
 }
 
-pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxResult {
+pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
     let decode_interrupt = super::selected_guest_fdt_policy().decode_interrupt;
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
@@ -621,7 +620,7 @@ pub fn update_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
     crate_config: &AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let patch_provided = super::selected_guest_fdt_policy().patch_provided;
     patch_provided(provided_dtb, host_dtb, crate_config)
 }

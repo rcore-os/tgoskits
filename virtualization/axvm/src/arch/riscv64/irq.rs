@@ -16,25 +16,26 @@
 
 use alloc::sync::Arc;
 
-use ax_errno::{AxResult, ax_err};
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceRegistration,
     MmioDeviceAdapter,
 };
-use axdevice_base::{IrqLineId, IrqSink};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
+use axdevice_base::{AxResult as DeviceResult, IrqLineId, IrqSink};
+use axvm_types::{
+    AxVmError as BackendError, EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode,
+};
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };
 
-use crate::irq::InterruptFabric;
+use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
 
 struct RiscvPlicIrqSink {
     vplic: Arc<VPlicGlobal>,
 }
 
 impl IrqSink for RiscvPlicIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> AxResult {
+    fn set_level(&self, line: IrqLineId, asserted: bool) -> DeviceResult {
         if asserted {
             self.vplic.set_pending(line.0)
         } else {
@@ -42,7 +43,7 @@ impl IrqSink for RiscvPlicIrqSink {
         }
     }
 
-    fn pulse(&self, line: IrqLineId) -> AxResult {
+    fn pulse(&self, line: IrqLineId) -> DeviceResult {
         self.vplic.set_pending(line.0)
     }
 }
@@ -63,24 +64,18 @@ impl DeviceFactory for RiscvPlicFactory {
         &self,
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle> {
+    ) -> DeviceResult<DeviceBundle> {
         if config.base_gpa != self.base_gpa
             || config.length != self.length
             || config.cfg_list.as_slice() != [self.contexts_num]
         {
-            return ax_err!(
-                InvalidInput,
-                format_args!(
-                    "virtual PLIC configuration changed while building device '{}'",
-                    config.name
-                )
-            );
+            return Err(BackendError::InvalidInput);
         }
         Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.vplic.clone())).into())
     }
 }
 
-fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxResult<usize> {
+fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxVmResult<usize> {
     let [contexts_num] = config.cfg_list.as_slice() else {
         return ax_err!(
             InvalidInput,
@@ -95,11 +90,11 @@ fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxResult<usize> {
         .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CTRL_OFFSET))
         .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET))
         .and_then(|offset| config.base_gpa.checked_add(offset))
-        .ok_or(ax_errno::AxError::InvalidInput)?;
+        .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC context range overflow"))?;
     let region_end = config
         .base_gpa
         .checked_add(config.length)
-        .ok_or(ax_errno::AxError::InvalidInput)?;
+        .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC region range overflow"))?;
     if region_end <= context_end {
         return ax_err!(
             InvalidInput,
@@ -116,7 +111,7 @@ pub(crate) fn configure(
     factories: &mut DeviceFactoryRegistry,
     mode: VMInterruptMode,
     configs: &[EmulatedDeviceConfig],
-) -> AxResult<InterruptFabric> {
+) -> AxVmResult<InterruptFabric> {
     let mut vplic_configs = configs
         .iter()
         .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
@@ -136,12 +131,14 @@ pub(crate) fn configure(
         Some(config.length),
         contexts_num,
     ));
-    factories.register(Arc::new(RiscvPlicFactory {
-        base_gpa: config.base_gpa,
-        length: config.length,
-        contexts_num,
-        vplic: vplic.clone(),
-    }))?;
+    factories
+        .register(Arc::new(RiscvPlicFactory {
+            base_gpa: config.base_gpa,
+            length: config.length,
+            contexts_num,
+            vplic: vplic.clone(),
+        }))
+        .map_err(|error| AxVmError::device("register virtual PLIC factory", error))?;
 
     InterruptFabric::with_sink(mode, Arc::new(RiscvPlicIrqSink { vplic }))
 }

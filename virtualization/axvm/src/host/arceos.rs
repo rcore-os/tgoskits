@@ -7,7 +7,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::{
     os::arceos::{api, modules},
@@ -15,7 +14,10 @@ use ax_std::{
 };
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use crate::AxVmError;
 use crate::{
+    AxVmResult,
     arch::{ArchOps, CurrentArch},
     host::{HostCpu, HostMemory, HostPlatform, HostTime},
 };
@@ -163,8 +165,9 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-pub fn shutdown_host_filesystems() -> AxResult {
-    modules::ax_fs_ng::shutdown_filesystems()?;
+pub fn shutdown_host_filesystems() -> AxVmResult {
+    modules::ax_fs_ng::shutdown_filesystems()
+        .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
     let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
     if released != 0 {
         info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
@@ -177,7 +180,7 @@ impl HostPlatform for ArceOsHost {
         CurrentArch::has_hardware_support()
     }
 
-    fn enable_virtualization_on_current_cpu(&self) -> AxResult {
+    fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
         crate::timer::init_percpu();
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;
@@ -185,7 +188,7 @@ impl HostPlatform for ArceOsHost {
         Ok(())
     }
 
-    fn enable_virtualization_on_all_cpus(&self) -> AxResult {
+    fn enable_virtualization_on_all_cpus(&self) -> AxVmResult {
         static CORES: AtomicUsize = AtomicUsize::new(0);
 
         info!("Enabling hardware virtualization support on all cores...");

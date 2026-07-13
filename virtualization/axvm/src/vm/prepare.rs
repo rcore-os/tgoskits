@@ -6,12 +6,11 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
 use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::irq::InterruptFabric;
+use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
 
 pub(crate) enum VmInitRequest<'a> {
     Default,
@@ -34,7 +33,7 @@ impl PreparedVm {
 
 impl AxVM {
     /// Sets up the VM before booting.
-    pub fn prepare(&self) -> AxResult {
+    pub fn prepare(&self) -> AxVmResult {
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 
@@ -43,7 +42,7 @@ impl AxVM {
         &self,
         factories: &DeviceFactoryRegistry,
         interrupt_fabric: InterruptFabric,
-    ) -> AxResult {
+    ) -> AxVmResult {
         crate::arch::CurrentArch::init_vm(
             self,
             VmInitRequest::Provided {
@@ -54,17 +53,18 @@ impl AxVM {
     }
 }
 
-pub(crate) fn default_device_factories() -> AxResult<DeviceFactoryRegistry> {
+pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
     let mut factories = DeviceFactoryRegistry::new();
-    register_builtin_factories(&mut factories)?;
+    register_builtin_factories(&mut factories)
+        .map_err(|error| AxVmError::device("register built-in device factories", error))?;
     Ok(factories)
 }
 
 pub(crate) fn complete_vm_init(
     vm: &AxVM,
     interrupt_fabric: InterruptFabric,
-    initialize: impl FnOnce(&mut AxVMResources, &InterruptFabric) -> AxResult<PreparedVm>,
-) -> AxResult {
+    initialize: impl FnOnce(&mut AxVMResources, &InterruptFabric) -> AxVmResult<PreparedVm>,
+) -> AxVmResult {
     let mut machine = vm.machine.lock();
     if !matches!(
         machine.status(),
@@ -103,7 +103,7 @@ pub(crate) fn complete_vm_init(
     Ok(())
 }
 
-pub(crate) fn validate_guest_dtb(resources: &AxVMResources) -> AxResult {
+pub(crate) fn validate_guest_dtb(resources: &AxVMResources) -> AxVmResult {
     if resources.config.image_config().dtb_load_gpa.is_some()
         && resources.boot_description.device_tree().is_none()
     {
