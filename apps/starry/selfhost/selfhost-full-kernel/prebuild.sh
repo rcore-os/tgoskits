@@ -112,27 +112,42 @@ stage_run_state() {
     printf 'ready %s prebuild\n' "$run_id" >"$overlay_dir/opt/starry-selfhost.state"
 }
 
-# Pre-download rustup component tarballs on the host so the guest can
-# populate the rustup download cache in-RAM without touching QEMU user-
-# mode networking.  QEMU slirp degrades catastrophically for large
-# downloads (TCP throughput collapses from ~100 KiB/s to <1 KiB/s
-# after ~100 MiB), making a ~300 MiB toolchain download impossible.
-stage_rust_download_cache() {
+# Build a pre-extracted Rust toolchain tarball from host-downloaded components.
+# The guest cannot reliably extract .tar.xz files because: (1) QEMU slirp
+# degrades catastrophically for large downloads, and (2) StarryOS MemoryFs
+# (/tmp) has a limited size — filling it during XZ extraction freezes the
+# guest.  We download the six component tarballs on the host, extract them
+# into a merged toolchain tree, and inject a single uncompressed tar so the
+# guest only needs `tar xf` (no XZ, no network, no tmpfs pressure).
+stage_rust_toolchain() {
     local rust_date="2026-05-28"
     local rust_dl="https://static.rust-lang.org/dist/${rust_date}"
-    local cache_dir="$overlay_dir/root/.rustup-dl-cache"
-    mkdir -p "$cache_dir"
+    local toolchain_name="nightly-2026-05-28-x86_64-unknown-linux-musl"
+    local stage_dir="$output_dir/toolchain-stage"
+    local toolchain_dir="$stage_dir/$toolchain_name"
+    local cache_dir="$stage_dir/dl-cache"
+    local output_tar="$output_dir/rust-toolchain.tar"
 
-    # component → sha256 from channel-rust-nightly.toml (x86_64-unknown-linux-musl,
-    # target-independent for rust-src, x86_64-unknown-none for the bare-metal target)
-    for pair in \
-        "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
-        "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
-        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41" \
-        "rust-src:3ef29c6fe273c9c1fc210a53c461a1f984fc8857be508aa7aa3e8f82f23652b2" \
-        "llvm-tools:13bdcad985200f19188537e629bb80a7cd104237ad4469deebb53eb32b4a29ec" \
+    # component → sha256 from channel-rust-nightly.toml
+    local pairs=(
+        "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff"
+        "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d"
+        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
+        "rust-src:3ef29c6fe273c9c1fc210a53c461a1f984fc8857be508aa7aa3e8f82f23652b2"
+        "llvm-tools:13bdcad985200f19188537e629bb80a7cd104237ad4469deebb53eb32b4a29ec"
         "rust-std-none:2e67b503d145f68ab474fc7070bac3a1d936d5dd78f96a8bc3a2c5d98baa190d"
-    do
+    )
+
+    if [ -f "$output_tar" ] && [ "$(stat -c%s "$output_tar" 2>/dev/null)" -gt 500000000 ]; then
+        echo "[prebuild] rust toolchain tar already built ($(du -h "$output_tar" | cut -f1)) — skipping"
+        install -m 0644 "$output_tar" "$overlay_dir/opt/rust-toolchain.tar"
+        return
+    fi
+
+    rm -rf "$stage_dir"
+    mkdir -p "$toolchain_dir/bin" "$toolchain_dir/lib" "$cache_dir"
+
+    for pair in "${pairs[@]}"; do
         component="${pair%%:*}"
         hash="${pair##*:}"
         case "$component" in
@@ -143,21 +158,33 @@ stage_rust_download_cache() {
         esac
         url="${rust_dl}/${tarball}"
         dest="$cache_dir/$hash"
-        if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 10000000 ]; then
-            echo "[prebuild] rust ${component} tarball already cached ($(du -h "$dest" | cut -f1))"
-            continue
-        fi
-        echo "[prebuild] downloading rust ${component} tarball (~$( \
-            curl -sI "$url" 2>/dev/null | awk '/content-length/ {printf "%.0f", $2/1024/1024}') MiB)..."
-        if curl -fsSL --retry 3 --connect-timeout 30 --max-time 600 \
-            "$url" -o "${dest}.tmp" 2>/dev/null; then
-            mv "${dest}.tmp" "$dest"
-            echo "[prebuild]   ${component} cached ($(du -h "$dest" | cut -f1))"
+
+        if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 1000000 ]; then
+            echo "[prebuild]   ${component} already downloaded ($(du -h "$dest" | cut -f1))"
         else
-            rm -f "${dest}.tmp"
-            echo "[prebuild] WARNING: failed to download ${component} tarball (guest will fall back to network)" >&2
+            echo "[prebuild]   downloading ${tarball}..."
+            curl -fsSL --retry 3 --connect-timeout 30 --max-time 600 \
+                "$url" -o "${dest}.tmp" 2>/dev/null || {
+                    rm -f "${dest}.tmp"
+                    echo "[prebuild] ERROR: failed to download ${tarball}" >&2
+                    exit 1
+                }
+            mv "${dest}.tmp" "$dest"
         fi
+
+        echo "[prebuild]   extracting ${tarball}..."
+        tar xf "$dest" -C "$toolchain_dir" 2>/dev/null || {
+            echo "[prebuild] ERROR: failed to extract ${tarball}" >&2
+            exit 1
+        }
     done
+
+    echo "[prebuild] creating uncompressed toolchain tar..."
+    tar -C "$stage_dir" -cf "$output_tar" "$toolchain_name"
+    echo "[prebuild] rust toolchain tar built ($(du -h "$output_tar" | cut -f1))"
+
+    rm -rf "$stage_dir"
+    install -m 0644 "$output_tar" "$overlay_dir/opt/rust-toolchain.tar"
 }
 
 require_x86_64
@@ -169,7 +196,7 @@ stage_guest_resolver
 stage_guest_runner
 stage_guest_reboot_guard
 stage_run_state
-stage_rust_download_cache
+stage_rust_toolchain
 
 echo "selfhost x86_64 overlay ready in $overlay_dir"
 echo "rootfs=$rootfs"
