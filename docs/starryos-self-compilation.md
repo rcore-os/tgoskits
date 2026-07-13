@@ -15,7 +15,7 @@ cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 ### 来宾流程
 
 首次运行时，app runner 从默认 Alpine rootfs 创建受管理的
-`rootfs-x86_64-selfhost.img`，并由 prebuild 扩容到 16 GiB。prebuild 会把当前 checkout
+`rootfs-x86_64-selfhost.img`，并由 prebuild 扩容到 32 GiB。prebuild 会把当前 checkout
 （包含未提交修改）和 source metadata 打包注入 rootfs；不会复制 host 的 Rust 或 GNU
 二进制。
 
@@ -25,12 +25,14 @@ QEMU 通过 user-mode networking 联网。来宾 runner 会：
 2. 原生安装 `nightly-2026-05-28` 的 `x86_64-unknown-linux-musl` Rust toolchain；
 3. 安装 `rust-src`、`llvm-tools-preview`、`x86_64-unknown-none`、`cargo-binutils 0.4.0`
    和 `ksym 0.6.0`；
-4. 将源码解包到 `/tmp`，以 musl host triple 编译 `tg-xtask`，然后执行 canonical
+4. 将源码解包到 `/tmp`，但把 canonical `target/` 链接到持久化的
+   `/opt/starry-selfhost-target`，使用两个 Cargo jobs 编译 musl-host `tg-xtask`，然后执行
    `tg-xtask starry build -c apps/starry/selfhost/build-x86_64-unknown-none.toml --arch x86_64`；
 5. 将生成的 ELF 持久化为 `/opt/starryos-selfbuilt`，并输出 `SELF_COMPILE_SUCCESS`。
 
 失败会输出 `SELF_COMPILE_FAILED` 并让 app 命令以非零状态退出。成功前会先 `sync`，因此
-app runner 检测到成功标记后可安全结束 QEMU。
+app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前构建阶段写入 rootfs；若内核
+在编译中途异常重启，下一次登录会输出包含中断阶段的失败标记，而不会等待到全局超时。
 
 ### 前置条件
 

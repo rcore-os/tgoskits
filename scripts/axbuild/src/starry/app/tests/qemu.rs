@@ -218,6 +218,17 @@ fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
         "{} must use the staged non-interactive guest runner",
         config_path.display()
     );
+    let qemu_args = config
+        .get("args")
+        .and_then(toml::Value::as_array)
+        .expect("selfhost qemu args must be an array");
+    assert!(
+        qemu_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("-no-shutdown")),
+        "{} must wait for an explicit success or failure marker before QEMU exits",
+        config_path.display()
+    );
     assert!(
         fs::read_to_string(&config_path)
             .unwrap()
@@ -231,10 +242,13 @@ fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
     assert!(
         prebuild.contains("tgoskits-src.tar")
             && prebuild.contains("starry-selfhost-run.sh")
+            && prebuild.contains("starry-selfhost-reboot-guard.sh")
             && prebuild.contains("cargo xtask image resize")
+            && prebuild.contains("SELFHOST_ROOTFS_SIZE_MIB:-32768")
             && prebuild.contains("stage_guest_resolver")
             && prebuild.contains("/run/systemd/resolve/resolv.conf"),
-        "{} must stage source, the guest runner, and a usable resolver into a resized rootfs",
+        "{} must stage source, the guest runner, the reboot guard, and a usable resolver into a \
+         32 GiB rootfs",
         prebuild_path.display()
     );
 
@@ -270,10 +284,59 @@ fn selfhost_guest_runner_publishes_the_canonical_source_target_artifact() {
         guest_runner_path.display()
     );
     assert!(
+        guest_runner.contains("SELFHOST_TARGET_DIR:-/opt/starry-selfhost-target")
+            && guest_runner.contains("ln -s \"$TARGET_DIR\" \"$SOURCE_DIR/target\""),
+        "{} must redirect the canonical source target directory to persistent ext4 storage",
+        guest_runner_path.display()
+    );
+    assert!(
+        guest_runner.contains("SELFHOST_CARGO_BUILD_JOBS:-2"),
+        "{} must limit guest Cargo concurrency to control peak memory use",
+        guest_runner_path.display()
+    );
+    assert!(
         guest_runner.contains("$SOURCE_DIR/target/x86_64-unknown-linux-musl/release/starryos"),
         "{} must publish the artifact produced by the canonical xtask build",
         guest_runner_path.display()
     );
+}
+
+#[test]
+fn selfhost_reboot_guard_reports_the_interrupted_phase() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let guard =
+        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild-reboot-guard.sh");
+    let root = tempdir().unwrap();
+    let state = root.path().join("state");
+    fs::write(&state, "running test-run kernel\n").unwrap();
+
+    let output = Command::new("sh")
+        .arg(&guard)
+        .env("SELFHOST_STATE_FILE", &state)
+        .env("SELFHOST_REBOOT_GUARD_TEST_MODE", "1")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("SELF_COMPILE_FAILED: unexpected guest reboot during kernel")
+    );
+
+    fs::write(&state, "ready test-run prebuild\n").unwrap();
+    let output = Command::new("sh")
+        .arg(&guard)
+        .env("SELFHOST_STATE_FILE", &state)
+        .env("SELFHOST_REBOOT_GUARD_TEST_MODE", "1")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("SELF_COMPILE_FAILED"));
 }
 
 #[test]

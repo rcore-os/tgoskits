@@ -11,7 +11,7 @@ workspace="${STARRY_WORKSPACE:?STARRY_WORKSPACE is required}"
 rootfs="${STARRY_ROOTFS:?STARRY_ROOTFS is required}"
 overlay_dir="${STARRY_OVERLAY_DIR:?STARRY_OVERLAY_DIR is required}"
 arch="${STARRY_ARCH:?STARRY_ARCH is required}"
-rootfs_size_mib="${SELFHOST_ROOTFS_SIZE_MIB:-16384}"
+rootfs_size_mib="${SELFHOST_ROOTFS_SIZE_MIB:-32768}"
 output_dir="$workspace/target/starry-selfhost-x86_64"
 
 require_x86_64() {
@@ -95,6 +95,23 @@ stage_guest_runner() {
     install -m 0755 "$app_dir/guest-selfbuild.sh" "$overlay_dir/opt/starry-selfhost-run.sh"
 }
 
+stage_guest_reboot_guard() {
+    local profile_dir="$overlay_dir/etc/profile.d"
+
+    mkdir -p "$profile_dir"
+    install -m 0644 \
+        "$app_dir/guest-selfbuild-reboot-guard.sh" \
+        "$profile_dir/starry-selfhost-reboot-guard.sh"
+}
+
+stage_run_state() {
+    local run_id
+
+    run_id="$(git_value unknown rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    printf '%s\n' "$run_id" >"$overlay_dir/opt/starry-selfhost.run-id"
+    printf 'ready %s prebuild\n' "$run_id" >"$overlay_dir/opt/starry-selfhost.state"
+}
+
 require_x86_64
 mkdir -p "$output_dir" "$overlay_dir/opt"
 resize_rootfs
@@ -102,6 +119,8 @@ stage_source_archive
 stage_source_metadata
 stage_guest_resolver
 stage_guest_runner
+stage_guest_reboot_guard
+stage_run_state
 
 echo "selfhost x86_64 overlay ready in $overlay_dir"
 echo "rootfs=$rootfs"

@@ -8,13 +8,35 @@ RUSTUP_TOOLCHAIN="${TOOLCHAIN}-${HOST_TRIPLE}"
 SOURCE_TAR="${SELFHOST_SOURCE_TAR:-/opt/tgoskits-src.tar}"
 SOURCE_META="${SELFHOST_SOURCE_META:-/opt/tgoskits-src.meta}"
 SOURCE_DIR="${SELFHOST_SOURCE_DIR:-/tmp/tgoskits-src}"
+TARGET_DIR="${SELFHOST_TARGET_DIR:-/opt/starry-selfhost-target}"
 ARTIFACT="${SELFHOST_ARTIFACT:-/opt/starryos-selfbuilt}"
+STATE_FILE="${SELFHOST_STATE_FILE:-/opt/starry-selfhost.state}"
+RUN_ID_FILE="${SELFHOST_RUN_ID_FILE:-/opt/starry-selfhost.run-id}"
 FAILURE_REASON="guest command failed"
+CURRENT_PHASE="bootstrap"
+RUN_ID="unknown"
+
+write_state() {
+    state="$1"
+    phase="$2"
+    state_tmp="${STATE_FILE}.tmp"
+
+    printf '%s %s %s\n' "$state" "$RUN_ID" "$phase" >"$state_tmp"
+    mv "$state_tmp" "$STATE_FILE"
+    sync
+}
+
+mark_phase() {
+    CURRENT_PHASE="$1"
+    write_state running "$CURRENT_PHASE"
+    echo "SELF_COMPILE_PHASE=$CURRENT_PHASE"
+}
 
 finish_failure() {
     status="$1"
     trap - EXIT
-    echo "SELF_COMPILE_FAILED: $FAILURE_REASON (status=$status)"
+    write_state failed "$CURRENT_PHASE" 2>/dev/null || true
+    echo "SELF_COMPILE_FAILED: $FAILURE_REASON (phase=$CURRENT_PHASE, status=$status)"
     sync 2>/dev/null || true
     poweroff -f 2>/dev/null || poweroff 2>/dev/null || true
     exit "$status"
@@ -36,12 +58,18 @@ finish_success() {
     artifact_size="$1"
 
     trap - EXIT
-    sync 2>/dev/null || true
+    write_state success publish
     echo "SELF_COMPILE_ARTIFACT=$ARTIFACT"
     echo "SELF_COMPILE_ARTIFACT_SIZE=$artifact_size"
     echo "SELF_COMPILE_SUCCESS"
     poweroff -f 2>/dev/null || poweroff 2>/dev/null || true
     exit 0
+}
+
+load_run_id() {
+    [ -s "$RUN_ID_FILE" ] || fail "run id is missing: $RUN_ID_FILE"
+    IFS= read -r RUN_ID <"$RUN_ID_FILE"
+    [ -n "$RUN_ID" ] || fail "run id is empty: $RUN_ID_FILE"
 }
 
 install_build_packages() {
@@ -112,6 +140,11 @@ prepare_source_tree() {
     tar -xf "$SOURCE_TAR" -C "$SOURCE_DIR"
     [ -f "$SOURCE_DIR/Cargo.toml" ] || fail "source archive does not contain Cargo.toml"
 
+    mkdir -p "$TARGET_DIR"
+    rm -rf "$SOURCE_DIR/target"
+    ln -s "$TARGET_DIR" "$SOURCE_DIR/target"
+    [ -d "$SOURCE_DIR/target" ] || fail "persistent target directory is unavailable"
+
     if [ -f "$SOURCE_META" ]; then
         echo "SELF_COMPILE_SOURCE_METADATA_BEGIN"
         cat "$SOURCE_META"
@@ -119,23 +152,32 @@ prepare_source_tree() {
     fi
 }
 
-build_with_canonical_xtask() {
-    detected_host="$(rustc -vV | sed -n 's/^host: //p')"
-    [ "$detected_host" = "$HOST_TRIPLE" ] \
-        || fail "Rust host must be $HOST_TRIPLE, got ${detected_host:-unknown}"
-    echo "SELF_COMPILE_RUST_HOST=$detected_host"
+report_build_storage() {
+    echo "SELF_COMPILE_STORAGE_BEGIN"
+    mount | grep -E ' on /(tmp|opt) ' || true
+    df -T / /tmp "$TARGET_DIR" 2>/dev/null || df -h / /tmp "$TARGET_DIR"
+    free -m 2>/dev/null || sed -n '1,5p' /proc/meminfo
+    echo "SELF_COMPILE_STORAGE_END"
+}
 
+detect_rust_host() {
+    DETECTED_HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    [ "$DETECTED_HOST" = "$HOST_TRIPLE" ] \
+        || fail "Rust host must be $HOST_TRIPLE, got ${DETECTED_HOST:-unknown}"
+    echo "SELF_COMPILE_RUST_HOST=$DETECTED_HOST"
+}
+
+build_host_xtask() {
     cd "$SOURCE_DIR"
-    export CARGO_BUILD_JOBS="${SELFHOST_CARGO_BUILD_JOBS:-4}"
-    export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
-    unset CARGO_BUILD_TARGET
-
     RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= \
-        cargo "+$RUSTUP_TOOLCHAIN" build --locked -p tg-xtask --target "$detected_host"
-    xtask="$SOURCE_DIR/target/$detected_host/debug/tg-xtask"
-    [ -x "$xtask" ] || fail "tg-xtask was not built for $detected_host"
+        cargo "+$RUSTUP_TOOLCHAIN" build --locked -p tg-xtask --target "$DETECTED_HOST"
+    XTASK="$SOURCE_DIR/target/$DETECTED_HOST/debug/tg-xtask"
+    [ -x "$XTASK" ] || fail "tg-xtask was not built for $DETECTED_HOST"
+}
 
-    "$xtask" starry build \
+build_kernel() {
+    cd "$SOURCE_DIR"
+    "$XTASK" starry build \
         -c apps/starry/selfhost/build-x86_64-unknown-none.toml \
         --arch x86_64
 }
@@ -153,12 +195,28 @@ publish_artifact() {
 trap handle_exit EXIT
 
 echo "SELF_COMPILE_START"
+load_run_id
+export CARGO_BUILD_JOBS="${SELFHOST_CARGO_BUILD_JOBS:-2}"
+export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
+unset CARGO_BUILD_TARGET
+
+mark_phase packages
 install_build_packages
+mark_phase network
 verify_network
+mark_phase rust
 configure_musl_toolchain_aliases
 install_rust
+mark_phase tools
 install_kallsyms_tools
+mark_phase source
 prepare_source_tree
-build_with_canonical_xtask
+report_build_storage
+detect_rust_host
+mark_phase xtask-host
+build_host_xtask
+mark_phase kernel
+build_kernel
+mark_phase publish
 artifact_size="$(publish_artifact)"
 finish_success "$artifact_size"

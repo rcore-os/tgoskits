@@ -1,5 +1,6 @@
 args = [
     "-nographic",
+    "-no-shutdown",
     "-cpu", "host",
     "-smp", "4",
     "-m", "16G",

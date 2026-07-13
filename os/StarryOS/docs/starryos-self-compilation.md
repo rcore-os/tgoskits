@@ -4,7 +4,8 @@
 >
 > x86_64 自编译现在通过 `cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64`
 > 直接运行。它在联网 QEMU guest 中安装工具链和依赖，不需要 `self-compile.sh`、host
-> sudo 或 loop mount。推荐流程与产物启动方式见
+> sudo 或 loop mount。该流程使用 32 GiB 的稀疏 rootfs，并把 Cargo target 保存在
+> `/opt/starry-selfhost-target`，避免 Starry 的 `/tmp` MemoryFs 承载完整编译缓存。推荐流程与产物启动方式见
 > [`docs/starryos-self-compilation.md`](../../../docs/starryos-self-compilation.md)。本文其余内容
 > 保留为 riscv64/Debian 旧流程和历史排障记录，不能作为 x86_64 的当前操作说明。
 
