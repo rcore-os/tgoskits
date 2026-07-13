@@ -8,6 +8,7 @@ use rsext4::{
     disknode::Ext4Inode,
     entries::Ext4DirEntry2,
     error::{Ext4Error, Ext4Result},
+    file::{read_inode_data_into, truncate_inode, write_inode_data},
     *,
 };
 
@@ -155,4 +156,37 @@ fn insertion_clears_stale_directory_index_flag() {
         .expect("lookup inserted entry")
         .expect("inserted entry exists");
     assert_eq!(entry_ino, target_ino);
+}
+
+#[test]
+fn truncate_rewrite_reread_is_coherent() {
+    let (mut dev, mut fs) = setup();
+    let path = "/libfoo.so.3";
+
+    // Phase 1: write initial data
+    mkfile(&mut dev, &mut fs, path, Some(b"old data - v1.0"), None)
+        .expect("create libfoo");
+
+    // Phase 2: truncate to 0 (simulates apk upgrading the .so)
+    let (ino, _) = get_inode_with_num(&mut fs, &mut dev, path)
+        .expect("lookup")
+        .expect("exists");
+    truncate_inode(&mut dev, &mut fs, ino, 0).expect("truncate to 0");
+
+    // Phase 3: write new data (simulates apk installing new version)
+    let new_content: Vec<u8> = (0..8192u16)
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    write_inode_data(&mut dev, &mut fs, ino, 0, &new_content)
+        .expect("write new data");
+
+    // Phase 4: read back and verify — must see the new data, not old
+    let mut buf = vec![0u8; new_content.len()];
+    let n = read_inode_data_into(&mut dev, &mut fs, ino, 0, &mut buf)
+        .expect("read back");
+    assert_eq!(n, new_content.len(), "read length");
+    assert_eq!(
+        buf, new_content,
+        "data mismatch — truncate+rewrite not visible to reader"
+    );
 }
