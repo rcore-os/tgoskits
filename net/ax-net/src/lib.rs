@@ -105,7 +105,7 @@ pub use self::{
         ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction, EthernetIrqOutcome,
         EthernetIrqRegistrar, EthernetIrqRegistration, EthernetIrqRegistrationError,
         NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
-        set_ethernet_irq_registrar,
+        TunShared, set_ethernet_irq_registrar,
     },
     router::NetDevStats,
     socket::{
@@ -122,6 +122,12 @@ static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
+static TUN_CREATION_WAITING: AtomicBool = AtomicBool::new(false);
+/// Set by the net poll worker once it observes [`TUN_CREATION_WAITING`] and
+/// parks (stops touching SERVICE). A configuration task waits for this before
+/// acquiring SERVICE so the acquisition is uncontended - a deterministic
+/// handshake that does not depend on scheduler timing.
+static NET_POLL_PARKED: AtomicBool = AtomicBool::new(false);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
@@ -159,6 +165,15 @@ static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiCon
 
 static NET_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
 
+/// Registry of TUN/TAP shared handles, keyed by interface name.
+///
+/// A `/dev/net/tun` fd looks up its handle here after `TUNSETIFF`, so a second
+/// `open` + `TUNSETIFF` on a persistent interface rebinds to the existing
+/// device instead of creating a duplicate.
+type TunRegistry = Vec<(alloc::string::String, Arc<TunShared>)>;
+
+static TUN_REGISTRY: LazyLock<Mutex<TunRegistry>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -167,6 +182,32 @@ fn get_service() -> ax_sync::MutexGuard<'static, Service> {
         .get()
         .expect("Network service not initialized")
         .lock()
+}
+
+/// Acquires SERVICE for a configuration operation without racing the net poll
+/// worker for it.
+///
+/// The poll worker acquires SERVICE at high frequency. On slow SMP targets
+/// (loongarch64 under TCG) it can win the acquisition race repeatedly in the
+/// window before a configuration task enters the mutex wait queue, starving the
+/// configuration indefinitely. Rather than depend on scheduler timing, this
+/// performs a deterministic handshake: raise [`TUN_CREATION_WAITING`], wake the
+/// poll worker, and wait for it to acknowledge by parking
+/// ([`NET_POLL_PARKED`]) - at which point it is guaranteed not to touch SERVICE
+/// until the flag clears. The flag is cleared once SERVICE is held. The spin is
+/// bounded so that, should the worker not be running, this degrades to the
+/// previous (contended) acquisition rather than blocking here.
+fn acquire_service_for_config() -> ax_sync::MutexGuard<'static, Service> {
+    TUN_CREATION_WAITING.store(true, Ordering::Release);
+    NET_POLL_WAKE.notify_one(true);
+    let mut spins = 0u32;
+    while !NET_POLL_PARKED.load(Ordering::Acquire) && spins < 200 {
+        ax_task::sleep(core::time::Duration::from_micros(200));
+        spins += 1;
+    }
+    let service = get_service();
+    TUN_CREATION_WAITING.store(false, Ordering::Release);
+    service
 }
 
 pub(crate) fn get_control() -> &'static NetControl {
@@ -458,13 +499,28 @@ fn poll_until_idle() {
             return;
         }
 
-        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+        if !POLL_AGAIN.swap(false, Ordering::AcqRel) {
+            POLLING_INTERFACES.store(false, Ordering::Release);
+            return;
         }
+
+        let more_work = get_service().poll(&mut SOCKET_SET.inner.lock());
+        // SERVICE is free here; any waiter in the mutex wait queue gets
+        // ownership via notify_one_with, or can win the CAS in lock().
         POLLING_INTERFACES.store(false, Ordering::Release);
+
+        if more_work {
+            // Re-arm so the net_poll_worker outer loop re-enters after its
+            // scheduling gap, giving SERVICE waiters (e.g. create_tun) a
+            // window between consecutive polls.
+            POLL_AGAIN.store(true, Ordering::Release);
+            return;
+        }
+
         if !POLL_AGAIN.load(Ordering::Acquire) {
             return;
         }
+        // A new poll was requested while service.poll() ran; handle it.
     }
 }
 
@@ -541,7 +597,7 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 /// Assigns a static IPv4 address to an interface at runtime.
 pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
     {
-        let mut service = get_service();
+        let mut service = acquire_service_for_config();
         service.configure_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
     }
     request_poll();
@@ -551,11 +607,125 @@ pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u
 /// Removes a configured IPv4 address from an interface at runtime.
 pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
     {
-        let mut service = get_service();
+        let mut service = acquire_service_for_config();
         service.remove_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
     }
     request_poll();
     Ok(())
+}
+
+/// Creates a TUN/TAP interface driven by a `/dev/net/tun` file descriptor and
+/// returns the shared handle the char device uses to exchange packets.
+///
+/// The interface starts down with no address; userspace configures it through
+/// the usual `SIOCSIFADDR`/`SIOCSIFFLAGS`/`SIOCADDRT` ioctls.
+pub fn create_tun(name: alloc::string::String, kind: InterfaceKind) -> AxResult<Arc<TunShared>> {
+    // acquire_service_for_config parks the net poll worker first, so this
+    // TUNSETIFF-driven creation is never starved by the poll path on slow SMP
+    // targets (see the helper for the rationale and the loongarch64 case).
+    let mut service = acquire_service_for_config();
+    let shared = service.create_tun(name, kind)?;
+    drop(service);
+    // Key the registry by the interface's *allocated* name, not the requested
+    // one: an empty or "%d"-template request is expanded by `Service::create_tun`
+    // (e.g. "" -> "tun0"). Keying by the request would file the handle under ""
+    // so `tun_shared_by_name("tun0")`/`destroy_tun("tun0")` could never find it,
+    // leaking the interface and breaking persistent re-attach.
+    TUN_REGISTRY
+        .lock()
+        .push((shared.name().into(), shared.clone()));
+    Ok(shared)
+}
+
+/// Looks up the shared handle of an already-created TUN/TAP interface.
+pub fn tun_shared_by_name(name: &str) -> Option<Arc<TunShared>> {
+    TUN_REGISTRY
+        .lock()
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, shared)| shared.clone())
+}
+
+/// Tears down a non-persistent TUN/TAP interface.
+///
+/// The interface is removed from the control plane and its routes are dropped,
+/// so it stops carrying traffic and disappears from interface queries. The
+/// router keeps the (now idle) device slot to avoid renumbering the device
+/// indices that existing route rules reference.
+pub fn destroy_tun(name: &str) {
+    let removed = {
+        let mut registry = TUN_REGISTRY.lock();
+        registry
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|pos| registry.remove(pos))
+    };
+    if removed.is_some() {
+        acquire_service_for_config().remove_tun_interface(name);
+        request_poll();
+    }
+}
+
+/// Brings an interface administratively up or down (`SIOCSIFFLAGS`).
+pub fn set_interface_flags(interface_id: InterfaceId, up: bool) -> AxResult {
+    {
+        let mut service = acquire_service_for_config();
+        service.set_interface_flags(interface_id, up)?;
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Adds a static IPv4 route on an interface (`SIOCADDRT`).
+///
+/// `via` of `None` (or the unspecified address) marks a directly connected
+/// prefix.
+pub fn add_route(
+    interface_id: InterfaceId,
+    destination: Ipv4Addr,
+    prefix_len: u8,
+    via: Option<Ipv4Addr>,
+) -> AxResult {
+    let (dest, gateway) = route_args(destination, prefix_len, via)?;
+    {
+        let mut service = acquire_service_for_config();
+        service.add_route(interface_id, dest, gateway)?;
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Removes a static IPv4 route on an interface (`SIOCDELRT`).
+pub fn del_route(
+    interface_id: InterfaceId,
+    destination: Ipv4Addr,
+    prefix_len: u8,
+    via: Option<Ipv4Addr>,
+) -> AxResult {
+    let (dest, gateway) = route_args(destination, prefix_len, via)?;
+    {
+        let mut service = acquire_service_for_config();
+        service.del_route(interface_id, dest, gateway)?;
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Converts a userspace route request into wire types, rejecting an invalid
+/// prefix length and normalizing an unspecified gateway to `None`.
+fn route_args(
+    destination: Ipv4Addr,
+    prefix_len: u8,
+    via: Option<Ipv4Addr>,
+) -> AxResult<(Ipv4Cidr, Option<Ipv4Address>)> {
+    if prefix_len > 32 {
+        return Err(AxError::InvalidInput);
+    }
+    let dest = Ipv4Cidr::new(Ipv4Address::from(destination.octets()), prefix_len);
+    let gateway = via
+        .map(|addr| Ipv4Address::from(addr.octets()))
+        .filter(|addr| !addr.is_unspecified());
+    Ok((dest, gateway))
 }
 
 /// Returns public snapshots of configured IPv4 default routes.
@@ -717,6 +887,11 @@ pub fn wake_net_task_irq() {
 
 fn next_poll_delay() -> Duration {
     const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+    // Minimum sleep ensures wait_timeout_until() actually blocks instead of returning
+    // immediately. Without this, expired smoltcp timers (TCP TIME_WAIT from earlier
+    // tests) cause delay==0, poll_until_idle() tight-loops holding SERVICE, and tasks
+    // calling create_tun() starve indefinitely on slow QEMU targets (rv64/la64).
+    const MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
     let next = {
         let mut service = get_service();
         let sockets = SOCKET_SET.inner.lock();
@@ -728,7 +903,7 @@ fn next_poll_delay() -> Duration {
     let now_micros = ax_hal::time::monotonic_time_nanos() / 1_000;
     let next_micros = next.total_micros().max(0) as u64;
     if next_micros <= now_micros {
-        Duration::ZERO
+        MIN_POLL_INTERVAL
     } else {
         Duration::from_micros(next_micros - now_micros)
     }
@@ -748,11 +923,28 @@ impl Wake for NetPollWake {
 
 fn net_poll_worker() {
     loop {
+        // Linux separates the NAPI/softirq packet-processing path from the
+        // rtnl_lock configuration path: the poll worker never holds rtnl_lock,
+        // so interface creation (TUNSETIFF -> create_tun) is never starved.
+        //
+        // Here SERVICE plays both roles (rtnl_lock for configuration AND the
+        // per-device poll lock for packet processing). When a configuration
+        // operation signals TUN_CREATION_WAITING, park for this iteration:
+        // publish NET_POLL_PARKED so the waiting task knows SERVICE is free,
+        // then sleep without touching SERVICE. This is the worker half of the
+        // handshake in acquire_service_for_config().
+        if TUN_CREATION_WAITING.load(Ordering::Acquire) {
+            NET_POLL_PARKED.store(true, Ordering::Release);
+            ax_task::sleep(Duration::from_millis(1));
+            continue;
+        }
+        NET_POLL_PARKED.store(false, Ordering::Release);
         let delay = next_poll_delay();
         let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
             NET_POLL_REQUESTED.load(Ordering::Acquire)
                 || NET_IRQ_NOTIFY.is_pending()
                 || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
+                || POLL_AGAIN.load(Ordering::Acquire)
         });
         if !timed_out {
             take_poll_request(&NET_POLL_REQUESTED, || {});
@@ -764,6 +956,9 @@ fn net_poll_worker() {
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
+        if POLL_AGAIN.load(Ordering::Acquire) || (!timed_out && delay < Duration::from_millis(5)) {
+            ax_task::sleep(Duration::from_millis(1));
+        }
     }
 }
 

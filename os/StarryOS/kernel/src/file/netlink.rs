@@ -88,10 +88,14 @@ const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
+/// `ARPHRD_NONE`: link with no hardware header, used by layer-3 TUN devices.
+const ARPHRD_NONE: u16 = 0xFFFE;
 
 const IFF_UP: u32 = 1;
 const IFF_BROADCAST: u32 = 2;
 const IFF_LOOPBACK: u32 = 8;
+const IFF_POINTOPOINT: u32 = 16;
+const IFF_NOARP: u32 = 128;
 const IFF_RUNNING: u32 = 64;
 const IFF_MULTICAST: u32 = 4096;
 const IFF_LOWER_UP: u32 = 65536;
@@ -672,14 +676,17 @@ fn link_infos() -> Vec<LinkInfo> {
                 name: info.name,
                 ty: match info.kind {
                     InterfaceKind::Loopback => ARPHRD_LOOPBACK,
-                    InterfaceKind::Ethernet => ARPHRD_ETHER,
+                    // A TAP behaves like Ethernet at layer 2; a TUN has no
+                    // hardware header at all.
+                    InterfaceKind::Ethernet | InterfaceKind::Tap => ARPHRD_ETHER,
+                    InterfaceKind::Tun => ARPHRD_NONE,
                 },
                 flags,
                 mtu: info.mtu as u32,
                 qlen: 1000,
                 qdisc: match info.kind {
                     InterfaceKind::Loopback => "noqueue",
-                    InterfaceKind::Ethernet => "mq",
+                    _ => "mq",
                 },
                 operstate: if info.flags.contains(InterfaceFlags::RUNNING) {
                     IF_OPER_UP
@@ -687,7 +694,10 @@ fn link_infos() -> Vec<LinkInfo> {
                     IF_OPER_UNKNOWN
                 },
                 address,
-                broadcast: if info.kind == InterfaceKind::Ethernet {
+                // TAP shares Ethernet ARPHRD_ETHER type and IFF_BROADCAST;
+                // Linux ether_setup() sets broadcast to ff:ff:ff:ff:ff:ff for
+                // both real Ethernet and tap interfaces (tun.c:ether_setup call).
+                broadcast: if matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap) {
                     [0xff; 6]
                 } else {
                     [0; 6]
@@ -703,22 +713,25 @@ fn addr_infos() -> Vec<AddrInfo> {
         .filter_map(|info| {
             let ipv4 = info.ipv4?;
             let local = ipv4.address.address().octets();
-            let broadcast = (info.kind == InterfaceKind::Ethernet).then(|| {
-                let ip = u32::from_be_bytes(local);
-                let mask = if ipv4.address.prefix_len() == 0 {
-                    0
-                } else {
-                    !0u32 << (32 - ipv4.address.prefix_len())
-                };
-                (ip | !mask).to_be_bytes()
-            });
+            // TAP shares Ethernet addressing: Linux assigns IFF_BROADCAST to
+            // both real Ethernet and tap interfaces, so both get IPv4 broadcast.
+            let broadcast =
+                matches!(info.kind, InterfaceKind::Ethernet | InterfaceKind::Tap).then(|| {
+                    let ip = u32::from_be_bytes(local);
+                    let mask = if ipv4.address.prefix_len() == 0 {
+                        0
+                    } else {
+                        !0u32 << (32 - ipv4.address.prefix_len())
+                    };
+                    (ip | !mask).to_be_bytes()
+                });
             Some(AddrInfo {
                 index: info.id.get(),
                 label: info.name,
                 prefix_len: ipv4.address.prefix_len(),
                 scope: match info.kind {
                     InterfaceKind::Loopback => RT_SCOPE_HOST,
-                    InterfaceKind::Ethernet => RT_SCOPE_UNIVERSE,
+                    _ => RT_SCOPE_UNIVERSE,
                 },
                 local,
                 broadcast,
@@ -737,6 +750,12 @@ fn linux_link_flags(info: &InterfaceInfo) -> u32 {
     }
     if info.flags.contains(InterfaceFlags::LOOPBACK) {
         flags |= IFF_LOOPBACK;
+    }
+    if info.flags.contains(InterfaceFlags::POINTOPOINT) {
+        flags |= IFF_POINTOPOINT;
+    }
+    if info.flags.contains(InterfaceFlags::NOARP) {
+        flags |= IFF_NOARP;
     }
     if info.flags.contains(InterfaceFlags::RUNNING) {
         flags |= IFF_RUNNING | IFF_LOWER_UP;

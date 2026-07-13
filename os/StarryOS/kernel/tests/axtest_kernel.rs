@@ -59,4 +59,19 @@ mod tests {
     fn concurrent_epoll_reverse_add_is_serialized() {
         ax_assert!(axtest_exports::concurrent_epoll_reverse_add_is_serialized());
     }
+
+    #[test]
+    fn tun_rollback_destroys_created_device() {
+        ax_assert!(axtest_exports::tun_rollback_destroys_created_device());
+    }
+
+    #[test]
+    fn tun_rollback_detaches_existing_device() {
+        ax_assert!(axtest_exports::tun_rollback_detaches_existing_device());
+    }
+
+    #[test]
+    fn tun_rollback_on_concurrent_close() {
+        ax_assert!(axtest_exports::tun_rollback_on_concurrent_close());
+    }
 }

@@ -53,3 +53,15 @@ pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
+
+pub fn tun_rollback_destroys_created_device() -> bool {
+    super::pseudofs::dev::tun_rollback_destroys_created_device_for_test()
+}
+
+pub fn tun_rollback_detaches_existing_device() -> bool {
+    super::pseudofs::dev::tun_rollback_detaches_existing_device_for_test()
+}
+
+pub fn tun_rollback_on_concurrent_close() -> bool {
+    super::pseudofs::dev::tun_rollback_on_concurrent_close_for_test()
+}
