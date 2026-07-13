@@ -32,7 +32,7 @@ flowchart TB
     end
     subgraph sg_os["系统层"]
         direction LR
-        s1["ArceOS\n(ax-std, ax-api, ...)"]
+        s1["ArceOS\n(ax-std, ax-libc, ...)"]
         s2["StarryOS\n(starry-kernel, starryos)"]
         s3["Axvisor\n(axvisor)"]
     end
@@ -107,7 +107,6 @@ flowchart TB
 | `arm_vgic` | 组件层 | `virtualization/arm_vgic` | 6 | 2 | [查看](crates/arm-vgic) |
 | `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](crates/ax-alloc) |
 | `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
-| `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
 | `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](crates/ax-cpu) |
 | `ax-cpumask` | 组件层 | `components/cpumask` | 0 | 4 | [查看](crates/ax-cpumask) |
@@ -118,7 +117,6 @@ flowchart TB
 | `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
 | `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](../architecture/driver/overview) |
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
-| `ax-runtime` | ArceOS 层 | `os/arceos/api/feature` | 16 | 7 | [查看](crates/ax-runtime) |
 | `ax-fs` | ArceOS 层 | `os/arceos/modules/axfs` | 10 | 4 | [查看](crates/ax-fs) |
 | `ax-fs-devfs` | 组件层 | `components/axfs_crates/axfs_devfs` | 1 | 1 | [查看](crates/ax-fs-devfs) |
 | `ax-fs-ng` | ArceOS 层 | `os/arceos/modules/axfs-ng` | 10 | 4 | [查看](crates/ax-fs-ng) |
@@ -147,7 +145,6 @@ flowchart TB
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
 | `ax-plat-macros` | 组件层 | `platforms/ax-plat-macros` | 1 | 1 | [查看](crates/ax-plat-macros) |
-| `ax-posix-api` | ArceOS 层 | `os/arceos/api/arceos_posix_api` | 13 | 1 | [查看](crates/ax-posix-api) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/modules/axruntime` | 20 | 4 | [查看](crates/ax-runtime) |
 | `ax-sched` | 组件层 | `components/axsched` | 1 | 1 | [查看](crates/ax-sched) |
 | `arceos-shell` | ArceOS 层 | `apps/arceos/shell` | 1 | 0 | [查看](crates/arceos-shell) |

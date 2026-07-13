@@ -6,5 +6,5 @@
 
 /// Shutdown the whole system.
 pub fn exit(_exit_code: i32) -> ! {
-    ax_api::sys::ax_terminate();
+    crate::os::arceos::sys::ax_terminate();
 }

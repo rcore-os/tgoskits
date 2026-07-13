@@ -34,14 +34,22 @@
 #![cfg_attr(all(not(test), not(doc)), no_std)]
 #![cfg_attr(doc, feature(doc_cfg))]
 
-extern crate alloc;
+extern crate alloc as alloc_crate;
 extern crate ax_driver as _;
+
+/// Memory-allocation APIs compatible with [`std::alloc`].
+pub mod alloc {
+    pub use core::alloc::{GlobalAlloc, Layout, LayoutError};
+
+    pub use ::alloc_crate::alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc};
+}
+
+#[doc(no_inline)]
+pub use core::{arch, cell, cmp, hint, marker, mem, ops, ptr, slice, str};
 
 #[cfg(feature = "alloc")]
 #[doc(no_inline)]
-pub use alloc::{boxed, collections, format, string, vec};
-#[doc(no_inline)]
-pub use core::{arch, cell, cmp, hint, marker, mem, ops, ptr, slice, str};
+pub use alloc_crate::{boxed, collections, format, string, vec};
 
 #[macro_use]
 mod macros;

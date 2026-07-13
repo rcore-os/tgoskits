@@ -4,21 +4,6 @@ use ax_sync::Mutex;
 #[cfg(feature = "fd")]
 use {alloc::sync::Arc, ax_errno::LinuxError, ax_errno::LinuxResult, ax_io::PollState};
 
-fn console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
-    let len = ax_hal::console::read_bytes(buf);
-    for c in &mut buf[..len] {
-        if *c == b'\r' {
-            *c = b'\n';
-        }
-    }
-    Ok(len)
-}
-
-fn console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-    ax_hal::console::write_text_bytes(buf);
-    Ok(buf.len())
-}
-
 struct StdinRaw;
 struct StdoutRaw;
 
@@ -27,7 +12,13 @@ impl Read for StdinRaw {
     fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
         let mut read_len = 0;
         while read_len < buf.len() {
-            let len = console_read_bytes(buf[read_len..].as_mut())?;
+            let buf = &mut buf[read_len..];
+            let len = ax_hal::console::read_bytes(buf);
+            for byte in &mut buf[..len] {
+                if *byte == b'\r' {
+                    *byte = b'\n';
+                }
+            }
             if len == 0 {
                 break;
             }
@@ -39,7 +30,8 @@ impl Read for StdinRaw {
 
 impl Write for StdoutRaw {
     fn write(&mut self, buf: &[u8]) -> AxResult<usize> {
-        console_write_bytes(buf)
+        ax_hal::console::write_text_bytes(buf);
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> AxResult {

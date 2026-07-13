@@ -6,13 +6,12 @@ pub(crate) mod gic;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod irq;
 pub(crate) mod paging;
-pub(crate) mod task;
 pub(crate) mod traits;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86_port;
 
 pub(crate) fn default_host() -> &'static arceos::ArceOsHost {
-    arceos::arceos_host()
+    &arceos::ARCEOS_HOST
 }
 
 pub(crate) use paging::PagingHandler;

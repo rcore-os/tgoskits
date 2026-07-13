@@ -1,5 +1,5 @@
 use std::{
-    os::arceos::api::task::{self as api, AxWaitQueueHandle},
+    os::arceos::task::{self as api, AxWaitQueueHandle},
     println,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,

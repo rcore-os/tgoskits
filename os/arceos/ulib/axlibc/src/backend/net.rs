@@ -59,15 +59,15 @@ impl Socket {
 
     fn local_addr(&self) -> LinuxResult<SocketAddr> {
         match self {
-            Socket::Udp(udpsocket) => Ok(into_ip_addr(udpsocket.lock().local_addr()?)?),
-            Socket::Tcp(tcpsocket) => Ok(into_ip_addr(tcpsocket.lock().local_addr()?)?),
+            Socket::Udp(udpsocket) => Ok(udpsocket.lock().local_addr()?.into_ip()?),
+            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().local_addr()?.into_ip()?),
         }
     }
 
     fn peer_addr(&self) -> LinuxResult<SocketAddr> {
         match self {
-            Socket::Udp(udpsocket) => Ok(into_ip_addr(udpsocket.lock().peer_addr()?)?),
-            Socket::Tcp(tcpsocket) => Ok(into_ip_addr(tcpsocket.lock().peer_addr()?)?),
+            Socket::Udp(udpsocket) => Ok(udpsocket.lock().peer_addr()?.into_ip()?),
+            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().peer_addr()?.into_ip()?),
         }
     }
 
@@ -111,7 +111,7 @@ impl Socket {
                         ..RecvOptions::default()
                     },
                 )?;
-                Ok((len, Some(into_ip_addr(from)?)))
+                Ok((len, Some(from.into_ip()?)))
             }
             Socket::Tcp(tcpsocket) => {
                 Ok((tcpsocket.lock().recv(buf, RecvOptions::default())?, None))
@@ -224,10 +224,6 @@ impl From<SocketAddrV4> for ctypes::sockaddr_in {
             sin_zero: [0; 8],
         }
     }
-}
-
-fn into_ip_addr(addr: SocketAddrEx) -> LinuxResult<SocketAddr> {
-    Ok(addr.into_ip()?)
 }
 
 fn poll_state(events: IoEvents) -> PollState {
@@ -471,7 +467,7 @@ pub unsafe fn sys_accept(
         }
         let socket = Socket::from_fd(socket_fd)?;
         let new_socket = socket.accept()?;
-        let addr = into_ip_addr(new_socket.peer_addr()?)?;
+        let addr = new_socket.peer_addr()?.into_ip()?;
         let new_fd = Socket::add_to_fd_table(Socket::Tcp(Mutex::new(new_socket)))?;
         unsafe {
             (*socket_addr, *socket_len) = into_sockaddr(addr);

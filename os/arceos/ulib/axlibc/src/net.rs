@@ -1,12 +1,14 @@
 use core::ffi::{c_char, c_int, c_void};
 
-use ax_posix_api::{
-    sys_accept, sys_bind, sys_connect, sys_freeaddrinfo, sys_getaddrinfo, sys_getpeername,
-    sys_getsockname, sys_listen, sys_recv, sys_recvfrom, sys_send, sys_sendto, sys_shutdown,
-    sys_socket,
+use crate::{
+    backend::{
+        sys_accept, sys_bind, sys_connect, sys_freeaddrinfo, sys_getaddrinfo, sys_getpeername,
+        sys_getsockname, sys_listen, sys_recv, sys_recvfrom, sys_send, sys_sendto, sys_setsockopt,
+        sys_shutdown, sys_socket,
+    },
+    ctypes,
+    utils::e,
 };
-
-use crate::{ctypes, utils::e};
 
 /// Create an socket for communication.
 ///
@@ -134,6 +136,26 @@ pub unsafe extern "C" fn shutdown(
     flag: c_int, // currently not used
 ) -> c_int {
     e(sys_shutdown(socket_fd, flag))
+}
+
+/// Set a socket option.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn setsockopt(
+    socket_fd: c_int,
+    level: c_int,
+    option_name: c_int,
+    option_value: *const c_void,
+    option_len: ctypes::socklen_t,
+) -> c_int {
+    unsafe {
+        e(sys_setsockopt(
+            socket_fd,
+            level,
+            option_name,
+            option_value,
+            option_len,
+        ))
+    }
 }
 
 /// Query addresses for a domain name.

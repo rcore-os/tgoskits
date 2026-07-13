@@ -19,13 +19,10 @@ name = "ax_std"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["alloc", "tls", "fd"]
-
-# libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
+default = ["alloc", "tls"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-task/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
@@ -37,21 +34,21 @@ uspace = ["ax-runtime/uspace"]
 hv = ["ax-hal/hv"]
 
 # Interrupts
-irq = ["ax-api/irq", "ax-posix-api/irq", "ax-runtime/irq"]
-ipi = ["ax-api/ipi", "ax-runtime/ipi"]
+irq = ["ax-task/irq", "ax-runtime/irq"]
+ipi = ["dep:ax-ipi", "ax-runtime/ipi"]
 wake-ipi = ["ax-runtime/wake-ipi"]
 
 ext-ld = ["ax-runtime/ext-ld"]
 
 # Memory
-alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
+alloc = ["dep:ax-alloc", "ax-io/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
-dma = ["ax-api/dma", "ax-runtime/paging"]
+dma = ["dep:ax-dma", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
-lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
+multitask = ["ax-task/multitask", "ax-sync/multitask", "ax-runtime/multitask"]
+lockdep = ["multitask", "ax-sync/lockdep", "ax-runtime/lockdep"]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
@@ -61,29 +58,22 @@ stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = [
-    "ax-api/fs",
-    "ax-posix-api/fs",
+    "dep:ax-fs-ng",
     "ax-runtime/fs",
     "ax-driver/virtio-blk",
-    "fd",
 ]
 ext4fs = ["fs", "ax-runtime/ext4fs"]
 fatfs = ["fs", "ax-runtime/fatfs"]
 
 # Networking
 net = [
-    "ax-api/net",
-    "ax-posix-api/net",
+    "dep:ax-net",
     "ax-runtime/net",
     "ax-driver/virtio-net",
-    "fd",
 ]
 vsock = ["ax-runtime/vsock"]
 aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
-
-# libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
 virtio-blk = ["ax-driver/virtio-blk"]
@@ -93,7 +83,7 @@ virtio-input = ["ax-driver/virtio-input"]
 virtio-socket = ["ax-driver/virtio-socket"]
 
 # Display
-display = ["ax-api/display", "ax-runtime/display"]
+display = ["dep:ax-display", "ax-runtime/display"]
 
 # Input
 input = ["ax-runtime/input"]
@@ -109,18 +99,21 @@ backtrace = ["axbacktrace/alloc"]
 dwarf = ["axbacktrace/dwarf"]
 
 [dependencies]
-ax-api.workspace = true
-ax-alloc.workspace = true
+ax-alloc = { workspace = true, optional = true }
 axbacktrace.workspace = true
+ax-display = { workspace = true, optional = true }
+ax-dma = { workspace = true, optional = true }
 ax-driver.workspace = true
 ax-errno.workspace = true
+ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
+ax-ipi = { workspace = true, optional = true }
 ax-io.workspace = true
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
-ax-posix-api.workspace = true
+ax-log.workspace = true
+ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true
+ax-sync.workspace = true
 ax-task.workspace = true
-libc.workspace = true
 lock_api.workspace = true
-spin.workspace = true

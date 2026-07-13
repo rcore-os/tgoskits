@@ -28,7 +28,6 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
             "dns".to_string(),
             "multitask".to_string(),
             "net".to_string(),
-            "std-compat".to_string(),
         ],
     );
 
@@ -38,7 +37,6 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
             "ax-std/dns".to_string(),
             "ax-std/multitask".to_string(),
             "ax-std/net".to_string(),
-            "ax-std/std-compat".to_string(),
         ]
     );
     assert!(envs.is_empty());
@@ -95,7 +93,6 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
     );
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
     assert!(cargo.features.contains(&"ax-std/net".to_string()));
     assert!(cargo.to_bin);
@@ -132,7 +129,6 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(
         cargo
             .features

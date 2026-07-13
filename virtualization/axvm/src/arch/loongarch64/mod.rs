@@ -162,11 +162,11 @@ impl ArchOps for LoongArch64Arch {
             vcpu.vm_id(),
             vcpu.id()
         );
-        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
-        ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
-        ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
-        ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
-        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
+        ax_hal::asm::set_timer_irq_enabled(true);
+        ax_hal::asm::enable_irqs();
+        ax_hal::time::busy_wait(idle_timeout);
+        ax_hal::asm::disable_irqs();
+        ax_hal::asm::set_timer_irq_enabled(false);
     }
 
     fn handle_vcpu_exit_bound(
@@ -336,7 +336,7 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
     }
 
     fn ticks_to_nanos(ticks: u64) -> u64 {
-        ax_std::os::arceos::modules::ax_hal::time::ticks_to_nanos(ticks)
+        ax_hal::time::ticks_to_nanos(ticks)
     }
 
     fn register_timer(

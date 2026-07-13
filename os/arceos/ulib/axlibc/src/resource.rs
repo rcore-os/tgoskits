@@ -1,8 +1,9 @@
 use core::ffi::c_int;
 
-use ax_posix_api::{sys_getrlimit, sys_setrlimit};
-
-use crate::utils::e;
+use crate::{
+    backend::{sys_getrlimit, sys_setrlimit},
+    utils::e,
+};
 
 /// Get resource limitations
 #[unsafe(no_mangle)]

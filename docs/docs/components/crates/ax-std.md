@@ -39,7 +39,10 @@
 ```mermaid
 graph LR
     current["ax-std"]
-    current --> ax-api["ax-api"]
+    current --> ax_runtime["ax-runtime"]
+    current --> ax_task["ax-task"]
+    current --> ax_fs_ng["ax-fs-ng"]
+    current --> ax_net["ax-net"]
     current --> ax_errno["ax-errno"]
     current --> ax-runtime["ax-runtime"]
     current --> axio["ax-io"]
@@ -56,9 +59,11 @@ graph LR
 ```
 
 ### 直接依赖
-- `ax-api`
 - `ax-errno`
 - `ax-runtime`
+- `ax-task`
+- `ax-fs-ng`（启用 `fs` 时）
+- `ax-net`（启用 `net` 时）
 - `axio`
 - `ax-kspin`
 - `ax-lazyinit`

@@ -60,7 +60,7 @@ fn resolves_dynamic_platform_features_and_args() {
 fn max_cpu_num_adds_smp_feature_for_std_build() {
     let metadata = repo_metadata();
     let mut build_info = ArceosBuildInfo {
-        features: vec!["ax-api/net".to_string()],
+        features: vec!["ax-std/net".to_string()],
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     };
@@ -372,7 +372,7 @@ fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
     );
 
     assert!(build_info.features.contains(&"lockdep".to_string()));
-    assert!(!build_info.features.contains(&"ax-api/lockdep".to_string()));
+    assert!(!build_info.features.contains(&"ax-std/lockdep".to_string()));
 }
 
 #[test]

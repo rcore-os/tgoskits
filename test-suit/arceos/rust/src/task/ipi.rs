@@ -3,16 +3,16 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_ipi},
-    },
+    os::arceos::task::{AxCpuMask, ax_set_current_affinity},
     println,
     sync::Arc,
     thread,
     time::Duration,
     vec::Vec,
 };
+
+use ax_hal::percpu::this_cpu_id;
+use ax_ipi::run_on_cpu;
 
 const MAX_SENDER_CPUS: usize = 3;
 const CALLBACKS_PER_SENDER: usize = 16;
@@ -88,7 +88,7 @@ fn wait_for_callbacks_or_stall(expected: usize) -> bool {
 fn send_recovery_ipi(target_cpu: usize, sender_cpu: usize) {
     thread::spawn(move || {
         pin_current_to_cpu(sender_cpu);
-        ax_ipi::run_on_cpu(target_cpu, noop_callback);
+        run_on_cpu(target_cpu, noop_callback);
     })
     .join()
     .unwrap();
@@ -129,7 +129,7 @@ pub fn run() -> crate::TestResult {
 
                 for _ in 0..CALLBACKS_PER_SENDER {
                     SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                    ax_ipi::run_on_cpu(target_cpu, counting_callback);
+                    run_on_cpu(target_cpu, counting_callback);
                 }
             }));
         }

@@ -1,4 +1,4 @@
-use std::{os::arceos::api::task::ax_set_current_priority, sync::Arc, thread, time, vec, vec::Vec};
+use std::{os::arceos::task::ax_set_current_priority, sync::Arc, thread, time, vec, vec::Vec};
 
 struct TaskParam {
     data_len: usize,

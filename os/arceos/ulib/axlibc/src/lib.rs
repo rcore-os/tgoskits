@@ -32,6 +32,9 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 extern crate ax_driver as _;
+#[macro_use]
+extern crate ax_log;
+extern crate ax_runtime;
 
 mod ctypes {
     #[rustfmt::skip]
@@ -40,19 +43,21 @@ mod ctypes {
         include!(concat!(env!("OUT_DIR"), "/libctypes_gen.rs"));
     }
 
-    pub use ax_posix_api::ctypes::*;
     pub use libctypes::*;
 }
 
 #[macro_use]
 mod utils;
+mod backend;
+
+pub(crate) use backend::sys_sched_yield;
 
 #[cfg(feature = "fd")]
-mod fd_ops;
+mod fd;
 #[cfg(feature = "fs")]
 mod fs;
-#[cfg(any(feature = "select", feature = "epoll"))]
-mod io_mpx;
+#[cfg(any(feature = "select", feature = "poll", feature = "epoll"))]
+mod io_multiplex;
 #[cfg(feature = "alloc")]
 mod malloc;
 #[cfg(feature = "net")]
@@ -72,26 +77,28 @@ mod mktime;
 mod rand;
 mod resource;
 mod setjmp;
-mod sys;
+mod system;
 mod time;
 mod unistd;
 
 #[cfg(feature = "fd")]
-pub use self::fd_ops::{ax_fcntl, close, dup, dup2, dup3};
+pub use self::fd::{ax_fcntl, close, dup, dup2, dup3};
 #[cfg(feature = "fs")]
 pub use self::fs::{ax_open, fstat, getcwd, lseek, lstat, rename, stat};
 #[cfg(not(test))]
 pub use self::io::write;
+#[cfg(feature = "poll")]
+pub use self::io_multiplex::poll;
 #[cfg(feature = "select")]
-pub use self::io_mpx::select;
+pub use self::io_multiplex::select;
 #[cfg(feature = "epoll")]
-pub use self::io_mpx::{epoll_create, epoll_create1, epoll_ctl, epoll_wait};
+pub use self::io_multiplex::{epoll_create, epoll_create1, epoll_ctl, epoll_wait};
 #[cfg(feature = "alloc")]
 pub use self::malloc::{free, malloc};
 #[cfg(feature = "net")]
 pub use self::net::{
     accept, bind, connect, freeaddrinfo, getaddrinfo, getpeername, getsockname, listen, recv,
-    recvfrom, send, sendto, shutdown, socket,
+    recvfrom, send, sendto, setsockopt, shutdown, socket,
 };
 #[cfg(feature = "pipe")]
 pub use self::pipe::pipe;
@@ -110,7 +117,7 @@ pub use self::{
     rand::{rand, random, srand},
     resource::{getrlimit, setrlimit},
     setjmp::{longjmp, setjmp},
-    sys::sysconf,
+    system::sysconf,
     time::{clock_gettime, nanosleep},
     unistd::{abort, exit, getpid},
 };

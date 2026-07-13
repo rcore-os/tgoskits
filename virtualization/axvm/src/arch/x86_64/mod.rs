@@ -108,7 +108,7 @@ impl ArchOps for X86_64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         vector: usize,
     ) {
-        crate::host::arceos::dispatch_host_irq(vector);
+        ax_hal::irq::handle_irq(vector);
         crate::check_timer_events();
         crate::runtime::x86_irq::inject_pending_serial_irq(vm, vcpu);
     }
@@ -294,7 +294,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn current_time_nanos() -> u64 {
-        crate::host::arceos::monotonic_time_nanos()
+        ax_hal::time::monotonic_time_nanos()
     }
 
     fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {

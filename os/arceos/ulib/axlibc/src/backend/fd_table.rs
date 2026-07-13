@@ -12,7 +12,6 @@ use crate::ctypes;
 
 pub const AX_FILE_LIMIT: usize = 1024;
 
-#[allow(dead_code)]
 pub trait FileLike: Send + Sync {
     fn read(&self, buf: &mut [u8]) -> LinuxResult<usize>;
     fn write(&self, buf: &[u8]) -> LinuxResult<usize>;
@@ -27,13 +26,13 @@ scope_local! {
         let mut fd_table = flatten_objects::FlattenObjects::new();
         fd_table
             .add_at(0, Arc::new(stdin()) as _)
-            .unwrap_or_else(|_| panic!()); // stdin
+            .expect("standard input must occupy file descriptor 0");
         fd_table
             .add_at(1, Arc::new(stdout()) as _)
-            .unwrap_or_else(|_| panic!()); // stdout
+            .expect("standard output must occupy file descriptor 1");
         fd_table
             .add_at(2, Arc::new(stdout()) as _)
-            .unwrap_or_else(|_| panic!()); // stderr
+            .expect("standard error must occupy file descriptor 2");
         fd_table
     });
 }

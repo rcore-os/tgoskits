@@ -1,10 +1,13 @@
 extern crate alloc;
 
-use alloc::string::String;
 pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::{iter, option, slice};
 
+use alloc_crate::string::String;
+
 use crate::io;
+#[cfg(feature = "dns")]
+use crate::os::arceos::net;
 
 /// A trait for objects which can be converted or resolved to one or more
 /// [`SocketAddr`] values.
@@ -136,7 +139,7 @@ mod no_dns {
 #[cfg(feature = "dns")]
 #[cfg_attr(doc, doc(cfg(feature = "net")))]
 mod dns {
-    use alloc::{vec, vec::Vec};
+    use alloc_crate::{vec, vec::Vec};
 
     use super::*;
 
@@ -152,7 +155,7 @@ mod dns {
                 return Ok(vec![SocketAddr::V4(addr)].into_iter());
             }
 
-            Ok(ax_api::net::ax_dns_query(host)?
+            Ok(net::ax_dns_query(host)?
                 .into_iter()
                 .map(|ip| SocketAddr::new(ip, port))
                 .collect::<Vec<_>>()
@@ -177,7 +180,7 @@ mod dns {
                 .parse()
                 .map_err(|_| ax_errno::ax_err_type!(InvalidInput, "invalid port value"))?;
 
-            Ok(ax_api::net::ax_dns_query(host)?
+            Ok(net::ax_dns_query(host)?
                 .into_iter()
                 .map(|ip| SocketAddr::new(ip, port))
                 .collect::<Vec<_>>()

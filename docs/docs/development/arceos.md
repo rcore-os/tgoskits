@@ -65,13 +65,9 @@ os/arceos/
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()
-├── api/              # 对外 API 层
-│   ├── feature/       # 顶层 feature 聚合（单一真相源）
-│   ├── arceos_api/   # 公共 API 和类型
-│   └── arceos_posix_api/  # POSIX 兼容 API
 ├── ulib/             # 用户侧库
-│   ├── axstd/        # Rust std 风格接口
-│   └── axlibc/       # C libc 接口
+│   ├── axstd/        # Rust std 风格接口，直接依赖 runtime/modules
+│   └── axlibc/       # C/POSIX ABI，直接依赖 runtime/modules
 
 net/
 └── ax-net/           # 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP）
@@ -199,16 +195,16 @@ pub fn do_something() -> i32 {
 ax_mymod::init();
 ```
 
-**6) 在 `feature` 中注册 feature**
+**6) 在能力拥有者中注册 feature**
 
-在 `os/arceos/api/feature/Cargo.toml` 中添加：
+将模块的 feature 定义在模块自己的 `Cargo.toml` 中；应用侧 Rust 接口由 `axstd` 显式映射到所需模块与 runtime feature：
 
 ```toml
 [features]
-mymod = ["dep:ax-mymod", "ax-runtime/mymod"]
+mymod = ["dep:ax-mymod"]
 
 [dependencies]
-ax-mymod = { path = "../../modules/axmymod", optional = true }
+ax-mymod = { path = "../axmymod", optional = true }
 ```
 
 **7) 验证**

@@ -38,7 +38,7 @@ extern crate ax_log;
 
 extern crate ax_driver as _;
 
-#[cfg(all(target_os = "none", not(feature = "std-compat"), not(test)))]
+#[cfg(all(target_os = "none", not(test)))]
 mod lang_items;
 #[cfg(all(
     feature = "stack-protector",

@@ -1,5 +1,4 @@
 use std::{
-    os::arceos::modules::{ax_hal, ax_task},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
     time::Duration,

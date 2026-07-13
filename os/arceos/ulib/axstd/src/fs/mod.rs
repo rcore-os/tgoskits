@@ -4,15 +4,14 @@ mod dir;
 mod file;
 
 #[cfg(feature = "alloc")]
-use alloc::{string::String, vec::Vec};
-
-pub use ax_api::fs::{AxFilePermExt as PermissionsExt, AxFileTypeExt as FileTypeExt};
+use alloc_crate::{string::String, vec::Vec};
 
 pub use self::{
     dir::{DirBuilder, DirEntry, ReadDir},
     file::{File, FileType, Metadata, OpenOptions, Permissions},
 };
 use crate::io::{self, prelude::*};
+pub use crate::os::arceos::fs::{AxFilePermExt as PermissionsExt, AxFileTypeExt as FileTypeExt};
 
 /// Read the entire contents of a file into a bytes vector.
 #[cfg(feature = "alloc")]
@@ -63,12 +62,12 @@ pub fn create_dir_all(path: &str) -> io::Result<()> {
 
 /// Removes an empty directory.
 pub fn remove_dir(path: &str) -> io::Result<()> {
-    ax_api::fs::ax_remove_dir(path)
+    crate::os::arceos::fs::ax_remove_dir(path)
 }
 
 /// Removes a file from the filesystem.
 pub fn remove_file(path: &str) -> io::Result<()> {
-    ax_api::fs::ax_remove_file(path)
+    crate::os::arceos::fs::ax_remove_file(path)
 }
 
 /// Rename a file or directory to a new name.
@@ -76,5 +75,5 @@ pub fn remove_file(path: &str) -> io::Result<()> {
 ///
 /// This only works then the new path is in the same mounted fs.
 pub fn rename(old: &str, new: &str) -> io::Result<()> {
-    ax_api::fs::ax_rename(old, new)
+    crate::os::arceos::fs::ax_rename(old, new)
 }

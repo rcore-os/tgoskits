@@ -1,8 +1,5 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_ipi},
-    },
+    os::arceos::task::{AxCpuMask, ax_set_current_affinity},
     println,
     sync::{
         Arc,
@@ -11,6 +8,9 @@ use std::{
     thread,
     vec::Vec,
 };
+
+use ax_hal::percpu::this_cpu_id;
+use ax_ipi::run_on_cpu;
 
 static IPI_ACKS: AtomicUsize = AtomicUsize::new(0);
 
@@ -79,7 +79,7 @@ pub fn run() -> crate::TestResult {
     let remote_count = cpu_num - 1;
     for remote_cpu in 1..cpu_num {
         let expected_cpu = remote_cpu;
-        ax_ipi::run_on_cpu(remote_cpu, move || {
+        run_on_cpu(remote_cpu, move || {
             assert_eq!(
                 this_cpu_id(),
                 expected_cpu,

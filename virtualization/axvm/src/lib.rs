@@ -42,6 +42,7 @@ use crate::arch::ArchOps;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
+pub(crate) use ax_task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue};
 /// Compatibility export for legacy/common normalized VM events.
 ///
 /// Architecture-local raw exits are handled by `arch::CurrentArch` through
@@ -52,10 +53,7 @@ pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
 };
-pub(crate) use host::{
-    paging::HostPagingHandler,
-    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
-};
+pub(crate) use host::paging::HostPagingHandler;
 pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmLifecycleError, VmStatus};
 pub use manager::{
@@ -92,7 +90,7 @@ pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
     target_arch = "riscv64"
 ))]
 pub fn host_fdt_bootarg() -> usize {
-    host::arceos::host_fdt_bootarg()
+    ax_hal::dtb::get_bootarg()
 }
 
 /// Convert a host physical address into a host virtual address.
@@ -102,7 +100,7 @@ pub fn host_fdt_bootarg() -> usize {
     target_arch = "riscv64"
 ))]
 pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    host::arceos::phys_to_virt(paddr)
+    ax_hal::mem::phys_to_virt(paddr)
 }
 
 /// Shut down ArceOS filesystems so guest passthrough can take ownership.

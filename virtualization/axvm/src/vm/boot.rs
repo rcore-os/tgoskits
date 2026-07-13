@@ -63,7 +63,6 @@ mod tests {
             cpu_config: AxVCpuConfig {
                 bsp_entry: GuestPhysAddr::from(0x101000),
                 ap_entry: GuestPhysAddr::from(0x102000),
-                ..Default::default()
             },
             image_config: VMImageConfig {
                 kernel_load_gpa: GuestPhysAddr::from(0x100000),

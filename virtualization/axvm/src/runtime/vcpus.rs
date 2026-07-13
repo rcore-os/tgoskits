@@ -101,7 +101,7 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
         runtime.notify_all();
         Ok(())
     })?;
-    crate::host::task::send_ipi(cpu_id);
+    crate::host::arceos::send_ipi(cpu_id);
     Ok(())
 }
 
@@ -127,7 +127,7 @@ pub(crate) fn queue_external_interrupt(
         runtime.notify_all();
         Ok(())
     })?;
-    crate::host::task::send_ipi(cpu_id);
+    crate::host::arceos::send_ipi(cpu_id);
     Ok(())
 }
 
@@ -222,7 +222,7 @@ pub(crate) fn vcpu_on(
 
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
-    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
+    ax_task::spawn_task(build_vcpu_task(vm, vcpu))
 }
 
 pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
@@ -234,9 +234,11 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
     );
 
     if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(
-            vcpu_task_cpu_mask(vm.id(), vcpu.id(), phys_cpu_set),
-        ));
+        vcpu_task.set_cpumask(ax_task::AxCpuMask::from_raw_bits(vcpu_task_cpu_mask(
+            vm.id(),
+            vcpu.id(),
+            phys_cpu_set,
+        )));
     }
 
     // Use Weak reference in TaskExt to avoid keeping VM alive
@@ -286,7 +288,7 @@ fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> us
 /// When the VCpu first starts running, it waits for the VM to be in the running state.
 /// It then enters a loop where it runs the VCpu and handles the various exit reasons.
 fn vcpu_run() {
-    let curr = crate::host::task::current_task();
+    let curr = ax_task::current();
 
     let vm = curr.as_vcpu_task().vm();
     let vcpu = curr.as_vcpu_task().vcpu.clone();
@@ -355,7 +357,7 @@ fn vcpu_run() {
                 CurrentArch::on_last_vcpu_exit(vm_id);
 
                 sub_running_vm_count(1);
-                crate::host::task::wait_queue_wake(&super::VMM, 1);
+                super::VMM.notify_one(true);
             }
 
             break;

@@ -11,8 +11,8 @@ license = "Apache-2.0"
 
 [features]
 default = ["vmx"]
-fs = ["vmx", "ax-std/fs"]
-host-fs = ["ax-std/fs"]
+fs = ["vmx", "dep:ax-fs-ng"]
+host-fs = ["dep:ax-fs-ng"]
 vmx = ["x86_vcpu/vmx"]
 svm = ["x86_vcpu/svm"]
 sstc = ["riscv_vcpu/sstc"]
@@ -29,6 +29,7 @@ spin = { workspace = true }
 
 # System independent crates provided by ArceOS.
 ax-errno = { workspace = true }
+ax-alloc = { workspace = true }
 ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
 ax-kernel-guard = { workspace = true }
@@ -38,16 +39,10 @@ ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
 ax-percpu = { workspace = true, features = ["arm-el2"] }
 page-table-generic = { workspace = true }
-ax-std = { workspace = true, features = [
-    "paging",
-    "irq",
-    "multitask",
-    "task-ext",
-    "smp",
-    "hv",
-    "wake-ipi",
-] }
-ax-hal = { workspace = true, features = ["ipi"] }
+ax-std = { workspace = true, features = ["multitask"] }
+ax-fs-ng = { workspace = true, optional = true }
+ax-hal = { workspace = true, features = ["ipi", "irq"] }
+ax-task = { workspace = true, features = ["irq", "multitask", "task-ext", "smp"] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.

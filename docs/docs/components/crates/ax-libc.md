@@ -19,7 +19,7 @@
 - `utils`：通用工具函数和辅助类型
 - `fd_ops`：内部子模块（按 feature: fd 条件启用）
 - `fs`：文件系统、挂载或路径解析逻辑（按 feature: fs 条件启用）
-- `io_mpx`：内部子模块（按 feature: select, epoll 条件启用）
+- `io_mpx`：内部子模块（按 feature: select、poll、epoll 条件启用）
 - `malloc`：Provides the corresponding malloc(size_t) and free(size_t) when using the C user program. The normal malloc(size_t) and free(size_t) are provided by the library malloc.h, and sys_…（按 feature: alloc 条件启用）
 - `net`：网络栈、socket 或协议适配（按 feature: net 条件启用）
 - `pipe`：内部子模块（按 feature: pipe 条件启用）
@@ -38,17 +38,21 @@
 ```mermaid
 graph LR
     current["ax-libc"]
-    current --> ax-posix-api["ax-posix-api"]
     current --> ax_errno["ax-errno"]
     current --> ax-runtime["ax-runtime"]
     current --> axio["ax-io"]
+    current --> ax_task["ax-task"]
+    current --> ax_fs_ng["ax-fs-ng"]
+    current --> ax_net["ax-net"]
 ```
 
 ### 直接依赖
-- `ax-posix-api`
 - `ax-errno`
 - `ax-runtime`
 - `axio`
+- `ax-task`
+- `ax-fs-ng`（启用 `fs` 时）
+- `ax-net`（启用 `net` 时）
 
 ### 间接依赖
 - `ax-arm-pl031`

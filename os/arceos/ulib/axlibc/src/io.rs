@@ -1,8 +1,10 @@
 use core::ffi::{c_int, c_void};
 
-use ax_posix_api::{sys_read, sys_writev};
-
-use crate::{ctypes, utils::e};
+use crate::{
+    backend::{sys_read, sys_write, sys_writev},
+    ctypes,
+    utils::e,
+};
 
 /// Read data from the file indicated by `fd`.
 ///
@@ -18,7 +20,7 @@ pub unsafe extern "C" fn read(fd: c_int, buf: *mut c_void, count: usize) -> ctyp
 #[unsafe(no_mangle)]
 #[cfg(not(test))]
 pub unsafe extern "C" fn write(fd: c_int, buf: *const c_void, count: usize) -> ctypes::ssize_t {
-    e(ax_posix_api::sys_write(fd, buf, count) as _) as _
+    e(sys_write(fd, buf, count) as _) as _
 }
 
 /// Write a vector.

@@ -92,7 +92,6 @@ members = [
     "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
-    "os/arceos/api/*",
     "os/arceos/modules/axalloc",
     "os/arceos/modules/axdisplay",
     "os/arceos/modules/axdma",
@@ -136,7 +135,6 @@ arm_vcpu = { version = "0.5.16", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.3", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8.12", path = "os/arceos/modules/axalloc", default-features = false }
 ax-allocator = { version = "0.5.5", path = "memory/axallocator" }
-ax-api = { version = "0.7.4", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 ax-cpu = { version = "0.8.3", path = "components/axcpu" }
 ax-cpumask = { version = "0.3.5", path = "components/cpumask" }
@@ -173,7 +171,6 @@ ax-percpu = { version = "0.4.14", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.12.0", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3.9", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.5.29", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.9", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.10.4", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.8", path = "components/axsched" }

@@ -1,8 +1,10 @@
 use core::ffi::c_int;
 
-use ax_posix_api::{sys_clock_gettime, sys_nanosleep};
-
-use crate::{ctypes, utils::e};
+use crate::{
+    backend::{sys_clock_gettime, sys_nanosleep},
+    ctypes,
+    utils::e,
+};
 
 /// Get clock time since booting
 #[unsafe(no_mangle)]

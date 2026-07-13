@@ -1,11 +1,12 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use ax_hal::irq::{HwIrq, IrqContext, IrqDomainId, IrqId, IrqReturn, IrqSource};
 use ax_kspin::SpinRaw as Mutex;
 
 use crate::{
     InterruptTriggerMode,
     config::VMInterruptMode,
-    host::irq::{self, IrqSource},
+    host::irq,
     runtime::{VCpuRef, VMRef},
 };
 
@@ -93,7 +94,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     }
 
-    let now_ns = crate::host::arceos::monotonic_time_nanos();
+    let now_ns = ax_hal::time::monotonic_time_nanos();
     let Ok(devices) = vm.get_devices() else {
         return;
     };
@@ -256,7 +257,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
                     continue;
                 }
 
-                match irq::request_shared_irq(host_irq, ioapic_irq_forwarding_handler) {
+                match ax_hal::irq::request_shared_irq(host_irq, ioapic_irq_forwarding_handler) {
                     Ok(handle) => {
                         IOAPIC_IRQ_HANDLES[gsi].store(handle.id() as usize, Ordering::Release);
                         registered += 1;
@@ -452,23 +453,23 @@ fn gsi_bit(gsi: usize) -> usize {
     1usize << gsi
 }
 
-fn host_irq_to_raw(irq: irq::IrqId) -> usize {
+fn host_irq_to_raw(irq: IrqId) -> usize {
     (usize::from(irq.domain.0) << 32) | irq.hwirq.0 as usize
 }
 
-fn forwarded_host_irq_for_guest_gsi(guest_gsi: usize) -> Result<irq::IrqId, irq::IrqError> {
+fn forwarded_host_irq_for_guest_gsi(guest_gsi: usize) -> Result<IrqId, ax_hal::irq::IrqError> {
     let raw = IOAPIC_HOST_IRQS[guest_gsi].load(Ordering::Acquire);
     if raw != INVALID_RAW_IRQ {
         return Ok(raw_to_host_irq(raw));
     }
 
     let source = IrqSource::AcpiGsi(guest_gsi as u32);
-    let host_irq = irq::resolve_irq_source(source)?;
+    let host_irq = ax_hal::irq::resolve_irq_source(source)?;
     IOAPIC_HOST_IRQS[guest_gsi].store(host_irq_to_raw(host_irq), Ordering::Release);
     Ok(host_irq)
 }
 
-fn host_irq_has_explicit_route_for_other_gsi(host_irq: irq::IrqId, guest_gsi: usize) -> bool {
+fn host_irq_has_explicit_route_for_other_gsi(host_irq: IrqId, guest_gsi: usize) -> bool {
     let raw = host_irq_to_raw(host_irq);
     let explicit = IOAPIC_HOST_IRQ_EXPLICIT.load(Ordering::Acquire);
     ioapic_irq_hook_gsis()
@@ -476,8 +477,8 @@ fn host_irq_has_explicit_route_for_other_gsi(host_irq: irq::IrqId, guest_gsi: us
         .any(|gsi| IOAPIC_HOST_IRQS[gsi].load(Ordering::Acquire) == raw)
 }
 
-fn raw_to_host_irq(raw: usize) -> irq::IrqId {
-    irq::make_irq_id((raw >> 32) as u16, raw as u32)
+fn raw_to_host_irq(raw: usize) -> IrqId {
+    IrqId::new(IrqDomainId((raw >> 32) as u16), HwIrq(raw as u32))
 }
 
 fn set_forwarded_host_gsi_enabled(gsi: usize, enabled: bool) {
@@ -545,27 +546,27 @@ fn unmask_forwarded_host_gsi(gsi: usize) {
     IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
 }
 
-fn ioapic_irq_forwarding_handler(ctx: irq::IrqContext) -> irq::IrqReturn {
+fn ioapic_irq_forwarding_handler(ctx: IrqContext) -> IrqReturn {
     let Some(gsi) = guest_gsi_for_host_irq(ctx.irq) else {
-        return irq::IrqReturn::Unhandled;
+        return IrqReturn::Unhandled;
     };
 
     if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
         || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
     {
-        return irq::IrqReturn::Unhandled;
+        return IrqReturn::Unhandled;
     }
 
     let bit = gsi_bit(gsi);
     if !mask_forwarded_host_gsi(gsi) {
-        return irq::IrqReturn::Unhandled;
+        return IrqReturn::Unhandled;
     }
     let level_triggered = is_level_triggered_forwarded_host_gsi(gsi);
     if level_triggered {
         IOAPIC_IRQ_PENDING_LEVEL.fetch_or(bit, Ordering::AcqRel);
     }
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
-    irq::IrqReturn::Handled
+    IrqReturn::Handled
 }
 
 fn is_level_triggered_forwarded_host_gsi(gsi: usize) -> bool {
@@ -573,7 +574,7 @@ fn is_level_triggered_forwarded_host_gsi(gsi: usize) -> bool {
         && IOAPIC_HOST_IRQ_LEVEL_TRIGGERED.load(Ordering::Acquire) & gsi_bit(gsi) != 0
 }
 
-fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
+fn guest_gsi_for_host_irq(host_irq: IrqId) -> Option<usize> {
     let raw = host_irq_to_raw(host_irq);
     let explicit = IOAPIC_HOST_IRQ_EXPLICIT.load(Ordering::Acquire);
     if let Some(gsi) = ioapic_irq_hook_gsis()
@@ -592,6 +593,7 @@ fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
+    use ax_hal::irq::{HwIrq, IrqDomainId, IrqId};
     use ax_kspin::SpinRaw as Mutex;
 
     use super::{
@@ -664,7 +666,7 @@ mod tests {
 
     #[test]
     fn host_irq_storage_preserves_domain_and_hwirq() {
-        let irq = crate::host::irq::make_irq_id(2, 18);
+        let irq = IrqId::new(IrqDomainId(2), HwIrq(18));
         assert_eq!(raw_to_host_irq(host_irq_to_raw(irq)), irq);
     }
 
@@ -673,7 +675,7 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let fallback_guest_gsi = 7;
             let explicit_guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 7);
+            let host_irq = IrqId::new(IrqDomainId(2), HwIrq(7));
             IOAPIC_HOST_IRQS[fallback_guest_gsi]
                 .store(host_irq_to_raw(host_irq), Ordering::Release);
 
@@ -688,7 +690,7 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let fallback_guest_gsi = 10;
             let explicit_guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 10);
+            let host_irq = IrqId::new(IrqDomainId(2), HwIrq(10));
             IOAPIC_HOST_IRQS[fallback_guest_gsi]
                 .store(host_irq_to_raw(host_irq), Ordering::Release);
 
@@ -710,8 +712,8 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let low_level_gsi = COM1_GSI;
             let high_edge_gsi = 18;
-            let low_host_irq = crate::host::irq::make_irq_id(2, low_level_gsi as u32);
-            let high_host_irq = crate::host::irq::make_irq_id(2, high_edge_gsi as u32);
+            let low_host_irq = IrqId::new(IrqDomainId(2), HwIrq(low_level_gsi as u32));
+            let high_host_irq = IrqId::new(IrqDomainId(2), HwIrq(high_edge_gsi as u32));
 
             register_ioapic_irq_forwarding_route_with_trigger(
                 low_level_gsi,
@@ -755,7 +757,7 @@ mod tests {
     fn forwarding_activator_drops_pre_activation_pending_state() {
         with_clean_forwarding_routes(|| {
             let guest_gsi = 18;
-            let host_irq = crate::host::irq::make_irq_id(2, 10);
+            let host_irq = IrqId::new(IrqDomainId(2), HwIrq(10));
             ACTIVATION_COUNT.store(0, Ordering::Release);
             register_ioapic_irq_forwarding_route(guest_gsi, host_irq);
             register_ioapic_irq_forwarding_activator(guest_gsi, count_activation);

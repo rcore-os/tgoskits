@@ -56,14 +56,13 @@ F: drivers/ax-driver/src/block/
 F: components/sdio-host/
 F: components/sdio-host2/
 F: components/sdhci-cv1800/
-F: os/arceos/api/arceos_posix_api/
 F: os/arceos/ulib/axlibc/
 F: virtualization/riscv_vcpu/
 F: virtualization/riscv_vplic/
 F: virtualization/riscv-h/
 F: test-suit/**/qemu-riscv64.toml
 F: test-suit/**/*riscv*
-K: SD/MMC, SDHCI, DWMMC, `sdmmc`, `k230-sdhci`, `rockchip-sdhci`, `starfive-jh7110-dwmmc`, `simple-sdmmc`, `mmcblk`, `vmmc-supply`, `vqmmc-supply`, syscall, `sys_*`, `ax_posix_api`, `axlibc`, riscv64, `riscv64gc-unknown-none-elf`, `qemu-riscv64`, `riscv_vcpu`, `riscv_vplic`, SBI/OpenSBI, guest timer, runtime IPI
+K: SD/MMC, SDHCI, DWMMC, `sdmmc`, `k230-sdhci`, `rockchip-sdhci`, `starfive-jh7110-dwmmc`, `simple-sdmmc`, `mmcblk`, `vmmc-supply`, `vqmmc-supply`, syscall, `sys_*`, `axlibc`, riscv64, `riscv64gc-unknown-none-elf`, `qemu-riscv64`, `riscv_vcpu`, `riscv_vplic`, SBI/OpenSBI, guest timer, runtime IPI
 
 ## Memory Management, Address Spaces, And Page Tables
 

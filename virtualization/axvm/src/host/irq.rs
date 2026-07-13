@@ -3,34 +3,13 @@
 #[cfg(test)]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::arceos;
-
-pub(crate) type IrqContext = arceos::ArceOsIrqContext;
-pub(crate) type IrqError = arceos::ArceOsIrqError;
-pub(crate) type IrqId = arceos::ArceOsIrqId;
-pub(crate) type IrqReturn = arceos::ArceOsIrqReturn;
-pub(crate) type IrqSource = arceos::ArceOsIrqSource;
-
-pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> IrqId {
-    arceos::make_irq_id(domain, hwirq)
-}
-
-pub(crate) fn request_shared_irq(
-    irq: IrqId,
-    handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
-) -> Result<arceos::ArceOsIrqHandle, arceos::ArceOsIrqError> {
-    arceos::request_shared_irq(irq, handler)
-}
+use ax_hal::irq::{IrqError, IrqId};
 
 #[cfg(test)]
 static TEST_ENABLED_IRQ_RAW: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-pub(crate) fn set_host_irq_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-    set_host_irq_enable_impl(irq, enabled)
-}
-
 #[cfg(test)]
-fn set_host_irq_enable_impl(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+pub(crate) fn set_host_irq_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
     if enabled {
         TEST_ENABLED_IRQ_RAW.store(irq_to_test_raw(irq), Ordering::Release);
     } else if TEST_ENABLED_IRQ_RAW.load(Ordering::Acquire) == irq_to_test_raw(irq) {
@@ -40,12 +19,8 @@ fn set_host_irq_enable_impl(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
 }
 
 #[cfg(not(test))]
-fn set_host_irq_enable_impl(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-    arceos::set_irq_enable(irq, enabled)
-}
-
-pub(crate) fn resolve_irq_source(source: IrqSource) -> Result<IrqId, arceos::ArceOsIrqError> {
-    arceos::resolve_irq_source(source)
+pub(crate) fn set_host_irq_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+    ax_hal::irq::set_enable(irq, enabled)
 }
 
 #[cfg(test)]

@@ -1,11 +1,10 @@
 use core::{arch::asm, hint::black_box, ptr};
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-    },
+    os::arceos::task::{AxCpuMask, ax_set_current_affinity},
     println, thread,
 };
+
+use ax_hal::percpu::this_cpu_id;
 
 const STACK_SIZE: usize = 64 * 1024;
 const WRITE_STRIDE: usize = 64;

@@ -102,7 +102,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "dwarf"
             | "ext-ld"
             | "wake-ipi"
-            | "std-compat"
     )
 }
 

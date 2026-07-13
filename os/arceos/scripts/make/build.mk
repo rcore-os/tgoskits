@@ -50,7 +50,7 @@ ifeq ($(APP_TYPE), rust)
 	$(call cargo_build,$(APP),$(AX_FEATURES) $(LIB_FEAT) $(APP_FEAT))
 	@cp $(rust_elf) $(OUT_ELF)
 else ifeq ($(APP_TYPE), c)
-	$(call run_cmd,touch,api/arceos_posix_api/build.rs)
+	$(call run_cmd,touch,ulib/axlibc/build.rs)
 	$(call cargo_build,ulib/axlibc,$(AX_FEATURES) $(LIB_FEAT))
 endif
 

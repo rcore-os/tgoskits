@@ -1,6 +1,6 @@
 //! A naïve sleeping mutex.
 
-use ax_api::task::AxRawMutex;
+use crate::os::arceos::task::AxRawMutex;
 
 /// An alias of [`lock_api::Mutex`].
 pub type Mutex<T> = lock_api::Mutex<AxRawMutex, T>;

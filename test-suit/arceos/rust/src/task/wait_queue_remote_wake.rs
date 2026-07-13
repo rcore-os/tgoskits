@@ -1,14 +1,13 @@
 use core::{cell::Cell, sync::atomic::AtomicUsize};
 use std::{
-    os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-    },
+    os::arceos::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
     println,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Duration,
 };
+
+use ax_hal::percpu::this_cpu_id;
 
 static READY_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
 static SLEEP_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();

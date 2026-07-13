@@ -2,13 +2,15 @@
 
 extern crate alloc;
 
-use alloc::{string::String, sync::Arc};
 use core::{cell::UnsafeCell, num::NonZeroU64};
 
-use ax_api::task::{self as api, AxTaskHandle};
+use alloc_crate::{string::String, sync::Arc};
 use ax_errno::ax_err_type;
 
-use crate::io;
+use crate::{
+    io,
+    os::arceos::task::{self as api, AxTaskHandle},
+};
 
 /// A unique identifier for a running thread.
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
@@ -97,7 +99,9 @@ impl Builder {
         T: Send + 'static,
     {
         let name = self.name.unwrap_or_default();
-        let stack_size = self.stack_size.unwrap_or(ax_api::config::TASK_STACK_SIZE);
+        let stack_size = self
+            .stack_size
+            .unwrap_or(crate::os::arceos::config::TASK_STACK_SIZE);
 
         let my_packet = Arc::new(Packet {
             result: UnsafeCell::new(None),
@@ -131,8 +135,7 @@ impl Default for Builder {
 
 /// Gets a handle to the thread that invokes it.
 pub fn current() -> Thread {
-    let id = api::ax_current_task_id();
-    Thread::from_id(id)
+    Thread::from_id(ax_task::current().id().as_u64())
 }
 
 /// Spawns a new thread, returning a [`JoinHandle`] for it.
@@ -141,7 +144,7 @@ pub fn current() -> Thread {
 /// spawned thread.
 ///
 /// The default task name is an empty string. The default thread stack size is
-/// [`ax_api::config::TASK_STACK_SIZE`].
+/// [`crate::os::arceos::config::TASK_STACK_SIZE`].
 ///
 /// [`join`]: JoinHandle::join
 pub fn spawn<T, F>(f: F) -> JoinHandle<T>
@@ -184,7 +187,7 @@ impl<T> JoinHandle<T> {
     /// already finished.
     #[track_caller]
     pub fn join(mut self) -> io::Result<T> {
-        api::ax_wait_for_exit(self.native);
+        self.native.join();
         Arc::get_mut(&mut self.packet)
             .unwrap()
             .result

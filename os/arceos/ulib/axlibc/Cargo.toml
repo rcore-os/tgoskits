@@ -22,47 +22,56 @@ crate-type = ["staticlib"]
 default = []
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-task/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
 
 # Interrupts
-irq = ["ax-posix-api/irq", "ax-runtime/irq"]
+irq = ["ax-task/irq", "ax-runtime/irq"]
 
 # Memory
-alloc = ["ax-posix-api/alloc"]
+alloc = ["dep:ax-alloc"]
 paging = ["ax-runtime/paging"]
 tls = ["alloc", "ax-runtime/tls"]
 
 # Multi-task
-multitask = ["ax-posix-api/multitask", "ax-runtime/multitask"]
-lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask", "ax-runtime/multitask"]
+lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep", "ax-runtime/lockdep"]
 stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
-fs = ["ax-posix-api/fs", "ax-runtime/fs", "fd"]
+fs = ["dep:ax-fs-ng", "ax-runtime/fs", "fd"]
 ext4fs = ["fs", "ax-runtime/ext4fs"]
 fatfs = ["fs", "ax-runtime/fatfs"]
 
 # Networking
-net = ["ax-posix-api/net", "ax-runtime/net", "fd"]
+net = ["dep:ax-net", "ax-runtime/net", "fd"]
 
 # Libc features
-fd = ["ax-posix-api/fd"]
-pipe = ["ax-posix-api/pipe"]
-select = ["ax-posix-api/select"]
-poll = ["ax-posix-api/poll"]
-epoll = ["ax-posix-api/epoll"]
+fd = ["alloc", "dep:scope-local"]
+pipe = ["fd"]
+select = ["fd"]
+poll = ["fd"]
+epoll = ["fd"]
 
 [dependencies]
 ax-driver.workspace = true
+ax-alloc = { workspace = true, optional = true }
+ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-kspin.workspace = true
-ax-posix-api.workspace = true
 ax-errno.workspace = true
 ax-io.workspace = true
+ax-log.workspace = true
+ax-net = { workspace = true, optional = true }
+axpoll.workspace = true
 ax-runtime.workspace = true
+ax-sync.workspace = true
+ax-task.workspace = true
+flatten_objects = "0.2"
+scope-local = { workspace = true, optional = true }
+spin.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

@@ -1,7 +1,8 @@
-use ax_api::net::{self as api, AxTcpSocketHandle};
-
 use super::{SocketAddr, ToSocketAddrs};
-use crate::io::{self, prelude::*};
+use crate::{
+    io::{self, prelude::*},
+    os::arceos::net::{self as api, AxTcpSocketHandle},
+};
 
 /// A TCP stream between a local and a remote socket.
 pub struct TcpStream(AxTcpSocketHandle);

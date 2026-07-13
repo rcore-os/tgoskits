@@ -4,8 +4,6 @@
 //! ArceOS implementation crates. System software must depend on those crates
 //! directly.
 
-use core::fmt;
-
 pub use ax_errno::{AxError, AxResult};
 
 /// Platform-specific constants used by the `ax-std` implementation.
@@ -24,30 +22,6 @@ pub mod time {
     pub use ax_hal::time::{
         TimeValue as AxTimeValue, monotonic_time as ax_monotonic_time, wall_time as ax_wall_time,
     };
-}
-
-/// Console operations used by the standard I/O facade.
-pub mod stdio {
-    use super::{AxResult, fmt};
-
-    pub fn ax_console_read_bytes(buf: &mut [u8]) -> AxResult<usize> {
-        let len = ax_hal::console::read_bytes(buf);
-        for byte in &mut buf[..len] {
-            if *byte == b'\r' {
-                *byte = b'\n';
-            }
-        }
-        Ok(len)
-    }
-
-    pub fn ax_console_write_bytes(buf: &[u8]) -> AxResult<usize> {
-        ax_hal::console::write_text_bytes(buf);
-        Ok(buf.len())
-    }
-
-    pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result {
-        ax_log::print_fmt(args)
-    }
 }
 
 /// Task extensions that do not have a Rust standard-library equivalent.
@@ -108,6 +82,10 @@ pub mod task {
         pub fn id(&self) -> u64 {
             self.id
         }
+
+        pub fn join(self) -> i32 {
+            self.inner.join()
+        }
     }
 
     #[cfg(feature = "multitask")]
@@ -128,11 +106,6 @@ pub mod task {
     }
 
     #[cfg(feature = "multitask")]
-    pub fn ax_current_task_id() -> u64 {
-        ax_task::current().id().as_u64()
-    }
-
-    #[cfg(feature = "multitask")]
     pub fn ax_spawn<F>(f: F, name: alloc_crate::string::String, stack_size: usize) -> AxTaskHandle
     where
         F: FnOnce() + Send + 'static,
@@ -142,12 +115,6 @@ pub mod task {
             id: inner.id().as_u64(),
             inner,
         }
-    }
-
-    #[cfg(feature = "multitask")]
-    #[track_caller]
-    pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
-        task.inner.join()
     }
 
     #[cfg(feature = "multitask")]
@@ -320,11 +287,11 @@ pub(crate) mod net {
     }
 
     pub fn ax_tcp_socket_addr(socket: &AxTcpSocketHandle) -> AxResult<SocketAddr> {
-        into_ip_addr(socket.0.local_addr()?)
+        socket.0.local_addr()?.into_ip()
     }
 
     pub fn ax_tcp_peer_addr(socket: &AxTcpSocketHandle) -> AxResult<SocketAddr> {
-        into_ip_addr(socket.0.peer_addr()?)
+        socket.0.peer_addr()?.into_ip()
     }
 
     pub fn ax_tcp_connect(socket: &AxTcpSocketHandle, addr: SocketAddr) -> AxResult {
@@ -343,7 +310,7 @@ pub(crate) mod net {
         let Socket::Tcp(socket) = socket.0.accept()? else {
             unreachable!("TCP listener accepted a non-TCP socket");
         };
-        let addr = into_ip_addr(socket.peer_addr()?)?;
+        let addr = socket.peer_addr()?.into_ip()?;
         Ok((AxTcpSocketHandle(*socket), addr))
     }
 
@@ -364,11 +331,11 @@ pub(crate) mod net {
     }
 
     pub fn ax_udp_socket_addr(socket: &AxUdpSocketHandle) -> AxResult<SocketAddr> {
-        into_ip_addr(socket.0.local_addr()?)
+        socket.0.local_addr()?.into_ip()
     }
 
     pub fn ax_udp_peer_addr(socket: &AxUdpSocketHandle) -> AxResult<SocketAddr> {
-        into_ip_addr(socket.0.peer_addr()?)
+        socket.0.peer_addr()?.into_ip()
     }
 
     pub fn ax_udp_bind(socket: &AxUdpSocketHandle, addr: SocketAddr) -> AxResult {
@@ -379,7 +346,7 @@ pub(crate) mod net {
         socket: &AxUdpSocketHandle,
         buf: &mut [u8],
     ) -> AxResult<(usize, SocketAddr)> {
-        let mut from = SocketAddrEx::Ip("0.0.0.0:0".parse().unwrap());
+        let mut from = SocketAddrEx::Ip(SocketAddr::from(([0, 0, 0, 0], 0)));
         let len = socket.0.recv(
             buf,
             RecvOptions {
@@ -387,14 +354,14 @@ pub(crate) mod net {
                 ..RecvOptions::default()
             },
         )?;
-        Ok((len, into_ip_addr(from)?))
+        Ok((len, from.into_ip()?))
     }
 
     pub fn ax_udp_peek_from(
         socket: &AxUdpSocketHandle,
         buf: &mut [u8],
     ) -> AxResult<(usize, SocketAddr)> {
-        let mut from = SocketAddrEx::Ip("0.0.0.0:0".parse().unwrap());
+        let mut from = SocketAddrEx::Ip(SocketAddr::from(([0, 0, 0, 0], 0)));
         let len = socket.0.recv(
             buf,
             RecvOptions {
@@ -403,7 +370,7 @@ pub(crate) mod net {
                 ..RecvOptions::default()
             },
         )?;
-        Ok((len, into_ip_addr(from)?))
+        Ok((len, from.into_ip()?))
     }
 
     pub fn ax_udp_send_to(
@@ -436,22 +403,10 @@ pub(crate) mod net {
     pub fn ax_dns_query(domain_name: &str) -> AxResult<alloc_crate::vec::Vec<IpAddr>> {
         ax_net::dns_query(domain_name)
     }
-
-    fn into_ip_addr(addr: SocketAddrEx) -> AxResult<SocketAddr> {
-        addr.into_ip()
-    }
 }
 
 /// Framebuffer access, which has no Rust standard-library equivalent.
 #[cfg(feature = "display")]
 pub mod display {
-    pub use ax_display::DisplayInfo;
-
-    pub fn framebuffer_info() -> DisplayInfo {
-        ax_display::framebuffer_info()
-    }
-
-    pub fn framebuffer_flush() -> bool {
-        ax_display::framebuffer_flush()
-    }
+    pub use ax_display::{DisplayInfo, framebuffer_flush, framebuffer_info};
 }

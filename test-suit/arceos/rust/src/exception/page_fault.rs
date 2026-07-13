@@ -1,4 +1,4 @@
-use std::{os::arceos::modules::ax_hal, println};
+use std::println;
 
 use ax_hal::{mem::VirtAddr, paging::MappingFlags, trap::page_fault_handler};
 

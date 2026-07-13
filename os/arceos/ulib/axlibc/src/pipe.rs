@@ -1,8 +1,6 @@
 use core::ffi::c_int;
 
-use ax_posix_api::sys_pipe;
-
-use crate::utils::e;
+use crate::{backend::sys_pipe, utils::e};
 
 /// Create a pipe
 ///

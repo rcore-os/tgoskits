@@ -135,5 +135,5 @@ pub(crate) fn init_percpu() {
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     timer_list.init_once(SpinNoIrq::new(TimerList::new()));
     #[cfg(target_arch = "loongarch64")]
-    ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| check_events());
+    ax_task::register_timer_callback(|_| check_events());
 }

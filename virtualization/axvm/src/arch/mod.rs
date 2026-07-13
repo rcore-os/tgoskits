@@ -345,7 +345,7 @@ pub(crate) trait ArchOps {
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         vector: usize,
     ) {
-        crate::host::arceos::dispatch_host_irq(vector);
+        ax_hal::irq::handle_irq(vector);
         crate::check_timer_events();
     }
 

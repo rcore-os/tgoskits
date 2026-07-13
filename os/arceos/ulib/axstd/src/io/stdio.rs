@@ -1,6 +1,5 @@
 #[cfg(feature = "alloc")]
-use alloc::{string::String, vec::Vec};
-
+use alloc_crate::{string::String, vec::Vec};
 use ax_lazyinit::LazyInit;
 
 use crate::{
@@ -16,7 +15,13 @@ impl Read for StdinRaw {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut read_len = 0;
         while read_len < buf.len() {
-            let len = ax_api::stdio::ax_console_read_bytes(buf[read_len..].as_mut())?;
+            let buf = &mut buf[read_len..];
+            let len = ax_hal::console::read_bytes(buf);
+            for byte in &mut buf[..len] {
+                if *byte == b'\r' {
+                    *byte = b'\n';
+                }
+            }
             if len == 0 {
                 break;
             }
@@ -28,7 +33,8 @@ impl Read for StdinRaw {
 
 impl Write for StdoutRaw {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        ax_api::stdio::ax_console_write_bytes(buf)
+        ax_hal::console::write_text_bytes(buf);
+        Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
@@ -175,7 +181,7 @@ pub fn __print_impl(args: core::fmt::Arguments) {
     if cfg!(feature = "smp") {
         // synchronize using the lock in ax-log, to avoid interleaving
         // with kernel logs
-        ax_api::stdio::ax_console_write_fmt(args).unwrap();
+        ax_log::print_fmt(args).unwrap();
     } else {
         stdout().lock().write_fmt(args).unwrap();
     }

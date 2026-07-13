@@ -87,7 +87,7 @@ pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> Ax
 pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
     use crate::AsVCpuTask;
 
-    let current = crate::host::task::current_task();
+    let current = ax_task::current();
     if let Some(task) = current.try_as_vcpu_task()
         && task.vm().id() == vm_id
         && task.vcpu.id() == vcpu_id

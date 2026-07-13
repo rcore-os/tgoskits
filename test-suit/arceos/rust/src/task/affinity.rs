@@ -1,11 +1,10 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-    },
+    os::arceos::task::{AxCpuMask, ax_set_current_affinity},
     sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
+
+use ax_hal::percpu::this_cpu_id;
 
 const NUM_TASKS: usize = 8;
 const NUM_TIMES: usize = 32;

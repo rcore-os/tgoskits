@@ -233,7 +233,7 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {
-        let current = crate::host::task::current_task();
+        let current = ax_task::current();
         let tasks: Vec<_> = self
             .vcpu_task_list
             .lock()
@@ -615,7 +615,7 @@ impl AxVM {
             })
             .map_err(VmLifecycleError::into_ax_error)?;
 
-        let task = crate::host::task::spawn_task(primary_task);
+        let task = ax_task::spawn_task(primary_task);
         runtime.add_vcpu_task(0, task);
         Ok(())
     }
@@ -678,7 +678,7 @@ impl AxVM {
             match self.status() {
                 VmStatus::Stopped | VmStatus::Ready => return Ok(()),
                 VmStatus::Stopping | VmStatus::Running | VmStatus::Paused | VmStatus::Pausing => {
-                    crate::host::task::yield_now();
+                    ax_task::yield_now();
                 }
                 status => {
                     return ax_err!(

@@ -1,8 +1,10 @@
 use core::ffi::{c_char, c_int};
 
-use ax_posix_api::{sys_fstat, sys_getcwd, sys_lseek, sys_lstat, sys_open, sys_rename, sys_stat};
-
-use crate::{ctypes, utils::e};
+use crate::{
+    backend::{sys_fstat, sys_getcwd, sys_lseek, sys_lstat, sys_open, sys_rename, sys_stat},
+    ctypes,
+    utils::e,
+};
 
 /// Open a file by `filename` and insert it into the file descriptor table.
 ///

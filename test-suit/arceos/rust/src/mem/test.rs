@@ -4,15 +4,10 @@ use core::{
     slice,
 };
 use std::{
+    alloc::{alloc, dealloc},
     collections::BTreeMap,
     format,
-    os::arceos::{
-        api::{
-            mem::{ax_alloc, ax_dealloc},
-            task::{AxCpuMask, ax_set_current_affinity},
-        },
-        modules::ax_hal::percpu::this_cpu_id,
-    },
+    os::arceos::task::{AxCpuMask, ax_set_current_affinity},
     println,
     sync::{
         Arc,
@@ -22,6 +17,7 @@ use std::{
     vec::Vec,
 };
 
+use ax_hal::percpu::this_cpu_id;
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
 const SLAB_LAYOUT_CASES: [LayoutCase; 9] = [
@@ -93,11 +89,12 @@ impl Allocation {
 }
 
 unsafe fn alloc_raw(layout: Layout) -> NonNull<u8> {
-    unsafe { ax_alloc(layout) }.unwrap_or_else(|| panic!("allocation failed for {layout:?}"))
+    NonNull::new(unsafe { alloc(layout) })
+        .unwrap_or_else(|| panic!("allocation failed for {layout:?}"))
 }
 
 unsafe fn dealloc_raw(ptr: NonNull<u8>, layout: Layout) {
-    unsafe { ax_dealloc(ptr, layout) };
+    unsafe { dealloc(ptr.as_ptr(), layout) };
 }
 
 fn allocation_pattern(index: usize, round: usize) -> u8 {

@@ -6,24 +6,24 @@
 
 mod stdio;
 
-pub mod io;
-pub mod process;
-pub mod resource;
-pub mod system;
-pub mod time;
+pub(crate) mod io;
+pub(crate) mod process;
+pub(crate) mod resource;
+pub(crate) mod system;
+pub(crate) mod time;
 
 #[cfg(feature = "fd")]
-pub mod fd_table;
+pub(crate) mod fd_table;
 #[cfg(feature = "fs")]
-pub mod fs;
+pub(crate) mod fs;
 #[cfg(any(feature = "select", feature = "poll", feature = "epoll"))]
-pub mod io_multiplex;
+pub(crate) mod io_multiplex;
 #[cfg(feature = "net")]
-pub mod net;
+pub(crate) mod net;
 #[cfg(feature = "pipe")]
-pub mod pipe;
+pub(crate) mod pipe;
 #[cfg(feature = "multitask")]
-pub mod pthread;
+pub(crate) mod pthread;
 
 #[cfg(feature = "fd")]
 pub use fd_table::{sys_close, sys_dup, sys_dup2, sys_fcntl};

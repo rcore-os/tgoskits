@@ -34,7 +34,7 @@ pub type VMRef = crate::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
 pub type VCpuRef = crate::vm::AxVCpuRef;
 
-static VMM: crate::HostWaitQueueHandle = crate::HostWaitQueueHandle::new();
+static VMM: crate::WaitQueue = crate::WaitQueue::new();
 
 /// The number of running VMs. This is used to determine when to exit the VMM.
 static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -59,7 +59,7 @@ pub fn start() {
     }
 
     // Do not exit until all VMs are stopped.
-    crate::host::task::wait_queue_wait_until(&VMM, || {
+    VMM.wait_until(|| {
         let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
         debug!("a VM exited, current running VM count: {vm_count}");
         vm_count == 0
@@ -152,6 +152,13 @@ pub(crate) fn register_x86_ioapic_irq_forwarding_route_with_trigger(
     x86_irq::register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
 }
 
+/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
+/// programmed a usable virtual IOAPIC route for it.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
+    x86_irq::register_ioapic_irq_forwarding_activator(guest_gsi, activator);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,11 +178,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
-/// programmed a usable virtual IOAPIC route for it.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
-    x86_irq::register_ioapic_irq_forwarding_activator(guest_gsi, activator);
 }

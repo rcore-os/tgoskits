@@ -282,10 +282,6 @@ pub(super) fn pass_std_build_nested_features(
         }
     }
 
-    if axstd_feature_is_available("std-compat", axstd_features) {
-        cargo_features.push("ax-std/std-compat".to_string());
-    }
-
     cargo_features.sort();
     cargo_features.dedup();
 

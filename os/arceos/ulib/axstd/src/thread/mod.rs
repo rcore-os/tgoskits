@@ -4,9 +4,10 @@
 mod multi;
 use core::num::NonZero;
 
-use ax_api::task as api;
 #[cfg(feature = "multitask")]
 pub use multi::*;
+
+use crate::os::arceos::task as api;
 
 /// Current thread gives up the CPU time voluntarily, and switches to another
 /// ready thread.
@@ -33,7 +34,7 @@ pub fn exit(exit_code: i32) -> ! {
 /// instead.
 #[track_caller]
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(ax_api::time::ax_monotonic_time() + dur);
+    sleep_until(crate::os::arceos::time::ax_monotonic_time() + dur);
 }
 
 /// Current thread is going to sleep, it will be woken up at the given deadline.
@@ -42,7 +43,7 @@ pub fn sleep(dur: core::time::Duration) {
 /// If one of `multitask` or `irq` features is not enabled, it uses busy-wait
 /// instead.
 #[track_caller]
-pub fn sleep_until(deadline: ax_api::time::AxTimeValue) {
+pub fn sleep_until(deadline: crate::os::arceos::time::AxTimeValue) {
     api::ax_sleep_until(deadline);
 }
 
@@ -51,6 +52,6 @@ pub fn sleep_until(deadline: ax_api::time::AxTimeValue) {
 /// Here we directly return the number of available logical CPUs, representing
 /// the theoretical maximum parallelism.
 pub fn available_parallelism() -> crate::io::Result<NonZero<usize>> {
-    NonZero::new(ax_api::sys::ax_get_cpu_num())
+    NonZero::new(crate::os::arceos::sys::ax_get_cpu_num())
         .ok_or_else(|| panic!("No available CPUs found, cannot determine parallelism"))
 }

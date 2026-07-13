@@ -145,7 +145,7 @@ impl ArchOps for Riscv64Arch {
         vector: usize,
     ) {
         vcpu.with_current_cpu_set(|| {
-            crate::host::arceos::dispatch_host_irq(vector);
+            ax_hal::irq::handle_irq(vector);
             vcpu.get_arch_vcpu().latch_hvip_from_hw();
         });
         crate::check_timer_events();
