@@ -283,12 +283,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        let old_len = system.commit_queue.len();
-        Self::enqueue_journal_update(system, raw_dev, updates)?;
-        // If the journal committed (queue shrank), the commit checkpoint
-        // wrote blocks directly to the raw device, bypassing the 4-entry
-        // LRU. Invalidate the LRU so subsequent reads see fresh data.
-        if system.commit_queue.len() < old_len {
+        // enqueue_journal_update returns Ok(true) when it triggers a journal
+        // commit (the commit checkpoint writes blocks directly to the raw
+        // device, bypassing the 4-entry LRU).  Invalidate the LRU so
+        // subsequent reads go to disk instead of serving stale data.
+        if Self::enqueue_journal_update(system, raw_dev, updates)? {
             self.inner.invalidate_cache()?;
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
@@ -376,6 +375,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let Some(system) = self.system.as_ref() else {
             return Ok(());
         };
+        // Per-block linear scan of the pending journal queue.  JBD2_BUFFER_MAX
+        // is small (10 entries), so O(count × queue_len) is bounded and
+        // negligible.  A hash-set would only pay off with a much larger queue.
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
             if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
@@ -416,10 +418,12 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         block_id.checked_add(count.saturating_sub(1))?;
 
         // Track whether a journal commit happened during the loop.
-        // `enqueue_journal_update` commits when the queue fills up,
-        // writing blocks directly to the raw device and bypassing the
-        // 4-entry LRU. We must invalidate the LRU whenever this occurs,
-        // not just when the final queue is shorter than the initial queue.
+        // `enqueue_journal_update` returns Ok(true) when it triggers a
+        // commit (the commit checkpoint writes blocks directly to the raw
+        // device, bypassing the 4-entry LRU).  We must invalidate the LRU
+        // whenever this occurs — the per-iteration return value captures
+        // every commit, even when the queue later refills to the same
+        // length as before.
         let mut commit_occurred = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
@@ -427,9 +431,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            let before = system.commit_queue.len();
-            Self::enqueue_journal_update(system, raw_dev, updates)?;
-            if system.commit_queue.len() < before {
+            if Self::enqueue_journal_update(system, raw_dev, updates)? {
                 commit_occurred = true;
             }
         }
