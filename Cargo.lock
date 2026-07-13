@@ -7310,6 +7310,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sg200x-jpu"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "log",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7718,6 +7728,7 @@ dependencies = [
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
+ "sg200x-jpu",
  "slab",
  "some-serial",
  "spin",

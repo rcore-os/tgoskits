@@ -7,10 +7,6 @@ use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
-    jpu::{
-        JpuDecoder,
-        regs::{JPU_REG_BASE, VC_REG_BASE},
-    },
     pinmux::{FMUX_USB_VBUS_DET, Pinmux},
     soc::{
         CLKGEN_BASE, CV182X_USB2_PHY_BASE, DWC2_BASE, FMUX_BASE, IOBLK_BASE, IOBLK_GRTC_BASE,
@@ -23,6 +19,7 @@ use sg200x_bsp::{
         host::{self, UvcEnumerated, dwc2, dwc2::ep0 as dwc2_ep0},
     },
 };
+use sg200x_jpu::{JpuDecoder, JpuMmio, JpuScale};
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
@@ -40,6 +37,8 @@ const TOP_MMIO_SIZE: usize = 0x4000;
 /// GPIO, DWC2 controller, USB2 PHY). Each block's registers fit within one 4K
 /// page; FMUX/IOBLK share a page so their mappings coincide (idempotent).
 const REG_MMIO_SIZE: usize = 0x1000;
+const JPU_REG_BASE: usize = 0x0B00_0000;
+const VC_REG_BASE: usize = 0x0B03_0000;
 
 /// Map a physical MMIO region into the kernel address space and return its
 /// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
@@ -81,10 +80,6 @@ struct UsbCameraSession {
 struct UsbCameraState {
     session: Option<UsbCameraSession>,
     jpu: Option<JpuDecoder>,
-}
-
-fn jpu_dma_to_phys(v: usize) -> usize {
-    virt_to_phys(VirtAddr::from(v)).as_usize()
 }
 
 pub struct CviCamera {
@@ -328,8 +323,9 @@ impl UsbCameraState {
             let jpu_v = iomap_usize(JPU_REG_BASE, REG_MMIO_SIZE);
             let top_v = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
             let vc_v = iomap_usize(VC_REG_BASE, REG_MMIO_SIZE);
+            let dma = axklib::dma::device_with_mask(u32::MAX as u64);
             let decoder = unsafe {
-                JpuDecoder::new_at(jpu_v, top_v, vc_v, jpu_dma_to_phys).map_err(|e| {
+                JpuDecoder::new(JpuMmio::new(jpu_v, top_v, vc_v), dma).map_err(|e| {
                     warn!("cvi-camera: JPU init failed: {e}");
                     AxError::Io
                 })?
@@ -339,20 +335,26 @@ impl UsbCameraState {
         Ok(self.jpu.as_mut().unwrap())
     }
 
-    fn yuv_frame(&mut self) -> VfsResult<&'static [u8]> {
+    fn write_yuv_frame(&mut self, destination: *mut u8, scale: JpuScale) -> VfsResult<usize> {
         let jpeg = self.frame()?;
         let jpu = self.ensure_jpu()?;
-        let result = jpu.decode(jpeg).map_err(|e| {
+        let result = jpu.decode_scaled(jpeg, scale).map_err(|e| {
             warn!("cvi-camera: JPU decode failed: {e}");
             AxError::Io
         })?;
         info!(
-            "cvi-camera: JPU decode OK {}x{} yuv={} bytes",
+            "cvi-camera: JPU decode OK scale={:?} visible={}x{} storage={}x{} y_stride={} yuv={} \
+             bytes",
+            result.layout.scale,
             result.width,
             result.height,
+            result.layout.storage.width,
+            result.layout.storage.height,
+            result.layout.y.stride,
             result.yuv_data.len()
         );
-        Ok(result.yuv_data)
+        vm_write_slice(destination, result.yuv_data)?;
+        Ok(result.yuv_data.len())
     }
 }
 
@@ -397,11 +399,10 @@ impl DeviceOps for CviCamera {
                 vm_write_slice(arg as *mut u8, frame)?;
                 Ok(frame.len())
             }
-            CVI_CAMERA_IOCTL_GET_YUV_FRAME => {
-                let yuv = self.state.lock().yuv_frame()?;
-                vm_write_slice(arg as *mut u8, yuv)?;
-                Ok(yuv.len())
-            }
+            CVI_CAMERA_IOCTL_GET_YUV_FRAME => self
+                .state
+                .lock()
+                .write_yuv_frame(arg as *mut u8, JpuScale::Full),
             _ => Err(AxError::InvalidInput),
         }
     }
