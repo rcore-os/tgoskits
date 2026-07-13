@@ -7,9 +7,9 @@ use alloc::{boxed::Box, sync::Arc};
 use core::{arch::asm, time::Duration};
 
 use axvm_types::{
-    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, EmulatedDeviceConfig,
-    EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig,
-    Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
+    AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
+    MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
@@ -518,16 +518,16 @@ fn handle_x86_nested_page_fault(
 }
 
 fn x86_result<T>(result: X86VcpuResult<T>) -> BackendResult<T> {
-    result.map_err(x86_error_to_ax)
+    result.map_err(x86_error_to_backend)
 }
 
-fn x86_error_to_ax(err: X86VcpuError) -> BackendError {
+fn x86_error_to_backend(err: X86VcpuError) -> BackendError {
     match err {
         X86VcpuError::InvalidInput => BackendError::InvalidInput,
         X86VcpuError::InvalidData => BackendError::InvalidData,
         X86VcpuError::Unsupported => BackendError::Unsupported,
-        X86VcpuError::BadState => BackendError::BadState,
-        X86VcpuError::NoMemory => BackendError::NoMemory,
+        X86VcpuError::BadState => BackendError::InvalidState,
+        X86VcpuError::NoMemory => BackendError::OutOfMemory,
         X86VcpuError::ResourceBusy => BackendError::ResourceBusy,
     }
 }
@@ -625,17 +625,17 @@ mod tests {
     }
 
     #[test]
-    fn converts_x86_vcpu_errors_to_ax_errors() {
+    fn converts_x86_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            x86_error_to_ax(X86VcpuError::InvalidInput),
+            x86_error_to_backend(X86VcpuError::InvalidInput),
             BackendError::InvalidInput
         );
         assert_eq!(
-            x86_error_to_ax(X86VcpuError::NoMemory),
-            BackendError::NoMemory
+            x86_error_to_backend(X86VcpuError::NoMemory),
+            BackendError::OutOfMemory
         );
         assert_eq!(
-            x86_error_to_ax(X86VcpuError::ResourceBusy),
+            x86_error_to_backend(X86VcpuError::ResourceBusy),
             BackendError::ResourceBusy
         );
     }

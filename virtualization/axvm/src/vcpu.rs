@@ -19,7 +19,8 @@ use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{
-    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
+    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
+    VmBackendError, VmVcpuState,
 };
 
 use crate::{AxVmError, AxVmResult, ax_err};
@@ -61,7 +62,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             }),
             arch_vcpu: UnsafeCell::new(
                 A::new(vm_id, vcpu_id, arch_config)
-                    .map_err(|error| AxVmError::vcpu("create vCPU", error))?,
+                    .map_err(|error| map_vcpu_backend_error("create vCPU", error))?,
             ),
         })
     }
@@ -76,13 +77,13 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.manipulate_arch_vcpu(VmVcpuState::Created, VmVcpuState::Free, |arch_vcpu| {
             arch_vcpu
                 .set_entry(entry)
-                .map_err(|error| AxVmError::vcpu("set vCPU entry", error))?;
+                .map_err(|error| map_vcpu_backend_error("set vCPU entry", error))?;
             arch_vcpu
                 .set_nested_page_table(nested_paging)
-                .map_err(|error| AxVmError::vcpu("set nested page table", error))?;
+                .map_err(|error| map_vcpu_backend_error("set nested page table", error))?;
             arch_vcpu
                 .setup(arch_config)
-                .map_err(|error| AxVmError::vcpu("set up vCPU", error))?;
+                .map_err(|error| map_vcpu_backend_error("set up vCPU", error))?;
             Ok(())
         })
     }
@@ -192,7 +193,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.manipulate_arch_vcpu(VmVcpuState::Running, VmVcpuState::Ready, |arch_vcpu| {
             arch_vcpu
                 .run()
-                .map_err(|error| AxVmError::vcpu("run vCPU", error))
+                .map_err(|error| map_vcpu_backend_error("run vCPU", error))
         })
     }
 
@@ -201,7 +202,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.manipulate_arch_vcpu(VmVcpuState::Free, VmVcpuState::Ready, |arch_vcpu| {
             arch_vcpu
                 .bind()
-                .map_err(|error| AxVmError::vcpu("bind vCPU", error))
+                .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
         })
     }
 
@@ -210,7 +211,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.manipulate_arch_vcpu(VmVcpuState::Ready, VmVcpuState::Free, |arch_vcpu| {
             arch_vcpu
                 .unbind()
-                .map_err(|error| AxVmError::vcpu("unbind vCPU", error))
+                .map_err(|error| map_vcpu_backend_error("unbind vCPU", error))
         })
     }
 
@@ -222,7 +223,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn set_entry(&self, entry: GuestPhysAddr) -> AxVmResult {
         self.get_arch_vcpu()
             .set_entry(entry)
-            .map_err(|error| AxVmError::vcpu("set vCPU entry", error))
+            .map_err(|error| map_vcpu_backend_error("set vCPU entry", error))
     }
 
     /// Sets a guest general-purpose register.
@@ -234,7 +235,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn inject_interrupt(&self, vector: usize) -> AxVmResult {
         self.get_arch_vcpu()
             .inject_interrupt(vector)
-            .map_err(|error| AxVmError::interrupt("inject vCPU interrupt", error))
+            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
     }
 
     /// Sets the guest return value.
@@ -305,10 +306,9 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
             ax_err!(BadState, "per-CPU state is already initialized")
         } else {
             self.cpu_id = Some(cpu_id);
-            self.arch
-                .write(A::new(cpu_id).map_err(|error| {
-                    AxVmError::host("initialize per-CPU virtualization", error)
-                })?);
+            self.arch.write(A::new(cpu_id).map_err(|error| {
+                map_host_backend_error("initialize per-CPU virtualization", error)
+            })?);
             Ok(())
         }
     }
@@ -334,14 +334,14 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
     pub fn hardware_enable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_enable()
-            .map_err(|error| AxVmError::host("enable hardware virtualization", error))
+            .map_err(|error| map_host_backend_error("enable hardware virtualization", error))
     }
 
     /// Disables virtualization on the current CPU.
     pub fn hardware_disable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_disable()
-            .map_err(|error| AxVmError::host("disable hardware virtualization", error))
+            .map_err(|error| map_host_backend_error("disable hardware virtualization", error))
     }
 }
 
@@ -350,5 +350,118 @@ impl<A: VmArchPerCpuOps> Drop for AxPerCpu<A> {
         if self.cpu_id.is_some() && self.is_enabled() {
             self.hardware_disable().unwrap();
         }
+    }
+}
+
+fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
+    match error {
+        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
+        VmBackendError::InvalidData => AxVmError::vcpu(operation, error),
+        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
+        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
+        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
+        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
+            "vCPU backend",
+            format_args!("{operation} failed: {error}"),
+        ),
+    }
+}
+
+fn map_host_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
+    match error {
+        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
+        VmBackendError::InvalidData => AxVmError::host(operation, error),
+        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
+        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
+        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
+        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
+            "host virtualization backend",
+            format_args!("{operation} failed: {error}"),
+        ),
+    }
+}
+
+fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
+    match error {
+        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
+        VmBackendError::InvalidData => AxVmError::interrupt(operation, error),
+        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
+        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
+        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
+        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
+            "interrupt backend",
+            format_args!("{operation} failed: {error}"),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vcpu_backend_errors_keep_domain_context() {
+        assert!(matches!(
+            map_vcpu_backend_error("run vCPU", VmBackendError::InvalidState),
+            AxVmError::InvalidState {
+                operation: "run vCPU",
+                ..
+            }
+        ));
+        assert!(matches!(
+            map_vcpu_backend_error("create vCPU", VmBackendError::OutOfMemory),
+            AxVmError::OutOfMemory {
+                operation: "create vCPU"
+            }
+        ));
+        assert!(matches!(
+            map_vcpu_backend_error("bind vCPU", VmBackendError::ResourceBusy),
+            AxVmError::ResourceConflict {
+                resource: "vCPU backend",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn host_backend_errors_keep_domain_context() {
+        assert!(matches!(
+            map_host_backend_error(
+                "enable hardware virtualization",
+                VmBackendError::Unsupported
+            ),
+            AxVmError::Unsupported {
+                operation: "enable hardware virtualization",
+                ..
+            }
+        ));
+        assert!(matches!(
+            map_host_backend_error(
+                "initialize per-CPU virtualization",
+                VmBackendError::InvalidData
+            ),
+            AxVmError::Host {
+                operation: "initialize per-CPU virtualization",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn interrupt_backend_errors_keep_domain_context() {
+        assert!(matches!(
+            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::InvalidData),
+            AxVmError::Interrupt {
+                operation: "inject vCPU interrupt",
+                ..
+            }
+        ));
+        assert!(matches!(
+            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::ResourceBusy),
+            AxVmError::ResourceConflict {
+                resource: "interrupt backend",
+                ..
+            }
+        ));
     }
 }

@@ -25,10 +25,9 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
-use axdevice_base::AccessWidth;
+use axdevice_base::{AccessWidth, AxError as DeviceError};
 use axvm_types::{
-    AxVmError as BackendError, GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags,
-    NestedPagingConfig, VmVcpuState,
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
 
 use crate::{
@@ -802,11 +801,11 @@ impl AxVM {
                         desc_addr,
                         |gpa, buffer| {
                             self.read_from_guest(gpa, buffer)
-                                .map_err(|_| BackendError::InvalidData)
+                                .map_err(|_| DeviceError::InvalidData)
                         },
                         |gpa, buffer| {
                             self.write_to_guest(gpa, buffer)
-                                .map_err(|_| BackendError::InvalidData)
+                                .map_err(|_| DeviceError::InvalidData)
                         },
                     )
                     .map_err(|error| AxVmError::device("process fw_cfg DMA request", error))?;

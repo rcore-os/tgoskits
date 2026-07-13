@@ -23,7 +23,7 @@ use axdevice::{
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink,
 };
-use axvm::InterruptFabric;
+use axvm::{AxVmError, InterruptFabric};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
 };
@@ -189,10 +189,10 @@ fn recording_fabric(mode: VMInterruptMode) -> (InterruptFabric, Weak<RecordingIr
 #[test]
 fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
     let sink = Arc::new(RecordingIrqSink::default());
-    assert_eq!(
-        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink).err(),
-        Some(AxError::InvalidInput)
-    );
+    assert!(matches!(
+        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink),
+        Err(AxVmError::InvalidInput { .. })
+    ));
 
     let fabric = InterruptFabric::new(VMInterruptMode::NoIrq);
     let context = DeviceBuildContext::new(&fabric);

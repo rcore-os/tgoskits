@@ -1,7 +1,9 @@
 //! Native x86 host I/O port passthrough devices.
 
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, Port, PortRange};
-use axvm_types::{AxVmError as BackendError, AxVmResult as BackendResult};
+use axdevice_base::{
+    AccessWidth, AxError as DeviceError, AxResult as DeviceResult, BaseDeviceOps, EmuDeviceType,
+    Port, PortRange,
+};
 
 use crate::{AxVmResult, ax_err};
 
@@ -40,22 +42,22 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
         PortRange::new(self.base, self.end())
     }
 
-    fn handle_read(&self, port: Port, width: AccessWidth) -> BackendResult<usize> {
+    fn handle_read(&self, port: Port, width: AccessWidth) -> DeviceResult<usize> {
         match width {
             AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
             AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
             AccessWidth::Dword => Ok(unsafe { inl(port.number()) } as usize),
-            AccessWidth::Qword => Err(BackendError::Unsupported),
+            AccessWidth::Qword => Err(DeviceError::Unsupported),
         }
     }
 
-    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> BackendResult {
+    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> DeviceResult {
         match width {
             AccessWidth::Byte => unsafe { outb(port.number(), value as u8) },
             AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
             AccessWidth::Dword => unsafe { outl(port.number(), value as u32) },
             AccessWidth::Qword => {
-                return Err(BackendError::Unsupported);
+                return Err(DeviceError::Unsupported);
             }
         }
         Ok(())
