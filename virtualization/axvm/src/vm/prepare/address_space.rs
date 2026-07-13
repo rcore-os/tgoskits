@@ -45,7 +45,7 @@ pub(crate) fn map_guest_address_space(
         resources
             .address_space
             .map_linear(mapping.gpa, mapping.hpa, mapping.size, mapping.flags)
-            .map_err(|error| AxVmError::memory("map guest address space", error))?;
+            .map_err(|error| AxVmError::from_addrspace("map guest address space", error))?;
     }
     resources.address_layout = Some(address_layout);
 

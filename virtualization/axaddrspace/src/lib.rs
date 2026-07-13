@@ -20,21 +20,12 @@ extern crate log;
 extern crate alloc;
 
 mod address_space;
+mod error;
 mod memory_accessor;
 mod paging;
 
 pub use address_space::{AddrSpace, Backend};
-use ax_errno::AxError;
-use ax_memory_set::MappingError;
 pub use axvm_types::MappingFlags;
+pub use error::{AddrSpaceError, AddrSpaceResult};
 pub use memory_accessor::GuestMemoryAccessor;
 pub use paging::{NestedPageTableOps, PageSize};
-
-fn mapping_err_to_ax_err(err: MappingError) -> AxError {
-    warn!("Mapping error: {err:?}");
-    match err {
-        MappingError::InvalidParam => AxError::InvalidInput,
-        MappingError::AlreadyExists => AxError::AlreadyExists,
-        MappingError::BadState => AxError::BadState,
-    }
-}

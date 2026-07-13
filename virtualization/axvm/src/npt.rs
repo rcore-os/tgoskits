@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
-use axaddrspace::{NestedPageTableOps, PageSize};
+use axaddrspace::{AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 use page_table_generic as ptg;
 
@@ -346,12 +346,15 @@ where
         paddr: PhysAddr,
         size: PageSize,
         flags: MappingFlags,
-    ) -> MappingResult {
-        LeveledPageTable::map(self, vaddr, paddr, size, flags)
+    ) -> AddrSpaceResult {
+        Ok(LeveledPageTable::map(self, vaddr, paddr, size, flags)?)
     }
 
-    fn unmap(&mut self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)> {
-        LeveledPageTable::unmap(self, vaddr)
+    fn unmap(
+        &mut self,
+        vaddr: GuestPhysAddr,
+    ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
+        Ok(LeveledPageTable::unmap(self, vaddr)?)
     }
 
     fn map_region(
@@ -361,12 +364,14 @@ where
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
-    ) -> MappingResult {
-        LeveledPageTable::map_region(self, vaddr, get_paddr, size, flags, allow_huge)
+    ) -> AddrSpaceResult {
+        Ok(LeveledPageTable::map_region(
+            self, vaddr, get_paddr, size, flags, allow_huge,
+        )?)
     }
 
-    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> MappingResult {
-        LeveledPageTable::unmap_region(self, start, size)
+    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> AddrSpaceResult {
+        Ok(LeveledPageTable::unmap_region(self, start, size)?)
     }
 
     fn remap(&mut self, start: GuestPhysAddr, paddr: PhysAddr, flags: MappingFlags) -> bool {
@@ -382,8 +387,8 @@ where
         LeveledPageTable::protect_region(self, start, size, new_flags)
     }
 
-    fn query(&self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)> {
-        LeveledPageTable::query(self, vaddr)
+    fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
+        Ok(LeveledPageTable::query(self, vaddr)?)
     }
 }
 

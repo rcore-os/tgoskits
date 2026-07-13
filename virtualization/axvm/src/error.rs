@@ -3,6 +3,8 @@
 use alloc::{format, string::String};
 use core::fmt::Display;
 
+use axaddrspace::AddrSpaceError;
+
 use crate::{VMId, VmStatus};
 
 /// Result type returned by AxVM operations.
@@ -183,6 +185,22 @@ impl AxVmError {
             detail: format!("{detail}"),
         }
     }
+
+    pub(crate) fn from_addrspace(operation: &'static str, error: AddrSpaceError) -> Self {
+        match error {
+            AddrSpaceError::OutOfRange { .. }
+            | AddrSpaceError::Unaligned { .. }
+            | AddrSpaceError::AddressOverflow { .. }
+            | AddrSpaceError::InvalidMapping => Self::invalid_input(operation, error),
+            AddrSpaceError::MappingConflict => Self::resource_conflict(
+                "guest address range",
+                format_args!("{operation} failed: {error}"),
+            ),
+            AddrSpaceError::MappingState
+            | AddrSpaceError::Unmapped { .. }
+            | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),
+        }
+    }
 }
 
 macro_rules! ax_err_type {
@@ -284,5 +302,37 @@ mod tests {
             exhausted.to_string(),
             "out of memory while allocate guest RAM"
         );
+    }
+
+    #[test]
+    fn address_space_errors_map_to_axvm_domains() {
+        assert!(matches!(
+            AxVmError::from_addrspace("map guest RAM", AddrSpaceError::MappingConflict),
+            AxVmError::ResourceConflict {
+                resource: "guest address range",
+                ..
+            }
+        ));
+        assert!(matches!(
+            AxVmError::from_addrspace(
+                "map guest RAM",
+                AddrSpaceError::Unaligned {
+                    subject: "mapping size",
+                    value: 1,
+                    alignment: 0x1000,
+                },
+            ),
+            AxVmError::InvalidInput {
+                operation: "map guest RAM",
+                ..
+            }
+        ));
+        assert!(matches!(
+            AxVmError::from_addrspace("query guest RAM", AddrSpaceError::MappingState),
+            AxVmError::Memory {
+                operation: "query guest RAM",
+                ..
+            }
+        ));
     }
 }
