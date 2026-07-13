@@ -136,6 +136,25 @@ install_rust() {
     export RUSTUP_IO_THREADS="${SELFHOST_RUSTUP_IO_THREADS:-4}"
     export RUSTUP_MAX_RETRIES="${SELFHOST_RUSTUP_MAX_RETRIES:-5}"
 
+    # Populate rustup's download cache from host-side pre-downloaded component
+    # tarballs.  The cache key is the SHA-256 hash of each tarball (published
+    # in the rustup channel manifest).  When the hash-named file exists in
+    # $RUSTUP_HOME/downloads/, rustup skips the network download entirely —
+    # essential because QEMU slirp degrades to <1 KiB/s for large transfers.
+    local dl_cache="$RUSTUP_HOME/downloads"
+    local host_cache="/root/.rustup-dl-cache"
+    if [ -d "$host_cache" ]; then
+        mkdir -p "$dl_cache"
+        for f in "$host_cache"/*; do
+            [ -f "$f" ] || continue
+            cp "$f" "$dl_cache/" 2>/dev/null || true
+        done
+        if ls "$dl_cache"/???????????????????????????????????????????????????????????????? 2>/dev/null | grep -q .; then
+            echo "[self-compile] rustup download cache pre-populated from host prebuild ($(ls "$dl_cache" | wc -l) entries)"
+        fi
+        rm -rf "$host_cache"
+    fi
+
     if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
             -o /tmp/rustup-init.sh

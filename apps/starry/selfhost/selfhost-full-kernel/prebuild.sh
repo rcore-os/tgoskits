@@ -112,6 +112,44 @@ stage_run_state() {
     printf 'ready %s prebuild\n' "$run_id" >"$overlay_dir/opt/starry-selfhost.state"
 }
 
+# Pre-download rustup component tarballs on the host so the guest can
+# populate the rustup download cache in-RAM without touching QEMU user-
+# mode networking.  QEMU slirp degrades catastrophically for large
+# downloads (TCP throughput collapses from ~100 KiB/s to <1 KiB/s
+# after ~100 MiB), making a ~300 MiB toolchain download impossible.
+stage_rust_download_cache() {
+    local rust_date="2026-05-28"
+    local rust_dl="https://static.rust-lang.org/dist/${rust_date}"
+    local cache_dir="$overlay_dir/root/.rustup-dl-cache"
+    mkdir -p "$cache_dir"
+
+    # component → sha256 from channel-rust-nightly.toml (x86_64-unknown-linux-musl)
+    for pair in \
+        "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff" \
+        "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d" \
+        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
+    do
+        component="${pair%%:*}"
+        hash="${pair##*:}"
+        url="${rust_dl}/${component}-nightly-x86_64-unknown-linux-musl.tar.xz"
+        dest="$cache_dir/$hash"
+        if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 10000000 ]; then
+            echo "[prebuild] rust ${component} tarball already cached ($(du -h "$dest" | cut -f1))"
+            continue
+        fi
+        echo "[prebuild] downloading rust ${component} tarball (~$( \
+            curl -sI "$url" 2>/dev/null | awk '/content-length/ {printf "%.0f", $2/1024/1024}') MiB)..."
+        if curl -fsSL --retry 3 --connect-timeout 30 --max-time 600 \
+            "$url" -o "${dest}.tmp" 2>/dev/null; then
+            mv "${dest}.tmp" "$dest"
+            echo "[prebuild]   ${component} cached ($(du -h "$dest" | cut -f1))"
+        else
+            rm -f "${dest}.tmp"
+            echo "[prebuild] WARNING: failed to download ${component} tarball (guest will fall back to network)" >&2
+        fi
+    done
+}
+
 require_x86_64
 mkdir -p "$output_dir" "$overlay_dir/opt"
 resize_rootfs
@@ -121,6 +159,7 @@ stage_guest_resolver
 stage_guest_runner
 stage_guest_reboot_guard
 stage_run_state
+stage_rust_download_cache
 
 echo "selfhost x86_64 overlay ready in $overlay_dir"
 echo "rootfs=$rootfs"
