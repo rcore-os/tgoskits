@@ -5,20 +5,16 @@ use alloc::vec::Vec;
 use ax_errno::AxResult;
 use axdevice::AxVmDevices;
 use axdevice_base::Resource;
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use axvm_types::GuestPhysAddr;
-#[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-use x86_vcpu::X86_APIC_ACCESS_GPA;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
 
-pub(super) fn map_guest_address_space(
+pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
     devices: &AxVmDevices,
+    owned_regions: &[GuestOwnedRegion],
 ) -> AxResult {
-    let owned_regions = guest_owned_regions(resources);
     let emulated_resources = devices
         .devices()
         .flat_map(|device| device.resources().iter().cloned())
@@ -29,7 +25,7 @@ pub(super) fn map_guest_address_space(
         VM_ASPACE_SIZE,
         resources.config.pass_through_devices(),
         resources.config.pass_through_addresses(),
-        &owned_regions,
+        owned_regions,
         &emulated_resources,
     )?;
 
@@ -53,20 +49,10 @@ pub(super) fn map_guest_address_space(
     }
     resources.address_layout = Some(address_layout);
 
-    #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-    resources.address_space.map_linear(
-        GuestPhysAddr::from(X86_APIC_ACCESS_GPA),
-        crate::arch::x86_apic_access_page_addr(),
-        ax_memory_addr::PAGE_SIZE_4K,
-        axvm_types::MappingFlags::DEVICE
-            | axvm_types::MappingFlags::READ
-            | axvm_types::MappingFlags::WRITE,
-    )?;
-
     Ok(())
 }
 
-fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
+pub(crate) fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
     let mut regions = resources
         .memory_regions
         .iter()
@@ -92,13 +78,6 @@ fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRegion> {
                 GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
             }),
     );
-
-    #[cfg(all(target_arch = "x86_64", feature = "vmx"))]
-    regions.push(GuestOwnedRegion::new(
-        X86_APIC_ACCESS_GPA,
-        ax_memory_addr::PAGE_SIZE_4K,
-        VmRegionKind::Reserved,
-    ));
 
     regions
 }

@@ -22,28 +22,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ax_errno::{AxResult, ax_err_type};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
-#[cfg(target_arch = "x86_64")]
-use axvm::config::VMBootProtocol;
 use axvm::{
     AxVM, GuestPhysAddr,
-    boot::{BootImageProvider, ImageLoader, StaticVmImage, get_image_header},
+    boot::{
+        BootImageProvider, StaticVmImage, boot_firmware_load_gpa, get_image_header,
+        guest_boot_policy, init_guest_boot_resources, prepare_guest_boot,
+    },
     config::{
         AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
         VMImageConfig,
     },
 };
 use axvmconfig::{AxVMCrateConfig, VMType};
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use axvm::boot::handle_fdt_operations;
-#[cfg(target_arch = "x86_64")]
-use axvm::boot::is_x86_linux_image_config;
-#[cfg(target_arch = "loongarch64")]
-use axvm::boot::{handle_fdt_operations, init_guest_boot_resources};
-
-/// Default BIOS load GPA for x86_64 built-in BIOS.
-#[cfg(target_arch = "x86_64")]
-const DEFAULT_X86_BIOS_LOAD_GPA: usize = 0x8000;
 
 #[cfg(all(
     feature = "fs",
@@ -88,11 +78,7 @@ pub mod vmcfg {
 }
 
 pub fn init_guest_vms() {
-    // Initialize LoongArch firmware resources before guest configs are materialized.
-    #[cfg(target_arch = "loongarch64")]
-    {
-        init_guest_boot_resources();
-    }
+    init_guest_boot_resources();
 
     // First try to get configs from filesystem if fs feature is enabled
     let mut gvm_raw_configs = vmcfg::filesystem_vm_configs();
@@ -120,8 +106,7 @@ pub fn init_guest_vms() {
 
 pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     let image_provider = AxvisorBootImageProvider;
-    #[allow(unused_mut)]
-    let mut vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
+    let vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to resolve VM config: {e:?}")))?;
 
     #[cfg(all(
@@ -137,25 +122,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
         );
     }
 
-    #[allow(unused_mut)]
     let mut vm_config = build_axvm_config(&vm_create_config);
+    let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)?;
+    let prepared_config = prepared_boot.config();
 
-    // Handle FDT-related operations for architectures that boot guests with DTB.
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    let guest_dtb = handle_fdt_operations(&mut vm_config, &mut vm_create_config, &image_provider)?;
-    #[cfg(target_arch = "loongarch64")]
-    handle_fdt_operations(&mut vm_config, &mut vm_create_config)?;
+    sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
 
-    sync_axvm_config_from_crate_config(&mut vm_config, &vm_create_config);
-
-    #[cfg(target_arch = "x86_64")]
-    let skip_guest_address_adjustment = x86_linux_direct_boot_config(&vm_create_config);
-    #[cfg(not(target_arch = "x86_64"))]
-    let skip_guest_address_adjustment = false;
-    vm_config.set_boot_policy(guest_boot_policy(
-        &vm_create_config,
-        skip_guest_address_adjustment,
-    ));
+    vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
@@ -171,17 +144,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> AxResult<usize> {
     // Load corresponding images for VM.
     info!("VM[{}] created success, loading images...", vm.id());
 
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    let mut loader = ImageLoader::new(
-        main_mem,
-        vm_create_config,
-        vm.clone(),
-        &image_provider,
-        guest_dtb,
-    );
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
-    let mut loader = ImageLoader::new(main_mem, vm_create_config, vm.clone(), &image_provider);
-    loader.load()?;
+    prepared_boot.load_images(main_mem, vm.clone(), &image_provider)?;
 
     vm.prepare()
         .map_err(|e| ax_err_type!(InvalidData, format!("VM[{}] setup failed: {e:?}", vm.id())))?;
@@ -225,7 +188,7 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
             loaded_from_filesystem: cfg.kernel.image_location.as_deref() == Some("fs"),
-            bios_load_gpa: configured_bios_load_gpa(cfg),
+            bios_load_gpa: boot_firmware_load_gpa(cfg),
             dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
             ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
                 load_gpa: GuestPhysAddr::from(addr),
@@ -247,38 +210,6 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
 
 fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
-}
-
-fn guest_boot_policy(
-    cfg: &AxVMCrateConfig,
-    skip_guest_address_adjustment: bool,
-) -> GuestBootPolicy {
-    if skip_guest_address_adjustment {
-        GuestBootPolicy::KeepConfigured
-    } else {
-        GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: cfg.kernel.effective_boot_protocol(),
-        }
-    }
-}
-
-fn configured_bios_load_gpa(cfg: &AxVMCrateConfig) -> Option<GuestPhysAddr> {
-    if !cfg.kernel.enable_bios {
-        return None;
-    }
-
-    if let Some(addr) = cfg.kernel.bios_load_addr {
-        return Some(GuestPhysAddr::from(addr));
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if cfg.kernel.boot_firmware_path().is_none()
-        && cfg.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
-    {
-        return Some(GuestPhysAddr::from(DEFAULT_X86_BIOS_LOAD_GPA));
-    }
-
-    None
 }
 
 #[cfg(all(
@@ -417,11 +348,6 @@ fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTrig
         }
         _ => InterruptTriggerMode::LevelTriggered,
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn x86_linux_direct_boot_config(config: &AxVMCrateConfig) -> bool {
-    is_x86_linux_image_config(config, &AxvisorBootImageProvider)
 }
 
 struct AxvisorBootImageProvider;

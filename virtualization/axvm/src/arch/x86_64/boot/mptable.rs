@@ -22,10 +22,6 @@ const IO_APIC_VERSION: u8 = 0x11;
 const BUS_ID_PCI: u8 = 0;
 const BUS_ID_ISA: u8 = 1;
 
-pub const QEMU_PASSTHROUGH_BLOCK_DEVICE: u8 = 3;
-pub const QEMU_PASSTHROUGH_BLOCK_FUNCTION: u8 = 0;
-pub const QEMU_PASSTHROUGH_BLOCK_PIN: u8 = 1;
-
 const MP_IRQ_FLAGS_CONFORMING: u16 = 0;
 const MP_IRQ_FLAGS_ACTIVE_LOW: u16 = 0x3;
 const MP_IRQ_FLAGS_LEVEL_TRIGGERED: u16 = 0xc;
@@ -169,13 +165,6 @@ const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
     16 + ((dev + pin) & 3)
 }
 
-pub const fn qemu_passthrough_block_gsi() -> usize {
-    pci_intx_gsi(
-        QEMU_PASSTHROUGH_BLOCK_DEVICE,
-        QEMU_PASSTHROUGH_BLOCK_PIN - 1,
-    ) as usize
-}
-
 fn interrupt_entry(
     interrupt_type: u8,
     flags: u16,
@@ -225,19 +214,20 @@ mod tests {
 
     #[test]
     fn pci_intx_entries_are_low_active_level_triggered() {
-        let source_irq = (QEMU_PASSTHROUGH_BLOCK_DEVICE << 2) | (QEMU_PASSTHROUGH_BLOCK_PIN - 1);
+        let (device, _, pin, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();
+        let source_irq = (device << 2) | (pin - 1);
         let entry = interrupt_entry(
             0,
             PCI_INTX_IRQ_FLAGS,
             BUS_ID_PCI,
             source_irq,
-            qemu_passthrough_block_gsi() as u8,
+            guest_gsi as u8,
         );
 
         assert_eq!(u16::from_le_bytes([entry[2], entry[3]]), 0x0f);
         assert_eq!(entry[4], BUS_ID_PCI);
         assert_eq!(entry[5], source_irq);
-        assert_eq!(entry[7], qemu_passthrough_block_gsi() as u8);
+        assert_eq!(entry[7], guest_gsi as u8);
     }
 
     #[test]

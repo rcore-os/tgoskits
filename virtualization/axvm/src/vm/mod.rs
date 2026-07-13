@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Virtual machine state, resources, and lifecycle entry points.
+
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
@@ -42,7 +44,7 @@ use crate::{
 
 pub(crate) mod boot;
 pub(crate) mod memory;
-mod prepare;
+pub(crate) mod prepare;
 pub use memory::PreparedMemoryLayout;
 
 const VM_ASPACE_BASE: usize = 0x0;
@@ -111,7 +113,7 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxResul
 
 pub(crate) struct AxVMResources {
     // Todo: use more efficient lock.
-    address_space: AddrSpace<ArchNestedPageTable>,
+    pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
     nested_paging: NestedPagingConfig,
     memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
@@ -171,7 +173,10 @@ impl VmRuntimeHandle {
         Ok(task.cpu_id() as usize)
     }
 
-    #[cfg(target_arch = "loongarch64")]
+    #[expect(
+        dead_code,
+        reason = "only the LoongArch IRQ backend queues physical interrupts"
+    )]
     pub(crate) fn queue_external_interrupt(
         &self,
         vcpu_id: usize,
@@ -258,20 +263,17 @@ impl VmRuntimeHandle {
 }
 
 impl AxVMResources {
-    fn new(config: AxVMConfig) -> AxResult<Self> {
-        let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-        let page_table_levels = crate::arch::guest_page_table_levels(&vcpu_mappings)?;
-        let page_table = crate::arch::new_nested_page_table(page_table_levels)?;
+    pub(crate) fn from_page_table(
+        config: AxVMConfig,
+        page_table: ArchNestedPageTable,
+        build_nested_paging: impl FnOnce(HostPhysAddr) -> AxResult<NestedPagingConfig>,
+    ) -> AxResult<Self> {
         let address_space = AddrSpace::new_empty(
             page_table,
             GuestPhysAddr::from(VM_ASPACE_BASE),
             VM_ASPACE_SIZE,
         )?;
-        let nested_paging = crate::arch::nested_paging_config(
-            address_space.page_table_root(),
-            page_table_levels,
-            &vcpu_mappings,
-        )?;
+        let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
             address_space,
             nested_paging,
@@ -284,6 +286,10 @@ impl AxVMResources {
             address_layout: None,
             boot_description: GuestBootDescription::none(),
         })
+    }
+
+    pub(crate) const fn config(&self) -> &AxVMConfig {
+        &self.config
     }
 
     fn vcpu_list(&self) -> AxResult<&[AxVCpuRef]> {
@@ -387,16 +393,22 @@ pub struct AxVM {
 }
 
 impl AxVM {
-    /// Creates a new VM with the given configuration.
-    /// Returns an error if the configuration is invalid.
-    /// The VM is not started until `start` is called.
+    /// Creates a ready VM with eagerly initialized architecture resources.
+    ///
+    /// The VM is not started until [`Self::start`] is called.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if nested paging is unsupported for the selected host
+    /// CPUs or if the initial stage-2 address space cannot be allocated.
     pub fn new(config: AxVMConfig) -> AxResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
+        let resources = crate::arch::CurrentArch::create_vm_resources(config)?;
         let result = Arc::new(Self {
             id,
             name,
-            machine: Mutex::new(Machine::Uninit(Box::new(config))),
+            machine: Mutex::new(Machine::Ready(resources)),
             pending_fw_cfg: Mutex::new(None),
         });
 
@@ -423,33 +435,14 @@ impl AxVM {
 
     /// Returns the configured VM interrupt mode.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
-        let _ = self.ensure_resources_ready();
         self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
             .unwrap_or(VMInterruptMode::NoIrq)
-    }
-
-    fn ensure_resources_ready(&self) -> AxResult {
-        let mut machine = self.machine.lock();
-        if !matches!(machine.status(), VmStatus::Uninit) {
-            return Ok(());
-        }
-        machine
-            .prepare_with(|config| {
-                AxVMResources::new(config).map_err(|err| {
-                    VmLifecycleError::MissingResource(match err {
-                        AxError::NoMemory => "VM address space memory",
-                        _ => "VM address space",
-                    })
-                })
-            })
-            .map_err(VmLifecycleError::into_ax_error)
     }
 
     fn with_resources<F, R>(&self, f: F) -> AxResult<R>
     where
         F: FnOnce(&AxVMResources) -> AxResult<R>,
     {
-        self.ensure_resources_ready()?;
         let machine = self.machine.lock();
         let resources = machine
             .resources()
@@ -461,7 +454,6 @@ impl AxVM {
     where
         F: FnOnce(&mut AxVMResources) -> AxResult<R>,
     {
-        self.ensure_resources_ready()?;
         let mut machine = self.machine.lock();
         let resources = machine
             .resources_mut()
@@ -528,20 +520,6 @@ impl AxVM {
         F: FnOnce(&mut AxVMConfig) -> R,
     {
         let mut machine = self.machine.lock();
-        if matches!(machine.status(), VmStatus::Uninit) {
-            let old = core::mem::replace(&mut *machine, Machine::Switching);
-            if let Machine::Uninit(config) = old {
-                match AxVMResources::new(*config) {
-                    Ok(resources) => *machine = Machine::Ready(resources),
-                    Err(err) => {
-                        *machine = Machine::Failed(format!("prepare config resources: {err:?}"));
-                        panic!("VM resources are not available: {err:?}");
-                    }
-                }
-            } else {
-                *machine = old;
-            }
-        }
         let resources = machine
             .resources_mut()
             .expect("VM resources are not available for config access");
@@ -585,7 +563,6 @@ impl AxVM {
 
     /// Starts the VM by transitioning to Running state.
     pub fn start(self: &Arc<Self>) -> AxResult {
-        self.ensure_resources_ready()?;
         if self.status() == VmStatus::Stopped {
             if let Some(runtime) = self.take_stopped_runtime() {
                 runtime.join_all_vcpu_tasks(self.id());
@@ -841,7 +818,6 @@ impl AxVM {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn handle_nested_page_fault(
         &self,
         addr: GuestPhysAddr,
@@ -857,7 +833,6 @@ impl AxVM {
         .unwrap_or(false)
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     fn debug_nested_page_fault(
         vm_id: usize,
         resources: &AxVMResources,
@@ -1247,7 +1222,7 @@ impl AxVM {
             VmStatus::Running | VmStatus::Paused | VmStatus::Stopping => {
                 self.stop_and_join_runtime(StopReason::Forced)?;
             }
-            VmStatus::Ready | VmStatus::Stopped | VmStatus::Uninit | VmStatus::Failed => {
+            VmStatus::Ready | VmStatus::Stopped | VmStatus::Failed => {
                 if let Some(runtime) = self.take_stopped_runtime() {
                     runtime.join_all_vcpu_tasks(vm_id);
                 }

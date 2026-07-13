@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxError, AxResult, ax_err};
+use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
     AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
@@ -14,17 +14,25 @@ use riscv_vcpu::{
 };
 use riscv_vplic::host::RiscvVplicHostIf;
 
-use super::{
-    ArchOps, BoundVcpuExit, CpuUpExit, HypercallExit, MmioReadExit, MmioWriteExit,
-    VcpuCreateContext, VcpuRunAction, VcpuSetupContext, default_vcpu_affinities,
-    target_phys_cpu_ids,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
     StopReason,
+    architecture::ops::default_vcpu_affinities,
     host::{HostMemory, default_host},
 };
 
+mod capabilities;
+#[path = "../../architecture/cpu_up.rs"]
+mod cpu_up;
+pub(crate) mod fdt;
+mod images;
+mod irq;
 mod npt;
+mod vm;
+
+pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+use cpu_up::{CpuUpExit, CpuUpOps};
+pub use images::ImageLoader;
 
 pub(crate) struct Riscv64Arch;
 
@@ -33,67 +41,20 @@ pub(crate) enum RiscvDeferredRunWork {
     ExternalInterrupt { vector: usize },
 }
 
+impl CpuUpOps for Riscv64Arch {
+    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
+    }
+}
+
 impl ArchOps for Riscv64Arch {
     type VCpu = AxvmRiscvVcpu;
     type PerCpu = AxvmRiscvPerCpu;
-    type VcpuCreateState = ();
     type DeferredRunWork = RiscvDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         riscv_vcpu::has_hardware_support()
-    }
-
-    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
-        let mut levels = riscv_vcpu::max_guest_page_table_levels();
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            levels = levels.min(
-                crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                    .unwrap_or_else(riscv_vcpu::max_guest_page_table_levels),
-            );
-        }
-        match levels {
-            3 | 4 => Ok(levels),
-            _ => ax_err!(Unsupported, "no supported RISC-V G-stage paging mode"),
-        }
-    }
-
-    fn nested_paging_config(
-        root_paddr: PhysAddr,
-        levels: usize,
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<NestedPagingConfig> {
-        match levels {
-            3 => Ok(NestedPagingConfig::new(root_paddr, 3, 41, 8)),
-            4 => Ok(NestedPagingConfig::new(root_paddr, 4, 50, 9)),
-            _ => ax_err!(InvalidInput, "unsupported RISC-V G-stage levels"),
-        }
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
-    }
-
-    fn new_vcpu_create_state(
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        Ok(())
-    }
-
-    fn build_vcpu_create_config(
-        _state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        Ok(RiscvVcpuCreateConfig {
-            hart_id: ctx.vcpu_id,
-            dtb_addr: ctx.dtb_addr.unwrap_or_default().as_usize(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        _ctx: VcpuSetupContext<'_>,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        Ok(())
     }
 
     fn register_platform_irq_injector() {
@@ -133,10 +94,6 @@ impl ArchOps for Riscv64Arch {
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
-    }
-
-    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
     }
 
     fn after_external_interrupt(
@@ -200,7 +157,7 @@ impl ArchOps for Riscv64Arch {
                 target_cpu,
                 entry_point,
                 arg,
-            } => super::handle_cpu_up::<Self>(
+            } => cpu_up::handle::<Self>(
                 vm,
                 vcpu,
                 CpuUpExit {
@@ -215,19 +172,29 @@ impl ArchOps for Riscv64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Wait))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
             RiscvVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(Self::handle_halt()))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
             RiscvVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Stop(
-                    StopReason::SystemDown,
-                )))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: false,
+                    stop_reason: Some(StopReason::SystemDown),
+                }))
             }
-            RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
+            RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            })),
         }
     }
 
@@ -241,7 +208,10 @@ impl ArchOps for Riscv64Arch {
                 Self::after_external_interrupt(vm, vcpu, vector);
             }
         }
-        Ok(VcpuRunAction::Yield)
+        Ok(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        })
     }
 }
 
@@ -260,7 +230,10 @@ fn handle_riscv_nested_page_fault(
                 vcpu.id(),
                 ax_addr.as_usize()
             );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield));
+            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            }));
         };
         return Riscv64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
     }
@@ -276,7 +249,10 @@ fn handle_riscv_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        }))
     }
 }
 

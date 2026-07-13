@@ -21,11 +21,7 @@ use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
 use axvm_types::VMInterruptMode;
 
-#[cfg(target_arch = "riscv64")]
-pub(crate) mod riscv;
-
 /// Host platform hook for registering the RISC-V physical IRQ injector.
-#[cfg(target_arch = "riscv64")]
 #[ax_crate_interface::def_interface]
 pub trait RiscvPlatformIrqInjectorIf {
     /// Registers a callback that forwards a physical IRQ line into the current guest.
@@ -35,14 +31,20 @@ pub trait RiscvPlatformIrqInjectorIf {
     fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]);
 }
 
-#[cfg(target_arch = "riscv64")]
+#[expect(
+    dead_code,
+    reason = "the RISC-V architecture backend is not compiled for this target"
+)]
 pub(crate) fn register_riscv_virtual_irq_injector(injector: fn(usize) -> bool) {
     ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(
         injector
     ));
 }
 
-#[cfg(target_arch = "riscv64")]
+#[expect(
+    dead_code,
+    reason = "the RISC-V architecture backend is not compiled for this target"
+)]
 pub(crate) fn set_riscv_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
     ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::set_virtual_irq_targets(
         cpu_id,

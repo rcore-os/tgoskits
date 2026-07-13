@@ -1,13 +1,8 @@
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-};
+use alloc::string::{String, ToString};
 
 use super::{StopReason, VmLifecycleError, VmLifecycleResult, VmStatus};
-use crate::config::AxVMConfig;
 
 pub enum Machine<R, H = ()> {
-    Uninit(Box<AxVMConfig>),
     Ready(R),
     Running {
         resources: R,
@@ -40,7 +35,6 @@ pub enum Machine<R, H = ()> {
 impl<R, H> Machine<R, H> {
     pub fn status(&self) -> VmStatus {
         match self {
-            Machine::Uninit(_) => VmStatus::Uninit,
             Machine::Ready(_) => VmStatus::Ready,
             Machine::Running { .. } => VmStatus::Running,
             Machine::Pausing { .. } => VmStatus::Pausing,
@@ -77,41 +71,6 @@ impl<R, H> Machine<R, H> {
                 resources.as_mut()
             }
             _ => None,
-        }
-    }
-
-    pub fn config_mut(&mut self) -> Option<&mut AxVMConfig> {
-        match self {
-            Machine::Uninit(config) => Some(config.as_mut()),
-            _ => None,
-        }
-    }
-
-    pub fn prepare_with<F>(&mut self, f: F) -> VmLifecycleResult
-    where
-        F: FnOnce(AxVMConfig) -> VmLifecycleResult<R>,
-    {
-        let old = core::mem::replace(self, Machine::Switching);
-        match old {
-            Machine::Uninit(config) => match f(*config) {
-                Ok(resources) => {
-                    *self = Machine::Ready(resources);
-                    Ok(())
-                }
-                Err(err) => {
-                    *self = Machine::Failed(err.to_string());
-                    Err(err)
-                }
-            },
-            other => {
-                let from = other.status();
-                *self = other;
-                Err(VmLifecycleError::invalid_transition(
-                    from,
-                    VmStatus::Ready,
-                    "prepare",
-                ))
-            }
         }
     }
 
@@ -579,7 +538,7 @@ impl<R, H> Machine<R, H> {
                 *self = Machine::Destroyed;
                 Ok(())
             }
-            Machine::Uninit(_) | Machine::Failed(_) | Machine::Switching | Machine::Destroying => {
+            Machine::Failed(_) | Machine::Switching | Machine::Destroying => {
                 f(None)?;
                 *self = Machine::Destroyed;
                 Ok(())
@@ -592,16 +551,9 @@ impl<R, H> Machine<R, H> {
 mod tests {
     use super::*;
 
-    fn config() -> AxVMConfig {
-        AxVMConfig::default_for_test(1, "lifecycle-test")
-    }
-
     #[test]
-    fn lifecycle_allows_prepare_start_pause_resume_stop_destroy() {
-        let mut machine = Machine::Uninit(Box::new(config()));
-        assert_eq!(machine.status(), VmStatus::Uninit);
-
-        machine.prepare_with(|_| Ok(7usize)).unwrap();
+    fn lifecycle_allows_start_pause_resume_stop_destroy_from_ready() {
+        let mut machine = Machine::Ready(7usize);
         assert_eq!(machine.status(), VmStatus::Ready);
 
         machine
@@ -639,19 +591,7 @@ mod tests {
 
     #[test]
     fn lifecycle_rejects_invalid_transitions_without_changing_state() {
-        let mut machine = Machine::<usize>::Uninit(Box::new(config()));
-        let err = machine.start_with(|_| Ok(())).unwrap_err();
-        assert!(matches!(
-            err,
-            VmLifecycleError::InvalidTransition {
-                from: VmStatus::Uninit,
-                to: VmStatus::Running,
-                op: "start"
-            }
-        ));
-        assert_eq!(machine.status(), VmStatus::Uninit);
-
-        machine.prepare_with(|_| Ok(1)).unwrap();
+        let mut machine = Machine::<usize>::Ready(1);
         let err = machine.resume().unwrap_err();
         assert!(matches!(
             err,

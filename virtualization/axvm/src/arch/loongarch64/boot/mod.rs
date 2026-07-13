@@ -1,21 +1,52 @@
+mod fdt;
 mod probe;
 mod resources;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, format, vec::Vec};
 
 use ax_errno::{AxResult, ax_err_type};
 use axdevice::{
     FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
 };
-use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
+use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol};
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
     prepare_uefi_runtime_config,
 };
 
-use crate::{AxVMRef, GuestPhysAddr, boot::images::load_vm_image_from_memory};
+use crate::{
+    AxVMRef, GuestPhysAddr,
+    architecture::BootImagePlatform,
+    boot::{
+        BootImageProvider, StaticVmImage,
+        images::{ImageLoaderCore, load_vm_image_from_memory},
+    },
+};
 
 pub const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
+
+pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
+
+impl<'a> ImageLoader<'a> {
+    pub fn new(
+        main_memory: crate::VMMemoryRegion,
+        config: AxVMCrateConfig,
+        vm: AxVMRef,
+        provider: &'a dyn BootImageProvider,
+    ) -> Self {
+        Self(ImageLoaderCore::new(
+            main_memory,
+            config,
+            vm,
+            provider,
+            None,
+        ))
+    }
+
+    pub fn load(&mut self) -> AxResult {
+        self.0.load()
+    }
+}
 
 pub fn init() {
     resources::init();
@@ -145,7 +176,7 @@ impl GuestPlatform {
 
 pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxResult {
     let platform = GuestPlatform::discover(vm, config);
-    let fdt = crate::boot::fdt::loongarch64::guest_firmware_dtb::build(&platform)?;
+    let fdt = fdt::guest_firmware_dtb::build(&platform)?;
     debug!(
         "VM[{}] loading LoongArch UEFI firmware FDT: {} bytes at {:#x}",
         config.base.id,
@@ -185,6 +216,128 @@ pub fn emulated_fw_cfg(config: &AxVMCrateConfig) -> AxResult<&axvmconfig::Emulat
         .iter()
         .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
         .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires a fw_cfg device"))
+}
+
+impl BootImagePlatform for super::LoongArch64Arch {
+    fn load_images_from_memory(
+        loader: &mut ImageLoaderCore<'_>,
+        images: StaticVmImage,
+    ) -> AxResult {
+        ensure_uefi_boot(loader)?;
+        load_uefi_firmware_dtb(loader)?;
+        add_uefi_fw_cfg(loader, images.kernel, images.ramdisk)?;
+        let firmware = images
+            .bios
+            .or_else(|| provider_firmware_image(loader))
+            .ok_or_else(|| {
+                ax_err_type!(
+                    NotFound,
+                    "LoongArch UEFI boot requires a build-time firmware image"
+                )
+            })?;
+        load_uefi_firmware_image(loader, firmware)
+    }
+
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxResult {
+        ensure_uefi_boot(loader)?;
+        load_uefi_firmware_dtb(loader)?;
+
+        let kernel = crate::boot::images::fs::read_full_image(
+            &loader.config.kernel.kernel_path,
+            loader.provider,
+        )?;
+        let kernel: &'static [u8] = Box::leak(kernel.into_boxed_slice());
+        let ramdisk = if let Some(path) = &loader.config.kernel.ramdisk_path {
+            let ramdisk = crate::boot::images::fs::read_full_image(path, loader.provider)?;
+            Some(Box::leak(ramdisk.into_boxed_slice()) as &'static [u8])
+        } else {
+            None
+        };
+        add_uefi_fw_cfg(loader, kernel, ramdisk)?;
+
+        let firmware = provider_firmware_image(loader).ok_or_else(|| {
+            ax_err_type!(
+                NotFound,
+                "LoongArch UEFI boot requires a build-time firmware image"
+            )
+        })?;
+        load_uefi_firmware_image(loader, firmware)
+    }
+}
+
+fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxResult {
+    if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+        Ok(())
+    } else {
+        ax_errno::ax_err!(Unsupported, "LoongArch guests require UEFI boot")
+    }
+}
+
+fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxResult {
+    prepare_uefi_runtime_config(&loader.vm, &loader.config);
+    load_firmware_fdt(&loader.vm, &loader.config)
+}
+
+fn add_uefi_fw_cfg(
+    loader: &ImageLoaderCore<'_>,
+    kernel: &'static [u8],
+    ramdisk: Option<&'static [u8]>,
+) -> AxResult {
+    let fw_cfg = emulated_fw_cfg(&loader.config)?;
+    loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
+        base: GuestPhysAddr::from(fw_cfg.base_gpa),
+        size: fw_cfg.length,
+        kernel,
+        initrd: ramdisk,
+        cmdline: loader.config.kernel.cmdline.clone(),
+        cpu_num: loader.config.base.cpu_num as u16,
+        platform: fw_cfg_platform_config(&loader.vm, &loader.config),
+    })
+}
+
+fn provider_firmware_image(loader: &ImageLoaderCore<'_>) -> Option<&'static [u8]> {
+    loader
+        .provider
+        .static_firmware_images()
+        .iter()
+        .find(|image| image.id == loader.config.base.id)
+        .and_then(|image| image.bios)
+}
+
+fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> AxResult {
+    let load_gpa = loader
+        .bios_load_gpa
+        .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI firmware load addr is missed"))?;
+    let flash_len = loader
+        .config
+        .kernel
+        .memory_regions
+        .iter()
+        .find(|region| region.gpa == load_gpa.as_usize())
+        .map_or(firmware.len(), |region| region.size);
+    fill_vm_region(load_gpa, flash_len, 0xff, loader.vm.clone())?;
+    load_vm_image_from_memory(firmware, load_gpa, loader.vm.clone())
+}
+
+fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxResult {
+    let regions = vm.get_image_load_region(load_addr, size)?;
+    let mut filled_size = 0;
+    for region in regions {
+        // SAFETY: AxVM returned this writable guest-memory region and the fill
+        // is bounded by its length.
+        unsafe { core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
+        crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
+        filled_size += region.len();
+    }
+    if filled_size == size {
+        Ok(())
+    } else {
+        ax_errno::ax_err!(
+            InvalidData,
+            format!("VM memory was only partially filled: {filled_size}/{size} bytes")
+        )
+    }
 }
 
 fn ram_regions(vm: &AxVMRef) -> Vec<MemoryRegion> {

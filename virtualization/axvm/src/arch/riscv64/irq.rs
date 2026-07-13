@@ -27,7 +27,7 @@ use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };
 
-use super::InterruptFabric;
+use crate::irq::InterruptFabric;
 
 struct RiscvPlicIrqSink {
     vplic: Arc<VPlicGlobal>,

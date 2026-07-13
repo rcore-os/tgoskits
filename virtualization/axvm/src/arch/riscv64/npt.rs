@@ -106,4 +106,4 @@ impl ptg::PageTableEntry for RiscvPte {
 }
 
 pub(crate) type NestedPageTable<H> =
-    crate::arch::npt::LeveledPageTable<Sv39x4MetaData, Sv48x4MetaData, H, true>;
+    crate::npt::LeveledPageTable<Sv39x4MetaData, Sv48x4MetaData, H, true>;

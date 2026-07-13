@@ -6,7 +6,7 @@ use arm_gic_driver::v3::{
 };
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use super::{HostMemory, arceos, default_host};
+use crate::host::{HostMemory, default_host};
 
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -140,7 +140,7 @@ pub(crate) fn handle_current_irq() -> Option<usize> {
     // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
     // internally. The raw vector argument is ignored by current GIC-backed
     // platforms, so keep the ack/EOI ownership inside the platform handler.
-    arceos::handle_host_irq(0)
+    ax_std::os::arceos::modules::ax_hal::irq::handle_irq(0).then_some(0)
 }
 
 pub(crate) fn fetch_irq() -> usize {
