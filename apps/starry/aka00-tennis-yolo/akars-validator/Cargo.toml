@@ -6,7 +6,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-cvi-camera-uapi = { path = "../../../../drivers/interface/cvi-camera-uapi" }
+cvi-vdec-uapi = { path = "../../../../drivers/interface/cvi-vdec-uapi" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 zune-core = "0.5"

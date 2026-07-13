@@ -217,6 +217,7 @@ pub struct JpuDecoder {
     dma: DeviceDma,
     stream_buffer: Option<CpuDmaBuffer>,
     frame_buffer: Option<CpuDmaBuffer>,
+    completed_frame_len: Option<usize>,
     poisoned: bool,
 }
 
@@ -246,6 +247,7 @@ impl JpuDecoder {
             dma,
             stream_buffer: None,
             frame_buffer: None,
+            completed_frame_len: None,
             poisoned: false,
         })
     }
@@ -273,6 +275,7 @@ impl JpuDecoder {
 
         let JpegInspection { header, layout } = inspect_jpeg(jpeg_data, scale)?;
         let format = layout.format;
+        self.completed_frame_len = None;
         let stream_len = required_stream_capacity(jpeg_data.len(), header.ecs_offset)
             .map_err(JpuDecodeError::InvalidJpeg)?;
         validate_dma_allocation_len(stream_len).map_err(JpuDecodeError::DmaAddress)?;
@@ -318,6 +321,7 @@ impl JpuDecoder {
         }
 
         self.clear_frame_padding(&layout)?;
+        self.completed_frame_len = Some(layout.total_len);
         let frame = self
             .frame_buffer
             .as_ref()
@@ -339,6 +343,33 @@ impl JpuDecoder {
             yuv_dma_addr: frame_dma.start,
             layout,
         })
+    }
+
+    /// Copies bytes from the most recently completed frame.
+    ///
+    /// `frame_len` must come from that decode's [`DecodeResult::layout`]. The
+    /// method exists for device ABIs that return frame metadata separately
+    /// from a later `read`; it never exposes bytes outside the logical frame.
+    pub fn copy_completed_frame(
+        &self,
+        frame_len: usize,
+        offset: usize,
+        destination: &mut [u8],
+    ) -> Result<usize, JpuDecodeError> {
+        self.validate_decoder_ready()?;
+        if self.completed_frame_len != Some(frame_len) {
+            return Err(JpuDecodeError::BufferInvariant(
+                "requested frame does not match the most recent decode",
+            ));
+        }
+        let frame = self
+            .frame_buffer
+            .as_ref()
+            .ok_or(JpuDecodeError::BufferInvariant(
+                "missing completed frame buffer",
+            ))?;
+        copy_frame_range(frame.as_slice_cpu(), frame_len, offset, destination)
+            .map_err(JpuDecodeError::BufferInvariant)
     }
 
     fn validate_decoder_ready(&self) -> Result<(), JpuDecodeError> {
@@ -544,6 +575,23 @@ fn clear_frame_padding(buffer: &mut [u8], layout: &FrameLayout) -> Result<(), &'
     Ok(())
 }
 
+fn copy_frame_range(
+    source: &[u8],
+    frame_len: usize,
+    offset: usize,
+    destination: &mut [u8],
+) -> Result<usize, &'static str> {
+    let frame = source
+        .get(..frame_len)
+        .ok_or("logical frame exceeds its DMA allocation")?;
+    let Some(remaining) = frame.get(offset..) else {
+        return Ok(0);
+    };
+    let copied = remaining.len().min(destination.len());
+    destination[..copied].copy_from_slice(&remaining[..copied]);
+    Ok(copied)
+}
+
 fn clear_plane_and_gap_padding(
     buffer: &mut [u8],
     plane: PlaneLayout,
@@ -589,7 +637,7 @@ mod tests {
 
     use super::{
         BufferPlan, JpuInspectError, PollDisposition, buffer_plan, clear_frame_padding,
-        inspect_jpeg_layout, poll_disposition, required_stream_capacity,
+        copy_frame_range, inspect_jpeg_layout, poll_disposition, required_stream_capacity,
         validate_dma_allocation_len,
     };
     use crate::{FrameLayout, JpuPixelFormat, JpuScale, engine::PollError};
@@ -605,6 +653,17 @@ mod tests {
         assert_eq!(buffer_plan(128, 1024, 127, 1024), BufferPlan::Reuse);
         assert_eq!(buffer_plan(128, 1024, 129, 100), BufferPlan::ReplaceBoth);
         assert_eq!(buffer_plan(128, 1024, 100, 1025), BufferPlan::ReplaceBoth);
+    }
+
+    #[test]
+    fn completed_frame_copy_honors_logical_length_and_offset() {
+        let source = [0, 1, 2, 3, 4, 5, 6, 7];
+        let mut destination = [0xff; 4];
+
+        assert_eq!(copy_frame_range(&source, 6, 2, &mut destination), Ok(4));
+        assert_eq!(destination, [2, 3, 4, 5]);
+        assert_eq!(copy_frame_range(&source, 6, 6, &mut destination), Ok(0));
+        assert!(copy_frame_range(&source, 9, 0, &mut destination).is_err());
     }
 
     #[test]

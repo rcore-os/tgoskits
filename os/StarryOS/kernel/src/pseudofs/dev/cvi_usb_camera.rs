@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::{any::Any, time::Duration};
 
 use ax_errno::AxError;
@@ -6,17 +6,6 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
-use cvi_camera_uapi::{
-    CVI_CAMERA_CHROMA_SITING_CENTER, CVI_CAMERA_COLOR_MATRIX_BT601, CVI_CAMERA_COLOR_RANGE_FULL,
-    CVI_CAMERA_FORMAT_GRAYSCALE, CVI_CAMERA_FORMAT_YUV420_PLANAR,
-    CVI_CAMERA_FORMAT_YUV422_HORIZONTAL_PLANAR, CVI_CAMERA_FORMAT_YUV422_VERTICAL_PLANAR,
-    CVI_CAMERA_FORMAT_YUV444_PLANAR, CVI_CAMERA_IOCTL_CAPTURE_SCALED, CVI_CAMERA_IOCTL_DECODE_JPEG,
-    CVI_CAMERA_IOCTL_GET_FRAME, CVI_CAMERA_IOCTL_GET_INFO, CVI_CAMERA_IOCTL_GET_YUV_FRAME,
-    CVI_CAMERA_IOCTL_INIT, CVI_CAMERA_SCALE_EIGHTH, CVI_CAMERA_SCALE_FULL, CVI_CAMERA_SCALE_HALF,
-    CVI_CAMERA_SCALE_QUARTER, CviCameraExtentV1, CviCameraFrameLayoutV1, CviCameraPlaneV1,
-    CviCameraRequestV1,
-};
-use dma_api::DmaError;
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
     pinmux::{FMUX_USB_VBUS_DET, Pinmux},
@@ -31,13 +20,10 @@ use sg200x_bsp::{
         host::{self, UvcEnumerated, dwc2, dwc2::ep0 as dwc2_ep0},
     },
 };
-use sg200x_jpu::{
-    FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuInspectError,
-    JpuMmio, JpuPixelFormat, JpuScale, PlaneLayout, inspect_jpeg_layout,
-};
-use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
+use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
+use super::cvi_jpu::CviJpu;
 use crate::pseudofs::DeviceOps;
 
 const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
@@ -52,8 +38,6 @@ const TOP_MMIO_SIZE: usize = 0x4000;
 /// GPIO, DWC2 controller, USB2 PHY). Each block's registers fit within one 4K
 /// page; FMUX/IOBLK share a page so their mappings coincide (idempotent).
 const REG_MMIO_SIZE: usize = 0x1000;
-const JPU_REG_BASE: usize = 0x0B00_0000;
-const VC_REG_BASE: usize = 0x0B03_0000;
 
 /// Map a physical MMIO region into the kernel address space and return its
 /// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
@@ -68,11 +52,14 @@ fn iomap_usize(paddr: usize, size: usize) -> usize {
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
 const MAX_CAPTURE_TRIES: u32 = 8;
-const MAX_SUBMITTED_JPEG_BYTES: usize = 16 * 1024 * 1024;
-const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const NO_UVC_CAMERA: &str = "no UVC camera detected";
 /// Default resolution cap (640×480 = 307200 pixels) guiding UVC frame selection.
 const DEFAULT_RESOLUTION: u32 = 640 * 480;
+
+pub const CVI_CAMERA_IOCTL_INIT: u32 = 1;
+pub const CVI_CAMERA_IOCTL_GET_INFO: u32 = 2;
+pub const CVI_CAMERA_IOCTL_GET_FRAME: u32 = 3;
+pub const CVI_CAMERA_IOCTL_GET_YUV_FRAME: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -92,12 +79,11 @@ struct UsbCameraSession {
 #[derive(Default)]
 struct UsbCameraState {
     session: Option<UsbCameraSession>,
-    jpu: Option<JpuDecoder>,
-    jpeg_scratch: Vec<u8>,
 }
 
 pub struct CviCamera {
     state: Mutex<UsbCameraState>,
+    jpu: Arc<CviJpu>,
 }
 
 fn ep0_dma_virt_to_phys(p: *const u8) -> u32 {
@@ -313,193 +299,6 @@ fn capture_frame(session: &UsbCameraSession) -> Result<&'static [u8], &'static s
     Err("no complete JPEG frame after capture retries")
 }
 
-fn jpu_scale_from_uapi(scale: u32) -> VfsResult<JpuScale> {
-    match scale {
-        CVI_CAMERA_SCALE_FULL => Ok(JpuScale::Full),
-        CVI_CAMERA_SCALE_HALF => Ok(JpuScale::Half),
-        CVI_CAMERA_SCALE_QUARTER => Ok(JpuScale::Quarter),
-        CVI_CAMERA_SCALE_EIGHTH => Ok(JpuScale::Eighth),
-        _ => Err(AxError::InvalidInput),
-    }
-}
-
-fn map_frame_layout_error(_error: FrameLayoutError) -> AxError {
-    AxError::OperationNotSupported
-}
-
-fn map_jpu_inspect_error(error: JpuInspectError) -> AxError {
-    match error {
-        JpuInspectError::Layout(error) => map_frame_layout_error(error),
-        JpuInspectError::EmptyStream | JpuInspectError::InvalidJpeg(_) => AxError::Io,
-    }
-}
-
-fn map_jpu_create_error(error: JpuCreateError) -> AxError {
-    match error {
-        JpuCreateError::AlreadyOwned => AxError::ResourceBusy,
-        JpuCreateError::Initialization(_) => AxError::Io,
-    }
-}
-
-fn map_jpu_decode_error(error: &JpuDecodeError) -> AxError {
-    match error {
-        JpuDecodeError::Layout(error) => map_frame_layout_error(*error),
-        JpuDecodeError::Dma(DmaError::NoMemory) => AxError::NoMemory,
-        JpuDecodeError::Dma(_) => AxError::Io,
-        JpuDecodeError::Timeout => AxError::TimedOut,
-        JpuDecodeError::Poisoned
-        | JpuDecodeError::EmptyStream
-        | JpuDecodeError::InvalidJpeg(_)
-        | JpuDecodeError::BufferInvariant(_)
-        | JpuDecodeError::DmaAddress(_)
-        | JpuDecodeError::HardwareSetup(_)
-        | JpuDecodeError::DecodeFailed => AxError::Io,
-    }
-}
-
-fn checked_user_range(pointer: u64, length: u64) -> VfsResult<(usize, usize)> {
-    let pointer = usize::try_from(pointer).map_err(|_| AxError::InvalidInput)?;
-    let length = usize::try_from(length).map_err(|_| AxError::InvalidInput)?;
-    pointer.checked_add(length).ok_or(AxError::InvalidInput)?;
-    Ok((pointer, length))
-}
-
-const fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
-    a_start < b_end && b_start < a_end
-}
-
-fn validate_request_buffers_disjoint(
-    request_pointer: *mut CviCameraRequestV1,
-    request: &CviCameraRequestV1,
-) -> VfsResult<()> {
-    let request_start = request_pointer as usize;
-    let request_len = core::mem::size_of::<CviCameraRequestV1>();
-    let request_end = request_start
-        .checked_add(request_len)
-        .ok_or(AxError::InvalidInput)?;
-
-    for (pointer, length) in [
-        (request.jpeg_ptr, request.jpeg_len),
-        (request.data_ptr, request.capacity),
-    ] {
-        if length == 0 {
-            continue;
-        }
-        let (buffer_start, buffer_len) = checked_user_range(pointer, length)?;
-        let buffer_end = buffer_start
-            .checked_add(buffer_len)
-            .ok_or(AxError::InvalidInput)?;
-        if ranges_overlap(request_start, request_end, buffer_start, buffer_end) {
-            return Err(AxError::InvalidInput);
-        }
-    }
-    Ok(())
-}
-
-fn read_user_bytes_into(bytes: &mut Vec<u8>, pointer: u64, length: u64) -> VfsResult<()> {
-    let (pointer, length) = checked_user_range(pointer, length)?;
-    bytes.clear();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| AxError::NoMemory)?;
-    vm_read_slice(
-        pointer as *const u8,
-        &mut bytes.spare_capacity_mut()[..length],
-    )?;
-    // SAFETY: `vm_read_slice` initialized every byte in the reserved range.
-    unsafe { bytes.set_len(length) };
-    Ok(())
-}
-
-const fn extent_to_uapi(extent: sg200x_jpu::Extent) -> CviCameraExtentV1 {
-    CviCameraExtentV1 {
-        width: extent.width,
-        height: extent.height,
-    }
-}
-
-const fn half_ceil(value: u32) -> u32 {
-    value / 2 + value % 2
-}
-
-fn plane_to_uapi(plane: PlaneLayout, visible: CviCameraExtentV1) -> VfsResult<CviCameraPlaneV1> {
-    Ok(CviCameraPlaneV1 {
-        offset: u64::try_from(plane.offset).map_err(|_| AxError::Io)?,
-        len: u64::try_from(plane.len).map_err(|_| AxError::Io)?,
-        stride: plane.stride,
-        storage: extent_to_uapi(plane.storage),
-        visible,
-        reserved: 0,
-    })
-}
-
-fn frame_layout_to_uapi(layout: FrameLayout) -> VfsResult<CviCameraFrameLayoutV1> {
-    let visible = extent_to_uapi(layout.visible);
-    let (format, plane_count, chroma_visible) = match layout.format {
-        JpuPixelFormat::Yuv420 => (
-            CVI_CAMERA_FORMAT_YUV420_PLANAR,
-            3,
-            CviCameraExtentV1 {
-                width: half_ceil(layout.visible.width),
-                height: half_ceil(layout.visible.height),
-            },
-        ),
-        JpuPixelFormat::Yuv422Horizontal => (
-            CVI_CAMERA_FORMAT_YUV422_HORIZONTAL_PLANAR,
-            3,
-            CviCameraExtentV1 {
-                width: half_ceil(layout.visible.width),
-                height: layout.visible.height,
-            },
-        ),
-        JpuPixelFormat::Yuv422Vertical => (
-            CVI_CAMERA_FORMAT_YUV422_VERTICAL_PLANAR,
-            3,
-            CviCameraExtentV1 {
-                width: layout.visible.width,
-                height: half_ceil(layout.visible.height),
-            },
-        ),
-        JpuPixelFormat::Yuv444 => (CVI_CAMERA_FORMAT_YUV444_PLANAR, 3, visible),
-        JpuPixelFormat::Grayscale => (CVI_CAMERA_FORMAT_GRAYSCALE, 1, CviCameraExtentV1::default()),
-        _ => return Err(AxError::OperationNotSupported),
-    };
-
-    let y = plane_to_uapi(layout.y, visible)?;
-    let (cb, cr) = match (layout.cb, layout.cr) {
-        (Some(cb), Some(cr)) => (
-            plane_to_uapi(cb, chroma_visible)?,
-            plane_to_uapi(cr, chroma_visible)?,
-        ),
-        (None, None) if matches!(layout.format, JpuPixelFormat::Grayscale) => {
-            (CviCameraPlaneV1::default(), CviCameraPlaneV1::default())
-        }
-        _ => return Err(AxError::Io),
-    };
-
-    let converted = CviCameraFrameLayoutV1 {
-        data_len: u64::try_from(layout.total_len).map_err(|_| AxError::Io)?,
-        format,
-        plane_count,
-        color_range: CVI_CAMERA_COLOR_RANGE_FULL,
-        color_matrix: CVI_CAMERA_COLOR_MATRIX_BT601,
-        chroma_siting: CVI_CAMERA_CHROMA_SITING_CENTER,
-        reserved: 0,
-        source: extent_to_uapi(layout.source),
-        visible,
-        source_aligned: extent_to_uapi(layout.source_aligned),
-        coded: extent_to_uapi(layout.coded),
-        storage: extent_to_uapi(layout.storage),
-        y,
-        cb,
-        cr,
-    };
-    converted
-        .validate_for_buffer_len(converted.data_len)
-        .map_err(|_| AxError::Io)?;
-    Ok(converted)
-}
-
 impl UsbCameraState {
     fn ensure_initialized(&mut self) -> VfsResult<()> {
         if self.session.is_none() {
@@ -533,126 +332,22 @@ impl UsbCameraState {
             AxError::Io
         })
     }
-
-    fn ensure_jpu(&mut self) -> VfsResult<&mut JpuDecoder> {
-        if self.jpu.is_none() {
-            let jpu_v = iomap_usize(JPU_REG_BASE, REG_MMIO_SIZE);
-            let top_v = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
-            let vc_v = iomap_usize(VC_REG_BASE, REG_MMIO_SIZE);
-            let dma = axklib::dma::device_with_mask(u32::MAX as u64);
-            let decoder = unsafe {
-                JpuDecoder::new(JpuMmio::new(jpu_v, top_v, vc_v), dma).map_err(|e| {
-                    warn!("cvi-camera: JPU init failed: {e}");
-                    map_jpu_create_error(e)
-                })?
-            };
-            self.jpu = Some(decoder);
-        }
-        self.jpu.as_mut().ok_or(AxError::Io)
-    }
-
-    fn write_yuv_frame(&mut self, destination: *mut u8, scale: JpuScale) -> VfsResult<usize> {
-        let jpeg = self.frame()?;
-        let jpu = self.ensure_jpu()?;
-        let result = jpu.decode_scaled(jpeg, scale).map_err(|e| {
-            warn!("cvi-camera: JPU decode failed: {e}");
-            AxError::Io
-        })?;
-        info!(
-            "cvi-camera: JPU decode OK scale={:?} visible={}x{} storage={}x{} y_stride={} yuv={} \
-             bytes",
-            result.layout.scale,
-            result.width,
-            result.height,
-            result.layout.storage.width,
-            result.layout.storage.height,
-            result.layout.y.stride,
-            result.yuv_data.len()
-        );
-        vm_write_slice(destination, result.yuv_data)?;
-        Ok(result.yuv_data.len())
-    }
-
-    fn process_v1_jpeg(
-        &mut self,
-        request_pointer: *mut CviCameraRequestV1,
-        mut request: CviCameraRequestV1,
-        jpeg: &[u8],
-        scale: JpuScale,
-    ) -> VfsResult<usize> {
-        let output = if request.is_query_only() {
-            None
-        } else {
-            Some(checked_user_range(request.data_ptr, request.capacity)?)
-        };
-
-        let inspected = inspect_jpeg_layout(jpeg, scale).map_err(|error| {
-            warn!("cvi-camera: JPU layout inspection failed: {error}");
-            map_jpu_inspect_error(error)
-        })?;
-        if inspected.total_len > MAX_OUTPUT_BYTES {
-            warn!(
-                "cvi-camera: refusing {}-byte JPU output above {}-byte limit",
-                inspected.total_len, MAX_OUTPUT_BYTES
-            );
-            return Err(AxError::OperationNotSupported);
-        }
-
-        request.layout = frame_layout_to_uapi(inspected)?;
-        if request.is_query_only() {
-            request_pointer.vm_write(request)?;
-            return Ok(0);
-        }
-
-        let (output_pointer, capacity) = output.ok_or(AxError::InvalidInput)?;
-        if capacity < inspected.total_len {
-            request_pointer.vm_write(request)?;
-            return Err(AxError::StorageFull);
-        }
-
-        // Check write access and publish the final metadata before starting the
-        // hardware operation. A read-only control block must not lead to a
-        // successful payload copy followed by EFAULT on the response write.
-        request_pointer.vm_write(request)?;
-        let jpu = self.ensure_jpu()?;
-        let result = jpu.decode_scaled(jpeg, scale).map_err(|error| {
-            let mapped = map_jpu_decode_error(&error);
-            warn!("cvi-camera: JPU decode failed: {error}");
-            mapped
-        })?;
-        if result.layout != inspected || result.yuv_data.len() != inspected.total_len {
-            warn!(
-                "cvi-camera: inspected/decode layout mismatch inspected={:?} decoded={:?} bytes={}",
-                inspected,
-                result.layout,
-                result.yuv_data.len()
-            );
-            return Err(AxError::Io);
-        }
-
-        vm_write_slice(output_pointer as *mut u8, result.yuv_data)?;
-        Ok(0)
-    }
-
-    fn process_v1_submitted_jpeg(
-        &mut self,
-        request_pointer: *mut CviCameraRequestV1,
-        request: CviCameraRequestV1,
-        scale: JpuScale,
-    ) -> VfsResult<usize> {
-        let mut jpeg = core::mem::take(&mut self.jpeg_scratch);
-        let result = read_user_bytes_into(&mut jpeg, request.jpeg_ptr, request.jpeg_len)
-            .and_then(|_| self.process_v1_jpeg(request_pointer, request, jpeg.as_slice(), scale));
-        self.jpeg_scratch = jpeg;
-        result
-    }
 }
 
 impl CviCamera {
-    pub fn new() -> Self {
+    pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
             state: Mutex::new(UsbCameraState::default()),
+            jpu,
         }
+    }
+
+    fn write_yuv_frame(&self, destination: *mut u8) -> VfsResult<usize> {
+        // Hold the camera lock until decode has consumed the static USB DMA
+        // slice; another capture must not overwrite it concurrently.
+        let mut state = self.state.lock();
+        let jpeg = state.frame()?;
+        self.jpu.decode_camera_to_user(jpeg, destination)
     }
 }
 
@@ -689,144 +384,8 @@ impl DeviceOps for CviCamera {
                 vm_write_slice(arg as *mut u8, frame)?;
                 Ok(frame.len())
             }
-            CVI_CAMERA_IOCTL_GET_YUV_FRAME => self
-                .state
-                .lock()
-                .write_yuv_frame(arg as *mut u8, JpuScale::Full),
-            CVI_CAMERA_IOCTL_CAPTURE_SCALED => {
-                let request_pointer = arg as *mut CviCameraRequestV1;
-                let request = request_pointer.vm_read()?;
-                request
-                    .validate_capture()
-                    .map_err(|_| AxError::InvalidInput)?;
-                validate_request_buffers_disjoint(request_pointer, &request)?;
-                let scale = jpu_scale_from_uapi(request.header.scale)?;
-
-                let mut state = self.state.lock();
-                let jpeg = state.frame()?;
-                state.process_v1_jpeg(request_pointer, request, jpeg, scale)
-            }
-            CVI_CAMERA_IOCTL_DECODE_JPEG => {
-                let request_pointer = arg as *mut CviCameraRequestV1;
-                let request = request_pointer.vm_read()?;
-                request
-                    .validate_decode()
-                    .map_err(|_| AxError::InvalidInput)?;
-                validate_request_buffers_disjoint(request_pointer, &request)?;
-                let scale = jpu_scale_from_uapi(request.header.scale)?;
-                let jpeg_len =
-                    usize::try_from(request.jpeg_len).map_err(|_| AxError::InvalidInput)?;
-                if jpeg_len > MAX_SUBMITTED_JPEG_BYTES {
-                    return Err(AxError::InvalidInput);
-                }
-                self.state
-                    .lock()
-                    .process_v1_submitted_jpeg(request_pointer, request, scale)
-            }
+            CVI_CAMERA_IOCTL_GET_YUV_FRAME => self.write_yuv_frame(arg as *mut u8),
             _ => Err(AxError::NotATty),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_all_jpu_formats_to_valid_v1_layouts() {
-        for (format, expected_format, expected_planes) in [
-            (JpuPixelFormat::Yuv420, CVI_CAMERA_FORMAT_YUV420_PLANAR, 3),
-            (
-                JpuPixelFormat::Yuv422Horizontal,
-                CVI_CAMERA_FORMAT_YUV422_HORIZONTAL_PLANAR,
-                3,
-            ),
-            (
-                JpuPixelFormat::Yuv422Vertical,
-                CVI_CAMERA_FORMAT_YUV422_VERTICAL_PLANAR,
-                3,
-            ),
-            (JpuPixelFormat::Yuv444, CVI_CAMERA_FORMAT_YUV444_PLANAR, 3),
-            (JpuPixelFormat::Grayscale, CVI_CAMERA_FORMAT_GRAYSCALE, 1),
-        ] {
-            let layout = FrameLayout::new(641, 481, format, JpuScale::Full)
-                .expect("test dimensions produce a valid JPU layout");
-            let converted =
-                frame_layout_to_uapi(layout).expect("JPU layout maps to the frozen UAPI");
-
-            assert_eq!(converted.format, expected_format);
-            assert_eq!(converted.plane_count, expected_planes);
-            assert_eq!(
-                converted.visible,
-                CviCameraExtentV1 {
-                    width: 641,
-                    height: 481
-                }
-            );
-            assert_eq!(converted.data_len, layout.total_len as u64);
-            assert_eq!(
-                converted.validate_for_buffer_len(converted.data_len),
-                Ok(())
-            );
-        }
-    }
-
-    #[test]
-    fn maps_scaled_yuv420_visible_chroma_with_ceil_division() {
-        let layout = FrameLayout::new(1279, 1706, JpuPixelFormat::Yuv420, JpuScale::Half)
-            .expect("known SG2002 test dimensions are supported");
-        let converted = frame_layout_to_uapi(layout).expect("scaled layout maps to UAPI");
-
-        assert_eq!(
-            converted.visible,
-            CviCameraExtentV1 {
-                width: 640,
-                height: 853
-            }
-        );
-        assert_eq!(
-            converted.storage,
-            CviCameraExtentV1 {
-                width: 640,
-                height: 856
-            }
-        );
-        assert_eq!(
-            converted.cb.visible,
-            CviCameraExtentV1 {
-                width: 320,
-                height: 427
-            }
-        );
-        assert_eq!(converted.cr.visible, converted.cb.visible);
-    }
-
-    #[test]
-    fn rejects_user_ranges_that_overflow_usize() {
-        assert_eq!(checked_user_range(u64::MAX, 1), Err(AxError::InvalidInput));
-    }
-
-    #[test]
-    fn rejects_request_overlap_with_input_or_output_buffers() {
-        let request_pointer = 0x1000usize as *mut CviCameraRequestV1;
-        let mut request =
-            CviCameraRequestV1::new_decode(0x2000, 128, CVI_CAMERA_SCALE_HALF, 0x3000, 4096);
-        assert_eq!(
-            validate_request_buffers_disjoint(request_pointer, &request),
-            Ok(())
-        );
-
-        request.data_ptr = 0x1080;
-        assert_eq!(
-            validate_request_buffers_disjoint(request_pointer, &request),
-            Err(AxError::InvalidInput)
-        );
-
-        request.data_ptr = 0x3000;
-        request.jpeg_ptr = 0x0ff0;
-        assert_eq!(
-            validate_request_buffers_disjoint(request_pointer, &request),
-            Err(AxError::InvalidInput)
-        );
     }
 }

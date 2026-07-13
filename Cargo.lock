@@ -2621,11 +2621,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cvi-camera-uapi"
+name = "cvi-vdec-uapi"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7702,7 +7701,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "crab-usb",
- "cvi-camera-uapi",
+ "cvi-vdec-uapi",
  "ddebug",
  "dma-api",
  "downcast-rs",

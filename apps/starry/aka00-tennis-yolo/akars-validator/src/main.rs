@@ -210,6 +210,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for input in &input_images {
                 max_frame_len = max_frame_len.max(decoder.prepare_jpeg(&input.frame.jpeg)?);
             }
+            decoder.start()?;
             println!(
                 "AKARS_TENNIS_PIPELINE mode=jpu scale={} device={} prepared_bytes={max_frame_len}",
                 scale,
@@ -794,19 +795,13 @@ mod tests {
     #[test]
     fn benchmark_cli_accepts_explicit_jpu_replay_pipeline() {
         let cli = parse_cli(
-            cli_args(&[
-                "--jpu-device",
-                "/dev/cvi-usb-camera0",
-                "--jpu-scale",
-                "quarter",
-            ])
-            .into_iter(),
+            cli_args(&["--jpu-device", "/dev/cvi_vc_dec0", "--jpu-scale", "quarter"]).into_iter(),
         )
         .unwrap();
 
         assert_eq!(
             cli.jpu_device.as_deref(),
-            Some(Path::new("/dev/cvi-usb-camera0"))
+            Some(Path::new("/dev/cvi_vc_dec0"))
         );
         assert_eq!(cli.jpu_scale, Some(JpuScale::Quarter));
     }
