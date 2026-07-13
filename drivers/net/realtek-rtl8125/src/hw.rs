@@ -589,9 +589,10 @@ mod tests {
 
     impl PhyRegisterAccess for RecordingPhy {
         fn read_phy(&mut self, reg: u32) -> Result<u16> {
+            // Seed target and unrelated bits to verify clear/set behavior and preservation.
             let value = match (self.page, reg) {
-                (0, 0x09) => 0xa55a,
-                (0, 0x00) => 0x8040,
+                (0, 0x09) => 0x0500,
+                (0, 0x00) => 0x0140,
                 _ => 0,
             };
             self.operations
@@ -622,10 +623,10 @@ mod tests {
             phy.operations,
             [
                 (OperationKind::Write, 0x0b87, 0x1f, 0),
-                (OperationKind::Read, 0, 0x09, 0xa55a),
-                (OperationKind::Write, 0, 0x09, 0xa65a),
-                (OperationKind::Read, 0, 0x00, 0x8040),
-                (OperationKind::Write, 0, 0x00, 0x9240),
+                (OperationKind::Read, 0, 0x09, 0x0500),
+                (OperationKind::Write, 0, 0x09, 0x0600),
+                (OperationKind::Read, 0, 0x00, 0x0140),
+                (OperationKind::Write, 0, 0x00, 0x1340),
             ]
         );
     }
