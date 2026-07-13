@@ -2621,6 +2621,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cvi-camera-uapi"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "darling"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7694,7 +7702,9 @@ dependencies = [
  "cfg-if",
  "chrono",
  "crab-usb",
+ "cvi-camera-uapi",
  "ddebug",
+ "dma-api",
  "downcast-rs",
  "enum_dispatch",
  "event-listener",

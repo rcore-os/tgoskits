@@ -1,0 +1,14 @@
+[package]
+name = "cvi-camera-uapi"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fixed-width userspace ABI for the StarryOS CVI USB camera"
+keywords = ["cvi", "camera", "jpeg", "uapi", "no-std"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }
+thiserror.workspace = true
