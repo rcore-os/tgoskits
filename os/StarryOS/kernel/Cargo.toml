@@ -48,7 +48,7 @@ sg2002-wifi = [
     "sg2002",
     "ax-runtime/aic8800-wifi",
 ]
-sg2002-cvi-usb-camera = ["sg2002"]
+sg2002-cvi-usb-camera = ["sg2002", "dep:sg200x-jpu"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
@@ -155,6 +155,7 @@ kmod-loader = "0.3.1"
 lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+sg200x-jpu = { workspace = true, optional = true }
 # 0.10 to match sg200x-bsp 0.7.x's internal tock-registers; the Writeable trait
 # must come from the same version as sg200x-bsp's ReadWrite types.
 tock-registers = { version = "0.10", optional = true }
