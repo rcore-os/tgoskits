@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use aarch64_sysreg::SystemRegType;
-use ax_errno::AxResult;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
+    SysRegAddrRange,
 };
 use log::info;
 
@@ -35,7 +35,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         &self,
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
-    ) -> AxResult<usize> {
+    ) -> DeviceResult<usize> {
         Ok(0)
     }
 
@@ -44,7 +44,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
         val: usize,
-    ) -> AxResult {
+    ) -> DeviceResult {
         info!("Write to emulator register: {addr:?}, value: {val}");
         Ok(())
     }

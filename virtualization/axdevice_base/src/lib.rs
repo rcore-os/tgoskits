@@ -39,7 +39,7 @@
 //! ```rust,ignore
 //! use axdevice_base::{BaseDeviceOps, EmuDeviceType};
 //! use axaddrspace::{GuestPhysAddrRange, device::AccessWidth};
-//! use ax_errno::AxResult;
+//! use axdevice_base::DeviceResult;
 //!
 //! struct MyDevice {
 //!     base_addr: usize,
@@ -55,12 +55,12 @@
 //!         (self.base_addr..self.base_addr + self.size).try_into().unwrap()
 //!     }
 //!
-//!     fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+//!     fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
 //!         // Handle read operation
 //!         Ok(0)
 //!     }
 //!
-//!     fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
+//!     fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
 //!         // Handle write operation
 //!         Ok(())
 //!     }
@@ -89,17 +89,14 @@ mod device;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
-#[doc(hidden)]
-pub use ax_errno::AxError;
-pub use ax_errno::AxResult;
 pub use axvm_types::{
     EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode,
     IrqLineId,
 };
 
 pub use crate::device::{
-    AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError, Port,
-    PortRange, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError,
+    DeviceResult, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 
 /// Represents the configuration of an emulated device for a virtual machine.
@@ -227,7 +224,7 @@ pub trait BaseDeviceOps<R: DeviceAddrRange>: Any {
     /// Implementations should respect the `width` parameter and only return
     /// data of the appropriate size. The returned value should be zero-extended
     /// if necessary.
-    fn handle_read(&self, addr: R::Addr, width: AccessWidth) -> AxResult<usize>;
+    fn handle_read(&self, addr: R::Addr, width: AccessWidth) -> DeviceResult<usize>;
 
     /// Handles a write operation on the emulated device.
     ///
@@ -246,7 +243,7 @@ pub trait BaseDeviceOps<R: DeviceAddrRange>: Any {
     ///
     /// Implementations should only use the lower bits of `val` corresponding
     /// to the specified `width`.
-    fn handle_write(&self, addr: R::Addr, width: AccessWidth, val: usize) -> AxResult;
+    fn handle_write(&self, addr: R::Addr, width: AccessWidth, val: usize) -> DeviceResult;
 }
 
 /// Attempts to downcast a device to a specific type and apply a function to it.
@@ -383,7 +380,7 @@ pub enum Arch {
 ///
 /// The device manager uses this information for address-range conflict
 /// detection and architecture-suitability checks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Resource {
     /// An MMIO address window.
     MmioRange {
@@ -410,27 +407,33 @@ pub enum Resource {
 
 /// The reason a resource was rejected as structurally invalid during
 /// validation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 pub enum InvalidResourceReason {
     /// The resource has a size or count of zero.
+    #[error("resource size or count is zero")]
     ZeroSized,
     /// The resource's end address overflows the address space.
+    #[error("resource end address overflows")]
     AddressOverflow,
     /// The resource extends past the valid bus address range.
+    #[error("resource extends beyond the bus address range")]
     OutOfBusRange,
     /// The bus kind of the resource is not supported on the current
     /// architecture.
+    #[error("resource bus is unsupported on this architecture")]
     UnsupportedOnArchitecture,
     /// The device declared multiple resources of the same bus kind whose
     /// address ranges overlap each other, which would corrupt the
     /// dispatch index.
+    #[error("device resources overlap")]
     OverlappingResources,
 }
 
 /// Errors that can be returned when registering a device.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 pub enum RegistryError {
     /// The device declared a resource that is structurally invalid.
+    #[error("invalid device resource {resource:?}: {reason}")]
     InvalidResource {
         /// The invalid resource.
         resource: Resource,
@@ -438,6 +441,10 @@ pub enum RegistryError {
         reason: InvalidResourceReason,
     },
     /// Two devices claim overlapping address ranges.
+    #[error(
+        "device resource {resource:?} conflicts with {existing:?} owned by device \
+         {existing_device:?}"
+    )]
     AddressConflict {
         /// The resource the new device is attempting to register.
         resource: Resource,
@@ -448,6 +455,7 @@ pub enum RegistryError {
     },
     /// The device requested a bus type that the current architecture does
     /// not support (e.g. Port I/O on AArch64).
+    #[error("device bus {kind:?} is unsupported on {arch:?}")]
     BusKindNotSupported {
         /// The unsupported bus kind.
         kind: BusKind,
@@ -455,6 +463,10 @@ pub enum RegistryError {
         arch: Arch,
     },
     /// The device is not compatible with the current target architecture.
+    #[error(
+        "device {device_name} requires {required_arch:?}, but the current architecture is \
+         {current_arch:?}"
+    )]
     ArchNotSupported {
         /// Human-readable device name (for diagnostics).
         device_name: String,
@@ -559,4 +571,4 @@ mod adapter;
 mod irq;
 
 pub use adapter::{MmioDeviceAdapter, PortDeviceAdapter, SysRegDeviceAdapter};
-pub use irq::{IrqLine, IrqSink};
+pub use irq::{IrqError, IrqLine, IrqResult, IrqSink};

@@ -8,7 +8,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
 
-use crate::consts::*;
+use crate::{VplicError, VplicResult, consts::*};
 
 /// Virtual PLIC global controller.
 ///
@@ -39,22 +39,28 @@ impl VPlicGlobal {
     /// * `size` - Size of the PLIC memory region in bytes
     /// * `contexts_num` - Number of interrupt contexts (typically equal to number of harts)
     ///
-    /// # Panics
-    /// Panics if the provided size is insufficient to hold all PLIC registers.
-    pub fn new(addr: GuestPhysAddr, size: Option<usize>, contexts_num: usize) -> Self {
-        let addr_end = addr.as_usize()
-            + contexts_num * PLIC_CONTEXT_STRIDE
-            + PLIC_CONTEXT_CTRL_OFFSET
-            + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
-        let size = size.expect("Size must be specified for VPlicGlobal");
-        assert!(
-            addr.as_usize() + size > addr_end,
-            "End address 0x{:x} exceeds region [0x{:x}, 0x{:x})  ",
-            addr_end,
-            addr.as_usize(),
-            addr.as_usize() + size,
-        );
-        Self {
+    /// # Errors
+    ///
+    /// Returns an error if `size` is absent, the address calculation
+    /// overflows, or the region cannot cover all configured contexts.
+    pub fn new(addr: GuestPhysAddr, size: Option<usize>, contexts_num: usize) -> VplicResult<Self> {
+        let base = addr.as_usize();
+        let required_end = contexts_num
+            .checked_mul(PLIC_CONTEXT_STRIDE)
+            .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CTRL_OFFSET))
+            .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET))
+            .and_then(|offset| base.checked_add(offset))
+            .ok_or(VplicError::AddressOverflow)?;
+        let size = size.ok_or(VplicError::MissingRegionSize)?;
+        let region_end = base.checked_add(size).ok_or(VplicError::AddressOverflow)?;
+        if region_end <= required_end {
+            return Err(VplicError::InsufficientRegion {
+                base,
+                region_end,
+                required_end,
+            });
+        }
+        Ok(Self {
             addr,
             size,
             assigned_irqs: Mutex::new(Bitmap::new()),
@@ -62,7 +68,7 @@ impl VPlicGlobal {
             active_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
             host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()), /* Currently we assume host_plic_addr = guest_vplic_addr */
-        }
+        })
     }
 
     // pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {

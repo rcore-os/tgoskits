@@ -17,10 +17,10 @@
 use alloc::sync::Arc;
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceRegistration,
-    MmioDeviceAdapter,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter,
 };
-use axdevice_base::{AxError as DeviceError, AxResult as DeviceResult, IrqLineId, IrqSink};
+use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
@@ -33,16 +33,27 @@ struct RiscvPlicIrqSink {
 }
 
 impl IrqSink for RiscvPlicIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> DeviceResult {
-        if asserted {
+    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
+        let result = if asserted {
             self.vplic.set_pending(line.0)
         } else {
             self.vplic.clear_pending(line.0)
-        }
+        };
+        result.map_err(|error| IrqError::Backend {
+            line,
+            operation: "set vPLIC line level",
+            detail: alloc::format!("{error}"),
+        })
     }
 
-    fn pulse(&self, line: IrqLineId) -> DeviceResult {
-        self.vplic.set_pending(line.0)
+    fn pulse(&self, line: IrqLineId) -> IrqResult {
+        self.vplic
+            .set_pending(line.0)
+            .map_err(|error| IrqError::Backend {
+                line,
+                operation: "pulse vPLIC line",
+                detail: alloc::format!("{error}"),
+            })
     }
 }
 
@@ -62,12 +73,18 @@ impl DeviceFactory for RiscvPlicFactory {
         &self,
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
-    ) -> DeviceResult<DeviceBundle> {
+    ) -> DeviceManagerResult<DeviceBundle> {
         if config.base_gpa != self.base_gpa
             || config.length != self.length
             || config.cfg_list.as_slice() != [self.contexts_num]
         {
-            return Err(DeviceError::InvalidInput);
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build virtual PLIC",
+                detail: alloc::format!(
+                    "factory configuration does not match device '{}'",
+                    config.name
+                ),
+            });
         }
         Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.vplic.clone())).into())
     }
@@ -124,19 +141,16 @@ pub(crate) fn configure(
     }
 
     let contexts_num = validate_vplic_config(config)?;
-    let vplic = Arc::new(VPlicGlobal::new(
-        config.base_gpa.into(),
-        Some(config.length),
+    let vplic = Arc::new(
+        VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
+            .map_err(AxVmError::invalid_config)?,
+    );
+    factories.register(Arc::new(RiscvPlicFactory {
+        base_gpa: config.base_gpa,
+        length: config.length,
         contexts_num,
-    ));
-    factories
-        .register(Arc::new(RiscvPlicFactory {
-            base_gpa: config.base_gpa,
-            length: config.length,
-            contexts_num,
-            vplic: vplic.clone(),
-        }))
-        .map_err(|error| AxVmError::device("register virtual PLIC factory", error))?;
+        vplic: vplic.clone(),
+    }))?;
 
     InterruptFabric::with_sink(mode, Arc::new(RiscvPlicIrqSink { vplic }))
 }

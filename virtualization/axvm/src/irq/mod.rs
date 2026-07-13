@@ -16,14 +16,11 @@
 
 use alloc::sync::Arc;
 
-use axdevice::IrqResolver;
-use axdevice_base::{
-    AxError as DeviceError, AxResult as DeviceResult, InterruptTriggerMode, IrqLine, IrqLineId,
-    IrqSink,
-};
+use axdevice::{DeviceManagerResult, IrqResolver};
+use axdevice_base::{InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink};
 use axvm_types::VMInterruptMode;
 
-use crate::{AxVmError, AxVmResult, ax_err};
+use crate::{AxVmResult, ax_err};
 
 /// Host platform hook for registering the RISC-V physical IRQ injector.
 #[ax_crate_interface::def_interface]
@@ -96,30 +93,35 @@ impl InterruptFabric {
         self.sink.is_some()
     }
 
-    fn sink_for_line(&self, _line: usize) -> DeviceResult<&Arc<dyn IrqSink>> {
+    fn sink_for_line(&self, line: usize) -> IrqResult<&Arc<dyn IrqSink>> {
         let Some(sink) = &self.sink else {
             if self.mode == VMInterruptMode::NoIrq {
-                return Err(DeviceError::InvalidInput);
+                return Err(IrqError::InvalidLine {
+                    line: IrqLineId(line),
+                    operation: "resolve",
+                    detail: "the VM is configured without interrupt delivery".into(),
+                });
             }
-            return Err(DeviceError::Unsupported);
+            return Err(IrqError::Unsupported {
+                line: IrqLineId(line),
+                operation: "resolve",
+                detail: "no interrupt backend is installed".into(),
+            });
         };
         Ok(sink)
     }
 
     /// Sets the asserted state of a VM-local interrupt line.
     pub fn set_level(&self, line: usize, asserted: bool) -> AxVmResult {
-        self.sink_for_line(line)
-            .map_err(|error| AxVmError::interrupt("resolve interrupt line", error))?
-            .set_level(IrqLineId(line), asserted)
-            .map_err(|error| AxVmError::interrupt("set interrupt line level", error))
+        self.sink_for_line(line)?
+            .set_level(IrqLineId(line), asserted)?;
+        Ok(())
     }
 
     /// Delivers one pulse on a VM-local interrupt line.
     pub fn pulse(&self, line: usize) -> AxVmResult {
-        self.sink_for_line(line)
-            .map_err(|error| AxVmError::interrupt("resolve interrupt line", error))?
-            .pulse(IrqLineId(line))
-            .map_err(|error| AxVmError::interrupt("pulse interrupt line", error))
+        self.sink_for_line(line)?.pulse(IrqLineId(line))?;
+        Ok(())
     }
 
     pub(crate) fn validate_mode(&self, mode: VMInterruptMode) -> AxVmResult {
@@ -143,7 +145,11 @@ impl Default for InterruptFabric {
 }
 
 impl IrqResolver for InterruptFabric {
-    fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> DeviceResult<IrqLine> {
+    fn resolve_irq(
+        &self,
+        line: usize,
+        trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine> {
         Ok(IrqLine::new(
             IrqLineId(line),
             trigger,

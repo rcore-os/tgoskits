@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
-ax-errno.workspace = true
 ax-plat.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true

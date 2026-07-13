@@ -24,8 +24,8 @@ use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
-use axdevice::{AxVmDevices, FwCfg, FwCfgPlatformConfig};
-use axdevice_base::{AccessWidth, AxError as DeviceError};
+use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
+use axdevice_base::AccessWidth;
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
@@ -771,17 +771,15 @@ impl AxVM {
                 pending.base.as_usize(),
                 pending.base.as_usize() + pending.size
             );
-            devices
-                .add_fw_cfg_dev(Arc::new(FwCfg::new(
-                    pending.base,
-                    pending.size,
-                    pending.kernel,
-                    pending.initrd,
-                    pending.cmdline.as_deref(),
-                    pending.cpu_num,
-                    pending.platform,
-                )))
-                .map_err(|error| AxVmError::device("register fw_cfg device", error))?;
+            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(
+                pending.base,
+                pending.size,
+                pending.kernel,
+                pending.initrd,
+                pending.cmdline.as_deref(),
+                pending.cpu_num,
+                pending.platform,
+            )))?;
         }
         Ok(())
     }
@@ -794,30 +792,31 @@ impl AxVM {
     ) -> AxVmResult {
         let devices = self.get_devices()?;
         if let Some(fw_cfg) = devices.fw_cfg_for_dma_addr(addr) {
-            if let Some(desc_addr) = fw_cfg
-                .write_dma_address(addr, width, data)
-                .map_err(|error| AxVmError::device("write fw_cfg DMA address", error))?
-            {
-                fw_cfg
-                    .process_dma(
-                        desc_addr,
-                        |gpa, buffer| {
-                            self.read_from_guest(gpa, buffer)
-                                .map_err(|_| DeviceError::InvalidData)
-                        },
-                        |gpa, buffer| {
-                            self.write_to_guest(gpa, buffer)
-                                .map_err(|_| DeviceError::InvalidData)
-                        },
-                    )
-                    .map_err(|error| AxVmError::device("process fw_cfg DMA request", error))?;
+            if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
+                fw_cfg.process_dma(
+                    desc_addr,
+                    |gpa, buffer| {
+                        self.read_from_guest(gpa, buffer).map_err(|error| {
+                            DeviceManagerError::UnexpectedResponse {
+                                operation: "read guest memory for fw_cfg DMA",
+                                detail: alloc::format!("{error}"),
+                            }
+                        })
+                    },
+                    |gpa, buffer| {
+                        self.write_to_guest(gpa, buffer).map_err(|error| {
+                            DeviceManagerError::UnexpectedResponse {
+                                operation: "write guest memory for fw_cfg DMA",
+                                detail: alloc::format!("{error}"),
+                            }
+                        })
+                    },
+                )?;
             }
             return Ok(());
         }
 
-        devices
-            .handle_mmio_write(addr, width, data)
-            .map_err(|error| AxVmError::device("write guest MMIO", error))?;
+        devices.handle_mmio_write(addr, width, data)?;
         Ok(())
     }
 

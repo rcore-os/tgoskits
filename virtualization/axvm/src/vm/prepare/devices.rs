@@ -3,7 +3,7 @@
 use axdevice::{AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry};
 
 use super::super::{AxVM, AxVMResources};
-use crate::{AxVmError, AxVmResult, irq::InterruptFabric};
+use crate::{AxVmResult, irq::InterruptFabric};
 
 pub(crate) struct PreparedDevices {
     pub(crate) devices: AxVmDevices,
@@ -22,8 +22,7 @@ impl PreparedDevices {
             },
             factories,
             &build_context,
-        )
-        .map_err(|error| AxVmError::device("build VM devices", error))?;
+        )?;
 
         Ok(Self { devices })
     }

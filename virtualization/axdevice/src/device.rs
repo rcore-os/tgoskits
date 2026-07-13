@@ -17,7 +17,6 @@ use core::ops::Range;
 
 #[cfg(target_arch = "aarch64")]
 use arm_vgic::Vgic;
-use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
@@ -34,8 +33,8 @@ use riscv_vplic::VPlicGlobal;
 use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
-    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, FwCfg,
-    PollableDeviceOps, range_alloc::RangeAllocator,
+    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, FwCfg, PollableDeviceOps, range_alloc::RangeAllocator,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -114,7 +113,7 @@ impl AxVmDevices {
     }
 
     /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
+    pub fn new(config: AxVmDeviceConfig) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
 
         Self::init(&mut this, &config.emu_configs)?;
@@ -126,7 +125,7 @@ impl AxVmDevices {
         config: AxVmDeviceConfig,
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
-    ) -> AxResult<Self> {
+    ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
         for config in &config.emu_configs {
             if factories.get(config.emu_type).is_some() {
@@ -134,13 +133,13 @@ impl AxVmDevices {
             } else if Self::is_legacy_fallback(config.emu_type) {
                 Self::init(&mut this, core::slice::from_ref(config))?;
             } else {
-                return ax_err!(
-                    Unsupported,
-                    format_args!(
+                return Err(DeviceManagerError::Unsupported {
+                    operation: "build emulated device",
+                    detail: format!(
                         "no factory is registered for emulated device '{}' of type {}",
                         config.name, config.emu_type
-                    )
-                );
+                    ),
+                });
             }
         }
         Ok(this)
@@ -152,7 +151,7 @@ impl AxVmDevices {
         config: &EmulatedDeviceConfig,
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
-    ) -> AxResult {
+    ) -> DeviceManagerResult {
         let bundle = factories.build(config, context)?;
         self.register_bundle(bundle)
     }
@@ -174,8 +173,24 @@ impl AxVmDevices {
         )
     }
 
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn config_argument(
+        config: &EmulatedDeviceConfig,
+        index: usize,
+        expected: &'static str,
+    ) -> DeviceManagerResult<usize> {
+        config
+            .cfg_list
+            .get(index)
+            .copied()
+            .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                operation: "initialize emulated device",
+                detail: format!("device '{}' requires {expected}", config.name),
+            })
+    }
+
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> AxResult {
+    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> DeviceManagerResult {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -184,10 +199,7 @@ impl AxVmDevices {
                         #[allow(clippy::arc_with_non_send_sync)]
                         this.register(
                             MmioDeviceAdapter::from_arc(Arc::new(Vgic::new())) as Arc<dyn Device>
-                        )
-                        .map_err(|e| {
-                            ax_err_type!(InvalidInput, alloc::format!("register vgic: {e:?}"))
-                        })?;
+                        )?;
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -200,24 +212,11 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTRedistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        const GPPT_GICR_ARG_ERR_MSG: &str =
-                            "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
+                        const GPPT_GICR_ARGS: &str = "three arguments (cpu_num, stride, pcpu_id)";
 
-                        let cpu_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let stride = config
-                            .cfg_list
-                            .get(1)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let pcpu_id = config
-                            .cfg_list
-                            .get(2)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
+                        let cpu_num = Self::config_argument(config, 0, GPPT_GICR_ARGS)?;
+                        let stride = Self::config_argument(config, 1, GPPT_GICR_ARGS)?;
+                        let pcpu_id = Self::config_argument(config, 2, GPPT_GICR_ARGS)?;
 
                         for i in 0..cpu_num {
                             let addr = config.base_gpa + i * stride;
@@ -229,13 +228,7 @@ impl AxVmDevices {
                                     Some(size),
                                     pcpu_id + i,
                                 ),
-                            )) as Arc<dyn Device>)
-                                .map_err(|e| {
-                                    ax_err_type!(
-                                        InvalidInput,
-                                        alloc::format!("register gicr: {e:?}")
-                                    )
-                                })?;
+                            )) as Arc<dyn Device>)?;
 
                             info!(
                                 "GPPT Redistributor initialized for vCPU {i} with base GPA \
@@ -260,10 +253,7 @@ impl AxVmDevices {
                                 config.base_gpa.into(),
                                 Some(config.length),
                             ),
-                        )) as Arc<dyn Device>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, alloc::format!("register gicd: {e:?}"))
-                            })?;
+                        )) as Arc<dyn Device>)?;
 
                         info!(
                             "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
@@ -283,12 +273,9 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTITS => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        let host_gits_base = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .map(PhysAddr::from_usize)
-                            .expect("expect 1 arg for gppt its (host_gits_base)");
+                        let host_gits_base =
+                            Self::config_argument(config, 0, "one argument (host_gits_base)")
+                                .map(PhysAddr::from_usize)?;
 
                         #[allow(clippy::arc_with_non_send_sync)]
                         this.register(MmioDeviceAdapter::from_arc(Arc::new(
@@ -298,10 +285,7 @@ impl AxVmDevices {
                                 host_gits_base,
                                 false,
                             ),
-                        )) as Arc<dyn Device>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, alloc::format!("register gits: {e:?}"))
-                            })?;
+                        )) as Arc<dyn Device>)?;
 
                         info!(
                             "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
@@ -322,19 +306,22 @@ impl AxVmDevices {
                 EmulatedDeviceType::PPPTGlobal => {
                     #[cfg(target_arch = "riscv64")]
                     {
-                        let context_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect("expect 1 arg for pppt global (context_num)");
-                        this.register(MmioDeviceAdapter::from_arc(Arc::new(VPlicGlobal::new(
+                        let context_num =
+                            Self::config_argument(config, 0, "one argument (context_num)")?;
+                        let vplic = VPlicGlobal::new(
                             config.base_gpa.into(),
                             Some(config.length),
                             context_num,
-                        ))) as Arc<dyn Device>)
-                            .map_err(|e| {
-                                ax_err_type!(InvalidInput, alloc::format!("register pppt: {e:?}"))
-                            })?;
+                        )
+                        .map_err(|error| {
+                            DeviceManagerError::InvalidConfig {
+                                operation: "initialize virtual PLIC",
+                                detail: format!("device '{}': {error}", config.name),
+                            }
+                        })?;
+                        this.register(
+                            MmioDeviceAdapter::from_arc(Arc::new(vplic)) as Arc<dyn Device>
+                        )?;
                         // PLIC Partial Passthrough Global.
                         info!(
                             "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
@@ -395,13 +382,7 @@ impl AxVmDevices {
                         let pch_pic =
                             Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
                         this.register(MmioDeviceAdapter::from_arc(pch_pic.clone())
-                            as Arc<dyn Device + Send + Sync + 'static>)
-                            .map_err(|e| {
-                                ax_err_type!(
-                                    InvalidInput,
-                                    format!("register loongarch pch-pic: {e:?}")
-                                )
-                            })?;
+                            as Arc<dyn Device + Send + Sync + 'static>)?;
                         this.loongarch_pch_pic = Some(pch_pic);
                         info!(
                             "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
@@ -448,12 +429,18 @@ impl AxVmDevices {
     }
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
-    pub fn alloc_ivc_channel(&self, size: usize) -> AxResult<GuestPhysAddr> {
+    pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
         if size == 0 {
-            return ax_err!(InvalidInput, "Size must be greater than 0");
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "allocate IVC channel",
+                detail: "size must be greater than zero".into(),
+            });
         }
         if !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "Size must be aligned to 4K");
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "allocate IVC channel",
+                detail: format!("size {size:#x} is not aligned to 4 KiB"),
+            });
         }
 
         if let Some(allocator) = &self.ivc_channel {
@@ -462,24 +449,35 @@ impl AxVmDevices {
                 .allocate_range(size)
                 .ok_or_else(|| {
                     warn!("Failed to allocate IVC channel range with size {size:#x}");
-                    ax_errno::ax_err_type!(NoMemory, "IVC channel allocation failed")
+                    DeviceManagerError::OutOfMemory {
+                        operation: "allocate IVC channel",
+                    }
                 })
                 .map(|range| {
                     debug!("Allocated IVC channel range: {range:x?}");
                     GuestPhysAddr::from_usize(range.start)
                 })
         } else {
-            ax_err!(InvalidInput, "IVC channel not exists")
+            Err(DeviceManagerError::ResourceNotFound {
+                operation: "allocate IVC channel",
+                resource: "IVC channel allocator".into(),
+            })
         }
     }
 
     /// Releases an IVC channel at the specified address and size.
-    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> AxResult {
+    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
         if size == 0 {
-            return ax_err!(InvalidInput, "Size must be greater than 0");
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "release IVC channel",
+                detail: "size must be greater than zero".into(),
+            });
         }
         if !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "Size must be aligned to 4K");
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "release IVC channel",
+                detail: format!("size {size:#x} is not aligned to 4 KiB"),
+            });
         }
 
         if let Some(allocator) = &self.ivc_channel {
@@ -488,17 +486,23 @@ impl AxVmDevices {
                 debug!("Released IVC channel range: {range:x?}");
                 Ok(())
             } else {
-                ax_err!(InvalidInput, "Invalid IVC channel range")
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "release IVC channel",
+                    detail: format!("range {range:x?} is not allocated"),
+                })
             }
         } else {
-            ax_err!(InvalidInput, "IVC channel not exists")
+            Err(DeviceManagerError::ResourceNotFound {
+                operation: "release IVC channel",
+                resource: "IVC channel allocator".into(),
+            })
         }
     }
 
     /// Registers a bundle atomically.  If any device fails to register,
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
-    pub fn register_bundle(&mut self, bundle: DeviceBundle) -> AxResult {
+    pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
                 .pollable_devices
@@ -506,10 +510,10 @@ impl AxVmDevices {
                 .chain(bundle.pollable[..index].iter())
                 .any(|existing| Arc::ptr_eq(existing, pollable))
             {
-                return ax_err!(
-                    AlreadyExists,
-                    "failed to register pollable device: the same capability is already registered"
-                );
+                return Err(DeviceManagerError::ResourceConflict {
+                    operation: "register pollable device",
+                    detail: "the same pollable capability is already registered".into(),
+                });
             }
         }
 
@@ -535,14 +539,7 @@ impl AxVmDevices {
                             }
                         }
                     }
-                    let kind = match &e {
-                        RegistryError::AddressConflict { .. } => ax_errno::AxError::AddrInUse,
-                        _ => ax_errno::AxError::InvalidInput,
-                    };
-                    return Err(ax_err_type!(
-                        kind,
-                        format!("device registration failed: {e:?}")
-                    ));
+                    return Err(e.into());
                 }
             }
         }
@@ -941,46 +938,42 @@ impl AxVmDevices {
 
     /// Add an x86 IOAPIC device to the generic registry and x86 runtime handle.
     #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_ioapic_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    pub fn add_x86_ioapic_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
     where
         D: Device + X86IoApicDeviceOps + 'static,
     {
-        self.register(dev.clone() as Arc<dyn Device>)
-            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 ioapic: {e:?}")))?;
+        self.register(dev.clone() as Arc<dyn Device>)?;
         self.x86_ioapic = Some(dev);
         Ok(())
     }
 
     /// Add an x86 PIT device to the generic registry and x86 runtime handle.
     #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_pit_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    pub fn add_x86_pit_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
     where
         D: Device + X86PitDeviceOps + 'static,
     {
-        self.register(dev.clone() as Arc<dyn Device>)
-            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 pit: {e:?}")))?;
+        self.register(dev.clone() as Arc<dyn Device>)?;
         self.x86_pit = Some(dev);
         Ok(())
     }
 
     /// Add an x86 COM1 device to the generic registry and x86 runtime handle.
     #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_serial_dev<D>(&mut self, dev: Arc<D>) -> AxResult
+    pub fn add_x86_serial_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
     where
         D: Device + X86SerialDeviceOps + 'static,
     {
-        self.register(dev.clone() as Arc<dyn Device>)
-            .map_err(|e| ax_err_type!(InvalidInput, format!("register x86 serial: {e:?}")))?;
+        self.register(dev.clone() as Arc<dyn Device>)?;
         self.x86_serial = Some(dev);
         Ok(())
     }
 
     /// Add a QEMU fw_cfg MMIO device to the device list.
-    pub fn add_fw_cfg_dev(&mut self, dev: Arc<FwCfg>) -> AxResult {
+    pub fn add_fw_cfg_dev(&mut self, dev: Arc<FwCfg>) -> DeviceManagerResult {
         self.register(
             MmioDeviceAdapter::from_arc(dev.clone()) as Arc<dyn Device + Send + Sync + 'static>
-        )
-        .map_err(|e| ax_err_type!(InvalidInput, format!("register fw_cfg: {e:?}")))?;
+        )?;
         self.fw_cfg = Some(dev);
         Ok(())
     }
@@ -1052,7 +1045,11 @@ impl AxVmDevices {
     // ─── Hot-path dispatch handlers ─────────────────────────────────
 
     /// Handle the MMIO read by GuestPhysAddr and data width.
-    pub fn handle_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+    pub fn handle_mmio_read(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<usize> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: true,
@@ -1060,15 +1057,20 @@ impl AxVmDevices {
             width,
             data: 0,
         };
-        match self.dispatch(&access) {
-            Ok(BusResponse::Read { value }) => Ok(value as usize),
-            Ok(BusResponse::Write) => {
-                Err(ax_err_type!(BadState, "expected read response, got write"))
-            }
-            Err(err) => {
-                error!("emu_device mmio read failed: {err:?} at {addr:#x} width {width:?}");
-                Err(ax_err_type!(BadState, format!("mmio read: {err:?}")))
-            }
+        match self
+            .dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "read",
+                bus: BusKind::Mmio,
+                addr: access.addr,
+                width,
+                source,
+            })? {
+            BusResponse::Read { value } => Ok(value as usize),
+            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+                operation: "read MMIO device",
+                detail: "device returned a write acknowledgement".into(),
+            }),
         }
     }
 
@@ -1078,7 +1080,7 @@ impl AxVmDevices {
         addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
-    ) -> AxResult {
+    ) -> DeviceManagerResult {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: false,
@@ -1086,15 +1088,23 @@ impl AxVmDevices {
             width,
             data: val as u64,
         };
-        if let Err(err) = self.dispatch(&access) {
-            error!("emu_device mmio write failed: {err:?} at {addr:#x} width {width:?}");
-            return Err(ax_err_type!(BadState, format!("mmio write: {err:?}")));
-        }
+        self.dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Mmio,
+                addr: access.addr,
+                width,
+                source,
+            })?;
         Ok(())
     }
 
     /// Handle the system register read by SysRegAddr and data width.
-    pub fn handle_sys_reg_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
+    pub fn handle_sys_reg_read(
+        &self,
+        addr: SysRegAddr,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<usize> {
         let access = BusAccess {
             kind: BusKind::SysReg,
             is_read: true,
@@ -1102,18 +1112,20 @@ impl AxVmDevices {
             width,
             data: 0,
         };
-        match self.dispatch(&access) {
-            Ok(BusResponse::Read { value }) => Ok(value as usize),
-            Ok(BusResponse::Write) => {
-                Err(ax_err_type!(BadState, "expected read response, got write"))
-            }
-            Err(err) => {
-                error!(
-                    "emu_device sys_reg read failed: {err:?} at {:#x} width {width:?}",
-                    addr.0
-                );
-                Err(ax_err_type!(BadState, format!("sysreg read: {err:?}")))
-            }
+        match self
+            .dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "read",
+                bus: BusKind::SysReg,
+                addr: access.addr,
+                width,
+                source,
+            })? {
+            BusResponse::Read { value } => Ok(value as usize),
+            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+                operation: "read system register device",
+                detail: "device returned a write acknowledgement".into(),
+            }),
         }
     }
 
@@ -1123,7 +1135,7 @@ impl AxVmDevices {
         addr: SysRegAddr,
         width: AccessWidth,
         val: usize,
-    ) -> AxResult {
+    ) -> DeviceManagerResult {
         let access = BusAccess {
             kind: BusKind::SysReg,
             is_read: false,
@@ -1131,18 +1143,19 @@ impl AxVmDevices {
             width,
             data: val as u64,
         };
-        if let Err(err) = self.dispatch(&access) {
-            error!(
-                "emu_device sys_reg write failed: {err:?} at {:#x} width {width:?}",
-                addr.0
-            );
-            return Err(ax_err_type!(BadState, format!("sysreg write: {err:?}")));
-        }
+        self.dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::SysReg,
+                addr: access.addr,
+                width,
+                source,
+            })?;
         Ok(())
     }
 
     /// Handle the port read by port number and data width.
-    pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
+    pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> DeviceManagerResult<usize> {
         let access = BusAccess {
             kind: BusKind::Port,
             is_read: true,
@@ -1150,23 +1163,30 @@ impl AxVmDevices {
             width,
             data: 0,
         };
-        match self.dispatch(&access) {
-            Ok(BusResponse::Read { value }) => Ok(value as usize),
-            Ok(BusResponse::Write) => {
-                Err(ax_err_type!(BadState, "expected read response, got write"))
-            }
-            Err(err) => {
-                error!(
-                    "emu_device port read failed: {err:?} at {:#x} width {width:?}",
-                    port.0
-                );
-                Err(ax_err_type!(BadState, format!("port read: {err:?}")))
-            }
+        match self
+            .dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "read",
+                bus: BusKind::Port,
+                addr: access.addr,
+                width,
+                source,
+            })? {
+            BusResponse::Read { value } => Ok(value as usize),
+            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+                operation: "read port device",
+                detail: "device returned a write acknowledgement".into(),
+            }),
         }
     }
 
     /// Handle the port write by port number, data width and the value need to write.
-    pub fn handle_port_write(&self, port: Port, width: AccessWidth, val: usize) -> AxResult {
+    pub fn handle_port_write(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        val: usize,
+    ) -> DeviceManagerResult {
         let access = BusAccess {
             kind: BusKind::Port,
             is_read: false,
@@ -1174,13 +1194,14 @@ impl AxVmDevices {
             width,
             data: val as u64,
         };
-        if let Err(err) = self.dispatch(&access) {
-            error!(
-                "emu_device port write failed: {err:?} at {:#x} width {width:?}",
-                port.0
-            );
-            return Err(ax_err_type!(BadState, format!("port write: {err:?}")));
-        }
+        self.dispatch(&access)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Port,
+                addr: access.addr,
+                width,
+                source,
+            })?;
         Ok(())
     }
 }

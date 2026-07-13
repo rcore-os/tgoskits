@@ -426,7 +426,6 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
  "ax-crate-interface",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -434,6 +433,7 @@ dependencies = [
  "bitmaps",
  "log",
  "spin",
+ "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
 
@@ -1242,7 +1242,6 @@ name = "axdevice"
 version = "0.5.4"
 dependencies = [
  "arm_vgic",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -1253,6 +1252,7 @@ dependencies = [
  "paste",
  "rand 0.10.1",
  "riscv_vplic",
+ "thiserror 2.0.18",
  "x86_vlapic",
 ]
 
@@ -1260,11 +1260,11 @@ dependencies = [
 name = "axdevice_base"
 version = "0.6.1"
 dependencies = [
- "ax-errno 0.6.1",
  "ax-memory-addr",
  "axvm-types",
  "log",
  "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6653,7 +6653,6 @@ name = "riscv_vplic"
 version = "0.4.20"
 dependencies = [
  "ax-crate-interface",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -6661,6 +6660,7 @@ dependencies = [
  "bitmaps",
  "log",
  "riscv-h",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8973,7 +8973,6 @@ dependencies = [
 name = "virtualization-tests"
 version = "0.1.0"
 dependencies = [
- "ax-errno 0.6.1",
  "ax-plat",
  "axdevice",
  "axdevice_base",

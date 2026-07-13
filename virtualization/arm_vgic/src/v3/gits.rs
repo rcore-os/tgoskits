@@ -18,7 +18,7 @@ use core::ptr;
 
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
-use axdevice_base::{AccessWidth, BaseDeviceOps};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use log::{debug, trace, warn};
 use spin::Once;
@@ -122,7 +122,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         &self,
         addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
         width: AccessWidth,
-    ) -> ax_errno::AxResult<usize> {
+    ) -> DeviceResult<usize> {
         let gits_base = self.host_gits_base;
         let reg = addr - self.addr;
         // let reg = mmio.address;
@@ -136,7 +136,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         );
 
         // mmio_perform_access(gits_base, mmio);
-        match reg {
+        let result = match reg {
             GITS_CTRL => perform_mmio_read(gits_base + reg, width),
             GITS_CBASER => Ok(self.with_regs(|r| r.cbaser)),
             GITS_DT_BASER => {
@@ -159,7 +159,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
             GITS_CREADR => Ok(self.with_regs(|r| r.creadr)),
             GITS_TYPER => perform_mmio_read(gits_base + reg, width),
             _ => perform_mmio_read(gits_base + reg, width),
-        }
+        };
+        Ok(result?)
     }
 
     fn handle_write(
@@ -167,7 +168,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
         width: AccessWidth,
         val: usize,
-    ) -> ax_errno::AxResult {
+    ) -> DeviceResult {
         let gits_base = self.host_gits_base;
         let reg = addr - self.addr;
         // let reg = mmio.address;
@@ -182,7 +183,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         );
 
         // mmio_perform_access(gits_base, mmio);
-        match reg {
+        let result = match reg {
             GITS_CTRL => perform_mmio_write(gits_base + reg, width, val),
             GITS_CBASER => {
                 if self.is_root_vm {
@@ -233,7 +234,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
             }
             GITS_TYPER => perform_mmio_write(gits_base + reg, width, val),
             _ => perform_mmio_write(gits_base + reg, width, val),
-        }
+        };
+        Ok(result?)
     }
 }
 
