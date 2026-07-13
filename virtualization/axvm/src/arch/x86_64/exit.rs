@@ -1,10 +1,12 @@
 //! x86-only port, nested-fault, and deferred exit handling.
 
-use ax_errno::AxResult;
 use axvm_types::{AccessWidth, GuestPhysAddr, MappingFlags, Port};
 
 use super::{ArchOps, AxvmX86Vcpu, X86_64Arch};
-use crate::architecture::{BoundVcpuExit, VcpuRunAction};
+use crate::{
+    AxVmError, AxVmResult,
+    architecture::{BoundVcpuExit, VcpuRunAction},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {
@@ -36,8 +38,11 @@ pub(crate) fn handle_io_read(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     exit: IoReadExit,
-) -> AxResult<BoundVcpuExit<DeferredRunWork>> {
-    let val = vm.get_devices()?.handle_port_read(exit.port, exit.width)?;
+) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
+    let val = vm
+        .get_devices()?
+        .handle_port_read(exit.port, exit.width)
+        .map_err(|error| AxVmError::device("read guest I/O port", error))?;
     vcpu.set_gpr(0, val);
     Ok(BoundVcpuExit::Continue)
 }
@@ -45,9 +50,10 @@ pub(crate) fn handle_io_read(
 pub(crate) fn handle_io_write(
     vm: &crate::AxVM,
     exit: IoWriteExit,
-) -> AxResult<BoundVcpuExit<DeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
     vm.get_devices()?
-        .handle_port_write(exit.port, exit.width, exit.data as usize)?;
+        .handle_port_write(exit.port, exit.width, exit.data as usize)
+        .map_err(|error| AxVmError::device("write guest I/O port", error))?;
     Ok(BoundVcpuExit::Continue)
 }
 
@@ -55,7 +61,7 @@ pub(crate) fn finish(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     work: DeferredRunWork,
-) -> AxResult<VcpuRunAction> {
+) -> AxVmResult<VcpuRunAction> {
     match work {
         DeferredRunWork::ExternalInterrupt { vector } => {
             X86_64Arch::after_external_interrupt(vm, vcpu, vector);

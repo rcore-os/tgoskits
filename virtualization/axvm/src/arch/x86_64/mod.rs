@@ -6,11 +6,10 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{arch::asm, time::Duration};
 
-use ax_errno::{AxError, AxResult};
 use axvm_types::{
-    AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
-    MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps,
+    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, EmulatedDeviceConfig,
+    EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig,
+    Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
 };
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
@@ -24,7 +23,7 @@ use x86_vlapic::{
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
-    StopReason,
+    AxVmError, AxVmResult, StopReason,
     host::{HostMemory, default_host},
     manager,
     vcpu::get_current_vcpu,
@@ -88,7 +87,7 @@ impl ArchOps for X86_64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             X86VmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -208,7 +207,10 @@ impl ArchOps for X86_64Arch {
                 }))
             }
             X86VmExit::Nothing => Ok(BoundVcpuExit::Continue),
-            _ => Err(AxError::Unsupported),
+            _ => Err(AxVmError::unsupported(
+                "handle x86 VM exit",
+                "unsupported VM exit reason",
+            )),
         }
     }
 
@@ -216,7 +218,7 @@ impl ArchOps for X86_64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxVmResult<VcpuRunAction> {
         exit::finish(vm, vcpu, work)
     }
 }
@@ -356,37 +358,37 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     type SetupConfig = X86VCpuSetupConfig;
     type Exit = X86VmExit;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         x86_result(x86_vcpu::X86ArchVCpu::new_with_config(
             vm_id, vcpu_id, config,
         ))
         .map(Self)
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
         x86_result(self.0.set_entry(ax_guest_phys_addr_to_x86(entry)))
     }
 
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         x86_result(
             self.0
                 .set_nested_page_table(ax_nested_paging_to_x86(config)),
         )
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
         x86_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> AxResult<Self::Exit> {
+    fn run(&mut self) -> BackendResult<Self::Exit> {
         x86_result(self.0.run())
     }
 
-    fn bind(&mut self) -> AxResult {
+    fn bind(&mut self) -> BackendResult {
         x86_result(self.0.bind())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    fn unbind(&mut self) -> BackendResult {
         x86_result(self.0.unbind())
     }
 
@@ -394,7 +396,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         x86_result(self.0.inject_interrupt(vector))
     }
 
@@ -402,7 +404,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
-    ) -> AxResult {
+    ) -> BackendResult {
         x86_result(
             self.0.inject_interrupt_with_trigger(
                 vector,
@@ -423,7 +425,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
 pub(crate) struct AxvmX86PerCpu(x86_vcpu::X86ArchPerCpuState<AxvmX86HostOps>);
 
 impl VmArchPerCpuOps for AxvmX86PerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> BackendResult<Self> {
         x86_result(x86_vcpu::X86ArchPerCpuState::new(cpu_id)).map(Self)
     }
 
@@ -431,11 +433,11 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> BackendResult {
         x86_result(self.0.hardware_enable())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> BackendResult {
         x86_result(self.0.hardware_disable())
     }
 }
@@ -443,11 +445,13 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
 pub(crate) fn register_arch_device(
     config: &EmulatedDeviceConfig,
     devices: &mut axdevice::AxVmDevices,
-) -> AxResult {
+) -> AxVmResult {
     match config.emu_type {
         EmulatedDeviceType::Console => {
             let serial = Arc::new(axdevice::X86SerialPortDevice::<AxvmX86HostOps>::new());
-            devices.add_x86_serial_dev(serial)?;
+            devices
+                .add_x86_serial_dev(serial)
+                .map_err(|error| AxVmError::device("register x86 serial device", error))?;
             info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
         }
         EmulatedDeviceType::X86IoApic => {
@@ -455,7 +459,9 @@ pub(crate) fn register_arch_device(
                 x86_vlapic::X86GuestPhysAddr::from_usize(config.base_gpa),
                 Some(config.length),
             ));
-            devices.add_x86_ioapic_dev(ioapic)?;
+            devices
+                .add_x86_ioapic_dev(ioapic)
+                .map_err(|error| AxVmError::device("register x86 I/O APIC", error))?;
             info!(
                 "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
                 config.base_gpa, config.length
@@ -463,7 +469,9 @@ pub(crate) fn register_arch_device(
         }
         EmulatedDeviceType::X86Pit => {
             let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
-            devices.add_x86_pit_dev(pit)?;
+            devices
+                .add_x86_pit_dev(pit)
+                .map_err(|error| AxVmError::device("register x86 PIT", error))?;
             info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
         }
         _ => {}
@@ -480,7 +488,7 @@ pub(crate) fn x86_apic_access_page_addr() -> axvm_types::HostPhysAddr {
 fn handle_x86_nested_page_fault(
     vm: &crate::AxVMRef,
     exit: NestedPageFaultExit,
-) -> AxResult<BoundVcpuExit<DeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
     if vm.get_devices()?.find_mmio_dev(exit.addr).is_some() {
         warn!(
             "VM[{}] nested page fault at {:#x} maps MMIO but x86 core did not decode it",
@@ -509,22 +517,22 @@ fn handle_x86_nested_page_fault(
     }
 }
 
-fn x86_result<T>(result: X86VcpuResult<T>) -> AxResult<T> {
+fn x86_result<T>(result: X86VcpuResult<T>) -> BackendResult<T> {
     result.map_err(x86_error_to_ax)
 }
 
-fn x86_error_to_ax(err: X86VcpuError) -> AxError {
+fn x86_error_to_ax(err: X86VcpuError) -> BackendError {
     match err {
-        X86VcpuError::InvalidInput => AxError::InvalidInput,
-        X86VcpuError::InvalidData => AxError::InvalidData,
-        X86VcpuError::Unsupported => AxError::Unsupported,
-        X86VcpuError::BadState => AxError::BadState,
-        X86VcpuError::NoMemory => AxError::NoMemory,
-        X86VcpuError::ResourceBusy => AxError::ResourceBusy,
+        X86VcpuError::InvalidInput => BackendError::InvalidInput,
+        X86VcpuError::InvalidData => BackendError::InvalidData,
+        X86VcpuError::Unsupported => BackendError::Unsupported,
+        X86VcpuError::BadState => BackendError::BadState,
+        X86VcpuError::NoMemory => BackendError::NoMemory,
+        X86VcpuError::ResourceBusy => BackendError::ResourceBusy,
     }
 }
 
-fn ax_error_to_vlapic(_err: AxError) -> X86VlapicError {
+fn ax_error_to_vlapic(_err: crate::AxVmError) -> X86VlapicError {
     X86VlapicError::BadState
 }
 
@@ -620,12 +628,15 @@ mod tests {
     fn converts_x86_vcpu_errors_to_ax_errors() {
         assert_eq!(
             x86_error_to_ax(X86VcpuError::InvalidInput),
-            AxError::InvalidInput
+            BackendError::InvalidInput
         );
-        assert_eq!(x86_error_to_ax(X86VcpuError::NoMemory), AxError::NoMemory);
+        assert_eq!(
+            x86_error_to_ax(X86VcpuError::NoMemory),
+            BackendError::NoMemory
+        );
         assert_eq!(
             x86_error_to_ax(X86VcpuError::ResourceBusy),
-            AxError::ResourceBusy
+            BackendError::ResourceBusy
         );
     }
 

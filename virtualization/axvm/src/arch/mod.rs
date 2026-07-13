@@ -1,9 +1,10 @@
 //! Target architecture selection and stable internal dispatch.
 
-use ax_errno::AxResult;
-
 pub(crate) use crate::architecture::*;
-use crate::architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform};
+use crate::{
+    AxVmResult,
+    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+};
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -92,21 +93,21 @@ pub(crate) fn prepare_guest_boot(
     vm_config: &mut crate::config::AxVMConfig,
     vm_create_config: &mut axvmconfig::AxVMCrateConfig,
     provider: &dyn crate::boot::BootImageProvider,
-) -> AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
     CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)
 }
 
 pub(crate) fn load_images_from_memory(
     loader: &mut crate::boot::images::ImageLoaderCore<'_>,
     images: crate::boot::StaticVmImage,
-) -> AxResult {
+) -> AxVmResult {
     CurrentArch::load_images_from_memory(loader, images)
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub(crate) fn load_images_from_filesystem(
     loader: &mut crate::boot::images::ImageLoaderCore<'_>,
-) -> AxResult {
+) -> AxVmResult {
     CurrentArch::load_images_from_filesystem(loader)
 }
 

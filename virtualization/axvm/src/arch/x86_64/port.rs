@@ -1,7 +1,9 @@
 //! Native x86 host I/O port passthrough devices.
 
-use ax_errno::{AxResult, ax_err};
 use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, Port, PortRange};
+use axvm_types::{AxVmError as BackendError, AxVmResult as BackendResult};
+
+use crate::{AxVmResult, ax_err};
 
 /// A host x86 I/O port range passed directly through to a guest.
 pub(crate) struct HostPortPassthrough {
@@ -11,7 +13,7 @@ pub(crate) struct HostPortPassthrough {
 
 impl HostPortPassthrough {
     /// Creates a passthrough device for an inclusive host I/O port range.
-    pub(crate) fn new(base: u16, length: u16) -> AxResult<Self> {
+    pub(crate) fn new(base: u16, length: u16) -> AxVmResult<Self> {
         if length == 0 {
             return ax_err!(InvalidInput, "host port passthrough range is empty");
         }
@@ -38,22 +40,22 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
         PortRange::new(self.base, self.end())
     }
 
-    fn handle_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, port: Port, width: AccessWidth) -> BackendResult<usize> {
         match width {
             AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
             AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
             AccessWidth::Dword => Ok(unsafe { inl(port.number()) } as usize),
-            AccessWidth::Qword => ax_err!(Unsupported, "x86 port I/O does not support qword read"),
+            AccessWidth::Qword => Err(BackendError::Unsupported),
         }
     }
 
-    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> AxResult {
+    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> BackendResult {
         match width {
             AccessWidth::Byte => unsafe { outb(port.number(), value as u8) },
             AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
             AccessWidth::Dword => unsafe { outl(port.number(), value as u32) },
             AccessWidth::Qword => {
-                return ax_err!(Unsupported, "x86 port I/O does not support qword write");
+                return Err(BackendError::Unsupported);
             }
         }
         Ok(())

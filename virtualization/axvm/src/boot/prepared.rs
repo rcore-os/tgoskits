@@ -1,10 +1,9 @@
 //! Typed guest boot preparation shared by monitor integrations.
 
-use ax_errno::AxResult;
 use axvmconfig::AxVMCrateConfig;
 
 use super::{BootImageProvider, fdt::GuestDtbImage, images::ImageLoaderCore};
-use crate::{AxVMRef, VMMemoryRegion, config::AxVMConfig};
+use crate::{AxVMRef, AxVmResult, VMMemoryRegion, config::AxVMConfig};
 
 /// Architecture-prepared VM configuration and optional guest DTB.
 #[derive(Debug)]
@@ -30,7 +29,7 @@ impl PreparedGuestBoot {
         main_memory: VMMemoryRegion,
         vm: AxVMRef,
         provider: &dyn BootImageProvider,
-    ) -> AxResult {
+    ) -> AxVmResult {
         let mut loader =
             ImageLoaderCore::new(main_memory, self.config, vm, provider, self.guest_dtb);
         loader.load()
@@ -47,7 +46,7 @@ pub fn prepare_guest_boot(
     vm_config: &mut AxVMConfig,
     mut config: AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-) -> AxResult<PreparedGuestBoot> {
+) -> AxVmResult<PreparedGuestBoot> {
     let guest_dtb = crate::arch::prepare_guest_boot(vm_config, &mut config, provider)?;
     Ok(PreparedGuestBoot { config, guest_dtb })
 }

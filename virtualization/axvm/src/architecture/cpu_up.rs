@@ -1,9 +1,11 @@
 //! Shared secondary-vCPU boot flow for architectures that expose CPU-up exits.
 
-use ax_errno::AxResult;
 use axvm_types::GuestPhysAddr;
 
-use crate::architecture::{ArchOps, BoundVcpuExit, VcpuRunAction};
+use crate::{
+    AxVmResult,
+    architecture::{ArchOps, BoundVcpuExit, VcpuRunAction},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CpuUpExit {
@@ -28,7 +30,7 @@ pub(crate) fn handle<A: CpuUpOps>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: CpuUpExit,
-) -> AxResult<BoundVcpuExit<A::DeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
     info!(

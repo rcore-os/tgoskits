@@ -1,16 +1,19 @@
 //! Architecture-neutral handlers for exits shared by every guest architecture.
 
-use ax_errno::AxResult;
 use axvm_types::VmArchVcpuOps;
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use crate::{AxVmError, AxVmResult};
 
 pub(crate) fn handle_mmio_read<V: VmArchVcpuOps, D>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: MmioReadExit,
-) -> AxResult<BoundVcpuExit<D>> {
-    let raw = vm.get_devices()?.handle_mmio_read(exit.addr, exit.width)?;
+) -> AxVmResult<BoundVcpuExit<D>> {
+    let raw = vm
+        .get_devices()?
+        .handle_mmio_read(exit.addr, exit.width)
+        .map_err(|error| AxVmError::device("read guest MMIO", error))?;
     let masked = raw & crate::vm::width_mask(exit.width);
     let val = if exit.signed_ext {
         crate::vm::sign_extend_value(masked, exit.width)
@@ -24,7 +27,7 @@ pub(crate) fn handle_mmio_read<V: VmArchVcpuOps, D>(
 pub(crate) fn handle_mmio_write<A: ArchOps>(
     vm: &crate::AxVMRef,
     exit: MmioWriteExit,
-) -> AxResult<BoundVcpuExit<A::DeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
     vm.handle_mmio_write(exit.addr, exit.width, exit.data as usize)?;
     A::after_mmio_write(vm);
     Ok(BoundVcpuExit::Continue)
@@ -34,7 +37,7 @@ pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: HypercallExit,
-) -> AxResult<BoundVcpuExit<D>> {
+) -> AxVmResult<BoundVcpuExit<D>> {
     debug!("Hypercall [{:#x}] args {:x?}", exit.nr, exit.args);
     match crate::runtime::hvc::HyperCall::new(vm.clone(), exit.nr, exit.args) {
         Ok(hypercall) => {

@@ -2,10 +2,10 @@
 
 use alloc::{format, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
 use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
 
 use crate::{
+    AxVmResult, ax_err, ax_err_type,
     boot::{BootImageProvider, fdt::GuestDtbImage},
     config::AxVMConfig,
 };
@@ -28,7 +28,7 @@ pub fn prepare_dtb_guest(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-) -> AxResult<Option<GuestDtbImage>> {
+) -> AxVmResult<Option<GuestDtbImage>> {
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         skip_guest_dtb(vm_config, vm_create_config);
         return Ok(None);
@@ -58,7 +58,7 @@ fn build_guest_dtb(
     vm_create_config: &mut AxVMCrateConfig,
     provider: &dyn BootImageProvider,
     host_fdt_bytes: Option<&'static [u8]>,
-) -> AxResult<Option<GuestDtbImage>> {
+) -> AxVmResult<Option<GuestDtbImage>> {
     let provided_dtb = get_developer_provided_dtb(vm_config, vm_create_config, provider)?;
 
     match (host_fdt_bytes, provided_dtb) {
@@ -99,7 +99,7 @@ fn build_guest_dtb(
     }
 }
 
-fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxResult<fdt_edit::Fdt> {
+fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxVmResult<fdt_edit::Fdt> {
     fdt_edit::Fdt::from_bytes(host_fdt_bytes)
         .map_err(|err| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {err:#?}")))
 }
@@ -108,7 +108,7 @@ fn enrich_guest_config(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
     guest_dtb: Option<&GuestDtbImage>,
-) -> AxResult {
+) -> AxVmResult {
     let Some(dtb) = guest_dtb.map(GuestDtbImage::as_bytes) else {
         clear_unresolved_dtb_config(vm_config, vm_create_config);
         return Ok(());
@@ -148,7 +148,7 @@ fn get_developer_provided_dtb(
     vm_config: &AxVMConfig,
     crate_config: &AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-) -> AxResult<Option<Vec<u8>>> {
+) -> AxVmResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {
         Some("memory") => Ok(provider
             .static_vm_images()
@@ -166,7 +166,7 @@ fn get_developer_provided_dtb(
             .as_deref()
             .map(|path| crate::boot::images::fs::read_full_image(path, provider))
             .transpose(),
-        _ => ax_errno::ax_err!(
+        _ => ax_err!(
             InvalidInput,
             "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
         ),

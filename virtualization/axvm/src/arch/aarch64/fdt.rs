@@ -2,10 +2,10 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::{AxResult, ax_err_type};
 use fdt_edit::Fdt;
 
 use crate::{
+    AxVmResult, ax_err_type,
     boot::{BootImageProvider, fdt::GuestDtbImage},
     config::AxVMConfig,
 };
@@ -46,7 +46,7 @@ pub(super) fn update_cpu_node(
     fdt: &Fdt,
     host_fdt: Option<&Fdt>,
     crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let Some(host_fdt) = host_fdt else {
         return Ok(fdt.encode().as_ref().to_vec());
     };
@@ -92,6 +92,6 @@ pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut axvmconfig::AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-) -> AxResult<Option<GuestDtbImage>> {
+) -> AxVmResult<Option<GuestDtbImage>> {
     core::prepare_dtb_guest(vm_config, vm_create_config, provider)
 }

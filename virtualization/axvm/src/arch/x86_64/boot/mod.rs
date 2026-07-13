@@ -2,13 +2,16 @@
 
 use alloc::format;
 
-use ax_errno::{AxResult, ax_err_type};
 use axvm_types::GuestPhysAddr;
 use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
 
 use super::X86_64Arch;
+#[cfg(not(any(feature = "fs", feature = "host-fs")))]
+use crate::ax_err;
 use crate::{
+    AxVmError, AxVmResult,
     architecture::BootImagePlatform,
+    ax_err_type,
     boot::{
         BootImageProvider, StaticVmImage,
         images::{ImageLoaderCore, load_vm_image_from_memory},
@@ -39,7 +42,7 @@ impl<'a> ImageLoader<'a> {
         ))
     }
 
-    pub fn load(&mut self) -> AxResult {
+    pub fn load(&mut self) -> AxVmResult {
         self.0.load()
     }
 }
@@ -58,7 +61,7 @@ impl BootImagePlatform for X86_64Arch {
     fn load_images_from_memory(
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
-    ) -> AxResult {
+    ) -> AxVmResult {
         if should_direct_boot_linux(&loader.config)
             && let Some(header) = detect_linux_image(images.kernel)
         {
@@ -73,7 +76,7 @@ impl BootImagePlatform for X86_64Arch {
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxResult {
+    fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
         if should_direct_boot_linux(&loader.config) {
             let probe = crate::boot::images::fs::kernel_read(
                 &loader.config,
@@ -135,7 +138,7 @@ fn load_linux_from_memory(
     header: linux::X86LinuxHeader,
     kernel: &[u8],
     ramdisk: Option<&[u8]>,
-) -> AxResult {
+) -> AxVmResult {
     adjust_linux_dma_identity_layout(loader);
     let payload = linux_payload(&header, kernel)?;
     let initrd = ramdisk
@@ -166,7 +169,7 @@ fn load_linux_from_filesystem(
     loader: &mut ImageLoaderCore<'_>,
     header: linux::X86LinuxHeader,
     kernel: &[u8],
-) -> AxResult {
+) -> AxVmResult {
     adjust_linux_dma_identity_layout(loader);
     let payload = linux_payload(&header, kernel)?;
     let initrd = loader
@@ -174,7 +177,7 @@ fn load_linux_from_filesystem(
         .kernel
         .ramdisk_path
         .as_deref()
-        .map(|path| -> AxResult<_> {
+        .map(|path| -> AxVmResult<_> {
             let size = crate::boot::images::fs::image_size(path, loader.provider)?;
             Ok(linux::X86LinuxRange::new(
                 loader.ramdisk_load_gpa()?.as_usize(),
@@ -198,7 +201,7 @@ fn load_linux_from_filesystem(
     Ok(())
 }
 
-fn load_boot_image_from_memory(loader: &ImageLoaderCore<'_>, bios: Option<&[u8]>) -> AxResult {
+fn load_boot_image_from_memory(loader: &ImageLoaderCore<'_>, bios: Option<&[u8]>) -> AxVmResult {
     if !loader.config.kernel.enable_bios {
         return Ok(());
     }
@@ -225,7 +228,7 @@ fn load_boot_image_from_memory(loader: &ImageLoaderCore<'_>, bios: Option<&[u8]>
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxResult {
+fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     if !loader.config.kernel.enable_bios {
         return Ok(());
     }
@@ -255,7 +258,7 @@ fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxResult {
     }
 }
 
-fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxResult {
+fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     let path = loader
         .config
         .kernel
@@ -271,7 +274,7 @@ fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxResult {
     #[cfg(not(any(feature = "fs", feature = "host-fs")))]
     {
         let _ = (path, load_gpa);
-        ax_errno::ax_err!(
+        ax_err!(
             Unsupported,
             "UEFI firmware path requires the fs feature when no firmware image buffer is available"
         )
@@ -303,7 +306,7 @@ fn load_linux_layout(
     header: linux::X86LinuxHeader,
     layout: linux::X86LinuxLoadLayout,
     kernel: &[u8],
-) -> AxResult {
+) -> AxVmResult {
     let boot_params = build_boot_params(loader, header, layout, kernel)?;
     let boot_stub = linux_boot::build_boot_image(&layout).map_err(|err| {
         ax_err_type!(
@@ -335,7 +338,7 @@ fn build_boot_params(
     header: linux::X86LinuxHeader,
     layout: linux::X86LinuxLoadLayout,
     kernel: &[u8],
-) -> AxResult<[u8; linux::BOOT_PARAMS_SIZE]> {
+) -> AxVmResult<[u8; linux::BOOT_PARAMS_SIZE]> {
     let mut builder = boot_params::BootParamsBuilder::new(
         kernel,
         header,
@@ -383,7 +386,7 @@ fn load_multiboot_info(
     loader: &ImageLoaderCore<'_>,
     bios_image: &[u8],
     bios_load_gpa: GuestPhysAddr,
-) -> AxResult {
+) -> AxVmResult {
     const INFO_GPA: usize = 0x6000;
     const MMAP_GPA: usize = 0x6040;
     let mem_base = loader.main_memory.gpa.as_usize() as u64;
@@ -431,7 +434,7 @@ fn detect_linux_image(image: &[u8]) -> Option<linux::X86LinuxHeader> {
     linux::X86LinuxHeader::parse(image).ok()
 }
 
-fn linux_payload<'a>(header: &linux::X86LinuxHeader, image: &'a [u8]) -> AxResult<&'a [u8]> {
+fn linux_payload<'a>(header: &linux::X86LinuxHeader, image: &'a [u8]) -> AxVmResult<&'a [u8]> {
     image.get(header.payload_offset()..).ok_or_else(|| {
         ax_err_type!(
             InvalidInput,
@@ -444,14 +447,14 @@ fn linux_payload<'a>(header: &linux::X86LinuxHeader, image: &'a [u8]) -> AxResul
     })
 }
 
-fn linux_layout_error(err: linux::X86LinuxLayoutError) -> ax_errno::AxError {
+fn linux_layout_error(err: linux::X86LinuxLayoutError) -> AxVmError {
     ax_err_type!(
         InvalidInput,
         format!("invalid x86 Linux memory layout: {err:?}")
     )
 }
 
-fn builtin_bios_load_gpa(configured: Option<GuestPhysAddr>) -> AxResult<GuestPhysAddr> {
+fn builtin_bios_load_gpa(configured: Option<GuestPhysAddr>) -> AxVmResult<GuestPhysAddr> {
     let default = GuestPhysAddr::from(multiboot::DEFAULT_BIOS_LOAD_GPA);
     match configured {
         Some(gpa) if gpa != default => Err(ax_err_type!(
@@ -467,7 +470,7 @@ fn builtin_bios_load_gpa(configured: Option<GuestPhysAddr>) -> AxResult<GuestPhy
     }
 }
 
-fn validate_bios_patch_region(bios: &[u8]) -> AxResult {
+fn validate_bios_patch_region(bios: &[u8]) -> AxVmResult {
     let patch_end = multiboot::AXVM_BIOS_EBX_IMM_OFFSET + core::mem::size_of::<u32>();
     if bios.len() < patch_end
         || bios[multiboot::AXVM_BIOS_EBX_IMM_OFFSET - 1] != multiboot::MOV_EBX_IMM32_OPCODE

@@ -4,7 +4,6 @@ mod resources;
 
 use alloc::{boxed::Box, format, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
 use axdevice::{
     FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
 };
@@ -15,8 +14,9 @@ pub use resources::{
 };
 
 use crate::{
-    AxVMRef, GuestPhysAddr,
+    AxVMRef, AxVmResult, GuestPhysAddr,
     architecture::BootImagePlatform,
+    ax_err, ax_err_type,
     boot::{
         BootImageProvider, StaticVmImage,
         images::{ImageLoaderCore, load_vm_image_from_memory},
@@ -43,7 +43,7 @@ impl<'a> ImageLoader<'a> {
         ))
     }
 
-    pub fn load(&mut self) -> AxResult {
+    pub fn load(&mut self) -> AxVmResult {
         self.0.load()
     }
 }
@@ -174,7 +174,7 @@ impl GuestPlatform {
     }
 }
 
-pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxResult {
+pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
     let platform = GuestPlatform::discover(vm, config);
     let fdt = fdt::guest_firmware_dtb::build(&platform)?;
     debug!(
@@ -209,7 +209,7 @@ pub fn guest_irq_routes(vm: &AxVMRef, config: &AxVMCrateConfig) -> Vec<LoongArch
         .collect()
 }
 
-pub fn emulated_fw_cfg(config: &AxVMCrateConfig) -> AxResult<&axvmconfig::EmulatedDeviceConfig> {
+pub fn emulated_fw_cfg(config: &AxVMCrateConfig) -> AxVmResult<&axvmconfig::EmulatedDeviceConfig> {
     config
         .devices
         .emu_devices
@@ -222,7 +222,7 @@ impl BootImagePlatform for super::LoongArch64Arch {
     fn load_images_from_memory(
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
-    ) -> AxResult {
+    ) -> AxVmResult {
         ensure_uefi_boot(loader)?;
         load_uefi_firmware_dtb(loader)?;
         add_uefi_fw_cfg(loader, images.kernel, images.ramdisk)?;
@@ -239,7 +239,7 @@ impl BootImagePlatform for super::LoongArch64Arch {
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxResult {
+    fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
         ensure_uefi_boot(loader)?;
         load_uefi_firmware_dtb(loader)?;
 
@@ -266,15 +266,15 @@ impl BootImagePlatform for super::LoongArch64Arch {
     }
 }
 
-fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxResult {
+fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         Ok(())
     } else {
-        ax_errno::ax_err!(Unsupported, "LoongArch guests require UEFI boot")
+        ax_err!(Unsupported, "LoongArch guests require UEFI boot")
     }
 }
 
-fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxResult {
+fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     prepare_uefi_runtime_config(&loader.vm, &loader.config);
     load_firmware_fdt(&loader.vm, &loader.config)
 }
@@ -283,7 +283,7 @@ fn add_uefi_fw_cfg(
     loader: &ImageLoaderCore<'_>,
     kernel: &'static [u8],
     ramdisk: Option<&'static [u8]>,
-) -> AxResult {
+) -> AxVmResult {
     let fw_cfg = emulated_fw_cfg(&loader.config)?;
     loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
         base: GuestPhysAddr::from(fw_cfg.base_gpa),
@@ -305,7 +305,7 @@ fn provider_firmware_image(loader: &ImageLoaderCore<'_>) -> Option<&'static [u8]
         .and_then(|image| image.bios)
 }
 
-fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> AxResult {
+fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> AxVmResult {
     let load_gpa = loader
         .bios_load_gpa
         .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI firmware load addr is missed"))?;
@@ -320,7 +320,7 @@ fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> Ax
     load_vm_image_from_memory(firmware, load_gpa, loader.vm.clone())
 }
 
-fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxResult {
+fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxVmResult {
     let regions = vm.get_image_load_region(load_addr, size)?;
     let mut filled_size = 0;
     for region in regions {
@@ -333,7 +333,7 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
     if filled_size == size {
         Ok(())
     } else {
-        ax_errno::ax_err!(
+        ax_err!(
             InvalidData,
             format!("VM memory was only partially filled: {filled_size}/{size} bytes")
         )

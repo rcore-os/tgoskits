@@ -1,11 +1,11 @@
 //! RISC-V VM resource creation and initialization.
 
-use ax_errno::{AxResult, ax_err};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
 use super::{Riscv64Arch, irq, npt};
 use crate::{
+    AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -21,7 +21,7 @@ use crate::{
 };
 
 impl Riscv64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
@@ -30,7 +30,7 @@ impl Riscv64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxResult {
+    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
                 let mut factories = default_device_factories()?;
@@ -51,7 +51,7 @@ fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
     interrupt_fabric: crate::InterruptFabric,
-) -> AxResult {
+) -> AxVmResult {
     complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
         let placements = vcpu_placements(resources);
         let dtb_addr = resources
@@ -80,11 +80,11 @@ fn init_vm_with(
 fn build_vcpu_setup_config(
     _config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
-) -> AxResult<<super::AxvmRiscvVcpu as VmArchVcpuOps>::SetupConfig> {
+) -> AxVmResult<<super::AxvmRiscvVcpu as VmArchVcpuOps>::SetupConfig> {
     Ok(())
 }
 
-fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
+fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
     let mut levels = riscv_vcpu::max_guest_page_table_levels();
     for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
         levels = levels.min(
@@ -101,7 +101,7 @@ fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> A
 fn nested_paging_config(
     root_paddr: ax_memory_addr::PhysAddr,
     levels: usize,
-) -> AxResult<NestedPagingConfig> {
+) -> AxVmResult<NestedPagingConfig> {
     match levels {
         3 => Ok(NestedPagingConfig::new(root_paddr, 3, 41, 8)),
         4 => Ok(NestedPagingConfig::new(root_paddr, 4, 50, 9)),

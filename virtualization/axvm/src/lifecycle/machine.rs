@@ -1,6 +1,7 @@
 use alloc::string::{String, ToString};
 
-use super::{StopReason, VmLifecycleError, VmLifecycleResult, VmStatus};
+use super::{StopReason, VmStatus};
+use crate::{AxVmError, AxVmResult};
 
 pub enum Machine<R, H = ()> {
     Ready(R),
@@ -94,9 +95,9 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn start_with<F>(&mut self, f: F) -> VmLifecycleResult
+    pub fn start_with<F>(&mut self, f: F) -> AxVmResult
     where
-        F: FnOnce(&mut R) -> VmLifecycleResult<H>,
+        F: FnOnce(&mut R) -> AxVmResult<H>,
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
@@ -138,7 +139,7 @@ impl<R, H> Machine<R, H> {
                     runtime: Some(runtime),
                     reason,
                 };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Stopped,
                     VmStatus::Running,
                     "start",
@@ -147,7 +148,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Running,
                     "start",
@@ -156,7 +157,7 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn pause(&mut self) -> VmLifecycleResult {
+    pub fn pause(&mut self) -> AxVmResult {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
             Machine::Running { resources, runtime } => {
@@ -166,7 +167,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Paused,
                     "pause",
@@ -175,7 +176,7 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn resume(&mut self) -> VmLifecycleResult {
+    pub fn resume(&mut self) -> AxVmResult {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
             Machine::Paused { resources, runtime } => {
@@ -185,7 +186,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Running,
                     "resume",
@@ -194,9 +195,9 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn stop_with<F>(&mut self, reason: StopReason, f: F) -> VmLifecycleResult
+    pub fn stop_with<F>(&mut self, reason: StopReason, f: F) -> AxVmResult
     where
-        F: FnOnce(Option<&mut R>, &StopReason) -> VmLifecycleResult,
+        F: FnOnce(Option<&mut R>, &StopReason) -> AxVmResult,
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
@@ -215,7 +216,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Running { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Running,
                     VmStatus::Stopped,
                     "stop",
@@ -223,7 +224,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Pausing { resources, runtime } => {
                 *self = Machine::Pausing { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Pausing,
                     VmStatus::Stopped,
                     "stop",
@@ -231,7 +232,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Paused { resources, runtime } => {
                 *self = Machine::Paused { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Paused,
                     VmStatus::Stopped,
                     "stop",
@@ -252,7 +253,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Stopped,
                     "stop",
@@ -261,9 +262,9 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn request_stop_with<F>(&mut self, reason: StopReason, f: F) -> VmLifecycleResult
+    pub fn request_stop_with<F>(&mut self, reason: StopReason, f: F) -> AxVmResult
     where
-        F: FnOnce(Option<&mut R>, &StopReason) -> VmLifecycleResult,
+        F: FnOnce(Option<&mut R>, &StopReason) -> AxVmResult,
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
@@ -323,7 +324,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Stopping,
                     "request_stop",
@@ -332,7 +333,7 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn finish_stop(&mut self) -> VmLifecycleResult {
+    pub fn finish_stop(&mut self) -> AxVmResult {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
             Machine::Stopping {
@@ -362,7 +363,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Stopped,
                     "finish_stop",
@@ -378,9 +379,9 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn reset_with<F>(&mut self, f: F) -> VmLifecycleResult
+    pub fn reset_with<F>(&mut self, f: F) -> AxVmResult
     where
-        F: FnOnce(&mut R) -> VmLifecycleResult,
+        F: FnOnce(&mut R) -> AxVmResult,
     {
         let old = core::mem::replace(self, Machine::Switching);
         match old {
@@ -408,7 +409,7 @@ impl<R, H> Machine<R, H> {
                     runtime,
                     reason,
                 };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Stopping,
                     VmStatus::Ready,
                     "reset",
@@ -416,7 +417,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Running { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Running,
                     VmStatus::Ready,
                     "reset",
@@ -424,7 +425,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Paused { resources, runtime } => {
                 *self = Machine::Paused { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Paused,
                     VmStatus::Ready,
                     "reset",
@@ -440,7 +441,7 @@ impl<R, H> Machine<R, H> {
                     runtime: Some(runtime),
                     reason,
                 };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Stopped,
                     VmStatus::Ready,
                     "reset",
@@ -449,7 +450,7 @@ impl<R, H> Machine<R, H> {
             other => {
                 let from = other.status();
                 *self = other;
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     from,
                     VmStatus::Ready,
                     "reset",
@@ -458,9 +459,9 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn destroy_with<F>(&mut self, f: F) -> VmLifecycleResult
+    pub fn destroy_with<F>(&mut self, f: F) -> AxVmResult
     where
-        F: FnOnce(Option<R>) -> VmLifecycleResult,
+        F: FnOnce(Option<R>) -> AxVmResult,
     {
         let old = core::mem::replace(self, Machine::Destroying);
         match old {
@@ -475,7 +476,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Running { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Running,
                     VmStatus::Destroyed,
                     "destroy",
@@ -483,7 +484,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Pausing { resources, runtime } => {
                 *self = Machine::Pausing { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Pausing,
                     VmStatus::Destroyed,
                     "destroy",
@@ -491,7 +492,7 @@ impl<R, H> Machine<R, H> {
             }
             Machine::Paused { resources, runtime } => {
                 *self = Machine::Paused { resources, runtime };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Paused,
                     VmStatus::Destroyed,
                     "destroy",
@@ -507,7 +508,7 @@ impl<R, H> Machine<R, H> {
                     runtime,
                     reason,
                 };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Stopping,
                     VmStatus::Destroyed,
                     "destroy",
@@ -523,7 +524,7 @@ impl<R, H> Machine<R, H> {
                     runtime: Some(runtime),
                     reason,
                 };
-                Err(VmLifecycleError::invalid_transition(
+                Err(AxVmError::invalid_transition(
                     VmStatus::Stopped,
                     VmStatus::Destroyed,
                     "destroy",
@@ -595,10 +596,10 @@ mod tests {
         let err = machine.resume().unwrap_err();
         assert!(matches!(
             err,
-            VmLifecycleError::InvalidTransition {
+            AxVmError::InvalidTransition {
                 from: VmStatus::Ready,
                 to: VmStatus::Running,
-                op: "resume"
+                operation: "resume"
             }
         ));
         assert_eq!(machine.status(), VmStatus::Ready);
@@ -636,10 +637,10 @@ mod tests {
 
         assert!(matches!(
             err,
-            VmLifecycleError::InvalidTransition {
+            AxVmError::InvalidTransition {
                 from: VmStatus::Running,
                 to: VmStatus::Ready,
-                op: "reset"
+                operation: "reset"
             }
         ));
         assert_eq!(machine.status(), VmStatus::Running);
@@ -656,10 +657,10 @@ mod tests {
 
         assert!(matches!(
             err,
-            VmLifecycleError::InvalidTransition {
+            AxVmError::InvalidTransition {
                 from: VmStatus::Running,
                 to: VmStatus::Destroyed,
-                op: "destroy"
+                operation: "destroy"
             }
         ));
         assert_eq!(machine.status(), VmStatus::Running);
@@ -680,10 +681,10 @@ mod tests {
 
         assert!(matches!(
             err,
-            VmLifecycleError::InvalidTransition {
+            AxVmError::InvalidTransition {
                 from: VmStatus::Stopped,
                 to: VmStatus::Running,
-                op: "start"
+                operation: "start"
             }
         ));
         assert_eq!(machine.status(), VmStatus::Stopped);

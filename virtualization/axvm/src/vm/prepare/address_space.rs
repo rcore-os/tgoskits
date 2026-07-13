@@ -2,19 +2,21 @@
 
 use alloc::vec::Vec;
 
-use ax_errno::AxResult;
 use axdevice::AxVmDevices;
 use axdevice_base::Resource;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
-use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
+use crate::{
+    AxVmError, AxVmResult,
+    layout::{GuestOwnedRegion, VmRegionKind, build_address_layout},
+};
 
 pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
     devices: &AxVmDevices,
     owned_regions: &[GuestOwnedRegion],
-) -> AxResult {
+) -> AxVmResult {
     let emulated_resources = devices
         .devices()
         .flat_map(|device| device.resources().iter().cloned())
@@ -40,12 +42,10 @@ pub(crate) fn map_guest_address_space(
             mapping.hpa.as_usize() + mapping.size,
             mapping.flags
         );
-        resources.address_space.map_linear(
-            mapping.gpa,
-            mapping.hpa,
-            mapping.size,
-            mapping.flags,
-        )?;
+        resources
+            .address_space
+            .map_linear(mapping.gpa, mapping.hpa, mapping.size, mapping.flags)
+            .map_err(|error| AxVmError::memory("map guest address space", error))?;
     }
     resources.address_layout = Some(address_layout);
 

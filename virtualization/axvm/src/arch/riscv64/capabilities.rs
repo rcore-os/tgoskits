@@ -2,10 +2,12 @@
 
 use alloc::{format, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
-
 use super::Riscv64Arch;
-use crate::architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform};
+use crate::{
+    AxVmResult,
+    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    ax_err_type,
+};
 
 impl HostTimePlatform for Riscv64Arch {}
 
@@ -13,7 +15,7 @@ impl BootImagePlatform for Riscv64Arch {
     fn load_guest_dtb(
         loader: &crate::boot::images::ImageLoaderCore<'_>,
         dtb: &crate::boot::fdt::GuestDtbImage,
-    ) -> AxResult {
+    ) -> AxVmResult {
         let bytes = dtb.as_bytes();
         let source = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
@@ -26,7 +28,7 @@ impl GuestBootPlatform for Riscv64Arch {
         vm_config: &mut crate::config::AxVMConfig,
         vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         provider: &dyn crate::boot::BootImageProvider,
-    ) -> AxResult<Option<crate::boot::fdt::GuestDtbImage>> {
+    ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
         super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
     }
 }
@@ -47,7 +49,7 @@ pub(super) fn patch_runtime_fdt(
     fdt_bytes: &[u8],
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     let host_fdt = super::fdt::core::try_get_host_fdt()
         .map(fdt_edit::Fdt::from_bytes)
         .transpose()
@@ -71,7 +73,7 @@ pub(super) fn patch_provided_fdt(
     provided_dtb: &[u8],
     _host_dtb: Option<&[u8]>,
     _crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxResult<Vec<u8>> {
+) -> AxVmResult<Vec<u8>> {
     Ok(provided_dtb.to_vec())
 }
 

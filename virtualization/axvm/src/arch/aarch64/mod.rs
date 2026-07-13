@@ -13,15 +13,17 @@ use arm_vcpu::{
 };
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxError, AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps,
+    AccessWidth, AxVmError as BackendError, AxVmResult as BackendResult, GuestPhysAddr,
+    NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
 };
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::host::{HostCpu, HostMemory, HostTime, default_host};
+use crate::{
+    AxVmResult, ax_err,
+    host::{HostCpu, HostMemory, HostTime, default_host},
+};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
@@ -72,7 +74,7 @@ impl ArchOps for Aarch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -185,7 +187,7 @@ impl ArchOps for Aarch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxVmResult<VcpuRunAction> {
         match work {
             Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
                 Self::after_external_interrupt(vm, vcpu, vector);
@@ -222,34 +224,34 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     type SetupConfig = ArmVcpuSetupConfig;
     type Exit = ArmVmExit;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
         arm_result(self.0.set_entry(ax_guest_phys_addr_to_arm(entry)))
     }
 
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         arm_result(
             self.0
                 .set_nested_page_table(ax_nested_paging_to_arm(config)),
         )
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
         arm_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> AxResult<Self::Exit> {
+    fn run(&mut self) -> BackendResult<Self::Exit> {
         arm_result(self.0.run())
     }
 
-    fn bind(&mut self) -> AxResult {
+    fn bind(&mut self) -> BackendResult {
         arm_result(self.0.bind())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    fn unbind(&mut self) -> BackendResult {
         arm_result(self.0.unbind())
     }
 
@@ -257,7 +259,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         arm_result(self.0.inject_interrupt(vector))
     }
 
@@ -269,7 +271,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 pub(crate) struct AxvmArmPerCpu(ArmPerCpu);
 
 impl VmArchPerCpuOps for AxvmArmPerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> BackendResult<Self> {
         arm_result(ArmPerCpu::new(cpu_id)).map(Self)
     }
 
@@ -277,11 +279,11 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> BackendResult {
         arm_result(self.0.hardware_enable::<AxvmArmHostOps>())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> BackendResult {
         arm_result(self.0.hardware_disable())
     }
 
@@ -294,15 +296,15 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
     }
 }
 
-fn arm_result<T>(result: ArmVcpuResult<T>) -> AxResult<T> {
+fn arm_result<T>(result: ArmVcpuResult<T>) -> BackendResult<T> {
     result.map_err(arm_error_to_ax)
 }
 
-fn arm_error_to_ax(err: ArmVcpuError) -> AxError {
+fn arm_error_to_ax(err: ArmVcpuError) -> BackendError {
     match err {
-        ArmVcpuError::InvalidInput => AxError::InvalidInput,
-        ArmVcpuError::Unsupported => AxError::Unsupported,
-        ArmVcpuError::BadState => AxError::BadState,
+        ArmVcpuError::InvalidInput => BackendError::InvalidInput,
+        ArmVcpuError::Unsupported => BackendError::Unsupported,
+        ArmVcpuError::BadState => BackendError::BadState,
     }
 }
 
@@ -344,13 +346,16 @@ mod tests {
     fn converts_arm_vcpu_errors_to_ax_errors() {
         assert_eq!(
             arm_error_to_ax(ArmVcpuError::InvalidInput),
-            AxError::InvalidInput
+            BackendError::InvalidInput
         );
         assert_eq!(
             arm_error_to_ax(ArmVcpuError::Unsupported),
-            AxError::Unsupported
+            BackendError::Unsupported
         );
-        assert_eq!(arm_error_to_ax(ArmVcpuError::BadState), AxError::BadState);
+        assert_eq!(
+            arm_error_to_ax(ArmVcpuError::BadState),
+            BackendError::BadState
+        );
     }
 
     fn assert_arm_exit_type<T: VmArchVcpuOps<Exit = ArmVmExit>>() {}

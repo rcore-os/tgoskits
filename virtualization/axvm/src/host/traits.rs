@@ -2,8 +2,9 @@
 
 use core::time::Duration;
 
-use ax_errno::AxResult;
 use axvm_types::{HostPhysAddr, HostVirtAddr};
+
+use crate::AxVmResult;
 
 /// Host memory allocation and address translation.
 pub trait HostMemory {
@@ -57,8 +58,8 @@ pub trait HostPlatform {
     fn has_hardware_support(&self) -> bool;
 
     /// Enable virtualization on the current host CPU.
-    fn enable_virtualization_on_current_cpu(&self) -> AxResult;
+    fn enable_virtualization_on_current_cpu(&self) -> AxVmResult;
 
     /// Enable virtualization on every usable host CPU.
-    fn enable_virtualization_on_all_cpus(&self) -> AxResult;
+    fn enable_virtualization_on_all_cpus(&self) -> AxVmResult;
 }

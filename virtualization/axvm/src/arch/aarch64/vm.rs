@@ -3,12 +3,12 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use ax_errno::{AxResult, ax_err, ax_err_type};
 use axdevice_base::DeviceRegistry as _;
 use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
 use super::{Aarch64Arch, npt};
 use crate::{
+    AxVmResult, ax_err, ax_err_type,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -24,7 +24,7 @@ use crate::{
 };
 
 impl Aarch64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
@@ -33,7 +33,7 @@ impl Aarch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxResult {
+    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
@@ -52,7 +52,7 @@ fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
     interrupt_fabric: crate::InterruptFabric,
-) -> AxResult {
+) -> AxVmResult {
     complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
         let placements = vcpu_placements(resources);
         let dtb_addr = resources
@@ -82,7 +82,7 @@ fn init_vm_with(
 fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
-) -> AxResult<<super::AxvmArmVcpu as VmArchVcpuOps>::SetupConfig> {
+) -> AxVmResult<<super::AxvmArmVcpu as VmArchVcpuOps>::SetupConfig> {
     let passthrough = config.interrupt_mode() == VMInterruptMode::Passthrough;
     Ok(ArmVcpuSetupConfig {
         passthrough_interrupt: passthrough,
@@ -94,7 +94,7 @@ fn register_arch_devices(
     vm: &AxVM,
     config: &AxVMConfig,
     devices: &mut axdevice::AxVmDevices,
-) -> AxResult {
+) -> AxVmResult {
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
         assign_passthrough_spis(vm, config, devices);
     } else {
@@ -118,7 +118,7 @@ fn assign_passthrough_spis(vm: &AxVM, config: &AxVMConfig, devices: &axdevice::A
     }
 }
 
-fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxResult {
+fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxVmResult {
     for device in axdevice::create_vtimer_devices() {
         devices
             .register(Arc::from(device) as Arc<dyn axdevice_base::Device>)
@@ -129,7 +129,7 @@ fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxResult {
     Ok(())
 }
 
-fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
+fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
     let mut selected = usize::MAX;
     for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
         let levels = crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
@@ -155,7 +155,7 @@ fn nested_paging_config(
     root_paddr: ax_memory_addr::PhysAddr,
     levels: usize,
     vcpu_mappings: &[(usize, Option<usize>, usize)],
-) -> AxResult<NestedPagingConfig> {
+) -> AxVmResult<NestedPagingConfig> {
     let mut pa_bits = usize::MAX;
     for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
         let bits =

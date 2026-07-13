@@ -1,11 +1,11 @@
 //! LoongArch64 VM resource creation and initialization.
 
-use ax_errno::AxResult;
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
 use super::{LoongArch64Arch, loongarch_result, npt};
 use crate::{
+    AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -21,7 +21,7 @@ use crate::{
 };
 
 impl LoongArch64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements);
         let page_table = npt::NestedPageTable::new(levels)?;
@@ -30,7 +30,7 @@ impl LoongArch64Arch {
                 3 => 39,
                 4 => 48,
                 _ => {
-                    return ax_errno::ax_err!(
+                    return ax_err!(
                         InvalidInput,
                         "unsupported LoongArch nested page-table levels"
                     );
@@ -40,7 +40,7 @@ impl LoongArch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxResult {
+    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
@@ -59,7 +59,7 @@ fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
     interrupt_fabric: crate::InterruptFabric,
-) -> AxResult {
+) -> AxVmResult {
     complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
         let placements = vcpu_placements(resources);
         let state_count = placements
@@ -67,7 +67,9 @@ fn init_vm_with(
             .map(|placement| placement.id)
             .max()
             .map_or(0, |vcpu_id| vcpu_id + 1);
-        let iocsr_state = loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))?;
+        let iocsr_state =
+            loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
+                .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
         let dtb_addr = resources
             .config()
             .image_config()
@@ -99,7 +101,7 @@ fn init_vm_with(
 fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
-) -> AxResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
+) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
     let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
     Ok(LoongArchVCpuSetupConfig {
         passthrough_interrupt: passthrough,

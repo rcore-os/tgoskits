@@ -1,8 +1,9 @@
 use alloc::{format, string::String, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::{Header, RegInfo};
+
+use crate::{AxVmResult, ax_err_type};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GuestMemorySpec {
@@ -29,7 +30,7 @@ impl FdtTree {
         Self { fdt }
     }
 
-    pub(crate) fn from_bytes(bytes: &[u8]) -> AxResult<Self> {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> AxVmResult<Self> {
         let fdt = Fdt::from_bytes(bytes)
             .map_err(|err| ax_err_type!(InvalidData, format!("Failed to parse FDT: {err:#?}")))?;
         Ok(Self::from_fdt(fdt))
@@ -60,7 +61,7 @@ impl FdtTree {
             .collect()
     }
 
-    pub(crate) fn ensure_path(&mut self, path: &str) -> AxResult<NodeId> {
+    pub(crate) fn ensure_path(&mut self, path: &str) -> AxVmResult<NodeId> {
         if let Some(id) = self.fdt.get_by_path_id(path) {
             return Ok(id);
         }
@@ -82,7 +83,7 @@ impl FdtTree {
         Ok(parent)
     }
 
-    pub(crate) fn set_property(&mut self, node_id: NodeId, prop: Property) -> AxResult {
+    pub(crate) fn set_property(&mut self, node_id: NodeId, prop: Property) -> AxVmResult {
         let node = self
             .fdt
             .node_mut(node_id)
@@ -95,7 +96,7 @@ impl FdtTree {
         self.fdt.add_node(parent, node)
     }
 
-    pub(crate) fn rebuild_memory_nodes(&mut self, regions: &[GuestMemorySpec]) -> AxResult {
+    pub(crate) fn rebuild_memory_nodes(&mut self, regions: &[GuestMemorySpec]) -> AxVmResult {
         let memory_paths = self
             .node_paths()
             .into_iter()
@@ -124,7 +125,7 @@ impl FdtTree {
         Ok(())
     }
 
-    pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxResult {
+    pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
         let chosen = self
             .fdt
@@ -154,7 +155,7 @@ impl FdtTree {
         source_id: NodeId,
         dest_parent: NodeId,
         skip_cpu_cache_props: bool,
-    ) -> AxResult<NodeId> {
+    ) -> AxVmResult<NodeId> {
         let source_node = source
             .node(source_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "source FDT node id is invalid"))?;
@@ -175,7 +176,7 @@ impl FdtTree {
     pub(crate) fn clone_filtered(
         source: &Fdt,
         keep: impl Fn(NodeId, &str, &Node) -> bool,
-    ) -> AxResult<Self> {
+    ) -> AxVmResult<Self> {
         let mut dest = FdtTree::new();
         dest.fdt.boot_cpuid_phys = source.boot_cpuid_phys;
         dest.fdt.memory_reservations = source.memory_reservations.clone();

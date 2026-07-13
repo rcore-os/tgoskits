@@ -1,7 +1,7 @@
 //! Guest boot image and platform planning.
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-use ax_errno::ax_err_type;
+use crate::ax_err_type;
 
 pub mod fdt;
 pub mod guest_platform;
@@ -43,14 +43,14 @@ pub trait BootImageProvider {
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn read_file(&self, file_name: &str) -> ax_errno::AxResult<alloc::vec::Vec<u8>>;
+    fn read_file(&self, file_name: &str) -> crate::AxVmResult<alloc::vec::Vec<u8>>;
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn read_file_exact(
         &self,
         file_name: &str,
         read_size: usize,
-    ) -> ax_errno::AxResult<alloc::vec::Vec<u8>> {
+    ) -> crate::AxVmResult<alloc::vec::Vec<u8>> {
         let buffer = self.read_file(file_name)?;
         if buffer.len() < read_size {
             return Err(ax_err_type!(
@@ -62,7 +62,7 @@ pub trait BootImageProvider {
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn file_size(&self, file_name: &str) -> ax_errno::AxResult<usize> {
+    fn file_size(&self, file_name: &str) -> crate::AxVmResult<usize> {
         self.read_file(file_name).map(|buffer| buffer.len())
     }
 }

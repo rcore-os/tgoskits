@@ -2,10 +2,10 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use ax_errno::AxResult;
 use axvm_types::VmArchVcpuOps;
 
 use super::super::{AxVCpuRef, AxVMResources, VCpu};
+use crate::AxVmResult;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VcpuPlacement {
@@ -24,9 +24,10 @@ impl PreparedVcpus {
         placements: &[VcpuPlacement],
         mut build_config: impl FnMut(
             VcpuPlacement,
-        )
-            -> AxResult<<crate::arch::ArchVCpu as VmArchVcpuOps>::CreateConfig>,
-    ) -> AxResult<Self> {
+        ) -> AxVmResult<
+            <crate::arch::ArchVCpu as VmArchVcpuOps>::CreateConfig,
+        >,
+    ) -> AxVmResult<Self> {
         debug!("id: {vm_id}, vCPU placements: {placements:#x?}");
 
         let mut vcpus = Vec::with_capacity(placements.len());
@@ -58,9 +59,10 @@ impl PreparedVcpus {
         mut build_config: impl FnMut(
             &crate::config::AxVMConfig,
             &[crate::vm::VMMemoryRegion],
-        )
-            -> AxResult<<crate::arch::ArchVCpu as VmArchVcpuOps>::SetupConfig>,
-    ) -> AxResult {
+        ) -> AxVmResult<
+            <crate::arch::ArchVCpu as VmArchVcpuOps>::SetupConfig,
+        >,
+    ) -> AxVmResult {
         for vcpu in &self.vcpus {
             let setup_config = build_config(&resources.config, &resources.memory_regions)?;
             let entry = if vcpu.id() == 0 {

@@ -17,11 +17,12 @@
 use alloc::format;
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
-use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{
     GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState,
 };
+
+use crate::{AxVmError, AxVmResult, ax_err};
 
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
@@ -48,7 +49,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         vcpu_id: VCpuId,
         phys_cpu_set: Option<usize>,
         arch_config: A::CreateConfig,
-    ) -> AxResult<Self> {
+    ) -> AxVmResult<Self> {
         Ok(Self {
             inner_const: AxVCpuInnerConst {
                 vm_id,
@@ -58,7 +59,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
             }),
-            arch_vcpu: UnsafeCell::new(A::new(vm_id, vcpu_id, arch_config)?),
+            arch_vcpu: UnsafeCell::new(
+                A::new(vm_id, vcpu_id, arch_config)
+                    .map_err(|error| AxVmError::vcpu("create vCPU", error))?,
+            ),
         })
     }
 
@@ -68,11 +72,17 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         entry: GuestPhysAddr,
         nested_paging: NestedPagingConfig,
         arch_config: A::SetupConfig,
-    ) -> AxResult {
+    ) -> AxVmResult {
         self.manipulate_arch_vcpu(VmVcpuState::Created, VmVcpuState::Free, |arch_vcpu| {
-            arch_vcpu.set_entry(entry)?;
-            arch_vcpu.set_nested_page_table(nested_paging)?;
-            arch_vcpu.setup(arch_config)?;
+            arch_vcpu
+                .set_entry(entry)
+                .map_err(|error| AxVmError::vcpu("set vCPU entry", error))?;
+            arch_vcpu
+                .set_nested_page_table(nested_paging)
+                .map_err(|error| AxVmError::vcpu("set nested page table", error))?;
+            arch_vcpu
+                .setup(arch_config)
+                .map_err(|error| AxVmError::vcpu("set up vCPU", error))?;
             Ok(())
         })
     }
@@ -103,9 +113,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         from: VmVcpuState,
         to: VmVcpuState,
         f: F,
-    ) -> AxResult<T>
+    ) -> AxVmResult<T>
     where
-        F: FnOnce() -> AxResult<T>,
+        F: FnOnce() -> AxVmResult<T>,
     {
         {
             let inner_mut = self.inner_mut.lock();
@@ -156,9 +166,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         from: VmVcpuState,
         to: VmVcpuState,
         f: F,
-    ) -> AxResult<T>
+    ) -> AxVmResult<T>
     where
-        F: FnOnce(&mut A) -> AxResult<T>,
+        F: FnOnce(&mut A) -> AxVmResult<T>,
     {
         self.with_state_transition(from, to, || {
             self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
@@ -166,7 +176,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Transitions the vCPU state without calling the architecture backend.
-    pub fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxResult {
+    pub fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
         self.with_state_transition(from, to, || Ok(()))
     }
 
@@ -177,24 +187,30 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs the vCPU until a VM exit.
-    pub fn run(&self) -> AxResult<A::Exit> {
+    pub fn run(&self) -> AxVmResult<A::Exit> {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Running)?;
         self.manipulate_arch_vcpu(VmVcpuState::Running, VmVcpuState::Ready, |arch_vcpu| {
-            arch_vcpu.run()
+            arch_vcpu
+                .run()
+                .map_err(|error| AxVmError::vcpu("run vCPU", error))
         })
     }
 
     /// Binds the vCPU to the current physical CPU.
-    pub fn bind(&self) -> AxResult {
+    pub fn bind(&self) -> AxVmResult {
         self.manipulate_arch_vcpu(VmVcpuState::Free, VmVcpuState::Ready, |arch_vcpu| {
-            arch_vcpu.bind()
+            arch_vcpu
+                .bind()
+                .map_err(|error| AxVmError::vcpu("bind vCPU", error))
         })
     }
 
     /// Unbinds the vCPU from the current physical CPU.
-    pub fn unbind(&self) -> AxResult {
+    pub fn unbind(&self) -> AxVmResult {
         self.manipulate_arch_vcpu(VmVcpuState::Ready, VmVcpuState::Free, |arch_vcpu| {
-            arch_vcpu.unbind()
+            arch_vcpu
+                .unbind()
+                .map_err(|error| AxVmError::vcpu("unbind vCPU", error))
         })
     }
 
@@ -203,8 +219,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         dead_code,
         reason = "only non-x86 guest firmware updates secondary vCPU entries"
     )]
-    pub fn set_entry(&self, entry: GuestPhysAddr) -> AxResult {
-        self.get_arch_vcpu().set_entry(entry)
+    pub fn set_entry(&self, entry: GuestPhysAddr) -> AxVmResult {
+        self.get_arch_vcpu()
+            .set_entry(entry)
+            .map_err(|error| AxVmError::vcpu("set vCPU entry", error))
     }
 
     /// Sets a guest general-purpose register.
@@ -213,8 +231,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Injects an interrupt into the vCPU.
-    pub fn inject_interrupt(&self, vector: usize) -> AxResult {
-        self.get_arch_vcpu().inject_interrupt(vector)
+    pub fn inject_interrupt(&self, vector: usize) -> AxVmResult {
+        self.get_arch_vcpu()
+            .inject_interrupt(vector)
+            .map_err(|error| AxVmError::interrupt("inject vCPU interrupt", error))
     }
 
     /// Sets the guest return value.
@@ -280,12 +300,15 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
     }
 
     /// Initializes this per-CPU state.
-    pub fn init(&mut self, cpu_id: usize) -> AxResult {
+    pub fn init(&mut self, cpu_id: usize) -> AxVmResult {
         if self.cpu_id.is_some() {
             ax_err!(BadState, "per-CPU state is already initialized")
         } else {
             self.cpu_id = Some(cpu_id);
-            self.arch.write(A::new(cpu_id)?);
+            self.arch
+                .write(A::new(cpu_id).map_err(|error| {
+                    AxVmError::host("initialize per-CPU virtualization", error)
+                })?);
             Ok(())
         }
     }
@@ -308,13 +331,17 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
     }
 
     /// Enables virtualization on the current CPU.
-    pub fn hardware_enable(&mut self) -> AxResult {
-        self.arch_checked_mut().hardware_enable()
+    pub fn hardware_enable(&mut self) -> AxVmResult {
+        self.arch_checked_mut()
+            .hardware_enable()
+            .map_err(|error| AxVmError::host("enable hardware virtualization", error))
     }
 
     /// Disables virtualization on the current CPU.
-    pub fn hardware_disable(&mut self) -> AxResult {
-        self.arch_checked_mut().hardware_disable()
+    pub fn hardware_disable(&mut self) -> AxVmResult {
+        self.arch_checked_mut()
+            .hardware_disable()
+            .map_err(|error| AxVmError::host("disable hardware virtualization", error))
     }
 }
 

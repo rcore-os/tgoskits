@@ -1,13 +1,12 @@
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 
-use ax_errno::{AxResult, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
 use axvmconfig::AxVMCrateConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
 use crate::{
-    AxVMRef,
+    AxVMRef, AxVmResult, ax_err_type,
     config::{AxVMConfig, PassThroughDeviceConfig},
 };
 
@@ -43,7 +42,7 @@ pub fn get_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRoute> {
 pub fn prepare_uefi_fdt_config(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
-) -> AxResult {
+) -> AxVmResult {
     info!(
         "VM[{}] uses LoongArch UEFI boot protocol, keeping firmware FDT at {:#x}",
         vm_config.id(),
@@ -62,7 +61,7 @@ pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &AxVMCrateCon
 fn expand_root_passthrough(
     vm_config: &mut AxVMConfig,
     vm_create_config: &AxVMCrateConfig,
-) -> AxResult {
+) -> AxVmResult {
     let has_root_passthrough = vm_config
         .pass_through_devices()
         .iter()
@@ -140,7 +139,7 @@ struct AcpiPassthroughRange {
 
 fn acpi_passthrough_ranges(
     acpi: &ax_driver::probe::acpi::System,
-) -> AxResult<Vec<AcpiPassthroughRange>> {
+) -> AxVmResult<Vec<AcpiPassthroughRange>> {
     let mut ranges = Vec::new();
 
     for device in acpi.resource_devices().map_err(|err| {
@@ -224,7 +223,7 @@ fn add_acpi_passthrough_range(
     name: String,
     base: u64,
     size: u64,
-) -> AxResult {
+) -> AxVmResult {
     if size == 0 {
         return Ok(());
     }
