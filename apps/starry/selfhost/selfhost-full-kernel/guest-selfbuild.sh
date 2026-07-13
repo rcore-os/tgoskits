@@ -127,21 +127,25 @@ configure_musl_toolchain_aliases() {
 }
 
 install_rust() {
-    export RUSTUP_HOME=/root/.rustup
-    export CARGO_HOME=/root/.cargo
-    export PATH="$CARGO_HOME/bin:/usr/local/bin:/usr/bin:/bin"
-    # StarryOS reports a conservatively small memory budget to Rustup even when
-    # QEMU provides the app's configured 16 GiB. Avoid Rustup's unusably slow
-    # single-threaded fallback while keeping the value configurable for debug.
+    # rsext4 (CACHE_ENTRIES=4, 16 KiB metadata cache) writes small files at
+    # ~1-4 KiB/s during tar extraction.  Installing the ~6.9 GiB Rust
+    # toolchain directly to ext4 would take hours.  Instead, install to /tmp
+    # (MemoryFs / tmpfs, RAM-backed, fast), then copy the result to ext4 in
+    # one bulk operation — exactly the approach the selfhost-bootstrap path
+    # uses.
+    local tmp_rustup=/tmp/rustup-home
+    local tmp_cargo=/tmp/cargo-home
+
+    export RUSTUP_HOME="$tmp_rustup"
+    export CARGO_HOME="$tmp_cargo"
+    export PATH="$tmp_cargo/bin:/usr/local/bin:/usr/bin:/bin"
     export RUSTUP_IO_THREADS="${SELFHOST_RUSTUP_IO_THREADS:-4}"
     export RUSTUP_MAX_RETRIES="${SELFHOST_RUSTUP_MAX_RETRIES:-5}"
 
-    # Populate rustup's download cache from host-side pre-downloaded component
-    # tarballs.  The cache key is the SHA-256 hash of each tarball (published
-    # in the rustup channel manifest).  When the hash-named file exists in
-    # $RUSTUP_HOME/downloads/, rustup skips the network download entirely —
-    # essential because QEMU slirp degrades to <1 KiB/s for large transfers.
-    local dl_cache="$RUSTUP_HOME/downloads"
+    mkdir -p "$tmp_rustup" "$tmp_cargo"
+
+    # Populate rustup download cache from host-side pre-downloaded tarballs.
+    local dl_cache="$tmp_rustup/downloads"
     local host_cache="/root/.rustup-dl-cache"
     if [ -d "$host_cache" ]; then
         mkdir -p "$dl_cache"
@@ -155,7 +159,7 @@ install_rust() {
         rm -rf "$host_cache"
     fi
 
-    if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+    if [ ! -x "$tmp_cargo/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
             -o /tmp/rustup-init.sh
         sh /tmp/rustup-init.sh -y --profile minimal --default-host "$HOST_TRIPLE" \
@@ -166,9 +170,25 @@ install_rust() {
     rustup default "$RUSTUP_TOOLCHAIN"
     rustup component add --toolchain "$RUSTUP_TOOLCHAIN" rust-src llvm-tools-preview
     rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-none
+
+    # Copy the completed toolchain from tmpfs to the ext4 rootfs.
+    echo "[self-compile] copying Rust toolchain from tmpfs to ext4 rootfs..."
+    mkdir -p /root/.rustup /root/.cargo
+    cp -a "$tmp_rustup"/. /root/.rustup/ 2>/dev/null || fail "copy rustup from tmpfs failed"
+    cp -a "$tmp_cargo"/. /root/.cargo/ 2>/dev/null || fail "copy cargo from tmpfs failed"
+    echo "[self-compile] Rust toolchain copied to ext4 rootfs."
+    rm -rf "$tmp_rustup" "$tmp_cargo"
+
+    # Restore the persistent paths for subsequent phases.
+    export RUSTUP_HOME=/root/.rustup
+    export CARGO_HOME=/root/.cargo
+    export PATH="$CARGO_HOME/bin:/usr/local/bin:/usr/bin:/bin"
 }
 
 install_kallsyms_tools() {
+    # kallsyms tools run after install_rust restored CARGO_HOME to ext4.
+    # cargo install downloads source + compiles, which is small enough to
+    # tolerate rsext4 throughput.
     if ! cargo install --list | grep -q '^cargo-binutils v0.4.0:'; then
         cargo install cargo-binutils --version 0.4.0 --locked
     fi
