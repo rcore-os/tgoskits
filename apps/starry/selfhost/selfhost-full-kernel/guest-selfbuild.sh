@@ -128,45 +128,44 @@ configure_musl_toolchain_aliases() {
 
 install_rust() {
     # The prebuild host extracts all six rustup component tarballs and
-    # bundles them into a single uncompressed tar.  This avoids XZ
-    # decompression (which freezes the guest under MemoryFs pressure) and
-    # QEMU slirp networking (which degrades to <1 KiB/s).
+    # bundles them into a single uncompressed tar (~2.5 GiB).  We extract
+    # it directly to the ext4 rootfs — rsext4 is slow for small-file writes
+    # (~1-4 KiB/s during tar extraction) but `tar xf` streams the data
+    # through a pipe and does not deadlock the way `cp -a` from tmpfs does.
+    # Once the toolchain is on ext4, reads (rustc, std libs) are fast.
     local toolchain_tar="/opt/rust-toolchain.tar"
     local toolchain_name="nightly-2026-05-28-x86_64-unknown-linux-musl"
-    local tmp_tc="/tmp/toolchain-stage"
 
     [ -f "$toolchain_tar" ] || fail "rust toolchain tar is missing: $toolchain_tar"
 
-    echo "[self-compile] extracting pre-built Rust toolchain to tmpfs..."
-    mkdir -p "$tmp_tc"
-    tar xf "$toolchain_tar" -C "$tmp_tc" || fail "failed to extract toolchain tar"
+    echo "[self-compile] extracting pre-built Rust toolchain to ext4 rootfs..."
+    mkdir -p /root/.rustup/toolchains
+    tar xf "$toolchain_tar" -C /root/.rustup/toolchains/ \
+        || fail "failed to extract toolchain tar to ext4"
     rm -f "$toolchain_tar"
 
-    # Copy the extracted toolchain to the persistent ext4 rootfs.
-    echo "[self-compile] copying Rust toolchain from tmpfs to ext4 rootfs..."
-    mkdir -p /root/.rustup/toolchains /root/.cargo
-    cp -a "$tmp_tc/$toolchain_name" /root/.rustup/toolchains/ \
-        || fail "copy toolchain from tmpfs failed"
-    rm -rf "$tmp_tc"
+    # Install rustup to tmpfs (rsext4 is too slow for rustup's many small
+    # writes during installation of cargo-binutils / ksym).
+    local tmp_rustup=/tmp/rustup-home
+    local tmp_cargo=/tmp/cargo-home
+    mkdir -p "$tmp_rustup" "$tmp_cargo"
 
-    # Install rustup the normal way (small download) so it can manage the
-    # pre-staged toolchain.
-    export RUSTUP_HOME=/root/.rustup
-    export CARGO_HOME=/root/.cargo
-    export PATH="$CARGO_HOME/bin:/usr/local/bin:/usr/bin:/bin"
+    export RUSTUP_HOME="$tmp_rustup"
+    export CARGO_HOME="$tmp_cargo"
+    export PATH="$tmp_cargo/bin:/usr/local/bin:/usr/bin:/bin"
     export RUSTUP_IO_THREADS="${SELFHOST_RUSTUP_IO_THREADS:-4}"
     export RUSTUP_MAX_RETRIES="${SELFHOST_RUSTUP_MAX_RETRIES:-5}"
 
-    if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+    if [ ! -x "$tmp_cargo/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
             -o /tmp/rustup-init.sh
         sh /tmp/rustup-init.sh -y --profile minimal --default-host "$HOST_TRIPLE" \
             --no-modify-path
     fi
 
-    # Point rustup at the pre-staged toolchain.
-    rustup toolchain link "$toolchain_name" "/root/.rustup/toolchains/$toolchain_name" \
-        2>/dev/null || true
+    # Point rustup at the pre-staged toolchain on ext4.
+    rustup toolchain link "$toolchain_name" \
+        "/root/.rustup/toolchains/$toolchain_name" 2>/dev/null || true
     rustup default "$RUSTUP_TOOLCHAIN" 2>/dev/null || true
 
     echo "[self-compile] Rust toolchain ready."
