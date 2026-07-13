@@ -180,7 +180,7 @@ fn decode_jpeg_rgb_into(jpeg: &[u8], out: &mut Vec<u8>) -> Result<(u32, u32), Im
     Ok((info.width as u32, info.height as u32))
 }
 
-fn resize_pack_rgb_planar(
+pub(crate) fn resize_pack_rgb_planar(
     src: &[u8],
     src_w: u32,
     src_h: u32,
@@ -265,7 +265,7 @@ fn pack_rgb_planar_copy(
     }
 }
 
-fn clear_letterbox_padding(
+pub(crate) fn clear_letterbox_padding(
     dst: &mut [u8],
     dst_w: u32,
     dst_h: u32,
@@ -299,13 +299,13 @@ fn clear_letterbox_padding(
 }
 
 #[derive(Default)]
-struct InterpolationCache {
+pub(crate) struct InterpolationCache {
     table: Vec<Interpolation>,
     key: Option<(u32, u32)>,
 }
 
 impl InterpolationCache {
-    fn ensure(&mut self, src_len: u32, dst_len: u32) -> &[Interpolation] {
+    pub(crate) fn ensure(&mut self, src_len: u32, dst_len: u32) -> &[Interpolation] {
         if self.key == Some((src_len, dst_len)) {
             return &self.table;
         }
@@ -343,10 +343,10 @@ impl InterpolationCache {
 }
 
 #[derive(Clone, Copy)]
-struct Interpolation {
-    start: u32,
-    end: u32,
-    weight: u32,
+pub(crate) struct Interpolation {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) weight: u32,
 }
 
 fn interpolate_channel(
@@ -550,7 +550,7 @@ fn save_rgb_image(image: &RgbImage, out_path: &Path) -> Result<(), ImageBridgeEr
         .map_err(ImageBridgeError::Save)
 }
 
-fn elapsed_us(start: Instant) -> i64 {
+pub(crate) fn elapsed_us(start: Instant) -> i64 {
     start.elapsed().as_micros() as i64
 }
 
