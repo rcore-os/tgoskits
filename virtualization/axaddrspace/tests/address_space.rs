@@ -19,7 +19,7 @@ mod test_utils;
 use core::sync::atomic::Ordering;
 
 use ax_memory_addr::PhysAddr;
-use axaddrspace::{AddrSpace, MappingFlags};
+use axaddrspace::{AddrSpace, AddrSpaceError, MappingFlags};
 use axin::axin;
 use axvm_types::GuestPhysAddr;
 use mock_npt::MockNestedPageTable;
@@ -130,7 +130,10 @@ fn test_map_linear_rejects_physical_range_overflow() {
     let paddr = PhysAddr::from_usize(usize::MAX - 0xfff);
     let flags = MappingFlags::READ | MappingFlags::WRITE;
 
-    assert!(addr_space.map_linear(vaddr, paddr, 0x2000, flags).is_err());
+    assert!(matches!(
+        addr_space.map_linear(vaddr, paddr, 0x2000, flags),
+        Err(AddrSpaceError::AddressOverflow { .. })
+    ));
 }
 
 #[test]
@@ -164,6 +167,28 @@ fn test_map_alloc_populate() {
 
     // Verify two pages have different physical addresses
     assert_ne!(paddr1, paddr2);
+}
+
+#[test]
+#[axin(decorator(mock_hal_test))]
+fn test_mapping_validation_errors_are_matchable() {
+    let (mut addr_space, base, size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    assert!(matches!(
+        addr_space.map_alloc(base + size, 0x1000, flags, false),
+        Err(AddrSpaceError::OutOfRange { .. })
+    ));
+    assert!(matches!(
+        addr_space.map_alloc(base + 1, 0x1000, flags, false),
+        Err(AddrSpaceError::Unaligned { .. })
+    ));
+
+    addr_space.map_alloc(base, 0x1000, flags, false).unwrap();
+    assert_eq!(
+        addr_space.map_alloc(base, 0x1000, flags, false),
+        Err(AddrSpaceError::MappingConflict)
+    );
 }
 
 #[test]

@@ -4,12 +4,13 @@ extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::VMId;
 
 use crate::{
+    AxVmError, AxVmResult,
     arch::ArchVCpu,
+    ax_err,
     host::{HostPlatform, default_host},
     vcpu::get_current_vcpu,
     vm::AxVMRef,
@@ -54,7 +55,6 @@ pub fn get_vm_list() -> Vec<AxVMRef> {
 }
 
 /// Run an operation with a VM selected from the process-wide runtime registry.
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
 where
     F: FnOnce(&AxVMRef) -> R,
@@ -64,7 +64,6 @@ where
 }
 
 /// Return the active-vCPU mask for a VM.
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
     with_vm(vm_id, |vm| {
         let vcpu_num = vm.vcpu_num();
@@ -77,14 +76,16 @@ pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
 }
 
 /// Inject a virtual interrupt into a VM's vCPU.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
+pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
 /// Inject a virtual interrupt into a VM's vCPU.
-#[cfg(target_arch = "loongarch64")]
-pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxResult {
+#[expect(
+    dead_code,
+    reason = "only the LoongArch IRQ backend injects external VM interrupts"
+)]
+pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
     use crate::AsVCpuTask;
 
     let current = crate::host::task::current_task();
@@ -109,15 +110,16 @@ pub fn current_vcpu_id() -> Option<usize> {
 }
 
 /// Inject a virtual interrupt into the vCPU currently executing on this CPU.
-pub fn inject_current_vcpu_interrupt(vector: usize) -> AxResult {
-    let vcpu = get_current_vcpu::<ArchVCpu>()
-        .ok_or_else(|| ax_err_type!(BadState, "current vCPU is not set"))?;
+pub fn inject_current_vcpu_interrupt(vector: usize) -> AxVmResult {
+    let vcpu = get_current_vcpu::<ArchVCpu>().ok_or_else(|| {
+        AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
+    })?;
     vcpu.inject_interrupt(vector)
 }
 
 impl AxvmRuntime {
     /// Create a new AxVM runtime backed by the default ArceOS host adapter.
-    pub fn new() -> AxResult<Self> {
+    pub fn new() -> AxVmResult<Self> {
         let host = default_host();
         if !host.has_hardware_support() {
             return ax_err!(Unsupported, "hardware virtualization is not supported");
@@ -142,22 +144,22 @@ impl AxvmRuntime {
     }
 
     /// Start a VM selected from the runtime registry.
-    pub fn start_vm(vm_id: VMId) -> AxResult {
+    pub fn start_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::start_vm(vm_id)
     }
 
     /// Stop a VM selected from the runtime registry.
-    pub fn stop_vm(vm_id: VMId) -> AxResult {
+    pub fn stop_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::stop_vm(vm_id)
     }
 
     /// Resume a VM selected from the runtime registry.
-    pub fn resume_vm(vm_id: VMId) -> AxResult {
+    pub fn resume_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::resume_vm(vm_id)
     }
 
     /// Reset a VM selected from the runtime registry.
-    pub fn reset_vm(vm_id: VMId) -> AxResult {
+    pub fn reset_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::reset_vm(vm_id)
     }
 

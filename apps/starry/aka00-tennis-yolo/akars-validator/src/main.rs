@@ -27,6 +27,14 @@ struct Cli {
     conf: f32,
     iou: f32,
     write_expected: bool,
+    warmup: usize,
+    repeat: usize,
+}
+
+#[derive(Clone, Debug)]
+struct InputImage {
+    path: String,
+    frame: CameraFrame,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +61,72 @@ struct ExpectedSet {
     score_tolerance_q10000: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimingStats {
+    average_us: i64,
+    p50_us: i64,
+    p95_us: i64,
+}
+
+#[derive(Default)]
+struct BenchmarkSamples {
+    decode_us: Vec<i64>,
+    resize_us: Vec<i64>,
+    preprocess_us: Vec<i64>,
+    forward_us: Vec<i64>,
+    postprocess_us: Vec<i64>,
+    total_us: Vec<i64>,
+}
+
+impl BenchmarkSamples {
+    fn push(&mut self, timing: InferTiming, total_us: i64) {
+        self.decode_us.push(timing.decode_us);
+        self.resize_us.push(timing.resize_us);
+        self.preprocess_us.push(timing.preprocess_us);
+        self.forward_us.push(timing.forward_us);
+        self.postprocess_us.push(timing.postprocess_us);
+        self.total_us.push(total_us);
+    }
+
+    fn format_result(&self, measured_runs: usize, images: usize) -> String {
+        let decode = timing_stats(&self.decode_us).expect("benchmark has decode samples");
+        let resize = timing_stats(&self.resize_us).expect("benchmark has resize samples");
+        let preprocess =
+            timing_stats(&self.preprocess_us).expect("benchmark has preprocess samples");
+        let forward = timing_stats(&self.forward_us).expect("benchmark has forward samples");
+        let postprocess =
+            timing_stats(&self.postprocess_us).expect("benchmark has postprocess samples");
+        let total = timing_stats(&self.total_us).expect("benchmark has total samples");
+        format!(
+            "AKARS_TENNIS_BENCH_RESULT measured_runs={measured_runs} images={images} samples={} \
+             decode_us_avg={} decode_us_p50={} decode_us_p95={} resize_us_avg={} resize_us_p50={} \
+             resize_us_p95={} preprocess_us_avg={} preprocess_us_p50={} preprocess_us_p95={} \
+             forward_us_avg={} forward_us_p50={} forward_us_p95={} postprocess_us_avg={} \
+             postprocess_us_p50={} postprocess_us_p95={} total_us_avg={} total_us_p50={} \
+             total_us_p95={}",
+            self.total_us.len(),
+            decode.average_us,
+            decode.p50_us,
+            decode.p95_us,
+            resize.average_us,
+            resize.p50_us,
+            resize.p95_us,
+            preprocess.average_us,
+            preprocess.p50_us,
+            preprocess.p95_us,
+            forward.average_us,
+            forward.p50_us,
+            forward.p95_us,
+            postprocess.average_us,
+            postprocess.p50_us,
+            postprocess.p95_us,
+            total.average_us,
+            total.p50_us,
+            total.p95_us,
+        )
+    }
+}
+
 #[derive(Debug)]
 struct ValidationError(String);
 
@@ -69,6 +143,28 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
+
+fn timing_stats(values: &[i64]) -> Option<TimingStats> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let sum: i128 = sorted.iter().map(|value| i128::from(*value)).sum();
+    let average_us = (sum / sorted.len() as i128) as i64;
+    Some(TimingStats {
+        average_us,
+        p50_us: nearest_rank(&sorted, 50),
+        p95_us: nearest_rank(&sorted, 95),
+    })
+}
+
+fn nearest_rank(sorted: &[i64], percentile: usize) -> i64 {
+    debug_assert!(!sorted.is_empty());
+    debug_assert!((1..=100).contains(&percentile));
+    let rank = (percentile * sorted.len()).div_ceil(100);
+    sorted[rank - 1]
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -90,6 +186,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let cwd = env::current_dir()?;
     let list_root = cli.image_list.parent().unwrap_or_else(|| Path::new("."));
+    let mut input_images = Vec::with_capacity(image_paths.len());
+    for rel_path in image_paths {
+        let image_path = resolve_image_path(&cwd, list_root, &rel_path);
+        input_images.push(InputImage {
+            path: rel_path,
+            frame: CameraFrame {
+                jpeg: fs::read(image_path)?,
+                width: 0,
+                height: 0,
+            },
+        });
+    }
+
     let mut model = open_model(&cli.model)?;
     let config = InferenceConfig {
         classes_num: cli.classes,
@@ -97,61 +206,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         iou_threshold: cli.iou,
     };
 
-    let mut actual = Vec::new();
-    for (index, rel_path) in image_paths.iter().enumerate() {
-        let image_path = resolve_image_path(&cwd, list_root, rel_path);
-        let image = fs::read(&image_path)?;
-        let frame = CameraFrame {
-            jpeg: image,
-            width: 0,
-            height: 0,
-        };
-
-        let mut timing = InferTiming::default();
-        let total_start = Instant::now();
-        let detections = model.infer_timed(&frame, config, Some(&mut timing))?;
-        let total_us = total_start.elapsed().as_micros() as i64;
-        let normalized = normalize_detections(&detections);
-
-        println!(
-            "AKARS_TENNIS_RESULT image={index} path={} detections={}",
-            shell_word(rel_path),
-            normalized.len()
-        );
-        for det in &normalized {
-            println!(
-                "AKARS_TENNIS_DET image={index} cls={} class={} score_q10000={} \
-                 confidence_percent={:.2} left={} top={} right={} bottom={}",
-                det.cls,
-                class_name(det.cls),
-                det.score_q10000,
-                f64::from(det.score_q10000) / 100.0,
-                det.left,
-                det.top,
-                det.right,
-                det.bottom
-            );
+    for _ in 0..cli.warmup {
+        for input in &input_images {
+            let _ = infer_frame(&mut model, &input.frame, config)?;
         }
+    }
+    if cli.warmup > 0 {
         println!(
-            "AKARS_TENNIS_TIMING image={index} preprocess_us={} forward_us={} postprocess_us={} \
-             total_us={}",
-            timing.preprocess_us, timing.forward_us, timing.postprocess_us, total_us
+            "AKARS_TENNIS_WARMUP_DONE runs={} images={}",
+            cli.warmup,
+            input_images.len()
         );
-
-        actual.push(ImageExpected {
-            index,
-            path: rel_path.clone(),
-            detections: normalized,
-        });
     }
 
-    let actual_set = ExpectedSet {
-        images: actual,
-        bbox_tolerance_px: DEFAULT_BBOX_TOLERANCE_PX,
-        score_tolerance_q10000: DEFAULT_SCORE_TOLERANCE_Q10000,
-    };
-
     if cli.write_expected {
+        let actual_set = run_measured_pass(&mut model, &input_images, config, 1, None)?;
         fs::write(
             &cli.expected,
             format_expected(&actual_set, cli.classes, cli.conf, cli.iou),
@@ -165,12 +234,90 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let expected = parse_expected(&fs::read_to_string(&cli.expected)?)?;
-    compare_expected(&expected, &actual_set)?;
-    println!(
-        "AKARS_TENNIS_VALIDATE_PASS images={}",
-        actual_set.images.len()
-    );
+    let mut samples = BenchmarkSamples::default();
+    for run_index in 1..=cli.repeat {
+        let actual_set = run_measured_pass(
+            &mut model,
+            &input_images,
+            config,
+            run_index,
+            Some(&mut samples),
+        )?;
+        compare_expected(&expected, &actual_set)?;
+    }
+    println!("AKARS_TENNIS_VALIDATE_PASS images={}", input_images.len());
+    println!("{}", samples.format_result(cli.repeat, input_images.len()));
     Ok(())
+}
+
+fn run_measured_pass(
+    model: &mut tpu::YoloModel,
+    input_images: &[InputImage],
+    config: InferenceConfig,
+    run_index: usize,
+    mut samples: Option<&mut BenchmarkSamples>,
+) -> Result<ExpectedSet, Box<dyn std::error::Error>> {
+    let mut actual = Vec::with_capacity(input_images.len());
+    for (index, input) in input_images.iter().enumerate() {
+        let (normalized, timing, total_us) = infer_frame(model, &input.frame, config)?;
+
+        println!(
+            "AKARS_TENNIS_RESULT image={index} path={} detections={} run={run_index}",
+            shell_word(&input.path),
+            normalized.len()
+        );
+        for det in &normalized {
+            println!(
+                "AKARS_TENNIS_DET image={index} cls={} class={} score_q10000={} \
+                 confidence_percent={:.2} left={} top={} right={} bottom={} run={run_index}",
+                det.cls,
+                class_name(det.cls),
+                det.score_q10000,
+                f64::from(det.score_q10000) / 100.0,
+                det.left,
+                det.top,
+                det.right,
+                det.bottom
+            );
+        }
+        println!(
+            "AKARS_TENNIS_TIMING image={index} preprocess_us={} forward_us={} postprocess_us={} \
+             total_us={} run={run_index} decode_us={} resize_us={}",
+            timing.preprocess_us,
+            timing.forward_us,
+            timing.postprocess_us,
+            total_us,
+            timing.decode_us,
+            timing.resize_us
+        );
+
+        if let Some(samples) = samples.as_deref_mut() {
+            samples.push(timing, total_us);
+        }
+        actual.push(ImageExpected {
+            index,
+            path: input.path.clone(),
+            detections: normalized,
+        });
+    }
+
+    Ok(ExpectedSet {
+        images: actual,
+        bbox_tolerance_px: DEFAULT_BBOX_TOLERANCE_PX,
+        score_tolerance_q10000: DEFAULT_SCORE_TOLERANCE_Q10000,
+    })
+}
+
+fn infer_frame(
+    model: &mut tpu::YoloModel,
+    frame: &CameraFrame,
+    config: InferenceConfig,
+) -> Result<(Vec<ExpectedDetection>, InferTiming, i64), tpu::TpuError> {
+    let mut timing = InferTiming::default();
+    let total_start = Instant::now();
+    let detections = model.infer_timed(frame, config, Some(&mut timing))?;
+    let total_us = total_start.elapsed().as_micros() as i64;
+    Ok((normalize_detections(&detections), timing, total_us))
 }
 
 fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError> {
@@ -182,6 +329,8 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
         conf: 0.5,
         iou: 0.5,
         write_expected: false,
+        warmup: 0,
+        repeat: 1,
     };
     let mut positional = 0;
     let mut args = args.peekable();
@@ -194,6 +343,8 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
             "--classes" => cli.classes = take_parse(&mut args, "--classes")?,
             "--conf" => cli.conf = take_parse(&mut args, "--conf")?,
             "--iou" => cli.iou = take_parse(&mut args, "--iou")?,
+            "--warmup" => cli.warmup = take_parse(&mut args, "--warmup")?,
+            "--repeat" => cli.repeat = take_parse(&mut args, "--repeat")?,
             "--write-expected" => cli.write_expected = true,
             value if value.starts_with('-') => {
                 return Err(ValidationError::new(format!("unknown option: {value}")));
@@ -225,6 +376,14 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
     }
     if cli.classes <= 0 {
         return Err(ValidationError::new("--classes must be positive"));
+    }
+    if cli.repeat == 0 {
+        return Err(ValidationError::new("--repeat must be positive"));
+    }
+    if cli.write_expected && (cli.warmup != 0 || cli.repeat != 1) {
+        return Err(ValidationError::new(
+            "--write-expected requires --warmup 0 and --repeat 1",
+        ));
     }
     Ok(cli)
 }
@@ -526,7 +685,7 @@ fn class_name(cls: i32) -> &'static str {
 fn print_usage() {
     eprintln!(
         "Usage: akars-tennis-validator <model.cvimodel> <images.txt> <expected.txt> \
-         [--write-expected] [--classes N] [--conf X] [--iou X]"
+         [--write-expected] [--classes N] [--conf X] [--iou X] [--warmup N] [--repeat N]"
     );
 }
 
@@ -535,6 +694,94 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    fn cli_args(extra: &[&str]) -> Vec<String> {
+        ["model.cvimodel", "images.txt", "expected.txt"]
+            .into_iter()
+            .chain(extra.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn benchmark_cli_defaults_to_one_measured_pass() {
+        let cli = parse_cli(cli_args(&[]).into_iter()).unwrap();
+        assert_eq!(cli.warmup, 0);
+        assert_eq!(cli.repeat, 1);
+    }
+
+    #[test]
+    fn benchmark_cli_accepts_warmup_and_repeat() {
+        let cli = parse_cli(cli_args(&["--warmup", "2", "--repeat", "5"]).into_iter()).unwrap();
+        assert_eq!(cli.warmup, 2);
+        assert_eq!(cli.repeat, 5);
+    }
+
+    #[test]
+    fn benchmark_cli_rejects_zero_repeat() {
+        let error = parse_cli(cli_args(&["--repeat", "0"]).into_iter()).unwrap_err();
+        assert!(error.to_string().contains("--repeat must be positive"));
+    }
+
+    #[test]
+    fn write_expected_rejects_non_default_benchmark_parameters() {
+        let error = parse_cli(
+            cli_args(&["--write-expected", "--warmup", "1", "--repeat", "2"]).into_iter(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires --warmup 0 and --repeat 1")
+        );
+    }
+
+    #[test]
+    fn timing_stats_use_nearest_rank_percentiles() {
+        assert_eq!(
+            timing_stats(&[1, 2, 3, 4, 100]),
+            Some(TimingStats {
+                average_us: 22,
+                p50_us: 3,
+                p95_us: 100,
+            })
+        );
+        assert_eq!(timing_stats(&[]), None);
+    }
+
+    #[test]
+    fn benchmark_summary_has_stable_stage_fields() {
+        let mut samples = BenchmarkSamples::default();
+        samples.push(
+            InferTiming {
+                decode_us: 10,
+                resize_us: 20,
+                preprocess_us: 30,
+                forward_us: 40,
+                postprocess_us: 50,
+            },
+            120,
+        );
+        samples.push(
+            InferTiming {
+                decode_us: 20,
+                resize_us: 30,
+                preprocess_us: 50,
+                forward_us: 60,
+                postprocess_us: 70,
+            },
+            180,
+        );
+
+        assert_eq!(
+            samples.format_result(1, 2),
+            "AKARS_TENNIS_BENCH_RESULT measured_runs=1 images=2 samples=2 decode_us_avg=15 \
+             decode_us_p50=10 decode_us_p95=20 resize_us_avg=25 resize_us_p50=20 resize_us_p95=30 \
+             preprocess_us_avg=40 preprocess_us_p50=30 preprocess_us_p95=50 forward_us_avg=50 \
+             forward_us_p50=40 forward_us_p95=60 postprocess_us_avg=60 postprocess_us_p50=50 \
+             postprocess_us_p95=70 total_us_avg=150 total_us_p50=120 total_us_p95=180"
+        );
+    }
 
     #[test]
     fn resolves_paths_relative_to_cwd_first() {

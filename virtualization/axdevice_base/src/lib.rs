@@ -89,6 +89,8 @@ mod device;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::any::Any;
 
+#[doc(hidden)]
+pub use ax_errno::AxError;
 pub use ax_errno::AxResult;
 pub use axvm_types::{
     EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode,

@@ -17,9 +17,10 @@
 //! This module provides a safe and consistent way to access guest memory
 //! from VirtIO device implementations, handling address translation and
 //! memory safety concerns.
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddr;
 use axvm_types::GuestPhysAddr;
+
+use crate::{AddrSpaceError, AddrSpaceResult};
 
 /// A stateful accessor to the memory space of a guest
 pub trait GuestMemoryAccessor {
@@ -34,7 +35,7 @@ pub trait GuestMemoryAccessor {
     ///
     /// # Returns
     ///
-    /// Returns `Err(AxError::InvalidInput)` in the following cases:
+    /// Returns an error when the address is unmapped or the region is too small.
     /// - The guest address cannot be translated to a valid host address
     /// - The accessible memory region starting from the guest address is smaller
     ///   than the size of type V (insufficient space for the read operation)
@@ -44,14 +45,21 @@ pub trait GuestMemoryAccessor {
     /// This function uses volatile memory access to ensure the read operation
     /// is not optimized away by the compiler, which is important for device
     /// register access and shared memory scenarios.
-    fn read_obj<V: Copy>(&self, guest_addr: GuestPhysAddr) -> AxResult<V> {
-        let (host_addr, limit) = self
-            .translate_and_get_limit(guest_addr)
-            .ok_or(AxError::InvalidInput)?;
+    fn read_obj<V: Copy>(&self, guest_addr: GuestPhysAddr) -> AddrSpaceResult<V> {
+        let (host_addr, limit) =
+            self.translate_and_get_limit(guest_addr)
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: guest_addr,
+                })?;
 
         // Check if we have enough space to read the object
         if limit < core::mem::size_of::<V>() {
-            return Err(AxError::InvalidInput);
+            return Err(AddrSpaceError::InsufficientAccess {
+                operation: "read guest object",
+                address: guest_addr,
+                requested: core::mem::size_of::<V>(),
+                available: limit,
+            });
         }
 
         unsafe {
@@ -64,7 +72,7 @@ pub trait GuestMemoryAccessor {
     ///
     /// # Returns
     ///
-    /// Returns `Err(AxError::InvalidInput)` in the following cases:
+    /// Returns an error when the address is unmapped or the region is too small.
     /// - The guest address cannot be translated to a valid host address
     /// - The accessible memory region starting from the guest address is smaller
     ///   than the size of type V (insufficient space for the write operation)
@@ -74,14 +82,21 @@ pub trait GuestMemoryAccessor {
     /// This function uses volatile memory access to ensure the write operation
     /// is not optimized away by the compiler, which is important for device
     /// register access and shared memory scenarios.
-    fn write_obj<V: Copy>(&self, guest_addr: GuestPhysAddr, val: V) -> AxResult<()> {
-        let (host_addr, limit) = self
-            .translate_and_get_limit(guest_addr)
-            .ok_or(AxError::InvalidInput)?;
+    fn write_obj<V: Copy>(&self, guest_addr: GuestPhysAddr, val: V) -> AddrSpaceResult {
+        let (host_addr, limit) =
+            self.translate_and_get_limit(guest_addr)
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: guest_addr,
+                })?;
 
         // Check if we have enough space to write the object
         if limit < core::mem::size_of::<V>() {
-            return Err(AxError::InvalidInput);
+            return Err(AddrSpaceError::InsufficientAccess {
+                operation: "write guest object",
+                address: guest_addr,
+                requested: core::mem::size_of::<V>(),
+                available: limit,
+            });
         }
 
         unsafe {
@@ -92,14 +107,16 @@ pub trait GuestMemoryAccessor {
     }
 
     /// Read a buffer from guest memory
-    fn read_buffer(&self, guest_addr: GuestPhysAddr, buffer: &mut [u8]) -> AxResult<()> {
+    fn read_buffer(&self, guest_addr: GuestPhysAddr, buffer: &mut [u8]) -> AddrSpaceResult {
         if buffer.is_empty() {
             return Ok(());
         }
 
-        let (host_addr, accessible_size) = self
-            .translate_and_get_limit(guest_addr)
-            .ok_or(AxError::InvalidInput)?;
+        let (host_addr, accessible_size) =
+            self.translate_and_get_limit(guest_addr)
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: guest_addr,
+                })?;
 
         // Check if we can read the entire buffer from this accessible region
         if accessible_size >= buffer.len() {
@@ -118,7 +135,18 @@ pub trait GuestMemoryAccessor {
         while !remaining_buffer.is_empty() {
             let (current_host_addr, current_accessible_size) = self
                 .translate_and_get_limit(current_guest_addr)
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: current_guest_addr,
+                })?;
+
+            if current_accessible_size == 0 {
+                return Err(AddrSpaceError::InsufficientAccess {
+                    operation: "read guest buffer",
+                    address: current_guest_addr,
+                    requested: remaining_buffer.len(),
+                    available: 0,
+                });
+            }
 
             let bytes_to_read = remaining_buffer.len().min(current_accessible_size);
 
@@ -133,8 +161,7 @@ pub trait GuestMemoryAccessor {
             }
 
             // Move to next region
-            current_guest_addr =
-                GuestPhysAddr::from_usize(current_guest_addr.as_usize() + bytes_to_read);
+            current_guest_addr = advance_guest_address(current_guest_addr, bytes_to_read)?;
             remaining_buffer = &mut remaining_buffer[bytes_to_read..];
         }
 
@@ -142,14 +169,16 @@ pub trait GuestMemoryAccessor {
     }
 
     /// Write a buffer to guest memory
-    fn write_buffer(&self, guest_addr: GuestPhysAddr, buffer: &[u8]) -> AxResult<()> {
+    fn write_buffer(&self, guest_addr: GuestPhysAddr, buffer: &[u8]) -> AddrSpaceResult {
         if buffer.is_empty() {
             return Ok(());
         }
 
-        let (host_addr, accessible_size) = self
-            .translate_and_get_limit(guest_addr)
-            .ok_or(AxError::InvalidInput)?;
+        let (host_addr, accessible_size) =
+            self.translate_and_get_limit(guest_addr)
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: guest_addr,
+                })?;
 
         // Check if we can write the entire buffer to this accessible region
         if accessible_size >= buffer.len() {
@@ -168,7 +197,18 @@ pub trait GuestMemoryAccessor {
         while !remaining_buffer.is_empty() {
             let (current_host_addr, current_accessible_size) = self
                 .translate_and_get_limit(current_guest_addr)
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(AddrSpaceError::Unmapped {
+                    address: current_guest_addr,
+                })?;
+
+            if current_accessible_size == 0 {
+                return Err(AddrSpaceError::InsufficientAccess {
+                    operation: "write guest buffer",
+                    address: current_guest_addr,
+                    requested: remaining_buffer.len(),
+                    available: 0,
+                });
+            }
 
             let bytes_to_write = remaining_buffer.len().min(current_accessible_size);
 
@@ -179,8 +219,7 @@ pub trait GuestMemoryAccessor {
             }
 
             // Move to next region
-            current_guest_addr =
-                GuestPhysAddr::from_usize(current_guest_addr.as_usize() + bytes_to_write);
+            current_guest_addr = advance_guest_address(current_guest_addr, bytes_to_write)?;
             remaining_buffer = &remaining_buffer[bytes_to_write..];
         }
 
@@ -188,12 +227,23 @@ pub trait GuestMemoryAccessor {
     }
 
     /// Read a volatile value from guest memory (for device registers)
-    fn read_volatile<V: Copy>(&self, guest_addr: GuestPhysAddr) -> AxResult<V> {
+    fn read_volatile<V: Copy>(&self, guest_addr: GuestPhysAddr) -> AddrSpaceResult<V> {
         self.read_obj(guest_addr)
     }
 
     /// Write a volatile value to guest memory (for device registers)
-    fn write_volatile<V: Copy>(&self, guest_addr: GuestPhysAddr, val: V) -> AxResult<()> {
+    fn write_volatile<V: Copy>(&self, guest_addr: GuestPhysAddr, val: V) -> AddrSpaceResult {
         self.write_obj(guest_addr, val)
     }
+}
+
+fn advance_guest_address(address: GuestPhysAddr, size: usize) -> AddrSpaceResult<GuestPhysAddr> {
+    let next = address
+        .as_usize()
+        .checked_add(size)
+        .ok_or(AddrSpaceError::AddressOverflow {
+            start: address.as_usize(),
+            size,
+        })?;
+    Ok(GuestPhysAddr::from_usize(next))
 }

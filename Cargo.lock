@@ -1170,7 +1170,6 @@ name = "axaddrspace"
 version = "0.5.16"
 dependencies = [
  "assert_matches",
- "ax-errno 0.6.1",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
@@ -1179,6 +1178,7 @@ dependencies = [
  "lazy_static",
  "log",
  "page-table-generic",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1459,7 +1459,6 @@ dependencies = [
  "anyhow",
  "ax-crate-interface",
  "ax-driver",
- "ax-errno 0.6.1",
  "ax-hal",
  "ax-std",
  "axbuild",
@@ -1489,7 +1488,6 @@ dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
- "ax-errno 0.6.1",
  "ax-hal",
  "ax-kernel-guard",
  "ax-kspin",
@@ -1524,6 +1522,7 @@ dependencies = [
  "riscv_vcpu",
  "riscv_vplic",
  "spin",
+ "thiserror 2.0.18",
  "x86",
  "x86_vcpu",
  "x86_vlapic",
@@ -1534,9 +1533,9 @@ name = "axvm-types"
 version = "0.7.0"
 dependencies = [
  "ax-cpumask",
- "ax-errno 0.6.1",
  "ax-memory-addr",
  "bitflags 2.13.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7310,6 +7309,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sg200x-jpu"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "log",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7718,6 +7727,7 @@ dependencies = [
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
+ "sg200x-jpu",
  "slab",
  "some-serial",
  "spin",

@@ -21,6 +21,10 @@ impl Default for InferenceConfig {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InferTiming {
+    /// JPEG decode microseconds.
+    pub decode_us: i64,
+    /// Resize, letterbox clear, and planar pack microseconds.
+    pub resize_us: i64,
     /// CPU-side JPEG decode, resize, letterbox, and tensor packing microseconds.
     pub preprocess_us: i64,
     /// CVI_NN_Forward microseconds.
@@ -278,6 +282,8 @@ mod imp {
 
             if let Some(t) = timing.as_deref_mut() {
                 *t = InferTiming {
+                    decode_us: preprocess.decode_us,
+                    resize_us: preprocess.resize_us,
                     preprocess_us,
                     forward_us,
                     postprocess_us,

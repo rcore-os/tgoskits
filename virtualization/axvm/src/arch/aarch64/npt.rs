@@ -231,7 +231,7 @@ impl ptg::TableMeta for A64HVPagingMetaDataL4 {
 }
 
 pub(crate) type NestedPageTable<H> =
-    crate::arch::npt::LeveledPageTable<A64HVPagingMetaDataL3, A64HVPagingMetaDataL4, H, true>;
+    crate::npt::LeveledPageTable<A64HVPagingMetaDataL3, A64HVPagingMetaDataL4, H, true>;
 
 fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
     let mut flags = MappingFlags::empty();

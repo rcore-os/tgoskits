@@ -322,6 +322,7 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
+sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }
 simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"

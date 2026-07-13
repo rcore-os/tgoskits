@@ -18,6 +18,35 @@ use alloc::vec::Vec;
 
 use axvm_types::GuestPhysAddr;
 
+use super::BootImageProvider;
+
+/// Selects the guest address-adjustment policy for the current architecture.
+pub fn guest_boot_policy(
+    config: &axvmconfig::AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> crate::config::GuestBootPolicy {
+    if crate::boot::is_x86_linux_image_config(config, provider) {
+        crate::config::GuestBootPolicy::KeepConfigured
+    } else {
+        crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: config.kernel.effective_boot_protocol(),
+        }
+    }
+}
+
+/// Resolves the configured or architecture-default boot firmware load address.
+pub fn boot_firmware_load_gpa(config: &axvmconfig::AxVMCrateConfig) -> Option<GuestPhysAddr> {
+    if !config.kernel.enable_bios {
+        return None;
+    }
+
+    config
+        .kernel
+        .bios_load_addr
+        .map(GuestPhysAddr::from)
+        .or_else(|| crate::arch::default_boot_firmware_load_gpa(config))
+}
+
 /// Device-tree boot description owned by the VM lifecycle.
 #[derive(Debug, Clone)]
 pub struct GuestDeviceTree {

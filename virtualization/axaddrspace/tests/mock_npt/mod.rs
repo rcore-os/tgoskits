@@ -1,8 +1,8 @@
 use core::sync::atomic::Ordering;
 
 use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
-use ax_memory_set::{MappingError, MappingResult};
-use axaddrspace::{MappingFlags, NestedPageTableOps, PageSize};
+use ax_memory_set::MappingError;
+use axaddrspace::{AddrSpaceError, AddrSpaceResult, MappingFlags, NestedPageTableOps, PageSize};
 use axvm_types::GuestPhysAddr;
 use page_table_generic as ptg;
 use ptg::PageTableEntry;
@@ -204,8 +204,9 @@ impl NestedPageTableOps for MockNestedPageTable {
         paddr: PhysAddr,
         size: PageSize,
         flags: MappingFlags,
-    ) -> MappingResult {
-        self.inner
+    ) -> AddrSpaceResult {
+        Ok(self
+            .inner
             .map(&ptg::MapConfig {
                 vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
                 paddr: ptg::PhysAddr::new(paddr.as_usize()),
@@ -214,10 +215,13 @@ impl NestedPageTableOps for MockNestedPageTable {
                 allow_huge: false,
                 flush: false,
             })
-            .map_err(Self::convert_err)
+            .map_err(Self::convert_err)?)
     }
 
-    fn unmap(&mut self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)> {
+    fn unmap(
+        &mut self,
+        vaddr: GuestPhysAddr,
+    ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, flags, _) = self.query(vaddr)?;
         self.inner
             .unmap(ptg::VirtAddr::new(vaddr.as_usize()), PAGE_SIZE)
@@ -232,9 +236,10 @@ impl NestedPageTableOps for MockNestedPageTable {
         size: usize,
         flags: MappingFlags,
         _allow_huge: bool,
-    ) -> MappingResult {
+    ) -> AddrSpaceResult {
         let paddr = get_paddr(vaddr);
-        self.inner
+        Ok(self
+            .inner
             .map(&ptg::MapConfig {
                 vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
                 paddr: ptg::PhysAddr::new(paddr.as_usize()),
@@ -243,13 +248,14 @@ impl NestedPageTableOps for MockNestedPageTable {
                 allow_huge: false,
                 flush: false,
             })
-            .map_err(Self::convert_err)
+            .map_err(Self::convert_err)?)
     }
 
-    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> MappingResult {
-        self.inner
+    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> AddrSpaceResult {
+        Ok(self
+            .inner
             .unmap(ptg::VirtAddr::new(start.as_usize()), size)
-            .map_err(Self::convert_err)
+            .map_err(Self::convert_err)?)
     }
 
     fn remap(&mut self, start: GuestPhysAddr, paddr: PhysAddr, flags: MappingFlags) -> bool {
@@ -279,14 +285,14 @@ impl NestedPageTableOps for MockNestedPageTable {
         true
     }
 
-    fn query(&self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)> {
+    fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, pte) = self
             .inner
             .translate(ptg::VirtAddr::new(vaddr.as_usize()))
             .map_err(Self::convert_err)?;
         let config = pte.to_config(false);
         if !config.valid || MockPte::config_to_flags(config).is_empty() {
-            return Err(MappingError::BadState);
+            return Err(AddrSpaceError::MappingState);
         }
         Ok((
             PhysAddr::from(paddr.raw()),

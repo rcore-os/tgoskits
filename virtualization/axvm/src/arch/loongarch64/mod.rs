@@ -1,27 +1,33 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
     AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 use loongarch_vcpu::{
     LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
-    LoongArchHostPhysAddr, LoongArchHostVirtAddr, LoongArchIocsrStateRef,
-    LoongArchNestedPagingConfig, LoongArchPerCpu, LoongArchVCpuCreateConfig,
-    LoongArchVCpuSetupConfig, LoongArchVcpu, LoongArchVcpuError, LoongArchVcpuResult,
-    LoongArchVmExit,
+    LoongArchHostPhysAddr, LoongArchHostVirtAddr, LoongArchNestedPagingConfig, LoongArchPerCpu,
+    LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig, LoongArchVcpu, LoongArchVcpuError,
+    LoongArchVcpuResult, LoongArchVmExit,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuCreateContext,
-    VcpuRunAction, VcpuSetupContext,
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use crate::{
+    AxVmError, AxVmResult,
+    host::{HostMemory, HostTime, default_host},
 };
-use crate::host::{HostMemory, HostTime, default_host};
 
+pub(crate) mod boot;
+mod capabilities;
+pub(crate) mod fdt;
+mod idle;
+pub(crate) mod irq;
 mod npt;
+mod vm;
+
+pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 
 pub(crate) struct LoongArch64Arch;
 
@@ -34,7 +40,6 @@ pub(crate) enum LoongArchDeferredRunWork {
 impl ArchOps for LoongArch64Arch {
     type VCpu = AxvmLoongArchVcpu;
     type PerCpu = AxvmLoongArchPerCpu;
-    type VcpuCreateState = LoongArchIocsrStateRef;
     type DeferredRunWork = LoongArchDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
@@ -42,50 +47,8 @@ impl ArchOps for LoongArch64Arch {
         loongarch_vcpu::has_hardware_support()
     }
 
-    fn new_vcpu_create_state(
-        vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        let vcpu_state_count = vcpu_mappings
-            .iter()
-            .map(|(vcpu_id, ..)| *vcpu_id)
-            .max()
-            .map_or(0, |vcpu_id| vcpu_id + 1);
-        loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(vcpu_state_count))
-    }
-
-    fn build_vcpu_create_config(
-        state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        Ok(LoongArchVCpuCreateConfig {
-            cpu_id: ctx.vcpu_id,
-            dtb_addr: ctx.dtb_addr.unwrap_or_default().as_usize(),
-            boot_args: [0; 3],
-            boot_stack_top: 0,
-            firmware_boot: ctx.firmware_boot,
-            iocsr_state: state.clone(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let passthrough = ctx.interrupt_mode == axvm_types::VMInterruptMode::Passthrough;
-        Ok(LoongArchVCpuSetupConfig {
-            passthrough_interrupt: passthrough,
-            passthrough_timer: passthrough,
-            boot_args: [0; 3],
-            boot_stack_top: 0,
-            firmware_boot: ctx.firmware_boot,
-        })
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
-    }
-
     fn register_platform_irq_injector() {
-        crate::runtime::loongarch_irq::register_platform_irq_injector();
+        irq::register_platform_irq_injector();
     }
 
     fn inject_pending_interrupt(
@@ -146,34 +109,11 @@ impl ArchOps for LoongArch64Arch {
         drain_loongarch_pch_pic_events(vm);
     }
 
-    fn handle_idle(_vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        crate::check_timer_events();
-        if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
-            trace!(
-                "VM[{}] VCpu[{}] skips idle wait because guest has enabled pending interrupt",
-                vcpu.vm_id(),
-                vcpu.id()
-            );
-            return;
-        }
-        let idle_timeout = vcpu.get_arch_vcpu().idle_wait_timeout();
-        trace!(
-            "VM[{}] VCpu[{}] host idle wait for {idle_timeout:?}",
-            vcpu.vm_id(),
-            vcpu.id()
-        );
-        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(true);
-        ax_std::os::arceos::modules::ax_hal::asm::enable_irqs();
-        ax_std::os::arceos::modules::ax_hal::time::busy_wait(idle_timeout);
-        ax_std::os::arceos::modules::ax_hal::asm::disable_irqs();
-        ax_std::os::arceos::modules::ax_hal::asm::set_timer_irq_enabled(false);
-    }
-
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             LoongArchVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -220,10 +160,19 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(Self::handle_halt()))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
-            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
-            _ => Err(AxError::Unsupported),
+            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            })),
+            _ => Err(AxVmError::unsupported(
+                "handle LoongArch VM exit",
+                "unsupported VM exit reason",
+            )),
         }
     }
 
@@ -231,14 +180,17 @@ impl ArchOps for LoongArch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxVmResult<VcpuRunAction> {
         match work {
             LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
                 Self::after_external_interrupt(vm, vcpu, vector);
             }
-            LoongArchDeferredRunWork::Idle => Self::handle_idle(vm, vcpu),
+            LoongArchDeferredRunWork::Idle => idle::wait(vcpu),
         }
-        Ok(VcpuRunAction::Yield)
+        Ok(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        })
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
@@ -254,7 +206,7 @@ fn handle_loongarch_nested_page_fault(
     vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
     addr: LoongArchGuestPhysAddr,
     access_flags: LoongArchAccessFlags,
-) -> AxResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
+) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
     let ax_addr = loong_guest_phys_addr_to_ax(addr);
     if vm.get_devices()?.find_mmio_dev(ax_addr).is_some() {
         let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) else {
@@ -264,7 +216,10 @@ fn handle_loongarch_nested_page_fault(
                 vcpu.id(),
                 ax_addr.as_usize()
             );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield));
+            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            }));
         };
         return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
     }
@@ -280,7 +235,10 @@ fn handle_loongarch_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        }))
     }
 }
 
@@ -343,11 +301,11 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> usize {
-        default_host().register_timer(deadline.as_nanos() as u64, callback)
+        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
     }
 
     fn cancel_timer(token: usize) {
-        default_host().cancel_timer(token);
+        crate::timer::cancel_timer(token);
     }
 
     fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
@@ -363,8 +321,9 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
 pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
 
 impl AxvmLoongArchVcpu {
-    fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxResult {
+    fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxVmResult {
         loongarch_result(self.0.inject_external_interrupt(vector, physical_irq))
+            .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))
     }
 
     fn has_enabled_pending_interrupt(&self) -> bool {
@@ -389,34 +348,34 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
     type SetupConfig = LoongArchVCpuSetupConfig;
     type Exit = LoongArchVmExit;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         loongarch_result(LoongArchVcpu::new(vm_id, vcpu_id, config)).map(Self)
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
         loongarch_result(self.0.set_entry(ax_guest_phys_addr_to_loong(entry)))
     }
 
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         loongarch_result(
             self.0
                 .set_nested_page_table(ax_nested_paging_to_loong(config)),
         )
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
         loongarch_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> AxResult<Self::Exit> {
+    fn run(&mut self) -> BackendResult<Self::Exit> {
         loongarch_result(self.0.run())
     }
 
-    fn bind(&mut self) -> AxResult {
+    fn bind(&mut self) -> BackendResult {
         loongarch_result(self.0.bind())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    fn unbind(&mut self) -> BackendResult {
         loongarch_result(self.0.unbind())
     }
 
@@ -424,7 +383,7 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         loongarch_result(self.0.inject_interrupt(vector))
     }
 
@@ -436,7 +395,7 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
 pub(crate) struct AxvmLoongArchPerCpu(LoongArchPerCpu);
 
 impl VmArchPerCpuOps for AxvmLoongArchPerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> BackendResult<Self> {
         loongarch_result(LoongArchPerCpu::new(cpu_id)).map(Self)
     }
 
@@ -444,11 +403,11 @@ impl VmArchPerCpuOps for AxvmLoongArchPerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> BackendResult {
         loongarch_result(self.0.hardware_enable())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> BackendResult {
         loongarch_result(self.0.hardware_disable())
     }
 
@@ -457,15 +416,15 @@ impl VmArchPerCpuOps for AxvmLoongArchPerCpu {
     }
 }
 
-fn loongarch_result<T>(result: LoongArchVcpuResult<T>) -> AxResult<T> {
-    result.map_err(loongarch_error_to_ax)
+fn loongarch_result<T>(result: LoongArchVcpuResult<T>) -> BackendResult<T> {
+    result.map_err(loongarch_error_to_backend)
 }
 
-fn loongarch_error_to_ax(err: LoongArchVcpuError) -> AxError {
+fn loongarch_error_to_backend(err: LoongArchVcpuError) -> BackendError {
     match err {
-        LoongArchVcpuError::InvalidInput => AxError::InvalidInput,
-        LoongArchVcpuError::Unsupported => AxError::Unsupported,
-        LoongArchVcpuError::BadState => AxError::BadState,
+        LoongArchVcpuError::InvalidInput => BackendError::InvalidInput,
+        LoongArchVcpuError::Unsupported => BackendError::Unsupported,
+        LoongArchVcpuError::BadState => BackendError::InvalidState,
     }
 }
 
@@ -550,18 +509,18 @@ mod tests {
     }
 
     #[test]
-    fn converts_loongarch_vcpu_errors_to_ax_errors() {
+    fn converts_loongarch_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::InvalidInput),
-            AxError::InvalidInput
+            loongarch_error_to_backend(LoongArchVcpuError::InvalidInput),
+            BackendError::InvalidInput
         );
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::Unsupported),
-            AxError::Unsupported
+            loongarch_error_to_backend(LoongArchVcpuError::Unsupported),
+            BackendError::Unsupported
         );
         assert_eq!(
-            loongarch_error_to_ax(LoongArchVcpuError::BadState),
-            AxError::BadState
+            loongarch_error_to_backend(LoongArchVcpuError::BadState),
+            BackendError::InvalidState
         );
     }
 
