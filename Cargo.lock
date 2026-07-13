@@ -1170,7 +1170,6 @@ name = "axaddrspace"
 version = "0.5.16"
 dependencies = [
  "assert_matches",
- "ax-errno 0.6.1",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
@@ -1179,6 +1178,7 @@ dependencies = [
  "lazy_static",
  "log",
  "page-table-generic",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

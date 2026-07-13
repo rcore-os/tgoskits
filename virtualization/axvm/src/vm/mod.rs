@@ -274,7 +274,7 @@ impl AxVMResources {
             GuestPhysAddr::from(VM_ASPACE_BASE),
             VM_ASPACE_SIZE,
         )
-        .map_err(|error| AxVmError::memory("create guest address space", error))?;
+        .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
             address_space,
@@ -326,7 +326,9 @@ impl AxVMResources {
                         | MappingFlags::EXECUTE
                         | MappingFlags::USER,
                 )
-                .map_err(|error| AxVmError::memory("restore guest memory mapping", error))?;
+                .map_err(|error| {
+                    AxVmError::from_addrspace("restore guest memory mapping", error)
+                })?;
         }
         self.vcpu_list = None;
         self.devices = None;
@@ -984,7 +986,7 @@ impl AxVM {
             resources
                 .address_space
                 .map_linear(gpa, hpa, size, flags)
-                .map_err(|error| AxVmError::memory("map guest memory region", error))?;
+                .map_err(|error| AxVmError::from_addrspace("map guest memory region", error))?;
             Ok(())
         })
     }
@@ -995,7 +997,7 @@ impl AxVM {
             resources
                 .address_space
                 .unmap(gpa, size)
-                .map_err(|error| AxVmError::memory("unmap guest memory region", error))?;
+                .map_err(|error| AxVmError::from_addrspace("unmap guest memory region", error))?;
             Ok(())
         })
     }
@@ -1164,7 +1166,7 @@ impl AxVM {
                         | MappingFlags::EXECUTE
                         | MappingFlags::USER,
                 )
-                .map_err(|error| AxVmError::memory("map allocated guest memory", error))?;
+                .map_err(|error| AxVmError::from_addrspace("map allocated guest memory", error))?;
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
                 hva,
@@ -1223,7 +1225,7 @@ impl AxVM {
                         | MappingFlags::EXECUTE
                         | MappingFlags::USER,
                 )
-                .map_err(|error| AxVmError::memory("map reserved guest memory", error))?;
+                .map_err(|error| AxVmError::from_addrspace("map reserved guest memory", error))?;
             let hva = gpa.as_usize().into();
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
