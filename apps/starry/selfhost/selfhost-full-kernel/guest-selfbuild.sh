@@ -2,7 +2,7 @@
 
 set -eu
 
-TOOLCHAIN="${SELFHOST_RUST_TOOLCHAIN:-nightly-2026-05-28}"
+TOOLCHAIN="nightly-2026-05-28"
 HOST_TRIPLE="x86_64-unknown-linux-musl"
 RUSTUP_TOOLCHAIN="${TOOLCHAIN}-${HOST_TRIPLE}"
 SOURCE_TAR="${SELFHOST_SOURCE_TAR:-/opt/tgoskits-src.tar}"

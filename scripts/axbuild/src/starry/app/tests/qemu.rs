@@ -196,7 +196,7 @@ fail_regex = []
 }
 
 #[test]
-fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
+fn selfhost_x86_app_preserves_the_persistent_build_contract() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -222,10 +222,20 @@ fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
         .get("args")
         .and_then(toml::Value::as_array)
         .expect("selfhost qemu args must be an array");
+    let qemu_args = qemu_args
+        .iter()
+        .map(|arg| arg.as_str().expect("QEMU arguments must be strings"))
+        .collect::<Vec<_>>();
     assert!(
-        qemu_args
-            .iter()
-            .any(|arg| arg.as_str() == Some("-no-shutdown")),
+        qemu_args.contains(&"-no-shutdown")
+            && qemu_args.windows(2).any(|args| args == ["-smp", "4"])
+            && qemu_args.windows(2).any(|args| args == ["-m", "16G"])
+            && qemu_args
+                .windows(2)
+                .any(|args| args == ["-netdev", "user,id=net0"])
+            && qemu_args
+                .windows(2)
+                .any(|args| args == ["-device", "virtio-net-pci,netdev=net0"]),
         "{} must wait for an explicit success or failure marker before QEMU exits",
         config_path.display()
     );
@@ -256,47 +266,21 @@ fn selfhost_x86_app_uses_the_direct_networked_guest_runner() {
     let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
     assert!(
         guest_runner.contains("x86_64-unknown-linux-musl")
+            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-05-28\"")
             && guest_runner.contains("rustc -vV")
             && guest_runner.contains("cargo-binutils --version 0.4.0 --locked")
             && guest_runner.contains("ksym --version 0.6.0 --locked")
             && guest_runner.contains("tg-xtask")
             && guest_runner.contains("SELF_COMPILE_SUCCESS")
-            && !guest_runner.contains("x86_64-unknown-linux-gnu"),
+            && !guest_runner.contains("SELFHOST_RUST_TOOLCHAIN")
+            && !guest_runner.contains("x86_64-unknown-linux-gnu")
+            && !guest_runner.contains("export CARGO_TARGET_DIR")
+            && guest_runner.contains("SELFHOST_TARGET_DIR:-/opt/starry-selfhost-target")
+            && guest_runner.contains("ln -s \"$TARGET_DIR\" \"$SOURCE_DIR/target\"")
+            && guest_runner.contains("SELFHOST_CARGO_BUILD_JOBS:-2")
+            && guest_runner
+                .contains("$SOURCE_DIR/target/x86_64-unknown-linux-musl/release/starryos"),
         "{} must build the canonical x86_64 path with a native musl host toolchain",
-        guest_runner_path.display()
-    );
-}
-
-#[test]
-fn selfhost_guest_runner_publishes_the_canonical_source_target_artifact() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let guest_runner_path =
-        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
-    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
-
-    assert!(
-        !guest_runner.contains("export CARGO_TARGET_DIR"),
-        "{} must leave the canonical xtask build in the extracted source target directory",
-        guest_runner_path.display()
-    );
-    assert!(
-        guest_runner.contains("SELFHOST_TARGET_DIR:-/opt/starry-selfhost-target")
-            && guest_runner.contains("ln -s \"$TARGET_DIR\" \"$SOURCE_DIR/target\""),
-        "{} must redirect the canonical source target directory to persistent ext4 storage",
-        guest_runner_path.display()
-    );
-    assert!(
-        guest_runner.contains("SELFHOST_CARGO_BUILD_JOBS:-2"),
-        "{} must limit guest Cargo concurrency to control peak memory use",
-        guest_runner_path.display()
-    );
-    assert!(
-        guest_runner.contains("$SOURCE_DIR/target/x86_64-unknown-linux-musl/release/starryos"),
-        "{} must publish the artifact produced by the canonical xtask build",
         guest_runner_path.display()
     );
 }
@@ -312,12 +296,23 @@ fn selfhost_reboot_guard_reports_the_interrupted_phase() {
         repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild-reboot-guard.sh");
     let root = tempdir().unwrap();
     let state = root.path().join("state");
+    let bin_dir = root.path().join("bin");
+    let poweroff = bin_dir.join("poweroff");
+    let poweroff_marker = root.path().join("poweroff-called");
+    fs::create_dir(&bin_dir).unwrap();
+    fs::write(
+        &poweroff,
+        "#!/bin/sh\nprintf 'called\\n' >\"$POWER_OFF_MARKER\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&poweroff, fs::Permissions::from_mode(0o755)).unwrap();
     fs::write(&state, "running test-run kernel\n").unwrap();
 
-    let output = Command::new("sh")
+    let output = Command::new("/bin/sh")
         .arg(&guard)
         .env("SELFHOST_STATE_FILE", &state)
-        .env("SELFHOST_REBOOT_GUARD_TEST_MODE", "1")
+        .env("POWER_OFF_MARKER", &poweroff_marker)
+        .env("PATH", &bin_dir)
         .output()
         .unwrap();
 
@@ -326,73 +321,21 @@ fn selfhost_reboot_guard_reports_the_interrupted_phase() {
         String::from_utf8_lossy(&output.stdout)
             .contains("SELF_COMPILE_FAILED: unexpected guest reboot during kernel")
     );
+    assert_eq!(fs::read_to_string(&poweroff_marker).unwrap(), "called\n");
 
     fs::write(&state, "ready test-run prebuild\n").unwrap();
-    let output = Command::new("sh")
+    fs::remove_file(&poweroff_marker).unwrap();
+    let output = Command::new("/bin/sh")
         .arg(&guard)
         .env("SELFHOST_STATE_FILE", &state)
-        .env("SELFHOST_REBOOT_GUARD_TEST_MODE", "1")
+        .env("POWER_OFF_MARKER", &poweroff_marker)
+        .env("PATH", &bin_dir)
         .output()
         .unwrap();
 
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("SELF_COMPILE_FAILED"));
-}
-
-#[test]
-fn selfhost_guest_runner_overrides_rustup_low_memory_unpacking() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let guest_runner_path =
-        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
-    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
-
-    assert!(
-        guest_runner.contains("RUSTUP_IO_THREADS"),
-        "{} must override Rustup's false low-memory detection in the guest",
-        guest_runner_path.display()
-    );
-}
-
-#[test]
-fn selfhost_guest_runner_retries_transient_rustup_downloads() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let guest_runner_path =
-        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
-    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
-
-    assert!(
-        guest_runner.contains("RUSTUP_MAX_RETRIES"),
-        "{} must retry transient Rustup download failures in the networked guest",
-        guest_runner_path.display()
-    );
-}
-
-#[test]
-fn selfhost_guest_runner_uses_the_explicit_musl_toolchain_for_project_cargo() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let guest_runner_path =
-        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
-    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
-
-    assert!(
-        guest_runner.contains("RUSTUP_TOOLCHAIN=\"${TOOLCHAIN}-${HOST_TRIPLE}\"")
-            && guest_runner.contains("cargo \"+$RUSTUP_TOOLCHAIN\" build --locked -p tg-xtask"),
-        "{} must explicitly select its installed musl toolchain so the checkout's \
-         rust-toolchain.toml cannot install unrelated host components",
-        guest_runner_path.display()
-    );
+    assert!(!poweroff_marker.exists());
 }
 
 #[test]

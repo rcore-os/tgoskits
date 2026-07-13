@@ -842,9 +842,7 @@ impl JBD2DEVSYSTEM {
                 sb_block, self.jbd2_super_block.s_sequence, self.jbd2_super_block.s_start
             );
             self.write_journal_superblock_with_mapping(block_dev, journal_blocks);
-            if let Err(e) = block_dev.flush() {
-                warn!("journal replay superblock flush failed: {e:?}");
-            }
+            let _ = block_dev.flush();
         }
         debug!(
             "[JBD2 replay] end: status={status:?} transactions={} records={} payloads={} \

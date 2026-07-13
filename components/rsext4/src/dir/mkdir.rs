@@ -2,12 +2,9 @@
 
 use alloc::{string::String, vec::Vec};
 
-use log::warn;
-
 use crate::{
     alloc::string::ToString,
     blockdev::*,
-    bmalloc::InodeNumber,
     checksum::update_ext4_dirblock_csum32,
     config::*,
     crc32c::ext4_superblock_has_metadata_csum,
@@ -87,7 +84,7 @@ fn mkdir_internal<B: BlockDevice>(
         p
     };
 
-    let (parent_ino_num, mut parent_inode) =
+    let (parent_ino_num, parent_inode) =
         get_inode_with_num(fs, device, &parent)?.ok_or(Ext4Error::not_found())?;
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
@@ -98,36 +95,7 @@ fn mkdir_internal<B: BlockDevice>(
         return find_file(fs, device, "/lost+found");
     }
 
-    // Duplicate-entry guard: before allocating any resources (inode, block,
-    // link count, group stats), check the parent's directory blocks directly
-    // for the child name.  The path walk above (get_file_inode) may miss
-    // entries due to cache coherence issues.  If the entry already exists,
-    // return the existing inode — this avoids leaking a newly-allocated
-    // inode/block and corrupting the parent's link count and group stats.
-    {
-        let parent_blocks = resolve_inode_block_allextend(fs, device, &mut parent_inode)?;
-        let total_size = parent_inode.size() as usize;
-        let total_blocks = if total_size == 0 {
-            0
-        } else {
-            total_size.div_ceil(BLOCK_SIZE)
-        };
-        for lbn in 0..total_blocks {
-            if let Some(&phys) = parent_blocks.get(&(lbn as u32))
-                && let Some(cached) = fs.datablock_cache.get(phys)
-                && let Some(entry) = classic_dir::find_entry(&cached.data, child.as_bytes())
-            {
-                warn!(
-                    "mkdir_internal: entry '{}' already in block {phys} (ino={}) — returning \
-                     existing inode instead of creating duplicate",
-                    child, entry.inode
-                );
-                return fs.get_inode_by_num(device, InodeNumber::new(entry.inode)?);
-            }
-        }
-    }
-
-    // Allocate the child inode and its first directory block.
+    // Allocate the child inode and its first directory block only after parent validation.
     let new_dir_ino = fs.alloc_inode(device)?;
     let data_block = fs.alloc_block(device)?;
     let new_dir_gen = fs.get_inode_by_num(device, new_dir_ino)?.i_generation;
@@ -215,12 +183,8 @@ fn mkdir_internal<B: BlockDevice>(
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
 
-    // Reload parent_inode from the inode cache before passing it to
-    // insert_dir_entry: set_inode_links_count above updated the cached
-    // inode, but our local copy still has the old i_links_count.
-    // insert_dir_entry's Path B (new-block allocation) calls
-    // finalize_inode_update which writes the inode back, so we must
-    // give it the fresh copy or the link-count increment is lost.
+    // set_inode_links_count updated the inode cache, so reload the parent
+    // before insert_dir_entry can persist directory block growth.
     let mut parent_inode = fs.get_inode_by_num(device, parent_ino_num)?;
     insert_dir_entry(
         fs,

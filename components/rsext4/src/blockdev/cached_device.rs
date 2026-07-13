@@ -140,17 +140,6 @@ impl<B: BlockDevice> BlockDev<B> {
         Ok(())
     }
 
-    /// Reads one block directly into the provided buffer (bypasses the cache).
-    /// Use this when cache coherence is critical — the caller gets the
-    /// on-disk data without any cached intermediary.
-    pub fn read_block_direct(&mut self, buffer: &mut [u8], block_id: AbsoluteBN) -> Ext4Result<()> {
-        let block_size = self.dev.block_size() as usize;
-        if buffer.len() < block_size {
-            return Err(Ext4Error::buffer_too_small(buffer.len(), block_size));
-        }
-        self.dev.read(buffer, block_id, 1)
-    }
-
     /// Reads `count` blocks directly into `buffer` (bypasses the cache).
     pub fn read_blocks(
         &mut self,
@@ -169,10 +158,6 @@ impl<B: BlockDevice> BlockDev<B> {
     }
 
     /// Writes `count` blocks directly from `buffer` (bypasses the cache).
-    ///
-    /// After the direct write any cached entries that overlap with the written
-    /// range are invalidated so that subsequent [`read_block`] calls see the
-    /// newly-written data rather than stale cached copies.
     pub fn write_blocks(
         &mut self,
         buffer: &[u8],
@@ -190,23 +175,20 @@ impl<B: BlockDevice> BlockDev<B> {
             return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
         }
 
-        // Validate the whole range up front so an overflow cannot occur after
-        // the (irreversible) device write while invalidating cache entries.
-        block_id.checked_add(count.saturating_sub(1))?;
-
         self.dev.write(buffer, block_id, count)?;
 
-        // Invalidate any cached entries that overlap with the directly-written
-        // range.  Without this, subsequent reads of those blocks would return
-        // the stale pre-write data from the cache rather than the fresh data
-        // just written to the device.
-        for i in 0..count {
-            let target = block_id.checked_add(i)?;
+        for off in 0..count {
+            let target = block_id.checked_add(off)?;
             for entry in self.entries.iter_mut() {
                 if !entry.is_empty() && entry.block_id == Some(target) {
-                    entry.block_id = None;
+                    let start = off as usize * block_size;
+                    entry
+                        .buffer
+                        .as_mut_slice()
+                        .copy_from_slice(&buffer[start..start + block_size]);
                     entry.dirty = false;
-                    entry.referenced = false;
+                    entry.referenced = true;
+                    break;
                 }
             }
         }

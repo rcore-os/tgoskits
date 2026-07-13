@@ -16,10 +16,6 @@ if [ -r "$state_file" ]; then
         echo "SELF_COMPILE_FAILED: unexpected guest reboot during $phase (run_id=$run_id)"
         sync 2>/dev/null || true
 
-        if [ "${SELFHOST_REBOOT_GUARD_TEST_MODE:-0}" = "1" ]; then
-            return 1 2>/dev/null || exit 1
-        fi
-
         poweroff -f 2>/dev/null || poweroff 2>/dev/null || true
         return 1 2>/dev/null || exit 1
     fi

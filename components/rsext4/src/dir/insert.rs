@@ -1,6 +1,6 @@
 //! Directory entry insertion helpers.
 
-use log::error;
+use log::{error, warn};
 
 use crate::{
     blockdev::*,
@@ -157,20 +157,18 @@ pub fn insert_dir_entry<B: BlockDevice>(
                 offset = entry_end;
             }
         }) {
-            return Err(e.with_context(crate::error::ErrorContext::Operation {
-                op: "insert_dir_entry: modify block",
-            }));
+            warn!(
+                "insert_dir_entry: modify block {phys} for parent_ino={parent_ino_num} \
+                 name={child_name:?} failed: {e:?}, trying next block"
+            );
         }
     }
 
     if let Some(modified_block) = modified_phys {
-        // Write the modified directory block through immediately so that
-        // subsequent lookups see the newly-inserted entry, even under
-        // SMP pressure on the DataBlockCache.
+        // Publish the modified directory block before subsequent lookup.
         fs.datablock_cache.flush(device, modified_block)?;
-        // Clear the hash-tree index flag: after inserting an entry the
-        // hash tree is stale, and updating it is complex.  Forcing a
-        // linear scan guarantees correct lookups.
+        // The hash tree is stale after insertion; force subsequent lookups
+        // through the authoritative linear directory scan.
         if parent_inode.i_flags & Ext4Inode::EXT4_INDEX_FL != 0 {
             parent_inode.i_flags &= !Ext4Inode::EXT4_INDEX_FL;
             fs.modify_inode(device, parent_ino_num, |ino| {

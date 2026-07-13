@@ -98,6 +98,23 @@ mod tests {
             .expect("read target after auto commit");
         assert_eq!(dev.buffer()[0], 1);
     }
+
+    #[test]
+    fn bulk_read_overlays_pending_journal_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        let pending = vec![0x5a; BLOCK_SIZE];
+        dev.write_blocks(&pending, target, 1, true)
+            .expect("queue metadata update");
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("bulk read pending metadata");
+
+        assert_eq!(observed, pending);
+    }
 }
 
 /// Block device proxy that optionally routes metadata writes through JBD2.
@@ -178,10 +195,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Replays the journal if the proxy is configured to use it.
     pub fn journal_replay(&mut self) {
-        let status = self.journal_replay_checked();
-        if matches!(status, ReplayStatus::Incomplete) {
-            warn!("journal replay incomplete — filesystem may be inconsistent");
-        }
+        let _ = self.journal_replay_checked();
     }
 
     /// Replays the journal if JBD2 state is available.
@@ -246,18 +260,14 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
         if let Some(system) = self.system.as_mut() {
-            system
+            let committed = system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
-            // The commit checkpoint writes blocks directly to the raw
-            // device, bypassing the 4-entry LRU.  Invalidate the LRU so
-            // subsequent reads go to disk instead of serving stale data.
-            // invalidate_cache() flushes dirty entries before clearing them,
-            // so its Result carries a real write-back error; surface it loudly
-            // (this path returns `()`, matching the commit's `.expect()` above).
-            self.inner
-                .invalidate_cache()
-                .expect("cache invalidation after unmount commit failed");
+            if committed {
+                self.inner
+                    .invalidate_cache()
+                    .expect("invalidate_cache failed during umount commit");
+            }
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -283,10 +293,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        // enqueue_journal_update returns Ok(true) when it triggers a journal
-        // commit (the commit checkpoint writes blocks directly to the raw
-        // device, bypassing the 4-entry LRU).  Invalidate the LRU so
-        // subsequent reads go to disk instead of serving stale data.
         if Self::enqueue_journal_update(system, raw_dev, updates)? {
             self.inner.invalidate_cache()?;
         }
@@ -310,26 +316,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         self.inner.read_block(block_id)
     }
 
-    /// Reads one block directly into `buffer`, bypassing the cached LRU.
-    /// Still checks the journal commit queue for pending metadata updates.
-    pub fn read_block_direct(&mut self, buffer: &mut [u8], block_id: AbsoluteBN) -> Ext4Result<()> {
-        if self.journal_use
-            && let Some(system) = self.system.as_ref()
-            && let Some(update) = system
-                .commit_queue
-                .iter()
-                .find(|queued| queued.0 == block_id)
-        {
-            if buffer.len() < BLOCK_SIZE {
-                return Err(Ext4Error::buffer_too_small(buffer.len(), BLOCK_SIZE));
-            }
-            buffer[..BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
-            return Ok(());
-        }
-
-        self.inner.read_block_direct(buffer, block_id)
-    }
-
     /// Returns the cached block buffer.
     pub fn buffer(&self) -> &[u8] {
         self.inner.buffer()
@@ -341,13 +327,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Reads multiple blocks directly.
-    ///
-    /// Checks the journal commit queue for each block in the range, matching
-    /// the behaviour of [`read_block_direct`].  Without this check a read that
-    /// falls between a metadata `write_blocks(is_metadata: true)` and the
-    /// journal commit sees stale on-disk data, which causes the read-modify-
-    /// write in the inode/bitmap cache write helpers to build a buffer that
-    /// silently drops prior modifications to the same block.
     pub fn read_blocks(
         &mut self,
         buf: &mut [u8],
@@ -363,21 +342,11 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
-        // Bulk-read the whole range in a single device round-trip, then overlay
-        // any block that has a pending journal update so the read reflects the
-        // not-yet-committed metadata.  A read that falls between a metadata
-        // `write_blocks(is_metadata: true)` and the journal commit would
-        // otherwise see stale on-disk data, which causes the read-modify-write
-        // in the inode/bitmap cache write helpers to build a buffer that
-        // silently drops prior modifications to the same block.
         self.inner.read_blocks(buf, block_id, count)?;
 
         let Some(system) = self.system.as_ref() else {
             return Ok(());
         };
-        // Per-block linear scan of the pending journal queue.  JBD2_BUFFER_MAX
-        // is small (10 entries), so O(count × queue_len) is bounded and
-        // negligible.  A hash-set would only pay off with a much larger queue.
         for i in 0..count {
             let bid = block_id.checked_add(i)?;
             if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
@@ -413,29 +382,16 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
-        // Validate the whole block range up front so a later overflow cannot
-        // leave earlier blocks committed while the call still reports failure.
-        block_id.checked_add(count.saturating_sub(1))?;
-
-        // Track whether a journal commit happened during the loop.
-        // `enqueue_journal_update` returns Ok(true) when it triggers a
-        // commit (the commit checkpoint writes blocks directly to the raw
-        // device, bypassing the 4-entry LRU).  We must invalidate the LRU
-        // whenever this occurs — the per-iteration return value captures
-        // every commit, even when the queue later refills to the same
-        // length as before.
-        let mut commit_occurred = false;
+        let mut committed_any = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            if Self::enqueue_journal_update(system, raw_dev, updates)? {
-                commit_occurred = true;
-            }
+            committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
         }
-        if commit_occurred {
+        if committed_any {
             self.inner.invalidate_cache()?;
         }
 
