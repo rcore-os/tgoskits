@@ -4,6 +4,7 @@ set -eu
 
 TOOLCHAIN="${SELFHOST_RUST_TOOLCHAIN:-nightly-2026-05-28}"
 HOST_TRIPLE="x86_64-unknown-linux-musl"
+RUSTUP_TOOLCHAIN="${TOOLCHAIN}-${HOST_TRIPLE}"
 SOURCE_TAR="${SELFHOST_SOURCE_TAR:-/opt/tgoskits-src.tar}"
 SOURCE_META="${SELFHOST_SOURCE_META:-/opt/tgoskits-src.meta}"
 SOURCE_DIR="${SELFHOST_SOURCE_DIR:-/tmp/tgoskits-src}"
@@ -85,10 +86,10 @@ install_rust() {
             --default-toolchain "$TOOLCHAIN"
     fi
 
-    rustup toolchain install "$TOOLCHAIN" --profile minimal
-    rustup default "$TOOLCHAIN"
-    rustup component add --toolchain "$TOOLCHAIN" rust-src llvm-tools-preview
-    rustup target add --toolchain "$TOOLCHAIN" x86_64-unknown-none
+    rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    rustup default "$RUSTUP_TOOLCHAIN"
+    rustup component add --toolchain "$RUSTUP_TOOLCHAIN" rust-src llvm-tools-preview
+    rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-none
 }
 
 install_kallsyms_tools() {
@@ -130,7 +131,7 @@ build_with_canonical_xtask() {
     unset CARGO_BUILD_TARGET
 
     RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= \
-        cargo build --locked -p tg-xtask --target "$detected_host"
+        cargo "+$RUSTUP_TOOLCHAIN" build --locked -p tg-xtask --target "$detected_host"
     xtask="$SOURCE_DIR/target/$detected_host/debug/tg-xtask"
     [ -x "$xtask" ] || fail "tg-xtask was not built for $detected_host"
 

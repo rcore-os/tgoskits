@@ -313,6 +313,26 @@ fn selfhost_guest_runner_retries_transient_rustup_downloads() {
 }
 
 #[test]
+fn selfhost_guest_runner_uses_the_explicit_musl_toolchain_for_project_cargo() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let guest_runner_path =
+        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild.sh");
+    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
+
+    assert!(
+        guest_runner.contains("RUSTUP_TOOLCHAIN=\"${TOOLCHAIN}-${HOST_TRIPLE}\"")
+            && guest_runner.contains("cargo \"+$RUSTUP_TOOLCHAIN\" build --locked -p tg-xtask"),
+        "{} must explicitly select its installed musl toolchain so the checkout's \
+         rust-toolchain.toml cannot install unrelated host components",
+        guest_runner_path.display()
+    );
+}
+
+#[test]
 fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
     let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
     let qemu_config_path = case_dir.join("qemu-x86_64.toml");
