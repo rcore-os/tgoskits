@@ -44,7 +44,10 @@
 //!             // Handle hypervisor disable request
 //!             Ok(0)
 //!         }
-//!         _ => Err(ax_errno::AxError::Unsupported),
+//!         _ => Err(axhvc::HyperCallError::Unsupported {
+//!             code,
+//!             detail: "not implemented by this handler".into(),
+//!         }),
 //!     }
 //! }
 //! ```
@@ -56,7 +59,11 @@
 #![no_std]
 #![deny(missing_docs)]
 
-use ax_errno::AxResult;
+extern crate alloc;
+
+mod error;
+
+pub use error::{HyperCallError, HyperCallResult, InvalidHyperCallCode};
 
 /// Hypercall operation codes for AxVisor.
 ///
@@ -185,19 +192,6 @@ pub enum HyperCallCode {
     HIVCUnSubscribChannel = 6,
 }
 
-/// Error type for invalid hypercall code conversion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidHyperCallCode(
-    /// The invalid numeric value that was attempted to convert.
-    pub u32,
-);
-
-impl core::fmt::Display for InvalidHyperCallCode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "invalid hypercall code: {:#x}", self.0)
-    }
-}
-
 impl TryFrom<u32> for HyperCallCode {
     type Error = InvalidHyperCallCode;
 
@@ -240,21 +234,3 @@ impl core::fmt::Debug for HyperCallCode {
         write!(f, ")")
     }
 }
-
-/// The result type for hypercall operations.
-///
-/// This is an alias for [`AxResult<usize>`], where:
-/// - `Ok(value)` indicates successful execution with a return value
-/// - `Err(error)` indicates failure with an error code
-///
-/// # Example
-///
-/// ```ignore
-/// use axhvc::HyperCallResult;
-///
-/// fn my_hypercall_handler() -> HyperCallResult {
-///     // Perform hypercall operation...
-///     Ok(0)
-/// }
-/// ```
-pub type HyperCallResult = AxResult<usize>;

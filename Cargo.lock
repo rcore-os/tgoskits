@@ -1295,7 +1295,7 @@ dependencies = [
 name = "axhvc"
 version = "0.4.10"
 dependencies = [
- "ax-errno 0.6.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
