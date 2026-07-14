@@ -305,8 +305,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn live_fdt() -> Result<Fdt, OnProbeError> {
-    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
+fn live_fdt() -> Result<&'static Fdt, OnProbeError> {
+    rdrive::fdt_ref().ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 fn map_phandle_reg(
