@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
 use bitmaps::Bitmap;
 use log::debug;
@@ -23,7 +22,7 @@ use super::{
     registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
-use crate::host;
+use crate::{VgicError, VgicResult, host};
 
 /// Default size for GICD region.
 pub const DEFAULT_GICD_SIZE: usize = 0x10000; // 64K
@@ -47,6 +46,17 @@ pub struct VGicD {
 }
 
 impl VGicD {
+    /// Validates that an IRQ identifier can be represented by the VGIC.
+    pub fn validate_irq(irq: u32) -> VgicResult {
+        if irq >= MAX_IRQ_V3 as u32 {
+            return Err(VgicError::InvalidIrq {
+                irq: irq as usize,
+                max: MAX_IRQ_V3,
+            });
+        }
+        Ok(())
+    }
+
     /// Creates a new VGicD instance.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>) -> Self {
         let size = size.unwrap_or(DEFAULT_GICD_SIZE);
@@ -60,15 +70,18 @@ impl VGicD {
     }
 
     /// Assigns an IRQ to a specific CPU.
-    pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
+    pub fn assign_irq(
+        &self,
+        irq: u32,
+        cpu_phys_id: usize,
+        target_cpu_affinity: (u8, u8, u8, u8),
+    ) -> VgicResult {
         debug!(
             "Physically assigning IRQ {irq} to CPU {cpu_phys_id} with affinity \
              {target_cpu_affinity:?}"
         );
 
-        if irq >= MAX_IRQ_V3 as u32 {
-            panic!("IRQ {} is out of range for VGicD", irq);
-        }
+        Self::validate_irq(irq)?;
         self.assigned_irqs.lock().set(irq as usize, true);
 
         // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
@@ -80,7 +93,6 @@ impl VGicD {
                 1u8 << (cpu_phys_id),
             );
         }
-
         let gicd_irouter_paddr = self.host_gicd_addr + GICD_IROUTER + (irq as usize) * 8;
         let gicd_irouter_vaddr = host::phys_to_virt(gicd_irouter_paddr);
         unsafe {
@@ -93,6 +105,7 @@ impl VGicD {
                     | target_cpu_affinity.3 as u64,
             );
         }
+        Ok(())
     }
 }
 
@@ -109,13 +122,13 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         &self,
         addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
         width: AccessWidth,
-    ) -> ax_errno::AxResult<usize> {
+    ) -> DeviceResult<usize> {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
         debug!("vGICD read reg {reg:#x} width {width:?}");
 
-        match reg {
+        let result = match reg {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_IROUTER) as u32 / 8;
 
@@ -172,7 +185,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             _ => {
                 todo!("vgicdv3 read unimplemented for reg {:#x}", reg);
             }
-        }
+        };
+        Ok(result?)
     }
 
     fn handle_write(
@@ -180,13 +194,13 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
         width: AccessWidth,
         val: usize,
-    ) -> ax_errno::AxResult {
+    ) -> DeviceResult {
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
         debug!("vGICD write reg {reg:#x} width {width:?} val {val:#x}");
 
-        match reg {
+        let result = match reg {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_IROUTER) as u32 / 8;
 
@@ -243,7 +257,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             _ => {
                 todo!("vgicdv3 write unimplemented for reg {:#x}", reg);
             }
-        }
+        };
+        Ok(result?)
     }
 }
 
@@ -305,7 +320,7 @@ impl VGicD {
         bits_per_irq_shift: usize,
         width: AccessWidth,
         _is_poke: bool,
-    ) -> AxResult<usize> {
+    ) -> VgicResult<usize> {
         let mask = self.irq_access_mask(reg_offset, bits_per_irq_shift, width);
 
         Ok(perform_mmio_read(self.host_gicd_addr + offset, width)? & mask)
@@ -320,7 +335,7 @@ impl VGicD {
         width: AccessWidth,
         is_poke: bool,
         val: usize,
-    ) -> AxResult<()> {
+    ) -> VgicResult<()> {
         let mask = self.irq_access_mask(reg_offset, bits_per_irq_shift, width);
 
         if is_poke {

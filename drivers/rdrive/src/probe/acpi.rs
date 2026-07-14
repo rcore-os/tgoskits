@@ -28,7 +28,7 @@ use acpi::{
     },
     sdt::spcr::{Spcr, SpcrInterfaceType},
 };
-use ax_kspin::SpinRaw as Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use spin::Once;
 
@@ -891,6 +891,15 @@ pub fn check_root(root: AcpiRoot) -> Result<(), DriverError> {
 
 pub fn init(root: AcpiRoot) -> Result<(), DriverError> {
     let system = System::new(root)?;
+    init_system(system)
+}
+
+pub fn init_without_aml(root: AcpiRoot) -> Result<(), DriverError> {
+    let system = System::new_without_aml(root)?;
+    init_system(system)
+}
+
+fn init_system(system: System) -> Result<(), DriverError> {
     info!(
         "ACPI initialized: {} PCI ECAM region(s), {} IOAPIC(s), {} PCH-PIC(s)",
         system.pci_ecam_regions().len(),
@@ -1134,7 +1143,7 @@ impl AcpiRoot {
 pub struct System {
     ecam_regions: Vec<AcpiPciEcam>,
     routing: AcpiRouting,
-    interpreter: Interpreter<AcpiHandler>,
+    interpreter: Option<Interpreter<AcpiHandler>>,
     handler: AcpiHandler,
     pci: Option<AcpiPciNamespace>,
     probed_names: Mutex<BTreeSet<&'static str>>,
@@ -1160,21 +1169,35 @@ struct AcpiPciRoot {
 
 impl System {
     pub fn new(root: AcpiRoot) -> Result<Self, DriverError> {
+        Self::new_with_options(root, true)
+    }
+
+    pub fn new_without_aml(root: AcpiRoot) -> Result<Self, DriverError> {
+        Self::new_with_options(root, false)
+    }
+
+    fn new_with_options(root: AcpiRoot, load_aml: bool) -> Result<Self, DriverError> {
         let handler = root.handler();
         let tables =
             unsafe { AcpiTables::from_rsdp(handler.clone(), root.rsdp) }.map_err(acpi_error)?;
         let ecam_regions = read_pci_ecam_regions(&tables)?;
         let routing = read_interrupt_routing(&tables)?;
         let namespace_handler = root.handler_with_pci_ecam(ecam_regions.clone());
-        let platform = AcpiPlatform::new(tables, namespace_handler.clone()).map_err(acpi_error)?;
-        let interpreter = Interpreter::new_from_platform(&platform).map_err(acpi_error)?;
-        interpreter.initialize_namespace();
-        let pci = match read_pci_namespace(&interpreter) {
-            Ok(pci) => Some(pci),
-            Err(err) => {
-                warn!("failed to discover ACPI PCI namespace: {err:?}");
-                None
-            }
+        let (interpreter, pci) = if load_aml {
+            let platform =
+                AcpiPlatform::new(tables, namespace_handler.clone()).map_err(acpi_error)?;
+            let interpreter = Interpreter::new_from_platform(&platform).map_err(acpi_error)?;
+            interpreter.initialize_namespace();
+            let pci = match read_pci_namespace(&interpreter) {
+                Ok(pci) => Some(pci),
+                Err(err) => {
+                    warn!("failed to discover ACPI PCI namespace: {err:?}");
+                    None
+                }
+            };
+            (Some(interpreter), pci)
+        } else {
+            (None, None)
         };
 
         Ok(Self {
@@ -1302,7 +1325,9 @@ impl System {
                         u16::from(route.root_device),
                         u16::from(route.root_function),
                         pin,
-                        &self.interpreter,
+                        self.interpreter
+                            .as_ref()
+                            .expect("ACPI PCI routing requires an AML interpreter"),
                         &self.handler,
                         &mut pci.link_allocator.lock(),
                     )
@@ -1315,7 +1340,9 @@ impl System {
                 u16::from(route.root_device),
                 u16::from(route.root_function),
                 pin,
-                &self.interpreter,
+                self.interpreter
+                    .as_ref()
+                    .expect("ACPI PCI routing requires an AML interpreter"),
             ) {
                 Ok(route) => return Ok(Some(route)),
                 Err(AmlError::PrtNoEntry) => {}
@@ -1355,20 +1382,23 @@ impl System {
     }
 
     fn device_infos_for_ids(&self, ids: &[AcpiId]) -> Result<Vec<AcpiDeviceInfo>, ProbeError> {
+        let Some(interpreter) = &self.interpreter else {
+            return Ok(Vec::new());
+        };
         let mut devices = Vec::new();
-        let mut namespace = self.interpreter.namespace.lock().clone();
+        let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
                 if level.kind != NamespaceLevelKind::Device {
                     return Ok(true);
                 }
-                let Some((hid, cids)) = acpi_device_ids(&self.interpreter, path)? else {
+                let Some((hid, cids)) = acpi_device_ids(interpreter, path)? else {
                     return Ok(true);
                 };
                 if !acpi_ids_match(&hid, &cids, ids) {
                     return Ok(true);
                 }
-                let resources = read_device_resources(&self.interpreter, path, &self.routing)?;
+                let resources = read_device_resources(interpreter, path, &self.routing)?;
                 devices.push(AcpiDeviceInfo {
                     path: path.as_string(),
                     hid: Some(hid),
@@ -1384,17 +1414,20 @@ impl System {
     }
 
     fn device_infos(&self) -> Result<Vec<AcpiDeviceInfo>, ProbeError> {
+        let Some(interpreter) = &self.interpreter else {
+            return Ok(Vec::new());
+        };
         let mut devices = Vec::new();
-        let mut namespace = self.interpreter.namespace.lock().clone();
+        let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
                 if level.kind != NamespaceLevelKind::Device {
                     return Ok(true);
                 }
-                let Some((hid, cids)) = acpi_device_ids(&self.interpreter, path)? else {
+                let Some((hid, cids)) = acpi_device_ids(interpreter, path)? else {
                     return Ok(true);
                 };
-                let resources = read_device_resources(&self.interpreter, path, &self.routing)?;
+                let resources = read_device_resources(interpreter, path, &self.routing)?;
                 devices.push(AcpiDeviceInfo {
                     path: path.as_string(),
                     hid: Some(hid),

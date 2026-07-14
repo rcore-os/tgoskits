@@ -1,0 +1,18 @@
+# monitor x86_64 -- Prometheus stack (prometheus/promtool/node_exporter, static Go) + glances
+# (musl CPython3: CLI / headless / pyte-verified TUI / client-server / web) carpet.
+# -cpu Haswell exposes a modern userspace baseline (AVX2/XSAVE); the kernel CR4.OSXSAVE + XCR0
+# enable lives in dev. prometheus/node_exporter are CGO-free static Go (no libc), glances rides the
+# injected musl closure.
+args = [
+    "-nographic", "-cpu", "Haswell", "-m", "2048M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-monitor.sh"
+success_regex = ['(?m)^MONITOR_OK=9/9', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 15000

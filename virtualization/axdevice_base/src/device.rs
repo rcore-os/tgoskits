@@ -1,5 +1,6 @@
 //! Device address and access width definitions.
 
+use alloc::string::String;
 use core::fmt::{Debug, LowerHex};
 
 use ax_memory_addr::AddrRange;
@@ -178,11 +179,13 @@ pub enum BusResponse {
 }
 
 /// Errors that can occur during device access handling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 pub enum DeviceError {
     /// No device found at the requested address.
+    #[error("no device was found for the requested bus access")]
     NotFound,
     /// The access width does not match what the register expects.
+    #[error("invalid device access width: expected {expected:?}, got {actual:?}")]
     InvalidWidth {
         /// The width the register expects.
         expected: AccessWidth,
@@ -190,16 +193,78 @@ pub enum DeviceError {
         actual: AccessWidth,
     },
     /// Attempted to write to a read-only register.
+    #[error("attempted to write a read-only device register")]
     ReadOnly,
     /// Attempted to read from a write-only register.
+    #[error("attempted to read a write-only device register")]
     WriteOnly,
     /// The address is outside the device's range.
+    #[error("device address {addr:#x} is outside the registered range")]
     OutOfRange {
         /// The address that was accessed.
         addr: u64,
     },
     /// The requested functionality is not yet implemented.
+    #[error("device operation is not implemented")]
     Unimplemented,
     /// An internal error occurred in the device implementation.
+    #[error("internal device error")]
     Internal,
+    /// An operation received an invalid argument.
+    #[error("invalid input for device operation {operation}: {detail}")]
+    InvalidInput {
+        /// The operation that rejected the input.
+        operation: &'static str,
+        /// Diagnostic detail describing the invalid input.
+        detail: String,
+    },
+    /// Device data is malformed or inconsistent.
+    #[error("invalid data for device operation {operation}: {detail}")]
+    InvalidData {
+        /// The operation that rejected the data.
+        operation: &'static str,
+        /// Diagnostic detail describing the malformed data.
+        detail: String,
+    },
+    /// Device state does not allow the requested operation.
+    #[error("invalid state for device operation {operation}: {detail}")]
+    InvalidState {
+        /// The operation that cannot run in the current state.
+        operation: &'static str,
+        /// Diagnostic detail describing the current state.
+        detail: String,
+    },
+    /// The device does not support the requested operation.
+    #[error("unsupported device operation {operation}: {detail}")]
+    Unsupported {
+        /// The unsupported operation.
+        operation: &'static str,
+        /// Diagnostic detail describing the limitation.
+        detail: String,
+    },
+    /// A device allocation failed.
+    #[error("out of memory during device operation {operation}")]
+    OutOfMemory {
+        /// The operation that attempted the allocation.
+        operation: &'static str,
+    },
+    /// A device resource is currently busy.
+    #[error("device resource {resource} is busy during {operation}")]
+    ResourceBusy {
+        /// The operation that attempted to use the resource.
+        operation: &'static str,
+        /// The busy resource.
+        resource: String,
+    },
+    /// A device backend operation failed.
+    #[error("device backend operation {operation} failed: {detail}")]
+    Backend {
+        /// The backend operation that failed.
+        operation: &'static str,
+        /// Diagnostic detail from the backend.
+        detail: String,
+    },
 }
+
+/// Result type returned by device access operations.
+pub type DeviceResult<T = ()> = Result<T, DeviceError>;

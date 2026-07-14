@@ -22,6 +22,101 @@ pub enum Jbd2RunState {
     Replay,
 }
 
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    struct MemBlockDev {
+        data: Vec<u8>,
+    }
+
+    impl MemBlockDev {
+        fn new(blocks: usize) -> Self {
+            Self {
+                data: vec![0; blocks * BLOCK_SIZE],
+            }
+        }
+    }
+
+    impl BlockDevice for MemBlockDev {
+        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + buffer.len();
+            buffer.copy_from_slice(&self.data[start..end]);
+            Ok(())
+        }
+
+        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + buffer.len();
+            self.data[start..end].copy_from_slice(buffer);
+            Ok(())
+        }
+
+        fn open(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn total_blocks(&self) -> u64 {
+            (self.data.len() / BLOCK_SIZE) as u64
+        }
+
+        fn block_size(&self) -> u32 {
+            BLOCK_SIZE as u32
+        }
+
+        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(0, 0))
+        }
+    }
+
+    #[test]
+    fn auto_commit_invalidates_stale_block_cache() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        dev.read_block(target).expect("prime target cache");
+        assert_eq!(dev.buffer()[0], 0);
+
+        let count = (JBD2_BUFFER_MAX + 1) as u32;
+        let mut updates = vec![0u8; count as usize * BLOCK_SIZE];
+        for idx in 0..count as usize {
+            updates[idx * BLOCK_SIZE] = (idx + 1) as u8;
+        }
+
+        dev.write_blocks(&updates, target, count, true)
+            .expect("queue metadata updates");
+
+        dev.read_block(target)
+            .expect("read target after auto commit");
+        assert_eq!(dev.buffer()[0], 1);
+    }
+
+    #[test]
+    fn bulk_read_overlays_pending_journal_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        let pending = vec![0x5a; BLOCK_SIZE];
+        dev.write_blocks(&pending, target, 1, true)
+            .expect("queue metadata update");
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("bulk read pending metadata");
+
+        assert_eq!(observed, pending);
+    }
+}
+
 /// Block device proxy that optionally routes metadata writes through JBD2.
 pub struct Jbd2Dev<B: BlockDevice> {
     _mode: u8,
@@ -37,22 +132,24 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         system: &mut JBD2DEVSYSTEM,
         raw_dev: &mut B,
         update: Jbd2Update,
-    ) -> Ext4Result<()> {
+    ) -> Ext4Result<bool> {
         if let Some(existing) = system
             .commit_queue
             .iter_mut()
             .find(|queued| queued.0 == update.0)
         {
             *existing = update;
-            return Ok(());
+            return Ok(false);
         }
 
+        let mut committed = false;
         if system.commit_queue.len() >= JBD2_BUFFER_MAX {
             system.commit_transaction(raw_dev)?;
+            committed = true;
         }
 
         system.commit_queue.push(update);
-        Ok(())
+        Ok(committed)
     }
 
     fn make_system(
@@ -119,7 +216,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
 
         let status = jbd_sys.replay_with_mapping(self.inner.device_mut(), &self.journal_blocks);
-        self.inner.invalidate_cache();
+        if self.inner.invalidate_cache().is_err() {
+            return ReplayStatus::Incomplete;
+        }
         status
     }
 
@@ -161,9 +260,14 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         }
 
         if let Some(system) = self.system.as_mut() {
-            system
+            let committed = system
                 .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
                 .expect("journal transaction commit failed");
+            if committed {
+                self.inner
+                    .invalidate_cache()
+                    .expect("invalidate_cache failed during umount commit");
+            }
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
@@ -189,7 +293,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        Self::enqueue_journal_update(system, raw_dev, updates)?;
+        if Self::enqueue_journal_update(system, raw_dev, updates)? {
+            self.inner.invalidate_cache()?;
+        }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
     }
@@ -227,7 +333,28 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        self.inner.read_blocks(buf, block_id, count)
+        if !self.journal_use || count == 0 {
+            return self.inner.read_blocks(buf, block_id, count);
+        }
+
+        let required = BLOCK_SIZE * count as usize;
+        if buf.len() < required {
+            return Err(Ext4Error::buffer_too_small(buf.len(), required));
+        }
+
+        self.inner.read_blocks(buf, block_id, count)?;
+
+        let Some(system) = self.system.as_ref() else {
+            return Ok(());
+        };
+        for i in 0..count {
+            let bid = block_id.checked_add(i)?;
+            if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
+                let off = (i as usize) * BLOCK_SIZE;
+                buf[off..off + BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
+            }
+        }
+        Ok(())
     }
 
     /// Writes multiple blocks, optionally journaling metadata buffers.
@@ -255,13 +382,17 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
         }
 
+        let mut committed_any = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
             boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
             let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
 
-            Self::enqueue_journal_update(system, raw_dev, updates)?;
+            committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
+        }
+        if committed_any {
+            self.inner.invalidate_cache()?;
         }
 
         Ok(())

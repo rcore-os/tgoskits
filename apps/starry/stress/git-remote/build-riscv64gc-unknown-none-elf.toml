@@ -1,5 +1,5 @@
 features = [
-  "ax-feat/rtc",
+  "ax-runtime/rtc",
   "ax-driver/rtc",
   "ax-driver/serial",
   "ax-driver/virtio-blk",

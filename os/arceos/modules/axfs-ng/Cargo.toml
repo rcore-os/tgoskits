@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.7.0"
+version = "0.8.4"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -12,8 +12,6 @@ fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = []
 lockdep = ["axfs-ng-vfs/lockdep"]
-times = []
-std = []
 
 [dependencies]
 ax-errno = { workspace = true }

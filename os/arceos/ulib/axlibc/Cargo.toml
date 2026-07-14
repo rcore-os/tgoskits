@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.23"
+version = "0.5.28"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -22,42 +22,47 @@ crate-type = ["staticlib"]
 default = []
 
 # Multicore
-smp = ["ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-feat/fp-simd"]
+fp-simd = ["ax-hal/fp-simd"]
 
 # Interrupts
-irq = ["ax-posix-api/irq", "ax-feat/irq"]
+irq = ["ax-posix-api/irq", "ax-runtime/irq"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
-tls = ["alloc", "ax-feat/tls"]
+paging = ["ax-runtime/paging"]
+tls = ["alloc", "ax-runtime/tls"]
 
 # Multi-task
-multitask = ["ax-feat/multitask", "ax-posix-api/multitask"]
-lockdep = ["ax-posix-api/lockdep", "ax-feat/lockdep"]
-stack-protector = ["ax-feat/stack-protector"]
+multitask = ["ax-posix-api/multitask", "ax-runtime/multitask"]
+lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
-fs = ["ax-posix-api/fs", "fd"]
+fs = ["ax-posix-api/fs", "ax-runtime/fs", "fd"]
+ext4fs = ["fs", "ax-runtime/ext4fs"]
+fatfs = ["fs", "ax-runtime/fatfs"]
 
 # Networking
-net = ["ax-posix-api/net", "fd"]
+net = ["ax-posix-api/net", "ax-runtime/net", "fd"]
 
 # Libc features
 fd = ["ax-posix-api/fd"]
 pipe = ["ax-posix-api/pipe"]
 select = ["ax-posix-api/select"]
+poll = ["ax-posix-api/poll"]
 epoll = ["ax-posix-api/epoll"]
 
 [dependencies]
 ax-driver.workspace = true
 ax-hal.workspace = true
+ax-kspin.workspace = true
 ax-posix-api.workspace = true
 ax-errno.workspace = true
-ax-feat.workspace = true
 ax-io.workspace = true
+ax-runtime.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

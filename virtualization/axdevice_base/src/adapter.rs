@@ -129,12 +129,10 @@ where
             self.inner
                 .handle_read(addr, access.width)
                 .map(|v| BusResponse::Read { value: v as u64 })
-                .map_err(|_| DeviceError::Internal)
         } else {
             self.inner
                 .handle_write(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
-                .map_err(|_| DeviceError::Internal)
         }
     }
 
@@ -210,12 +208,10 @@ where
             self.inner
                 .handle_read(addr, access.width)
                 .map(|v| BusResponse::Read { value: v as u64 })
-                .map_err(|_| DeviceError::Internal)
         } else {
             self.inner
                 .handle_write(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
-                .map_err(|_| DeviceError::Internal)
         }
     }
 
@@ -291,12 +287,10 @@ where
             self.inner
                 .handle_read(port, access.width)
                 .map(|v| BusResponse::Read { value: v as u64 })
-                .map_err(|_| DeviceError::Internal)
         } else {
             self.inner
                 .handle_write(port, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
-                .map_err(|_| DeviceError::Internal)
         }
     }
 
@@ -307,12 +301,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ax_errno::AxResult;
     use axvm_types::GuestPhysAddr;
 
     use super::MmioDeviceAdapter;
     use crate::{
-        BaseDeviceOps, Device, EmuDeviceType, GuestPhysAddrRange, Resource,
+        BaseDeviceOps, Device, DeviceResult, EmuDeviceType, GuestPhysAddrRange, Resource,
         device::{AccessWidth, BusAccess, BusKind, BusResponse},
     };
 
@@ -331,10 +324,15 @@ mod tests {
                 .try_into()
                 .unwrap()
         }
-        fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+        fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
             Ok(self.read_val)
         }
-        fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+        fn handle_write(
+            &self,
+            _addr: GuestPhysAddr,
+            _width: AccessWidth,
+            _val: usize,
+        ) -> DeviceResult {
             Ok(())
         }
     }

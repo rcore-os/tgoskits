@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdrive"
 repository.workspace = true
-version = "0.23.3"
+version = "0.23.6"
 
 [dependencies]
 acpi = "6.1.1"
@@ -23,7 +23,10 @@ thiserror = { version = "2", default-features = false }
 pcie.workspace = true
 
 rdif-base = { workspace = true }
+rdif-clk = { workspace = true }
 rdif-pinctrl = { workspace = true, features = ["fdt"] }
+rdif-power = { workspace = true }
+rdif-reset = { workspace = true }
 rdrive-macros.workspace = true
 rdif-pcie = { workspace = true }
 

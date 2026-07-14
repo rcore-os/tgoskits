@@ -96,7 +96,13 @@ pub(super) fn std_c_toolchain_env(target_name: &str, tool_prefix: &str) -> HashM
     let target_env = target_name.replace('-', "_");
     let cc = format!("{tool_prefix}-cc");
     let ar = format!("{tool_prefix}-ar");
-    let c_flags = std_c_target_flags(target_name).join(" ");
+    // The kernel links these freestanding C objects without a stack-protector
+    // runtime (no __stack_chk_fail / __stack_chk_guard). GCC 16 enables stack
+    // protection by default, which breaks the static-PIE link; disable it for
+    // all kernel C compiles, matching the in-guest self-compile build.
+    let mut c_flag_list = std_c_target_flags(target_name);
+    c_flag_list.push("-fno-stack-protector");
+    let c_flags = c_flag_list.join(" ");
     env.insert(format!("CC_{target_env}"), cc.clone());
     env.insert(format!("AR_{target_env}"), ar);
     if !c_flags.is_empty() {
@@ -261,7 +267,7 @@ pub(super) fn pass_std_build_nested_features(
         if is_removed_dynamic_platform_feature(&feature) {
             continue;
         }
-        if matches!(feature.as_str(), "ax-std" | "ax-feat") {
+        if matches!(feature.as_str(), "ax-std") {
             continue;
         }
         if is_log_level_feature(&feature) {

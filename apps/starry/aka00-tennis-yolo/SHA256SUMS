@@ -1,0 +1,4 @@
+60da9b28c5736624534cb625ee2b67bdb5081954e43e320e1d749421e5e4155b  model/yolov8n_tennis_v2.cvimodel
+9acae9866cff94c79bd3b644531657b33d33114005500f17a934599b0eeaa250  validation/tennis-ball-black-box.jpg
+73060d738a991c8a93d04a43ff228b7c200472e58605575ff9adce224af66507  validation/tennis-ball-close.jpg
+6a3e4bb91eb93fd85b66a6d0e16dbba1185287e777a5ec93becdbb8ae8bb4614  validation/tennis-ball-plant.jpg

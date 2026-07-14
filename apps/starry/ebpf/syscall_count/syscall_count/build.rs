@@ -25,5 +25,10 @@ fn main() -> anyhow::Result<()> {
         features: &[],
         ..Default::default()
     };
-    aya_build::build_ebpf([ebpf_package], Toolchain::default())
+    let rustup_toolchain = std::env::var("RUSTUP_TOOLCHAIN").ok();
+    let toolchain = rustup_toolchain
+        .as_deref()
+        .map(Toolchain::Custom)
+        .unwrap_or_default();
+    aya_build::build_ebpf([ebpf_package], toolchain)
 }

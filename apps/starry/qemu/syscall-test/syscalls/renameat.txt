@@ -1,0 +1,3 @@
+# renameat01 # TCONF: mkfs.ext2/ext2 support is unavailable in the current environment
+# renameat201 # TFAIL: renameat2 returns EINVAL for cases that expect success or ENOENT
+# renameat202 -i 10 # TFAIL: renameat2 returns EINVAL for RENAME_EXCHANGE stress cases

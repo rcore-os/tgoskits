@@ -2,7 +2,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
-    block::runtime::RdifBlockDevice,
+    block::runtime::{BlockIrqSource, RdifBlockDevice},
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, BlockTimeProvider,
         FsPage, FsPageProvider,
@@ -49,6 +49,12 @@ struct RuntimeTaskOps;
 impl BlockTaskOps for RuntimeTaskOps {
     fn current_task_id(&self) -> Option<u64> {
         ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
+    }
+
+    fn can_block(&self) -> bool {
+        crate::is_init_ok()
+            && ax_task::current_may_uninit().is_some()
+            && !ax_task::in_atomic_context()
     }
 
     fn task_yield(&self) {
@@ -169,10 +175,29 @@ fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
         .into_iter()
         .map(|block| {
             let name = String::from(block.name());
-            let irq = resolve_block_irq(block.irq_cloned());
-            RdifBlockDevice::new(name, irq, block.into_interface())
+            let irqs = resolve_block_irqs(&block);
+            RdifBlockDevice::new_with_irqs(name, irqs, block.into_interface())
         })
         .collect()
+}
+
+#[cfg(feature = "irq")]
+fn resolve_block_irqs(block: &ax_driver::block::RdifBlockDevice) -> Vec<BlockIrqSource> {
+    block
+        .irq_sources()
+        .iter()
+        .filter_map(|source| {
+            resolve_block_irq(Some(source.irq.clone())).map(|irq| BlockIrqSource {
+                source_id: source.source_id,
+                irq,
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "irq"))]
+fn resolve_block_irqs(_block: &ax_driver::block::RdifBlockDevice) -> Vec<BlockIrqSource> {
+    Vec::new()
 }
 
 #[cfg(feature = "irq")]

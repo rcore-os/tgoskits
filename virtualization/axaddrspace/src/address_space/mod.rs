@@ -15,12 +15,11 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use ax_errno::{AxResult, ax_err};
 use ax_memory_addr::{MemoryAddr, PhysAddr, is_aligned_4k};
 use ax_memory_set::{MemoryArea, MemorySet};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, MappingFlags};
 
-use crate::{NestedPageTableOps, mapping_err_to_ax_err};
+use crate::{AddrSpaceError, AddrSpaceResult, NestedPageTableOps};
 
 mod backend;
 
@@ -71,7 +70,13 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
     }
 
     /// Creates a new empty address space with the architecture default page table level.
-    pub fn new_empty(page_table: Npt, base: GuestPhysAddr, size: usize) -> AxResult<Self> {
+    pub fn new_empty(page_table: Npt, base: GuestPhysAddr, size: usize) -> AddrSpaceResult<Self> {
+        base.as_usize()
+            .checked_add(size)
+            .ok_or(AddrSpaceError::AddressOverflow {
+                start: base.as_usize(),
+                size,
+            })?;
         Ok(Self {
             va_range: GuestPhysAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
@@ -90,22 +95,22 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
         start_paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
-    ) -> AxResult {
-        if !self.contains_range(start_vaddr, size) {
-            return ax_err!(InvalidInput, "address out of range");
-        }
-        if !start_vaddr.is_aligned_4k() || !start_paddr.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
-        }
-        if start_paddr.as_usize().checked_add(size).is_none() {
-            return ax_err!(InvalidInput, "physical address range overflow");
-        }
+    ) -> AddrSpaceResult {
+        validate_range(&self.va_range, start_vaddr, size)?;
+        validate_alignment("guest physical address", start_vaddr.as_usize())?;
+        validate_alignment("host physical address", start_paddr.as_usize())?;
+        validate_alignment("mapping size", size)?;
+        start_paddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or(AddrSpaceError::AddressOverflow {
+                start: start_paddr.as_usize(),
+                size,
+            })?;
 
         let offset = start_vaddr.as_usize() as i128 - start_paddr.as_usize() as i128;
         let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
-        self.areas
-            .map(area, &mut self.pt, false)
-            .map_err(mapping_err_to_ax_err)?;
+        self.areas.map(area, &mut self.pt, false)?;
         Ok(())
     }
 
@@ -120,36 +125,23 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
         size: usize,
         flags: MappingFlags,
         populate: bool,
-    ) -> AxResult {
-        if !self.contains_range(start, size) {
-            return ax_err!(
-                InvalidInput,
-                alloc::format!("address [{:?}~{:?}] out of range", start, start + size).as_str()
-            );
-        }
-        if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
-        }
+    ) -> AddrSpaceResult {
+        validate_range(&self.va_range, start, size)?;
+        validate_alignment("guest physical address", start.as_usize())?;
+        validate_alignment("mapping size", size)?;
 
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
-        self.areas
-            .map(area, &mut self.pt, false)
-            .map_err(mapping_err_to_ax_err)?;
+        self.areas.map(area, &mut self.pt, false)?;
         Ok(())
     }
 
     /// Removes mappings within the specified virtual address range.
-    pub fn unmap(&mut self, start: GuestPhysAddr, size: usize) -> AxResult {
-        if !self.contains_range(start, size) {
-            return ax_err!(InvalidInput, "address out of range");
-        }
-        if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return ax_err!(InvalidInput, "address not aligned");
-        }
+    pub fn unmap(&mut self, start: GuestPhysAddr, size: usize) -> AddrSpaceResult {
+        validate_range(&self.va_range, start, size)?;
+        validate_alignment("guest physical address", start.as_usize())?;
+        validate_alignment("mapping size", size)?;
 
-        self.areas
-            .unmap(start, size, &mut self.pt)
-            .map_err(mapping_err_to_ax_err)?;
+        self.areas.unmap(start, size, &mut self.pt)?;
         Ok(())
     }
 
@@ -264,6 +256,40 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
             None
         }
     }
+}
+
+fn validate_range(
+    space: &GuestPhysAddrRange,
+    start: GuestPhysAddr,
+    size: usize,
+) -> AddrSpaceResult {
+    start
+        .as_usize()
+        .checked_add(size)
+        .ok_or(AddrSpaceError::AddressOverflow {
+            start: start.as_usize(),
+            size,
+        })?;
+    if !space.contains_range(GuestPhysAddrRange::from_start_size(start, size)) {
+        return Err(AddrSpaceError::OutOfRange {
+            start,
+            size,
+            space_start: space.start,
+            space_end: space.end,
+        });
+    }
+    Ok(())
+}
+
+fn validate_alignment(subject: &'static str, value: usize) -> AddrSpaceResult {
+    if !is_aligned_4k(value) {
+        return Err(AddrSpaceError::Unaligned {
+            subject,
+            value,
+            alignment: 0x1000,
+        });
+    }
+    Ok(())
 }
 
 impl<Npt: NestedPageTableOps> fmt::Debug for AddrSpace<Npt> {

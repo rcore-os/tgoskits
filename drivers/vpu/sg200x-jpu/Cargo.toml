@@ -1,0 +1,17 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "no_std SG200x JPEG Processing Unit driver with checked hardware scaling"
+edition.workspace = true
+keywords = ["sg2002", "jpeg", "jpu", "dma", "no-std"]
+license = "MIT"
+name = "sg200x-jpu"
+readme = "README.md"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+dma-api.workspace = true
+log.workspace = true
+thiserror.workspace = true
+tock-registers.workspace = true

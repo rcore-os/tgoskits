@@ -1,4 +1,5 @@
 pub const EIOINTC_VECTOR_COUNT: usize = 256;
+pub const LIOINTC_VECTOR_COUNT: usize = 32;
 pub const PCH_PIC_VECTOR_COUNT: usize = 64;
 
 pub fn fdt_first_cell_vector(irq_prop: &[u32]) -> Option<usize> {

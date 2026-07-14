@@ -16,16 +16,19 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::{AxResult, ax_err};
 use axdevice_base::{InterruptTriggerMode, IrqLine};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::DeviceBundle;
+use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
 
 /// Resolves a VM-local interrupt line for a device under construction.
 pub trait IrqResolver: Send + Sync {
     /// Resolves `line` with the requested trigger mode.
-    fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> AxResult<IrqLine>;
+    fn resolve_irq(
+        &self,
+        line: usize,
+        trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine>;
 }
 
 /// VM-owned services available while a device factory is building a device.
@@ -40,7 +43,11 @@ impl<'a> DeviceBuildContext<'a> {
     }
 
     /// Resolves a VM-local interrupt line.
-    pub fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
+    pub fn resolve_irq(
+        &self,
+        line: usize,
+        trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine> {
         self.irq_resolver.resolve_irq(line, trigger)
     }
 }
@@ -55,7 +62,7 @@ pub trait DeviceFactory: Send + Sync {
         &self,
         config: &EmulatedDeviceConfig,
         context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle>;
+    ) -> DeviceManagerResult<DeviceBundle>;
 }
 
 /// A registry containing at most one factory for each emulated device type.
@@ -73,13 +80,15 @@ impl DeviceFactoryRegistry {
     }
 
     /// Registers a factory, rejecting a duplicate device type.
-    pub fn register(&mut self, factory: Arc<dyn DeviceFactory>) -> AxResult {
+    pub fn register(&mut self, factory: Arc<dyn DeviceFactory>) -> DeviceManagerResult {
         let device_type = factory.device_type();
         if self.get(device_type).is_some() {
-            return ax_err!(
-                AlreadyExists,
-                format_args!("factory for device type {device_type} is already registered")
-            );
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "register device factory",
+                detail: alloc::format!(
+                    "factory for device type {device_type} is already registered"
+                ),
+            });
         }
         self.factories.push((device_type, factory));
         Ok(())
@@ -98,15 +107,16 @@ impl DeviceFactoryRegistry {
         &self,
         config: &EmulatedDeviceConfig,
         context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle> {
+    ) -> DeviceManagerResult<DeviceBundle> {
         let Some(factory) = self.get(config.emu_type) else {
-            return ax_err!(
-                Unsupported,
-                format_args!(
+            return Err(DeviceManagerError::Unsupported {
+                operation: "build emulated device",
+                detail: alloc::format!(
                     "no factory is registered for emulated device '{}' of type {}",
-                    config.name, config.emu_type
-                )
-            );
+                    config.name,
+                    config.emu_type
+                ),
+            });
         };
         factory.build(config, context)
     }
@@ -123,12 +133,12 @@ impl DeviceFactory for MetaDeviceFactory {
         &self,
         _config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle> {
+    ) -> DeviceManagerResult<DeviceBundle> {
         Ok(DeviceBundle::new())
     }
 }
 
 /// Registers device factories that do not depend on an architecture backend.
-pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> AxResult {
+pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
     registry.register(Arc::new(MetaDeviceFactory))
 }

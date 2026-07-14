@@ -21,10 +21,13 @@
 
 extern crate alloc;
 
+mod error;
+
 use alloc::{string::String, vec::Vec};
 use core::fmt::{Debug, Display, Formatter, LowerHex, UpperHex};
 
 use ax_memory_addr::{AddrRange, PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
+pub use error::{VmBackendError, VmBackendResult};
 
 bitflags::bitflags! {
     /// Generic memory mapping permissions and attributes exchanged between
@@ -138,12 +141,6 @@ pub type GuestVirtAddrRange = AddrRange<GuestVirtAddr>;
 
 /// Guest physical address range.
 pub type GuestPhysAddrRange = AddrRange<GuestPhysAddr>;
-
-/// Common AxVM result type.
-pub type AxVmResult<T = ()> = ax_errno::AxResult<T>;
-
-/// Common AxVM error type.
-pub type AxVmError = ax_errno::AxError;
 
 /// The width of a guest bus access.
 ///
@@ -285,7 +282,12 @@ pub struct NestedPageFaultInfo {
     pub fault_guest_paddr: GuestPhysAddr,
 }
 
-/// VM-exit reason returned by architecture vCPU implementations to AxVM.
+/// Legacy/common normalized VM event.
+///
+/// New AxVM architecture backends should expose their raw VM-exit type through
+/// [`VmArchVcpuOps::Exit`] and handle it inside their `axvm::arch` module.
+/// This enum remains for compatibility and as a transitional normalized event
+/// shape for backends that have not split out an architecture-owned exit enum.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum VmExit {
@@ -415,24 +417,31 @@ pub trait VmArchVcpuOps: Sized {
     type CreateConfig;
     /// Architecture-specific setup configuration.
     type SetupConfig;
+    /// Architecture-specific VM-exit type returned by [`Self::run`].
+    type Exit: Debug;
 
     /// Creates a new architecture-specific vCPU.
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxVmResult<Self>;
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> VmBackendResult<Self>;
     /// Sets the guest entry point.
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxVmResult;
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> VmBackendResult;
     /// Sets the nested page table selected by AxVM.
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxVmResult;
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> VmBackendResult;
     /// Completes architecture-specific setup.
-    fn setup(&mut self, config: Self::SetupConfig) -> AxVmResult;
-    /// Runs the vCPU until a VM exit.
-    fn run(&mut self) -> AxVmResult<VmExit>;
+    fn setup(&mut self, config: Self::SetupConfig) -> VmBackendResult;
+    /// Runs the vCPU until an architecture-specific VM exit.
+    fn run(&mut self) -> VmBackendResult<Self::Exit>;
     /// Binds the vCPU to the current physical CPU.
-    fn bind(&mut self) -> AxVmResult;
+    fn bind(&mut self) -> VmBackendResult;
     /// Unbinds the vCPU from the current physical CPU.
-    fn unbind(&mut self) -> AxVmResult;
+    fn unbind(&mut self) -> VmBackendResult;
     /// Sets a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
-    /// Decodes an architecture-specific memory fault as MMIO when possible.
+    /// Decodes an architecture-specific memory fault as a legacy normalized
+    /// MMIO event when possible.
+    ///
+    /// This is kept as a transition helper for backends that still route
+    /// device faults through [`VmExit`]. New raw vCPU exits should use
+    /// [`Self::Exit`] and be handled in the architecture-local AxVM adapter.
     fn decode_mmio_fault(
         &mut self,
         _fault_addr: GuestPhysAddr,
@@ -441,13 +450,13 @@ pub trait VmArchVcpuOps: Sized {
         None
     }
     /// Injects an interrupt into the vCPU.
-    fn inject_interrupt(&mut self, vector: usize) -> AxVmResult;
+    fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
     /// Injects an interrupt with trigger-mode metadata.
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
-    ) -> AxVmResult {
+    ) -> VmBackendResult {
         debug_assert!(
             trigger == InterruptTriggerMode::EdgeTriggered,
             "level-triggered interrupt injection requires an architecture-specific implementation"
@@ -465,13 +474,13 @@ pub trait VmArchVcpuOps: Sized {
 /// Architecture-specific per-CPU virtualization state consumed by AxVM.
 pub trait VmArchPerCpuOps: Sized {
     /// Creates a new per-CPU state.
-    fn new(cpu_id: usize) -> AxVmResult<Self>;
+    fn new(cpu_id: usize) -> VmBackendResult<Self>;
     /// Whether virtualization is enabled on the current CPU.
     fn is_enabled(&self) -> bool;
     /// Enables virtualization on the current CPU.
-    fn hardware_enable(&mut self) -> AxVmResult;
+    fn hardware_enable(&mut self) -> VmBackendResult;
     /// Disables virtualization on the current CPU.
-    fn hardware_disable(&mut self) -> AxVmResult;
+    fn hardware_disable(&mut self) -> VmBackendResult;
     /// Returns the max guest page table levels supported by this architecture.
     fn max_guest_page_table_levels(&self) -> usize {
         4
@@ -735,7 +744,7 @@ mod tests {
     }
 
     impl VmArchPerCpuOps for MockPerCpu {
-        fn new(_cpu_id: usize) -> AxVmResult<Self> {
+        fn new(_cpu_id: usize) -> VmBackendResult<Self> {
             Ok(Self { enabled: false })
         }
 
@@ -743,15 +752,20 @@ mod tests {
             self.enabled
         }
 
-        fn hardware_enable(&mut self) -> AxVmResult {
+        fn hardware_enable(&mut self) -> VmBackendResult {
             self.enabled = true;
             Ok(())
         }
 
-        fn hardware_disable(&mut self) -> AxVmResult {
+        fn hardware_disable(&mut self) -> VmBackendResult {
             self.enabled = false;
             Ok(())
         }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum MockExit {
+        SysRegRead { reg: usize },
     }
 
     struct MockVcpu;
@@ -759,41 +773,43 @@ mod tests {
     impl VmArchVcpuOps for MockVcpu {
         type CreateConfig = ();
         type SetupConfig = ();
+        type Exit = MockExit;
 
-        fn new(_vm_id: VMId, _vcpu_id: VCpuId, _config: Self::CreateConfig) -> AxVmResult<Self> {
+        fn new(
+            _vm_id: VMId,
+            _vcpu_id: VCpuId,
+            _config: Self::CreateConfig,
+        ) -> VmBackendResult<Self> {
             Ok(Self)
         }
 
-        fn set_entry(&mut self, _entry: GuestPhysAddr) -> AxVmResult {
+        fn set_entry(&mut self, _entry: GuestPhysAddr) -> VmBackendResult {
             Ok(())
         }
 
-        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> AxVmResult {
+        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
             Ok(())
         }
 
-        fn setup(&mut self, _config: Self::SetupConfig) -> AxVmResult {
+        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
             Ok(())
         }
 
-        fn run(&mut self) -> AxVmResult<VmExit> {
-            Ok(VmExit::SysRegRead {
-                addr: SysRegAddr::from(0x10),
-                reg: 2,
-            })
+        fn run(&mut self) -> VmBackendResult<Self::Exit> {
+            Ok(MockExit::SysRegRead { reg: 2 })
         }
 
-        fn bind(&mut self) -> AxVmResult {
+        fn bind(&mut self) -> VmBackendResult {
             Ok(())
         }
 
-        fn unbind(&mut self) -> AxVmResult {
+        fn unbind(&mut self) -> VmBackendResult {
             Ok(())
         }
 
         fn set_gpr(&mut self, _reg: usize, _val: usize) {}
 
-        fn inject_interrupt(&mut self, _vector: usize) -> AxVmResult {
+        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
             Ok(())
         }
 
@@ -819,7 +835,7 @@ mod tests {
         vcpu.setup(()).unwrap();
         assert!(matches!(
             vcpu.run().unwrap(),
-            VmExit::SysRegRead { reg: 2, .. }
+            MockExit::SysRegRead { reg: 2 }
         ));
     }
 

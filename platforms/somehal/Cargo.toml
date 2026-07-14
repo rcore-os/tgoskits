@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.7.4"
+version = "0.8.0"
 
 [features]
 efi = ["someboot/efi"]
@@ -23,6 +23,7 @@ ax-kspin = { workspace = true }
 irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true
+rdif-msi.workspace = true
 rdrive = {workspace = true}
 someboot = {workspace = true}
 somehal-macros = {workspace = true}

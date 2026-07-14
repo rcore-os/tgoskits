@@ -44,6 +44,13 @@ pub struct LoadedElf {
     pub load_addr: u64,
     pub load_end: u64,
     pub page_count: usize,
+    pub handoff: EntryHandoff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryHandoff {
+    BootInfo,
+    Uefi,
 }
 
 #[repr(C)]
@@ -126,12 +133,7 @@ fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLo
     .ok_or(ElfLoadError::SegmentAddressOverflow)?;
     let page_count = usize::try_from((load_end - load_addr) / UEFI_PAGE_SIZE)
         .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
-    let target = boot::allocate_pages(
-        AllocateType::Address(load_addr),
-        MemoryType::LOADER_DATA,
-        page_count,
-    )
-    .map_err(|_| ElfLoadError::AllocateFailed)?;
+    let (target, actual_load_addr) = allocate_load_region(load_addr, page_count)?;
 
     if let Err(err) = copy_segments(image, &segments, load_addr, target) {
         unsafe {
@@ -140,21 +142,82 @@ fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLo
         return Err(err);
     }
 
-    let entry = match entry_symbol {
-        Some("httpboot_entry") => find_symbol(image, &header, "httpboot_entry")
-            .and_then(|symbol| virtual_to_physical(symbol, &segments))
-            .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
+    let (entry, handoff) = match entry_symbol {
+        Some("httpboot_entry") => {
+            if let Some(entry) = find_symbol(image, &header, "httpboot_entry")
+                .and_then(|symbol| virtual_to_physical(symbol, &segments))
+            {
+                (entry, EntryHandoff::BootInfo)
+            } else if let Some(entry) = find_symbol(image, &header, "__x86_64_efi_pe_entry")
+                .and_then(|symbol| virtual_to_physical(symbol, &segments))
+            {
+                (entry, EntryHandoff::Uefi)
+            } else {
+                (
+                    virtual_to_physical(header.e_entry, &segments)
+                        .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
+                    EntryHandoff::Uefi,
+                )
+            }
+        }
         Some(_) => return Err(ElfLoadError::UnsupportedEntrySymbol),
-        None => virtual_to_physical(header.e_entry, &segments)
-            .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
+        None => (
+            virtual_to_physical(header.e_entry, &segments)
+                .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
+            EntryHandoff::BootInfo,
+        ),
     };
+    let entry = biased_addr(entry, load_addr, actual_load_addr)?;
+    let actual_load_end = actual_load_addr
+        .checked_add(page_count as u64 * UEFI_PAGE_SIZE)
+        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
 
     Ok(LoadedElf {
         entry_point: entry,
-        load_addr,
-        load_end,
+        load_addr: actual_load_addr,
+        load_end: actual_load_end,
         page_count,
+        handoff,
     })
+}
+
+fn biased_addr(addr: u64, original_base: u64, actual_base: u64) -> Result<u64, ElfLoadError> {
+    let addr = addr as i128 + actual_base as i128 - original_base as i128;
+    if !(0..=u64::MAX as i128).contains(&addr) {
+        return Err(ElfLoadError::SegmentAddressOverflow);
+    }
+    Ok(addr as u64)
+}
+
+fn allocate_load_region(
+    preferred_load_addr: u64,
+    page_count: usize,
+) -> Result<(NonNull<u8>, u64), ElfLoadError> {
+    match boot::allocate_pages(
+        AllocateType::Address(preferred_load_addr),
+        MemoryType::LOADER_DATA,
+        page_count,
+    ) {
+        Ok(target) => Ok((target, preferred_load_addr)),
+        Err(_) => {
+            // This is only a load-bias fallback: axloader moves PT_LOAD segments as a
+            // whole and adjusts the handoff entry point, but it does not process ELF
+            // relocation records or rewrite absolute references embedded in the image.
+            // It is therefore valid only for images that are already known to tolerate
+            // this placement model, such as the current AxVisor UEFI stub. A generic
+            // non-PIE ET_EXEC kernel may still dereference its original physical
+            // addresses and fail early after being loaded at AnyPages.
+            crate::logln!(
+                "elf_load_relocate: preferred={:#x} pages={}",
+                preferred_load_addr,
+                page_count
+            );
+            let target =
+                boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count)
+                    .map_err(|_| ElfLoadError::AllocateFailed)?;
+            Ok((target, target.as_ptr() as u64))
+        }
+    }
 }
 
 fn validate_header(header: &Elf64Header) -> Result<(), ElfLoadError> {

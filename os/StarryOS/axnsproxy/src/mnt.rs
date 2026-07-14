@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::ffi::c_char;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_kspin::SpinNoIrq;
 
@@ -8,29 +8,31 @@ use ax_kspin::SpinNoIrq;
 pub static ROOT_MNT_NS: spin::LazyLock<Arc<SpinNoIrq<MntNamespace>>> =
     spin::LazyLock::new(|| Arc::new(SpinNoIrq::new(MntNamespace::new_root())));
 
-const fn pad_mnt_root(root: &str) -> [c_char; 256] {
-    let mut data: [c_char; 256] = [0; 256];
-    unsafe {
-        core::ptr::copy_nonoverlapping(root.as_ptr().cast(), data.as_mut_ptr(), root.len());
-    }
-    data
-}
+static MNT_NS_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Per-process mount namespace.
-/// Isolates the set of filesystem mount points seen by a process.
-/// In the root namespace `root` starts as `"/"`.
+///
+/// This is the namespace identity visible through `NsProxy`. The live mount
+/// topology is held by the task-local `ax_fs::FsContext`, and syscall paths
+/// update both objects together when entering a new mount namespace.
 pub struct MntNamespace {
-    pub root: [c_char; 256],
+    id: u64,
 }
 
 impl MntNamespace {
     pub fn new_root() -> Self {
         Self {
-            root: pad_mnt_root("/"),
+            id: MNT_NS_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
     pub fn clone_ns(&self) -> Self {
-        Self { root: self.root }
+        Self {
+            id: MNT_NS_ID.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }

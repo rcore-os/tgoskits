@@ -1,6 +1,6 @@
 [package]
 name = "rdif-power"
-version = "0.7.3"
+version = "0.8.0"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true
@@ -11,3 +11,4 @@ categories = ["embedded", "no-std"]
 
 [dependencies]
 rdif-base = { workspace = true }
+thiserror = { version = "2", default-features = false }

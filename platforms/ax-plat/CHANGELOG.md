@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.11.0...ax-plat-v0.12.0) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.10.0...ax-plat-v0.11.0) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.2...ax-plat-v0.10.0) - 2026-07-08
+
+### Added
+
+- *(loongarch64)* add LS2K1000 physical board support ([#1368](https://github.com/rcore-os/tgoskits/pull/1368))
+
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.1...ax-plat-v0.9.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.9.0...ax-plat-v0.9.1) - 2026-07-07
+
+### Other
+
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.8.0...ax-plat-v0.9.0) - 2026-07-02
 
 ### Added

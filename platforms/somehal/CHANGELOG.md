@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.8...somehal-v0.8.0) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.7...somehal-v0.7.8) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.6...somehal-v0.7.7) - 2026-07-08
+
+### Other
+
+- updated the following local packages: someboot
+
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.5...somehal-v0.7.6) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive
+
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.4...somehal-v0.7.5) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
+### Other
+
+- *(somehal)* cache IRQ routes in CPU interfaces ([#1494](https://github.com/rcore-os/tgoskits/pull/1494))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.3...somehal-v0.7.4) - 2026-07-02
 
 ### Added

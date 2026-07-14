@@ -68,6 +68,9 @@ pub trait ArchTrait {
     fn _io(paddr: usize) -> *mut u8 {
         Self::_va(paddr)
     }
+    fn ioremap_device(_addr: usize, _size: usize) -> Option<*mut u8> {
+        None
+    }
     fn _percpu(paddr: usize) -> *mut u8 {
         Self::_va(paddr)
     }
@@ -85,6 +88,13 @@ pub trait ArchTrait {
     fn trap_addr() -> usize;
 
     fn virt_to_phys(vaddr: *const u8) -> usize;
+
+    fn canonicalize_paddr(addr: usize) -> usize {
+        addr
+    }
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        true
+    }
 
     fn kernel_space() -> core::ops::Range<usize>;
     fn is_kernel_relocated_at(addr: usize) -> bool {
@@ -127,6 +137,17 @@ pub trait ArchTrait {
     fn irq_set_enable(irq: IrqId, enable: bool);
 
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);
+
+    /// Prepare a cached virtual range before remapping it as uncached for DMA.
+    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+        Self::dcache_range(DCacheOp::CleanInvalidate, addr, size);
+    }
+
+    /// Prepare an uncached DMA range before restoring it to cached mappings.
+    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {}
+
+    /// Complete ordering after a DMA coherent mapping attribute update.
+    fn dma_coherent_after_mapping_update() {}
 
     /// EFI 入口点 - 从 EFI PE 入口跳转到内核
     ///

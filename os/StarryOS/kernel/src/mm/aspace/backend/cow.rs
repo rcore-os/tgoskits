@@ -76,6 +76,48 @@ impl FrameTableRefCount {
 
 static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRefCount::new());
 
+fn cow_file_max_read_len(
+    file_len: u64,
+    file_end: Option<u64>,
+    file_read_offset: u64,
+    available: usize,
+) -> AxResult<usize> {
+    let effective_end = match file_end {
+        Some(end) => end,
+        None => {
+            if file_read_offset >= file_len {
+                return Err(AxError::BadAddress);
+            }
+            file_len
+        }
+    };
+    Ok(effective_end
+        .saturating_sub(file_read_offset)
+        .min(available as u64) as usize)
+}
+
+fn cow_file_max_read(
+    file: &FileBackend,
+    file_end: Option<u64>,
+    file_read_offset: u64,
+    available: usize,
+) -> AxResult<usize> {
+    let file_len = if file_end.is_none() { file.len()? } else { 0 };
+    cow_file_max_read_len(file_len, file_end, file_read_offset, available)
+}
+
+#[cfg(axtest)]
+pub(crate) fn private_mmap_eof_check_for_test() -> bool {
+    matches!(
+        cow_file_max_read_len(4096, None, 4096, 4096),
+        Err(AxError::BadAddress)
+    ) && matches!(cow_file_max_read_len(4096, None, 2048, 4096), Ok(2048))
+        && matches!(
+            cow_file_max_read_len(4096, Some(8192), 4096, 4096),
+            Ok(4096)
+        )
+}
+
 /// Copy-on-write mapping backend.
 ///
 /// This corresponds to the `MAP_PRIVATE` flag.
@@ -226,9 +268,14 @@ impl CowBackend {
 
             let file_read_offset =
                 *file_start + vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
-            let max_read = file_end
-                .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
-                .min((buf.len() - start) as u64) as usize;
+            let max_read =
+                match cow_file_max_read(file, *file_end, file_read_offset, buf.len() - start) {
+                    Ok(max_read) => max_read,
+                    Err(err) => {
+                        self.deinit_frame(frame);
+                        return Err(err);
+                    }
+                };
 
             if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
             {
@@ -274,9 +321,7 @@ impl CowBackend {
         let n = run.len();
         let total = n * ps;
         let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
-        let max_read = file_end
-            .map_or(u64::MAX, |end| end.saturating_sub(file_read_offset))
-            .min(total as u64) as usize;
+        let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
         let mut buf = alloc::vec![0u8; total];
         if max_read > 0 {
             file.read_at(&mut &mut buf[..max_read], file_read_offset)?;

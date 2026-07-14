@@ -6,7 +6,7 @@
   "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
   "eh-frame-header": false,
   "env": "musl",
-  "features": "-f,-d",
+  "features": "-f,-d,-ual",
   "has-thread-local": true,
   "linker": "rust-lld",
   "linker-flavor": "gnu-lld",

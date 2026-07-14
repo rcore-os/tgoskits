@@ -6,7 +6,7 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.16"
+version = "0.4.20"
 description = "An OS build lib toolkit used by arceos"
 
 [target.'cfg(any(windows, unix))'.dependencies]
@@ -35,7 +35,7 @@ sha2 = { version = "0.10" }
 tar = { version = "0.4" }
 tempfile = "3"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
-toml.workspace = true
+toml = { workspace = true, features = ["serde", "parse", "display"] }
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }

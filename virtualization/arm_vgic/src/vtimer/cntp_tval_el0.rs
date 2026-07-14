@@ -18,9 +18,9 @@ use alloc::boxed::Box;
 use core::time::Duration;
 
 use aarch64_sysreg::SystemRegType;
-use ax_errno::AxResult;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
+    SysRegAddrRange,
 };
 use log::info;
 
@@ -42,7 +42,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         &self,
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
-    ) -> AxResult<usize> {
+    ) -> DeviceResult<usize> {
         todo!()
     }
 
@@ -51,7 +51,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
         val: usize,
-    ) -> AxResult {
+    ) -> DeviceResult {
         info!("Write to emulator register: {addr:?}, value: {val}");
         let now = host::current_time_nanos();
         info!("Current time: {}, deadline: {}", now, now + val as u64);

@@ -29,12 +29,15 @@ extern crate log;
 mod adapter;
 mod config;
 mod device;
+mod error;
 mod factory;
 mod fw_cfg;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
+#[cfg(target_arch = "x86_64")]
+mod x86;
 
 #[cfg(target_arch = "aarch64")]
 pub use adapter::create_vtimer_devices;
@@ -45,6 +48,7 @@ pub use axdevice_base::{
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;
+pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
     register_builtin_factories,
@@ -56,6 +60,11 @@ pub use fw_cfg::{
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+#[cfg(target_arch = "x86_64")]
+pub use x86::{
+    X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,
+    X86SerialPortDevice,
+};
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
 // pub use virtio_dev::*;

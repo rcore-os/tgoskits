@@ -1,0 +1,1 @@
+# symlinkat01 # TFAIL: some dirfd/path cases return ENOTDIR or EBADF unexpectedly

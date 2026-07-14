@@ -18,8 +18,8 @@ use super::{
 pub(super) fn log_resource_summary(resources: &HostResources<'_>) {
     info!(
         "Rockchip RK3588 PCIe host {:#x}: FDT resources node={}, dbi={:#x}/{:#x}, \
-         cfg={:#x}/{:#x}, buses {:#x}..={:#x}, clocks={}, resets={}, power-domains={}, phys={}, \
-         supply={:?}, pipe-grf={:?}, reset-gpio={}",
+         cfg={:#x}/{:#x}, buses {:#x}..={:#x}, clocks={}, resets={}, phys={}, supply={:?}, \
+         pipe-grf={:?}, reset-gpio={}",
         resources.apb.address,
         resources.name,
         resources.dbi.address,
@@ -30,7 +30,6 @@ pub(super) fn log_resource_summary(resources: &HostResources<'_>) {
         resources.bus_base.saturating_add(resources.logical_bus_end),
         resources.clocks.len(),
         resources.resets.len(),
-        resources.power_domains.len(),
         resources.phys.len(),
         resources.supply,
         resources.pipe_grf,

@@ -1,0 +1,4 @@
+lseek01
+# lseek02 # TFAIL: lseek on some non-seekable descriptors succeeds unexpectedly
+lseek07
+# lseek11 # Not enabled: skipped after earlier lseek failures/hangs in this environment

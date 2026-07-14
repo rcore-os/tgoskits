@@ -77,7 +77,7 @@ socket 入口：
 主要消费者：
 
 - `ax-runtime`：网络和 vsock 初始化。
-- `ax-feat`：`net` / `vsock` feature 装配。
+- `ax-runtime`：`net` / `vsock` feature 装配。
 - `ax-api`、`ax-posix-api`：ArceOS 网络 API 和 POSIX socket 路径。
 - `ax-std`、`ax-libc`：通过上层 API 间接消费网络能力。
 - `starry-kernel`：Linux syscall socket 底层实现。

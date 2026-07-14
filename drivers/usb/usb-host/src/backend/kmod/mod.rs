@@ -4,6 +4,7 @@ use crate::{
 };
 
 mod dwc;
+mod dwc2;
 mod ehci;
 mod hub;
 mod kcore;
@@ -16,8 +17,12 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap};
 
 use dwc::Dwc;
 pub use dwc::{
-    CruOp, DwcNewParams, DwcParams, UdphyParam, Usb2PhyParam, UsbPhyInterfaceMode,
-    usb2phy::Usb2PhyPortId,
+    DwcNewParams, DwcParams, NamedResetLine, ResetLine, UdphyParam, Usb2PhyParam,
+    UsbPhyInterfaceMode, usb2phy::Usb2PhyPortId,
+};
+use dwc2::Dwc2;
+pub use dwc2::{
+    Dwc2FifoSizes, Dwc2HostParams, Dwc2NewParams, Dwc2Quirks, Dwc2TransferStats, Dwc2UtmiWidth,
 };
 use ehci::Ehci;
 pub use ehci::EhciNewParams;
@@ -34,8 +39,12 @@ impl USBHost {
         Ok(USBHost::new(Xhci::new(mmio, kernel)?))
     }
 
-    pub fn new_dwc(params: DwcNewParams<'_, impl CruOp>) -> Result<USBHost> {
+    pub fn new_dwc(params: DwcNewParams<'_>) -> Result<USBHost> {
         Ok(USBHost::new(Dwc::new(params)?))
+    }
+
+    pub fn new_dwc2(params: Dwc2NewParams) -> Result<USBHost> {
+        Ok(USBHost::new(Dwc2::new(params)?))
     }
 
     pub fn new_ehci(params: EhciNewParams) -> Result<USBHost> {

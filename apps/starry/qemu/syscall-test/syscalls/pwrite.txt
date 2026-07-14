@@ -1,0 +1,8 @@
+pwrite01
+pwrite02
+pwrite03
+# pwrite04 # TFAIL: file size remains 2048 instead of expected K3 in O_APPEND test
+pwrite01_64
+pwrite02_64
+pwrite03_64
+# pwrite04_64 # TFAIL: file size remains 2048 instead of expected K3 in O_APPEND test

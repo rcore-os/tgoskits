@@ -14,9 +14,8 @@
 
 mod test_utils;
 
-use ax_errno::AxResult;
 use ax_memory_addr::PhysAddr;
-use axaddrspace::GuestMemoryAccessor;
+use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
 use axin::axin;
 use axvm_types::GuestPhysAddr;
 use test_utils::{BASE_PADDR, MEMORY_LEN, MockHal, mock_hal_test};
@@ -98,11 +97,21 @@ fn test_basic_read_write_operations() {
 
     // Test error handling with invalid address
     let invalid_addr = GuestPhysAddr::from_usize(MEMORY_LEN + 0x1000);
-    let result: AxResult<u32> = translator.read_obj(invalid_addr);
-    assert!(result.is_err(), "Reading from invalid address should fail");
+    let result: AddrSpaceResult<u32> = translator.read_obj(invalid_addr);
+    assert!(matches!(result, Err(AddrSpaceError::Unmapped { .. })));
 
     let result = translator.write_obj(invalid_addr, 42u32);
     assert!(result.is_err(), "Writing to invalid address should fail");
+
+    let short = MockTranslator::new(PhysAddr::from_usize(0), 2);
+    assert!(matches!(
+        short.read_obj::<u32>(GuestPhysAddr::from_usize(0)),
+        Err(AddrSpaceError::InsufficientAccess {
+            requested: 4,
+            available: 2,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -182,7 +191,7 @@ fn test_two_vm_isolation() {
 
     // Test that VM1 cannot access VM2's address space (beyond its limit)
     let vm2_only_addr = GuestPhysAddr::from_usize(MEMORY_LEN / 2 + 0x100);
-    let result: AxResult<u32> = vm1_translator.read_obj(vm2_only_addr);
+    let result: AddrSpaceResult<u32> = vm1_translator.read_obj(vm2_only_addr);
     assert!(
         result.is_err(),
         "VM1 should not be able to access VM2's exclusive address space"

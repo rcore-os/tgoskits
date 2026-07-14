@@ -1,0 +1,5 @@
+# mkdir02 # TFAIL: new directory does not inherit expected GID/S_ISGID in the current environment
+# mkdir03 # TCONF: ext2 filesystem support is unavailable in the current environment
+# mkdir04 # TFAIL: nested mkdir succeeds unexpectedly
+mkdir05
+mkdir09

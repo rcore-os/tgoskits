@@ -15,8 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+
+use crate::support::download::{download_file_verified_sha256, http_client};
 
 /// Upstream firmware source: the repo referenced by the LicheeRV Nano
 /// buildroot package `aic8800-sdio-firmware`, pinned to a fixed commit.
@@ -119,7 +121,7 @@ pub async fn ensure_aic8800_firmware(workspace_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create firmware dir {}", dir.display()))?;
 
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     log::info!(
         "fetching {} AIC8800 firmware blob(s) from {}@{}",
         missing.len(),
@@ -132,33 +134,11 @@ pub async fn ensure_aic8800_firmware(workspace_root: &Path) -> Result<()> {
             "https://raw.githubusercontent.com/{}/{}/{}",
             FIRMWARE_REPO, FIRMWARE_COMMIT, file.remote_path
         );
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("failed to GET {url}"))?;
-        if !resp.status().is_success() {
-            bail!("GET {url} returned HTTP {}", resp.status());
-        }
-        let bytes = resp
-            .bytes()
-            .await
-            .with_context(|| format!("failed to read body of {url}"))?;
-
-        let actual = sha256_hex(&bytes);
-        if actual != file.sha256 {
-            bail!(
-                "firmware {} sha256 mismatch: expected {}, got {} (from {url})",
-                file.name,
-                file.sha256,
-                actual
-            );
-        }
-
         let dest = dir.join(file.name);
-        std::fs::write(&dest, &bytes)
-            .with_context(|| format!("failed to write {}", dest.display()))?;
-        log::info!("  fetched {} ({} bytes)", file.name, bytes.len());
+        download_file_verified_sha256(&client, &url, &dest, file.sha256)
+            .await
+            .with_context(|| format!("failed to fetch firmware {} from {url}", file.name))?;
+        log::info!("  fetched {}", file.name);
     }
 
     Ok(())

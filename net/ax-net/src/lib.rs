@@ -107,6 +107,7 @@ pub use self::{
         NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
         set_ethernet_irq_registrar,
     },
+    router::NetDevStats,
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
         SocketAddrEx, SocketOps,
@@ -510,6 +511,11 @@ fn drain_deferred_poll_wakes() {
 /// Returns ARP/neighbor entries collected from all devices.
 pub fn arp_entries() -> Vec<ArpEntry> {
     get_service().arp_entries()
+}
+
+/// Returns per-interface RX/TX byte and packet counters for `/proc/net/dev`.
+pub fn net_dev_stats() -> Vec<NetDevStats> {
+    get_service().net_dev_stats()
 }
 
 /// Returns a snapshot of all configured network interfaces.

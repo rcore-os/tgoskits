@@ -1,6 +1,6 @@
 <h1 align="center">riscv_vcpu</h1>
 
-<p align="center">ArceOS-Hypervisor RISC-V vCPU module</p>
+<p align="center">OS-neutral RISC-V vCPU core</p>
 
 <div align="center">
 
@@ -15,66 +15,46 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`riscv_vcpu` provides ArceOS-Hypervisor RISC-V vCPU module. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`riscv_vcpu` provides the RISC-V Hypervisor Extension vCPU core used by Axvisor.
+The crate owns VM entry/exit, CSR state, SBI handling, guest-page-fault decode,
+timer pending state, and local RISC-V exit/error/value types.
 
-## Quick Start
+The crate is OS-neutral. Host integration is provided through `RiscvHostOps`,
+and AxVM-specific traits, errors, device policy, and runtime IRQ handling live in
+the AxVM RISC-V adapter.
 
-### Installation
+# Target Support
 
-Add this crate to your `Cargo.toml`:
+The crate is compiled only for `target_arch = "riscv64"`. On other targets it is
+an empty crate. Consumers should depend on it through target-specific
+dependencies:
 
 ```toml
-[dependencies]
-riscv_vcpu = "0.5.0"
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv_vcpu = "0.5"
 ```
 
-### Run Check and Test
+# Public API
+
+- `RiscvVcpu<H>` / `RiscvVCpu<H>` / `RISCVVCpu<H>`
+- `RiscvPerCpu` / `RISCVPerCpu`
+- `RiscvHostOps`
+- `RiscvVmExit`
+- `RiscvVcpuError` / `RiscvVcpuResult`
+- `RiscvGuestPhysAddr`, `RiscvGuestVirtAddr`, `RiscvHostPhysAddr`, `RiscvHostVirtAddr`
+- `RiscvAccessWidth`, `RiscvAccessFlags`, `RiscvNestedPagingConfig`
+
+# Validation
+
+Typical local checks from the workspace root:
 
 ```bash
-# Enter the crate directory
-cd virtualization/riscv_vcpu
-
-# Format code
-cargo fmt --all
-
-# Run clippy
-cargo clippy --all-targets --all-features
-
-# Run tests
-cargo test --all-features
-
-# Build documentation
-cargo doc --no-deps
+cargo test -p riscv_vcpu --tests
+cargo check -p riscv_vcpu --target riscv64gc-unknown-none-elf
+cargo xtask clippy --package riscv_vcpu
 ```
 
-## Integration
-
-### Example
-
-```rust
-use riscv_vcpu as _;
-
-fn main() {
-    // Integrate `riscv_vcpu` into your project here.
-}
-```
-
-### Documentation
-
-Generate and view API documentation:
-
-```bash
-cargo doc --no-deps --open
-```
-
-Online documentation: [docs.rs/riscv_vcpu](https://docs.rs/riscv_vcpu)
-
-# Contributing
-
-1. Fork the repository and create a branch
-2. Run local format and checks
-3. Run local tests relevant to this crate
-4. Submit a PR and ensure CI passes
+End-to-end behavior is validated through Axvisor RISC-V smoke tests.
 
 # License
 

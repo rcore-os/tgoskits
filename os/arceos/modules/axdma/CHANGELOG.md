@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.12](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.11...ax-dma-v0.6.12) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-hal, ax-alloc, ax-mm
+
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.10...ax-dma-v0.6.11) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal, ax-alloc, ax-mm
+
+## [0.6.10](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.9...ax-dma-v0.6.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-hal, ax-mm
+
+## [0.6.9](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.8...ax-dma-v0.6.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-alloc, ax-hal, ax-mm
+
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.7...ax-dma-v0.6.8) - 2026-07-07
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
 ## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-dma-v0.6.6...ax-dma-v0.6.7) - 2026-07-02
 
 ### Added

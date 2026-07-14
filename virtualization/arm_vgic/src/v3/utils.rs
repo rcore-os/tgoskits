@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
 use axdevice_base::AccessWidth;
 use axvm_types::HostPhysAddr;
 
-use crate::host;
+use crate::{VgicResult, host};
 
-pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> AxResult<usize> {
+pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> VgicResult<usize> {
     let addr = host::phys_to_virt(addr).as_ptr();
 
     match width {
@@ -33,7 +32,7 @@ pub(crate) fn perform_mmio_write(
     addr: HostPhysAddr,
     width: AccessWidth,
     val: usize,
-) -> AxResult<()> {
+) -> VgicResult<()> {
     let addr = host::phys_to_virt(addr).as_mut_ptr();
 
     match width {

@@ -1,8 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
 const PCH_PIC_INT_ID_LO: usize = 0x000;
@@ -164,7 +163,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
         GuestPhysAddrRange::from_start_size(self.base, self.size)
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         let offset = addr.as_usize() - self.base.as_usize();
         let state = self.state.lock();
         let value = match width {
@@ -179,7 +178,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
         Ok(value)
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
+    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
         let offset = addr.as_usize() - self.base.as_usize();
         let mut state = self.state.lock();
         log_pch_pic_io("write", offset, width, val);

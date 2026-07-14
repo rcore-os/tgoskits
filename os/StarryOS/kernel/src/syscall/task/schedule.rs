@@ -32,16 +32,15 @@ pub fn sys_sched_yield() -> AxResult<isize> {
     Ok(0)
 }
 
-fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> TimeValue {
+fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (AxResult<()>, TimeValue) {
     debug!("sleep_impl <= {dur:?}");
 
     let start = clock();
 
     // TODO: currently ignoring concrete clock type
-    // We detect EINTR manually if the slept time is not enough.
-    let _ = block_on(interruptible(sleep(dur)));
+    let result = block_on(interruptible(sleep(dur))).map_err(AxError::from);
 
-    clock() - start
+    (result, clock() - start)
 }
 
 /// Sleep some nanoseconds
@@ -50,16 +49,18 @@ pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!("sys_nanosleep <= req: {req:?}");
 
-    let actual = sleep_impl(hal::time::monotonic_time, req);
+    let (result, actual) = sleep_impl(hal::time::monotonic_time, req);
 
-    if let Some(diff) = req.checked_sub(actual) {
-        debug!("sys_nanosleep => rem: {diff:?}");
-        if let Some(rem) = rem.nullable() {
-            rem.vm_write(timespec::from_time_value(diff))?;
+    match result {
+        Ok(()) => Ok(0),
+        Err(err) => {
+            let diff = req.saturating_sub(actual);
+            debug!("sys_nanosleep => rem: {diff:?}");
+            if let Some(rem) = rem.nullable() {
+                rem.vm_write(timespec::from_time_value(diff))?;
+            }
+            Err(err)
         }
-        Err(AxError::Interrupted)
-    } else {
-        Ok(0)
     }
 }
 
@@ -81,22 +82,27 @@ pub fn sys_clock_nanosleep(
     let req = unsafe { req.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
     debug!("sys_clock_nanosleep <= clock_id: {clock_id}, flags: {flags}, req: {req:?}");
 
-    let dur = if flags & TIMER_ABSTIME != 0 {
+    let is_abstime = flags & TIMER_ABSTIME != 0;
+    let dur = if is_abstime {
         req.saturating_sub(clock())
     } else {
         req
     };
 
-    let actual = sleep_impl(clock, dur);
+    let (result, actual) = sleep_impl(clock, dur);
 
-    if let Some(diff) = dur.checked_sub(actual) {
-        debug!("sys_clock_nanosleep => rem: {diff:?}");
-        if let Some(rem) = rem.nullable() {
-            rem.vm_write(timespec::from_time_value(diff))?;
+    match result {
+        Ok(()) => Ok(0),
+        Err(err) => {
+            if !is_abstime {
+                let diff = dur.saturating_sub(actual);
+                debug!("sys_clock_nanosleep => rem: {diff:?}");
+                if let Some(rem) = rem.nullable() {
+                    rem.vm_write(timespec::from_time_value(diff))?;
+                }
+            }
+            Err(err)
         }
-        Err(AxError::Interrupted)
-    } else {
-        Ok(0)
     }
 }
 

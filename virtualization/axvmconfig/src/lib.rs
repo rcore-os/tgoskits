@@ -24,12 +24,15 @@ extern crate log;
 
 use alloc::{string::String, vec::Vec};
 
-use ax_errno::AxResult;
 pub use axvm_types::{
     AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
     PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
     VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
 };
+
+mod error;
+
+pub use error::*;
 
 mod emu_device_type_serde {
     use serde::{Deserialize, Deserializer, Serializer, de};
@@ -733,27 +736,27 @@ impl VMKernelConfig {
     }
 
     /// Validate that the configured boot protocol has the firmware inputs it needs.
-    pub fn validate_boot_config(&self) -> AxResult<()> {
+    pub fn validate_boot_config(&self) -> AxVmConfigResult {
         self.validate_boot_config_for_arch(BUILD_TARGET_ARCH)
     }
 
-    fn validate_boot_config_for_arch(&self, arch: &str) -> AxResult<()> {
+    fn validate_boot_config_for_arch(&self, arch: &str) -> AxVmConfigResult {
         let protocol = self.effective_boot_protocol();
         if !self.enable_bios {
             if protocol != VMBootProtocol::Direct {
-                return Err(ax_errno::ax_err_type!(
-                    InvalidInput,
-                    "boot_protocol requires enable_bios = true"
-                ));
+                return Err(AxVmConfigError::BootProtocolConflict {
+                    protocol,
+                    enable_bios: self.enable_bios,
+                });
             }
             return Ok(());
         }
 
         if protocol == VMBootProtocol::Direct {
-            return Err(ax_errno::ax_err_type!(
-                InvalidInput,
-                "direct boot must not set enable_bios = true"
-            ));
+            return Err(AxVmConfigError::BootProtocolConflict {
+                protocol,
+                enable_bios: self.enable_bios,
+            });
         }
 
         let support = boot_protocol_support(protocol);
@@ -763,34 +766,25 @@ impl VMKernelConfig {
                 boot_protocol_name(protocol),
                 support.supported_arches.join(", ")
             );
-            return Err(ax_errno::ax_err_type!(
-                InvalidInput,
-                "boot protocol is not supported on this architecture"
-            ));
+            return Err(AxVmConfigError::UnsupportedBootProtocol {
+                protocol,
+                arch: arch.into(),
+            });
         }
 
         if support.requires_firmware_path && self.boot_firmware_path().is_none() {
-            return Err(ax_errno::ax_err_type!(
-                InvalidInput,
-                "firmware boot requires uefi_firmware_path or legacy bios_path"
-            ));
+            return Err(AxVmConfigError::MissingFirmwarePath { protocol });
         }
 
         if support.requires_firmware_load_addr && self.bios_load_addr.is_none() {
-            return Err(ax_errno::ax_err_type!(
-                InvalidInput,
-                "firmware boot requires bios_load_addr"
-            ));
+            return Err(AxVmConfigError::MissingFirmwareLoadAddress { protocol });
         }
 
         if support.optional_firmware_requires_load_addr
             && self.bios_path.is_some()
             && self.bios_load_addr.is_none()
         {
-            return Err(ax_errno::ax_err_type!(
-                InvalidInput,
-                "external firmware boot requires bios_load_addr"
-            ));
+            return Err(AxVmConfigError::MissingFirmwareLoadAddress { protocol });
         }
 
         Ok(())
@@ -887,11 +881,8 @@ pub struct AxVMCrateConfig {
 
 impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
-    pub fn from_toml(raw_cfg_str: &str) -> AxResult<Self> {
-        let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str).map_err(|err| {
-            warn!("Config TOML parse error {:?}", err.message());
-            ax_errno::ax_err_type!(InvalidInput, alloc::format!("Error details {err:?}"))
-        })?;
+    pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
+        let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str)?;
         config.kernel.validate_boot_config()?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)

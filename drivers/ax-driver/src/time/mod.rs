@@ -12,11 +12,7 @@ mod cmos_decode;
     target_arch = "x86_64"
 ))]
 mod datetime;
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 mod fdt;
 #[cfg(target_arch = "riscv64")]
 mod goldfish;

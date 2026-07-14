@@ -1,0 +1,53 @@
+# py-tui leg B — pinned, hash-locked closure for the REAL app `frogmouth` (terminal Markdown
+# browser). Pure-Python (py3-none-any) wheels ONLY; installed into its OWN pip --target dir so
+# frogmouth's textual==0.43.2 pin cannot collide with leg A (textual 8.2.8) or toolong (0.58.1):
+#
+#   pip install --require-hashes --no-deps -r assets/requirements-frogmouth.txt --target /opt/pytui-frogmouth
+#
+# NO wheels are committed. Every entry pins an exact version + its PyPI sha256, and all twenty
+# wheels are py3-none-any (pure Python), so the resulting site-packages tree is architecture-
+# independent and identical for x86_64 / aarch64 / riscv64 / loongarch64. Closure = frogmouth plus
+# its full transitive runtime deps; zero C-extensions. httpx/httpcore/h11/anyio/certifi/idna/
+# sniffio are frogmouth's REMOTE-URL fetch path only — the carpet opens a LOCAL file, so no network
+# is used at runtime, but the closure is pinned in full for a faithful, reproducible install.
+
+frogmouth==0.9.2 \
+    --hash=sha256:c56d4047653c02d3c4aef052aa226fc537272bfbd88c6627e1ee17b4c2510973
+textual==0.43.2 \
+    --hash=sha256:b6a3340738e3c2223049bb6a4fbce059e4f942a4480b8fd146b816ce5228a8ec
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdit-py-plugins==0.6.1 \
+    --hash=sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+linkify-it-py==2.1.0 \
+    --hash=sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e
+uc-micro-py==2.0.0 \
+    --hash=sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c
+pygments==2.20.0 \
+    --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+httpx==0.24.1 \
+    --hash=sha256:06781eb9ac53cde990577af654bd990a4949de37a28bdb4a230d434f3a30b9bd
+httpcore==0.17.3 \
+    --hash=sha256:c2789b767ddddfa2a5782e3199b2b7f6894540b17b16ec26b2c4d8e103510b87
+h11==0.14.0 \
+    --hash=sha256:e3fe4ac4b851c468cc8363d500db52c2ead036020723024a109d37346efaa761
+anyio==4.14.1 \
+    --hash=sha256:4e5533c5b8ff0a24f5d7a176cbe6877129cd183893f66b537f8f227d10527d72
+sniffio==1.3.1 \
+    --hash=sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2
+certifi==2026.6.17 \
+    --hash=sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db
+idna==3.18 \
+    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+importlib-metadata==9.0.0 \
+    --hash=sha256:2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7
+zipp==4.1.0 \
+    --hash=sha256:25ad4e16390cd314347dd8f1de67a2ac538ae658ed4ab9db16029c07c188e97f
+xdg==6.0.0 \
+    --hash=sha256:df3510755b4395157fc04fc3b02467c777f3b3ca383257397f09ab0d4c16f936

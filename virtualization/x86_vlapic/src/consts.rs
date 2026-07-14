@@ -218,24 +218,22 @@ pub const LAPIC_TRIG_LEVEL: bool = true;
 pub const LAPIC_TRIG_EDGE: bool = false;
 
 pub mod xapic {
-    use axvm_types::GuestPhysAddr;
-
     use super::ApicRegOffset;
+    use crate::X86GuestPhysAddr;
 
     pub const DEFAULT_APIC_BASE: usize = 0xFEE0_0000;
     pub const APIC_MMIO_SIZE: usize = 0x1000;
 
     pub const XAPIC_BROADCAST_DEST_ID: u32 = 0xFF;
 
-    pub(crate) const fn xapic_mmio_access_reg_offset(addr: GuestPhysAddr) -> ApicRegOffset {
+    pub(crate) const fn xapic_mmio_access_reg_offset(addr: X86GuestPhysAddr) -> ApicRegOffset {
         ApicRegOffset::from((addr.as_usize() & (APIC_MMIO_SIZE - 1)) >> 4)
     }
 }
 
 pub mod x2apic {
-    use axdevice_base::SysRegAddr;
-
     use super::ApicRegOffset;
+    use crate::X86MsrAddr;
 
     pub const X2APIC_MSE_REG_BASE: usize = 0x800;
     pub const X2APIC_MSE_REG_SIZE: usize = 0x100;
@@ -244,7 +242,7 @@ pub mod x2apic {
     /// in both logical destination and physical destination modes.
     pub const X2APIC_BROADCAST_DEST_ID: u32 = 0xFFFF_FFFF;
 
-    pub(crate) const fn x2apic_msr_access_reg(addr: SysRegAddr) -> ApicRegOffset {
+    pub(crate) const fn x2apic_msr_access_reg(addr: X86MsrAddr) -> ApicRegOffset {
         ApicRegOffset::from(addr.addr() - X2APIC_MSE_REG_BASE)
     }
 }

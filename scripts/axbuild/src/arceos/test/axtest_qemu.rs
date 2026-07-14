@@ -1,5 +1,5 @@
 use super::{
-    ARCEOS_AXTEST_GROUP,
+    ARCEOS_AXTEST_GROUP, ARCEOS_AXTEST_RUSTFLAGS,
     assets::arceos_test_group_dir,
     discovery::{discover_qemu_cases_in_dir, discover_qemu_cases_in_dir_allow_empty},
     runner::run_prepared_qemu_groups,
@@ -7,8 +7,6 @@ use super::{
     types::GenericQemuRunOptions,
 };
 use crate::{arceos::ArceOS, build::append_encoded_rustflags};
-
-const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 
 pub(super) async fn test_axtest_qemu(
     arceos: &mut ArceOS,
@@ -45,7 +43,7 @@ pub(super) async fn test_axtest_qemu(
     );
     let mut prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
     for case in &mut prepared {
-        append_encoded_rustflags(&mut case.cargo, AXTEST_RUSTFLAGS);
+        append_encoded_rustflags(&mut case.cargo, ARCEOS_AXTEST_RUSTFLAGS);
         if crate::support::axtest_coverage::enabled(&case.cargo) {
             crate::support::axtest_coverage::prepare_cargo(&mut case.cargo);
         }
@@ -84,6 +82,28 @@ mod tests {
         assert_eq!(
             cargo.env.get("CARGO_ENCODED_RUSTFLAGS").map(String::as_str),
             Some("-Cdebuginfo=2\u{1f}--cfg\u{1f}axtest")
+        );
+    }
+
+    #[test]
+    fn append_encoded_rustflags_skips_existing_sequence() {
+        let mut cargo = Cargo {
+            env: [(
+                "CARGO_ENCODED_RUSTFLAGS".to_string(),
+                "--cfg\u{1f}axtest\u{1f}--check-cfg\u{1f}cfg(axtest)".to_string(),
+            )]
+            .into(),
+            ..Cargo::default()
+        };
+
+        append_encoded_rustflags(
+            &mut cargo,
+            &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"],
+        );
+
+        assert_eq!(
+            cargo.env.get("CARGO_ENCODED_RUSTFLAGS").map(String::as_str),
+            Some("--cfg\u{1f}axtest\u{1f}--check-cfg\u{1f}cfg(axtest)")
         );
     }
 }

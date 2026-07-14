@@ -1,0 +1,14 @@
+# gateway x86_64 -- angie 1.11.5 full-directive gateway carpet (musl apk build, full module set).
+args = [
+    "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-gateway.sh"
+success_regex = ['(?m)^GATEWAY_OK=109/109', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 90000

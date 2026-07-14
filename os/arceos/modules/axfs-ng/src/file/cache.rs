@@ -18,7 +18,7 @@ use lru::LruCache;
 use super::page::PageCache;
 use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
 
-const DISK_PAGE_CACHE_CAP: usize = 8192;
+const DISK_PAGE_CACHE_CAP: usize = 512;
 
 #[cfg(feature = "ext4")]
 type CachedFileKey = (usize, u64);

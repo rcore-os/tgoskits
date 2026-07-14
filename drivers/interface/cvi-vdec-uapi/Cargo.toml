@@ -1,0 +1,13 @@
+[package]
+name = "cvi-vdec-uapi"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "64-bit SG2002 cvi_vc_dec userspace ABI"
+keywords = ["cvi", "video", "decoder", "uapi", "no-std"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }

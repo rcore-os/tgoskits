@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.3...axdevice-v0.5.4) - 2026-07-10
+
+### Other
+
+- *(x86_vcpu)* make x86 virtualization OS-neutral ([#1550](https://github.com/rcore-os/tgoskits/pull/1550))
+
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.2...axdevice-v0.5.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, arm_vgic, riscv_vplic, x86_vlapic
+
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.1...axdevice-v0.5.2) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, axvm-types, arm_vgic, axdevice_base, riscv_vplic, x86_vlapic
+
 ## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.0...axdevice-v0.5.1) - 2026-07-02
 
 ### Added

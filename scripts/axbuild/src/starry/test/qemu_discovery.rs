@@ -147,7 +147,7 @@ pub(crate) fn parse_starry_qemu_case_selection(
 }
 
 fn is_starry_qemu_system_group(group: &str) -> bool {
-    matches!(group, "qemu-smp1" | "qemu-smp4")
+    group == "qemu"
 }
 
 fn load_qemu_case(

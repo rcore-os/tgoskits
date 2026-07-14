@@ -1,141 +1,50 @@
 use alloc::{format, vec::Vec};
 
-use fdt_edit::{ClockRef, Node, Phandle};
+use fdt_edit::{Node, Phandle};
 use log::warn;
 use rdrive::{
-    probe::{OnProbeError, fdt::NodeType},
+    probe::{
+        OnProbeError,
+        fdt::{ClockLine, NodeType, ResetLine, apply_assigned_clocks, clock_lines, reset_lines},
+    },
     register::FdtInfo,
 };
 
 use super::{
-    resources::{ClockSpec, GpioSpec, RK3588_GPIO_BASES, ResetSpec},
-    windows::{live_fdt, prop_str_list, rk3588_pcie_reset_pin},
-};
-use crate::soc::{
-    rk3588_enable_clock, rk3588_reset_assert, rk3588_reset_deassert, rk3588_set_clock_rate,
+    resources::{GpioSpec, RK3588_GPIO_BASES},
+    windows::{live_fdt, rk3588_pcie_reset_pin},
 };
 
-pub(super) fn clock_specs_for_node(node: NodeType<'_>) -> Vec<ClockSpec> {
-    let assigned_clocks = node
-        .as_node()
-        .get_property("assigned-clocks")
-        .map(|prop| {
-            let vals = prop.get_u32_iter().collect::<Vec<_>>();
-            let mut ids = Vec::new();
-            for cells in vals.chunks(2) {
-                if let [_, id] = cells {
-                    ids.push(*id);
-                }
-            }
-            ids
-        })
-        .unwrap_or_default();
-    let assigned_rates = node
-        .as_node()
-        .get_property("assigned-clock-rates")
-        .map(|prop| prop.get_u32_iter().collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    node.clocks()
-        .into_iter()
-        .filter_map(|clock| {
-            let assigned_rate = clock.specifier.first().and_then(|id| {
-                assigned_clocks
-                    .iter()
-                    .position(|assigned| assigned == id)
-                    .and_then(|index| assigned_rates.get(index).copied())
-                    .filter(|rate| *rate != 0)
-            });
-            let id = *clock.specifier.first()?;
-            Some(ClockSpec {
-                name: clock.name,
-                id,
-                assigned_rate,
-            })
-        })
-        .collect()
+pub(super) fn clock_lines_for_node(node: NodeType<'_>) -> Result<Vec<ClockLine>, OnProbeError> {
+    apply_assigned_clocks(node)?;
+    clock_lines(node)
 }
 
-pub(super) fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
-    clocks
-        .into_iter()
-        .filter_map(|clock| {
-            let id = *clock.specifier.first()?;
-            Some(ClockSpec {
-                name: clock.name,
-                id,
-                assigned_rate: None,
-            })
-        })
-        .collect()
-}
-
-pub(super) fn enable_clocks(clocks: &[ClockSpec]) -> Result<(), OnProbeError> {
+pub(super) fn enable_clocks(clocks: &[ClockLine]) -> Result<(), OnProbeError> {
     for clock in clocks {
-        let id = clock.id;
+        let id = clock.id().raw();
         if id == 0 {
             continue;
         }
-        if let Some(rate) = clock.assigned_rate {
-            rk3588_set_clock_rate(id, u64::from(rate)).map_err(|err| {
-                OnProbeError::other(format!(
-                    "failed to set RK3588 PCIe clock {:?} ({id:#x}) rate to {rate}: {err}",
-                    clock.name
-                ))
-            })?;
-        }
-        rk3588_enable_clock(id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable RK3588 PCIe clock {:?} ({id:#x}): {err}",
-                clock.name
-            ))
-        })?;
+        clock.enable()?;
     }
     Ok(())
 }
 
-pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(prop) = node.as_node().get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-    let reset_names = prop_str_list(node.as_node(), "reset-names");
-    Ok(cells
-        .chunks(2)
-        .enumerate()
-        .map(|(idx, chunk)| ResetSpec {
-            name: reset_names.get(idx).cloned(),
-            id: u64::from(chunk[1]),
-        })
-        .collect())
+pub(super) fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    reset_lines(node)
 }
 
-pub(super) fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_assert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to assert RK3588 PCIe reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.assert()?;
     }
     Ok(())
 }
 
-pub(super) fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+pub(super) fn deassert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_deassert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to deassert RK3588 PCIe reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.deassert()?;
     }
     Ok(())
 }

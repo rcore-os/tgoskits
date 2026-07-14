@@ -84,7 +84,7 @@ fn mkdir_internal<B: BlockDevice>(
         p
     };
 
-    let (parent_ino_num, mut parent_inode) =
+    let (parent_ino_num, parent_inode) =
         get_inode_with_num(fs, device, &parent)?.ok_or(Ext4Error::not_found())?;
     if !parent_inode.is_dir() {
         return Err(Ext4Error::not_dir());
@@ -183,6 +183,9 @@ fn mkdir_internal<B: BlockDevice>(
         desc.bg_used_dirs_count_hi = ((newc >> 16) & 0xFFFF) as u16;
     }
 
+    // set_inode_links_count updated the inode cache, so reload the parent
+    // before insert_dir_entry can persist directory block growth.
+    let mut parent_inode = fs.get_inode_by_num(device, parent_ino_num)?;
     insert_dir_entry(
         fs,
         device,

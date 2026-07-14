@@ -1,0 +1,5 @@
+# Minimal syscall smoke coverage for the default QEMU app run.
+close
+getegid
+gettimeofday
+uname

@@ -14,11 +14,11 @@ fn std_c_toolchain_env_does_not_require_installed_cross_compiler() {
     );
     assert_eq!(
         env.get("CFLAGS_riscv64gc_unknown_linux_musl"),
-        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany -fno-stack-protector".to_string())
     );
     assert_eq!(
         env.get("CXXFLAGS_riscv64gc_unknown_linux_musl"),
-        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany -fno-stack-protector".to_string())
     );
     assert!(!env.contains_key("BINDGEN_EXTRA_CLANG_ARGS_riscv64gc_unknown_linux_musl"));
 }
@@ -29,11 +29,11 @@ fn std_c_toolchain_env_exports_loongarch_softfloat_abi_flags() {
 
     assert_eq!(
         env.get("CFLAGS_loongarch64_unknown_linux_musl"),
-        Some(&"-mabi=lp64s -msoft-float".to_string())
+        Some(&"-mabi=lp64s -msoft-float -fno-stack-protector".to_string())
     );
     assert_eq!(
         env.get("CXXFLAGS_loongarch64_unknown_linux_musl"),
-        Some(&"-mabi=lp64s -msoft-float".to_string())
+        Some(&"-mabi=lp64s -msoft-float -fno-stack-protector".to_string())
     );
     if let Some(bindgen_args) = env.get("BINDGEN_EXTRA_CLANG_ARGS_loongarch64_unknown_linux_musl") {
         assert!(bindgen_args.contains("--target=loongarch64-linux-musl"));
@@ -139,7 +139,7 @@ fn std_target_specs_keep_kernel_fields_with_std_identity() {
     )
     .unwrap();
     assert_eq!(loongarch["llvm-abiname"], "lp64s");
-    assert_eq!(loongarch["features"], "-f,-d");
+    assert_eq!(loongarch["features"], "-f,-d,-ual");
 }
 
 #[test]

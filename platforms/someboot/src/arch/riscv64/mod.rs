@@ -423,14 +423,90 @@ impl ArchTrait for Arch {
         }
     }
 
-    fn dcache_range(_op: DCacheOp, _addr: usize, _size: usize) {
-        unsafe {
-            core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+    fn dcache_range(op: DCacheOp, addr: usize, size: usize) {
+        #[cfg(feature = "thead-mae")]
+        {
+            thead_dcache_range(op, addr, size);
+        }
+        #[cfg(not(feature = "thead-mae"))]
+        {
+            let _ = (op, addr, size);
+            riscv_dma_fence();
         }
     }
 
     unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
         false
+    }
+}
+
+#[cfg(feature = "thead-mae")]
+const THEAD_DMA_CACHE_LINE_SIZE: usize = 64;
+
+#[cfg(feature = "thead-mae")]
+#[derive(Clone, Copy)]
+enum TheadDCacheOp {
+    Clean,
+    CleanInvalidate,
+}
+
+#[cfg(feature = "thead-mae")]
+fn thead_dcache_range(op: DCacheOp, vaddr: usize, size: usize) {
+    let paddr = Arch::virt_to_phys(vaddr as *const u8);
+    match op {
+        DCacheOp::Clean => {
+            riscv_dma_fence();
+            thead_dcache_range_inner(paddr, size, TheadDCacheOp::Clean);
+        }
+        DCacheOp::Invalidate => {
+            thead_dcache_range_inner(paddr, size, TheadDCacheOp::CleanInvalidate);
+            riscv_dma_fence();
+        }
+        DCacheOp::CleanInvalidate => {
+            riscv_dma_fence();
+            thead_dcache_range_inner(paddr, size, TheadDCacheOp::CleanInvalidate);
+            riscv_dma_fence();
+        }
+    }
+}
+
+#[cfg(feature = "thead-mae")]
+fn thead_dcache_range_inner(paddr: usize, size: usize, op: TheadDCacheOp) {
+    let Some((mut line, end)) =
+        crate::mem::cache_line_range(paddr, size, THEAD_DMA_CACHE_LINE_SIZE)
+    else {
+        return;
+    };
+
+    while line < end {
+        match op {
+            TheadDCacheOp::Clean => unsafe {
+                // T-Head dcache.cpa a0: clean by physical address.
+                core::arch::asm!(".long 0x0295000b", in("a0") line, options(nostack));
+            },
+            TheadDCacheOp::CleanInvalidate => unsafe {
+                // T-Head dcache.cipa a0: clean and invalidate by physical address.
+                core::arch::asm!(".long 0x02b5000b", in("a0") line, options(nostack));
+            },
+        }
+        let Some(next) = line.checked_add(THEAD_DMA_CACHE_LINE_SIZE) else {
+            break;
+        };
+        line = next;
+    }
+    thead_sync_is();
+}
+
+fn riscv_dma_fence() {
+    unsafe {
+        core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(feature = "thead-mae")]
+fn thead_sync_is() {
+    unsafe {
+        core::arch::asm!(".long 0x01b0000b", options(nostack));
     }
 }
 

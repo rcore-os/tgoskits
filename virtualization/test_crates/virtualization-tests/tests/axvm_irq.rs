@@ -14,16 +14,17 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use ax_errno::{AxError, AxResult};
 use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, MmioDeviceAdapter,
+    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    IrqResolver, MmioDeviceAdapter,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink,
+    AccessWidth, BaseDeviceOps, DeviceResult, InterruptTriggerMode, IrqError, IrqLine, IrqLineId,
+    IrqResult, IrqSink,
 };
-use axvm::InterruptFabric;
+use axvm::{AxVmError, InterruptFabric};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
 };
@@ -100,7 +101,7 @@ impl RecordingIrqSink {
 }
 
 impl IrqSink for RecordingIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> AxResult {
+    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
         self.events
             .lock()
             .unwrap()
@@ -108,7 +109,7 @@ impl IrqSink for RecordingIrqSink {
         Ok(())
     }
 
-    fn pulse(&self, line: IrqLineId) -> AxResult {
+    fn pulse(&self, line: IrqLineId) -> IrqResult {
         self.events.lock().unwrap().push(IrqEvent::Pulse(line));
         Ok(())
     }
@@ -128,12 +129,17 @@ impl BaseDeviceOps<GuestPhysAddrRange> for IrqMmioDevice {
         EmulatedDeviceType::VirtioNet
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(0)
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
-        self.line.pulse()
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
+        self.line
+            .pulse()
+            .map_err(|error| axdevice_base::DeviceError::Backend {
+                operation: "pulse test device IRQ",
+                detail: error.to_string(),
+            })
     }
 }
 
@@ -148,9 +154,12 @@ impl DeviceFactory for IrqMmioFactory {
         &self,
         config: &EmulatedDeviceConfig,
         context: &DeviceBuildContext<'_>,
-    ) -> AxResult<DeviceBundle> {
+    ) -> DeviceManagerResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(AxError::InvalidInput);
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build IRQ MMIO test device",
+                detail: "device address range overflows".into(),
+            });
         };
         let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
         Ok(
@@ -189,22 +198,22 @@ fn recording_fabric(mode: VMInterruptMode) -> (InterruptFabric, Weak<RecordingIr
 #[test]
 fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
     let sink = Arc::new(RecordingIrqSink::default());
-    assert_eq!(
-        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink).err(),
-        Some(AxError::InvalidInput)
-    );
+    assert!(matches!(
+        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink),
+        Err(AxVmError::InvalidInput { .. })
+    ));
 
     let fabric = InterruptFabric::new(VMInterruptMode::NoIrq);
     let context = DeviceBuildContext::new(&fabric);
-    assert_eq!(
+    assert!(matches!(
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0x6_0000, 12)]),
             &irq_factory_registry(),
             &context,
         )
         .err(),
-        Some(AxError::InvalidInput)
-    );
+        Some(DeviceManagerError::Irq(IrqError::InvalidLine { .. }))
+    ));
 }
 
 #[test]
@@ -218,8 +227,14 @@ fn test_interrupt_fabric_preserves_event_order() {
         .resolve_irq(14, InterruptTriggerMode::EdgeTriggered)
         .unwrap();
 
-    assert_eq!(level.pulse(), Err(AxError::InvalidInput));
-    assert_eq!(edge.raise(), Err(AxError::InvalidInput));
+    assert!(matches!(
+        level.pulse(),
+        Err(IrqError::InvalidTriggerMode { .. })
+    ));
+    assert!(matches!(
+        edge.raise(),
+        Err(IrqError::InvalidTriggerMode { .. })
+    ));
     level.raise().unwrap();
     level.lower().unwrap();
     edge.pulse().unwrap();

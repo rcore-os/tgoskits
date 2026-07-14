@@ -8,6 +8,7 @@ use ax_task::{
     TaskInner, current,
     future::{block_on, interruptible},
 };
+use axpoll::IoEvents;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
@@ -494,7 +495,13 @@ pub fn with_blocked_signals<R>(
 }
 
 pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {
-    if thr.signal.send_signal(sig) {
+    let accepted = thr.signal.send_signal(sig);
+    // Always wake signalfd waiters so a signalfd monitoring for this signal
+    // (even a blocked one) can become readable in epoll/poll.  Without this,
+    // a process using signalfd + SA_RESTART or signalfd + blocked signals
+    // would never observe newly-pending signals from the event loop.
+    unsafe { thr.signalfd_waker.wake(IoEvents::IN) };
+    if accepted {
         task.interrupt();
     }
 }
@@ -516,6 +523,9 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         if thread.signal.send_signal(sig) {
             task.interrupt();
         }
+        // Always wake signalfd waiters — even blocked signals should be
+        // visible via signalfd in an epoll event loop.
+        unsafe { thread.signalfd_waker.wake(IoEvents::IN) };
     }
 
     Ok(())
@@ -587,6 +597,15 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
                 {
                     ax_task::wake_task(&task);
                 }
+            }
+        }
+        // Wake signalfd waiters on every thread: even blocked process-level
+        // signals must be visible from signalfd in an epoll event loop.
+        for tid in proc_data.proc.threads() {
+            if let Ok(task) = get_task(tid)
+                && let Some(thr) = task.try_as_thread()
+            {
+                unsafe { thr.signalfd_waker.wake(IoEvents::IN) };
             }
         }
     }

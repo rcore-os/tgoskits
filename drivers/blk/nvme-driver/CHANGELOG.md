@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.1...nvme-driver-v0.7.2) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.0...nvme-driver-v0.7.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api, rdif-block
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.3...nvme-driver-v0.7.0) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
 ## [0.6.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.6.2...nvme-driver-v0.6.3) - 2026-07-02
 
 ### Fixed

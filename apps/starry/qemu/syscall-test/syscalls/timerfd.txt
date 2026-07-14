@@ -1,0 +1,7 @@
+timerfd01
+timerfd02
+# timerfd04 # TBROK: kernel .config is unavailable in the current environment
+timerfd_create01
+timerfd_gettime01
+timerfd_settime01
+# timerfd_settime02 # TBROK: missing /proc/sys/kernel/tainted in the current environment

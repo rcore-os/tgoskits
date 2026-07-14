@@ -281,7 +281,7 @@ fn rootfs_patch_mode(cargo: &Cargo) -> RootfsPatchMode {
     if cargo.features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "plat-dyn" | "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
+            "plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
         )
     }) {
         RootfsPatchMode::ReplaceDriveOnly

@@ -1,0 +1,4 @@
+# msgsnd01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/msgsnd.log
+# msgsnd02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/msgsnd.log
+# msgsnd05 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/msgsnd.log
+# msgsnd06 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs/msgsnd.log

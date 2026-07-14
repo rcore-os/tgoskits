@@ -56,7 +56,6 @@ pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
         "dyn-plat"
             | "plat-dyn"
             | "axplat-dyn"
-            | "ax-feat/plat-dyn"
             | "ax-hal/plat-dyn"
             | "ax-std/plat-dyn"
             | "axvm/plat-dyn"
@@ -70,7 +69,6 @@ fn nested_platform_feature_name<'a>(
 ) -> Option<&'a str> {
     feature
         .strip_prefix("ax-std/")
-        .or_else(|| feature.strip_prefix("ax-feat/"))
         .filter(|name| is_platform_control_feature(name, known_platforms))
 }
 

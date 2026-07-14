@@ -60,7 +60,7 @@ fn resolves_dynamic_platform_features_and_args() {
 fn max_cpu_num_adds_smp_feature_for_std_build() {
     let metadata = repo_metadata();
     let mut build_info = ArceosBuildInfo {
-        features: vec!["ax-feat/net".to_string()],
+        features: vec!["ax-api/net".to_string()],
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     };
@@ -212,7 +212,7 @@ fn load_build_info_normalizes_legacy_feature_aliases() {
     fs::write(
         &path,
         r#"
-features = ["axstd", "axstd/smp", "axfeat/net"]
+features = ["axstd", "ax-std/smp", "ax-runtime/net"]
 log = "Warn"
 
 "#,
@@ -224,7 +224,7 @@ log = "Warn"
 
     assert!(build_info.features.contains(&"ax-std".to_string()));
     assert!(build_info.features.contains(&"ax-std/smp".to_string()));
-    assert!(build_info.features.contains(&"ax-feat/net".to_string()));
+    assert!(build_info.features.contains(&"ax-runtime/net".to_string()));
     assert!(!build_info.features.contains(&"axstd".to_string()));
 
     let rewritten = fs::read_to_string(path).unwrap();
@@ -347,11 +347,11 @@ log = "Warn"
 #[test]
 fn parse_makefile_features_splits_commas_whitespace_and_dedups() {
     assert_eq!(
-        build::parse_makefile_features(" lockdep, sched-rr  lockdep\taxfeat/net "),
+        build::parse_makefile_features(" lockdep, sched-rr  lockdep\tax-runtime/net "),
         vec![
             "lockdep".to_string(),
             "sched-rr".to_string(),
-            "axfeat/net".to_string()
+            "ax-runtime/net".to_string()
         ]
     );
 }
@@ -372,7 +372,7 @@ fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
     );
 
     assert!(build_info.features.contains(&"lockdep".to_string()));
-    assert!(!build_info.features.contains(&"ax-feat/lockdep".to_string()));
+    assert!(!build_info.features.contains(&"ax-api/lockdep".to_string()));
 }
 
 #[test]

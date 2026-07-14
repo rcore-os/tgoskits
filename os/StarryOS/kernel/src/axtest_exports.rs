@@ -29,3 +29,23 @@ pub fn invalid_timespec_is_rejected() -> bool {
     };
     invalid.try_into_time_value().is_err()
 }
+
+pub fn random_write_mixes_entropy() -> bool {
+    super::pseudofs::dev::random_write_mixes_entropy_for_test()
+}
+
+pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
+    super::file::peer_close_with_multiple_readers_is_visible_for_test()
+}
+
+pub fn pipe_resize_rejects_oversized_pipe() -> bool {
+    super::file::resize_rejects_oversized_pipe_for_test()
+}
+
+pub fn fcntl_setpipe_size_returns_capacity() -> bool {
+    super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
+}
+
+pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
+    super::mm::private_mmap_eof_check_for_test()
+}

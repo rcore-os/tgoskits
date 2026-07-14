@@ -1,0 +1,21 @@
+args = [
+    "-nographic",
+    "-no-shutdown",
+    "-cpu", "host",
+    "-smp", "4",
+    "-m", "16G",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-selfhost.img,file.locking=off,cache=writeback",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+# The guest writes both its provisioned toolchain and /opt/starryos-selfbuilt to
+# this app-specific rootfs, so the runner must not discard writes on exit.
+snapshot = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "/bin/sh /opt/starry-selfhost-run.sh"
+success_regex = ["(?m)^SELF_COMPILE_SUCCESS\\s*$"]
+fail_regex = ['(?i)\bpanicked\b', 'SELF_COMPILE_FAILED']
+timeout = 28800

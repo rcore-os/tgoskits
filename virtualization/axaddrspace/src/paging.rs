@@ -1,6 +1,7 @@
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use ax_memory_set::MappingResult;
 use axvm_types::{GuestPhysAddr, MappingFlags};
+
+use crate::AddrSpaceResult;
 
 /// Page size selected by a nested page table mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,10 +55,13 @@ pub trait NestedPageTableOps {
         paddr: PhysAddr,
         size: PageSize,
         flags: MappingFlags,
-    ) -> MappingResult;
+    ) -> AddrSpaceResult;
 
     /// Removes one page or block mapping.
-    fn unmap(&mut self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)>;
+    fn unmap(
+        &mut self,
+        vaddr: GuestPhysAddr,
+    ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)>;
 
     /// Maps a range, optionally using huge mappings.
     fn map_region(
@@ -67,10 +71,10 @@ pub trait NestedPageTableOps {
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
-    ) -> MappingResult;
+    ) -> AddrSpaceResult;
 
     /// Removes mappings from a range.
-    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> MappingResult;
+    fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> AddrSpaceResult;
 
     /// Replaces the mapping at `start`.
     fn remap(&mut self, start: GuestPhysAddr, paddr: PhysAddr, flags: MappingFlags) -> bool;
@@ -84,7 +88,7 @@ pub trait NestedPageTableOps {
     ) -> bool;
 
     /// Queries a mapped address.
-    fn query(&self, vaddr: GuestPhysAddr) -> MappingResult<(PhysAddr, MappingFlags, PageSize)>;
+    fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)>;
 
     /// Translates a guest physical address.
     fn translate(&self, vaddr: GuestPhysAddr) -> Option<PhysAddr> {

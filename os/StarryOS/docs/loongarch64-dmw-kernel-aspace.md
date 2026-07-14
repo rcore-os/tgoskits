@@ -22,9 +22,11 @@ kernel-aspace-base = "0xFFFF_8000_0000_0000"
 kernel-aspace-size = "0x0000_7fff_ffff_f000"
 ```
 
-Temporary kernel mappings such as `vmap`, eBPF ring-buffer aliases, MMIO
-`iomap` ranges, module memory, and trampoline pages should be allocated from
-this page-table-backed kernel address space.
+Temporary kernel mappings such as `vmap`, eBPF ring-buffer aliases, module
+memory, and trampoline pages should be allocated from this page-table-backed
+kernel address space. Device MMIO is the exception: LoongArch64 `iomap()`
+returns the uncached DMW alias (`0x8000... | PA`) so register accesses do not
+accidentally use the cached DMW window.
 
 Do not add a second page-table mapping for DMW direct-map RAM. Besides being
 redundant, it can conflict with real kernel virtual mappings because the current
@@ -32,7 +34,7 @@ LoongArch64 page-table implementation indexes only the low 48 virtual-address
 bits. For example, mappings in `0x9000_...` and page-table-backed mappings can
 share the same page-table indexes if their low 48 bits are equal.
 
-`ax-mm` therefore maps a physical memory region through `phys_to_virt()` only
+`ax-mm` therefore maps ordinary physical memory through `phys_to_virt()` only
 when the resulting virtual range is contained in the configured kernel address
 space. On DMW platforms this skips the hardware direct-map range; on platforms
 where the direct map is page-table-backed, the existing mapping behavior is

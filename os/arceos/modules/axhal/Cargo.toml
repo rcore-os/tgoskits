@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.5.23"
+version = "0.5.28"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -37,8 +37,6 @@ hv = [
     "ax-percpu/arm-el2",
     "axplat-dyn/hv",
 ]
-axvisor-linker = []
-
 host-test = []
 
 default = []

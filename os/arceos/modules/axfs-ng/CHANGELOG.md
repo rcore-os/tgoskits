@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.2...ax-fs-ng-v0.8.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.1...ax-fs-ng-v0.8.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.0...ax-fs-ng-v0.8.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, axfs-ng-vfs, rsext4, rdif-block, ax-sync
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.7.0...ax-fs-ng-v0.8.0) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+- *(starry)* back /proc/diskstats, /proc/net/dev and /proc/mounts with real data ([#1504](https://github.com/rcore-os/tgoskits/pull/1504))
+
+### Fixed
+
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+- *(starry-mm)* bound per-file page-cache pre-allocation to avoid OOM ([#1499](https://github.com/rcore-os/tgoskits/pull/1499))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.6.0...ax-fs-ng-v0.7.0) - 2026-07-02
 
 ### Added

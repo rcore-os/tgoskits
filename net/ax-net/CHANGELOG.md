@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.3...ax-net-v0.12.4) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-task, ax-task, ax-sync
+
+## [0.12.3](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.2...ax-net-v0.12.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-task, ax-task, ax-sync
+
+## [0.12.2](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.1...ax-net-v0.12.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-task, ax-task, ax-sync
+
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.0...ax-net-v0.12.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-task, ax-task, rd-net, axpoll, ax-hal, ax-hal, ax-sync
+
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.11.0...ax-net-v0.12.0) - 2026-07-07
+
+### Added
+
+- *(starry)* back /proc/diskstats, /proc/net/dev and /proc/mounts with real data ([#1504](https://github.com/rcore-os/tgoskits/pull/1504))
+- *(starry)* support rtnetlink IPv4 configuration ([#1497](https://github.com/rcore-os/tgoskits/pull/1497))
+
+### Fixed
+
+- *(ax-net)* continue blocking TCP sends until complete ([#1533](https://github.com/rcore-os/tgoskits/pull/1533))
+- *(starry)* harden path, random, and icmp behavior ([#1517](https://github.com/rcore-os/tgoskits/pull/1517))
+
+### Other
+
+- *(starry)* add gateway and higress reverse-proxy carpets ([#1502](https://github.com/rcore-os/tgoskits/pull/1502))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.10.0...ax-net-v0.11.0) - 2026-07-02
 
 ### Added

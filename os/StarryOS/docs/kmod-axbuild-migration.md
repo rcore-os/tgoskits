@@ -21,7 +21,7 @@ The upstream StarryOS kmod build flow is Makefile-based:
 
 The important property is not the Makefile itself. The important property is
 that the module build shares the same kernel build context, so Cargo can reuse
-the same compiled `starry-kernel`, `ax-feat`, platform, and ArceOS dependency
+the same compiled `starry-kernel`, `ax-runtime`, platform, and ArceOS dependency
 artifacts whenever the compilation inputs match.
 
 The existing tgoskits `cargo xtask starry kmod build` implementation bypassed

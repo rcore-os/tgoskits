@@ -86,13 +86,13 @@ fn command_parses_test_qemu_with_case() {
         "--arch",
         "x86_64",
         "-c",
-        "qemu-smp1/system",
+        "qemu/system",
     ]) {
         Command::Test(args) => match args.command {
             TestCommand::Qemu(args) => {
                 assert_eq!(args.arch.as_deref(), Some("x86_64"));
                 assert_eq!(args.target, None);
-                assert_eq!(args.test_case, Some("qemu-smp1/system".to_string()));
+                assert_eq!(args.test_case, Some("qemu/system".to_string()));
             }
             _ => panic!("expected qemu test command"),
         },

@@ -1,25 +1,21 @@
 extern crate alloc;
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::ToString, vec::Vec};
 use core::ptr::NonNull;
 
 use crab_usb::{EhciNewParams, usb_if::Speed};
-use fdt_edit::{ClockRef, Fdt, Node, NodeType, Phandle, RegFixed};
+use fdt_edit::{Fdt, Node, NodeType, Phandle, RegFixed};
 use log::{debug, info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{
+        OnProbeError,
+        fdt::{ClockLine, ResetLine, apply_assigned_clocks, clock_lines, reset_lines},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 
 use super::{ProbeFdtUsbHost, usb_kernel};
-use crate::{
-    mmio::iomap,
-    soc::{rk3588_enable_clock, rk3588_enable_power_domain, rk3588_reset_deassert},
-};
+use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
 
@@ -35,23 +31,10 @@ crate::model_register!(
     ],
 );
 
-#[derive(Clone)]
-struct ClockSpec {
-    name: Option<String>,
-    id: u32,
-}
-
-#[derive(Clone)]
-struct ResetSpec {
-    name: String,
-    id: u64,
-}
-
 struct EhciResources {
     ctrl: RegFixed,
-    power_domains: Vec<usize>,
-    clocks: Vec<ClockSpec>,
-    resets: Vec<ResetSpec>,
+    clocks: Vec<ClockLine>,
+    resets: Vec<ResetLine>,
 }
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -59,8 +42,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let fdt = live_fdt()?;
     let resources = collect_resources(info, &fdt)?;
 
-    enable_power_domains(&resources.power_domains)?;
-    enable_clocks(&resources.clocks);
+    enable_clocks(&resources.clocks)?;
     deassert_resets(&resources.resets);
 
     let mmio = map_reg(resources.ctrl)?;
@@ -92,18 +74,19 @@ fn collect_resources(info: &FdtInfo<'_>, fdt: &Fdt) -> Result<EhciResources, OnP
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
 
-    let mut clocks = clock_specs(info.node.clocks());
+    let mut clocks = info.clock_lines()?;
     let mut resets = parse_resets(info.node)?;
 
     for phy in collect_usb2_phys(info.node.as_node(), fdt) {
-        clocks.extend(clock_specs(phy.port.clocks()));
-        clocks.extend(clock_specs(phy.parent.clocks()));
+        apply_assigned_clocks(phy.port)?;
+        clocks.extend(clock_lines(phy.port)?);
+        apply_assigned_clocks(phy.parent)?;
+        clocks.extend(clock_lines(phy.parent)?);
         resets.extend(parse_resets(phy.parent)?);
     }
 
     Ok(EhciResources {
         ctrl,
-        power_domains: parse_power_domains(info.node.as_node())?,
         clocks,
         resets,
     })
@@ -128,111 +111,38 @@ fn collect_usb2_phys<'a>(node: &Node, fdt: &'a Fdt) -> Vec<Usb2PhyNode<'a>> {
         .collect()
 }
 
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
+fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    reset_lines(node)
 }
 
-fn parse_resets(node: NodeType<'_>) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(resets_prop) = node.as_node().get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let reset_cells = resets_prop.get_u32_iter().collect::<Vec<_>>();
-    if reset_cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
+fn enable_clocks(clocks: &[ClockLine]) -> Result<(), OnProbeError> {
+    for clock in clocks {
+        let id = clock.id().raw();
+        if id == 0 {
+            continue;
+        }
 
-    let reset_names = node
-        .as_node()
-        .get_property("reset-names")
-        .ok_or_else(|| {
-            OnProbeError::other(format!("[{}] has resets but no reset-names", node.name()))
-        })?
-        .as_str_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let reset_count = reset_cells.len() / 2;
-    if reset_names.len() < reset_count {
-        return Err(OnProbeError::other(format!(
-            "[{}] has fewer reset-names than resets",
-            node.name()
-        )));
-    }
-
-    Ok(reset_cells
-        .chunks(2)
-        .zip(reset_names.iter())
-        .map(|(cells, name)| ResetSpec {
-            name: name.clone(),
-            id: cells[1] as u64,
-        })
-        .collect())
-}
-
-fn enable_power_domains(domains: &[usize]) -> Result<(), OnProbeError> {
-    for &domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable EHCI power domain {domain}: {err}"
-            ))
-        })?;
-        info!("EHCI power domain {domain} enabled");
+        clock.enable()?;
+        debug!("EHCI clock {:?} ({id:#x}) enabled", clock.name());
     }
     Ok(())
 }
 
-fn enable_clocks(clocks: &[ClockSpec]) {
-    for clock in clocks {
-        if clock.id == 0 {
-            continue;
-        }
-
-        match rk3588_enable_clock(clock.id) {
-            Ok(()) => debug!("EHCI clock {:?} ({:#x}) enabled", clock.name, clock.id),
-            Err(err) => warn!(
-                "EHCI clock {:?} ({:#x}) enable skipped: {err}",
-                clock.name, clock.id
-            ),
-        }
-    }
-}
-
-fn deassert_resets(resets: &[ResetSpec]) {
+fn deassert_resets(resets: &[ResetLine]) {
     for reset in resets {
-        match rk3588_reset_deassert(reset.id) {
-            Ok(()) => debug!("EHCI reset {} ({:#x}) deasserted", reset.name, reset.id),
+        match reset.deassert() {
+            Ok(()) => debug!(
+                "EHCI reset {:?} ({:#x}) deasserted",
+                reset.name(),
+                reset.id().raw()
+            ),
             Err(err) => warn!(
-                "EHCI reset {} ({:#x}) deassert skipped: {err}",
-                reset.name, reset.id
+                "EHCI reset {:?} ({:#x}) deassert skipped: {err}",
+                reset.name(),
+                reset.id().raw()
             ),
         }
     }
-}
-
-fn clock_specs(clocks: Vec<ClockRef>) -> Vec<ClockSpec> {
-    clocks
-        .into_iter()
-        .filter_map(|clock| {
-            let id = *clock.specifier.first()?;
-            Some(ClockSpec {
-                name: clock.name,
-                id,
-            })
-        })
-        .collect()
 }
 
 fn live_fdt() -> Result<Fdt, OnProbeError> {

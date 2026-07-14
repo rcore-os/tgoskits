@@ -37,7 +37,7 @@ graph LR
     current --> ax_dma["ax-dma"]
     current --> ax-driver["ax-driver"]
     current --> ax_errno["ax-errno"]
-    current --> ax-feat["ax-feat"]
+    current --> ax-runtime["ax-runtime"]
     current --> ax-fs["ax-fs"]
     ax_std["ax-std"] --> current
 ```
@@ -48,7 +48,7 @@ graph LR
 - `ax-dma`
 - `ax-driver`
 - `ax-errno`
-- `ax-feat`
+- `ax-runtime`
 - `ax-fs`
 - `ax-hal`
 - `axio`

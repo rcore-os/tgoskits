@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn std_build_platform_feature_stays_on_arceos_rust_dependency() {
     let mut info = BuildInfo {
-        features: vec!["ax-feat/plat-dyn".to_string(), "alloc".to_string()],
+        features: vec!["ax-std/plat-dyn".to_string(), "alloc".to_string()],
         ..BuildInfo::default()
     };
 
@@ -67,4 +67,15 @@ fn build_cargo_args_uses_target_stem_as_rustflags_key() {
             .any(|arg| arg.starts_with("target.") && arg.contains('/')),
         "config key must not use a removed spec path"
     );
+}
+
+#[test]
+fn build_cargo_args_disables_loongarch64_unaligned_access() {
+    let args = BuildInfo::build_cargo_args("loongarch64-unknown-none-softfloat", &[]);
+
+    assert!(args.windows(2).any(|pair| {
+        pair[0] == "--config"
+            && pair[1].starts_with("target.loongarch64-unknown-none-softfloat.rustflags=")
+            && pair[1].contains("\"-Ctarget-feature=-ual\"")
+    }));
 }

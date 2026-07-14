@@ -7,11 +7,10 @@ keywords = ["os", "usb", "xhci", "driver"]
 license.workspace = true
 name = "crab-usb"
 repository.workspace = true
-version = "0.9.10"
+version = "0.10.2"
 
 [features]
-aggressive_usb_reset = []
-default = ["aggressive_usb_reset"]
+default = []
 libusb = ["umod"]
 umod = ["libusb1-sys"]
 

@@ -1,6 +1,6 @@
 use crate::{
     ClockError, ClockResult, Mmio, ResetRockchip, RstId,
-    clock::{ClkId, CruOp},
+    clock::{ClkId, ClockOp, ResetOp},
     variants::MHZ,
 };
 
@@ -84,6 +84,14 @@ const fn rate_selector(rate_hz: u64) -> Option<(u32, u64)> {
     }
 }
 
+const fn fixed_emmc_rate(id: ClkId) -> Option<u64> {
+    match id {
+        BCLK_EMMC | ACLK_EMMC | HCLK_EMMC => Some(200 * MHZ),
+        TCLK_EMMC => Some(OSC_HZ),
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 pub struct Cru {
     base: usize,
@@ -141,13 +149,23 @@ impl Cru {
     }
 
     pub fn clk_set_rate(&mut self, id: ClkId, rate_hz: u64) -> ClockResult<u64> {
-        if id != CCLK_EMMC {
-            return Err(ClockError::unsupported(id));
+        if id == CCLK_EMMC {
+            let Some((selector, actual_hz)) = rate_selector(rate_hz) else {
+                return Err(ClockError::invalid_rate(id, rate_hz));
+            };
+            self.write_clksel(CCLK_EMMC_SEL_MASK, selector);
+            return Ok(actual_hz);
         }
-        let Some((selector, actual_hz)) = rate_selector(rate_hz) else {
-            return Err(ClockError::invalid_rate(id, rate_hz));
+
+        let Some(actual_hz) = fixed_emmc_rate(id) else {
+            return Err(ClockError::unsupported(id));
         };
-        self.write_clksel(CCLK_EMMC_SEL_MASK, selector);
+        if rate_hz != actual_hz {
+            return Err(ClockError::invalid_rate(id, rate_hz));
+        }
+        if id == BCLK_EMMC {
+            self.write_clksel(BCLK_EMMC_SEL_MASK, BCLK_EMMC_GPLL_200M);
+        }
         Ok(actual_hz)
     }
 
@@ -227,7 +245,7 @@ impl Cru {
     }
 }
 
-impl CruOp for Cru {
+impl ResetOp for Cru {
     fn reset_assert(&mut self, id: RstId) {
         self.reset.reset_assert(id);
     }
@@ -235,7 +253,9 @@ impl CruOp for Cru {
     fn reset_deassert(&mut self, id: RstId) {
         self.reset.reset_deassert(id);
     }
+}
 
+impl ClockOp for Cru {
     fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
         self.clk_enable(id)
     }
@@ -323,5 +343,37 @@ mod tests {
         );
         assert_eq!(rate_selector(374_999), None);
         assert_eq!(rate_selector(201 * MHZ), None);
+    }
+
+    #[test]
+    fn emmc_assigned_fixed_rates_are_accepted() {
+        let mut regs = [0_u32; 0x600 / core::mem::size_of::<u32>()];
+        let base = regs.as_mut_ptr() as usize;
+        let mut cru = Cru {
+            base,
+            reset: ResetRockchip::new(base + SOFTRST_CON_OFFSET as usize, 512),
+        };
+
+        assert_eq!(cru.clk_set_rate(BCLK_EMMC, 200 * MHZ).unwrap(), 200 * MHZ);
+        assert_eq!(cru.clk_set_rate(TCLK_EMMC, OSC_HZ).unwrap(), OSC_HZ);
+    }
+
+    #[test]
+    fn emmc_fixed_rates_reject_mismatched_assigned_rate() {
+        let mut regs = [0_u32; 0x600 / core::mem::size_of::<u32>()];
+        let base = regs.as_mut_ptr() as usize;
+        let mut cru = Cru {
+            base,
+            reset: ResetRockchip::new(base + SOFTRST_CON_OFFSET as usize, 512),
+        };
+
+        let err = cru.clk_set_rate(BCLK_EMMC, 100 * MHZ).unwrap_err();
+        assert!(matches!(
+            err,
+            ClockError::InvalidRate {
+                clk_id: BCLK_EMMC,
+                rate_hz,
+            } if rate_hz == 100 * MHZ
+        ));
     }
 }

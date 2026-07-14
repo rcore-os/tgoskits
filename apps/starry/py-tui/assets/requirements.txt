@@ -1,0 +1,38 @@
+# py-tui pinned, hash-locked dependency closure — pure-Python (py3-none-any) wheels only.
+#
+# The prebuild step fetches these EXACT wheels at build time (network is the source of truth;
+# an optional local wheel cache is only a speed-up, never a cache-miss-exit) and installs them
+# with:  pip install --require-hashes --no-deps -r assets/requirements.txt --target <overlay>/opt/pytui
+#
+# NO wheels are committed to the repository. Every entry pins an exact version + its PyPI
+# sha256 so the install is byte-reproducible across the four target arches; because all eleven
+# wheels are py3-none-any (pure Python) the resulting site-packages tree is architecture-
+# independent and therefore identical for x86_64 / aarch64 / riscv64 / loongarch64.
+#
+# Closure = textual + casca + rich + their transitive pure-Python runtime deps. textual's
+# optional [syntax] extra (tree-sitter, a C-extension) is intentionally NOT included: it is only
+# needed for TextArea syntax highlighting and would break the pure-Python / arch-independent model.
+# casca has zero required runtime dependencies (all of its Requires-Dist are optional extras).
+
+textual==8.2.8 \
+    --hash=sha256:267375fd402dc8d981457212efa71f0e3365fd17bba144ba9bb3ed7563cb374a
+casca==1.0.4 \
+    --hash=sha256:90b4946493ba6052f42d0d7d5f24f271a1978da1bd8d6fe0d3cc63ee6bd19d72
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+pygments==2.20.0 \
+    --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+platformdirs==4.10.0 \
+    --hash=sha256:fb516cdb12eb0d857d0cd85a7c57cea4d060bee4578d6cf5a14dfdf8cbf8784a
+linkify-it-py==2.1.0 \
+    --hash=sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e
+uc-micro-py==2.0.0 \
+    --hash=sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c
+mdit-py-plugins==0.6.1 \
+    --hash=sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d

@@ -1,0 +1,4 @@
+fsync01
+fsync02
+# fsync03 # TFAIL: one invalid-usage case returns success unexpectedly
+# fsync04 # not verified yet

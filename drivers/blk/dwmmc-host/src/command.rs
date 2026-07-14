@@ -211,20 +211,7 @@ impl DwMmc {
     }
 
     fn take_command_irq_status(&mut self) -> u32 {
-        if self.completion_irq_enabled() {
-            return self
-                .irq
-                .state
-                .take(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
-        }
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let consume = raw_status & (crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
-        if consume != 0 {
-            self.regs
-                .rintsts()
-                .write(crate::regs::RIntSts::from_bits(consume));
-        }
-        raw_status
+        self.take_task_irq_status(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK)
     }
 
     fn clear_command_int_status(&mut self) {

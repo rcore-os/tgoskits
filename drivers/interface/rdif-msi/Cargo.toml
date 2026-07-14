@@ -1,0 +1,14 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "no-std"]
+description = "Driver Interface for message-signaled interrupt providers."
+edition.workspace = true
+keywords = ["os", "driver", "msi"]
+license.workspace = true
+name = "rdif-msi"
+repository.workspace = true
+version = "0.2.0"
+
+[dependencies]
+irq-framework = { workspace = true }
+rdif-base = { workspace = true }

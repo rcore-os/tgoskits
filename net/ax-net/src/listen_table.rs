@@ -19,6 +19,10 @@
 //! specific addresses may share a port. Incoming packets are matched by port and
 //! local destination address before a child is created.
 //!
+//! Listeners that all requested `SO_REUSEPORT` on the same local address form a
+//! group and may share one endpoint, mirroring the bind-side reuseport group. A
+//! listener that did not request `SO_REUSEPORT` still conflicts with the port.
+//!
 //! # Lock Ordering
 //!
 //! Callers that inspect child socket state pass a locked `SocketSet` into this
@@ -53,6 +57,9 @@ struct ListenTableEntryInner {
     syn_queue: VecDeque<AcceptedTcp>,
     /// Wakes accept/poll waiters when child readiness changes.
     accept_poll: Arc<PollSet>,
+    /// Whether this listener joined via `SO_REUSEPORT`, letting several
+    /// listeners share the same endpoint.
+    reuse_port: bool,
 }
 
 /// Child TCP socket returned by accept().
@@ -68,13 +75,14 @@ pub(crate) struct AcceptedTcp {
 
 impl ListenTableEntryInner {
     /// Creates a listener entry and clamps backlog to the global limit.
-    pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize) -> Self {
+    pub fn new(listen_endpoint: IpListenEndpoint, backlog: usize, reuse_port: bool) -> Self {
         let backlog = backlog.clamp(1, LISTEN_QUEUE_SIZE);
         Self {
             listen_endpoint,
             backlog,
             syn_queue: VecDeque::with_capacity(backlog),
             accept_poll: Arc::new(PollSet::new()),
+            reuse_port,
         }
     }
 
@@ -132,19 +140,35 @@ impl ListenTable {
     }
 
     /// Registers a listening endpoint and backlog.
-    pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
+    ///
+    /// Several `SO_REUSEPORT` listeners may share one endpoint: a new listener
+    /// joins an existing group only when it and every colliding owner requested
+    /// `SO_REUSEPORT` on the exact same local address, matching the bind-side
+    /// group rule. Any other overlap returns `EADDRINUSE`.
+    pub fn listen(
+        &self,
+        listen_endpoint: IpListenEndpoint,
+        backlog: usize,
+        reuse_port: bool,
+    ) -> AxResult {
         let port = listen_endpoint.port;
         assert_ne!(port, 0);
         let entries = self.listen_entry_or_create(port);
         let mut entries = entries.lock();
-        if entries
-            .iter()
-            .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
-        {
+        if entries.iter().any(|entry| {
+            listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr)
+                && !(reuse_port
+                    && entry.reuse_port
+                    && entry.listen_endpoint.addr == listen_endpoint.addr)
+        }) {
             warn!("socket already listening on {}", listen_endpoint);
             return Err(AxError::AddrInUse);
         }
-        entries.push(ListenTableEntryInner::new(listen_endpoint, backlog));
+        entries.push(ListenTableEntryInner::new(
+            listen_endpoint,
+            backlog,
+            reuse_port,
+        ));
         Ok(())
     }
 
@@ -387,9 +411,9 @@ mod tests {
         let second = endpoint(Some(Ipv4Address::new(198, 51, 100, 20)), 8080);
 
         assert!(table.can_listen(first));
-        table.listen(first, 16).unwrap();
+        table.listen(first, 16, false).unwrap();
         assert!(table.can_listen(second));
-        table.listen(second, 16).unwrap();
+        table.listen(second, 16, false).unwrap();
 
         table.unlisten(first);
         assert!(table.can_listen(first));
@@ -402,9 +426,38 @@ mod tests {
         let wildcard = endpoint(None, 8081);
         let specific = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8081);
 
-        table.listen(wildcard, 16).unwrap();
+        table.listen(wildcard, 16, false).unwrap();
 
         assert!(!table.can_listen(specific));
-        assert_eq!(table.listen(specific, 16), Err(AxError::AddrInUse));
+        assert_eq!(table.listen(specific, 16, false), Err(AxError::AddrInUse));
+    }
+
+    #[test]
+    fn reuseport_group_shares_a_listen_endpoint() {
+        let table = ListenTable::new();
+        let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8082);
+
+        // Several SO_REUSEPORT listeners join the same endpoint.
+        table.listen(ep, 16, true).unwrap();
+        table.listen(ep, 16, true).unwrap();
+
+        // A plain listener cannot join a reuseport group.
+        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+
+        // Each close removes one group member; the port frees on the last leave.
+        table.unlisten(ep);
+        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+        table.unlisten(ep);
+        assert!(table.can_listen(ep));
+    }
+
+    #[test]
+    fn plain_listener_rejects_reuseport_join() {
+        let table = ListenTable::new();
+        let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8083);
+
+        // The first owner is plain, so even a reuseport listener still conflicts.
+        table.listen(ep, 16, false).unwrap();
+        assert_eq!(table.listen(ep, 16, true), Err(AxError::AddrInUse));
     }
 }

@@ -1,0 +1,6 @@
+[target.riscv64gc-unknown-linux-musl]
+linker = "../scripts/linker.sh"
+rustflags = [
+  "-C", "target-feature=-crt-static",
+  "-C", "link-arg=-Wl,--dynamic-linker=/lib/ld-musl-riscv64.so.1",
+]

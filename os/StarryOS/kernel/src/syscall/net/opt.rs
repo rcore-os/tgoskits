@@ -253,6 +253,7 @@ macro_rules! call_dispatch {
             $dispatch, $pat,
             // ---- Implemented socket options ----
             (SOL_SOCKET, SO_REUSEADDR) => ReuseAddress as IntBool,
+            (SOL_SOCKET, SO_REUSEPORT) => ReusePort as IntBool,
             (SOL_SOCKET, SO_ERROR) => Error,
             (SOL_SOCKET, SO_DONTROUTE) => DontRoute as IntBool,   // stored but routing logic ignores it
             (SOL_SOCKET, SO_SNDBUF) => SendBuffer as Int<usize>,  // TODO: set is no-op, smoltcp uses fixed buffer
@@ -279,7 +280,6 @@ macro_rules! call_dispatch {
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
-            // (SOL_SOCKET, SO_REUSEPORT) => ...,     // TODO: needs kernel support
             // (SOL_SOCKET, SO_RCVLOWAT) => ...,       // TODO: needs kernel support
             // (SOL_SOCKET, SO_SNDLOWAT) => ...,       // TODO: needs kernel support
             // (PROTO_TCP, TCP_CORK) => ...,           // TODO: needs smoltcp support
@@ -298,7 +298,10 @@ macro_rules! call_dispatch {
                     dispatch!($which $(as $conv)?);
                 }
             )*
-            _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
+            unsupported => {
+                debug!("unsupported sockopt (level, optname) = {:?}", unsupported);
+                return Err(AxError::from(LinuxError::ENOPROTOOPT));
+            }
         }
     }
 }
@@ -370,6 +373,23 @@ pub fn sys_getsockopt(
         socket.get_option(GetSocketOption::IpTos(&mut tos))?;
         *get::<i32>(optval, optlen)? = i32::from(tos);
         return Ok(0);
+    }
+
+    // IP_PKTINFO / IPV6_RECVPKTINFO / IPV6_PKTINFO are accepted on set (see sys_setsockopt);
+    // report them as disabled on get so a probing client sees a coherent value instead of
+    // ENOPROTOOPT.
+    {
+        use linux_raw_sys::net::{IP_PKTINFO, IPV6_PKTINFO, IPV6_RECVPKTINFO};
+        if level == PROTO_IP && optname == IP_PKTINFO {
+            *get::<i32>(optval, optlen)? = 0;
+            return Ok(0);
+        }
+        if level == IPPROTO_IPV6 as u32 && (optname == IPV6_RECVPKTINFO || optname == IPV6_PKTINFO)
+        {
+            ensure_ipv6_socket(&socket)?;
+            *get::<i32>(optval, optlen)? = 0;
+            return Ok(0);
+        }
     }
 
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_TCLASS {
@@ -492,6 +512,25 @@ pub fn sys_setsockopt(
         let tos = normalize_ip_tos(*get::<i32>(optval, optlen)?);
         socket.set_option(SetSocketOption::IpTos(&tos))?;
         return Ok(0);
+    }
+
+    // IP_PKTINFO / IPV6_RECVPKTINFO / IPV6_PKTINFO request ancillary destination-address
+    // delivery on datagram sockets (consul's DNS server via miekg/dns and serf/memberlist
+    // enable them). The socket stays functional without cmsg delivery when bound to a single
+    // loopback address, so accept the request like Linux instead of failing the whole socket
+    // with ENOPROTOOPT.
+    {
+        use linux_raw_sys::net::{IP_PKTINFO, IPV6_PKTINFO, IPV6_RECVPKTINFO};
+        if level == PROTO_IP && optname == IP_PKTINFO {
+            let _ = read_int_sockopt(optval, optlen)?;
+            return Ok(0);
+        }
+        if level == IPPROTO_IPV6 as u32 && (optname == IPV6_RECVPKTINFO || optname == IPV6_PKTINFO)
+        {
+            ensure_ipv6_socket(&socket)?;
+            let _ = read_int_sockopt(optval, optlen)?;
+            return Ok(0);
+        }
     }
 
     if level == IPPROTO_IPV6 as u32 && optname == IPV6_TCLASS {

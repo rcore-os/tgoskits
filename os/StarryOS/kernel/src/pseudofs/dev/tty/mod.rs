@@ -11,7 +11,12 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
+use core::{
+    any::Any,
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Context,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
@@ -62,6 +67,7 @@ pub struct Tty<R, W> {
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
+    open_count: AtomicUsize,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -75,6 +81,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             ldisc,
             writer,
             is_ptm,
+            open_count: AtomicUsize::new(0),
         })
     }
 }
@@ -103,7 +110,23 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn open(&self, _exclusive: bool) -> AxResult<()> {
+        self.open_count.fetch_add(1, Ordering::AcqRel);
         self.writer.open()
+    }
+
+    fn close(&self, _exclusive: bool) {
+        // On the last fd close, notify the writer side so the peer reader can
+        // observe POLLHUP / EOF. Without this, a PTY master/slave close never
+        // wakes the peer and poll()/read() hang.
+        if self
+            .open_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok_and(|old| old == 1)
+        {
+            self.writer.close();
+        }
     }
 
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {

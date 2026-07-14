@@ -1,0 +1,89 @@
+# py-tui leg B (heavy) — pinned closure for the REAL app `posting` (12k+ GitHub stars, terminal HTTP/API client),
+# the single heaviest third-party consumer of the textual widget/API surface. Installed into its OWN
+# pip --target dir so posting's textual==6.1.0 pin cannot collide with leg A (8.2.8), toolong (0.58.1),
+# frogmouth (0.43.2) or the game carpet (8.2.8):
+#
+#   pip install --require-hashes --no-deps -r assets/requirements-posting.txt --target /opt/pytui-posting
+#
+# This file lists ONLY the PURE-Python (py3-none-any) part of posting's closure — 28 wheels, each
+# pinned to an exact version + PyPI sha256, architecture-independent and identical across x86_64 /
+# aarch64 / riscv64 / loongarch64. NO wheels are committed; prebuild fetches + hash-verifies them.
+#
+# posting's C-EXTENSION deps are NOT in this hash-locked file (their wheels are arch-specific, so a
+# single sha256 cannot pin them); prebuild-heavy provisions them per-arch instead:
+#
+#   Provisioned musl-native from Alpine v3.23 `apk add` — prebuilt for ALL FOUR arches, zero build.
+#   These are the genuinely-hard Rust/C deps; Alpine ships each musl-native per arch at a stable
+#   version (the carpet asserts version invariants for them, not exact patch strings):
+#     pydantic       (pure, but a MATCHED PAIR with the compiled core) -> py3-pydantic       (v3.23: 2.12.3)
+#     pydantic-core  (Rust; pydantic hard-requires the exact matching core) -> py3-pydantic-core (v3.23: 2.41.4)
+#     watchfiles     (Rust)                                            -> py3-watchfiles     (v3.23: 1.0.3)
+#     Brotli         (C)                                               -> py3-brotli         (v3.23: 1.2.0)
+#     PyYAML         (C _yaml, pure fallback)                          -> py3-yaml           (v3.23: 6.0.3)
+#   NOTE: pydantic is therefore NOT in the hash-locked pip list below — it MUST come from apk as a
+#   matched pair with pydantic-core (a pure pydantic wheel pins one exact core version).
+#
+#   Provisioned as tree-sitter (C) for textual[syntax] TextArea highlighting — musllinux wheels where
+#   present, else cross-built from sdist with the musl cross-gcc (recipe in prebuild-heavy):
+#     tree-sitter == 0.26.0  + 15 grammars:
+#       tree-sitter-bash==0.25.1 tree-sitter-css==0.25.0 tree-sitter-go==0.25.0
+#       tree-sitter-html==0.23.2 tree-sitter-java==0.23.5 tree-sitter-javascript==0.25.0
+#       tree-sitter-json==0.24.8 tree-sitter-markdown==0.5.1 tree-sitter-python==0.25.0
+#       tree-sitter-regex==0.25.0 tree-sitter-rust==0.23.2 tree-sitter-sql==0.3.7
+#       tree-sitter-toml==0.7.0 tree-sitter-xml==0.7.0 tree-sitter-yaml==0.7.2
+#
+# ---- PURE-Python closure (hash-locked; pip --require-hashes) --------------------------------------
+annotated-types==0.7.0 \
+    --hash=sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53
+anyio==4.14.1 \
+    --hash=sha256:4e5533c5b8ff0a24f5d7a176cbe6877129cd183893f66b537f8f227d10527d72
+certifi==2026.6.17 \
+    --hash=sha256:2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db
+click==8.4.2 \
+    --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
+click-default-group==1.2.4 \
+    --hash=sha256:9b60486923720e7fc61731bdb32b617039aba820e22e1c88766b1125592eaa5f
+h11==0.16.0 \
+    --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+httpcore==1.0.9 \
+    --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
+httpx==0.28.1 \
+    --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+idna==3.18 \
+    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+linkify-it-py==2.1.0 \
+    --hash=sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdit-py-plugins==0.6.1 \
+    --hash=sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+openapi-pydantic==0.5.1 \
+    --hash=sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146
+platformdirs==4.10.0 \
+    --hash=sha256:fb516cdb12eb0d857d0cd85a7c57cea4d060bee4578d6cf5a14dfdf8cbf8784a
+posting==2.10.0 \
+    --hash=sha256:c0fd982a22ddeb9fb01f85f89045600f440452dda7b47d69eb0944264a3b88dc
+pydantic-settings==2.14.2 \
+    --hash=sha256:a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440
+Pygments==2.20.0 \
+    --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
+pyperclip==1.11.0 \
+    --hash=sha256:299403e9ff44581cb9ba2ffeed69c7aa96a008622ad0c46cb575ca75b5b84273
+python-dotenv==1.2.2 \
+    --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+textual==6.1.0 \
+    --hash=sha256:a3f5e6710404fcdc6385385db894699282dccf2ad50103cebc677403c1baadd5
+textual-autocomplete==4.0.6 \
+    --hash=sha256:bff69c19386e2cbb4a007503b058dc37671d480a4fa2ddb3959c15ceb4aff9b5
+typing-inspection==0.4.2 \
+    --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+uc-micro-py==2.0.0 \
+    --hash=sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c
+xdg-base-dirs==6.0.2 \
+    --hash=sha256:3c01d1b758ed4ace150ac960ac0bd13ce4542b9e2cdf01312dcda5012cfebabe

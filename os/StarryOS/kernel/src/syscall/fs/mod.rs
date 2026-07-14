@@ -23,7 +23,10 @@ pub use self::{
     inotify::*,
     io::*,
     io_uring::*,
-    lock::{release_inode_posix_locks, release_pid_locks, wake_flock_waiters, wake_lock_waiters},
+    lock::{
+        release_flock_lock, release_inode_posix_locks, release_pid_flock_locks, release_pid_locks,
+        wake_flock_waiters, wake_lock_waiters,
+    },
     memfd::*,
     mount::*,
     pidfd::*,

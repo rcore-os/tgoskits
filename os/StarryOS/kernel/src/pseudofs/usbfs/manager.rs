@@ -1212,16 +1212,11 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             continue;
         }
 
-        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-            Ok(devices) => devices,
-            Err(err) => {
-                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                failed_device_ids.push((device_id, host_irq));
-                continue;
-            }
-        };
-
         if let Some(host_irq) = host_irq {
+            // DWC2 internal-DMA transfers complete through host-channel IRQs.
+            // Enable both the controller interrupt mask and the framework
+            // callback before the initial probe, because enumeration itself
+            // issues control transfers that wait for IRQ completions.
             if let Err(err) = guard.enable_irq() {
                 warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
                 failed_device_ids.push((device_id, Some(host_irq)));
@@ -1237,6 +1232,23 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             }
             irq::bootstrap_irq(host_irq);
         }
+
+        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+            Ok(devices) => devices,
+            Err(err) => {
+                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                if host_irq.is_some()
+                    && let Err(disable_err) = guard.disable_irq()
+                {
+                    warn!(
+                        "usbfs: failed to disable host IRQ after probe failure on bus {bus_num}: \
+                         {disable_err:?}"
+                    );
+                }
+                failed_device_ids.push((device_id, host_irq));
+                continue;
+            }
+        };
         info!("usbfs: host on bus {} initialized", bus_num);
         initialized += 1;
         manager.apply_probe_results(device_id, bus_num, devices);
