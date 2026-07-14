@@ -16,7 +16,6 @@ use ax_runtime::hal::{
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
 use ax_sync::Mutex;
-use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
@@ -31,7 +30,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, task::future::IrqNotify};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
@@ -487,7 +486,7 @@ impl SerialBackend {
             if self.tx_idle() {
                 return Ok(());
             }
-            ax_task::sleep(Duration::from_millis(1));
+            crate::task::sleep(Duration::from_millis(1));
         }
     }
 
@@ -532,7 +531,7 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
 
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-event", backend.tty_name);
-    ax_task::spawn_with_name(
+    crate::task::spawn_with_name(
         move || loop {
             backend.events.wait();
             loop {

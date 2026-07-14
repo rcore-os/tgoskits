@@ -13,7 +13,6 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::current;
 use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
@@ -28,7 +27,7 @@ use crate::task::PtraceStopFpData;
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{Cred, ProcessData, current, get_process_cred, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -295,7 +294,7 @@ fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
     tracee.set_ptrace_singlestep_for(tid, false);
     tracee.set_ptrace_syscall_trace_for(tid, false);
     tracee.resume_ptrace_stop_with_signal_for(tid, signo);
-    ax_task::yield_now();
+    crate::task::yield_now();
     Ok(0)
 }
 

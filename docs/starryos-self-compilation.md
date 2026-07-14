@@ -31,7 +31,7 @@ Host (Linux)
 
 | PR | 内容 | 关联 |
 |----|------|------|
-| #797 | 信号传递修复：`interrupt_waker.wake()` 唤醒被 `future_blocked_resched` 移出运行队列的任务 | 无此修复，cargo 子进程（build script）挂起，父进程 waitpid 永远阻塞 |
+| #797 | 历史信号传递修复：设置中断标志后还必须执行调度器可见的 wake；当前由 `StarryTaskRef::interrupt()` + `ThreadWakeHandle` 实现 | 无此闭环，cargo 子进程（build script）挂起，父进程 waitpid 永远阻塞 |
 | #1007 | 页回收：内存压力下驱逐干净文件支持页面，`try_page_reclaim()` 最多重试 4 次 | 无此修复，编译 `syn` 时 OOM panic（大量源码/产物占满文件缓存） |
 | #971 | rsext4 clock LRU 缓存（4 入口/16 KiB），减少 virtio 块设备 round-trip | 加速离线 registry 读取，将依赖解析从分钟级降到秒级 |
 

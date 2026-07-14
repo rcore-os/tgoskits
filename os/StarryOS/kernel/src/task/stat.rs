@@ -1,12 +1,12 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
 use ax_errno::AxResult;
-use ax_task::{TaskInner, TaskState};
+use ax_std::os::arceos::task::ThreadState;
 use starry_signal::Signo;
 
 use crate::{
     mm::ProcessMemStats,
-    task::{AsThread, task_cpu_time},
+    task::{StarryTaskRef, task_cpu_time},
 };
 
 /// Represents the `/proc/[pid]/stat` file.
@@ -70,8 +70,8 @@ pub struct TaskStat {
 }
 
 impl TaskStat {
-    /// Create a new [`TaskStat`] from a [`AxTaskRef`].
-    pub fn from_thread(task: &TaskInner) -> AxResult<Self> {
+    /// Creates a task-stat snapshot from a Starry scheduler handle.
+    pub fn from_thread(task: &StarryTaskRef) -> AxResult<Self> {
         let thread = task.as_thread();
         let proc_data = &thread.proc_data;
         let proc = &proc_data.proc;
@@ -80,9 +80,10 @@ impl TaskStat {
         let comm = task.name();
         let comm = comm[..comm.len().min(16)].to_owned();
         let state = match task.state() {
-            TaskState::Running | TaskState::Ready => 'R',
-            TaskState::Blocked => 'S',
-            TaskState::Exited => 'Z',
+            ThreadState::Ready | ThreadState::Running | ThreadState::Waking => 'R',
+            ThreadState::Parking | ThreadState::Blocked => 'S',
+            ThreadState::New => 'R',
+            ThreadState::Exited => 'Z',
         };
         let ppid = proc.parent().map_or(0, |p| p.pid());
         let pgrp = proc.group().pgid();
@@ -117,7 +118,7 @@ impl TaskStat {
             start_stack: mem.start_stack,
             start_brk: proc_data.get_heap_top() as u64,
             exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
-            processor: task.cpu_id(),
+            processor: task.cpu_id() as u32,
             exit_code: proc.exit_code(),
             ..Default::default()
         })

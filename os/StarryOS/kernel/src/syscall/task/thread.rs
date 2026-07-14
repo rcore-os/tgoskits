@@ -1,7 +1,6 @@
 use ax_errno::{AxError, AxResult};
-use ax_task::current;
 
-use crate::task::AsThread;
+use crate::task::current;
 
 #[inline(never)]
 pub fn sys_getpid() -> AxResult<isize> {

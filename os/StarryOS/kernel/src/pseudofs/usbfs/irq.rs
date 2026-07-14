@@ -131,11 +131,11 @@ pub(super) fn start_event_pump() {
         return;
     }
 
-    ax_task::spawn_with_name(
+    crate::task::spawn_with_name(
         move || {
             loop {
                 usbfs_poll_events();
-                ax_task::sleep(USBFS_EVENT_POLL_INTERVAL);
+                crate::task::sleep(USBFS_EVENT_POLL_INTERVAL);
             }
         },
         "usbfs-event-pump".to_owned(),

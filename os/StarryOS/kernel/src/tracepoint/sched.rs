@@ -1,14 +1,12 @@
 //! `sched:*` tracepoints.
 //!
-//! `sched_switch` is fired by `ax-task` through the cross-crate
-//! [`ax_task::SchedTracepoint`] interface (gated by `tracepoint-hooks`).
+//! `sched_switch` is fired by the runtime's allocation-free scheduler trace
+//! hook after `ax-task` commits a context-switch decision.
 //!
 //! The other two `sched:*` events are defined next to their emission sites
 //! rather than here: `sched_process_fork` in `crate::syscall::task::clone`
 //! and `sched_process_exit` in `crate::task::ops`. Registration is by link
 //! section, so their physical location does not affect discovery.
-
-use ax_task::SchedTracepoint;
 
 ktracepoint::define_event_trace!(
     sched_switch,
@@ -36,11 +34,10 @@ ktracepoint::define_event_trace!(
     })
 );
 
-struct SchedTracepointImpl;
+pub(super) fn install() {
+    ax_runtime::task::install_sched_switch_trace_hook(on_sched_switch);
+}
 
-#[ax_crate_interface::impl_interface]
-impl SchedTracepoint for SchedTracepointImpl {
-    fn on_sched_switch(prev_tid: u64, next_tid: u64, prev_state: u32) {
-        trace_sched_switch(prev_tid, next_tid, prev_state);
-    }
+fn on_sched_switch(record: ax_runtime::task::SchedSwitchRecord) {
+    trace_sched_switch(record.previous_thread, record.next_thread, record.reason);
 }

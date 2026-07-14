@@ -7,7 +7,6 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
-use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
@@ -26,7 +25,7 @@ use crate::{
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
-    task::AsThread,
+    task::current,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.

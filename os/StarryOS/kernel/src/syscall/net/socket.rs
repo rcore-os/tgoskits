@@ -11,7 +11,6 @@ use ax_net::{
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
-use ax_task::current;
 use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -29,7 +28,7 @@ use super::addr::{
 use crate::{
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::AsThread,
+    task::current,
 };
 
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {

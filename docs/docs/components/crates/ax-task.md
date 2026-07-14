@@ -1,205 +1,157 @@
 # `ax-task`
 
-> 路径：`os/arceos/modules/axtask`
-> 类型：库 crate
-> 分层：ArceOS 层 / ArceOS 内核模块
-> 版本：`0.3.0-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/api.rs`、`src/task.rs`、`src/run_queue.rs`、`src/wait_queue.rs`、`src/timers.rs`、`src/future/*`
+> 路径：`components/ax-task`
+>
+> 类型：`no_std + alloc` 库 crate
+>
+> 分层：共享组件 / OS 无关任务调度
+>
+> 版本：`0.7.0`
 
-`ax-task` 是 ArceOS 的任务管理核心模块。它既承担线程/任务对象的创建、阻塞、退出与回收，又通过 `axsched` 抽象把 FIFO、RR、CFS 等调度策略统一到同一个运行队列框架下，并进一步向 StarryOS 和 Axvisor 输出可复用的调度基础设施。
+`ax-task` 是不持有全局调度器、per-CPU 静态变量或具体 OS 能力的任务调度库。
+OS 显式创建一个固定地址的 `TaskSystem`，为每个 CPU 创建一个固定地址的
+`CpuLocal`，再通过 `TaskRuntime` trait-ffi 注入 IRQ、时间、IPI、上下文、栈、TLS、
+地址空间和诊断能力。
 
-## 架构设计
-### 1.1 总体设计
-`ax-task` 的设计目标不是提供“单一线程库”，而是构造一个可裁剪的内核任务运行时：
+它始终按 IRQ、抢占和 SMP 安全语义编译，不再通过 `multitask`、`sched-rr`、
+`sched-cfs`、`preempt` 或 `smp` feature 生成不同的调度器实现。
 
-- 通过 `multitask` feature 在“真正多任务调度器”和“单任务桩实现”之间切换。
-- 通过 `multitask`、`sched-rr`、`sched-cfs` 在同一套 API 下选择不同调度策略。
-- 通过 `irq`、`preempt`、`smp`、`tls`、`task-ext` 决定任务系统究竟具备多少内核能力。
+## 依赖边界
 
-因此，`ax-task` 是一个强 feature 驱动的状态机模块，而不是简单的 API 封装。
+```mermaid
+flowchart TD
+    Starry["starry-kernel"] --> AxStd["ax-std task facade"]
+    AxStd --> Runtime["ax-runtime"]
+    Runtime --> Task["components/ax-task"]
+    Runtime --> Hal["ax-hal / platform raw operations"]
+    Sync["ax-sync"] --> Task
+    Sync --> Kspin["ax-kspin"]
+    Net["ax-net"] --> Task
+    Task -. "no dependency" .-> Runtime
+    Task -. "no dependency" .-> Kspin
+    Task -. "no dependency" .-> Sync
+```
 
-### 模块结构
-- `src/lib.rs`：顶层 feature 门控。决定编译 `run_queue`、`task`、`api`、`wait_queue`、`future`、`timers` 还是退回 `api_s` 单任务实现。
-- `src/task.rs`：任务实体定义与状态机，包含 `TaskInner`、`TaskState`、`CurrentTask`、栈对象、退出码、join 与可选 TLS/TaskExt 字段。
-- `src/run_queue.rs`：每 CPU 运行队列、调度切换、GC 任务、SMP 下多队列初始化与迁移逻辑。
-- `src/api.rs`：多任务模式下的公开 API，如 `spawn()`、`yield_now()`、`sleep()`、`exit()`、`set_priority()`、`set_current_affinity()` 等。
-- `src/api_s.rs`：单任务模式下的桩实现，很多“阻塞”行为会退化为 busy-wait 或等待 IRQ。
-- `src/wait_queue.rs`：基于 `event-listener` 的等待队列封装。
-- `src/timers.rs`：IRQ 打开时的定时事件回调与每核计时事件检查。
-- `src/future/mod.rs`：内核态 `block_on`、waker、阻塞/唤醒桥接。
-- `src/future/time.rs`：截止时间驱动的 sleep/timeout future 与每核 `TimerRuntime`。
-- `src/future/poll.rs`：I/O poll 异步适配，与 `axpoll` 协作。
-- `src/tests.rs`：FIFO、浮点状态切换、`WaitQueue`、`join` 等单元测试。
+`ax-task` 不依赖 `ax-hal`、`ax-percpu`、`ax-ipi`、`ax-runtime`、`ax-mm`、
+`ax-kspin`、`ax-sync`、`lock_api`、`spin` 或旧 `ax-sched`。内部临界区使用私有
+ticket lock，并通过 `TaskRuntime` 的嵌套 IRQ guard 服务保存和恢复最外层 IRQ 状态。
 
-### 1.3 关键数据结构
-- `TaskState`：`Running`、`Ready`、`Blocked`、`Exited`，是任务生命周期分析的核心。
-- `TaskInner`：任务内部主体，包含任务名、entry 闭包、上下文、栈、退出码、等待退出事件、CPU 亲和、可选 TLS、可选 `TaskExt` 等。
-- `CurrentTask`：当前任务句柄，是 API 层访问当前任务状态、优先级、亲和性和扩展对象的主要入口。
-- `AxTaskRef` / `WeakAxTaskRef`：调度器持有的任务引用类型。
-- `AxRunQueue`：每 CPU 运行队列包装，内部持有具体 `Scheduler` 实例并负责上下文切换。
-- `WaitQueue`：内核阻塞/唤醒的基础同步原语。
-- `TimerRuntime`：基于截止时间和 waker 的软件定时运行时，仅在 `irq` 路径启用。
-- `AxTaskExt` / `TaskExt`：供上层系统附加任务私有语义的扩展接口，是 StarryOS 线程对象与 Axvisor vCPU 任务集成的关键点。
+## 对象模型
 
-### 1.4 调度器抽象与算法实现
-`ax-task` 并不自己实现完整调度算法，而是通过 `api.rs` 中的类型别名把 `TaskInner` 适配到 `axsched`：
+- `TaskSystem`：拓扑、online mask、generation-based 线程注册表、CPU 对象表、
+  Deadline admission、PI 依赖图和系统统计的所有者。
+- `CpuLocal`：owner CPU 唯一修改的 current/idle、Deadline/RT/Fair runqueue、
+  remote wake/policy/migration/reclaim inbox、固定容量 timer heap 和粘滞
+  `need_resched`。
+- `ThreadId`：slot index 与 generation 的组合，slot 复用后旧 ID 必然失效。
+- `ThreadHandle`：普通任务上下文中的强引用和控制句柄。
+- `WeakThreadHandle`：普通任务上下文中的非拥有观察句柄。
+- `ThreadWakeHandle`：直接指向稳定 wake header 的 IRQ-safe 唤醒能力，不通过全局
+  ID map 查找。
+- `ThreadResources`：runtime 创建的 context、stack、TLS 和 address-space opaque
+  handle；线程 reaper 按 context → TLS → stack 的顺序释放。
 
-- `multitask`：`FifoScheduler` + `FifoTask`，协作式调度。
-- `sched-rr`：`RRScheduler` + `RRTask`，带时间片，依赖 `preempt`。
-- `sched-cfs`：`CFScheduler` + `CFSTask`，公平调度，同样依赖 `preempt`。
-
-这层设计的关键好处是：
-
-- `TaskInner` 始终保持稳定。
-- 上层 API 如 `spawn`、`yield_now`、`sleep` 无需感知底层采用 FIFO、RR 还是 CFS。
-- StarryOS、Axvisor 可以在不重写任务核心对象的前提下复用调度机制。
-
-### 1.5 任务生命周期主线
-典型生命周期可概括为：
+线程生命周期使用受检查的转换：
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Ready: spawn/init
-    Ready --> Running: scheduler pick
-    Running --> Ready: yield / preempt
-    Running --> Blocked: wait queue / sleep / poll
-    Blocked --> Ready: wake / timeout / irq
-    Running --> Exited: exit
-    Exited --> [*]: gc 回收
+    [*] --> New
+    New --> Ready
+    Ready --> Running
+    Running --> Ready: preempt / yield
+    Running --> Parking: begin park
+    Parking --> Blocked: park commit
+    Parking --> Waking: concurrent wake
+    Blocked --> Waking: wake
+    Waking --> Ready
+    Running --> Exited
+    Blocked --> Exited
+    Exited --> [*]: reaper
 ```
 
-更具体的初始化主线如下：
+## 调度策略
 
-1. `init_scheduler()` 调用 `run_queue::init()`。
-2. 主 CPU 创建 idle 任务、当前 init 任务和 GC 任务。
-3. `spawn_task()` / `spawn()` 把新任务加入选中的运行队列。
-4. `yield_current()`、`blocked_resched()`、`scheduler_timer_tick()` 驱动状态在 `Running/Ready/Blocked` 间转换。
-5. `exit_current()` 把任务移入退出队列，由 GC 任务清理最终资源。
+调度类顺序固定为：
 
-## 核心功能
-### 功能概览
-- 任务创建：`spawn_task()`、`spawn_raw()`、`spawn_with_name()`、`spawn()`。
-- 任务调度：`yield_now()`、调度器 tick、优先级调整、CPU 亲和迁移。
-- 阻塞与等待：`WaitQueue`、`block_on()`、sleep/timeout。
-- 退出与回收：`exit()`、`join()`、GC 任务。
-- 扩展语义：通过 `TaskExt` 把上层系统数据挂到任务对象上。
-
-### 2.2 关键 API
-最常用的 API 入口在 `src/api.rs`：
-
-- `current()` / `current_may_uninit()`
-- `init_scheduler()` / `init_scheduler_secondary()`
-- `spawn()` / `spawn_task()`
-- `yield_now()`
-- `sleep()` / `sleep_until()`
-- `exit()`
-- `set_priority()`
-- `set_current_affinity()`
-- `on_timer_tick()`（`irq` 打开时）
-
-### 2.3 典型使用示例
-```rust
-use core::time::Duration;
-
-let worker = ax-task::spawn(|| {
-    // do work
-});
-
-ax-task::yield_now();
-ax-task::sleep(Duration::from_millis(10));
-
-let _exit_code = worker.join();
+```text
+Deadline > RT FIFO/RR > Fair Normal/Batch > Fair Idle > CPU idle
 ```
 
-若需要等待条件成立，通常走 `WaitQueue`：
+- Fair 使用 Linux nice `-20..=19` 权重和 EEVDF 的 vruntime、lag eligibility、
+  service request、virtual deadline。Normal 支持 wakeup preemption，Batch 不因普通
+  wake 立即抢占，Idle 使用最低 fair 权重。
+- FIFO 使用 `1..=99` 优先级；高优先级立即抢占，同优先级 wake 不抢占；被高优先级
+  抢占时保留位置，主动 yield 才移到队尾。
+- RR 与 FIFO 使用相同优先级域，默认 quantum 为 5 ms；仅在 quantum 到期且存在同级
+  waiter 时轮转。
+- Deadline 验证 `0 < runtime <= deadline <= period`，使用 absolute-deadline EDF 与
+  CBS 预算、throttle、replenishment、miss/overrun 统计。GRUB reclaim 通过
+  ActiveContending、ActiveNonContending、Inactive 三态和 zero-lag 定时转换维护
+  `this_bw`/`running_bw`，不会在任务刚阻塞时提前借出带宽。默认 root-domain
+  admission cap 为 95%，Deadline 线程 affinity 必须覆盖完整 online root domain。
+- RT bandwidth 默认每 CPU `950 ms / 1 s`。PI owner 可进入有记录的 critical rescue
+  直至 unlock，防止 quota 或 donor CBS 耗尽造成锁死。
 
-```rust
-let wq = ax-task::WaitQueue::new();
-// 条件不满足时 wait，条件满足后 wake
-```
+`ax-sync` 负责 PI mutex 的短元数据临界区和 waiter 排序；`ax-task` 负责 base/effective
+policy、传递式 donation、owner runqueue 重排、远端 IPI、Deadline donor CBS 记账和
+unlock 后撤销。
 
-## 依赖关系
-```mermaid
-graph LR
-    ax-hal["ax-hal"] --> ax-task["ax-task"]
-    axsched["ax-sched"] --> ax-task
-- `ax-hal`：任务上下文、当前 CPU、时间、IRQ、TLS 与上下文切换能力来源。
-- `axsched`：具体调度算法实现。
-- `kernel_guard`：抢占关闭/恢复的接口桥接。
-- `axpoll`：异步 poll 与 I/O 等待适配。
-- `cpumask`、`ax-percpu`、`ax-kspin`：SMP 与每核运行队列支持。
+## SMP 与 IRQ 约束
 
-### 主要消费者
-- `ax-runtime`：在启动链中初始化调度器，并在 timer tick 中调用 `on_timer_tick()`。
-- `ax-sync`：基于 `ax-task` 的阻塞/唤醒机制构建锁和同步原语。
-- `ax-api`、`ax-posix-api`：把任务、睡眠、等待队列等能力对外暴露。
-- `starry-kernel`：在 Linux 兼容线程模型上直接复用 `ax-task`。
-- `ax-net`、`ax-net`：在网络栈阻塞/异步路径上复用调度与等待能力。
+每个 runqueue 只允许 owner CPU 修改。远端 wake 和 policy/migration 更新使用嵌入对象
+的 intrusive MPSC inbox；发布端只做有界原子操作并按 epoch 合并 scheduler IPI，不会
+获取远端 runqueue 锁。owner 每个安全点最多 drain 配置的 batch 数，未清空时保留
+`need_resched`。
 
-## 开发指南
-### 接入方式
-```toml
-[dependencies]
-ax-task = { workspace = true }
-```
+timer heap 在 `CpuLocal` 创建时按配置一次性预分配，默认容量 4096。IRQ expiry 每次
+最多处理 64 个节点，把事件复制到预分配输出区，不扩容、不释放、不调用 callback。
 
-常见 feature 组合：
+idle 路径固定执行：发布 polling → memory barrier → 重查 runqueue/inbox/
+`need_resched` → WFI。`need_resched` 只有真正进入 scheduler 后才能清除。
 
-- `multitask`：启用完整任务管理。
-- `multitask` / `sched-rr` / `sched-cfs`：选择调度器。
-- `preempt`：允许基于 timer tick 的抢占。
-- `irq`：启用 sleep/timeout 等基于中断的时间能力。
-- `smp`：启用多核运行队列与任务迁移。
-- `tls`：启用任务 TLS。
-- `task-ext`：允许外部系统挂接扩展任务对象。
+## `TaskRuntime` 接入
 
-### 4.2 初始化与接入顺序
-1. 先确保上层运行时已完成 `ax-hal` 初始化。
-2. 主 CPU 调 `init_scheduler()`，从 CPU 调 `init_scheduler_secondary()`。
-3. 再通过 `spawn()` 等 API 投递任务。
-4. 若启用 `irq` 与 `preempt`，需要保证 timer tick 能够进入 `on_timer_tick()`。
+`TaskRuntime` 使用显式 Rust ABI trait-ffi。边界只传 `repr(C)`/`repr(transparent)` 值、
+opaque handle、整数和静态函数；不传引用、`Arc`、`Future` 或 trait object。
 
-### 4.3 关键开发注意事项
-- 修改 `TaskInner` 时，要同时检查调度器包装类型、`TaskExt`、TLS、join 和 GC 回收路径是否仍一致。
-- 修改 `run_queue.rs` 时，要同时检查 FIFO/RR/CFS 三种调度器行为是否都成立。
-- 修改 `WaitQueue`、`future`、`timers` 时，要区分 `irq` 开启与关闭两条实现路径。
-- 修改 `smp` 相关逻辑时，要同时验证 CPU 亲和、迁移任务和每核队列初始化。
+ArceOS 的实现位于 `os/arceos/modules/axruntime/src/task.rs`：
 
-## 测试
-### 单元测试
-`src/tests.rs` 已经覆盖了几类关键路径：
+1. 主核和副核先完成架构 per-CPU 与 runtime guard state。
+2. runtime 创建并固定 `TaskSystem`/`CpuLocal`，安装 bootstrap 与 idle context。
+3. timer 与 scheduler IPI handler 可用后才把 CPU 发布到 online mask。
+4. timer IRQ 只做预算/时间片记账、bounded expiry、`need_resched` 和下一次 one-shot
+   计算；scheduler IPI 只 ack epoch 并置 sticky reschedule。
+5. IRQ-return 或最外层 preempt-enable 进入 scheduler safe point；调度状态和 current
+   已提交、runqueue 锁已释放且 IRQ 仍关闭时，依次执行 previous switch-out hook、安装
+   next 地址空间、执行 next switch-in hook，最后切换 context。
 
-- FIFO 调度顺序。
-- 浮点状态切换。
-- `WaitQueue` 行为。
-- 任务 `join` 路径。
+其他 OS 应创建自己的对象并实现同一能力边界；crate 不提供默认 host runtime 符号，
+每个测试二进制使用独立 fake runtime。
 
-后续新增功能时，应优先补这几类单元测试：
+## 单线程协程执行器
 
-- 状态转换与退出码传播。
-- 多调度器策略的一致性。
-- `task-ext`、TLS、CPU 亲和与迁移路径。
-- `irq` 与非 `irq` 两种 sleep/timeout 语义。
+`LocalExecutor` 绑定 owner `ThreadId`，future 只由 owner thread poll/drop，因此支持
+`!Send` future，owner thread 迁移 CPU 不改变所有权。每个 `CoroutineHeader` 保存 owner
+ID、generation、原子状态和 intrusive node，并持有固定地址的 shared executor header；
+shared header 保存 generation-checked `ThreadWakeHandle`，不依赖 CPU 固定位置。
 
-### 集成测试
-系统级验证更重要：
+自定义 `RawWaker` 的 clone/wake/wake_by_ref/drop 均不分配、不释放、不 poll、不调用
+用户代码、不获取 blocking/remote-runqueue lock。重复 wake 通过 `RUN_QUEUED` CAS
+合并；self-wake 进入下一批；每批最多 poll 64 个 coroutine。owner 在 completion、取消
+或 executor shutdown 时先清空并销毁 `!Send` future；最后一个 waker 即使在 hard IRQ
+释放也只发布 task-system deferred-reclaim node，header 内存随后由普通任务上下文的
+有界 reaper 回收。
 
-- `test-suit/arceos/task/*` 是最直接的回归入口。
-- `arceos-helloworld` 可验证最小 bring-up。
-- StarryOS 线程/进程路径能验证 `task-ext` 和复杂阻塞语义。
-- Axvisor 的 vCPU 任务路径能验证 `TaskExt` 与 `WaitQueue` 的复用场景。
+## 验证要求
 
-### 5.3 覆盖率要求
-- API 层、状态机分支和错误路径应保持高覆盖。
-- 调度器切换、阻塞/唤醒、GC 回收和多核迁移必须有专门覆盖。
-- 涉及 `preempt`、`irq`、`smp`、`task-ext` 的修改必须做系统级回归。
+- `scripts/test/test_ax_task_boundary.py` 固定新路径、旧 crate 删除、forbidden dependency、
+  无 scheduler/per-CPU 全局状态和 Cargo 图边界。
+- host model 测试覆盖线程状态、调度类顺序、EEVDF/RT/CBS、Deadline admission、PI、
+  generation ID、bounded inbox/timer 与 executor wake/reclaim。
+- 并发测试必须覆盖 wake-before/during-park、远端 inbox publication、policy requeue、
+  migration、IPI epoch、late waker、timer cancel/complete/reclaim 和 PI donor accounting。
+- 系统测试需要在 SMP1/SMP2/SMP4 上覆盖普通调度、RT/DL、remote IRQ wake、affinity、
+  balance、Starry 调度 ABI，并覆盖 x86_64、aarch64、riscv64、loongarch64。
 
-## 跨项目定位
-### ArceOS
-`ax-task` 是 ArceOS 的标准任务运行时。它为 `ax-runtime`、`ax-sync`、`ax-api` 和各种示例/测试提供统一的任务抽象，是系统从“单核顺序执行”迈向“可调度 OS”的关键模块。
-
-### StarryOS
-StarryOS 直接复用 `ax-task` 作为线程调度基础，并借助 `TaskExt` 把 Linux 兼容线程对象挂接到任务实体上。因此，`ax-task` 在 StarryOS 中承担的是“底层线程调度内核”，而不是外围帮助库。
-
-### Axvisor
-Axvisor 并不直接依赖 `ax-task` 包名，但它通过 `ax-std` 启用的任务能力，把每个 vCPU 组织成可调度任务，并利用 `TaskExt`、`WaitQueue` 和运行队列复用 Hypervisor 并发模型。因此，`ax-task` 是 Axvisor 把“vCPU”转化成“宿主调度实体”的关键基础设施。
+本轮不支持 CPU hotplug、NUMA、cgroup/energy-aware scheduling、异构 CPU capacity、
+FUTEX_PI、IRQ threaded handler、动态卸载或通用跨线程异步执行池。

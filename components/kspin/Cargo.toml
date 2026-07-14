@@ -10,16 +10,10 @@ categories = ["os", "no-std"]
 license = "Apache-2.0"
 
 [features]
-# To use in the multi-core environment
-smp = []
-host-test = ["ax-kernel-guard/host-test"]
-lockdep = ["dep:ax-lockdep"]
-# Expose raw spin locks implementing `lock_api::RawMutex`.
-lock_api = ["dep:lock_api"]
+lockdep = []
 default = []
 
 [dependencies]
-cfg-if = "1.0"
-ax-lockdep = { workspace = true, optional = true }
-ax-kernel-guard = { workspace = true }
-lock_api = { workspace = true, optional = true }
+lock_api.workspace = true
+spin.workspace = true
+trait-ffi = "0.2"

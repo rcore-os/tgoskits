@@ -7,10 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{
-    current, future,
-    future::{block_on, interruptible},
-};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
 use starry_signal::SignalSet;
@@ -21,7 +17,11 @@ use crate::{
     file::get_file_like,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
-    task::{AsThread, with_blocked_signals},
+    task::{
+        current,
+        future::{self, block_on, interruptible},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 

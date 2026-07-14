@@ -2,10 +2,6 @@ use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{
-    current,
-    future::{self, block_on},
-};
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
     SS_ONSTACK, kernel_sigaction, siginfo, timespec,
@@ -16,8 +12,9 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        AsThread, block_next_signal, check_signals, get_process_cred, processes,
-        send_signal_to_process, send_signal_to_thread,
+        block_next_signal, check_signals, current,
+        future::{self, block_on},
+        get_process_cred, processes, send_signal_to_process, send_signal_to_thread,
     },
     time::TimeValueLike,
 };

@@ -1,6 +1,7 @@
 use ax_memory_addr::VirtAddr;
-use ax_task::current;
 use ddebug::{ControlFile, DebugOps};
+
+use crate::task::current;
 pub struct DynamicDebugOps;
 
 impl DebugOps for DynamicDebugOps {

@@ -8,13 +8,12 @@
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     mm::vm_load_string,
-    task::{AsThread, Cred, get_process_data, get_task},
+    task::{Cred, current, get_process_data, get_task},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;

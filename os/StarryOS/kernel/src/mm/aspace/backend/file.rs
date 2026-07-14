@@ -235,10 +235,6 @@ impl FileBackend {
         }
     }
 
-    pub fn cache(&self) -> &CachedFile {
-        &self.0.cache
-    }
-
     pub fn writeback_range(&self, range_start: VirtAddr, range_end: VirtAddr) -> AxResult {
         let file_data = self.0.file_data.lock();
 

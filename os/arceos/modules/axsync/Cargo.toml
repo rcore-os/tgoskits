@@ -8,10 +8,9 @@ description = "ArceOS synchronization primitives"
 license.workspace = true
 
 [features]
-multitask = ["ax-task/multitask"]
+multitask = []
 lockdep = [
   "multitask",
-  "ax-task/lockdep",
   "ax-kspin/lockdep",
   "dep:ax-lockdep",
   "ax-lockdep/task-context",
@@ -24,7 +23,6 @@ ax-task.workspace = true
 ax-kspin.workspace = true
 lock_api.workspace = true
 
-[target.'cfg(not(target_os = "none"))'.dev-dependencies]
-ax-task = { workspace = true, features = ["test"] }
-# FIXME: `rand` crate can not be used since https://github.com/google/zerocopy/pull/2574
-fastrand = "2.3"
+[dev-dependencies]
+ax-crate-interface.workspace = true
+loom.workspace = true

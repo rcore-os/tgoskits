@@ -20,7 +20,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use ax_task::current;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -43,7 +42,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceOps,
-    task::{AsThread, get_process_group, send_signal_to_process_group},
+    task::{current, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";

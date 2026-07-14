@@ -22,7 +22,7 @@ crate-type = ["staticlib"]
 default = []
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]

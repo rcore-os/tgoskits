@@ -7,9 +7,9 @@
 //!
 //! # Cargo Features
 //!
-//! - `multitask`: For use in the multi-threaded environments. If the feature is
-//!   not enabled, [`Mutex`] will be an alias of [`spin::SpinNoIrq`]. This
-//!   feature is enabled by default.
+//! - `multitask`: Enables the urgency-ordered priority-inheritance sleeping
+//!   [`Mutex`]. Without it, [`Mutex`] is a compatibility alias of
+//!   [`spin::SpinNoIrq`].
 
 #![cfg_attr(any(not(test), target_os = "none"), no_std)]
 #![cfg_attr(all(test, target_os = "none"), no_main)]
@@ -19,6 +19,8 @@
     all(test, target_os = "none"),
     test_runner(crate::bare_metal_test_runner)
 )]
+
+extern crate alloc;
 
 pub use ax_kspin as spin;
 
@@ -46,6 +48,10 @@ mod lockdep;
 
 #[cfg(feature = "multitask")]
 mod mutex;
+#[cfg(feature = "multitask")]
+mod pi;
+#[cfg(all(test, feature = "multitask", not(target_os = "none")))]
+mod test_runtime;
 
 #[cfg(not(feature = "multitask"))]
 #[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]

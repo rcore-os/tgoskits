@@ -1,10 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_task::{
-    current,
-    future::{block_on, interruptible},
-};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
@@ -17,9 +13,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{PidFd, get_file_like},
     task::{
-        AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-        get_zombie_cred, is_zombie_clone_child, processes, remove_process, traced_zombies_for,
-        unregister_zombie, wait_on_pollset, zombie_wait_parent_tid,
+        JobStatus, ProcessData, current, decode_wait_status,
+        future::{block_on, interruptible},
+        get_process_data, get_task, get_zombie_cred, is_zombie_clone_child, processes,
+        remove_process, traced_zombies_for, unregister_zombie, wait_on_pollset,
+        zombie_wait_parent_tid,
     },
 };
 
@@ -286,7 +284,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             for tid in child.threads() {
                 if let Ok(task) = get_task(tid) {
                     let thr = task.as_thread();
-                    let (utime, stime) = thr.time.borrow().output();
+                    let (utime, stime) = thr.cpu_time.output();
                     proc_data.add_child_cpu_time(utime, stime);
                 }
             }
@@ -449,7 +447,7 @@ pub fn sys_waitid(
                 for tid in child.threads() {
                     if let Ok(task) = get_task(tid) {
                         let thr = task.as_thread();
-                        let (utime, stime) = thr.time.borrow().output();
+                        let (utime, stime) = thr.cpu_time.output();
                         proc_data.add_child_cpu_time(utime, stime);
                     }
                 }

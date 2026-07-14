@@ -10,7 +10,7 @@ authors = ["Yuekai Jia <equation618@gmail.com>", "Youjie Zheng <Azure_stars@126.
 license = "Apache-2.0"
 
 [features]
-smp = ["ax-kspin/smp"]
+smp = []
 irq = ["dep:rdif-intc"]
 
 [dependencies]
@@ -21,7 +21,6 @@ irq-framework = { workspace = true }
 rdif-intc = { workspace = true, optional = true }
 const-str = "1.0"
 ax-plat-macros = { workspace = true }
-ax-kernel-guard = { workspace = true }
 ax-kspin = { workspace = true }
 ax-percpu.workspace = true
 rdrive.workspace = true

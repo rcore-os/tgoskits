@@ -34,18 +34,8 @@ flowchart LR
 
 因此这个测试真正观察的是“任务主动让出 CPU 后，调度器是否做了正确的切换”。
 
-### 1.3 feature 条件为什么重要
-源码里有两个很关键的条件：
-
-- `#[cfg(all(not(feature = "sched-rr"), not(feature = "sched-cfs")))]`
-- `if cfg!(not(feature = "sched-cfs")) && available_parallelism() == 1`
-
-这意味着：
-
-- 在默认非 RR、非 CFS 场景下，它明确测试 cooperative `yield_now()`
-- 只有在非 CFS 且单核时，才要求完成顺序与创建顺序一致，以验证 FIFO 风格语义
-
-所以这个 crate 不是“无条件断言所有调度器都应同序执行”，而是有边界地验证默认/特定调度语义。
+### 1.3 策略边界
+调度策略不再由 `sched-rr` 或 `sched-cfs` feature 全局选择。这个用例只验证 `yield_now()` 能完成一次安全调度并让全部任务继续前进，不把完成顺序绑定到某个策略实现。
 
 ## 核心功能
 ### 2.1 实际验证内容
@@ -53,7 +43,7 @@ flowchart LR
 
 1. `yield_now()` 调用本身不会导致任务丢失或死锁。
 2. 主线程在等待子任务完成时，可以通过反复 `yield_now()` 推进系统前进。
-3. 在非 CFS、单核的窄场景下，任务完成顺序仍符合预期的 FIFO 语义。
+3. 主线程和子线程都能在反复 yield 后收敛结束。
 
 ### 2.2 为什么顺序断言被严格门控
 当前仓库的 `qemu-riscv64.toml` 使用 `-smp 4`，在多核环境下任务完成顺序天然会受并行性影响。因此源码只在单核时做顺序断言，这是合理而且必要的。
@@ -70,7 +60,7 @@ flowchart LR
 它不负责：
 
 - 比较不同调度器的性能
-- 证明 RR 或 CFS 的公平性
+- 证明 RR 或 EEVDF 的公平性
 - 提供高级任务同步原语
 
 它只是“主动让出 CPU 这一下是否还正常”的快速探针。
@@ -92,7 +82,7 @@ graph LR
 
 ### 主要消费者
 - `cargo arceos test qemu` 自动收集的任务基础回归。
-- 修改 `ax-task`、调度器 feature 或 cooperative 调度路径后的最小验证。
+- 修改 `ax-task` 或 cooperative 调度路径后的最小验证。
 
 ## 开发指南
 ### 接入方式
@@ -113,7 +103,7 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 ### 4.3 适合补充的场景
 - 单核专用配置下的更强顺序断言
-- RR/CFS 下“让出后系统仍能前进”的更明确 smoke check
+- 为不同线程策略补充“让出后系统仍能前进”的明确 smoke check
 
 ## 测试
 ### 5.1 当前自动化形态

@@ -1,13 +1,12 @@
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
-use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_process::Pid;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{AsThread, Thread, get_process_data, get_task},
+    task::{Thread, current, get_process_data, get_task},
     time::TimeValueLike,
 };
 
@@ -65,7 +64,7 @@ struct Rusage {
 
 impl Rusage {
     fn from_thread(thread: &Thread) -> Self {
-        let (utime, stime) = thread.time.borrow().output();
+        let (utime, stime) = thread.cpu_time.output();
         let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
             * (PAGE_SIZE_4K as u64 / 1024);
         Self {

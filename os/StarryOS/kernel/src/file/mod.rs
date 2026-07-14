@@ -27,7 +27,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_kspin::SpinRwLock as RwLock;
-use ax_task::{TaskState, current};
+use ax_std::os::arceos::task::ThreadState;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
@@ -53,7 +53,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceMmap,
-    task::{AX_FILE_LIMIT, AsThread, tasks},
+    task::{AX_FILE_LIMIT, current, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -326,7 +326,7 @@ pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
 pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
     let mut refs = alloc::vec::Vec::new();
     for task in tasks() {
-        if task.state() == TaskState::Exited {
+        if task.state() == ThreadState::Exited {
             continue;
         }
         let pid = task.as_thread().proc_data.proc.pid();

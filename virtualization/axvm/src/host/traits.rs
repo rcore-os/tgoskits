@@ -51,7 +51,6 @@ pub trait HostTime {
     fn monotonic_time(&self) -> Duration;
 
     /// Program the host one-shot timer.
-    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64);
 
     /// Register a VM timer callback.

@@ -1560,7 +1560,7 @@ impl Card0 {
         const FRAME_PERIOD_NS: u64 = 1_000_000_000 / 60;
         let delay =
             core::time::Duration::from_nanos(FRAME_PERIOD_NS.saturating_mul(wait_count as u64));
-        ax_task::sleep(delay);
+        crate::task::sleep(delay);
         self.sequence.fetch_add(wait_count, Ordering::AcqRel);
 
         let now = monotonic_time();

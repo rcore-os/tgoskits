@@ -3,7 +3,6 @@ use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
-use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
@@ -22,7 +21,7 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
-    task::AsThread,
+    task::current,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every

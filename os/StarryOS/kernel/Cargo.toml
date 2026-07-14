@@ -55,7 +55,6 @@ axtest = []
 
 [dependencies]
 ax-alloc = { workspace = true }
-ax-crate-interface.workspace = true
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
@@ -72,17 +71,13 @@ ax-runtime = { workspace = true, features = [
     "irq",
     "uspace",
     "multitask",
+    "fp-simd",
     "rtc",
     "ext4fs",
     "net",
 ] }
 ax-sync = { workspace = true, features = ["multitask"] }
-ax-task = { workspace = true, features = [
-    "multitask",
-    "task-ext",
-    "tracepoint-hooks",
-    "sched-rr",
-] }
+ax-std = { workspace = true, features = ["irq", "multitask"] }
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
@@ -112,9 +107,8 @@ flatten_objects = "0.2.4"
 hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
-ax-kernel-guard = { workspace = true }
 kernel-elf-parser = "0.3.4"
-ax-kspin = { workspace = true, features = ["lock_api"] }
+ax-kspin.workspace = true
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",

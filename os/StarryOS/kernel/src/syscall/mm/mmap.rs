@@ -4,7 +4,6 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::paging::{MappingFlags, PageSize};
-use ax_task::current;
 use linux_raw_sys::general::*;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
-    task::AsThread,
+    task::current,
 };
 
 bitflags::bitflags! {

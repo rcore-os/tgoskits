@@ -18,10 +18,10 @@ license.workspace = true
 [features]
 default = []
 
-smp = []
-irq = []
+smp = ["ax-runtime/smp"]
+irq = ["ax-runtime/irq"]
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask"]
+multitask = ["alloc", "irq", "ax-runtime/multitask", "ax-sync/multitask"]
 lockdep = ["multitask", "ax-sync/lockdep", "ax-kspin/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
@@ -41,7 +41,6 @@ ax-log.workspace = true
 ax-net = { workspace = true, optional = true }
 ax-runtime.workspace = true
 ax-sync.workspace = true
-ax-task = { workspace = true, optional = true }
 
 # Other crates
 ax-errno.workspace = true

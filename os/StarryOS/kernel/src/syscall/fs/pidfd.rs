@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_task::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::{SI_TKILL, SI_USER};
 use starry_signal::{SignalInfo, Signo};
@@ -11,7 +10,7 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
     syscall::signal::check_kill_permission,
     task::{
-        AsThread, get_process_data, get_task, send_signal_to_process, send_signal_to_process_group,
+        current, get_process_data, get_task, send_signal_to_process, send_signal_to_process_group,
         send_signal_to_thread,
     },
 };

@@ -15,13 +15,12 @@ use ax_runtime::hal::{
     cpu::{asm::user_copy, trap::page_fault_handler},
     paging::MappingFlags,
 };
-use ax_task::{current, might_sleep};
 use extern_trait::extern_trait;
 use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    task::AsThread,
+    task::{current, might_sleep},
 };
 
 /// Enables scoped access into user memory, allowing page faults to occur inside
@@ -249,7 +248,7 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
     #[cfg(feature = "stack-guard-page")]
-    if ax_task::diagnose_current_stack_guard_page_fault(vaddr) {
+    if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
     }
 

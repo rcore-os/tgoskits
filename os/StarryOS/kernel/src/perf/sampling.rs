@@ -6,7 +6,7 @@
 //! interrupt (PPI 7 / INTID 23). [`pmu_overflow_handler`] runs in hard-IRQ
 //! context, reads the interrupted PC, builds one `PERF_RECORD_SAMPLE` per
 //! overflowed counter, writes it into that event's mmap ring buffer, re-arms the
-//! counter, and wakes a deferred worker (via [`ax_task::IrqNotify`]) that
+//! counter, and wakes a deferred worker (via [`crate::task::future::IrqNotify`]) that
 //! delivers `POLLIN` to userspace pollers.
 //!
 //! The record emitted honours the event's `attr.sample_type`: [`build_sample`]
@@ -29,7 +29,7 @@
 //! per CPU (index = programmable counter index). A [`SampleSlot`] is a small
 //! `Copy` POD carrying exactly the raw values the handler needs. `register` /
 //! `unregister` mutate the *current* CPU's array under a local-IRQ-off critical
-//! section ([`NoPreemptIrqSave`]) so they never race the handler. M2 is
+//! section ([`PreemptIrqGuard`]) so they never race the handler. M2 is
 //! single-core, so the event's core is always cpu0.
 //!
 //! # `notify` raw pointer soundness
@@ -44,9 +44,10 @@
 use core::sync::atomic::Ordering;
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_task::IrqNotify;
+use ax_kspin::PreemptIrqGuard;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
+
+use crate::task::future::IrqNotify;
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
@@ -213,14 +214,14 @@ static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 /// Registers `slot` for programmable counter `n` on the current CPU.
 ///
 /// Runs in process context on the event's core (cpu0 under smp1). The mutation
-/// is performed under [`NoPreemptIrqSave`] so the overflow handler — which reads
+/// is performed under [`PreemptIrqGuard`] so the overflow handler — which reads
 /// the same per-CPU array — can never observe a half-written entry, and so the
 /// current CPU's view of `REGISTRY` is the one being updated.
 pub fn register(n: usize, slot: SampleSlot) {
     if n > MAX_COUNTER {
         return;
     }
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqGuard::new();
     // SAFETY: preemption and local IRQs are disabled by `_guard`, so we hold
     // exclusive access to this CPU's `REGISTRY` for the critical section.
     let registry = unsafe { REGISTRY.current_ref_mut_raw() };
@@ -236,7 +237,7 @@ pub fn unregister(n: usize) {
     if n > MAX_COUNTER {
         return;
     }
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqGuard::new();
     // SAFETY: see `register`.
     let registry = unsafe { REGISTRY.current_ref_mut_raw() };
     registry[n] = None;
@@ -350,7 +351,8 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         // best-effort: the interrupted task's scheduler id (non-zero, stable per
         // task) — enough for perf to parse + count samples; precise user TID is a
         // future refinement. time/cpu are the real interrupt-time values.
-        let tid = ax_task::current().id().as_u64() as u32;
+        let tid = ax_std::os::arceos::task::current_thread_id()
+            .map_or(0, |thread| thread.as_u64() as u32);
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
@@ -593,7 +595,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
 ///
 /// The overflow handler ([`pmu_overflow_handler`]) writes the same ring in hard-
 /// IRQ context on this core; a process-context writer must therefore mask local
-/// IRQs ([`NoPreemptIrqSave`]) so the handler cannot run mid-write and interleave
+/// IRQs ([`PreemptIrqGuard`]) so the handler cannot run mid-write and interleave
 /// a sample at the same `data_head`. On a single core this fully serializes the
 /// two writers (M2 scope). The actual copy + head publish reuses [`ring_write`].
 ///
@@ -604,7 +606,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
 /// duration of the call (the event holds the backing `Arc` while the slot/ring is
 /// registered).
 pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqGuard::new();
     // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
     // overflow handler cannot race this write on the current core.
     unsafe { ring_write(ring_vaddr, ring_len, record) };

@@ -14,18 +14,10 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "multitask")]
-use ax_hal::mem::VirtAddr;
-
 static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::build_info::CPU_CAPACITY - 1];
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
-
-#[cfg(feature = "multitask")]
-fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    ax_hal::mem::boot_stack_bounds(cpu_id)
-}
 
 fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
     SECONDARY_CPUID_BY_SLOT[slot].store(cpu_id, Ordering::Release);
@@ -70,9 +62,15 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         }
     }
     ax_hal::percpu::init_secondary(cpu_id);
+    crate::guard::assert_boot_guards_released();
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
+    #[cfg(all(feature = "tls", feature = "multitask"))]
+    crate::task::initialize_early_bootstrap_tls()
+        .expect("failed to initialize secondary bootstrap TLS");
+    #[cfg(all(feature = "tls", not(feature = "multitask")))]
+    super::init_tls();
     ax_hal::init_early_secondary(cpu_id);
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
@@ -85,8 +83,8 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     #[cfg(feature = "multitask")]
     {
-        let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
-        ax_task::init_scheduler_secondary(stack_ptr, stack_size);
+        crate::task::initialize_secondary(cpu_id)
+            .expect("failed to initialize secondary task scheduler");
     }
 
     #[cfg(feature = "ipi")]
@@ -104,6 +102,9 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::mark_current_cpu_ready();
 
+    #[cfg(feature = "multitask")]
+    crate::task::publish_current_cpu_online().expect("failed to publish secondary scheduler CPU");
+
     info!("Secondary CPU {cpu_id:x} init OK.");
     super::INITED_CPUS.fetch_add(1, Ordering::Release);
 
@@ -111,11 +112,8 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    super::init_tls();
-
     #[cfg(feature = "multitask")]
-    ax_task::run_idle();
+    crate::task::run_idle();
     #[cfg(not(feature = "multitask"))]
     loop {
         ax_hal::asm::wait_for_irqs();

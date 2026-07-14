@@ -13,7 +13,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{
@@ -25,7 +24,10 @@ use linux_raw_sys::{
 use spin::LazyLock;
 use starry_vm::VmMutPtr;
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::future::{block_on, poll_io},
+};
 
 const INOTIFY_EVENT_SIZE: usize = 16;
 const MAX_QUEUED_EVENTS: usize = 1024;

@@ -7,7 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
-use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -20,7 +19,7 @@ use crate::{
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
-    task::AsThread,
+    task::current,
 };
 
 /// Convert open flags to [`OpenOptions`].

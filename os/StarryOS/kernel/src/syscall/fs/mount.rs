@@ -8,7 +8,7 @@ use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
     pseudofs::{MemoryFs, overlay::OverlayOptions},
-    task::{AsThread, tasks},
+    task::tasks,
 };
 
 const MNT_FORCE: i32 = 1;

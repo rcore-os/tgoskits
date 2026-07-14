@@ -5,7 +5,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_task::current;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
@@ -16,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{File, FileLike, resolve_at},
     mm::{UserPtr, vm_load_path_string},
-    task::AsThread,
+    task::current,
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;

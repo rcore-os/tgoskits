@@ -6,7 +6,7 @@
 //! (becomes readable when `expire_count > 0`).
 //!
 //! Implementation model: each `Timerfd::new` spawns exactly one long-lived
-//! background task (via `ax_task::spawn_raw`) that owns a weak reference to
+//! background task (via the Starry task facade) that owns a weak reference to
 //! the Timerfd. The task loops, reading the current deadline under the state
 //! lock, then parks on whichever fires first: the deadline (via
 //! `timeout_at_wall`) or an "arm event" poked by `settime` / `Drop`. One task
@@ -31,11 +31,13 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::future::{block_on, poll_io, timeout_at_wall},
+};
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
 /// musl and glibc both pass `CLOCK_REALTIME` or `CLOCK_MONOTONIC`. Other
@@ -100,10 +102,10 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        ax_task::spawn_raw(
+        crate::task::spawn_raw(
             move || block_on(run_timer(weak)),
             "timerfd".to_owned(),
-            ax_task::default_task_stack_size(),
+            crate::task::default_task_stack_size(),
         );
         Ok(this)
     }

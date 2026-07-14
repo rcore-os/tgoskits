@@ -1,0 +1,183 @@
+//! Bounded intrusive SMP scheduler inboxes.
+//!
+//! Producers publish embedded nodes using one lock-free compare/exchange loop.
+//! The owner drains detached FIFO snapshots into caller-provided storage.
+
+mod message;
+mod node;
+
+use core::{
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+};
+
+pub use message::{InboxKind, InboxMessage};
+pub use node::InboxNode;
+
+/// Result of publishing one embedded scheduler node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishResult {
+    /// The node was published and now owns one inbox membership.
+    Published,
+    /// This node already represents a coalesced pending request.
+    AlreadyPending,
+    /// The node or message belongs to another inbox class.
+    WrongKind,
+}
+
+/// Result of one bounded owner-side drain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrainBatch {
+    drained: usize,
+    pending: bool,
+}
+
+impl DrainBatch {
+    /// Returns messages written to caller storage.
+    pub const fn drained(self) -> usize {
+        self.drained
+    }
+
+    /// Reports whether another drain is required.
+    pub const fn pending(self) -> bool {
+        self.pending
+    }
+}
+
+/// Lock-free intrusive inbox for one scheduler message class.
+#[derive(Debug)]
+pub struct SchedulerInbox {
+    kind: InboxKind,
+    head: AtomicPtr<InboxNode>,
+    pending: AtomicPtr<InboxNode>,
+    draining: AtomicBool,
+}
+
+impl SchedulerInbox {
+    /// Creates an empty remote-wake, migration, or reclaim inbox.
+    pub const fn new(kind: InboxKind) -> Self {
+        Self {
+            kind,
+            head: AtomicPtr::new(ptr::null_mut()),
+            pending: AtomicPtr::new(ptr::null_mut()),
+            draining: AtomicBool::new(false),
+        }
+    }
+
+    /// Coalesces and publishes one embedded request without allocating.
+    pub fn publish(
+        &self,
+        node: core::pin::Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> PublishResult {
+        if node.kind() != self.kind || message.kind() != self.kind {
+            return PublishResult::WrongKind;
+        }
+        if !node.reserve(message) {
+            return PublishResult::AlreadyPending;
+        }
+
+        let node = node.get_ref() as *const InboxNode as *mut InboxNode;
+        let mut observed = self.head.load(Ordering::Relaxed);
+        loop {
+            unsafe {
+                // Reservation gives this producer exclusive write access to the
+                // selected node link until Release publication succeeds.
+                (*node).next().store(observed, Ordering::Relaxed);
+            }
+            match self.head.compare_exchange_weak(
+                observed,
+                node,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return PublishResult::Published,
+                Err(updated) => observed = updated,
+            }
+        }
+    }
+
+    /// Drains at most `limit` messages into preallocated caller storage.
+    ///
+    /// Concurrent drain attempts return immediately with `pending = true`; the
+    /// owner CPU remains the only logical consumer.
+    pub fn drain(&self, limit: usize, output: &mut [InboxMessage]) -> DrainBatch {
+        if self
+            .draining
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return DrainBatch {
+                drained: 0,
+                pending: true,
+            };
+        }
+
+        let mut cursor = self.take_snapshot();
+        let bound = limit.min(output.len());
+        let mut drained = 0;
+        while !cursor.is_null() && drained < bound {
+            let node = cursor;
+            cursor = unsafe {
+                // The drain guard gives this consumer exclusive ownership of the
+                // detached list and its intrusive links.
+                (*node).take_next()
+            };
+            output[drained] = unsafe {
+                // Acquire detachment observes the payload written before Release
+                // publication, and no producer may reuse it while queued is set.
+                (*node).take_message()
+            };
+            drained += 1;
+        }
+
+        self.pending.store(cursor, Ordering::Release);
+        let pending = !cursor.is_null() || !self.head.load(Ordering::Acquire).is_null();
+        self.draining.store(false, Ordering::Release);
+        DrainBatch { drained, pending }
+    }
+
+    /// Reports whether producer or partially drained work remains.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.load(Ordering::Acquire).is_null()
+            || !self.head.load(Ordering::Acquire).is_null()
+    }
+
+    fn take_snapshot(&self) -> *mut InboxNode {
+        let pending = self.pending.swap(ptr::null_mut(), Ordering::Acquire);
+        if !pending.is_null() {
+            return pending;
+        }
+        let stack = self.head.swap(ptr::null_mut(), Ordering::Acquire);
+        unsafe {
+            // The drain guard makes this the sole consumer of the detached stack.
+            reverse(stack)
+        }
+    }
+}
+
+/// Reverses one exclusively detached producer stack into FIFO order.
+///
+/// # Safety
+///
+/// `cursor` must be a detached list of pinned nodes whose queue memberships keep
+/// them alive, and the caller must be its exclusive consumer.
+unsafe fn reverse(mut cursor: *mut InboxNode) -> *mut InboxNode {
+    let mut reversed = ptr::null_mut();
+    while !cursor.is_null() {
+        let next = unsafe {
+            // Every link in the detached list is exclusively consumer-owned.
+            (*cursor).next().load(Ordering::Relaxed)
+        };
+        unsafe {
+            // The node cannot be republished until `take_message` clears queued.
+            (*cursor).next().store(reversed, Ordering::Relaxed);
+        }
+        reversed = cursor;
+        cursor = next;
+    }
+    reversed
+}
+
+#[cfg(test)]
+mod tests;

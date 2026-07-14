@@ -194,7 +194,7 @@ graph TD
 
 启用 `preempt` 后，生成的 `read_current()` / `write_current()` / `with_current()` 会通过 `ax_percpu::__priv::NoPreemptGuard` 在访问当前 CPU 数据前先关抢占。因此：
 
-- 该宏本身不直接依赖 `kernel_guard`
+- 该宏本身不直接依赖具体的抢占 guard 实现
 - 但它生成的代码依赖 `ax-percpu` 已正确导出抢占保护能力
 
 ## 测试

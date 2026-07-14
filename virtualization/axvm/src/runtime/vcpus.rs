@@ -239,9 +239,9 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
         ));
     }
 
-    // Use Weak reference in TaskExt to avoid keeping VM alive
+    // The extension keeps only a weak VM reference so its task cannot retain the VM.
     let inner = VCpuTask::new(vm, vcpu);
-    *vcpu_task.task_ext_mut() = Some(crate::AxTaskExt::from_impl(inner));
+    vcpu_task.set_vcpu_extension(inner);
 
     info!(
         "VCpu task {} created {:?}",

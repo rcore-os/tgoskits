@@ -153,7 +153,7 @@
 - 当前任务切换
 - 调度器局部状态一致性
 
-这些运行时语义配合。因此它经常与 `kernel_guard`、`ax-task`、`ax-hal` 一起出现。
+这些运行时语义配合。因此启用 `preempt` 时它通过 `ax-kspin::PreemptGuard` 使用 OS runtime 的抢占能力。
 
 ## 依赖关系
 
@@ -163,7 +163,7 @@
 | --- | --- |
 | `ax-percpu-macros` | 生成 per-CPU 静态变量与访问代码 |
 | `cfg-if` | 选择不同实现路径 |
-| `kernel_guard`（可选） | `preempt` 模式下提供抢占保护 |
+| `ax-kspin`（可选） | `preempt` 模式下提供 runtime-backed 抢占保护 |
 | `x86`（x86_64） | x86 per-CPU 基址相关辅助 |
 | `spin`（非裸机目标） | host/test 环境辅助初始化 |
 

@@ -252,7 +252,8 @@ int main(void)
         pol = syscall(SYS_SCHED_GETSCHEDULER, 0);
         prio = gp.sched_priority;
 
-        if (pol == SCHED_FIFO || pol == SCHED_RR) {
+        int base_pol = pol & ~SCHED_RESET_ON_FORK;
+        if (base_pol == SCHED_FIFO || base_pol == SCHED_RR) {
             CHECK(prio >= 1 && prio <= 99, "RT priority range");
         } else {
             CHECK(prio == 0, "non-RT priority must be 0");

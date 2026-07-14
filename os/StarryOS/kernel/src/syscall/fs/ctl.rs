@@ -13,7 +13,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
-use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
@@ -24,7 +23,7 @@ use starry_vm::{VmPtr, vm_write_slice};
 use crate::{
     file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
-    task::AsThread,
+    task::current,
     time::TimeValueLike,
 };
 

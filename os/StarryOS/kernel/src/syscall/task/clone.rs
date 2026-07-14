@@ -4,17 +4,22 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::VmMutPtr;
 
+use super::schedule_abi::fork_schedule_policy;
+#[cfg(target_arch = "riscv64")]
+use crate::task::spawn_starry_user_thread_with_fp_state_and_policy;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like},
     mm::copy_from_kernel,
-    task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
+    task::{
+        ProcessData, ProcessImage, Thread, add_task_to_table, allocate_user_tid, current,
+        new_user_task, spawn_starry_user_thread_with_policy,
+    },
 };
 
 bitflags! {
@@ -212,26 +217,25 @@ impl CloneArgs {
         let curr = current();
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
+        let (child_policy, child_reset_on_fork) =
+            fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
 
-        let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
+        let tid = allocate_user_tid()?;
         #[cfg(target_arch = "riscv64")]
-        {
+        let child_fp_state = {
             let mut fp_state = ax_cpu::FpState::default();
             fp_state.save();
             fp_state.fs = child_fp_fs;
-            new_task.ctx_mut().fp_state = fp_state;
-        }
+            fp_state
+        };
 
-        let tid = new_task.id().as_u64() as Pid;
         if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
             (parent_tid as *mut Pid).vm_write(tid).ok();
         }
 
-        let new_proc_data = if flags.contains(CloneFlags::THREAD) {
-            new_task
-                .ctx_mut()
-                .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
-            old_proc_data.clone()
+        let (new_proc_data, page_table_root) = if flags.contains(CloneFlags::THREAD) {
+            let page_table_root = old_proc_data.aspace().lock().page_table_root().as_usize();
+            (old_proc_data.clone(), page_table_root)
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
                 old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
@@ -248,9 +252,7 @@ impl CloneArgs {
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
             };
-            new_task
-                .ctx_mut()
-                .set_page_table_root(aspace.lock().page_table_root());
+            let page_table_root = aspace.lock().page_table_root().as_usize();
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
@@ -276,7 +278,13 @@ impl CloneArgs {
                 flags.contains(CloneFlags::VM),
             );
             proc_data.set_umask(old_proc_data.umask());
-            proc_data.set_nice(old_proc_data.nice());
+            let child_nice = match child_policy {
+                ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => {
+                    i32::from(nice.get())
+                }
+                _ => old_proc_data.nice(),
+            };
+            proc_data.set_nice(child_nice);
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -355,7 +363,7 @@ impl CloneArgs {
                 }
             }
 
-            proc_data
+            (proc_data, page_table_root)
         };
 
         new_proc_data.proc.add_thread(tid);
@@ -391,8 +399,6 @@ impl CloneArgs {
         // yet spawned) so the counter is present the first time the child runs.
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::on_clone_inherit(curr_thread, &thr);
-        *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
-
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
@@ -423,7 +429,29 @@ impl CloneArgs {
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
-        let task = spawn_task(new_task);
+        #[cfg(target_arch = "riscv64")]
+        let task = spawn_starry_user_thread_with_fp_state_and_policy(
+            new_user_task(new_uctx, set_child_tid),
+            curr.name(),
+            crate::config::KERNEL_STACK_SIZE,
+            page_table_root,
+            child_fp_state,
+            thr,
+            child_policy,
+            child_reset_on_fork,
+        )
+        .map_err(map_task_creation_error)?;
+        #[cfg(not(target_arch = "riscv64"))]
+        let task = spawn_starry_user_thread_with_policy(
+            new_user_task(new_uctx, set_child_tid),
+            curr.name(),
+            crate::config::KERNEL_STACK_SIZE,
+            page_table_root,
+            thr,
+            child_policy,
+            child_reset_on_fork,
+        )
+        .map_err(map_task_creation_error)?;
         add_task_to_table(&task);
 
         if trace_clone && needs_vfork_block {
@@ -457,6 +485,16 @@ impl CloneArgs {
         }
 
         Ok(tid as _)
+    }
+}
+
+fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> AxError {
+    use ax_std::os::arceos::task::TaskError;
+
+    match error {
+        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => AxError::NoMemory,
+        TaskError::DeadlineAdmission | TaskError::ThreadBusy => AxError::ResourceBusy,
+        _ => AxError::BadState,
     }
 }
 

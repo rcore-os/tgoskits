@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 use core::{fmt, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
@@ -16,7 +15,10 @@ use crate::{
     file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{
+        future::{self, block_on, poll_io},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 

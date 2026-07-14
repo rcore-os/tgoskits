@@ -82,30 +82,6 @@ impl Cred {
         }
     }
 
-    /// Create credentials for an unprivileged identity.
-    ///
-    /// The bounding set remains full so future privileged transitions can
-    /// still be represented, but the effective/permitted/ambient sets start
-    /// empty.
-    pub fn unprivileged(uid: u32, gid: u32) -> Self {
-        Self {
-            uid,
-            gid,
-            euid: uid,
-            egid: gid,
-            suid: uid,
-            sgid: gid,
-            fsuid: uid,
-            fsgid: gid,
-            groups: Arc::from([].as_slice()),
-            cap_inheritable: 0,
-            cap_permitted: 0,
-            cap_effective: 0,
-            cap_bounding: CAP_MASK,
-            cap_ambient: 0,
-        }
-    }
-
     /// Check whether a capability is present in the effective set.
     pub fn has_cap(&self, cap: u32) -> bool {
         self.cap_effective & cap_bit(cap) != 0

@@ -1,10 +1,9 @@
 use core::mem::size_of;
 
 use ax_errno::{AxError, LinuxError};
-use ax_task::current;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::current;
 
 /// Linux rseq area layout used for ABI validation.
 #[repr(C)]

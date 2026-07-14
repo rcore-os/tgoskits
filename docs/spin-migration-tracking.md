@@ -131,7 +131,7 @@
   因此本阶段先落地非睡眠 `SpinRwLock`；可睡眠读写锁暂不引入，留到后续出现明确长临界区或
   可睡眠上下文需求时单独设计。
 - 逐点盘点当前 `spin::RwLock` 使用点，至少覆盖 StarryOS 文件表/任务表/文件锁/AIO、
-  `ax-net` 路由和 socket 状态、`axtask` 任务注册表、`axfs-ng` 注册器和缓存、
+  `ax-net` 路由和 socket 状态、`ax-task` 任务注册表、`axfs-ng` 注册器和缓存、
   `rdrive` OSAL、`arceos_posix_api` fd/pthread 表以及 `usb-host` xHCI 寄存器访问。
 - 对每个使用点记录上下文：是否可能在 IRQ/禁抢占路径调用、持锁区是否可能睡眠或阻塞、
   临界区长短、是否有跨锁嵌套、是否需要 `const fn new` 静态初始化、是否依赖 `try_*`

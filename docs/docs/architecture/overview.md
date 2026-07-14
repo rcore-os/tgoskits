@@ -18,7 +18,7 @@ flowchart TD
         C5["平台契约<br/>ax-plat percpu ..."]
         C6["Starry 组件<br/>starry-process starry-signal starry-vm"]
         C7["虚拟化组件<br/>axvm axvm-types axvmconfig arch_vcpu axvisor_api"]
-        C8["基础工具<br/>axerrno axio kernel_guard kspin ..."]
+        C8["基础工具<br/>axerrno axio kspin trait-ffi ..."]
     end
 
     subgraph ArceOS["ArceOS"]

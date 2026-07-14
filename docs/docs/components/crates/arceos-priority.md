@@ -33,22 +33,10 @@ flowchart LR
     F --> G["join + 结果汇总"]
 ```
 
-`ax_set_current_priority()` 在 `ax_api::task` 中最终调用的是 `ax-task::set_priority(prio)`，而 `ax-task` 的实现明确说明：在 CFS 下这个值是 `nice`，范围通常是 `-20..19`。
+`ax_set_current_priority()` 在 `ax_api::task` 中最终更新当前线程的 Fair policy；这个值是 `nice`，范围为 `-20..=19`，生产调度器使用 EEVDF 的 Linux nice weight 表。
 
-### 1.3 为什么顺序断言被限定得很窄
-源码只在下面这个条件下做完成顺序断言：
-
-- `cfg!(feature = "sched-cfs")`
-- `available_parallelism() == 1`
-
-这非常重要。它说明当前作者并没有声称“所有环境下优先级都会表现成固定顺序”，而只是说：
-
-- 在 CFS
-- 且单核
-
-时，较高优先级的短任务应更早离开。
-
-而默认 `qemu-riscv64.toml` 使用 `-smp 4`，所以在自动回归里，这个顺序断言通常不会触发。当前自动化更偏向“API 与计算结果 smoke test”，而不是严格调度次序验证。
+### 1.3 为什么不固定完成顺序
+默认 QEMU 使用多核，完成顺序会受并行执行和唤醒时序影响。当前用例因此只验证 nice API、线程执行和 join 的正确性；EEVDF 的 lag、eligibility 和 virtual deadline 由 `ax-task` 的确定性模型测试覆盖。
 
 ## 核心功能
 ### 2.1 测试覆盖内容
@@ -56,7 +44,7 @@ flowchart LR
 
 1. `ax_set_current_priority()` 可以被调用且不会破坏任务执行。
 2. 多个带不同 `nice` 的任务仍能正确完成工作并 `join`。
-3. 在窄场景下，优先级差异会反映到离开时间顺序上。
+3. 改变优先级不会破坏线程生命周期或计算结果。
 
 ### 2.2 为什么还要比较 `expect` 与 `actual`
 如果只看离开时间，不足以判断调度路径是否正确。源码先对所有任务输入做一次基线求和，再把各任务结果汇总比较：
@@ -85,12 +73,11 @@ graph LR
 
 ### 直接依赖
 - `ax-std(alloc, multitask)`：需要堆对象、线程和 `join`。
-- `sched-rr` / `sched-cfs`：通过 feature 透传到底层调度器。
 
 ### 间接依赖
 - `ax_api::task::ax_set_current_priority`
 - `ax-task::set_priority`
-- 底层调度器实现（FIFO/RR/CFS 中的一种）
+- ax-task 的线程 policy 与 EEVDF fair runqueue
 
 ### 主要消费者
 - `ax-task` 调度器优先级路径改动后的回归。
@@ -110,15 +97,15 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 
 ### 注意事项
 1. 若要验证顺序，必须明确是单核还是多核。
-2. 若要验证 CFS 的 `nice` 语义，必须同时确认对应 feature 已打开。
+2. 若要验证 EEVDF 的 `nice` 语义，应使用单核确定性调度模型，避免把 QEMU wall-clock 顺序当作断言。
 3. 不要把输出时间当成性能基准报告；这里只能做相对语义检查。
 
 ### 4.3 更强验证的推荐方式
 如果你要真正验证“高优先级更早完成”的行为，建议额外准备：
 
 1. 单核 QEMU 配置
-2. 显式打开 `sched-cfs`
-3. 保持当前工作负载规模稳定
+2. 显式把线程 policy 设置为 Fair
+3. 保持当前工作负载和虚拟时间事件稳定
 
 否则默认 4 核配置下，顺序本来就不应被写死。
 
@@ -135,12 +122,11 @@ cargo arceos test qemu --target riscv64gc-unknown-none-elf
 ### 5.2 成功标准
 - 所有任务计算都能完成
 - `actual == expect`
-- 在满足单核 CFS 条件时，离开时间顺序满足断言
 - 最终打印 `Priority tests run OK!`
 
 ### 5.3 风险点
 - 多核下不要误把日志顺序波动理解为 bug。
-- 调度器 feature 切换后，要重新评估当前断言是否仍合理。
+- 调度策略或 nice weight 改动后，要同步运行 `ax-task` 的 reference scheduler 测试。
 
 ## 跨项目定位
 ### ArceOS

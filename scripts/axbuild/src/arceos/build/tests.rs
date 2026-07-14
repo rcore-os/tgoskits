@@ -347,10 +347,10 @@ log = "Warn"
 #[test]
 fn parse_makefile_features_splits_commas_whitespace_and_dedups() {
     assert_eq!(
-        build::parse_makefile_features(" lockdep, sched-rr  lockdep\tax-runtime/net "),
+        build::parse_makefile_features(" lockdep, multitask  lockdep\tax-runtime/net "),
         vec![
             "lockdep".to_string(),
-            "sched-rr".to_string(),
+            "multitask".to_string(),
             "ax-runtime/net".to_string()
         ]
     );

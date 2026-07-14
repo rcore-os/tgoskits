@@ -234,16 +234,20 @@ impl VmRuntimeHandle {
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {
         let current = crate::host::task::current_task();
-        let tasks: Vec<_> = self
-            .vcpu_task_list
-            .lock()
-            .values()
-            .filter(|task| !current.ptr_eq(task))
-            .cloned()
-            .collect();
+        let tasks: Vec<_> = {
+            let mut task_list = self.vcpu_task_list.lock();
+            let exited_task_ids: Vec<_> = task_list
+                .iter()
+                .filter_map(|(vcpu_id, task)| (!current.ptr_eq(task)).then_some(*vcpu_id))
+                .collect();
+            exited_task_ids
+                .into_iter()
+                .filter_map(|vcpu_id| task_list.remove(&vcpu_id))
+                .collect()
+        };
         let task_count = tasks.len();
         info!("VM[{vm_id}] Joining {task_count} VCpu tasks...");
-        for (idx, task) in tasks.iter().enumerate() {
+        for (idx, task) in tasks.into_iter().enumerate() {
             debug!(
                 "VM[{}] Joining VCpu task[{}]: {}",
                 vm_id,

@@ -20,7 +20,6 @@ sstc = ["riscv_vcpu/sstc"]
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
-extern-trait = "0.4"
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
@@ -31,7 +30,6 @@ spin = { workspace = true }
 ax-errno = { workspace = true }
 ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
-ax-kernel-guard = { workspace = true }
 ax-kspin.workspace = true
 ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }

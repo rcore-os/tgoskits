@@ -6,14 +6,20 @@ publish = false
 
 [features]
 default = []
-ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
+ax-std = [
+    "dep:ax-hal",
+    "dep:ax-runtime",
+    "dep:ax-std",
+    "ax-runtime/irq",
+    "ax-runtime/multitask",
+    "ax-std/multitask",
+]
 
 [dependencies]
 ax-driver.workspace = true
 ax-hal = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true }
-ax-task.workspace = true
 axplat-dyn.workspace = true
 axtest.workspace = true
 crab-usb.workspace = true

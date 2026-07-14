@@ -348,16 +348,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn replace_area_metadata(
-        &mut self,
-        start: VirtAddr,
-        size: usize,
-        flags: MappingFlags,
-        backend: Backend,
-    ) -> AxResult {
-        self.replace_area_metadata_with_reported_flags(start, size, flags, flags, backend)
-    }
-
     pub fn replace_area_metadata_with_reported_flags(
         &mut self,
         start: VirtAddr,
@@ -502,14 +492,6 @@ impl AddrSpace {
         })?;
         ax_runtime::hal::cache::flush_icache_all();
         Ok(())
-    }
-
-    /// Updates mapping within the specified virtual address range.
-    ///
-    /// Returns an error if the address range is out of the address space or not
-    /// aligned.
-    pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
-        self.protect_with_reported_flags(start, size, flags, flags)
     }
 
     pub fn protect_with_reported_flags(

@@ -9,7 +9,6 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_runtime::hal::irq::IrqId;
 use ax_sync::Mutex as BlockingMutex;
-use ax_task::IrqNotify;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
@@ -34,6 +33,7 @@ use super::{
     },
     irq::{self, PendingUsbIrqSlot},
 };
+use crate::task::future::IrqNotify;
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
@@ -198,7 +198,7 @@ fn wait_endpoint(
         .lock()
         .submit(request)
         .map_err(map_transfer_error)?;
-    ax_task::future::block_on(poll_fn(|cx| {
+    crate::task::future::block_on(poll_fn(|cx| {
         match endpoint.lock().poll_request(request_id, cx) {
             Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
             Poll::Pending => Poll::Pending,
@@ -216,7 +216,7 @@ fn wait_control(
         .ctrl_ep_mut()
         .submit(request)
         .map_err(map_transfer_error)?;
-    ax_task::future::block_on(poll_fn(|cx| {
+    crate::task::future::block_on(poll_fn(|cx| {
         match live_device
             .device
             .lock()
@@ -463,7 +463,7 @@ impl UsbFsManager {
                 }
             };
 
-            let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+            let devices = match crate::task::future::block_on(guard.host_mut().probe_devices()) {
                 Ok(devices) => devices,
                 Err(err) => {
                     warn!("usbfs: refresh probe failed on bus {bus_num}: {err:?}");
@@ -730,7 +730,7 @@ impl UsbFsManager {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
-        ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
+        crate::task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
             warn!(
                 "usbfs: failed to open live device on host {:?} for USB device id {}: {:?}",
                 host_device_id,
@@ -745,8 +745,8 @@ impl UsbFsManager {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
             .map_err(|_| AxError::NoSuchDevice)?;
         let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
-        let devices =
-            ax_task::future::block_on(guard.host_mut().probe_devices()).map_err(map_usb_error)?;
+        let devices = crate::task::future::block_on(guard.host_mut().probe_devices())
+            .map_err(map_usb_error)?;
         drop(guard);
         self.apply_probe_results(host_device_id, bus_num, devices);
         Ok(())
@@ -822,7 +822,7 @@ impl UsbFsManager {
         {
             let mut device = live_device.device.lock();
             if let Err(err) =
-                ax_task::future::block_on(device.claim_interface(interface, alternate))
+                crate::task::future::block_on(device.claim_interface(interface, alternate))
                     .map_err(map_usb_error)
             {
                 live_device.interface_owners.lock().remove(&interface);
@@ -858,7 +858,7 @@ impl UsbFsManager {
     fn live_ensure_configured(&self, stable_id: UsbStableId) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
-        if ax_task::future::block_on(device.current_configuration_descriptor()).is_ok() {
+        if crate::task::future::block_on(device.current_configuration_descriptor()).is_ok() {
             return Ok(());
         }
 
@@ -867,14 +867,14 @@ impl UsbFsManager {
             .first()
             .map(|config| config.configuration_value)
             .ok_or(AxError::NotFound)?;
-        ax_task::future::block_on(device.set_configuration(configuration_value))
+        crate::task::future::block_on(device.set_configuration(configuration_value))
             .map_err(map_usb_error)
     }
 
     fn live_set_configuration(&self, stable_id: UsbStableId, configuration: u8) -> AxResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
-        ax_task::future::block_on(device.set_configuration(configuration))
+        crate::task::future::block_on(device.set_configuration(configuration))
             .map_err(map_usb_error)?;
         live_device.endpoints.write().clear();
         live_device.endpoint_interfaces.write().clear();
@@ -1206,7 +1206,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
         };
 
         info!("usbfs: initializing host on bus {}", bus_num);
-        if let Err(err) = ax_task::future::block_on(guard.host_mut().init()) {
+        if let Err(err) = crate::task::future::block_on(guard.host_mut().init()) {
             warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
             failed_device_ids.push((device_id, host_irq));
             continue;
@@ -1233,7 +1233,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             irq::bootstrap_irq(host_irq);
         }
 
-        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+        let devices = match crate::task::future::block_on(guard.host_mut().probe_devices()) {
             Ok(devices) => devices,
             Err(err) => {
                 warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");

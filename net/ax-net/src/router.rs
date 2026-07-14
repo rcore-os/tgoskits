@@ -619,7 +619,9 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-tx", device.name);
-        ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        if let Err(error) = crate::spawn_permanent_worker(name, move || device_tx_worker(device)) {
+            error!("failed to start network TX worker: {error}");
+        }
     }
 
     fn start_device_rx_worker(&self, dev: usize) {
@@ -632,7 +634,9 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-rx", device.name);
-        ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        if let Err(error) = crate::spawn_permanent_worker(name, move || device_rx_worker(device)) {
+            error!("failed to start network RX worker: {error}");
+        }
     }
 
     /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
@@ -986,7 +990,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             if device.rx_queue.push(rx).is_err() {
                 warn!("{}: RX queue is full, dropping packet", device.name);
                 crate::request_poll();
-                ax_task::yield_now();
+                let _result = ax_task::yield_current_cpu();
                 break;
             }
             device.count_rx(packet_len);

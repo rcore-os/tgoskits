@@ -35,7 +35,6 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -47,7 +46,7 @@ use spin::LazyLock;
 use crate::{
     file::{FileLike, IoDst, IoSrc},
     syscall::in_root_net_ns,
-    task::AsThread,
+    task::future::{block_on, poll_io},
 };
 
 /// Maximum number of queued receive messages per socket.  Matches
@@ -318,7 +317,7 @@ impl NetlinkSocket {
         match state.addr {
             Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
             _ => {
-                let pid = ax_task::current().as_thread().proc_data.proc.pid();
+                let pid = crate::task::current().as_thread().proc_data.proc.pid();
                 state.addr = Some(sockaddr_nl {
                     nl_family: AF_NETLINK as _,
                     nl_pad: 0,

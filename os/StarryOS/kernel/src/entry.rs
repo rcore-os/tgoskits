@@ -4,17 +4,19 @@ use alloc::{
 };
 
 use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_kspin::PreemptIrqGuard;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
-use ax_task::{AxTaskExt, spawn_task};
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
-    task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    task::{
+        ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task,
+        spawn_starry_user_thread,
+    },
     tracepoint::tracepoint_init,
 };
 
@@ -53,8 +55,7 @@ pub fn init(args: &[String], envs: &[String]) {
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
-    let mut task = new_user_task(&name, uctx, 0);
-    task.ctx_mut().set_page_table_root(uspace.page_table_root());
+    let page_table_root = uspace.page_table_root().as_usize();
 
     // PID 1 must really be 1: the init process is the root of the process
     // hierarchy and userspace (e.g. systemd's `getpid() == 1` system-manager
@@ -90,11 +91,17 @@ pub fn init(args: &[String], envs: &[String]) {
     }
 
     let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
-    *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = {
-        let _guard = NoPreemptIrqSave::new();
-        let task = spawn_task(task);
+        let _guard = PreemptIrqGuard::new();
+        let task = spawn_starry_user_thread(
+            new_user_task(uctx, 0),
+            name,
+            crate::config::KERNEL_STACK_SIZE,
+            page_table_root,
+            thr,
+        )
+        .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));
         add_task_to_table(&task);
         tty::arm_console_irq();
         task

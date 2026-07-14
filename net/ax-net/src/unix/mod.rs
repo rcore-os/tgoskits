@@ -28,7 +28,6 @@ use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
@@ -41,6 +40,7 @@ pub use self::{
 };
 use crate::{
     RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    blocking::poll_io,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -225,9 +225,9 @@ impl SocketOps for UnixSocket {
             .transport
             .get_option_inner(&mut GetSocketOption::NonBlocking(&mut nonblocking));
         let (transport, peer_addr) =
-            block_on(poll_io(&self.transport, IoEvents::IN, nonblocking, || {
+            poll_io(&self.transport, IoEvents::IN, nonblocking, None, || {
                 self.transport.try_accept()
-            }))?;
+            })?;
         Ok(Self {
             transport,
             local_addr: Mutex::new(self.local_addr.lock().clone()),

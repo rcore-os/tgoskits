@@ -1,0 +1,178 @@
+//! Per-unit-test-binary task and lock runtime symbols.
+
+#[cfg(feature = "lockdep")]
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use ax_kspin::{LockRuntime, LockdepEvent, impl_trait as impl_lock_runtime};
+use ax_task::{
+    impl_trait as impl_task_runtime,
+    runtime::{
+        AddressSpaceHandle, CpuLocalHandle, ExecutionContextHandle, IrqGuardToken,
+        KernelContextRequest, RuntimeCpuId, RuntimeHandleResult, RuntimeStatus, SchedSwitchRecord,
+        StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle, TlsRequest,
+        UserContextRequest,
+    },
+};
+
+struct UnitTestLockRuntime;
+struct UnitTestTaskRuntime;
+
+static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
+static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_IPIS: AtomicUsize = AtomicUsize::new(0);
+static LAST_SCHEDULER_IPI_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
+static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(feature = "lockdep")]
+std::thread_local! {
+    static HELD_LOCKS: RefCell<ax_lockdep::HeldLockStack> =
+        const { RefCell::new(ax_lockdep::HeldLockStack::new()) };
+}
+
+impl_lock_runtime! {
+    impl LockRuntime for UnitTestLockRuntime {
+        fn irq_enter() {}
+        fn irq_exit() {}
+        fn irqs_enabled() -> bool { true }
+        fn preempt_enter() {
+            PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
+        }
+        fn preempt_exit() -> bool {
+            PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) == 1
+        }
+        fn in_hard_irq() -> bool { false }
+        fn need_resched() -> bool { false }
+        fn schedule() {}
+        fn current_thread_id() -> u64 { 1 }
+        fn lockdep_acquire(_event: LockdepEvent) {}
+        fn lockdep_release(_event: LockdepEvent) {}
+        fn lockdep_set_trace_enabled(_enabled: bool) {}
+        fn lockdep_dump_trace() {}
+    }
+}
+
+impl_task_runtime! {
+    impl TaskRuntime for UnitTestTaskRuntime {
+        fn task_system_handle() -> TaskSystemHandle {
+            TaskSystemHandle::from_raw(TASK_SYSTEM.load(Ordering::Acquire))
+        }
+        fn current_cpu_local_handle() -> CpuLocalHandle {
+            CpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire))
+        }
+        fn cpu_local_handle(_cpu: RuntimeCpuId) -> CpuLocalHandle {
+            Self::current_cpu_local_handle()
+        }
+        fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
+        fn online_cpu_count() -> u32 { 1 }
+        fn irq_guard_enter() -> IrqGuardToken { IrqGuardToken::from_raw(1) }
+        unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+        fn finish_initial_context_switch() {}
+        fn scheduler_frame_guard_enter() {}
+        fn scheduler_frame_guard_exit() {}
+        fn in_hard_irq() -> bool { false }
+        fn monotonic_ns() -> u64 { 0 }
+        fn timer_resolution_ns() -> u64 { 1 }
+        fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
+        fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
+            LAST_SCHEDULER_IPI_CPU.store(cpu.as_u32() as usize, Ordering::Release);
+            SCHEDULER_IPIS.fetch_add(1, Ordering::AcqRel);
+            RuntimeStatus::Success
+        }
+        fn wait_for_interrupt() {}
+        fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn create_user_context(_request: UserContextRequest) -> RuntimeHandleResult {
+            if _request.address_space.is_none() {
+                RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle)
+            } else {
+                RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+            }
+        }
+        fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
+        unsafe fn switch_context(
+            _previous: ExecutionContextHandle,
+            _next: ExecutionContextHandle,
+        ) {
+            panic!("unit-test runtime has no execution contexts")
+        }
+        fn install_address_space(_address_space: AddressSpaceHandle) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
+        fn flush_tlb_local(_start: usize, _size: usize) {}
+        fn trace_sched_switch(_record: SchedSwitchRecord) {}
+        fn fatal_invariant(_code: u32, _argument: usize) -> ! {
+            panic!("scheduler invariant reported by ax-sync unit test")
+        }
+    }
+}
+
+#[cfg(feature = "lockdep")]
+struct UnitTestKspinLockdep;
+
+#[cfg(feature = "lockdep")]
+#[ax_crate_interface::impl_interface]
+impl ax_lockdep::KspinLockdepIf for UnitTestKspinLockdep {
+    fn collect_current_task_held_locks(snapshot: &mut ax_lockdep::HeldLockSnapshot) {
+        HELD_LOCKS.with(|held| snapshot.extend(&held.borrow()));
+    }
+
+    fn push_current_task_held_lock(held: ax_lockdep::HeldLock) {
+        HELD_LOCKS.with(|stack| stack.borrow_mut().push(held));
+    }
+
+    fn pop_current_task_held_lock(lock_addr: usize) {
+        HELD_LOCKS.with(|stack| stack.borrow_mut().pop_checked(lock_addr));
+    }
+
+    fn console_write_str(_text: &str) {}
+
+    fn fatal() -> ! {
+        panic!("ax-sync unit-test lockdep fatal")
+    }
+}
+
+pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexGuard<'static, ()> {
+    let guard = RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    TASK_SYSTEM.store(task_system, Ordering::Release);
+    CPU_LOCAL.store(cpu_local, Ordering::Release);
+    guard
+}
+
+pub(crate) fn clear() {
+    CPU_LOCAL.store(0, Ordering::Release);
+    TASK_SYSTEM.store(0, Ordering::Release);
+    PREEMPT_DEPTH.store(0, Ordering::Release);
+}
+
+pub(crate) fn reset_scheduler_ipis() {
+    SCHEDULER_IPIS.store(0, Ordering::Release);
+    LAST_SCHEDULER_IPI_CPU.store(usize::MAX, Ordering::Release);
+}
+
+pub(crate) fn scheduler_ipi_count() -> usize {
+    SCHEDULER_IPIS.load(Ordering::Acquire)
+}
+
+pub(crate) fn last_scheduler_ipi_cpu() -> Option<usize> {
+    let cpu = LAST_SCHEDULER_IPI_CPU.load(Ordering::Acquire);
+    (cpu != usize::MAX).then_some(cpu)
+}
+
+pub(crate) fn preempt_depth() -> usize {
+    PREEMPT_DEPTH.load(Ordering::Acquire)
+}

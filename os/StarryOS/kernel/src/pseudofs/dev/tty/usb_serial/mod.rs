@@ -384,7 +384,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_with_name(
             move || {
                 let mut buf = [0u8; USB_SERIAL_RX_CHUNK];
                 loop {
@@ -412,7 +412,7 @@ impl UsbSerialBackendState {
                         }
                     };
                     match backend.bulk_in_rx(&session, &mut buf) {
-                        Ok(0) => ax_task::yield_now(),
+                        Ok(0) => crate::task::yield_now(),
                         Ok(actual) => {
                             backend.push_rx(&buf[..actual.min(buf.len())]);
                             if backend.session_closing.load(Ordering::Acquire) {
@@ -445,7 +445,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_with_name(
             move || loop {
                 let result = {
                     let _guard = backend.output_lock.lock();

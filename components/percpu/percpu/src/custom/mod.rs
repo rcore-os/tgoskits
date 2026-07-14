@@ -6,7 +6,7 @@ use core::{
 mod tp;
 
 #[cfg(feature = "preempt")]
-use ax_kernel_guard::NoPreempt;
+use ax_kspin::PreemptGuard;
 pub use tp::*;
 
 #[repr(transparent)]
@@ -22,7 +22,7 @@ where
     F: FnOnce() -> R,
 {
     #[cfg(feature = "preempt")]
-    let g = NoPreempt::new();
+    let g = PreemptGuard::new();
     let res = f();
     #[cfg(feature = "preempt")]
     drop(g);

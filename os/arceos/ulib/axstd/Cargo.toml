@@ -25,10 +25,10 @@ default = ["alloc", "tls", "fd"]
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-hal/fp-simd"]
+fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 
 # User space support
 uspace = ["ax-runtime/uspace"]
@@ -52,10 +52,8 @@ tls = ["ax-runtime/tls"]
 # Multi-threading and scheduler
 multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
 lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
-task-ext = ["ax-task/task-ext"]
-tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
-sched-cfs = ["irq", "multitask", "ax-task/sched-cfs"]
+task-ext = []
+tracepoint-hooks = []
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -120,7 +118,6 @@ ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
-ax-task.workspace = true
 libc.workspace = true
 lock_api.workspace = true
 spin.workspace = true

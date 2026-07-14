@@ -121,7 +121,7 @@ rg -n "spin::RwLock|use spin::RwLock" \
 rg -n "SpinNoPreempt|SpinNoPreemptGuard|BaseSpinLock<NoPreempt|NoPreempt" \
   --glob '*.rs' --glob '!target/**'
 
-rg -n "ax_kernel_guard::NoPreempt|NoPreempt::new\(|NoPreemptGuard::new\(" \
+rg -n "ax_kspin::PreemptGuard|PreemptGuard::new\(|NoPreemptGuard::new\(" \
   --glob '*.rs' --glob '!target/**'
 ```
 

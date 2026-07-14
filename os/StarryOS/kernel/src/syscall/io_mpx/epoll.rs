@@ -4,7 +4,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -21,7 +20,10 @@ use crate::{
     },
     mm::{UserConstPtr, UserPtr, check_access, nullable},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{
+        future::{self, block_on, poll_io},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 

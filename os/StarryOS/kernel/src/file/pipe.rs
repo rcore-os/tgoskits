@@ -8,10 +8,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_sync::Mutex;
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
@@ -27,7 +23,11 @@ use starry_vm::VmMutPtr;
 use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc},
-    task::{AsThread, send_signal_to_process},
+    task::{
+        current,
+        future::{block_on, poll_io},
+        send_signal_to_process,
+    },
 };
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB

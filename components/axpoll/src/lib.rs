@@ -208,46 +208,6 @@ impl PollSet {
         }
         woke
     }
-
-    /// Wakes up registered wakers whose interests intersect `ready` from IRQ context.
-    ///
-    /// Unlike [`wake`](Self::wake), this does not allocate a replacement
-    /// waiter buffer. It drains the already-initialized entries in place, so
-    /// device IRQ handlers can acknowledge the device and then wake matching
-    /// poll waiters without allocating in hard IRQ context.
-    pub fn wake_from_irq(&self, ready: IoEvents) -> usize {
-        let Some(inner) = self.0.get() else {
-            return 0;
-        };
-        let mut ready_entries = [const { MaybeUninit::<Entry>::uninit() }; POLL_SET_CAPACITY];
-        let ready_len = {
-            let mut inner = inner.lock();
-            let len = inner.len();
-            if len == 0 {
-                return 0;
-            }
-
-            let mut ready_len = 0;
-            let mut keep_len = 0;
-            for i in 0..len {
-                let entry = unsafe { inner.entries[i].assume_init_read() };
-                if entry.interests.intersects(ready) {
-                    ready_entries[ready_len].write(entry);
-                    ready_len += 1;
-                } else {
-                    inner.entries[keep_len].write(entry);
-                    keep_len += 1;
-                }
-            }
-            inner.cursor = keep_len;
-            ready_len
-        };
-
-        for entry in ready_entries.iter_mut().take(ready_len) {
-            unsafe { entry.assume_init_read() }.wake();
-        }
-        ready_len
-    }
 }
 
 impl Drop for PollSet {

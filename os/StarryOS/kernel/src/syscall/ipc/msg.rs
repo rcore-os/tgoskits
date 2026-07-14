@@ -3,7 +3,6 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::monotonic_time_nanos;
 use ax_sync::Mutex;
-use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -13,7 +12,7 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
     MSG_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::task::{AsThread, WaitQueue as MsgWaitQueue};
+use crate::task::{WaitQueue as MsgWaitQueue, current};
 
 /// Data structure describing a message queue.
 #[repr(C)]

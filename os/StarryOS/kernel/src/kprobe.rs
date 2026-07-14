@@ -30,15 +30,13 @@ use kprobe::{
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
 
-use crate::task::AsThread;
-
 /// Raw mutex used as the `L` type parameter for the `kprobe` crate's
 /// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
 /// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
-/// local IRQs across the critical section (`NoPreemptIrqSave` semantics, the
+/// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
 /// preemption and IRQs enabled could be re-entered on the same CPU and would
@@ -188,7 +186,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 
     fn insert_kretprobe_instance_to_task(instance: RetprobeInstance) {
-        let task = ax_task::current_may_uninit();
+        let task = crate::task::current_starry_task().ok();
         if let Some(task) = task {
             let thread = task.try_as_thread();
             if let Some(thread) = thread {
@@ -203,7 +201,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 
     fn pop_kretprobe_instance_from_task() -> RetprobeInstance {
-        let task = ax_task::current_may_uninit();
+        let task = crate::task::current_starry_task().ok();
         if let Some(task) = task {
             let thread = task.try_as_thread();
             if let Some(thread) = thread {

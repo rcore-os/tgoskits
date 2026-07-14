@@ -20,7 +20,6 @@ use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
-use ax_task::current;
 use kbpf_basic::{
     helper::RawBPFHelperFn,
     linux_bpf::{bpf_attr, bpf_cmd},
@@ -31,6 +30,8 @@ use kbpf_basic::{
     prog::BpfProgMeta,
     raw_tracepoint::BpfRawTracePointArg,
 };
+
+use crate::task::current;
 
 pub(crate) mod error;
 pub mod map;
@@ -45,7 +46,6 @@ use crate::{
     kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
-    task::AsThread,
 };
 
 /// The global BPF helper-function table (id → `RawBPFHelperFn`). Populated by

@@ -6,7 +6,7 @@
 > 版本：`0.5.0`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/def_interface.rs`、`src/impl_interface.rs`、`src/args.rs`、`src/naming.rs`
 
-`ax-crate-interface` 是 ArceOS 生态里非常关键、也非常“非典型”的基础设施。它通过过程宏把 trait 定义、实现和调用拆到不同 crate 中，再用链接期符号把它们重新拼起来，从而避免传统泛型注入或显式依赖带来的循环依赖问题。`axplat`、`kernel_guard`、`ax-log`、`axvisor_api` 等公共契约层都建立在这套机制之上。
+`ax-crate-interface` 是 ArceOS 生态里非常关键、也非常“非典型”的基础设施。它通过过程宏把 trait 定义、实现和调用拆到不同 crate 中，再用链接期符号把它们重新拼起来，从而避免传统泛型注入或显式依赖带来的循环依赖问题。`axplat`、`ax-log`、`axvisor_api` 等公共契约层都建立在这套机制之上。
 
 ## 架构设计
 
@@ -154,7 +154,6 @@ flowchart TD
 - `ax-log`
 - `ax-runtime`
 - `ax-task`
-- `kernel_guard`
 - `axvisor_api`
 - `os/axvisor`
 
@@ -164,7 +163,6 @@ flowchart TD
 graph TD
     A[crate_interface]
     A --> B[axplat]
-    A --> C[kernel_guard]
     A --> D[ax-log]
     A --> E[axvisor_api]
     B --> F[axplat-*]

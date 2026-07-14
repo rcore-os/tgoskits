@@ -2,7 +2,6 @@ use core::mem::align_of;
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_task::current;
 use linux_raw_sys::general::{
     FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ,
     FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE,
@@ -13,7 +12,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     mm::atomic_update_user_u32,
-    task::{AsThread, FutexKey, FutexKeyMode, futex_table_for, get_task},
+    task::{FutexKey, FutexKeyMode, current, futex_table_for, get_task},
     time::TimeValueLike,
 };
 
@@ -240,7 +239,7 @@ pub fn sys_futex(
                 };
                 count = futex.wq.wake(wake_count, bitset);
             }
-            ax_task::yield_now();
+            crate::task::yield_now();
             Ok(count as _)
         }
         FutexCommand::Requeue | FutexCommand::CmpRequeue => {
@@ -283,7 +282,7 @@ pub fn sys_futex(
             };
 
             if count > 0 {
-                ax_task::yield_now();
+                crate::task::yield_now();
             }
             Ok(count as _)
         }
@@ -302,7 +301,7 @@ pub fn sys_futex(
             })?;
 
             if count > 0 {
-                ax_task::yield_now();
+                crate::task::yield_now();
             }
             Ok(count as _)
         }

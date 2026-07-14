@@ -1,0 +1,91 @@
+//! Trait-FFI runtime stubs linked only into the ax-net unit-test binary.
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use ax_kspin::{LockRuntime, LockdepEvent, impl_trait as impl_lock_runtime};
+use ax_task::{
+    impl_trait as impl_task_runtime,
+    runtime::{TaskRuntime, *},
+};
+
+static NEXT_IRQ_TOKEN: AtomicUsize = AtomicUsize::new(1);
+
+struct NetTestTaskRuntime;
+
+impl_task_runtime! {
+    impl TaskRuntime for NetTestTaskRuntime {
+        fn task_system_handle() -> TaskSystemHandle { TaskSystemHandle::NONE }
+        fn current_cpu_local_handle() -> CpuLocalHandle { CpuLocalHandle::NONE }
+        fn cpu_local_handle(_cpu: RuntimeCpuId) -> CpuLocalHandle { CpuLocalHandle::NONE }
+        fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
+        fn online_cpu_count() -> u32 { 1 }
+        fn irq_guard_enter() -> IrqGuardToken {
+            IrqGuardToken::from_raw(NEXT_IRQ_TOKEN.fetch_add(1, Ordering::Relaxed))
+        }
+        unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+        fn finish_initial_context_switch() {}
+        fn scheduler_frame_guard_enter() {}
+        fn scheduler_frame_guard_exit() {}
+        fn in_hard_irq() -> bool { false }
+        fn monotonic_ns() -> u64 { ax_hal::time::monotonic_time_nanos() }
+        fn timer_resolution_ns() -> u64 { 1 }
+        fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
+        fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
+        fn wait_for_interrupt() {}
+        fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+        }
+        fn create_user_context(_request: UserContextRequest) -> RuntimeHandleResult {
+            if _request.address_space.is_none() {
+                RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle)
+            } else {
+                RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
+            }
+        }
+        fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
+        unsafe fn switch_context(
+            _previous: ExecutionContextHandle,
+            _next: ExecutionContextHandle,
+        ) {
+            panic!("ax-net unit tests do not switch scheduler contexts")
+        }
+        fn install_address_space(_address_space: AddressSpaceHandle) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
+        fn flush_tlb_local(_start: usize, _size: usize) {}
+        fn trace_sched_switch(_record: SchedSwitchRecord) {}
+        fn fatal_invariant(code: u32, argument: usize) -> ! {
+            panic!("ax-net test scheduler invariant {code} failed with {argument:#x}")
+        }
+    }
+}
+
+struct NetTestLockRuntime;
+
+impl_lock_runtime! {
+    impl LockRuntime for NetTestLockRuntime {
+        fn irq_enter() {}
+        fn irq_exit() {}
+        fn irqs_enabled() -> bool { true }
+        fn preempt_enter() {}
+        fn preempt_exit() -> bool { true }
+        fn in_hard_irq() -> bool { false }
+        fn need_resched() -> bool { false }
+        fn schedule() {}
+        fn current_thread_id() -> u64 { 0 }
+        fn lockdep_acquire(_event: LockdepEvent) {}
+        fn lockdep_release(_event: LockdepEvent) {}
+        fn lockdep_set_trace_enabled(_enabled: bool) {}
+        fn lockdep_dump_trace() {}
+    }
+}

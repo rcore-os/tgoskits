@@ -69,7 +69,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
-    ax_task::spawn_with_name(
+    crate::task::spawn_with_name(
         move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
@@ -784,9 +784,9 @@ impl UsbDeviceFile {
         let poll_urbs = self.poll_urbs.clone();
         let worker = self.urb_worker.clone();
         let manager = self.manager.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_with_name(
             move || {
-                ax_task::future::block_on(async {
+                crate::task::future::block_on(async {
                     loop {
                         let mut ready = Vec::new();
                         {
@@ -894,7 +894,7 @@ impl UsbDeviceFile {
                                 ),
                             );
                         } else {
-                            ax_task::yield_now();
+                            crate::task::yield_now();
                         }
                     }
                 });
@@ -1200,7 +1200,7 @@ impl UsbDeviceFile {
     fn reap_urb(&self, arg: usize, nonblocking: bool) -> AxResult<usize> {
         self.collect_submitted_urbs(None);
         if !nonblocking && self.pending_urbs.lock().is_empty() {
-            ax_task::future::block_on(poll_fn(|cx| {
+            crate::task::future::block_on(poll_fn(|cx| {
                 if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
                     Poll::Ready(())
                 } else {
@@ -1246,7 +1246,7 @@ impl UsbDeviceFile {
 
         if !submitted.is_deferred() {
             let lease = self.lease.lock().clone();
-            ax_task::spawn_with_name(
+            crate::task::spawn_with_name(
                 move || {
                     let _lease = lease;
                     cleanup_submitted_urbs(alloc::vec![submitted], None);
@@ -1405,7 +1405,7 @@ impl Drop for UsbDeviceFile {
             return;
         }
 
-        ax_task::spawn_with_name(
+        crate::task::spawn_with_name(
             move || {
                 let _lease = lease;
                 cleanup_submitted_urbs(submitted, None);
@@ -1476,7 +1476,7 @@ fn cleanup_submitted_urbs(
             if deadline.is_some_and(|deadline| ax_runtime::hal::time::wall_time() >= deadline) {
                 break;
             }
-            ax_task::sleep(Duration::from_millis(1));
+            crate::task::sleep(Duration::from_millis(1));
         }
     }
 

@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_kernel_guard::BaseGuard;
+use ax_kspin::IrqGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
@@ -96,7 +96,7 @@ pub unsafe fn run_on_cpu_sync(
 struct PlatIrqOps;
 
 impl IrqOps for PlatIrqOps {
-    type LocalIrqState = <ax_kernel_guard::IrqSave as BaseGuard>::State;
+    type LocalIrqState = IrqGuard;
 
     fn current_cpu(&self) -> CpuId {
         CpuId(crate::percpu::this_cpu_id())
@@ -112,11 +112,11 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
-        ax_kernel_guard::IrqSave::acquire()
+        IrqGuard::new()
     }
 
     fn local_irq_restore(&self, state: Self::LocalIrqState) {
-        ax_kernel_guard::IrqSave::release(state);
+        drop(state);
     }
 
     fn run_on_cpu_sync(
@@ -422,7 +422,7 @@ mod tests {
         let handle = request_irq(irq, request).unwrap();
 
         assert_eq!(ENABLE_CALLS.load(Ordering::Relaxed), 0);
-        assert_eq!(irq_status(handle).unwrap().action_enabled, false);
+        assert!(!irq_status(handle).unwrap().action_enabled);
 
         free_irq(handle).unwrap();
     }
@@ -441,7 +441,7 @@ mod tests {
 
         FAIL_ENABLE.store(0, Ordering::Relaxed);
         let handle = request_irq(irq, request()).unwrap();
-        assert_eq!(irq_status(handle).unwrap().action_enabled, true);
+        assert!(irq_status(handle).unwrap().action_enabled);
 
         free_irq(handle).unwrap();
     }

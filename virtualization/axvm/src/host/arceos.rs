@@ -2,12 +2,7 @@
 
 extern crate alloc;
 
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -32,6 +27,7 @@ use crate::{
 pub(crate) struct ArceOsHost;
 
 const CPU_ENABLE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const CPU_ENABLE_TASK_STACK_SIZE: usize = 256 * 1024;
 
 static ARCEOS_HOST: ArceOsHost = ArceOsHost;
 
@@ -99,7 +95,6 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
-    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         modules::ax_hal::time::set_oneshot_timer(deadline_ns);
     }
@@ -180,20 +175,133 @@ pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
 }
 
 pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
-pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
-pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
-pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
-pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
-pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
 
 pub(crate) fn current_task() -> ArceOsCurrentTask {
-    modules::ax_task::current()
+    let inner = modules::ax_task::current_thread_handle()
+        .unwrap_or_else(|error| panic!("AxVM current task is unavailable: {error}"));
+    ArceOsCurrentTask { inner }
 }
 
-pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
-    modules::ax_task::spawn_task(task)
+pub(crate) fn spawn_task(mut task: ArceOsTaskInner) -> ArceOsAxTaskRef {
+    let name = Arc::<str>::from(task.name.as_str());
+    let entry = task
+        .entry
+        .take()
+        .expect("an AxVM task entry may only be spawned once");
+    let affinity = task.affinity.as_ref().map(scheduler_cpu_set);
+    let extension = task
+        .extension
+        .take()
+        .map(crate::task::into_thread_extension);
+    // SAFETY: `into_thread_extension` transfers the unique VCpuTask allocation
+    // to ax-runtime, whose composed extension releases it exactly once.
+    let inner = unsafe {
+        modules::ax_task::spawn_raw_with_extension_and_affinity(
+            entry,
+            task.name,
+            task.stack_size,
+            extension,
+            affinity,
+        )
+    }
+    .unwrap_or_else(|error| panic!("failed to spawn AxVM task {name}: {error}"));
+    ArceOsAxTaskRef { inner, name }
+}
+
+type ArceOsTaskEntry = Box<dyn FnOnce() + Send + 'static>;
+
+pub(crate) struct ArceOsTaskInner {
+    entry: Option<ArceOsTaskEntry>,
+    name: String,
+    stack_size: usize,
+    affinity: Option<ArceOsCpuMask>,
+    extension: Option<crate::VCpuTask>,
+}
+
+impl ArceOsTaskInner {
+    pub(crate) fn new<F>(entry: F, name: String, stack_size: usize) -> Self
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        Self {
+            entry: Some(Box::new(entry)),
+            name,
+            stack_size,
+            affinity: None,
+            extension: None,
+        }
+    }
+
+    pub(crate) fn set_cpumask(&mut self, cpumask: ArceOsCpuMask) {
+        self.affinity = Some(cpumask);
+    }
+
+    pub(crate) fn set_vcpu_extension(&mut self, extension: crate::VCpuTask) {
+        self.extension = Some(extension);
+    }
+
+    pub(crate) fn id_name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn cpumask(&self) -> ArceOsCpuMask {
+        self.affinity.unwrap_or_else(ArceOsCpuMask::full)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ArceOsAxTaskRef {
+    inner: modules::ax_task::ThreadHandle,
+    name: Arc<str>,
+}
+
+impl ArceOsAxTaskRef {
+    pub(crate) fn cpu_id(&self) -> u32 {
+        self.inner
+            .wake_handle()
+            .target_cpu()
+            .map_or(0, modules::ax_task::CpuId::as_u32)
+    }
+
+    pub(crate) fn id_name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn join(self) -> i32 {
+        modules::ax_task::join_thread(self.inner)
+            .unwrap_or_else(|error| panic!("failed to join AxVM task {}: {error}", self.name))
+    }
+}
+
+pub(crate) struct ArceOsCurrentTask {
+    inner: modules::ax_task::ThreadHandle,
+}
+
+impl ArceOsCurrentTask {
+    pub(crate) fn ptr_eq(&self, task: &ArceOsAxTaskRef) -> bool {
+        self.inner.id() == task.inner.id()
+    }
+
+    pub(crate) fn extension(&self) -> Option<modules::ax_task::ThreadOsExtensionBorrow<'_>> {
+        modules::ax_task::thread_os_extension(&self.inner)
+            .ok()
+            .flatten()
+    }
+}
+
+fn scheduler_cpu_set(cpumask: &ArceOsCpuMask) -> modules::ax_task::CpuSet {
+    let topology_len = modules::ax_hal::cpu_num();
+    let mut affinity = modules::ax_task::CpuSet::empty(topology_len);
+    for cpu in cpumask {
+        let cpu = u32::try_from(cpu).expect("AxVM CPU index must fit the scheduler ABI");
+        assert!(
+            affinity.insert(modules::ax_task::CpuId::new(cpu)),
+            "AxVM CPU affinity includes CPU {cpu} outside the scheduler topology"
+        );
+    }
+    affinity
 }
 
 pub(crate) fn yield_now() {
@@ -343,7 +451,7 @@ impl HostPlatform for ArceOsHost {
             if cpu_id == current_cpu {
                 continue;
             }
-            let task = modules::ax_task::TaskInner::new(
+            let mut task = ArceOsTaskInner::new(
                 move || {
                     let host = arceos_host();
                     info!("Core {cpu_id} is initializing hardware virtualization support...");
@@ -353,10 +461,10 @@ impl HostPlatform for ArceOsHost {
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_task::default_task_stack_size(),
+                CPU_ENABLE_TASK_STACK_SIZE,
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
-            modules::ax_task::spawn_task(task);
+            let _task = spawn_task(task);
             if cpu_id != self.this_cpu_id() {
                 send_ipi(cpu_id);
             }

@@ -36,7 +36,7 @@ static void *increment_thread(void *arg)
 
 int arceos_c_test_pthread_basic(char *reason, size_t reason_len)
 {
-    enum { THREADS = 32 };
+    enum { THREADS = 32, JOIN_REUSE_ROUNDS = 64 };
     pthread_t threads[THREADS];
     pthread_t t;
     void *result = NULL;
@@ -55,6 +55,16 @@ int arceos_c_test_pthread_basic(char *reason, size_t reason_len)
     CHECK_RET(pthread_join(t, &result), 0);
     CHECK_TRUE(result != NULL);
     CHECK_RET(strcmp((const char *)result, "exit message"), 0);
+
+    /* Repeated join must consume the owning scheduler handle and release its
+     * generation slot before the next pthread is created. */
+    for (uintptr_t i = 1; i <= JOIN_REUSE_ROUNDS; i++) {
+        void *expected = (void *)i;
+        result = NULL;
+        CHECK_RET(pthread_create(&t, NULL, return_arg_thread, expected), 0);
+        CHECK_RET(pthread_join(t, &result), 0);
+        CHECK_TRUE(result == expected);
+    }
 
     for (int i = 0; i < THREADS; i++) {
         CHECK_RET(pthread_create(&threads[i], NULL, increment_thread, &value), 0);

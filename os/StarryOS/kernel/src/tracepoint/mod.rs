@@ -17,14 +17,13 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_sync::Mutex;
-use ax_task::{IrqNotify, current};
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    task::AsThread,
+    task::{current, future::IrqNotify},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
@@ -33,7 +32,7 @@ const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
 // The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
+// `sched:sched_switch` runs from the ax-task switch path (IRQ off,
 // preemption disabled). A sleeping `ax_sync::Mutex` would trip the
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
@@ -150,7 +149,7 @@ fn start_trace_pipe_notify_worker() {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
         return;
     }
-    ax_task::spawn_with_name(
+    crate::task::spawn_with_name(
         || loop {
             TRACE_STATE.pipe_notify.wait();
             // Trace records are queued before the deferred poll wake.
@@ -284,6 +283,7 @@ pub fn tracepoint_init() -> AxResult<()> {
         .init_once(Mutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
+    sched::install();
     start_trace_pipe_notify_worker();
     Ok(())
 }

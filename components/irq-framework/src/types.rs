@@ -311,7 +311,7 @@ pub(crate) enum IrqHandler {
 /// External capabilities supplied by the OS/platform adapter.
 pub trait IrqOps {
     /// Saved local IRQ state.
-    type LocalIrqState: Copy;
+    type LocalIrqState;
 
     /// Returns the current CPU.
     fn current_cpu(&self) -> CpuId;

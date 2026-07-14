@@ -11,7 +11,6 @@ use ax_runtime::hal::{
     time::monotonic_time_nanos,
 };
 use ax_sync::Mutex;
-use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -23,7 +22,7 @@ use super::{
 };
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
-    task::AsThread,
+    task::current,
 };
 
 bitflags::bitflags! {

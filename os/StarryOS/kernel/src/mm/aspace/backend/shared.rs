@@ -53,10 +53,6 @@ impl SharedPages {
     pub fn len(&self) -> usize {
         self.phys_pages.len()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.phys_pages.is_empty()
-    }
 }
 
 impl Deref for SharedPages {

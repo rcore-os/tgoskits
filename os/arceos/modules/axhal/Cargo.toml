@@ -15,7 +15,6 @@ smp = [
 irq = [
     "ax-plat/irq",
     "axplat-dyn/irq",
-    "dep:ax-kspin",
 ]
 fp-simd = [
     "ax-cpu/fp-simd",
@@ -45,12 +44,11 @@ ipi = ["irq"]
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
-ax-kspin = { workspace = true, optional = true }
+ax-kspin.workspace = true
 ax-plat.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
-ax-kernel-guard.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-page-table-multiarch = { workspace = true, optional = true }

@@ -50,6 +50,7 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
+mod guard;
 mod klib;
 
 mod devices;
@@ -57,6 +58,9 @@ mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
+
+#[cfg(feature = "multitask")]
+pub mod task;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
@@ -69,6 +73,14 @@ pub use ax_hal as hal;
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
+
+/// Maximum logical CPU count represented by runtime-sized CPU masks.
+#[cfg(feature = "smp")]
+pub const CPU_CAPACITY: usize = build_info::CPU_CAPACITY;
+
+/// A uniprocessor runtime represents only CPU zero.
+#[cfg(not(feature = "smp"))]
+pub const CPU_CAPACITY: usize = 1;
 
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
@@ -115,11 +127,6 @@ fn runtime_page_fault_handler(
     addr: ax_memory_addr::VirtAddr,
     flags: ax_hal::trap::PageFaultFlags,
 ) -> bool {
-    #[cfg(feature = "stack-guard-page")]
-    if ax_task::diagnose_current_stack_guard_page_fault(addr) {
-        return false;
-    }
-
     ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
 }
 
@@ -148,7 +155,7 @@ impl ax_log::LogIf for LogIfImpl {
         if is_init_ok() {
             #[cfg(feature = "multitask")]
             {
-                ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
+                ax_task::current_thread_id().ok().map(|id| id.as_u64())
             }
             #[cfg(not(feature = "multitask"))]
             None
@@ -180,6 +187,7 @@ fn is_init_ok() -> bool {
 #[cfg_attr(not(test), ax_plat::main)]
 pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     ax_hal::percpu::init_primary(cpu_id);
+    guard::assert_boot_guards_released();
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
@@ -223,6 +231,11 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     init_allocator();
+
+    #[cfg(all(feature = "tls", feature = "multitask"))]
+    task::initialize_early_bootstrap_tls().expect("failed to initialize primary bootstrap TLS");
+    #[cfg(all(feature = "tls", not(feature = "multitask")))]
+    init_tls();
 
     let (kernel_space_start, kernel_space_size) = ax_hal::mem::kernel_aspace();
 
@@ -275,7 +288,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler();
+    task::initialize_primary(cpu_id).expect("failed to initialize primary task scheduler");
 
     #[cfg(feature = "ipi")]
     {
@@ -289,6 +302,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         info!("Initialize interrupt handlers...");
         init_interrupt();
     }
+
+    #[cfg(feature = "multitask")]
+    task::publish_current_cpu_online().expect("failed to publish primary scheduler CPU");
 
     // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
     // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
@@ -323,12 +339,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "smp")]
     self::mp::start_secondary_cpus(cpu_id);
 
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    {
-        info!("Initialize thread local storage...");
-        init_tls();
-    }
-
     ax_ctor_bare::call_ctors();
 
     info!("Primary CPU {cpu_id} init OK.");
@@ -344,7 +354,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     ax_app_entry();
 
     #[cfg(feature = "multitask")]
-    ax_task::exit(0);
+    task::exit_current(0);
     #[cfg(not(feature = "multitask"))]
     {
         debug!("main task exited: exit_code={}", 0);
@@ -439,7 +449,7 @@ unsafe fn ax_ipi_run_on_cpu_sync(
 
 #[cfg(feature = "irq")]
 fn periodic_interval_nanos() -> u64 {
-    ax_hal::time::NANOS_PER_SEC / ticks_per_sec()
+    (ax_hal::time::NANOS_PER_SEC / ticks_per_sec()).max(1)
 }
 
 #[cfg(feature = "irq")]
@@ -471,32 +481,80 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
         return false;
     }
 
-    while deadline <= now_ns {
-        deadline = deadline.saturating_add(periodic_interval_nanos());
-        if deadline == u64::MAX {
-            break;
-        }
-    }
+    deadline = next_periodic_deadline(deadline, now_ns, periodic_interval_nanos());
     unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(deadline) };
     true
 }
 
+#[cfg(any(feature = "irq", test))]
+const fn next_periodic_deadline(deadline_ns: u64, now_ns: u64, interval_ns: u64) -> u64 {
+    if now_ns == u64::MAX {
+        return u64::MAX;
+    }
+    if deadline_ns > now_ns {
+        return deadline_ns;
+    }
+
+    let interval_ns = if interval_ns == 0 { 1 } else { interval_ns };
+    let elapsed_ns = (now_ns - deadline_ns) as u128;
+    let interval_ns = interval_ns as u128;
+    let periods = elapsed_ns / interval_ns + 1;
+    let next = deadline_ns as u128 + periods * interval_ns;
+    if next > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        next as u64
+    }
+}
+
+#[cfg(any(feature = "irq", test))]
+const fn select_next_timer_deadline(periodic_ns: u64, task_ns: Option<u64>) -> u64 {
+    match (periodic_ns, task_ns) {
+        (0, Some(task_ns)) => task_ns,
+        (0, None) => 0,
+        (periodic_ns, Some(task_ns)) => {
+            if task_ns < periodic_ns {
+                task_ns
+            } else {
+                periodic_ns
+            }
+        }
+        (periodic_ns, None) => periodic_ns,
+    }
+}
+
+#[cfg(any(feature = "multitask", test))]
+pub(crate) const fn timer_resolution_from_frequency(frequency_hz: u64) -> u64 {
+    if frequency_hz == 0 {
+        return ax_hal::time::NANOS_PER_SEC;
+    }
+    let nanos_per_second = ax_hal::time::NANOS_PER_SEC as u128;
+    let frequency_hz = frequency_hz as u128;
+    let resolution_ns = nanos_per_second.div_ceil(frequency_hz);
+    if resolution_ns == 0 {
+        1
+    } else {
+        resolution_ns as u64
+    }
+}
+
 #[cfg(feature = "irq")]
 fn program_next_timer() {
-    let mut deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
-    if deadline == 0 {
+    let mut periodic_deadline = unsafe { NEXT_PERIODIC_DEADLINE_NANOS.read_current_raw() };
+    if periodic_deadline == 0 {
         let now_ns = ax_hal::time::monotonic_time_nanos();
-        deadline = now_ns.saturating_add(periodic_interval_nanos());
-        unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(deadline) };
+        periodic_deadline = now_ns.saturating_add(periodic_interval_nanos());
+        unsafe { NEXT_PERIODIC_DEADLINE_NANOS.write_current_raw(periodic_deadline) };
     }
     #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
-        deadline = core::cmp::min(deadline, task_deadline);
-    }
+    let task_deadline = task::next_timer_deadline_nanos();
+    #[cfg(not(feature = "multitask"))]
+    let task_deadline = None;
+    let deadline = select_next_timer_deadline(periodic_deadline, task_deadline);
 
     ax_hal::time::set_oneshot_timer(deadline);
     #[cfg(feature = "multitask")]
-    ax_task::note_programmed_timer_deadline_nanos(deadline);
+    task::note_programmed_timer_deadline_nanos(deadline);
 }
 
 #[cfg(feature = "irq")]
@@ -507,7 +565,7 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     #[cfg(not(feature = "multitask"))]
     let _ = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(feature = "multitask")]
-    ax_task::on_timer_irq(scheduler_tick);
+    task::on_timer_irq(scheduler_tick);
     program_next_timer();
     ax_hal::irq::IrqReturn::Handled
 }
@@ -515,11 +573,15 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
 #[cfg(all(feature = "irq", feature = "ipi"))]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::ipi_handler();
+    #[cfg(feature = "multitask")]
+    task::on_scheduler_ipi();
     ax_hal::irq::IrqReturn::Handled
 }
 
 #[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
+    #[cfg(feature = "multitask")]
+    task::on_scheduler_ipi();
     ax_hal::irq::IrqReturn::Handled
 }
 
@@ -532,8 +594,58 @@ fn init_tls() {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        next_periodic_deadline, select_next_timer_deadline, timer_resolution_from_frequency,
+    };
+
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/vda"));
+    }
+
+    #[test]
+    fn later_task_timer_does_not_postpone_periodic_tick() {
+        assert_eq!(select_next_timer_deadline(10, Some(20)), 10);
+    }
+
+    #[test]
+    fn earlier_task_timer_advances_hardware_deadline() {
+        assert_eq!(select_next_timer_deadline(20, Some(10)), 10);
+    }
+
+    #[test]
+    fn zero_periodic_sentinel_uses_task_or_reports_unarmed() {
+        assert_eq!(select_next_timer_deadline(0, Some(10)), 10);
+        assert_eq!(select_next_timer_deadline(0, None), 0);
+    }
+
+    #[test]
+    fn periodic_deadline_advances_past_now_without_iteration() {
+        assert_eq!(next_periodic_deadline(10, 10, 5), 15);
+        assert_eq!(next_periodic_deadline(10, 12, 5), 15);
+        assert_eq!(next_periodic_deadline(10, 1_000_000, 3), 1_000_003);
+    }
+
+    #[test]
+    fn zero_periodic_interval_is_normalized_to_one_nanosecond() {
+        assert_eq!(next_periodic_deadline(10, 12, 0), 13);
+    }
+
+    #[test]
+    fn periodic_deadline_saturates_at_timestamp_limit() {
+        assert_eq!(
+            next_periodic_deadline(u64::MAX - 1, u64::MAX - 1, 10),
+            u64::MAX
+        );
+        assert_eq!(next_periodic_deadline(1, u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn timer_resolution_rounds_one_hardware_tick_up_to_nanoseconds() {
+        assert_eq!(timer_resolution_from_frequency(1_000_000_000), 1);
+        assert_eq!(timer_resolution_from_frequency(10_000_000), 100);
+        assert_eq!(timer_resolution_from_frequency(24_000_000), 42);
+        assert_eq!(timer_resolution_from_frequency(2_500_000_000), 1);
+        assert_eq!(timer_resolution_from_frequency(0), 1_000_000_000);
     }
 }

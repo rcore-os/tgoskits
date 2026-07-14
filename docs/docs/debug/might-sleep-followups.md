@@ -7,11 +7,13 @@ sidebar_label: "might_sleep 后续计划"
 
 本文档记录 `might_sleep` 原子上下文检查的后续增强计划，用作逐项讨论和拆分实现任务的基础。
 
-当前实现已经覆盖基础睡眠入口：调度让出、定时睡眠、任务退出、`WaitQueue::wait*`、`future::block_on`、`ax_sync::Mutex::lock`、Starry 用户内存访问和 page fault slow path。核心判断位于 `os/arceos/modules/axtask/src/api.rs`，当前主要把以下状态视为原子上下文：
-
-- IRQ 已关闭。
-- 显式 IRQ context。
-- `preempt_count != 0`。
+调度重构后，portable `ax-task` 不再读取 HAL 或 OS 的全局
+`preempt_count`。它通过 `TaskRuntime::in_hard_irq` 拒绝 hard IRQ 中的
+yield、park、sleep、exit 等入口，并以 `TaskError::UnsafeContext` 暴露可恢复错误；
+`WaitQueue` 的 infallible 包装再把不变量错误转成 panic。StarryOS 的
+`task::might_sleep()` 当前同样只显式检查 hard IRQ。IRQ-disabled、持有
+non-sleep lock 和普通 preempt-disabled task context 的统一诊断仍属于本文的
+后续工作，不能沿用旧调度器的实现状态描述。
 
 这个基础机制已经能发现一批典型错误，但还没有覆盖所有“不能睡眠”的语义来源。后续增强重点不是机械增加更多 `might_sleep()` 调用点，而是让上下文判断、诊断信息和注解能力更完整。
 
@@ -19,9 +21,12 @@ sidebar_label: "might_sleep 后续计划"
 
 当前机制的主要入口：
 
-- `os/arceos/modules/axtask/src/api.rs`
-- `os/arceos/modules/axtask/src/wait_queue.rs`
-- `os/arceos/modules/axtask/src/future/mod.rs`
+- `components/ax-task/src/facade.rs`
+- `components/ax-task/src/wait_queue.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
+- `os/StarryOS/kernel/src/task/future.rs`
+- `os/StarryOS/kernel/src/task/scheduler_task.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
 - `os/arceos/modules/axhal/src/irq.rs`
 - `platforms/ax-plat/src/irq.rs`
@@ -29,10 +34,14 @@ sidebar_label: "might_sleep 后续计划"
 
 当前需要保留的语义：
 
-- `ax_sync::Mutex::lock` 会调用 `might_sleep()`。
-- `ax_sync::Mutex::try_lock` 不调用 `might_sleep()`；它是单次 CAS，不会阻塞，语义接近 Linux `mutex_trylock`。
-- `SpinNoIrq` / `SpinNoPreempt` / `SpinRaw` / `SpinRwLock` 自身不睡眠，但持有这些锁时进入睡眠路径应被发现。
-- `future::sleep()` 是 async future，本身不直接阻塞；当前由 `future::block_on()` 在进入阻塞式 executor 时检查。
+- `ax_sync::Mutex::lock` 通过 `ax-task` PI block/handoff API 睡眠，不再调用一个
+  OS-global `might_sleep()`；hard IRQ 会由调度 API 拒绝。
+- `ax_sync::Mutex::try_lock` 是单次非阻塞尝试，不应引入 sleepability 检查，
+  语义接近 Linux `mutex_trylock`。
+- `SpinNoIrq` / `SpinNoPreempt` / `SpinRaw` / `SpinRwLock` 自身不睡眠；
+  持锁后进入睡眠路径的统一诊断尚未完成，必须由 runtime guard/lockdep 状态补齐。
+- Starry `future::sleep()` 是 async future，本身不直接阻塞；
+  `future::block_on()` 只在所属线程 poll，并通过 runtime scheduler facade park/wake。
 
 ## 计划清单
 
@@ -56,19 +65,23 @@ sidebar_label: "might_sleep 后续计划"
 - `dispatch_irq()` 进入时置位，返回前恢复。
 - `IrqOps::in_irq_context()` 已被 IRQ 注册、释放、同步等路径使用。
 
-建议后续暴露一个 `ax_hal::irq::in_irq_context()` 或等价接口，并在 `axtask::in_atomic_context()` 中纳入判断。
+`ax_hal::irq::in_irq_context()` 已存在；当前 portable core 通过
+`TaskRuntime::in_hard_irq` 接收等价能力，Starry wrapper 则通过
+`ax_runtime::hal::irq::in_irq_context()` 检查。
 
 实现状态：
 
 - 已在 `platforms/ax-plat/src/irq.rs` 暴露 `in_irq_context()`。
 - 已在 `os/arceos/modules/axhal/src/irq.rs` re-export。
-- 已在 `os/arceos/modules/axtask/src/api.rs` 的 `in_atomic_context()` / `might_sleep()` 判定中纳入显式 IRQ context。
+- 已在 `components/ax-task` 的 facade/wait queue 中返回
+  `TaskError::UnsafeContext`，并在 Starry `scheduler_task::might_sleep()` 中纳入显式 IRQ context。
 
 已确认方向：
 
 - 在 `platforms/ax-plat/src/irq.rs` 暴露 `in_irq_context()`，返回当前 CPU 的 `IN_IRQ_CONTEXT` 状态。
-- 在 `os/arceos/modules/axhal/src/irq.rs` re-export 该接口，保持 `axtask` 只依赖 `ax-hal` 边界。
-- 在 `axtask::in_atomic_context()` 的 `irq` feature 路径中纳入 `ax_hal::irq::in_irq_context()`。
+- `os/arceos/modules/axhal/src/irq.rs` re-export 该接口；`ax-runtime`
+  将它实现为 `TaskRuntime`/`LockRuntime` 能力，`ax-task` 不依赖 `ax-hal`。
+- OS facade 负责决定哪些错误转为诊断或 panic，portable core 保持 typed error。
 - `might_sleep()` panic 信息同步打印显式 IRQ context。
 - 不用 `NoPreempt` 语义替代 IRQ context；`NoPreempt` 只是当前 IRQ handler 外层实现细节。
 
@@ -106,14 +119,16 @@ sidebar_label: "might_sleep 后续计划"
 建议方向：
 
 - 在 held lock 记录中增加锁 kind 或 sleepability 标记。
-- 或在 `axtask` 中维护轻量 `non_sleep_lock_depth`，由 kspin acquire/release 更新。
+- 或在 `ax-runtime` 的 per-CPU guard state 中维护轻量
+  `non_sleep_lock_depth`，由 `LockRuntime`/kspin acquire/release 更新。
 - `try_lock` 失败不应留下 held 状态；try 成功后与普通 lock 一样记录。
 
 已确认方向：
 
 - 第一阶段已完成：增强 `lockdep` 构建下的诊断，复用现有 task held-lock stack，在 `might_sleep()` 失败时打印当前 held locks。
 - 第一阶段已完成：给 held lock 补充最少语义字段，能区分 `spin` / `mutex` / `spin-rwlock` 以及该锁是否 `sleep_forbidden`。
-- 第二阶段再增加可选的轻量 `non_sleep_lock_depth` 或等价状态，由 `ax-kspin` acquire/release 通过 crate interface 通知 `axtask`。
+- 第二阶段再增加可选的轻量 `non_sleep_lock_depth` 或等价状态，由
+  `ax-kspin` 通过 `LockRuntime` 通知 OS runtime；`ax-task` 不能反向依赖锁 crate。
 - 第二阶段应通过 feature 控制，避免无条件增加所有 spin lock 快路径成本。
 - 不把 `SpinRwLock` read guard 直接机械塞进 lockdep dependency stack 来解决睡眠检查。读写锁依赖检查和“持锁禁止睡眠”是相关但不同的语义，应共享诊断信息而不是强行共用同一个判定模型。
 
@@ -146,13 +161,13 @@ sidebar_label: "might_sleep 后续计划"
 - 阶段 A 已完成：输出结构化 reason 列表，目前覆盖 `irq_disabled`、`irq_context`、`preempt_disabled`，避免只打印“atomic context”这个总称。
 - 阶段 B 已完成：在 `lockdep` feature 下打印 held-lock stack，复用 `ax-lockdep` 字段，包含 kind、sleepability、class、addr、acquired_at。
 - 阶段 C 在 preempt count 从 0 变成 1 时记录 preempt-disable caller，在降回 0 时清除；`might_sleep()` 因 preempt disabled 触发时输出该位置。
-- 阶段 C 如果 `#[track_caller]` 不能完整穿透 `NoPreempt::new()` / `NoPreemptIrqSave::new()` 到 `axtask::disable_preempt()`，先记录 guard 创建点，不伪造更精确的位置。
+- 阶段 C 如果 `#[track_caller]` 不能完整穿透 `PreemptGuard::new()` / `PreemptIrqGuard::new()` 到 runtime 的 preempt hook，先记录 guard 创建点，不伪造更精确的位置。
 - 阶段 A 可以与 MS-1 同一 PR 完成；阶段 B 跟随 MS-2 第一阶段；阶段 C 单独拆分。
 
 讨论点：
 
 - 是否使用普通 `panic!` 输出，还是在 oops 状态下走更底层 console fast path。
-- held-lock stack 输出格式复用 `ax-lockdep` 还是在 `axtask` 层定义轻量格式。
+- held-lock stack 输出格式复用 runtime 的固定 lockdep ring，还是在 OS 诊断层定义轻量格式。
 - panic 路径是否需要 rate limit 或 one-shot。
 
 完成标准：
@@ -283,7 +298,8 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 - 不做全局“boot 阶段允许 sleep”的豁免，避免隐藏真实 atomic sleep bug。
 - 第一版优先增强诊断，让 `might_sleep()` 报错能区分 `no_current_task`、`idle_task`、`scheduler_not_ready`、`runtime_init` 和普通运行期 atomic context。
-- 职责边界上，`axruntime` 适合维护生命周期阶段，`axtask` 适合组合当前 task、调度器状态、IRQ/preempt 状态，并产出 sleepability reason。
+- 职责边界上，`ax-runtime` 维护生命周期、IRQ/preempt nesting 和 OS
+  诊断；`ax-task` 只依据显式 runtime capability 与线程状态返回 typed error。
 - 如果当前没有稳定的 runtime phase 信号，第一步不强行引入完整 `SleepabilityPhase`；先基于已有 current task / scheduler 状态补诊断。
 - 只有遇到真实 false positive，再引入类似 `SleepabilityPhase::{NoScheduler, RuntimeInit, TaskContext, PanicOops}` 的显式阶段。
 - rootfs / pseudofs / tmpfs root_dir 等启动路径不靠 `might_sleep()` 特判长期绕过；后续要么迁到普通 task context，要么明确标注它们必须走 non-sleep 路径。
@@ -291,7 +307,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 讨论点：
 
 - 第一版能否只依赖 current task、idle task、scheduler 状态完成足够诊断。
-- 是否已有合适的 `axruntime` 生命周期状态可安全暴露给 `axtask`。
+- 是否应在 `ax-runtime` facade 中增加显式生命周期快照，而不把 OS 阶段塞进 portable core。
 - `might_sleep()` 在早期阶段应 panic、warn，还是带明确原因地拒绝；默认倾向保持严格失败。
 - rootfs / pseudofs 初始化是否能移动到普通任务上下文。
 
@@ -379,7 +395,7 @@ rg -n "access_user_memory|handle_page_fault|vm_read|vm_write|IoDst::write" \
 
 2026-07-02 在实现 MS-1、MS-2 Phase 1 和 MS-3 Phase A/B 时，以下 host 单元测试过滤项出现 SIGSEGV：
 
-- `cargo test -p ax-task --features "test sched-rr" test_fp_state_switch`
+- 已退役 ArceOS 调度器的 `test_fp_state_switch` host 过滤项（当时通过 `test sched-rr` feature 运行）
 - `cargo test -p ax-lockdep dynamic_lock_instances_do_not_consume_class_slots`
 - `cargo test -p ax-lockdep subclass_tracks_same_base_class_nesting`
 

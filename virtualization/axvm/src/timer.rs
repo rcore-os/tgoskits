@@ -120,9 +120,6 @@ pub(crate) fn check_events() {
 }
 
 fn rearm_host_timer(next_deadline: Option<TimeValue>) {
-    #[cfg(target_arch = "loongarch64")]
-    let _ = next_deadline;
-    #[cfg(not(target_arch = "loongarch64"))]
     if let Some(deadline) = next_deadline {
         default_host().set_oneshot_timer(deadline.as_nanos() as u64);
     }
@@ -134,6 +131,4 @@ pub(crate) fn init_percpu() {
     // CPU can register VM timers.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     timer_list.init_once(SpinNoIrq::new(TimerList::new()));
-    #[cfg(target_arch = "loongarch64")]
-    ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| check_events());
 }

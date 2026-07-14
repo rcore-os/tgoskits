@@ -16,12 +16,11 @@
 
 use alloc::sync::Arc;
 
-use ax_task::current;
 use kprobe::{ProbeBuilder, Uprobe};
 
 use crate::{
     kprobe::{KernelKprobeOps, KernelRawMutex, ptregs_write_back, trapframe_to_ptregs},
-    task::AsThread,
+    task::current,
 };
 
 /// Concrete `kprobe::Uprobe` parameterized on the kernel's raw mutex and

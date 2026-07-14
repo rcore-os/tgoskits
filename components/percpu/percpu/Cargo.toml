@@ -19,7 +19,7 @@ host-test = ["dep:spin"]
 sp-naive = ["ax-percpu-macros/sp-naive"]
 
 # Whether the system enables preemption.
-preempt = ["ax-percpu-macros/preempt", "dep:ax-kernel-guard"]
+preempt = ["ax-percpu-macros/preempt", "dep:ax-kspin"]
 
 # ARM specific, whether to run at the EL2 privilege level.
 arm-el2 = ["ax-percpu-macros/arm-el2"]
@@ -35,7 +35,7 @@ custom-base = ["ax-percpu-macros/custom-base"]
 
 [dependencies]
 cfg-if = "1.0"
-ax-kernel-guard = { workspace = true, optional = true }
+ax-kspin = { workspace = true, optional = true }
 ax-percpu-macros = { workspace = true }
 spin = { workspace = true, optional = true }
 

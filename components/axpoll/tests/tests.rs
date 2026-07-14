@@ -11,6 +11,8 @@ use std::{
 
 use axpoll::{IoEvents, PollSet};
 
+mod common;
+
 struct Counter(AtomicUsize);
 
 impl Counter {
@@ -260,18 +262,13 @@ fn concurrent_deferred_wakes_partition_by_mask() {
 }
 
 #[test]
-fn irq_wake_drains_without_double_wake() {
-    let ps = PollSet::new();
-    assert_eq!(ps.wake_from_irq(IoEvents::IN), 0);
-
-    let counter = Counter::new();
-    let w = Waker::from(counter.clone());
-    unsafe { ps.register(&w, IoEvents::IN) };
-
-    assert_eq!(ps.wake_from_irq(IoEvents::IN), 1);
-    assert_eq!(counter.count(), 1);
-    assert_eq!(ps.wake_from_irq(IoEvents::IN), 0);
-    assert_eq!(counter.count(), 1);
+fn pollset_has_no_hard_irq_wake_surface() {
+    let source = include_str!("../src/lib.rs");
+    assert!(
+        !source.contains("wake_from_irq"),
+        "PollSet must not expose an IRQ path that scans waiters, locks its inner state, or \
+         invokes RawWaker callbacks"
+    );
 }
 
 #[test]

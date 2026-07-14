@@ -54,7 +54,7 @@ pub use axvm_types::{
 };
 pub(crate) use host::{
     paging::HostPagingHandler,
-    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
+    task::{AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmLifecycleError, VmStatus};

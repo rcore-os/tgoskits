@@ -3,11 +3,10 @@ use core::task::Context;
 
 use ax_errno::{AxResult, ax_bail};
 use ax_kspin::SpinNoIrq;
-use ax_task::current;
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_process::{ProcessGroup, Session};
 
-use crate::task::AsThread;
+use crate::task::current;
 
 pub struct JobControl {
     state: SpinNoIrq<JobControlState>,

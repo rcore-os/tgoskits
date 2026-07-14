@@ -171,7 +171,7 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     }
     pinmux_usb_vbus_det_gpio_output_prep();
     enable_usb_vbus_gpio();
-    ax_task::sleep(Duration::from_micros(2_000_000));
+    crate::task::sleep(Duration::from_micros(2_000_000));
 
     usb::set_dwc2_base_virt(iomap_usize(DWC2_BASE, REG_MMIO_SIZE));
     usb::set_cv182x_phy_base_virt(iomap_usize(CV182X_USB2_PHY_BASE, REG_MMIO_SIZE));

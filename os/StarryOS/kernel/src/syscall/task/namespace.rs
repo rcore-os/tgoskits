@@ -3,14 +3,13 @@ use alloc::sync::Arc;
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::FS_CONTEXT;
 use ax_sync::Mutex;
-use ax_task::current;
 use linux_raw_sys::general::{
     CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
-    task::AsThread,
+    task::current,
 };
 
 const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS

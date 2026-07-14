@@ -2,7 +2,6 @@ use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
 };
-use ax_task::current;
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
     CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
@@ -11,7 +10,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{AsThread, ITimerType, posix_timer::TimerSpec},
+    task::{ITimerType, current, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
 
@@ -22,7 +21,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             monotonic_time()
         }
         CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
-            let (utime, stime) = current().as_thread().time.borrow().output();
+            let (utime, stime) = current().as_thread().cpu_time.output();
             utime + stime
         }
         _ => {
@@ -77,7 +76,7 @@ pub struct Tms {
 }
 
 pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
-    let (utime, stime) = current().as_thread().time.borrow().output();
+    let (utime, stime) = current().as_thread().cpu_time.output();
     let (cutime, cstime) = current().as_thread().proc_data.children_cpu_time();
     tms.vm_write(Tms {
         tms_utime: utime.as_micros() as usize,
@@ -90,7 +89,7 @@ pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
 
 pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
-    let (it_interval, it_value) = current().as_thread().time.borrow().get_itimer(ty);
+    let (it_interval, it_value) = current().as_thread().time.lock().get_itimer(ty);
 
     value.vm_write(itimerval {
         it_interval: timeval::from_time_value(it_interval),
@@ -124,7 +123,7 @@ pub fn sys_setitimer(
     let old = curr
         .as_thread()
         .time
-        .borrow_mut()
+        .lock()
         .set_itimer(ty, interval, remained);
 
     if let Some(old_value) = old_value.nullable() {

@@ -21,6 +21,7 @@ members = [
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/ax-lazyinit",
+    "components/ax-task",
     "components/axbacktrace",
     "components/axcpu",
     "components/axerrno",
@@ -34,7 +35,6 @@ members = [
     "components/crate_interface",
     "components/irq-framework",
     "components/kasm-aarch64",
-    "components/kernel_guard",
     "components/kernutil",
     "components/kspin",
     "components/linked_list_r4l",
@@ -105,7 +105,6 @@ members = [
     "net/ax-net",
     "os/arceos/modules/axruntime",
     "os/arceos/modules/axsync",
-    "os/arceos/modules/axtask",
     "os/arceos/tools/bwbench_client",
     "os/arceos/tools/deptool",
     "os/arceos/tools/raspi4/chainloader",
@@ -154,7 +153,6 @@ irq-framework = { version = "0.3.0", path = "components/irq-framework" }
 ax-input = { version = "0.6.5", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.1", path = "components/axio" }
 ax-ipi = { version = "0.5.27", path = "os/arceos/modules/axipi" }
-ax-kernel-guard = { version = "0.3.11", path = "components/kernel_guard" }
 ax-lockdep = { version = "0.2.0", path = "components/lockdep" }
 ax-kspin = { version = "0.3.15", path = "components/kspin" }
 ax-lazyinit = { version = "0.4.8", path = "components/ax-lazyinit" }
@@ -179,7 +177,7 @@ ax-runtime = { version = "0.10.4", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.8", path = "components/axsched" }
 ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd" }
 ax-sync = { version = "0.5.28", path = "os/arceos/modules/axsync" }
-ax-task = { version = "0.6.4", path = "os/arceos/modules/axtask" }
+ax-task = { version = "0.7.0", path = "components/ax-task" }
 axtest = { version = "0.5.12", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5.12", path = "components/axtest/axtest_macros" }
 xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }
@@ -311,7 +309,15 @@ dma-api = { version = "0.9.3", path = "memory/dma-api" }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
+loom = "0.7.2"
+spin = { version = "=0.12.0", default-features = false, features = [
+    "lazylock",
+    "lock_api",
+    "mutex",
+    "once",
+    "rwlock",
+    "use_ticket_mutex",
+] }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.24.0" }
 riscv = { version = "0.16.1", default-features = false }

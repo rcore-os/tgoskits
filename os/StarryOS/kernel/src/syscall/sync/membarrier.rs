@@ -1,10 +1,9 @@
 use core::sync::atomic::{Ordering, fence};
 
 use ax_errno::{AxError, AxResult};
-use ax_task::current;
 use linux_raw_sys::general::membarrier_cmd;
 
-use crate::task::AsThread;
+use crate::task::current;
 
 /// Memory barrier commands
 const MEMBARRIER_CMD_QUERY: i32 = membarrier_cmd::MEMBARRIER_CMD_QUERY as i32;

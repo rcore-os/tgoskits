@@ -78,6 +78,79 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 
+## Scheduler Runtime Bring-Up
+
+When the OS uses the OS-independent `ax-task` scheduler, keep scheduler objects
+out of architecture and platform crates. The OS runtime owns one pinned global
+`TaskSystem` plus one pinned `CpuLocal` allocation in each per-CPU slot.
+
+- On the primary CPU, initialize the architecture per-CPU register first, then
+  the runtime IRQ/preemption nesting state, allocator/MM/HAL services, the
+  `TaskSystem`, and the primary `CpuLocal`. Register timer and scheduler-IPI
+  delivery only after those objects are address-stable; enable interrupts last.
+- On a secondary CPU, initialize its architecture per-CPU register and runtime
+  guard state before allocating or publishing `CpuLocal`. Do not add the CPU to
+  the scheduler online mask until its bootstrap context, timer and IPI receive
+  path are ready.
+- If Rust TLS is enabled, install a temporary CPU-local bootstrap TLS area as
+  soon as the allocator and architecture per-CPU register are ready. Platform
+  late-init, exception reporting, logging, and `std` may touch TLS before the
+  scheduler exists. After `install_bootstrap_thread` commits ownership, publish
+  its execution context and long-lived TLS together, switch the hardware thread
+  pointer, and only then release the temporary area. Every later context switch
+  must verify that the scheduler's `previous` context equals the context
+  currently published by that CPU.
+- Treat generated `CPU_CAPACITY` as allocation capacity only. Placement and
+  Deadline root-domain admission must use the scheduler's published online
+  mask, whose size remains capped by `ax_hal::cpu_num()`.
+- Timer and scheduler-IPI hard handlers must only acknowledge hardware, publish
+  bounded accounting/inbox work, and set sticky `need_resched`. Drain remote
+  work, run OS switch hooks and change contexts at the IRQ-return scheduler safe
+  point with local IRQs disabled and no runqueue lock held.
+- Route every scheduler timer update through one runtime-owned one-shot mux that
+  programs the earlier of the periodic tick and task deadline. A task deadline
+  must never directly overwrite an earlier periodic deadline or bypass the
+  runtime's programmed-deadline accounting.
+- Advance an overdue periodic deadline in constant time with checked or wider
+  arithmetic; never loop once per missed period in hard IRQ context. Normalize
+  a zero interval and define saturation at the timestamp limit explicitly.
+- Derive `TaskRuntime::timer_resolution_ns` from the platform counter frequency
+  and round one hardware tick up to nanoseconds. Hard-coding 1 ns on AArch64,
+  RISC-V, or LoongArch can convert `now + 1 ns` back to the current tick and
+  create early or repeated immediate timer interrupts.
+- In ArceOS, `ax_hal::irq::handle_irq` creates that return safe point only after
+  controller EOI and after `irq-framework` clears its hard-IRQ marker. If the
+  trap entered with hardware IRQs masked, it briefly enables local IRQs while
+  the outer preemption guard is still held, drops that guard so pending work may
+  enter the scheduler (which immediately takes its own IRQ guard), and masks
+  IRQs again before returning to the architecture trap frame. Do not move the
+  preemption-guard drop back into the framework dispatch window: that loses
+  timer preemption because `in_hard_irq()` must prohibit scheduling there.
+- Treat the CPU-local IRQ guard as a context-switch baton. A resumed context
+  consumes it when its suspended scheduler guard returns; a fresh kernel or idle
+  context must call the runtime's initial-switch completion hook as its first
+  operation, after completing scheduler switch tail and before touching TLS,
+  taking context-aware locks, polling futures, or enabling interrupts.
+- Keep the previous thread's `on_cpu` publication set until the architecture has
+  physically left its stack. Clear it from switch tail in the newly active
+  context; only then publish a deferred migration, run the task-context exit
+  hook, or allow the reaper to destroy context/stack/extension resources.
+- Make the address-space handoff explicit even when the next scheduler record
+  carries the `NONE` sentinel. Capture the per-CPU kernel page-table root before
+  publishing the CPU on x86_64 and RISC-V, where kernel and user execution share
+  one root register; translate `NONE` back to that saved root. On AArch64 and
+  LoongArch, where the kernel root is separate, translate `NONE` to a zero user
+  root. Install this resolved root with local IRQs disabled after the previous
+  switch-out hook and before the next switch-in hook; initialize the saved
+  architecture `TaskContext` with the same value so its later comparison cannot
+  restore a stale user root.
+- Before WFI, publish the CPU's polling/idle state, execute the architecture
+  barrier, then recheck the owner runqueue, remote inbox and `need_resched` so a
+  wake cannot be lost between the final check and sleep.
+- A scheduler IPI is a typed CPU-local `IrqId`; keep its coalescing epoch in the
+  OS-owned `CpuLocal` path and do not introduce an `ax-task` dependency into
+  `ax-hal`, `ax-plat`, `somehal`, or `ax-percpu`.
+
 ## Validation Ladder
 
 Run the smallest useful check first, then climb:

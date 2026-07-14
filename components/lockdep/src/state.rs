@@ -12,9 +12,9 @@ use core::{
 ))]
 use std::cell::RefCell;
 
-#[cfg(feature = "task-context")]
+#[cfg(all(feature = "task-context", not(any(test, doctest))))]
 use ax_crate_interface::call_interface;
-use ax_kernel_guard::IrqSave;
+use ax_kspin::IrqGuard;
 
 const MAX_LOCK_CLASSES: usize = 1024;
 const MAX_HELD_LOCKS: usize = 32;
@@ -544,12 +544,12 @@ struct GraphState {
 unsafe impl Sync for GraphState {}
 
 struct GraphGuard {
-    _irq_guard: IrqSave,
+    _irq_guard: IrqGuard,
 }
 
 impl GraphGuard {
     fn acquire() -> Self {
-        let irq_guard = IrqSave::new();
+        let irq_guard = IrqGuard::new();
         while GRAPH_STATE
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

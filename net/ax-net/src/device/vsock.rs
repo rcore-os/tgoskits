@@ -24,7 +24,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::Mutex;
-use ax_task::future::{block_on, interruptible};
 use rdif_vsock::{Interface, VsockAddr, VsockConnId, VsockError, VsockEvent};
 
 use crate::vsock::connection_manager::VSOCK_CONN_MANAGER;
@@ -99,7 +98,12 @@ pub fn start_vsock_poll() {
         if !POLL_TASK_RUNNING.swap(true, Ordering::SeqCst) {
             drop(count);
             debug!("Starting vsock poll task");
-            ax_task::spawn_with_name(vsock_poll_loop, "vsock-poll".to_string());
+            if let Err(error) =
+                crate::spawn_permanent_worker("vsock-poll".to_string(), vsock_poll_loop)
+            {
+                POLL_TASK_RUNNING.store(false, Ordering::Release);
+                warn!("Failed to start vsock poll task: {error}");
+            }
         } else {
             warn!("Poll task already running!");
         }
@@ -123,15 +127,16 @@ fn vsock_poll_loop() {
     loop {
         let ref_count = *POLL_REF_COUNT.lock();
         if ref_count == 0 {
-            POLL_TASK_RUNNING.store(false, Ordering::SeqCst);
-            debug!("Vsock poll task exiting (no active connections)");
-            break;
+            ax_task::sleep(Duration::from_millis(10));
+            continue;
         }
-        let _ = block_on(interruptible(poll_interfaces_adaptive()));
+        if let Err(error) = poll_interfaces_adaptive() {
+            debug!("vsock poll iteration failed: {error}");
+        }
     }
 }
 
-async fn poll_interfaces_adaptive() -> AxResult<()> {
+fn poll_interfaces_adaptive() -> AxResult<()> {
     let has_events = poll_vsock_interfaces()?;
 
     if has_events {
@@ -146,7 +151,7 @@ async fn poll_interfaces_adaptive() -> AxResult<()> {
     if idle_count > 0 && idle_count % 10 == 0 {
         trace!("Poll frequency: idle_count={idle_count}, interval={interval_us}μs",);
     }
-    ax_task::future::sleep(interval).await;
+    ax_task::sleep(interval);
     Ok(())
 }
 

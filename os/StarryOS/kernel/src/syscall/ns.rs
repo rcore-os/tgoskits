@@ -1,6 +1,4 @@
-use ax_task::current;
-
-use crate::task::AsThread;
+use crate::task::current;
 
 /// Returns `true` when the calling task belongs to the root network
 /// namespace (ns_id == 0).  Used by the network stack to decide whether

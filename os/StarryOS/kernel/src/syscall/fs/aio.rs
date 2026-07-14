@@ -21,11 +21,8 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
     time::wall_time,
 };
+use ax_std::os::arceos::task::WaitQueue;
 use ax_sync::Mutex;
-use ax_task::{
-    WaitQueue,
-    future::{block_on, interruptible, timeout_at_wall},
-};
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
 use starry_process::Pid;
@@ -36,7 +33,10 @@ use crate::{
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, Backend, IoVec},
     syscall::signal::check_sigset_size,
-    task::{AsThread, with_blocked_signals},
+    task::{
+        future::{block_on, interruptible, timeout_at_wall},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
@@ -239,7 +239,7 @@ static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::n
 
 // Return the process id that owns newly created or looked-up contexts.
 fn current_pid() -> Pid {
-    ax_task::current().as_thread().proc_data.proc.pid()
+    crate::task::current().as_thread().proc_data.proc.pid()
 }
 
 // Use Linux EINVAL for all invalid AIO context handles.
@@ -1065,7 +1065,7 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxRes
 
     if spawn_worker {
         let worker_context = context.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_with_name(
             move || aio_worker(worker_context),
             String::from("aio-worker"),
         );
@@ -1248,7 +1248,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
     }
     // Allocate the user ring before publishing the context globally.
     let (ring_size, ring_events) = aio_ring_layout(nr_events)?;
-    let curr = ax_task::current();
+    let curr = crate::task::current();
     let aspace = curr.as_thread().proc_data.aspace();
     let ring_vaddr = {
         let mut guard = aspace.lock();

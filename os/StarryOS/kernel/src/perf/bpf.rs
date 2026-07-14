@@ -20,7 +20,6 @@ use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
 use kbpf_basic::{
     linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
@@ -35,6 +34,7 @@ use crate::perf::BPFJitMemory;
 use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
+    task::future::IrqNotify,
 };
 
 /// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
@@ -132,7 +132,7 @@ fn start_bpf_perf_notify_worker(
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    ax_task::spawn_with_name(
+    crate::task::spawn_with_name(
         move || loop {
             poll_notify.wait();
             if !poll_alive.load(Ordering::Acquire) {

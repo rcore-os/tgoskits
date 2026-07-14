@@ -357,8 +357,6 @@ mod tests {
             "lockdep-baseline",
             ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
             "net-loopback",
-            "sched-cfs",
-            "sched-rr",
             ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
         ] {
             let features = rust_qemu_features_for_list(Some(feature), false).unwrap();

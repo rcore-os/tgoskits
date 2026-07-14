@@ -1,7 +1,7 @@
 use core::panic::Location;
 
-use ax_kspin::lockdep::{self as common, HeldLockSnapshot, PreparedAcquire};
-pub(crate) use ax_kspin::lockdep::{LockSubclass, LockdepMap};
+use ax_lockdep::{self as common, HeldLockSnapshot, PreparedAcquire};
+pub(crate) use ax_lockdep::{LockSubclass, LockdepMap};
 
 use crate::mutex::RawMutex;
 
