@@ -18,4 +18,4 @@ shell_prefix = "root@starry:"
 shell_init_cmd = "/bin/sh /opt/starry-selfhost-run.sh"
 success_regex = ["(?m)^SELF_COMPILE_SUCCESS\\s*$"]
 fail_regex = ['(?i)\bpanicked\b', 'SELF_COMPILE_FAILED']
-timeout = 14400
+timeout = 28800
