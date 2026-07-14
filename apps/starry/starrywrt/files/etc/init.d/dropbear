@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+# StarryWRT dropbear init script - OpenWrt-style. Reads /etc/config/dropbear via uci and
+# launches the SSH server accordingly. (Under a full procd StarryWRT this is procd-managed;
+# in the single-core Phase-1 boot the rc runner execs it directly.)
+START=19
+STOP=99
+
+start() {
+	PORT="$(uci -q get dropbear.@dropbear[0].Port || echo 22)"
+	KEYDIR=/etc/dropbear
+	mkdir -p "$KEYDIR"
+	[ -f "$KEYDIR/dropbear_ed25519_host_key" ] || \
+		dropbearkey -t ed25519 -f "$KEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
+	dropbear -r "$KEYDIR/dropbear_ed25519_host_key" -p "$PORT" -P /var/run/dropbear.pid
+}
+
+stop() {
+	[ -f /var/run/dropbear.pid ] || return 0
+	PID="$(cat /var/run/dropbear.pid)"
+	kill "$PID" 2>/dev/null
+	i=0; while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.25; i=$((i+1)); done
+	kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+	rm -f /var/run/dropbear.pid
+}

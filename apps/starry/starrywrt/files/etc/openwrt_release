@@ -1,0 +1,7 @@
+DISTRIB_ID='StarryWRT'
+DISTRIB_RELEASE='1.0-snapshot'
+DISTRIB_REVISION='r0'
+DISTRIB_TARGET='starryos/generic'
+DISTRIB_ARCH='STARRY_ARCH_PLACEHOLDER'
+DISTRIB_DESCRIPTION='StarryWRT 1.0-snapshot - OpenWrt userland on the StarryOS kernel'
+DISTRIB_TAINTS=''
