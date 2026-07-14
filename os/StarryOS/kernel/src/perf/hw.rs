@@ -658,6 +658,8 @@ impl HwPerfEvent {
                     // System-wide sampling: attribute to the interrupted
                     // `current()` in the handler (it matches the sampled IP).
                     owner_ids: None,
+                    read_format: self.read_format,
+                    read_value: 0,
                 },
             );
             ax_cpu::pmu::overflow::enable_irq(n);
@@ -1429,6 +1431,14 @@ pub fn perf_event_open_hw(
             );
             return Err(StarryError::Unsupported);
         }
+        if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format) {
+            warn!(
+                "perf_event_open: PERF_SAMPLE_READ read_format {:#x} unsupported (only 0 / \
+                 PERF_FORMAT_ID; no group/time-format sampling)",
+                attr.read_format
+            );
+            return Err(AxError::Unsupported);
+        }
         // A fixed period must fit the 32-bit programmable counter (the preload is
         // 32-bit). Frequency mode carries a (small) rate here, not a period.
         if !is_freq && raw > u32::MAX as u64 {
@@ -1598,6 +1608,14 @@ fn perf_event_open_hw_per_task(
                 attr.sample_type
             );
             return Err(StarryError::Unsupported);
+        }
+        if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format) {
+            warn!(
+                "perf_event_open: per-task PERF_SAMPLE_READ read_format {:#x} unsupported (only 0 \
+                 / PERF_FORMAT_ID; no group/time-format sampling)",
+                attr.read_format
+            );
+            return Err(AxError::Unsupported);
         }
         if !is_freq && raw > u32::MAX as u64 {
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
