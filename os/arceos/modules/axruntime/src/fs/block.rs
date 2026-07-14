@@ -93,6 +93,10 @@ impl BlockTaskOps for RuntimeTaskOps {
         BLOCK_DRAIN_NOTIFY.wait();
     }
 
+    fn wait_for_drain_notification_timeout(&self, dur: core::time::Duration) -> bool {
+        BLOCK_DRAIN_NOTIFY.wait_timeout(dur)
+    }
+
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
         ax_task::spawn_raw(f, name, crate::runtime_default_task_stack_size());
     }
