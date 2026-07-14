@@ -718,19 +718,7 @@ jobs:
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: |
-              # Provision the perf-validate static probe onto the board's
-              # persistent ext4 before the run: the board runner deploys only the
-              # kernel, so userspace test assets are provisioned out-of-band (same
-              # convention as the other orangepi board cases). Best-effort and
-              # guarded — a deploy failure (e.g. the board is not currently in
-              # Linux mode, or docker/scp is unavailable on this runner) is logged
-              # but MUST NOT abort the other orangepi board cases; the
-              # perf-validate case then fails fast via its `not found` fail_regex
-              # instead of hanging to the 900s timeout.
-              bash test-suit/starryos/board-orangepi-5-plus/perf-validate/deploy.sh deploy \
-                || echo "::warning::perf-validate deploy failed; the perf-validate board case will fail-fast"
-              cargo xtask starry test board --board orangepi-5-plus
+            command: cargo xtask starry test board --board orangepi-5-plus
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
