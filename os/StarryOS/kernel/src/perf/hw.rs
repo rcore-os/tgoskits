@@ -1828,6 +1828,9 @@ fn perf_event_open_hw_per_task(
             inherit: attr.inherit() != 0,
             observer: ax_task::current().as_thread().active_pid_namespace().id(),
             valid_clusters,
+            // The monitored thread's tid: group-leader sampling links a member to
+            // a leader only when these match (same monitored thread).
+            owner_tid: thr.tid(),
         },
     ));
     super::task::attach(thr, ptc.clone());
