@@ -47,6 +47,7 @@ impl Device for LoopbackDevice {
         // Loopback packets are injected directly in Router::dispatch() —
         // this method is never called. The router's loopback fast path
         // calls count_tx()/count_rx() directly on the DeviceHandle.
-        unreachable!("loopback Device::send() is never called; router uses fast path")
+        warn!("loopback Device::send() unexpectedly called; router should use fast path");
+        0
     }
 }

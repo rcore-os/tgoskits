@@ -342,6 +342,35 @@ impl DeviceHandle {
         }
     }
 
+    /// Drains one iteration of the RX worker's local batch into the shared RX
+    /// queue. Pops entries from `local_batch` and pushes them to `rx_queue`;
+    /// counts each successfully pushed frame via `count_rx`. On backpressure,
+    /// the failed entry is returned to the front of `local_batch` and the
+    /// function returns `Err(())`. If all entries drain successfully, returns
+    /// `Ok(())`. This shared helper keeps the backpressure retry logic and
+    /// frame-length pairing consistent between the production RX worker and
+    /// tests that verify the pairing invariant.
+    fn drain_local_batch_step(
+        &self,
+        local_batch: &mut VecDeque<(RxPacket, usize)>,
+    ) -> Result<(), ()> {
+        while let Some((rx, frame_len)) = local_batch.pop_front() {
+            match self.rx_queue.push(rx) {
+                Ok(()) => {
+                    self.count_rx(frame_len);
+                }
+                Err(rx) => {
+                    // Queue is full — return the entry to the front and
+                    // signal backpressure to the caller. The frame_len stays
+                    // paired with its packet.
+                    local_batch.push_front((rx, frame_len));
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn wake_rx(&self) {
         self.rx_ready.store(true, Ordering::Release);
         self.rx_wake.notify_one(true);
@@ -1018,23 +1047,21 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         // Push to the shared RX queue outside the device lock.
-        while let Some((rx, frame_len)) = local_batch.pop_front() {
-            match device.rx_queue.push(rx) {
-                Ok(()) => {
-                    device.count_rx(frame_len);
-                    crate::request_poll();
-                }
-                Err(rx) => {
-                    // Queue is full — return the entry to the front and
-                    // retry on the next iteration. The frame_len stays
-                    // paired with its packet.
-                    local_batch.push_front((rx, frame_len));
-                    warn!("{}: RX queue is full, delaying packet", device.name);
-                    crate::request_poll();
-                    ax_task::yield_now();
-                    break;
-                }
+        if device.drain_local_batch_step(&mut local_batch).is_err() {
+            // Backpressure: the shared RX queue is full. Notify the main poll
+            // loop to drain, yield CPU to allow progress, then retry on the
+            // next iteration. The unpushed entries remain in local_batch with
+            // their frame lengths paired.
+            warn!("{}: RX queue is full, delaying packet", device.name);
+            crate::request_poll();
+            ax_task::yield_now();
+        } else {
+            // All entries were successfully pushed — notify the main poll loop
+            // that new packets are available for processing.
+            if !local_batch.is_empty() {
+                panic!("drain_local_batch_step returned Ok but local_batch is not empty");
             }
+            crate::request_poll();
         }
 
         if !received && local_batch.is_empty() {
@@ -1679,7 +1706,8 @@ mod l2_counter_tests {
     fn rx_backpressure_preserves_frame_len_pairing() {
         // When the shared RX queue is full, unprocessed (packet, frame_len)
         // pairs must stay paired for the next drain iteration. This test
-        // mirrors the restructured device_rx_worker's local_batch drain loop.
+        // verifies that the production drain_local_batch_step() helper
+        // preserves FIFO order and pairing across backpressure retries.
         //
         // Use a queue large enough that backpressure is deliberate (capacity 1)
         // but the second drain can exercise the full successful path.
@@ -1723,21 +1751,10 @@ mod l2_counter_tests {
         }
 
         // First drain attempt — no entries can be pushed (queue full).
-        let mut processed = 0usize;
-        while let Some((rx, frame_len)) = local_batch.pop_front() {
-            match device.rx_queue.push(rx) {
-                Ok(()) => {
-                    device.count_rx(frame_len);
-                    processed += 1;
-                }
-                Err(rx) => {
-                    local_batch.push_front((rx, frame_len));
-                    break;
-                }
-            }
-        }
-        // Queue was full; no entries should have been pushed.
-        assert_eq!(processed, 0);
+        // drain_local_batch_step returns Err on backpressure and leaves
+        // all entries in local_batch.
+        let result = device.drain_local_batch_step(&mut local_batch);
+        assert!(result.is_err(), "Expected backpressure Err on full queue");
         // All 3 entries are still paired in local_batch.
         assert_eq!(local_batch.len(), 3);
 
@@ -1748,21 +1765,9 @@ mod l2_counter_tests {
 
         // Second drain — all entries should succeed, each with its original
         // frame length still paired.
-        while let Some((rx, frame_len)) = local_batch.pop_front() {
-            match device.rx_queue.push(rx) {
-                Ok(()) => {
-                    device.count_rx(frame_len);
-                    processed += 1;
-                }
-                Err(rx) => {
-                    local_batch.push_front((rx, frame_len));
-                    break;
-                }
-            }
-        }
-
-        assert_eq!(processed, 3);
-        assert!(local_batch.is_empty());
+        let result = device.drain_local_batch_step(&mut local_batch);
+        assert!(result.is_ok(), "Expected Ok after clearing queue");
+        assert!(local_batch.is_empty(), "All entries should be drained");
 
         let stats = device.stats();
         assert_eq!(stats.rx_packets, 3);
