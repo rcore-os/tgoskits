@@ -132,11 +132,34 @@ impl DmaOp for KlibDma {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let pages = unsafe { DmaPages::alloc_for_layout(constraints, layout).ok()? };
+        // On RISC-V the dma-api `op::arch` cache hooks are no-ops (no CMO
+        // support is wired in), so a cached contiguous buffer would be
+        // incoherent with device DMA on the non-coherent C906. Remap it
+        // uncached — the same policy as `alloc_coherent` — so streaming and
+        // bounce buffers used by ADMA2 are correct. aarch64 keeps the cached
+        // + `sync_*` path because its `op::arch` performs real cache
+        // maintenance.
+        #[cfg(target_arch = "riscv64")]
+        {
+            if CoherentDmaPolicy::make_uncached(&pages, layout).is_err() {
+                unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) };
+                return None;
+            }
+        }
         Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
+        #[cfg(target_arch = "riscv64")]
+        {
+            if CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages).is_err() {
+                // Refuse to hand uncached pages back to the cached page
+                // allocator; leak this allocation rather than corrupt future
+                // cached users.
+                return;
+            }
+        }
         unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
     }
 
