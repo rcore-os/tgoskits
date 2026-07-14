@@ -24,7 +24,7 @@ pub use crate::{IntId, VirtAddr, define::Trigger, sys_reg::*};
 /// Unlike GICv2, GICv3 uses affinity-based targeting through system registers.
 #[derive(Debug, Clone, Copy)]
 pub enum SGITarget {
-    /// Send SGI to the current CPU (using IRM=1).
+    /// Send SGI to all participating PEs except the requesting PE (IRM=1).
     All,
     /// Send SGI to specific CPUs identified by affinity and target list.
     List(TargetList),
@@ -46,6 +46,11 @@ impl SGITarget {
     pub fn list(list: impl AsRef<[Affinity]>) -> Self {
         Self::List(TargetList::new(list))
     }
+
+    /// Creates one checked target list without relying on range-selector support.
+    pub fn try_list(list: impl AsRef<[Affinity]>) -> Result<Self, SgiError> {
+        Ok(Self::List(TargetList::try_new(list)?))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +66,34 @@ pub struct TargetList {
 }
 
 impl TargetList {
+    /// Creates a target list representable by the base GICv3 SGI encoding.
+    pub fn try_new(list: impl AsRef<[Affinity]>) -> Result<Self, SgiError> {
+        let list = list.as_ref();
+        let Some(first) = list.first().copied() else {
+            return Err(SgiError::InvalidTarget);
+        };
+        if first.aff0 >= 16 {
+            return Err(SgiError::InvalidTarget);
+        }
+        let mut raw = 0u16;
+        for affinity in list {
+            if affinity.aff3 != first.aff3
+                || affinity.aff2 != first.aff2
+                || affinity.aff1 != first.aff1
+                || affinity.aff0 >= 16
+            {
+                return Err(SgiError::InvalidTarget);
+            }
+            raw |= 1u16 << affinity.aff0;
+        }
+        Ok(Self {
+            aff3: first.aff3,
+            aff2: first.aff2,
+            aff1: first.aff1,
+            target_list: raw,
+        })
+    }
+
     /// Create a new TargetList with a specific CPU target list. list is Cpu interface IDs.
     pub fn new(list: impl AsRef<[Affinity]>) -> Self {
         let mut aff3 = 0;
@@ -106,6 +139,15 @@ impl TargetList {
                 aff0: i as u8,
             })
     }
+}
+
+/// Failure to encode one bounded GICv3 SGI transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SgiError {
+    /// The interrupt is not an SGI.
+    InvalidIntId,
+    /// The target requires unsupported affinity range selection.
+    InvalidTarget,
 }
 
 /// Affinity routing information for GICv3.
@@ -890,6 +932,14 @@ impl CpuInterfaceInit {
             security_state: self.security_state,
         }
     }
+
+    /// Returns the current CPU interface when its redistributor is present.
+    pub fn try_cpu_interface(&self) -> Option<CpuInterface> {
+        Some(CpuInterface {
+            rd: find_current_rd_from(self.gicr)?.as_ptr(),
+            security_state: self.security_state,
+        })
+    }
 }
 
 fn rd_slice_from(gicr: VirtAddr) -> RDv3Slice {
@@ -897,6 +947,10 @@ fn rd_slice_from(gicr: VirtAddr) -> RDv3Slice {
 }
 
 fn current_rd_from(gicr: VirtAddr) -> NonNull<RedistributorV3> {
+    find_current_rd_from(gicr).expect("No current redistributor")
+}
+
+fn find_current_rd_from(gicr: VirtAddr) -> Option<NonNull<RedistributorV3>> {
     let want = (MPIDR_EL1.get() & 0xFFFFFF) as u32;
 
     for rd in rd_slice_from(gicr).iter() {
@@ -905,10 +959,10 @@ fn current_rd_from(gicr: VirtAddr) -> NonNull<RedistributorV3> {
             .TYPER
             .read(gicr::TYPER::Affinity) as u32;
         if affi == want {
-            return rd;
+            return Some(rd);
         }
     }
-    panic!("No current redistributor")
+    None
 }
 
 /// Every CPU interface has its own GICC registers
@@ -918,6 +972,11 @@ pub struct CpuInterface {
 }
 
 unsafe impl Send for CpuInterface {}
+// SAFETY: each value identifies one redistributor and is published only after
+// its owning CPU completes initialization. Private IRQ operations are issued
+// by that logical CPU; immutable inspection/publication through `Once` does not
+// alias mutable Rust state.
+unsafe impl Sync for CpuInterface {}
 
 impl CpuInterface {
     fn rd(&self) -> &RedistributorV3 {
@@ -1118,8 +1177,8 @@ impl CpuInterface {
         self.rd().sgi.get_cfgr(id)
     }
 
-    pub fn send_sgi(&self, sgi_id: IntId, target: SGITarget) {
-        send_sgi(sgi_id, target);
+    pub fn try_send_sgi(&self, sgi_id: IntId, target: SGITarget) -> Result<(), SgiError> {
+        try_send_sgi(sgi_id, target)
     }
 
     pub const fn trap_operations(&self) -> TrapOp {
@@ -1204,20 +1263,23 @@ pub fn dir(ack: IntId) {
 ///
 /// // Send SGI 5 to all other CPUs
 /// let sgi_id = IntId::sgi(5);
-/// arm_gic_driver::v3::send_sgi(sgi_id, SGITarget::AllOther);
+/// arm_gic_driver::v3::try_send_sgi(sgi_id, SGITarget::All)?;
 /// ```
-pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
-    assert!(sgi_id.is_sgi(), "Invalid SGI ID: {sgi_id:?}");
+pub fn try_send_sgi(sgi_id: IntId, target: SGITarget) -> Result<(), SgiError> {
+    if !sgi_id.is_sgi() {
+        return Err(SgiError::InvalidIntId);
+    }
 
     let sgi_num = sgi_id.to_u32();
 
+    // Match Linux's publish-before-SGI ordering: remote work published in
+    // normal memory must be visible before ICC_SGI1R_EL1 is observed.
+    barrier::dsb(barrier::ISHST);
     match target {
         SGITarget::All => {
-            trace!("Sending SGI {sgi_num} to all CPUs");
             ICC_SGI1R_EL1.write(ICC_SGI1R_EL1::INTID.val(sgi_num as u64) + ICC_SGI1R_EL1::IRM::SET);
         }
         SGITarget::List(val) => {
-            trace!("Sending SGI {sgi_num} to CPUs with affinity: {val:#x?}");
             // Send to specific CPUs identified by affinity and target list
             let value = ICC_SGI1R_EL1::INTID.val(sgi_num as u64)
                 + ICC_SGI1R_EL1::AFF3.val(val.aff3 as u64)
@@ -1228,4 +1290,5 @@ pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
         }
     }
     barrier::isb(barrier::SY);
+    Ok(())
 }

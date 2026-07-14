@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+#[cfg(any(feature = "irq", test))]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 #[macro_use]
 extern crate ax_plat_macros;
 
@@ -21,6 +24,14 @@ pub use ax_crate_interface::impl_interface as impl_plat_interface;
 pub use ax_plat_macros::main;
 #[cfg(feature = "smp")]
 pub use ax_plat_macros::secondary_main;
+
+#[cfg(any(feature = "irq", test))]
+pub(crate) fn install_runtime_hook_once(slot: &AtomicUsize, candidate: usize) -> bool {
+    match slot.compare_exchange(0, candidate, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => true,
+        Err(installed) => installed == candidate,
+    }
+}
 
 #[doc(hidden)]
 pub mod __priv {
@@ -89,17 +100,36 @@ mod test_lock_runtime {
         impl LockRuntime for TestLockRuntime {
             fn irq_enter() {}
             fn irq_exit() {}
-            fn irqs_enabled() -> bool { true }
             fn preempt_enter() {}
-            fn preempt_exit() -> bool { true }
-            fn in_hard_irq() -> bool { false }
-            fn need_resched() -> bool { false }
-            fn schedule() {}
+            fn preempt_exit() {}
+            unsafe fn preempt_exit_irq_return() {}
             fn current_thread_id() -> u64 { 1 }
             fn lockdep_acquire(_event: LockdepEvent) {}
             fn lockdep_release(_event: LockdepEvent) {}
             fn lockdep_set_trace_enabled(_enabled: bool) {}
             fn lockdep_dump_trace() {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::install_runtime_hook_once;
+
+    unsafe fn first_runtime_hook() {}
+    unsafe fn second_runtime_hook() {}
+
+    #[test]
+    fn runtime_hook_is_one_shot_and_same_value_idempotent() {
+        let slot = AtomicUsize::new(0);
+        let first = first_runtime_hook as *const () as usize;
+        let second = second_runtime_hook as *const () as usize;
+
+        assert!(install_runtime_hook_once(&slot, first));
+        assert!(install_runtime_hook_once(&slot, first));
+        assert!(!install_runtime_hook_once(&slot, second));
+        assert_eq!(slot.load(Ordering::Acquire), first);
     }
 }

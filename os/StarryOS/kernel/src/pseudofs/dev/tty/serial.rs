@@ -15,7 +15,7 @@ use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
@@ -80,12 +80,12 @@ struct SerialBackend {
     irq: IrqId,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
     started: AtomicBool,
-    start_lock: Mutex<()>,
+    start_lock: PiMutex<()>,
     events: SerialEvents,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
     tx_notify: IrqNotify,
-    output_lock: Mutex<()>,
+    output_lock: PiMutex<()>,
 }
 
 struct SerialEvents {
@@ -313,12 +313,12 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         irq: irq_id,
         irq_handle: SpinNoIrq::new(None),
         started: AtomicBool::new(false),
-        start_lock: Mutex::new(()),
+        start_lock: PiMutex::new(()),
         events: SerialEvents::new(),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
         tx_notify: IrqNotify::new(),
-        output_lock: Mutex::new(()),
+        output_lock: PiMutex::new(()),
     });
 
     backend.register_irq(irq)?;

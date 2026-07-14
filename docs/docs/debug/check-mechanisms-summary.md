@@ -38,10 +38,12 @@ lock 而不能睡眠”的统一诊断尚未重新接入，因此不能把旧调
 - `WaitQueue::wait*`
 - `ax_runtime::task::wait_thread` / `join_thread`
 - Starry `task::future::block_on`
-- `ax-sync::Mutex::lock`
+- `ax_sync::PiMutex::lock`
 - Starry 用户内存访问和 page fault slow path
 
-`ax-sync::Mutex::try_lock` 不属于覆盖路径。它是单次 CAS，不会阻塞或睡眠，因此保持可在原子上下文中调用，语义接近 Linux `mutex_trylock`。
+`ax_sync::PiMutex::try_lock` 不属于覆盖路径。它只检查 mutex 本地 owner，不会
+donation、阻塞或睡眠，因此保持可在原子上下文中做非阻塞尝试，语义接近 Linux
+`mutex_trylock`。成功后得到的 guard 仍不能包住任何睡眠操作。
 
 主要入口：
 
@@ -207,7 +209,7 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 接入范围包括：
 
 - `ax-kspin` spin lock。
-- `ax-sync` mutex。
+- `ax_sync::SpinMutex` / 兼容 `Mutex`（经 `ax-kspin`）和 `PiMutex`。
 - POSIX pthread mutex lockdep-aware 布局。
 - ArceOS lockdep QEMU 回归用例。
 

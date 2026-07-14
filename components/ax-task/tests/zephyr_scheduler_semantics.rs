@@ -28,6 +28,7 @@ fn higher_priority_fifo_wake_requests_preemption() {
         system
             .schedule_if_requested(cpu.as_mut(), 1)
             .unwrap()
+            .decision()
             .unwrap()
             .next(),
         higher.id()
@@ -52,6 +53,7 @@ fn same_priority_fifo_wake_does_not_request_preemption() {
         system
             .schedule_if_requested(cpu.as_mut(), 1)
             .unwrap()
+            .decision()
             .is_none()
     );
     assert_eq!(cpu.current(), Some(running.id()));
@@ -75,6 +77,7 @@ fn batch_wake_does_not_request_ordinary_fair_preemption() {
         system
             .schedule_if_requested(cpu.as_mut(), 1)
             .unwrap()
+            .decision()
             .is_none()
     );
     assert_eq!(cpu.current(), Some(running.id()));
@@ -98,6 +101,7 @@ fn batch_wake_preempts_sched_idle_current() {
         system
             .schedule_if_requested(cpu.as_mut(), 1)
             .unwrap()
+            .decision()
             .unwrap()
             .next(),
         batch.id()
@@ -253,12 +257,9 @@ fn repeated_smp_wake_coalesces_to_one_ipi_epoch() {
     assert_eq!(second.state(), ThreadState::Blocked);
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu0.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu0.as_mut(),
     );
-    support::install_cpu(
-        1,
-        (cpu1.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
-    );
+    support::install_cpu(1, cpu1.as_mut());
     support::set_online_cpu_count(2);
 
     let first_wake = first.wake_handle();

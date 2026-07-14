@@ -1,16 +1,16 @@
 use std::{sync::Arc, thread};
 
 use ax_kspin::{
-    LockRuntime, LockdepEvent, RawSpinIrqSave, RawSpinIrqSaveRwLock, RawSpinLock, RawSpinNoIrq,
-    RawSpinNoIrqRwLock, RawSpinNoPreempt, RawSpinNoPreemptIrqSave, RawSpinNoPreemptIrqSaveRwLock,
-    RawSpinNoPreemptRwLock, RawSpinRwLock, SpinIrqSave, SpinIrqSaveGuard, SpinIrqSaveRwLock,
-    SpinIrqSaveRwLockReadGuard, SpinIrqSaveRwLockWriteGuard, SpinNoIrq, SpinNoIrqGuard,
-    SpinNoIrqRwLock, SpinNoIrqRwLockReadGuard, SpinNoIrqRwLockWriteGuard, SpinNoPreempt,
-    SpinNoPreemptGuard, SpinNoPreemptIrqSave, SpinNoPreemptIrqSaveGuard,
-    SpinNoPreemptIrqSaveRwLock, SpinNoPreemptIrqSaveRwLockReadGuard,
-    SpinNoPreemptIrqSaveRwLockWriteGuard, SpinNoPreemptRwLock, SpinNoPreemptRwLockReadGuard,
-    SpinNoPreemptRwLockWriteGuard, SpinRaw, SpinRawGuard, SpinRawRwLock, SpinRawRwLockReadGuard,
-    SpinRawRwLockWriteGuard, impl_trait,
+    IrqGuard, LockRuntime, LockdepEvent, PreemptGuard, PreemptIrqGuard, RawSpinIrqSave,
+    RawSpinIrqSaveRwLock, RawSpinLock, RawSpinNoIrq, RawSpinNoIrqRwLock, RawSpinNoPreempt,
+    RawSpinNoPreemptIrqSave, RawSpinNoPreemptIrqSaveRwLock, RawSpinNoPreemptRwLock, RawSpinRwLock,
+    SpinIrqSave, SpinIrqSaveGuard, SpinIrqSaveRwLock, SpinIrqSaveRwLockReadGuard,
+    SpinIrqSaveRwLockWriteGuard, SpinNoIrq, SpinNoIrqGuard, SpinNoIrqRwLock,
+    SpinNoIrqRwLockReadGuard, SpinNoIrqRwLockWriteGuard, SpinNoPreempt, SpinNoPreemptGuard,
+    SpinNoPreemptIrqSave, SpinNoPreemptIrqSaveGuard, SpinNoPreemptIrqSaveRwLock,
+    SpinNoPreemptIrqSaveRwLockReadGuard, SpinNoPreemptIrqSaveRwLockWriteGuard, SpinNoPreemptRwLock,
+    SpinNoPreemptRwLockReadGuard, SpinNoPreemptRwLockWriteGuard, SpinRaw, SpinRawGuard,
+    SpinRawRwLock, SpinRawRwLockReadGuard, SpinRawRwLockWriteGuard, impl_trait,
 };
 use lock_api::{GuardNoSend, RawMutex, RawRwLock};
 
@@ -20,12 +20,9 @@ impl_trait! {
     impl LockRuntime for TestRuntime {
         fn irq_enter() {}
         fn irq_exit() {}
-        fn irqs_enabled() -> bool { true }
         fn preempt_enter() {}
-        fn preempt_exit() -> bool { true }
-        fn in_hard_irq() -> bool { false }
-        fn need_resched() -> bool { false }
-        fn schedule() {}
+        fn preempt_exit() {}
+        unsafe fn preempt_exit_irq_return() {}
         fn current_thread_id() -> u64 { 1 }
         fn lockdep_acquire(_event: LockdepEvent) {}
         fn lockdep_release(_event: LockdepEvent) {}
@@ -74,6 +71,18 @@ fn context_aware_rwlock_has_non_send_guards() {
     assert_rwlock_guards_are_not_send::<RawSpinIrqSaveRwLock>();
     assert_rwlock_guards_are_not_send::<RawSpinNoPreemptIrqSaveRwLock>();
     assert_rwlock_guards_are_not_send::<RawSpinNoIrqRwLock>();
+}
+
+#[test]
+fn context_guards_lend_cpu_pin_proof() {
+    let preempt = PreemptGuard::new();
+    accept_cpu_pin(preempt.cpu_pin());
+
+    let irq = IrqGuard::new();
+    accept_cpu_pin(irq.cpu_pin());
+
+    let combined = PreemptIrqGuard::new();
+    accept_cpu_pin(combined.cpu_pin());
 }
 
 #[test]
@@ -128,6 +137,8 @@ where
     R: RawRwLock<GuardMarker = GuardNoSend>,
 {
 }
+
+fn accept_cpu_pin(_pin: &ax_cpu_local::CpuPin) {}
 
 fn accept_spin_raw_guard(_guard: SpinRawGuard<'_, usize>) {}
 

@@ -4,10 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use axvm_types::VmArchPerCpuOps;
 
-use crate::{
-    AxVMPerCpu, AxVmResult,
-    host::{HostCpu, default_host},
-};
+use crate::{AxVMPerCpu, AxVmResult, vcpu::PinnedCpuContext};
 
 #[ax_percpu::def_percpu]
 static mut AXVM_PER_CPU: AxVMPerCpu = AxVMPerCpu::new_uninit();
@@ -50,31 +47,39 @@ pub(crate) fn cpu_guest_phys_addr_bits(cpu_id: usize) -> Option<usize> {
         .filter(|bits| *bits != 0)
 }
 
-pub(crate) fn init_current_cpu() -> AxVmResult {
-    // SAFETY: Called once per CPU during hypervisor initialization before any
-    // vCPU task uses this CPU-local virtualization state.
+pub(crate) fn init_current_cpu(pinned_cpu: &PinnedCpuContext<'_>) -> AxVmResult {
+    let cpu_id = pinned_cpu.cpu_index_usize();
+    // SAFETY: Host initialization calls this once for the CPU proven by
+    // `pinned_cpu`, before that CPU is published in ENABLED_CPU_MASK. No vCPU
+    // or virtualization IRQ path can alias the owner-only state in this phase.
     #[allow(static_mut_refs)]
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.init(default_host().this_cpu_id())
+    unsafe {
+        AXVM_PER_CPU.with_current_mut_raw(pinned_cpu.cpu_pin(), |percpu| percpu.init(cpu_id))
+    }
 }
 
-pub(crate) fn enable_current_cpu() -> AxVmResult {
-    // SAFETY: The per-CPU value belongs to the currently pinned CPU.
+pub(crate) fn enable_current_cpu(pinned_cpu: &PinnedCpuContext<'_>) -> AxVmResult {
+    let cpu_id = pinned_cpu.cpu_index_usize();
+    // SAFETY: The caller retains the live CPU pin from initialization through
+    // hardware enablement and publishes this CPU only after this function
+    // returns. This is the unique mutable owner during that lifecycle phase.
     #[allow(static_mut_refs)]
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.hardware_enable()?;
-    let cpu_id = default_host().this_cpu_id();
-    if let Some(levels) = CPU_MAX_GPT_LEVELS.get(cpu_id) {
-        levels.store(
-            percpu.arch_checked().max_guest_page_table_levels(),
-            Ordering::Release,
-        );
+    unsafe {
+        AXVM_PER_CPU.with_current_mut_raw(pinned_cpu.cpu_pin(), |percpu| {
+            percpu.hardware_enable(pinned_cpu)?;
+            if let Some(levels) = CPU_MAX_GPT_LEVELS.get(cpu_id) {
+                levels.store(
+                    percpu.arch_checked().max_guest_page_table_levels(),
+                    Ordering::Release,
+                );
+            }
+            if let Some(bits) = CPU_GPA_BITS.get(cpu_id) {
+                bits.store(
+                    percpu.arch_checked().guest_phys_addr_bits(),
+                    Ordering::Release,
+                );
+            }
+            Ok(())
+        })
     }
-    if let Some(bits) = CPU_GPA_BITS.get(cpu_id) {
-        bits.store(
-            percpu.arch_checked().guest_phys_addr_bits(),
-            Ordering::Release,
-        );
-    }
-    Ok(())
 }

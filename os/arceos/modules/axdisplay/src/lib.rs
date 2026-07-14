@@ -11,11 +11,11 @@ pub mod rdif;
 mod types;
 
 use ax_lazyinit::LazyInit;
-use ax_sync::spin::SpinNoIrq as Mutex;
+use ax_sync::SpinMutex;
 pub use device::{DisplayDevice, DisplayError, DisplayResult, ErasedDisplayDevice};
 pub use types::{DisplayInfo, PixelFormat};
 
-static MAIN_DISPLAY: LazyInit<Mutex<ErasedDisplayDevice>> = LazyInit::new();
+static MAIN_DISPLAY: LazyInit<SpinMutex<ErasedDisplayDevice>> = LazyInit::new();
 
 /// Initializes the display subsystem by underlayer devices.
 pub fn init_display(display_devs: impl IntoIterator<Item = ErasedDisplayDevice>) {
@@ -23,7 +23,7 @@ pub fn init_display(display_devs: impl IntoIterator<Item = ErasedDisplayDevice>)
 
     if let Some(dev) = display_devs.into_iter().next() {
         log::info!("  use display device 0: {}", dev.name());
-        MAIN_DISPLAY.init_once(Mutex::new(dev));
+        MAIN_DISPLAY.init_once(SpinMutex::new(dev));
     } else {
         log::warn!("  No display device found!");
     }

@@ -31,10 +31,16 @@ exception_entry_base:
     STD     $t1, $sp, 32    // prmd
     STD     $t2, $sp, 33    // era
 
+    // On a user trap the saved r21 is the user's `u0`. Recover the immutable
+    // kernel per-CPU base only after PUSH_GENERAL_REGS captured that value.
+    // A kernel trap already has the correct live r21 and must leave it alone.
+    andi    $t2, $t1, 0x3
+    beqz    $t2, .Lkernel_percpu_ready
+    csrrd   $r21, KSAVE_PERCPU
+.Lkernel_percpu_ready:
     move    $a0, $sp
 
-    andi    $t1, $t1, 0x3
-    bnez    $t1, .Lexit_user
+    bnez    $t2, .Lexit_user
 
     la.pcrel $ra, .Ltrap_return
     b       loongarch64_trap_handler
@@ -45,7 +51,6 @@ exception_entry_base:
     LDD     $ra, $sp, 0
     LDD     $tp, $sp, 1
     LDD     $fp, $sp, 2
-    LDD     $r21,$sp, 3
     LDD     $s0, $sp, 4
     LDD     $s1, $sp, 5
     LDD     $s2, $sp, 6
@@ -65,7 +70,6 @@ enter_user:
     STD     $ra, $sp, 0
     STD     $tp, $sp, 1
     STD     $fp, $sp, 2
-    STD     $r21,$sp, 3
     STD     $s0, $sp, 4
     STD     $s1, $sp, 5
     STD     $s2, $sp, 6
@@ -83,10 +87,20 @@ enter_user:
 .Ltrap_return:
     LDD     $t0, $sp, 32    // prmd
     LDD     $t1, $sp, 33    // era
+    andi    $t2, $t0, 0x3   // saved prmd.PPLV != 0 means user mode
     csrwr   $t0, LA_CSR_PRMD
     csrwr   $t1, LA_CSR_ERA
 
-    POP_GENERAL_REGS
+    // A kernel trap may resume on another CPU after IRQ-return scheduling.
+    // Keep that CPU's live per-CPU base; only a user return restores user u0.
+    bnez    $t2, .Lrestore_user_regs
+    RESTORE_KERNEL_GENERAL_REGS
+    b       .Lrestore_sp
+
+.Lrestore_user_regs:
+    RESTORE_USER_GENERAL_REGS
+
+.Lrestore_sp:
     LDD     $sp, $sp, 3
 
     ertn

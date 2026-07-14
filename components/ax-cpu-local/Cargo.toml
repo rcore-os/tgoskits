@@ -1,0 +1,19 @@
+[package]
+name = "ax-cpu-local"
+version = "0.1.0"
+description = "Architecture CPU-local register capability for TGOSKits"
+repository.workspace = true
+edition.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["os", "no-std"]
+license.workspace = true
+
+[features]
+default = []
+
+# Use a thread-local register model for host-side tests.
+host-test = []
+
+# Select the EL2 CPU-local register for an AArch64 hypervisor host.
+arm-el2 = []

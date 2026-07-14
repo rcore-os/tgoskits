@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
@@ -151,7 +151,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     socket.bind(addr)?;
 
     if let Some(path) = unix_path
-        && let Err(err) = FS_CONTEXT
+        && let Err(err) = current_fs_context()
             .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {

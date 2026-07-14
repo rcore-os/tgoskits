@@ -70,11 +70,23 @@ impl SchedulerInbox {
         node: core::pin::Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
+        self.publish_with_head_transition(node, message).0
+    }
+
+    /// Publishes and reports an empty-head to non-empty-head transition.
+    ///
+    /// The transition is the producer-side scheduler-IPI epoch, analogous to
+    /// Linux `llist_add()` returning whether the lock-free list was empty.
+    pub(crate) fn publish_with_head_transition(
+        &self,
+        node: core::pin::Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> (PublishResult, bool) {
         if node.kind() != self.kind || message.kind() != self.kind {
-            return PublishResult::WrongKind;
+            return (PublishResult::WrongKind, false);
         }
         if !node.reserve(message) {
-            return PublishResult::AlreadyPending;
+            return (PublishResult::AlreadyPending, false);
         }
 
         let node = node.get_ref() as *const InboxNode as *mut InboxNode;
@@ -91,7 +103,7 @@ impl SchedulerInbox {
                 Ordering::Release,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return PublishResult::Published,
+                Ok(_) => return (PublishResult::Published, observed.is_null()),
                 Err(updated) => observed = updated,
             }
         }

@@ -1,3 +1,8 @@
+use core::{
+    alloc::Layout,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use kernutil::memory::MemoryType;
 
 use crate::{
@@ -20,22 +25,71 @@ use prealloc as layout;
 
 static mut PERCPU_START: usize = 0;
 static mut PERCPU_END: usize = 0;
+static PERCPU_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PERCPU_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+enum PerCpuLayoutError {
+    #[error("firmware did not provide any usable CPU")]
+    EmptyCpuSet,
+    #[error("per-CPU layout alignment {alignment:#x} is not a nonzero power of two")]
+    InvalidAlignment { alignment: usize },
+    #[error("per-CPU layout address arithmetic overflowed")]
+    AddressOverflow,
+    #[error("per-CPU linker template range {start:#x}..{end:#x} is malformed")]
+    MalformedTemplateRange { start: usize, end: usize },
+    #[error("per-CPU allocation size {size:#x} and alignment {alignment:#x} are invalid")]
+    InvalidAllocationLayout { size: usize, alignment: usize },
+}
 
 fn __cpu_id_list() -> impl Iterator<Item = usize> {
     cpu_iter::cpu_id_list()
 }
 
-fn align_up_pow2(value: usize, align: usize) -> usize {
-    assert!(align.is_power_of_two());
-    (value + align - 1) & !(align - 1)
+fn checked_align_up_pow2(value: usize, alignment: usize) -> Result<usize, PerCpuLayoutError> {
+    if !alignment.is_power_of_two() {
+        return Err(PerCpuLayoutError::InvalidAlignment { alignment });
+    }
+    let mask = alignment - 1;
+    value
+        .checked_add(mask)
+        .map(|aligned| aligned & !mask)
+        .ok_or(PerCpuLayoutError::AddressOverflow)
+}
+
+fn checked_allocation_layout(size: usize, alignment: usize) -> Result<Layout, PerCpuLayoutError> {
+    Layout::from_size_align(size, alignment)
+        .map_err(|_| PerCpuLayoutError::InvalidAllocationLayout { size, alignment })
 }
 
 fn meta_align() -> usize {
     core::mem::align_of::<PerCpuMeta>().max(64)
 }
 
-fn percpu_region_align() -> usize {
-    page_size().max(meta_align())
+fn percpu_region_align() -> Result<usize, PerCpuLayoutError> {
+    let alignment = page_size()
+        .max(meta_align())
+        .max(percpu_template_alignment()?);
+    if !alignment.is_power_of_two() {
+        return Err(PerCpuLayoutError::InvalidAlignment { alignment });
+    }
+    Ok(alignment)
+}
+
+fn percpu_template_alignment() -> Result<usize, PerCpuLayoutError> {
+    unsafe extern "C" {
+        static __AX_PERCPU_LINKER_ALIGNMENT_START: u8;
+        static __AX_PERCPU_LINKER_ALIGNMENT_END: u8;
+    }
+    let start = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_START) as usize;
+    let end = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_END) as usize;
+    let alignment = end
+        .checked_sub(start)
+        .ok_or(PerCpuLayoutError::MalformedTemplateRange { start, end })?;
+    if !alignment.is_power_of_two() {
+        return Err(PerCpuLayoutError::InvalidAlignment { alignment });
+    }
+    Ok(alignment)
 }
 
 pub fn alloc_percpu() {
@@ -51,7 +105,8 @@ pub(crate) fn init_percpu() {
     }
 
     let start = __percpu(unsafe { PERCPU_START });
-    let size = unsafe { PERCPU_END - PERCPU_START };
+    let size = unsafe { PERCPU_END.checked_sub(PERCPU_START) }
+        .expect("published per-CPU range must remain ordered");
     dcache_range(DCacheOp::CleanInvalidate, start, size);
 }
 
@@ -69,6 +124,36 @@ pub struct PerCpuMeta {
 
     pub boot_table_paddr: usize,
     pub primary_table_paddr: usize,
+}
+
+/// Immutable CPU identity resolved from the allocated per-CPU metadata table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeCpuTarget {
+    logical_index: usize,
+    hardware_id: usize,
+}
+
+impl RuntimeCpuTarget {
+    /// Returns the dense logical CPU index used by kernel data structures.
+    pub const fn logical_index(self) -> usize {
+        self.logical_index
+    }
+
+    /// Returns the firmware/hardware CPU identity used by architecture IPIs.
+    pub const fn hardware_id(self) -> usize {
+        self.hardware_id
+    }
+}
+
+/// Failure to resolve one runtime CPU target without firmware parsing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RuntimeCpuTargetError {
+    /// The logical CPU has no allocated metadata slot.
+    #[error("logical CPU index has no allocated metadata slot")]
+    Missing,
+    /// The requested slot contains metadata for a different logical CPU.
+    #[error("per-CPU metadata logical index mismatch")]
+    IndexMismatch,
 }
 
 #[allow(dead_code)]
@@ -95,6 +180,32 @@ pub fn cpu_meta(idx: usize) -> Option<PerCpuMeta> {
     Some(unsafe { *(meta_va as *const PerCpuMeta) })
 }
 
+/// Resolves one logical CPU through shutdown-lifetime per-CPU metadata.
+///
+/// This path performs one bounds check and one metadata load. It never falls
+/// back to ACPI/FDT discovery and is therefore safe to use from bounded IPI
+/// send paths after [`alloc_percpu`] completes.
+pub fn runtime_cpu_target(idx: usize) -> Result<RuntimeCpuTarget, RuntimeCpuTargetError> {
+    if idx >= runtime_cpu_count() {
+        return Err(RuntimeCpuTargetError::Missing);
+    }
+    let meta = cpu_meta(idx).ok_or(RuntimeCpuTargetError::Missing)?;
+    if meta.cpu_idx != idx {
+        return Err(RuntimeCpuTargetError::IndexMismatch);
+    }
+    Ok(RuntimeCpuTarget {
+        logical_index: idx,
+        hardware_id: meta.cpu_id,
+    })
+}
+
+/// Returns the number of CPU slots published by [`alloc_percpu`].
+///
+/// Unlike [`cpu_count`], this accessor never revisits firmware tables.
+pub fn runtime_cpu_count() -> usize {
+    PERCPU_RUNTIME_COUNT.load(Ordering::Acquire)
+}
+
 /// Physical address of cpu meta
 pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     layout::cpu_meta_addr(idx)
@@ -108,11 +219,44 @@ pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
     percpu_data_phys(idx).map(__percpu)
 }
 
+/// Contiguous runtime layout of the platform-owned CPU-local data areas.
+///
+/// The platform publishes this value after [`alloc_percpu`] has copied the
+/// linked template into CPU-lifetime storage. The kernel may register it once
+/// with its CPU-local semantic layer before binding the bootstrap CPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct PerCpuDataLayout {
+    /// Virtual address of logical CPU zero's data area.
+    pub runtime_base: usize,
+    /// Byte distance between adjacent logical CPU data areas.
+    pub area_stride: usize,
+    /// Number of allocated logical CPU data areas.
+    pub area_count: u32,
+}
+
+/// Returns the platform-owned contiguous CPU-local data layout.
+pub fn percpu_data_layout() -> Option<PerCpuDataLayout> {
+    let area_count = u32::try_from(allocated_cpu_count()).ok()?;
+    if area_count == 0 {
+        return None;
+    }
+    let runtime_base = percpu_data_ptr(0)? as usize;
+    let area_stride = layout::percpu_data_stride();
+    let last_offset = area_stride.checked_mul(area_count as usize - 1)?;
+    runtime_base.checked_add(last_offset)?;
+    Some(PerCpuDataLayout {
+        runtime_base,
+        area_stride,
+        area_count,
+    })
+}
+
 /// Returns the current hardware CPU ID from the early boot register convention.
 ///
-/// On RISC-V this reads `tp`, which is only a boot-time hart ID scratch
-/// register before handing control to the runtime. Runtime code must use its
-/// own per-CPU current-CPU reader instead.
+/// On RISC-V, `sscratch` points to the versioned boot record that owns the hart
+/// ID. The platform binder later replaces that pointer with the runtime
+/// `CpuAreaHeader` anchor before the CPU becomes online.
 pub fn early_current_hart_id() -> usize {
     Arch::cpu_current_hartid()
 }
@@ -189,25 +333,60 @@ fn percpu_link_range() -> core::ops::Range<usize> {
     start..end
 }
 
-fn set_percpu_range(start: usize, end: usize) {
+fn percpu_link_size() -> Result<usize, PerCpuLayoutError> {
+    let range = percpu_link_range();
+    range
+        .end
+        .checked_sub(range.start)
+        .ok_or(PerCpuLayoutError::MalformedTemplateRange {
+            start: range.start,
+            end: range.end,
+        })
+}
+
+fn set_percpu_range(start: usize, size: usize, cpu_count: usize) {
+    debug_assert_eq!(PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed), 0);
+    let end = start
+        .checked_add(size)
+        .expect("the allocator returned a wrapping per-CPU region");
     unsafe {
         PERCPU_START = start;
         PERCPU_END = end;
     }
+    PERCPU_LAYOUT_COUNT.store(cpu_count, Ordering::Relaxed);
+}
+
+fn publish_runtime_percpu(cpu_count: usize) {
+    debug_assert_eq!(PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed), cpu_count);
+    PERCPU_RUNTIME_COUNT.store(cpu_count, Ordering::Release);
+}
+
+pub(crate) fn allocated_cpu_count() -> usize {
+    PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed)
 }
 
 fn percpu_data_range() -> core::ops::Range<usize> {
     unsafe { PERCPU_START..PERCPU_END }
 }
 
-fn alloc_percpu_region(size: usize) -> usize {
+fn alloc_percpu_region(layout: Layout) -> usize {
     unsafe { crate::mem::ram::flush_to_memory_map(MemoryType::Reserved) };
 
     unsafe {
-        crate::mem::ram::alloc_and_flush_to_memory_map(
-            core::alloc::Layout::from_size_align(size, percpu_region_align()).unwrap(),
-            MemoryType::PerCpuData,
-        )
-        .unwrap()
+        crate::mem::ram::alloc_and_flush_to_memory_map(layout, MemoryType::PerCpuData)
+            .expect("validated per-CPU allocation must fit available boot memory")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extreme_alignment_input_does_not_wrap_or_panic() {
+        assert_eq!(
+            checked_align_up_pow2(usize::MAX, 4096),
+            Err(PerCpuLayoutError::AddressOverflow)
+        );
     }
 }

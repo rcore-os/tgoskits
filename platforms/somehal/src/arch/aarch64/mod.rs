@@ -1,6 +1,6 @@
 use crate::{
     common::PlatOp,
-    irq::{HwIrq, IrqError, IrqId, IrqSource},
+    irq::{CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
 };
 
 pub mod gic;
@@ -44,9 +44,15 @@ impl PlatOp for Plat {
         gic::irq_set_affinity(irq, affinity)
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(
+        irq: IrqId,
+        target: CpuIpiTarget,
+        current_cpu: irq_framework::CpuId,
+    ) -> IpiSendStatus {
         if is_gic_domain(irq.domain) {
-            gic::send_ipi((irq.hwirq.0 as usize).into(), target);
+            gic::send_ipi((irq.hwirq.0 as usize).into(), target, current_cpu)
+        } else {
+            IpiSendStatus::Invalid
         }
     }
 
@@ -81,12 +87,13 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) {
+    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) -> Result<(), IrqError> {
         match role {
-            crate::irq::CpuBootRole::Primary => {}
+            crate::irq::CpuBootRole::Primary => Ok(()),
             crate::irq::CpuBootRole::Secondary => {
-                gic::init_cpu(cpu_idx);
+                gic::init_cpu(cpu_idx)?;
                 systick::setup_systick_irq();
+                Ok(())
             }
         }
     }

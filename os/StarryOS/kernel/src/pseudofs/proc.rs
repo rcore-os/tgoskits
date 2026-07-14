@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::{ffi::CStr, fmt::Write, iter, mem::size_of, sync::atomic::Ordering};
 
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 #[cfg(target_arch = "aarch64")]
@@ -410,7 +410,8 @@ fn render_mounts() -> String {
     // enumerated here because the VFS does not expose a public mount-tree
     // walker, so third-party mounts made via mount(2) are absent.
     let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         ctx.root_dir().filesystem().name().to_string()
     };
     let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
@@ -431,7 +432,8 @@ fn render_mountinfo() -> String {
     // precedes the fs type. Tools such as node_exporter's filesystem collector and findmnt read
     // this file (in preference to /proc/mounts) to discover mount points before statfs().
     let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         ctx.root_dir().filesystem().name().to_string()
     };
     let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");

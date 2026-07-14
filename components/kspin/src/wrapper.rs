@@ -5,8 +5,8 @@ use core::fmt;
 use lock_api::{RawMutex, RawRwLock};
 
 use crate::{
-    IrqSaveContext, LockContext, NoPreemptContext, NoPreemptIrqSaveContext, RawContext,
-    RawSpinLock, RawSpinRwLock,
+    IrqSaveContext, LockContext, NoPreemptContext, NoPreemptIrqSaveContext, RawSpinLock,
+    RawSpinRwLock,
 };
 
 /// A safe data-owning mutex backed by a raw lock_api mutex.
@@ -220,8 +220,13 @@ impl<R: RawRwLock, T: ?Sized + fmt::Debug> fmt::Debug for SpinRwLockCore<R, T> {
     }
 }
 
-/// Raw ticket mutex that does not change CPU context.
-pub type SpinRaw<T> = SpinMutex<RawSpinLock<RawContext>, T>;
+/// Default raw-style ticket mutex that prevents same-CPU preemption.
+///
+/// Like Linux `raw_spinlock_t`, a public spin mutex must not allow its owner to
+/// be preempted by another task that can spin on the same lock. Use the generic
+/// [`RawSpinLock`] with an explicit caller-managed context only in lower layers
+/// that already prove a non-preemptible execution state.
+pub type SpinRaw<T> = SpinMutex<RawSpinLock<NoPreemptContext>, T>;
 /// Alias for [`SpinRaw`] using the new lock naming.
 pub type SpinLock<T> = SpinRaw<T>;
 /// Ticket mutex that disables preemption while held.
@@ -234,7 +239,7 @@ pub type SpinNoPreemptIrqSave<T> = SpinMutex<RawSpinLock<NoPreemptIrqSaveContext
 pub type SpinNoIrq<T> = SpinNoPreemptIrqSave<T>;
 
 /// Non-send guard returned by [`SpinRaw`].
-pub type SpinRawGuard<'a, T> = lock_api::MutexGuard<'a, RawSpinLock<RawContext>, T>;
+pub type SpinRawGuard<'a, T> = lock_api::MutexGuard<'a, RawSpinLock<NoPreemptContext>, T>;
 /// Non-send guard returned by [`SpinNoPreempt`].
 ///
 /// Context-aware guards must be released on the CPU that acquired them. The
@@ -263,8 +268,8 @@ pub type RawSpinNoPreemptIrqSave = RawSpinLock<NoPreemptIrqSaveContext>;
 /// Compatibility raw-mutex name for [`RawSpinNoPreemptIrqSave`].
 pub type RawSpinNoIrq = RawSpinNoPreemptIrqSave;
 
-/// Raw spin read-write lock that does not change CPU context.
-pub type SpinRawRwLock<T> = SpinRwLockCore<RawSpinRwLock<RawContext>, T>;
+/// Default raw-style read-write lock that prevents same-CPU preemption.
+pub type SpinRawRwLock<T> = SpinRwLockCore<RawSpinRwLock<NoPreemptContext>, T>;
 /// Compatibility name for [`SpinRawRwLock`].
 pub type SpinRwLock<T> = SpinRawRwLock<T>;
 /// Spin read-write lock that disables preemption while held.
@@ -278,10 +283,10 @@ pub type SpinNoIrqRwLock<T> = SpinNoPreemptIrqSaveRwLock<T>;
 
 /// Read guard returned by [`SpinRawRwLock`].
 pub type SpinRawRwLockReadGuard<'a, T> =
-    lock_api::RwLockReadGuard<'a, RawSpinRwLock<RawContext>, T>;
+    lock_api::RwLockReadGuard<'a, RawSpinRwLock<NoPreemptContext>, T>;
 /// Write guard returned by [`SpinRawRwLock`].
 pub type SpinRawRwLockWriteGuard<'a, T> =
-    lock_api::RwLockWriteGuard<'a, RawSpinRwLock<RawContext>, T>;
+    lock_api::RwLockWriteGuard<'a, RawSpinRwLock<NoPreemptContext>, T>;
 /// Compatibility read-guard name for [`SpinRwLock`].
 pub type SpinRwLockReadGuard<'a, T> = SpinRawRwLockReadGuard<'a, T>;
 /// Compatibility write-guard name for [`SpinRwLock`].
@@ -329,6 +334,17 @@ pub type RawSpinNoIrqRwLock = RawSpinNoPreemptIrqSaveRwLock;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_spin_mutex_prevents_same_cpu_preemption_while_held() {
+        crate::runtime_call::imp::reset();
+        let mutex = SpinRaw::new(());
+
+        let guard = mutex.lock();
+        assert_eq!(crate::runtime_call::imp::snapshot().1, 1);
+        drop(guard);
+        assert_eq!(crate::runtime_call::imp::snapshot().1, 0);
+    }
 
     #[test]
     fn mutex_unlocked_temporarily_restores_its_context() {

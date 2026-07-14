@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, vec::Vec};
 
-use crate::{FairMode, SchedulePolicy, SchedulingEntity, TaskError, ThreadId};
+use crate::{FairEntity, FairMode, SchedulePolicy, SchedulingEntity, TaskError, ThreadId};
 
 /// Why a runnable thread is being inserted into its owner run queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +36,7 @@ pub(crate) struct RunQueue {
     fair: Vec<QueuedThread>,
     idle_fair: Vec<QueuedThread>,
     virtual_time: u64,
+    idle_virtual_time: u64,
     earliest_deadline_event_ns: Option<u64>,
     next_sequence: u64,
     len: usize,
@@ -49,6 +50,7 @@ impl RunQueue {
             fair: Vec::new(),
             idle_fair: Vec::new(),
             virtual_time: 0,
+            idle_virtual_time: 0,
             earliest_deadline_event_ns: None,
             next_sequence: 0,
             len: 0,
@@ -59,8 +61,33 @@ impl RunQueue {
         self.len
     }
 
+    #[cfg(test)]
     pub(crate) const fn virtual_time(&self) -> u64 {
         self.virtual_time
+    }
+
+    pub(crate) const fn virtual_time_for_mode(&self, mode: FairMode) -> u64 {
+        if matches!(mode, FairMode::Idle) {
+            self.idle_virtual_time
+        } else {
+            self.virtual_time
+        }
+    }
+
+    /// Advances each fair class's lag origin from its runnable weighted mean.
+    ///
+    /// `current` is supplied because the running entity is temporarily absent
+    /// from the owner runqueue. Virtual time is monotonic; dequeueing a sleeper
+    /// cannot move it backward and manufacture positive lag.
+    pub(crate) fn update_fair_virtual_time(&mut self, current: Option<FairEntity>) {
+        let normal_current = current.filter(|entity| entity.mode() != FairMode::Idle);
+        let idle_current = current.filter(|entity| entity.mode() == FairMode::Idle);
+        if let Some(mean) = weighted_virtual_time(&self.fair, normal_current) {
+            self.virtual_time = self.virtual_time.max(mean);
+        }
+        if let Some(mean) = weighted_virtual_time(&self.idle_fair, idle_current) {
+            self.idle_virtual_time = self.idle_virtual_time.max(mean);
+        }
     }
 
     pub(crate) fn has_rt(&self) -> bool {
@@ -145,7 +172,7 @@ impl RunQueue {
         entity: SchedulingEntity,
         now_ns: u64,
         reason: EnqueueReason,
-    ) -> Result<(), TaskError> {
+    ) -> Result<SchedulingEntity, TaskError> {
         if self.contains(id) {
             return Err(TaskError::AlreadyQueued);
         }
@@ -157,9 +184,12 @@ impl RunQueue {
             sequence,
         };
         if let SchedulingEntity::Fair(fair) = &mut entry.entity {
-            fair.place_at_least(self.virtual_time);
-            if matches!(reason, EnqueueReason::Yield) || fair.request_exhausted() {
-                fair.renew_request(self.virtual_time);
+            let virtual_time = self.virtual_time_for_mode(fair.mode());
+            fair.place_at_least(virtual_time);
+            if matches!(reason, EnqueueReason::Yield) {
+                fair.yield_request(virtual_time);
+            } else if fair.request_exhausted() {
+                fair.renew_request(virtual_time);
             }
         }
         let reason = if matches!(reason, EnqueueReason::Yield)
@@ -171,6 +201,7 @@ impl RunQueue {
         } else {
             reason
         };
+        let queued_entity = entry.entity;
         match policy {
             SchedulePolicy::Deadline(_) => {
                 if reason == EnqueueReason::Wake {
@@ -199,7 +230,7 @@ impl RunQueue {
             SchedulePolicy::Fair { .. } => self.fair.push(entry),
         }
         self.len += 1;
-        Ok(())
+        Ok(queued_entity)
     }
 
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
@@ -269,6 +300,12 @@ impl RunQueue {
     }
 
     fn pick_fair(&mut self, idle: bool) -> Option<QueuedThread> {
+        self.update_fair_virtual_time(None);
+        let virtual_time = if idle {
+            self.idle_virtual_time
+        } else {
+            self.virtual_time
+        };
         let queue = if idle {
             &mut self.idle_fair
         } else {
@@ -277,12 +314,6 @@ impl RunQueue {
         if queue.is_empty() {
             return None;
         }
-        let minimum_vruntime = queue
-            .iter()
-            .filter_map(|entry| entry.entity.fair().map(|entity| entity.vruntime()))
-            .min()
-            .unwrap_or(self.virtual_time);
-        self.virtual_time = self.virtual_time.max(minimum_vruntime);
         let index = queue
             .iter()
             .enumerate()
@@ -290,7 +321,7 @@ impl RunQueue {
                 entry
                     .entity
                     .fair()
-                    .is_some_and(|entity| entity.is_eligible(self.virtual_time))
+                    .is_some_and(|entity| entity.is_eligible(virtual_time))
             })
             .min_by_key(|(_, entry)| {
                 let deadline = entry
@@ -331,6 +362,22 @@ impl RunQueue {
     }
 }
 
+fn weighted_virtual_time(queue: &[QueuedThread], current: Option<FairEntity>) -> Option<u64> {
+    let mut weighted_sum = 0_u128;
+    let mut total_weight = 0_u128;
+    for entity in queue
+        .iter()
+        .filter_map(|entry| entry.entity.fair())
+        .chain(current)
+    {
+        let weight = u128::from(entity.weight());
+        weighted_sum =
+            weighted_sum.saturating_add(u128::from(entity.vruntime()).saturating_mul(weight));
+        total_weight = total_weight.saturating_add(weight);
+    }
+    (total_weight != 0).then(|| u64::try_from(weighted_sum / total_weight).unwrap_or(u64::MAX))
+}
+
 fn remove_from_vec(queue: &mut Vec<QueuedThread>, id: ThreadId) -> Option<QueuedThread> {
     let index = queue.iter().position(|entry| entry.id == id)?;
     Some(queue.swap_remove(index))
@@ -348,7 +395,7 @@ fn remove_from_rt(queues: &mut [VecDeque<QueuedThread>; 99], id: ThreadId) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority};
+    use crate::{DeadlineFlags, DeadlinePolicy, FairEntity, FairMode, Nice, RtPriority};
 
     #[test]
     fn deadline_precedes_rt_and_fair() {
@@ -440,6 +487,70 @@ mod tests {
         let entity = queue.dequeue(thread).unwrap().entity.fair().unwrap();
         assert_eq!(entity.vruntime(), 10_000);
         assert_eq!(entity.virtual_deadline(), 11_000);
+    }
+
+    #[test]
+    fn fair_yield_forfeits_request_before_positive_lag_peer() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let yielding = ThreadId::from_parts(0, 1);
+        let waiting = ThreadId::from_parts(1, 1);
+
+        queue
+            .enqueue(
+                waiting,
+                policy,
+                SchedulingEntity::new(policy, 100, 100),
+                0,
+                EnqueueReason::Migrated,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                yielding,
+                policy,
+                SchedulingEntity::new(policy, 100, 0),
+                0,
+                EnqueueReason::Yield,
+            )
+            .unwrap();
+
+        assert_eq!(
+            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            waiting,
+            "yield must forfeit the active request so positive-lag peers become eligible",
+        );
+    }
+
+    #[test]
+    fn weighted_virtual_time_makes_every_non_negative_lag_entity_eligible() {
+        let mut queue = RunQueue::new();
+        let low_weight = SchedulePolicy::fair(Nice::new(19).unwrap(), FairMode::Normal);
+        let normal_weight = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        for (slot, policy, vruntime, deadline) in [
+            (0, low_weight, 0, 100),
+            (1, normal_weight, 4, 8),
+            (2, normal_weight, 10, 20),
+        ] {
+            let SchedulePolicy::Fair { nice, mode } = policy else {
+                unreachable!();
+            };
+            queue
+                .enqueue(
+                    ThreadId::from_parts(slot, 1),
+                    policy,
+                    SchedulingEntity::Fair(FairEntity::test_state(nice, mode, vruntime, deadline)),
+                    0,
+                    EnqueueReason::Migrated,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            ThreadId::from_parts(1, 1),
+            "weighted V must make both vruntime 0 and 4 eligible, then choose vd=8",
+        );
     }
 
     #[test]

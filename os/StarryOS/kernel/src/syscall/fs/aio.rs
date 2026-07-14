@@ -22,7 +22,7 @@ use ax_runtime::hal::{
     time::wall_time,
 };
 use ax_std::os::arceos::task::WaitQueue;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::timespec;
 use starry_process::Pid;
@@ -178,19 +178,19 @@ struct AioContextInner {
 struct AioContext {
     id: AioContextId,
     owner: Pid,
-    aspace: Arc<Mutex<AddrSpace>>,
+    aspace: Arc<PiMutex<AddrSpace>>,
     ring_vaddr: VirtAddr,
     ring_size: usize,
     ring_events: u32,
     ring_tail: AtomicUsize,
-    ring_lock: Mutex<()>,
+    ring_lock: PiMutex<()>,
     ready_count: AtomicUsize,
     queued_count: AtomicUsize,
     destroying: AtomicBool,
     work_wq: WaitQueue,
     inflight_wq: WaitQueue,
     completion_wakers: PollSet,
-    inner: Mutex<AioContextInner>,
+    inner: PiMutex<AioContextInner>,
 }
 
 impl AioContext {
@@ -198,7 +198,7 @@ impl AioContext {
     fn new(
         id: AioContextId,
         owner: Pid,
-        aspace: Arc<Mutex<AddrSpace>>,
+        aspace: Arc<PiMutex<AddrSpace>>,
         ring_vaddr: VirtAddr,
         ring_size: usize,
         ring_events: u32,
@@ -211,14 +211,14 @@ impl AioContext {
             ring_size,
             ring_events,
             ring_tail: AtomicUsize::new(0),
-            ring_lock: Mutex::new(()),
+            ring_lock: PiMutex::new(()),
             ready_count: AtomicUsize::new(0),
             queued_count: AtomicUsize::new(0),
             destroying: AtomicBool::new(false),
             work_wq: WaitQueue::new(),
             inflight_wq: WaitQueue::new(),
             completion_wakers: PollSet::new(),
-            inner: Mutex::new(AioContextInner {
+            inner: PiMutex::new(AioContextInner {
                 inflight: 0,
                 queue: VecDeque::new(),
                 pending: BTreeMap::new(),
@@ -423,7 +423,7 @@ fn u64_to_offset(value: i64) -> AxResult<u64> {
 
 // Fault in and validate a user memory range before worker access.
 fn prepare_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &Arc<PiMutex<AddrSpace>>,
     start: VirtAddr,
     len: usize,
     flags: MappingFlags,
@@ -446,7 +446,7 @@ fn prepare_user_region(
 
 // Copy a linear user buffer into owned kernel memory.
 fn read_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &Arc<PiMutex<AddrSpace>>,
     start: VirtAddr,
     len: usize,
 ) -> AxResult<Vec<u8>> {
@@ -464,7 +464,7 @@ fn read_user_region(
 
 // Build a one-segment user buffer descriptor.
 fn user_buffer_from_linear(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &Arc<PiMutex<AddrSpace>>,
     ptr: u64,
     len: usize,
     flags: MappingFlags,
@@ -505,7 +505,7 @@ fn read_iov(iov: *const IoVec, iovcnt: usize) -> AxResult<Vec<UserSegment>> {
 
 // Build a multi-segment user buffer from an iovec array.
 fn user_buffer_from_iov(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &Arc<PiMutex<AddrSpace>>,
     iov: *const IoVec,
     iovcnt: usize,
     flags: MappingFlags,
@@ -526,7 +526,7 @@ fn user_buffer_from_iov(
 }
 
 // Copy all user segments into a contiguous kernel buffer.
-fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> AxResult<Vec<u8>> {
+fn read_user_segments(aspace: &Arc<PiMutex<AddrSpace>>, buf: &UserBuffer) -> AxResult<Vec<u8>> {
     let mut data = vec![0; buf.len];
     let mut offset = 0usize;
     let guard = aspace.lock();
@@ -542,7 +542,7 @@ fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> AxRes
 
 // Copy a kernel buffer back into user segments.
 fn write_user_segments(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &Arc<PiMutex<AddrSpace>>,
     buf: &UserBuffer,
     data: &[u8],
 ) -> AxResult<()> {
@@ -971,7 +971,7 @@ fn finish_request(context: &AioContext, request: &AioRequest, event: IoEvent) {
             inner.pending.len()
         );
     }
-    context.inflight_wq.notify_all(true);
+    context.inflight_wq.notify_all();
     // Request accounting/completion state is published before waking waiters.
     unsafe {
         context
@@ -1070,7 +1070,7 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxRes
             String::from("aio-worker"),
         );
     }
-    context.work_wq.notify_one(true);
+    context.work_wq.notify_one();
     Ok(())
 }
 
@@ -1299,7 +1299,7 @@ fn destroy_context(context: Arc<AioContext>) {
             inner.pending.len()
         );
     }
-    context.work_wq.notify_all(true);
+    context.work_wq.notify_all();
     // Destroying state is published before waking waiters.
     unsafe {
         context
@@ -1487,8 +1487,8 @@ pub fn sys_io_cancel(
     };
 
     result.vm_write(event)?;
-    context.inflight_wq.notify_all(true);
-    context.work_wq.notify_one(true);
+    context.inflight_wq.notify_all();
+    context.work_wq.notify_one();
     // Cancellation/accounting state is published before waking waiters.
     unsafe {
         context

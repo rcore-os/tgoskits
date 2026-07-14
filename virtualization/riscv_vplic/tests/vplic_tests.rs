@@ -1,30 +1,29 @@
-use ax_crate_interface::impl_interface;
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_kspin::{LockRuntime, LockdepEvent, impl_trait};
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{
-    PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
-    PLIC_ENABLE_OFFSET, PLIC_ENABLE_STRIDE, PLIC_NUM_SOURCES, PLIC_PENDING_OFFSET,
-    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError, host::RiscvVplicHostIf,
+    ForwardedBatchError, PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET,
+    PLIC_CONTEXT_STRIDE, PLIC_ENABLE_OFFSET, PLIC_ENABLE_STRIDE, PLIC_NUM_SOURCES,
+    PLIC_PENDING_OFFSET, PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError,
 };
 
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
 
-#[repr(align(8))]
-struct AlignedHostPlic([u8; HOST_PLIC_SIZE]);
+struct TestLockRuntime;
 
-static mut HOST_PLIC: AlignedHostPlic = AlignedHostPlic([0; HOST_PLIC_SIZE]);
-
-struct TestRiscvVplicHostIf;
-
-#[impl_interface]
-impl RiscvVplicHostIf for TestRiscvVplicHostIf {
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        let offset = paddr.as_usize() - HOST_PLIC_BASE;
-        assert!(offset < HOST_PLIC_SIZE);
-        let base = unsafe { core::ptr::addr_of_mut!(HOST_PLIC.0).cast::<u8>() };
-        VirtAddr::from(unsafe { base.add(offset) } as usize)
+impl_trait! {
+    impl LockRuntime for TestLockRuntime {
+        fn irq_enter() {}
+        fn irq_exit() {}
+        fn preempt_enter() {}
+        fn preempt_exit() {}
+        unsafe fn preempt_exit_irq_return() {}
+        fn current_thread_id() -> u64 { 1 }
+        fn lockdep_acquire(_event: LockdepEvent) {}
+        fn lockdep_release(_event: LockdepEvent) {}
+        fn lockdep_set_trace_enabled(_enabled: bool) {}
+        fn lockdep_dump_trace() {}
     }
 }
 
@@ -114,6 +113,32 @@ fn test_typed_pending_api_is_visible_through_mmio() {
 }
 
 #[test]
+fn guest_write_to_read_only_pending_register_has_no_effect() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+
+    vplic
+        .handle_write(addr + PLIC_PENDING_OFFSET, AccessWidth::Dword, 1 << 10)
+        .unwrap();
+
+    assert!(!vplic.is_pending(10).unwrap());
+}
+
+#[test]
+fn misaligned_context_register_access_returns_an_error_without_underflow() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let misaligned = addr + PLIC_CONTEXT_CTRL_OFFSET + 1;
+
+    assert!(vplic.handle_read(misaligned, AccessWidth::Dword).is_err());
+    assert!(
+        vplic
+            .handle_write(misaligned, AccessWidth::Dword, 0)
+            .is_err()
+    );
+}
+
+#[test]
 fn test_pending_api_rejects_reserved_unassigned_and_out_of_range_sources() {
     let vplic =
         VPlicGlobal::new(GuestPhysAddr::from(HOST_PLIC_BASE), Some(HOST_PLIC_SIZE), 2).unwrap();
@@ -182,6 +207,79 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
 }
 
 #[test]
+fn uart_source_10_round_trips_through_guest_context_1_exactly_once() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let irq_id = 10;
+    let context_id = 1;
+    let threshold_addr = addr + PLIC_CONTEXT_CTRL_OFFSET + context_id * PLIC_CONTEXT_STRIDE;
+    let claim_addr = addr
+        + PLIC_CONTEXT_CTRL_OFFSET
+        + context_id * PLIC_CONTEXT_STRIDE
+        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
+
+    vplic
+        .handle_write(
+            addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
+            AccessWidth::Dword,
+            1,
+        )
+        .unwrap();
+    vplic
+        .handle_write(
+            addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
+            AccessWidth::Dword,
+            1 << irq_id,
+        )
+        .unwrap();
+    vplic
+        .handle_write(threshold_addr, AccessWidth::Dword, 0)
+        .unwrap();
+    assert_eq!(
+        vplic
+            .handle_read(addr + PLIC_PRIORITY_OFFSET + irq_id * 4, AccessWidth::Dword,)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        vplic
+            .handle_read(
+                addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
+                AccessWidth::Dword,
+            )
+            .unwrap(),
+        1 << irq_id
+    );
+    assert_eq!(
+        vplic
+            .handle_read(threshold_addr, AccessWidth::Dword)
+            .unwrap(),
+        0
+    );
+    vplic.set_forwarded_pending(irq_id).unwrap();
+    assert_eq!(
+        vplic.take_context_notification(context_id).unwrap(),
+        Some(true)
+    );
+
+    assert_eq!(
+        vplic.handle_read(claim_addr, AccessWidth::Dword).unwrap(),
+        irq_id
+    );
+    assert_eq!(
+        vplic.take_context_notification(context_id).unwrap(),
+        Some(false)
+    );
+    assert_eq!(vplic.take_completed_forwarded_irq(), None);
+
+    vplic
+        .handle_write(claim_addr, AccessWidth::Dword, irq_id)
+        .unwrap();
+    assert_eq!(vplic.take_completed_forwarded_irq(), Some(irq_id));
+    assert_eq!(vplic.take_completed_forwarded_irq(), None);
+}
+
+#[test]
 fn test_virtual_plic_instances_and_guest_addresses_are_independent() {
     let first =
         VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(HOST_PLIC_SIZE), 2).unwrap();
@@ -192,4 +290,100 @@ fn test_virtual_plic_instances_and_guest_addresses_are_independent() {
 
     assert!(first.is_pending(11).unwrap());
     assert!(!second.is_pending(11).unwrap());
+}
+
+#[test]
+fn forwarded_batch_is_atomic_and_rejects_pending_or_active_collisions() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let context_id = 1;
+    let first = 10;
+    let second = 11;
+
+    for irq_id in [first, second] {
+        vplic
+            .handle_write(
+                addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
+                AccessWidth::Dword,
+                1,
+            )
+            .unwrap();
+    }
+    vplic
+        .handle_write(
+            addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
+            AccessWidth::Dword,
+            (1 << first) | (1 << second),
+        )
+        .unwrap();
+
+    vplic.set_pending(first).unwrap();
+    assert_eq!(
+        vplic.set_forwarded_pending_batch(&[first, second]),
+        Err(ForwardedBatchError::Rejected(
+            VplicError::ForwardedSourceCollision { source_id: first }
+        ))
+    );
+    assert!(vplic.is_pending(first).unwrap());
+    assert!(!vplic.is_pending(second).unwrap());
+
+    vplic.clear_pending(first).unwrap();
+    vplic.set_forwarded_pending_batch(&[first, second]).unwrap();
+    assert!(vplic.is_pending(first).unwrap());
+    assert!(vplic.is_pending(second).unwrap());
+    assert_eq!(
+        vplic.take_context_notification(context_id).unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        vplic.set_forwarded_pending_batch(&[first]),
+        Err(ForwardedBatchError::Rejected(
+            VplicError::ForwardedSourceBusy { source_id: first }
+        ))
+    );
+}
+
+#[test]
+fn test_context_lines_remain_independent_after_another_context_claims() {
+    const ISOLATED_OFFSET: usize = 0x10_0000;
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE + ISOLATED_OFFSET);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE - ISOLATED_OFFSET), 4).unwrap();
+    let first_irq = 41;
+    let second_irq = 42;
+
+    for irq_id in [first_irq, second_irq] {
+        vplic
+            .handle_write(
+                addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
+                AccessWidth::Dword,
+                2,
+            )
+            .unwrap();
+    }
+    for (context_id, irq_id) in [(1, first_irq), (3, second_irq)] {
+        vplic
+            .handle_write(
+                addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE + irq_id / 32 * 4,
+                AccessWidth::Dword,
+                1 << (irq_id % 32),
+            )
+            .unwrap();
+    }
+
+    vplic.set_pending(first_irq).unwrap();
+    vplic.set_pending(second_irq).unwrap();
+    assert_eq!(vplic.take_context_notification(1).unwrap(), Some(true));
+    assert_eq!(vplic.take_context_notification(3).unwrap(), Some(true));
+
+    let first_claim =
+        addr + PLIC_CONTEXT_CTRL_OFFSET + PLIC_CONTEXT_STRIDE + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
+    assert_eq!(
+        vplic.handle_read(first_claim, AccessWidth::Dword).unwrap(),
+        first_irq
+    );
+
+    assert!(!vplic.context_line_asserted(1).unwrap());
+    assert!(vplic.context_line_asserted(3).unwrap());
+    assert_eq!(vplic.take_context_notification(1).unwrap(), Some(false));
+    assert_eq!(vplic.take_context_notification(3).unwrap(), None);
 }

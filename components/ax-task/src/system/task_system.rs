@@ -8,8 +8,8 @@ use core::{
 };
 
 use crate::{
-    CpuId, CpuLocal, CpuSet, CpuSnapshot, DeadlineAdmission, DeadlineEntity, DeadlineFlags,
-    EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkToken, PiLockId, PiWaitState,
+    CpuId, CpuLocal, CpuRemote, CpuSet, CpuSnapshot, DeadlineAdmission, DeadlineEntity,
+    DeadlineFlags, EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkToken, PiLockId,
     PiWaitToken, QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason,
     TaskError, TaskSystemConfig, ThreadCore, ThreadExtension, ThreadExtensionBorrow,
     ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle,
@@ -17,8 +17,8 @@ use crate::{
     inbox::{InboxKind, InboxMessage, PublishResult, SchedulerInbox},
     lock::{IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
-    runtime::{ExecutionContextHandle, RuntimeCpuId, RuntimeStatus, task_runtime},
-    system::cpu::{CurrentDispatch, CurrentDispatchState},
+    runtime::{ExecutionContextHandle, RuntimeStatus, task_runtime},
+    system::cpu::{CurrentDispatch, CurrentDispatchState, SchedulerIpiRetrySet},
 };
 
 /// Failure returned by [`TaskSystem::reap_thread_handle`].
@@ -67,6 +67,8 @@ impl OwnedThreadReapError {
 #[derive(Debug)]
 pub struct TaskSystem {
     config: TaskSystemConfig,
+    cpu_remotes: Vec<Arc<CpuRemote>>,
+    scheduler_ipi_retries: Arc<SchedulerIpiRetrySet>,
     state: IrqTicketLock<TaskSystemState>,
     deferred_reclaims: SchedulerInbox,
     topology_sequence: SequenceCounter,
@@ -81,8 +83,6 @@ struct TaskSystemState {
     slots: Vec<ThreadSlot>,
     free_slots: Vec<u32>,
     deadline_admission: DeadlineAdmission,
-    pi_locks: Vec<PiLockRecord>,
-    pi_waits: Vec<Arc<PiWaitState>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +91,12 @@ enum BalanceReason {
     RtDeadlinePush,
     IdlePull,
     FairPeriodic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FairPolicyPlacement {
+    source_virtual_time: u64,
+    destination_virtual_time: u64,
 }
 
 impl TaskSystem {
@@ -103,27 +109,76 @@ impl TaskSystem {
     /// capacities or bandwidth values.
     pub fn new(config: TaskSystemConfig) -> Result<Self, TaskError> {
         validate_config(config)?;
+        let scheduler_ipi_retries = Arc::new(SchedulerIpiRetrySet::new(config.cpu_count()));
+        let cpu_remotes = (0..config.cpu_count())
+            .map(|index| {
+                CpuRemote::create(
+                    CpuId::new(index as u32),
+                    config,
+                    Arc::clone(&scheduler_ipi_retries),
+                )
+            })
+            .collect::<Vec<_>>();
+        let cpu_registrations = cpu_remotes
+            .iter()
+            .cloned()
+            .map(|remote| CpuRegistration {
+                online: false,
+                remote,
+            })
+            .collect();
         Ok(Self {
             config,
+            cpu_remotes,
+            scheduler_ipi_retries,
             state: IrqTicketLock::new(TaskSystemState {
                 fair_slice_ns: config.fair_slice_ns(),
                 online: CpuSet::empty(config.cpu_count()),
-                cpus: (0..config.cpu_count())
-                    .map(|_| CpuRegistration {
-                        online: false,
-                        local: 0,
-                    })
-                    .collect(),
+                cpus: cpu_registrations,
                 slots: Vec::new(),
                 free_slots: Vec::new(),
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
-                pi_locks: Vec::new(),
-                pi_waits: Vec::new(),
             }),
             deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
             topology_sequence: SequenceCounter::default(),
             online_count: AtomicUsize::new(0),
         })
+    }
+
+    /// Reports whether a failed outbound scheduler doorbell requires a
+    /// task/IRQ-return safe point before this CPU may sleep.
+    pub(crate) fn scheduler_ipi_retry_pending(&self) -> bool {
+        self.scheduler_ipi_retries.has_pending()
+    }
+
+    /// Services a bounded batch of preallocated scheduler-IPI retries.
+    pub(crate) fn service_scheduler_ipi_retries(&self, limit: usize) -> Result<usize, TaskError> {
+        const MAX_RETRY_BATCH: usize = 64;
+
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let mut targets = [CpuId::new(0); MAX_RETRY_BATCH];
+        let limit = limit.min(MAX_RETRY_BATCH);
+        let invalid = self
+            .scheduler_ipi_retries
+            .take_invalid_batch(&mut targets[..limit]);
+        if invalid != 0 {
+            task_runtime::fatal_invariant(0x4950_4901, targets[0].as_u32() as usize);
+        }
+
+        let count = self
+            .scheduler_ipi_retries
+            .take_retry_batch(&mut targets[..limit]);
+        let mut attempted = 0;
+        for &target in targets.iter().take(count) {
+            let Some(remote) = self.cpu_remotes.get(target.as_u32() as usize) else {
+                self.scheduler_ipi_retries.publish_invalid(target);
+                continue;
+            };
+            attempted += usize::from(remote.retry_scheduler_ipi());
+        }
+        Ok(attempted)
     }
 
     /// Publishes one zero-reference resource to the task-context reaper.
@@ -185,34 +240,37 @@ impl TaskSystem {
         &self,
         cpu: CpuId,
     ) -> Result<Pin<alloc::boxed::Box<CpuLocal>>, TaskError> {
-        self.state.lock().cpu_registration(cpu)?;
-        Ok(CpuLocal::create(cpu, self.config))
+        let remote = Arc::clone(&self.state.lock().cpu_registration(cpu)?.remote);
+        Ok(CpuLocal::create(cpu, self.config, remote))
+    }
+
+    /// Returns the stable remote-publication endpoint of an online CPU.
+    pub fn cpu_remote(&self, cpu: CpuId) -> Option<&CpuRemote> {
+        self.cpu_remotes
+            .get(cpu.as_usize())
+            .map(Arc::as_ref)
+            .filter(|remote| remote.is_online())
     }
 
     /// Completes CPU registration and publishes it in the online root domain.
-    pub fn bring_cpu_online(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+    pub fn bring_cpu_online(&self, cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
         let id = cpu.owner();
         let mut state = self.state.lock();
         let registration = state.cpu_registration_mut(id)?;
         if registration.online || cpu.is_online() {
             return Err(TaskError::CpuAlreadyOnline(id.as_u32()));
         }
+        if !Arc::ptr_eq(&registration.remote, cpu.remote()) {
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
         self.topology_sequence.write_begin();
         registration.online = true;
-        registration.local = unsafe {
-            // Derive the persistent endpoint from the pinned owner's raw
-            // allocation pointer. A pointer exposed from `as_ref().get_ref()`
-            // would carry a temporary shared-reference tag that a later owner
-            // `Pin<&mut CpuLocal>` reborrow may invalidate under Stacked Borrows.
-            // The runtime keeps this pinned allocation live until shutdown.
-            ptr::from_mut(cpu.as_mut().get_unchecked_mut()).expose_provenance()
-        };
+        cpu.as_ref().get_ref().remote().mark_online();
         state.online.insert(id);
         let online_count = state.online_cpu_count();
         state.deadline_admission.set_online_cpus(online_count);
         self.online_count.store(online_count, Ordering::Release);
         self.topology_sequence.write_end();
-        cpu.as_mut().mark_online();
         Ok(())
     }
 
@@ -263,13 +321,13 @@ impl TaskSystem {
             on_cpu: None,
             migration_target: None,
             blocked_on: None,
-            owned_pi_locks: Vec::new(),
             blocked_pi_waiters: 0,
             deadline_donor: None,
             pi_critical_rescue: false,
             deadline_replenish_pending: false,
             deadline_overrun_pending: false,
             exit_callback_pending: false,
+            exit_callback_claimed: false,
             charged_runtime_ns: 0,
         };
         state.slots[slot as usize].record = Some(record);
@@ -462,9 +520,9 @@ impl TaskSystem {
         let (drained, pending) = {
             let fields = cpu.as_mut().fields_mut();
             let limit = fields.batch_limit();
-            let inbox = &fields.remote_wake_inbox;
+            let remote = Arc::clone(fields.remote());
             let buffer = &mut fields.remote_wake_buffer;
-            let batch = inbox.drain(limit, buffer);
+            let batch = remote.remote_wake_inbox().drain(limit, buffer);
             (batch.drained(), batch.pending())
         };
         for index in 0..drained {
@@ -531,8 +589,9 @@ impl TaskSystem {
         let (drained, pending) = {
             let fields = cpu.as_mut().fields_mut();
             let limit = fields.batch_limit();
-            let batch = fields
-                .migration_inbox
+            let remote = Arc::clone(fields.remote());
+            let batch = remote
+                .migration_inbox()
                 .drain(limit, &mut fields.migration_buffer);
             (batch.drained(), batch.pending())
         };
@@ -685,7 +744,16 @@ impl TaskSystem {
                 continue;
             }
             if queued_cpu == Some(owner) {
-                let fair_virtual_time = cpu.as_ref().get_ref().run_queue.virtual_time();
+                if cpu.as_ref().get_ref().current_dispatch.is_some() {
+                    cpu.as_mut().settle_current_dispatch(now_ns, 0)?;
+                } else {
+                    cpu.as_mut()
+                        .fields_mut()
+                        .run_queue
+                        .update_fair_virtual_time(None);
+                }
+                let fair_placement =
+                    Self::fair_policy_placement(&state, cpu.as_ref().get_ref(), core.id())?;
                 let queued = cpu
                     .as_mut()
                     .fields_mut()
@@ -703,7 +771,7 @@ impl TaskSystem {
                     message.generation(),
                     self.config.fair_slice_ns(),
                     now_ns,
-                    Some(fair_virtual_time),
+                    fair_placement,
                     true,
                 )?;
                 let entity = state.refresh_effective_entity(
@@ -721,15 +789,16 @@ impl TaskSystem {
                 )?;
                 cpu.request_reschedule();
             } else if running_cpu == Some(owner) && cpu.current() == Some(core.id()) {
-                let fair_virtual_time = cpu.as_ref().get_ref().run_queue.virtual_time();
                 Self::commit_current_dispatch(&mut state, cpu.as_mut(), now_ns)?;
+                let fair_placement =
+                    Self::fair_policy_placement(&state, cpu.as_ref().get_ref(), core.id())?;
                 Self::detach_deadline_bandwidth(&mut state, cpu.as_mut(), core.id())?;
                 state.apply_base_policy_generation(
                     core.id(),
                     message.generation(),
                     self.config.fair_slice_ns(),
                     now_ns,
-                    Some(fair_virtual_time),
+                    fair_placement,
                     true,
                 )?;
                 let entity = state.refresh_effective_entity(
@@ -777,6 +846,49 @@ impl TaskSystem {
         Ok(RemoteWakeDrain { drained, pending })
     }
 
+    fn fair_policy_placement(
+        state: &TaskSystemState,
+        cpu: &CpuLocal,
+        thread: ThreadId,
+    ) -> Result<Option<FairPolicyPlacement>, TaskError> {
+        let record = state.thread_record(thread)?;
+        let destination_mode = match record.base_policy {
+            SchedulePolicy::Fair { mode, .. } => mode,
+            _ => return Ok(None),
+        };
+        let source_mode = record
+            .entity
+            .fair()
+            .map_or(destination_mode, |fair| fair.mode());
+        Ok(Some(FairPolicyPlacement {
+            source_virtual_time: cpu.run_queue.virtual_time_for_mode(source_mode),
+            destination_virtual_time: cpu.run_queue.virtual_time_for_mode(destination_mode),
+        }))
+    }
+
+    /// Drains one bounded batch from every inbox owned by `cpu`.
+    ///
+    /// The inboxes, rather than `need_resched`, are the source of truth for
+    /// remote scheduler work. Forced scheduling operations call this before
+    /// claiming their doorbell so object-API users cannot accidentally clear a
+    /// wake, migration, or policy update without first making it visible to the
+    /// owner run queue. Work racing after this batch is retained by
+    /// [`CpuLocal::scheduler_enter`]'s post-claim inbox recheck.
+    fn drain_owner_work(&self, mut cpu: Pin<&mut CpuLocal>, now_ns: u64) -> Result<(), TaskError> {
+        self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
+        self.drain_policy_updates(cpu.as_mut(), now_ns)?;
+        if cpu.has_remote_work() {
+            cpu.request_scheduler_work();
+            // One safe point consumes at most one batch from each inbox. A
+            // self-IPI carries the remainder into a later IRQ-return instead
+            // of turning this safe point into an unbounded drain loop or
+            // relying on a future periodic tick.
+            let remote = Arc::clone(cpu.remote());
+            remote.kick_scheduler_work();
+        }
+        Ok(())
+    }
+
     /// Requests one owner-mediated pull from the busiest remote CPU.
     ///
     /// The target never locks or mutates the source runqueue. Its pinned request
@@ -802,7 +914,7 @@ impl TaskSystem {
             })
             .filter_map(|(index, _)| {
                 let source = CpuId::new(index as u32);
-                let local = state.cpu_local(source)?;
+                let local = state.cpu_remote(source)?;
                 let summary = local.load_summary();
                 let key = summary.pushable_key()?;
                 if !summary.is_overloaded()
@@ -820,14 +932,10 @@ impl TaskSystem {
             return Ok(false);
         };
         let source_local = state
-            .cpu_local(source)
+            .cpu_remote(source)
             .ok_or(TaskError::CpuOffline(source.as_u32()))?;
         let message = InboxMessage::balance_request(source, target, source_epoch);
-        let (result, send_ipi) =
-            source_local.publish_migration(cpu.balance_request_node(), message);
-        if send_ipi {
-            let _status = task_runtime::send_scheduler_ipi(RuntimeCpuId::new(source.as_u32()));
-        }
+        let result = source_local.publish_migration(cpu.balance_request_node(), message);
         Ok(matches!(
             result,
             PublishResult::Published | PublishResult::AlreadyPending
@@ -867,7 +975,7 @@ impl TaskSystem {
             })
             .filter_map(|(index, _)| {
                 let target = CpuId::new(index as u32);
-                let target_summary = state.cpu_local(target)?.load_summary();
+                let target_summary = state.cpu_remote(target)?.load_summary();
                 if target_summary.runnable_count() >= source_summary.runnable_count() {
                     return None;
                 }
@@ -1011,6 +1119,7 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let decision = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
@@ -1033,7 +1142,7 @@ impl TaskSystem {
                     )?;
                 }
             }
-            let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns)?;
+            let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns, previous)?;
             Self::stage_switch_handoff(cpu.as_mut(), previous, next, migration_target)?;
             let reason = if migration_target.is_some() {
                 SwitchReason::Migrated
@@ -1052,18 +1161,22 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
-    ) -> Result<Option<ScheduleDecision>, TaskError> {
+    ) -> Result<SchedulerOutcome, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let mut state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
         if let Some(current) = cpu.current()
             && state.thread_record(current)?.lifecycle.state() == ThreadState::Parking
         {
             // The interrupted owner still holds a generation-checked park
-            // token and remains `current` / `on_cpu`. Preserve the sticky
-            // request without entering the scheduler; commit/cancel owns the
-            // only legal transition out of PARKING.
-            return Ok(None);
+            // token and remains `current` / `on_cpu`. Consume this safe-point
+            // doorbell so an IRQ-return `while need_resched` loop can return to
+            // `commit_park`. A real preemption request is kept separately and
+            // restored only if the park is cancelled.
+            let preempt_requested = cpu.as_mut().scheduler_enter();
+            cpu.defer_park_preemption(preempt_requested);
+            return Ok(SchedulerOutcome::ParkingDeferred);
         }
         let mut switch_requested = cpu.as_mut().scheduler_enter();
         Self::commit_current_dispatch(&mut state, cpu.as_mut(), now_ns)?;
@@ -1102,7 +1215,11 @@ impl TaskSystem {
             }
             drop(state);
             Self::program_local_timer(cpu.as_mut(), now_ns)?;
-            return Ok(None);
+            return Ok(if cpu.has_remote_work() {
+                SchedulerOutcome::OwnerWorkPending
+            } else {
+                SchedulerOutcome::Quiescent
+            });
         }
         let mut migration_target = None;
         if let Some(previous) = previous {
@@ -1119,7 +1236,7 @@ impl TaskSystem {
                 )?;
             }
         }
-        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns)?;
+        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns, previous)?;
         Self::stage_switch_handoff(cpu.as_mut(), previous, next, migration_target)?;
         let reason = if migration_target.is_some() {
             SwitchReason::Migrated
@@ -1130,7 +1247,7 @@ impl TaskSystem {
         drop(state);
         Self::program_local_timer(cpu.as_mut(), now_ns)?;
         self.balance_after_schedule(cpu.as_mut(), decision.next(), now_ns)?;
-        Ok(Some(decision))
+        Ok(SchedulerOutcome::Decision(decision))
     }
 
     /// Moves the current thread to its class tail and selects another thread.
@@ -1140,6 +1257,7 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let mut state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
         cpu.as_mut().scheduler_enter();
@@ -1185,7 +1303,7 @@ impl TaskSystem {
                 )?;
             }
         }
-        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns)?;
+        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns, previous)?;
         Self::stage_switch_handoff(cpu.as_mut(), previous, next, migration_target)?;
         let decision = state.switch_plan(previous, next, SwitchReason::Yield);
         drop(state);
@@ -1202,7 +1320,6 @@ impl TaskSystem {
         let thread = cpu.current().ok_or(TaskError::NoRunnableThread)?;
         let record = state.thread_record_mut(thread)?;
         if record.core.take_park_notification() {
-            record.core.take_wake();
             return Ok(ParkPrepare::Notified);
         }
         let generation = record.core.next_park_generation();
@@ -1217,6 +1334,7 @@ impl TaskSystem {
         token: ParkToken,
     ) -> Result<ParkCommit, TaskError> {
         let now_ns = task_runtime::monotonic_ns();
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let mut state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
         if cpu.current() != Some(token.thread()) {
@@ -1232,18 +1350,19 @@ impl TaskSystem {
             .take_park_notification();
         if notified {
             let record = state.thread_record_mut(token.thread())?;
-            record.core.take_wake();
             record.transition(ThreadState::Running)?;
+            cpu.finish_park_preemption(true);
             return Ok(ParkCommit::Notified);
         }
         cpu.as_mut().scheduler_enter();
+        cpu.finish_park_preemption(false);
         Self::commit_current_dispatch(&mut state, cpu.as_mut(), now_ns)?;
         let record = state.thread_record_mut(token.thread())?;
         record.transition(ThreadState::Blocked)?;
         record.running_cpu = None;
         Self::mark_deadline_non_contending(&mut state, cpu.as_mut(), token.thread(), now_ns)?;
         cpu.as_mut().set_current(None);
-        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns)?;
+        let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns, Some(token.thread()))?;
         Self::stage_switch_handoff(cpu.as_mut(), Some(token.thread()), next, None)?;
         Ok(ParkCommit::Blocked(state.switch_plan(
             Some(token.thread()),
@@ -1263,7 +1382,9 @@ impl TaskSystem {
         if record.core.park_generation() != token.generation() {
             return Err(TaskError::StaleThreadId);
         }
-        record.transition(ThreadState::Running)
+        record.transition(ThreadState::Running)?;
+        cpu.finish_park_preemption(true);
+        Ok(())
     }
 
     /// Parks the current thread and selects its replacement.
@@ -1291,25 +1412,66 @@ impl TaskSystem {
         }
     }
 
+    /// Validates all fallible current-thread exit prerequisites without
+    /// publishing the thread as exited.
+    pub fn prepare_current_exit(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ThreadId, TaskError> {
+        self.complete_context_switch(cpu.as_mut())?;
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
+        let state = self.state.lock();
+        state.ensure_cpu_online(&cpu)?;
+        let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
+        if cpu.idle() == Some(current) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let record = state.thread_record(current)?;
+        let lifecycle = record.lifecycle.state();
+        if lifecycle != ThreadState::Running {
+            return Err(TaskError::InvalidTransition {
+                from: lifecycle,
+                to: ThreadState::Exited,
+            });
+        }
+        if record.has_live_pi_edges() {
+            return Err(TaskError::InvalidPiState);
+        }
+        if record.running_cpu != Some(cpu.owner()) || record.on_cpu != Some(cpu.owner()) {
+            return Err(TaskError::ThreadBusy);
+        }
+        if record.resources.context().is_none() {
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
+        Ok(current)
+    }
+
     /// Commits current-thread exit and selects a replacement.
     pub fn exit_current(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
         let now_ns = task_runtime::monotonic_ns();
+        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let decision = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
+            let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
+            if state.thread_record(previous)?.has_live_pi_edges() {
+                return Err(TaskError::InvalidPiState);
+            }
             cpu.as_mut().scheduler_enter();
             Self::commit_current_dispatch(&mut state, cpu.as_mut(), now_ns)?;
-            let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
             Self::detach_deadline_bandwidth(&mut state, cpu.as_mut(), previous)?;
             {
                 let record = state.thread_record_mut(previous)?;
                 record.transition(ThreadState::Exited)?;
                 record.running_cpu = None;
                 record.exit_callback_pending = record.extension.is_some();
+                record.exit_callback_claimed = false;
             }
+            state.release_deadline_reservation_on_exit(previous)?;
             cpu.as_mut().set_current(None);
-            let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns)?;
+            let next = Self::pick_next(&mut state, cpu.as_mut(), now_ns, Some(previous))?;
             Self::stage_switch_handoff(cpu.as_mut(), Some(previous), next, None)?;
             state.switch_plan(Some(previous), next, SwitchReason::Exited)
         };
@@ -1325,15 +1487,15 @@ impl TaskSystem {
         let Some(handoff) = cpu.as_mut().take_switch_handoff() else {
             return Ok(());
         };
-        let exit_callback = {
+        {
             let mut state = self.state.lock();
-            let (migration, exit_callback) = {
+            let migration = {
                 let record = state.thread_record_mut(handoff.previous)?;
                 if record.on_cpu != Some(cpu.owner()) {
                     return Err(TaskError::InvalidConfiguration);
                 }
                 record.on_cpu = None;
-                let migration = match handoff.migration_target {
+                match handoff.migration_target {
                     Some(_) => {
                         let target = record
                             .migration_target
@@ -1348,34 +1510,13 @@ impl TaskSystem {
                         Some((Arc::clone(&record.core), target))
                     }
                     None => None,
-                };
-                let exit_callback = if record.exit_callback_pending {
-                    record
-                        .extension
-                        .as_ref()
-                        .map(|extension| (extension.as_view(), handoff.previous))
-                } else {
-                    None
-                };
-                (migration, exit_callback)
+                }
             };
             if let Some((core, target)) = migration {
                 Self::detach_deadline_bandwidth(&mut state, cpu.as_mut(), handoff.previous)?;
                 state.publish_migration_to(&core, target, cpu.owner(), target)?;
             }
             Self::publish_cpu_load_summary(&state, cpu.as_mut());
-            exit_callback
-        };
-        if let Some((extension, thread)) = exit_callback {
-            // SAFETY: switch tail has proved the previous stack is inactive;
-            // the live registry record retains the extension through callback.
-            unsafe { (extension.ops().on_exit)(extension.data(), thread) };
-            let mut state = self.state.lock();
-            let record = state.thread_record_mut(thread)?;
-            if !record.exit_callback_pending || record.on_cpu.is_some() {
-                return Err(TaskError::InvalidConfiguration);
-            }
-            record.exit_callback_pending = false;
         }
         Ok(())
     }
@@ -1397,13 +1538,16 @@ impl TaskSystem {
             Err(TaskError::StaleThreadId) => return Ok(false),
             Err(error) => return Err(error),
         };
-        if !record.core.take_wake() || record.lifecycle.state() == ThreadState::Exited {
+        let lifecycle = record.lifecycle.state();
+        if !record.core.consume_wake(lifecycle == ThreadState::Parking)
+            || lifecycle == ThreadState::Exited
+        {
             return Ok(false);
         }
         if record.deadline_replenish_pending {
             return Ok(false);
         }
-        match record.lifecycle.state() {
+        match lifecycle {
             ThreadState::Parking => {
                 // PARKING still executes on this CPU and remains `current` /
                 // `on_cpu`. The wake's park notification is the ownership
@@ -1487,6 +1631,52 @@ impl TaskSystem {
         Ok(())
     }
 
+    /// Updates the owner CPU's running thread without publishing a self inbox.
+    ///
+    /// The caller owns `cpu` in an IRQ-off scheduler-safe window. A `true`
+    /// result means the current thread must schedule out before the operation
+    /// can return to its caller; switch tail will publish the detached context
+    /// to the selected destination CPU.
+    pub fn set_current_affinity(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        affinity: CpuSet,
+    ) -> Result<bool, TaskError> {
+        validate_affinity(&affinity, self.config.cpu_count())?;
+        let mut state = self.state.lock();
+        state.ensure_cpu_online(&cpu)?;
+        let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
+        let record = state.thread_record(current)?;
+        if record.running_cpu != Some(cpu.owner()) || record.on_cpu != Some(cpu.owner()) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let is_deadline = matches!(record.active_base_policy, SchedulePolicy::Deadline(_))
+            || matches!(record.base_policy, SchedulePolicy::Deadline(_));
+        if is_deadline && !affinity.covers(&state.online) {
+            return Err(TaskError::DeadlineAffinity);
+        }
+        let timer_cpu = record.core.sleep_timer_cpu();
+        if timer_cpu.is_some_and(|timer_cpu| !affinity.contains(timer_cpu)) {
+            return Err(TaskError::ActiveTimerAffinity);
+        }
+        let target = timer_cpu
+            .or_else(|| state.select_allowed_cpu(&affinity))
+            .ok_or(TaskError::InvalidConfiguration)?;
+        let owner = cpu.owner();
+        let must_migrate = !affinity.contains(owner);
+        let record = state.thread_record_mut(current)?;
+        record.affinity = affinity;
+        record.migration_target = must_migrate.then_some(target);
+        record
+            .core
+            .set_target_cpu(if must_migrate { target } else { owner });
+        if must_migrate {
+            cpu.request_reschedule();
+        }
+        Self::publish_cpu_load_summary(&state, cpu.as_mut());
+        Ok(must_migrate)
+    }
+
     /// Installs an idle thread for a CPU; idle is selected only when queues empty.
     pub fn install_idle_thread(
         &self,
@@ -1504,16 +1694,24 @@ impl TaskSystem {
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
         let extension = {
             let mut state = self.state.lock();
-            let record = state.thread_record_mut(thread)?;
-            if record.queued_cpu.is_some() || record.running_cpu.is_some() {
-                return Err(TaskError::AlreadyQueued);
-            }
-            if record.on_cpu.is_some() {
-                return Err(TaskError::ThreadBusy);
-            }
-            record.transition(ThreadState::Exited)?;
-            record.exit_callback_pending = record.extension.is_some();
-            record.extension.as_ref().map(ThreadExtension::as_view)
+            let extension = {
+                let record = state.thread_record_mut(thread)?;
+                if record.queued_cpu.is_some() || record.running_cpu.is_some() {
+                    return Err(TaskError::AlreadyQueued);
+                }
+                if record.on_cpu.is_some() {
+                    return Err(TaskError::ThreadBusy);
+                }
+                if record.has_live_pi_edges() {
+                    return Err(TaskError::InvalidPiState);
+                }
+                record.transition(ThreadState::Exited)?;
+                record.exit_callback_pending = record.extension.is_some();
+                record.exit_callback_claimed = record.exit_callback_pending;
+                record.extension.as_ref().map(ThreadExtension::as_view)
+            };
+            state.release_deadline_reservation_on_exit(thread)?;
+            extension
         };
         if let Some(extension) = extension {
             // SAFETY: ThreadExtension::new requires the OS to keep `data` valid
@@ -1521,12 +1719,46 @@ impl TaskSystem {
             unsafe { (extension.ops().on_exit)(extension.data(), thread) };
             let mut state = self.state.lock();
             let record = state.thread_record_mut(thread)?;
-            if !record.exit_callback_pending || record.on_cpu.is_some() {
+            if !record.exit_callback_pending
+                || !record.exit_callback_claimed
+                || record.on_cpu.is_some()
+            {
                 return Err(TaskError::InvalidConfiguration);
             }
             record.exit_callback_pending = false;
+            record.exit_callback_claimed = false;
         }
         Ok(())
+    }
+
+    /// Runs pending exit callbacks from an ordinary task-context safe point.
+    ///
+    /// Context-switch tail only proves that the exited stack is inactive; its
+    /// inherited IRQ and scheduler guards are still live. Calling an OS exit
+    /// hook there can acquire a sleepable lock and recursively enter the
+    /// scheduler. This bounded pass claims each callback under the registry
+    /// lock, invokes it without scheduler locks, and only then makes the record
+    /// eligible for reaping.
+    pub fn dispatch_exit_callbacks(&self, limit: usize) -> Result<usize, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let mut dispatched = 0;
+        while dispatched < limit {
+            let callback = {
+                let mut state = self.state.lock();
+                state.claim_pending_exit_callback()?
+            };
+            let Some((extension, thread)) = callback else {
+                break;
+            };
+            // SAFETY: the registry record keeps the claimed extension live,
+            // and ThreadExtension construction validated this callback table.
+            unsafe { (extension.ops().on_exit)(extension.data(), thread) };
+            self.state.lock().finish_exit_callback(thread)?;
+            dispatched += 1;
+        }
+        Ok(dispatched)
     }
 
     /// Removes an exited registry record and makes its slot reusable.
@@ -1843,18 +2075,6 @@ impl TaskSystem {
         callbacks.len()
     }
 
-    /// Registers uncontended PI mutex ownership.
-    pub fn pi_mutex_acquired(&self, lock: PiLockId, owner: ThreadId) -> Result<(), TaskError> {
-        let mut state = self.state.lock();
-        state.thread_record(owner)?;
-        if state.pi_locks.iter().any(|entry| entry.lock == lock) {
-            return Err(TaskError::InvalidPiState);
-        }
-        state.pi_locks.push(PiLockRecord { lock, owner });
-        state.thread_record_mut(owner)?.owned_pi_locks.push(lock);
-        Ok(())
-    }
-
     /// Creates a donation edge and a wake-before-block handshake token.
     pub fn pi_wait_start(
         &self,
@@ -1863,59 +2083,62 @@ impl TaskSystem {
         owner: ThreadId,
     ) -> Result<PiWaitToken, TaskError> {
         let mut state = self.state.lock();
-        if state.ensure_pi_acyclic(waiter, owner).is_err() {
-            drop(state);
-            task_runtime::fatal_invariant(0x5049_0001, waiter.as_u64() as usize);
-        }
-        let registered_owner = state
-            .pi_locks
-            .iter()
-            .find(|entry| entry.lock == lock)
-            .map(|entry| entry.owner)
-            .ok_or(TaskError::InvalidPiState)?;
-        let granted = registered_owner == waiter;
-        if !granted && registered_owner != owner {
+        if waiter == owner {
             return Err(TaskError::InvalidPiState);
         }
-        state.thread_record(waiter)?;
-        let wait = Arc::new(PiWaitState::new(lock, waiter, owner, granted));
-        if !granted {
-            let next_waiter_count = state
-                .thread_record(owner)?
-                .blocked_pi_waiters
-                .checked_add(1)
-                .ok_or(TaskError::InvalidPiState)?;
-            state.thread_record_mut(waiter)?.blocked_on = Some((lock, owner));
-            state.thread_record_mut(owner)?.blocked_pi_waiters = next_waiter_count;
-            state.pi_waits.push(Arc::clone(&wait));
-            state.recompute_pi_chain(owner)?;
+        if state.thread_record(waiter)?.lifecycle.state() == ThreadState::Exited
+            || state.thread_record(owner)?.lifecycle.state() == ThreadState::Exited
+        {
+            return Err(TaskError::InvalidPiState);
         }
-        Ok(PiWaitToken { state: wait })
+        match state.ensure_pi_acyclic(waiter, owner) {
+            Ok(()) => {}
+            Err(TaskError::PiCycle) => {
+                drop(state);
+                task_runtime::fatal_invariant(0x5049_0001, waiter.as_u64() as usize);
+            }
+            Err(error) => return Err(error),
+        }
+        state.thread_record(owner)?;
+        let waiter_core = Arc::clone(&state.thread_record(waiter)?.core);
+        if state.thread_record(waiter)?.blocked_on.is_some() {
+            return Err(TaskError::InvalidPiState);
+        }
+        let next_waiter_count = state
+            .thread_record(owner)?
+            .blocked_pi_waiters
+            .checked_add(1)
+            .ok_or(TaskError::InvalidPiState)?;
+        let generation = waiter_core.pi_wait_state().begin()?;
+        state.thread_record_mut(waiter)?.blocked_on = Some(PiWaitRegistration {
+            lock,
+            owner,
+            generation,
+        });
+        state.thread_record_mut(owner)?.blocked_pi_waiters = next_waiter_count;
+        state.recompute_pi_chain(owner)?;
+        Ok(PiWaitToken {
+            core: waiter_core,
+            generation,
+        })
     }
 
     /// Cancels a waiter token after a wake-before-block handoff race.
     pub fn pi_wait_cancel(&self, token: PiWaitToken) -> Result<(), TaskError> {
-        token.state.cancelled.store(true, Ordering::Release);
         let mut state = self.state.lock();
-        let token_owner = token.state.owner();
-        if let Some(index) = state
-            .pi_waits
-            .iter()
-            .position(|wait| Arc::ptr_eq(wait, &token.state))
-        {
-            state.pi_waits.swap_remove(index);
-            let owner = state.thread_record_mut(token_owner)?;
-            owner.blocked_pi_waiters = owner
-                .blocked_pi_waiters
-                .checked_sub(1)
-                .ok_or(TaskError::InvalidPiState)?;
-        }
-        if let Ok(waiter) = state.thread_record_mut(token.state.waiter)
-            && waiter.blocked_on == Some((token.state.lock, token_owner))
-        {
-            waiter.blocked_on = None;
-        }
-        state.recompute_pi_chain(token_owner)?;
+        let waiter = token.waiter();
+        let registration = state
+            .thread_record(waiter)?
+            .blocked_on
+            .filter(|registration| registration.generation == token.generation)
+            .ok_or(TaskError::InvalidPiState)?;
+        state.thread_record_mut(waiter)?.blocked_on = None;
+        let owner = state.thread_record_mut(registration.owner)?;
+        owner.blocked_pi_waiters = owner
+            .blocked_pi_waiters
+            .checked_sub(1)
+            .ok_or(TaskError::InvalidPiState)?;
+        state.recompute_pi_chain(registration.owner)?;
         Ok(())
     }
 
@@ -1927,31 +2150,26 @@ impl TaskSystem {
         next_owner: Option<ThreadId>,
     ) -> Result<(), TaskError> {
         let mut state = self.state.lock();
-        let index = state
-            .pi_locks
-            .iter()
-            .position(|entry| entry.lock == lock && entry.owner == old_owner)
-            .ok_or(TaskError::InvalidPiState)?;
         let active_waiters = state
-            .pi_waits
+            .slots
             .iter()
-            .filter(|wait| {
-                wait.lock == lock
-                    && wait.owner() == old_owner
-                    && !wait.cancelled.load(Ordering::Acquire)
-                    && !wait.granted.load(Ordering::Acquire)
+            .filter_map(|slot| slot.record.as_ref())
+            .filter(|record| {
+                record.blocked_on.is_some_and(|registration| {
+                    registration.lock == lock && registration.owner == old_owner
+                })
             })
             .count();
         let selected_waiter = next_owner.is_some_and(|next| {
-            state.pi_waits.iter().any(|wait| {
-                wait.lock == lock
-                    && wait.owner() == old_owner
-                    && wait.waiter == next
-                    && !wait.cancelled.load(Ordering::Acquire)
-                    && !wait.granted.load(Ordering::Acquire)
+            state.thread_record(next).is_ok_and(|record| {
+                record.blocked_on.is_some_and(|registration| {
+                    registration.lock == lock && registration.owner == old_owner
+                })
             })
         });
-        if active_waiters != 0 && !selected_waiter {
+        if (active_waiters == 0 && next_owner.is_some())
+            || (active_waiters != 0 && !selected_waiter)
+        {
             return Err(TaskError::InvalidPiState);
         }
         let redirected_waiters = active_waiters.saturating_sub(usize::from(selected_waiter));
@@ -1971,46 +2189,27 @@ impl TaskSystem {
             }
             record.blocked_pi_waiters -= active_waiters;
         }
-        state
-            .thread_record_mut(old_owner)?
-            .owned_pi_locks
-            .retain(|owned| *owned != lock);
-        match next_owner {
-            Some(next) => {
-                state.thread_record(next)?;
-                state.pi_locks[index].owner = next;
-                let record = state.thread_record_mut(next)?;
-                if !record.owned_pi_locks.contains(&lock) {
-                    record.owned_pi_locks.push(lock);
-                }
-                record.blocked_on = None;
-                record.blocked_pi_waiters = next_waiter_count.unwrap_or(0);
-            }
-            None => {
-                state.pi_locks.swap_remove(index);
-            }
-        }
-        let mut redirected = Vec::new();
-        for wait in &state.pi_waits {
-            if wait.lock != lock {
-                continue;
-            }
-            if Some(wait.waiter) == next_owner {
-                wait.granted.store(true, Ordering::Release);
-            } else if let Some(next) = next_owner {
-                wait.set_owner(next);
-                redirected.push(wait.waiter);
-            }
-        }
         if let Some(next) = next_owner {
-            for waiter in redirected {
-                state.thread_record_mut(waiter)?.blocked_on = Some((lock, next));
+            for slot in &mut state.slots {
+                let Some(record) = slot.record.as_mut() else {
+                    continue;
+                };
+                let Some(registration) = record.blocked_on.as_mut() else {
+                    continue;
+                };
+                if registration.lock != lock || registration.owner != old_owner {
+                    continue;
+                }
+                if record.core.id() == next {
+                    let generation = registration.generation;
+                    record.blocked_on = None;
+                    record.core.pi_wait_state().grant(generation)?;
+                } else {
+                    registration.owner = next;
+                }
             }
+            state.thread_record_mut(next)?.blocked_pi_waiters = next_waiter_count.unwrap_or(0);
         }
-        state.pi_waits.retain(|wait| {
-            !(wait.lock == lock
-                && (Some(wait.waiter) == next_owner || wait.cancelled.load(Ordering::Acquire)))
-        });
         state.recompute_pi_chain(old_owner)?;
         if let Some(next) = next_owner {
             state.recompute_pi_chain(next)?;
@@ -2216,13 +2415,28 @@ impl TaskSystem {
         };
         Self::activate_deadline_bandwidth(state, cpu.as_mut(), thread)?;
         let fields = cpu.as_mut().fields_mut();
-        let preempts_current = fields.current_dispatch.as_ref().is_none_or(|current| {
-            current.should_preempt(policy, queued_entity, self.config.wakeup_granularity_ns())
+        let queued_entity =
+            fields
+                .run_queue
+                .enqueue(thread, policy, queued_entity, now_ns, reason)?;
+        let current_fair = fields
+            .current_dispatch
+            .as_ref()
+            .and_then(|dispatch| dispatch.entity.fair());
+        fields.run_queue.update_fair_virtual_time(current_fair);
+        let fair_virtual_time = queued_entity.fair().map_or(0, |fair| {
+            fields.run_queue.virtual_time_for_mode(fair.mode())
         });
-        fields
-            .run_queue
-            .enqueue(thread, policy, queued_entity, now_ns, reason)?;
+        let preempts_current = fields.current_dispatch.as_ref().is_none_or(|current| {
+            current.should_preempt(
+                policy,
+                queued_entity,
+                fair_virtual_time,
+                self.config.wakeup_granularity_ns(),
+            )
+        });
         let record = state.thread_record_mut(thread)?;
+        record.entity = queued_entity;
         record
             .core
             .publish_effective_schedule(policy, queued_entity);
@@ -2279,7 +2493,7 @@ impl TaskSystem {
     ) -> Result<Option<ThreadId>, TaskError> {
         state.ensure_cpu_online(&cpu)?;
         state
-            .cpu_local(target)
+            .cpu_remote(target)
             .ok_or(TaskError::CpuOffline(target.as_u32()))?;
         let source = cpu.owner();
         if source == target {
@@ -2349,16 +2563,16 @@ impl TaskSystem {
                         registration.online
                             && target != source
                             && record.affinity.contains(target)
-                            && state.cpu_local(target).is_some_and(|local| {
-                                local.current().is_some() || local.idle().is_some()
-                            })
+                            && state
+                                .cpu_remote(target)
+                                .is_some_and(CpuRemote::is_scheduler_ready)
                     })
                 },
                 |target| {
                     record.affinity.contains(target)
-                        && state.cpu_local(target).is_some_and(|local| {
-                            local.current().is_some() || local.idle().is_some()
-                        })
+                        && state
+                            .cpu_remote(target)
+                            .is_some_and(CpuRemote::is_scheduler_ready)
                 },
             );
             if !allowed_target
@@ -2503,6 +2717,14 @@ impl TaskSystem {
                 let missed = deadline.observe_time(now_ns);
                 let replenish_due =
                     deadline.is_throttled() && now_ns >= deadline.next_scheduler_event_ns();
+                let next_event_ns = deadline.next_scheduler_event_ns();
+                if !replenish_due && next_event_ns > now_ns {
+                    // Zero-lag, CBS replenishment and deadline observation
+                    // share one owner-CPU one-shot. Servicing an earlier event
+                    // must explicitly retain the later event for blocked
+                    // records that are absent from both current and runqueue.
+                    cpu.arm_deferred_scheduler_deadline(next_event_ns);
+                }
                 if replenish_due {
                     deadline.replenish(now_ns);
                     record.base_deadline = Some(deadline);
@@ -2630,7 +2852,7 @@ impl TaskSystem {
             })
             .filter_map(|(index, _)| {
                 let target = CpuId::new(index as u32);
-                let target_summary = state.cpu_local(target)?.load_summary();
+                let target_summary = state.cpu_remote(target)?.load_summary();
                 if target_summary.runnable_count() >= source_load {
                     return None;
                 }
@@ -2702,6 +2924,7 @@ impl TaskSystem {
         state: &mut TaskSystemState,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
+        outgoing: Option<ThreadId>,
     ) -> Result<ThreadId, TaskError> {
         let owner = cpu.owner();
         let fields = cpu.as_mut().fields_mut();
@@ -2715,12 +2938,15 @@ impl TaskSystem {
             })
         {
             let record = state.thread_record_mut(queued.id)?;
+            Self::validate_next_on_cpu(record, queued.id, owner, outgoing)?;
             record.entity = queued.entity;
             record.queued_cpu = None;
             record.running_cpu = Some(owner);
             record.on_cpu = Some(owner);
             record.transition(ThreadState::Running)?;
             fields.current = Some(queued.id);
+            fields.remote().publish_current_thread(Some(queued.id));
+            fields.remote().mark_scheduler_ready();
             fields.current_dispatch = Some(CurrentDispatch::new(
                 CurrentDispatchState {
                     thread: queued.id,
@@ -2740,12 +2966,15 @@ impl TaskSystem {
         }
         let idle = fields.idle.ok_or(TaskError::NoRunnableThread)?;
         let record = state.thread_record_mut(idle)?;
+        Self::validate_next_on_cpu(record, idle, owner, outgoing)?;
         if record.lifecycle.state() == ThreadState::Ready {
             record.transition(ThreadState::Running)?;
         }
         record.running_cpu = Some(owner);
         record.on_cpu = Some(owner);
         fields.current = Some(idle);
+        fields.remote().publish_current_thread(Some(idle));
+        fields.remote().mark_scheduler_ready();
         fields.current_dispatch = Some(CurrentDispatch::new(
             CurrentDispatchState {
                 thread: idle,
@@ -2762,6 +2991,25 @@ impl TaskSystem {
         ));
         Self::publish_cpu_load_summary(state, cpu.as_mut());
         Ok(idle)
+    }
+
+    fn validate_next_on_cpu(
+        record: &ThreadRecord,
+        next: ThreadId,
+        owner: CpuId,
+        outgoing: Option<ThreadId>,
+    ) -> Result<(), TaskError> {
+        match record.on_cpu {
+            None => Ok(()),
+            // The owner may select its currently executing thread again after
+            // requeueing it for this same decision. No physical switch or
+            // switch-tail ownership transfer occurs in that case.
+            Some(executing_cpu) if outgoing == Some(next) && executing_cpu == owner => Ok(()),
+            // All other non-empty states prove either a stale publication or a
+            // second CPU trying to select a context whose switch tail has not
+            // completed yet. Never overwrite the sole ownership authority.
+            Some(_) => Err(TaskError::InvalidConfiguration),
+        }
     }
 
     fn commit_current_dispatch(
@@ -2909,6 +3157,20 @@ impl TaskSystemState {
         self.cpus.iter().filter(|cpu| cpu.online).count()
     }
 
+    fn release_deadline_reservation_on_exit(&mut self, thread: ThreadId) -> Result<(), TaskError> {
+        let held = {
+            let record = self.thread_record_mut(thread)?;
+            let held = record
+                .active_deadline_reservation
+                .max(record.desired_deadline_reservation);
+            record.active_deadline_reservation = 0;
+            record.desired_deadline_reservation = 0;
+            held
+        };
+        self.deadline_admission.release(held);
+        Ok(())
+    }
+
     fn remove_exited_thread(&mut self, thread: ThreadId) -> Result<ThreadRecord, TaskError> {
         self.remove_exited_thread_with_count(thread, 1, None)
     }
@@ -2935,7 +3197,10 @@ impl TaskSystemState {
             if record.lifecycle.state() != ThreadState::Exited {
                 return Err(TaskError::NotExited);
             }
-            if record.on_cpu.is_some() || record.exit_callback_pending {
+            if record.on_cpu.is_some()
+                || record.exit_callback_pending
+                || record.exit_callback_claimed
+            {
                 return Err(TaskError::ThreadBusy);
             }
             if record.core.sleep_timer_cpu().is_some() {
@@ -2984,6 +3249,7 @@ impl TaskSystemState {
                 if record.lifecycle.state() != ThreadState::Exited
                     || record.on_cpu.is_some()
                     || record.exit_callback_pending
+                    || record.exit_callback_claimed
                     || record.core.sleep_timer_cpu().is_some()
                 {
                     continue;
@@ -3001,15 +3267,58 @@ impl TaskSystemState {
         Ok(None)
     }
 
+    fn claim_pending_exit_callback(
+        &mut self,
+    ) -> Result<Option<(ThreadExtensionView, ThreadId)>, TaskError> {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let Some(record) = slot.record.as_mut() else {
+                continue;
+            };
+            if record.lifecycle.state() != ThreadState::Exited
+                || record.on_cpu.is_some()
+                || !record.exit_callback_pending
+                || record.exit_callback_claimed
+            {
+                continue;
+            }
+            let extension = record
+                .extension
+                .as_ref()
+                .ok_or(TaskError::InvalidConfiguration)?
+                .as_view();
+            record.exit_callback_claimed = true;
+            let slot_index = u32::try_from(index).map_err(|_| TaskError::InvalidConfiguration)?;
+            return Ok(Some((
+                extension,
+                ThreadId::from_parts(slot_index, slot.generation),
+            )));
+        }
+        Ok(None)
+    }
+
+    fn finish_exit_callback(&mut self, thread: ThreadId) -> Result<(), TaskError> {
+        let record = self.thread_record_mut(thread)?;
+        if record.lifecycle.state() != ThreadState::Exited
+            || record.on_cpu.is_some()
+            || !record.exit_callback_pending
+            || !record.exit_callback_claimed
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        record.exit_callback_pending = false;
+        record.exit_callback_claimed = false;
+        Ok(())
+    }
+
     fn ensure_pi_acyclic(&self, waiter: ThreadId, mut owner: ThreadId) -> Result<(), TaskError> {
         for _ in 0..self.slots.len().saturating_add(1) {
             if owner == waiter {
                 return Err(TaskError::PiCycle);
             }
-            let Some((_, next_owner)) = self.thread_record(owner)?.blocked_on else {
+            let Some(registration) = self.thread_record(owner)?.blocked_on else {
                 return Ok(());
             };
-            owner = next_owner;
+            owner = registration.owner;
         }
         Err(TaskError::PiCycle)
     }
@@ -3023,12 +3332,10 @@ impl TaskSystemState {
             })
             .filter_map(|(index, registration)| {
                 let cpu = CpuId::new(index as u32);
-                let local = (registration.local != 0).then(|| unsafe {
-                    // SAFETY: online CpuRegistration values point to pinned
-                    // CpuLocal objects with shutdown lifetime.
-                    &*ptr::with_exposed_provenance::<CpuLocal>(registration.local)
-                })?;
-                Some((local.runnable_summary(), cpu))
+                registration
+                    .remote
+                    .is_online()
+                    .then(|| (registration.remote.runnable_summary(), cpu))
             })
             .min_by_key(|(load, cpu)| (*load, cpu.as_u32()))
             .map(|(_, cpu)| cpu)
@@ -3051,7 +3358,7 @@ impl TaskSystemState {
         target: CpuId,
     ) -> Result<(), TaskError> {
         let cpu_local = self
-            .cpu_local(inbox_cpu)
+            .cpu_remote(inbox_cpu)
             .ok_or(TaskError::CpuOffline(inbox_cpu.as_u32()))?;
         let pointer = Arc::as_ptr(core);
         // SAFETY: the retained count is transferred to the intrusive inbox
@@ -3067,14 +3374,11 @@ impl TaskSystemState {
             core.id().generation() as u64,
             pointer.expose_provenance(),
         );
-        let (result, send_ipi) = cpu_local.publish_migration(node, message);
+        let result = cpu_local.publish_migration(node, message);
         if result != PublishResult::Published {
             // SAFETY: a rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };
-        }
-        if send_ipi {
-            let _status = task_runtime::send_scheduler_ipi(RuntimeCpuId::new(inbox_cpu.as_u32()));
         }
         Ok(())
     }
@@ -3087,8 +3391,7 @@ impl TaskSystemState {
                 .or(record.deadline_bandwidth_cpu)
         {
             let core = Arc::as_ptr(&record.core);
-            let Some(cpu_local) = self.cpu_local(cpu) else {
-                let _status = task_runtime::send_scheduler_ipi(RuntimeCpuId::new(cpu.as_u32()));
+            let Some(cpu_local) = self.cpu_remote(cpu) else {
                 return;
             };
             // SAFETY: this retained Arc count is transferred to the embedded
@@ -3103,14 +3406,11 @@ impl TaskSystemState {
                 record.policy_generation,
                 core.expose_provenance(),
             );
-            let (result, send_ipi) = cpu_local.publish_policy_update(node, message);
+            let result = cpu_local.publish_policy_update(node, message);
             if result != PublishResult::Published {
                 // SAFETY: rejected/coalesced publication did not consume the
                 // retained count allocated for this attempt.
                 unsafe { Arc::decrement_strong_count(core) };
-            }
-            if send_ipi {
-                let _status = task_runtime::send_scheduler_ipi(RuntimeCpuId::new(cpu.as_u32()));
             }
         }
     }
@@ -3121,7 +3421,7 @@ impl TaskSystemState {
         generation: u64,
         fair_slice_ns: u64,
         now_ns: u64,
-        fair_virtual_time: Option<u64>,
+        fair_placement: Option<FairPolicyPlacement>,
         activate_deadline: bool,
     ) -> Result<bool, TaskError> {
         let (
@@ -3149,14 +3449,26 @@ impl TaskSystemState {
             return Ok(false);
         }
 
-        let placement = fair_virtual_time
-            .or_else(|| previous_entity.fair().map(|fair| fair.vruntime()))
-            .unwrap_or(0);
         let mut entity = match (previous_entity, policy) {
             (SchedulingEntity::Fair(fair), SchedulePolicy::Fair { nice, mode }) => {
-                SchedulingEntity::Fair(fair.reconfigure(nice, mode, placement))
+                let source_virtual_time = fair_placement
+                    .map(|placement| placement.source_virtual_time)
+                    .unwrap_or_else(|| fair.vruntime());
+                let destination_virtual_time = fair_placement
+                    .map(|placement| placement.destination_virtual_time)
+                    .unwrap_or(source_virtual_time);
+                SchedulingEntity::Fair(fair.reconfigure(
+                    nice,
+                    mode,
+                    source_virtual_time,
+                    destination_virtual_time,
+                ))
             }
-            _ => SchedulingEntity::new(policy, fair_slice_ns, placement),
+            _ => SchedulingEntity::new(
+                policy,
+                fair_slice_ns,
+                fair_placement.map_or(0, |placement| placement.destination_virtual_time),
+            ),
         };
         if activate_deadline {
             entity.activate_deadline(now_ns);
@@ -3189,12 +3501,7 @@ impl TaskSystemState {
 
     fn recompute_pi_chain(&mut self, start: ThreadId) -> Result<(), TaskError> {
         let mut current = start;
-        let mut visited = Vec::new();
-        loop {
-            if visited.contains(&current) {
-                return Err(TaskError::PiCycle);
-            }
-            visited.push(current);
+        for _ in 0..=self.slots.len() {
             let (base, base_entity, blocked_on, previous_policy, previous_donor) = {
                 let record = self.thread_record(current)?;
                 let base_entity = match record.active_base_policy {
@@ -3217,16 +3524,19 @@ impl TaskSystemState {
             let mut effective_entity = base_entity;
             let mut effective_key = base_entity.scheduling_key(base, current.as_u64());
             let mut deadline_donor = None;
-            for wait in &self.pi_waits {
-                if wait.owner() != current
-                    || wait.cancelled.load(Ordering::Acquire)
-                    || wait.granted.load(Ordering::Acquire)
-                {
+            for slot in &self.slots {
+                let Some(donor_record) = slot.record.as_ref() else {
+                    continue;
+                };
+                let Some(registration) = donor_record.blocked_on else {
+                    continue;
+                };
+                if registration.owner != current {
                     continue;
                 }
-                let donor_record = self.thread_record(wait.waiter)?;
+                let waiter = donor_record.core.id();
                 let donor_policy = donor_record.policy;
-                let donor = donor_record.deadline_donor.unwrap_or(wait.waiter);
+                let donor = donor_record.deadline_donor.unwrap_or(waiter);
                 let donor_entity = if matches!(donor_policy, SchedulePolicy::Deadline(_)) {
                     self.thread_record(donor)?
                         .base_deadline
@@ -3281,11 +3591,12 @@ impl TaskSystemState {
                     .publish_effective_schedule(record.policy, record.entity);
                 self.request_owner_reschedule(current);
             }
-            let Some((_, owner)) = blocked_on else {
+            let Some(registration) = blocked_on else {
                 return Ok(());
             };
-            current = owner;
+            current = registration.owner;
         }
+        Err(TaskError::PiCycle)
     }
 
     fn refresh_effective_entity(
@@ -3317,17 +3628,12 @@ impl TaskSystemState {
         Ok(SchedulingEntity::new(record.policy, fair_slice_ns, now_ns))
     }
 
-    fn cpu_local(&self, cpu: CpuId) -> Option<&CpuLocal> {
+    fn cpu_remote(&self, cpu: CpuId) -> Option<&CpuRemote> {
         let registration = self.cpu_registration(cpu).ok()?;
-        if !registration.online || registration.local == 0 {
+        if !registration.online || !registration.remote.is_online() {
             return None;
         }
-        // SAFETY: `bring_cpu_online` accepts a pinned CpuLocal and the public
-        // TaskSystem contract requires every published CPU object to remain at
-        // that address until shutdown. Access here is restricted to atomic and
-        // lock-free producer endpoints; the owner remains the sole runqueue
-        // mutator.
-        Some(unsafe { &*ptr::with_exposed_provenance::<CpuLocal>(registration.local) })
+        Some(registration.remote.as_ref())
     }
 
     fn switch_plan(
@@ -3361,6 +3667,45 @@ pub struct ScheduleDecision {
     previous_endpoint: Option<SwitchEndpoint>,
     next_endpoint: SwitchEndpoint,
     switch_reason: SwitchReason,
+}
+
+/// Result of one bounded scheduler safe point.
+///
+/// This type deliberately keeps lifecycle deferral and inbox backpressure
+/// separate from a scheduling decision. Callers must not infer either state
+/// from a boolean `need_resched` value or an absent decision.
+#[derive(Clone, Copy, Debug)]
+pub enum SchedulerOutcome {
+    /// No context switch or owner-only work remains from this pass.
+    Quiescent,
+    /// The current thread owns an in-flight park token and must finish it.
+    ParkingDeferred,
+    /// One bounded inbox batch completed, with more owner-only work retained.
+    OwnerWorkPending,
+    /// The scheduler selected a next thread.
+    Decision(ScheduleDecision),
+}
+
+impl SchedulerOutcome {
+    /// Returns the scheduler decision, if this pass selected a thread.
+    pub const fn decision(self) -> Option<ScheduleDecision> {
+        match self {
+            Self::Decision(decision) => Some(decision),
+            Self::Quiescent | Self::ParkingDeferred | Self::OwnerWorkPending => None,
+        }
+    }
+
+    /// Returns whether the caller must finish a pending park handshake before
+    /// scheduler task-work callbacks may execute.
+    pub const fn parking_deferred(self) -> bool {
+        matches!(self, Self::ParkingDeferred)
+    }
+
+    /// Returns whether more owner-only inbox work remains for a later bounded
+    /// safe point.
+    pub const fn owner_work_pending(self) -> bool {
+        matches!(self, Self::OwnerWorkPending)
+    }
 }
 
 impl ScheduleDecision {
@@ -3551,7 +3896,7 @@ impl ChargeOutcome {
 #[derive(Debug)]
 struct CpuRegistration {
     online: bool,
-    local: usize,
+    remote: Arc<CpuRemote>,
 }
 
 #[derive(Debug)]
@@ -3584,21 +3929,22 @@ struct ThreadRecord {
     running_cpu: Option<CpuId>,
     on_cpu: Option<CpuId>,
     migration_target: Option<CpuId>,
-    blocked_on: Option<(PiLockId, ThreadId)>,
-    owned_pi_locks: Vec<PiLockId>,
+    blocked_on: Option<PiWaitRegistration>,
     blocked_pi_waiters: usize,
     deadline_donor: Option<ThreadId>,
     pi_critical_rescue: bool,
     deadline_replenish_pending: bool,
     deadline_overrun_pending: bool,
     exit_callback_pending: bool,
+    exit_callback_claimed: bool,
     charged_runtime_ns: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PiLockRecord {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PiWaitRegistration {
     lock: PiLockId,
     owner: ThreadId,
+    generation: u64,
 }
 
 impl ThreadRecord {
@@ -3615,6 +3961,10 @@ impl ThreadRecord {
                 self.policy,
                 SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
             )
+    }
+
+    fn has_live_pi_edges(&self) -> bool {
+        self.blocked_on.is_some() || self.blocked_pi_waiters != 0
     }
 }
 
@@ -3675,28 +4025,88 @@ const fn next_generation(generation: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
+    use alloc::{boxed::Box, vec::Vec};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
+    fn publish_test_scheduler_work(
+        remote: &CpuRemote,
+        node: Pin<&'static crate::inbox::InboxNode>,
+        slot: u32,
+    ) {
+        let message = InboxMessage::remote_wake(ThreadId::from_parts(slot, 1), remote.owner());
+        let result = remote.publish_remote_wake(node, message);
+        assert_eq!(result, PublishResult::Published);
+    }
+
+    fn test_inbox_node(
+        node: &Pin<Box<crate::inbox::InboxNode>>,
+    ) -> Pin<&'static crate::inbox::InboxNode> {
+        let node = node.as_ref().get_ref() as *const crate::inbox::InboxNode;
+        unsafe {
+            // Callers keep the pinned fixture alive until its inbox has drained
+            // or the complete owning task system has been dropped.
+            Pin::new_unchecked(&*node)
+        }
+    }
+
     #[test]
-    fn registered_cpu_endpoint_survives_owner_mutable_reborrow() {
+    fn busy_scheduler_ipi_is_persistently_retried_without_a_new_producer() {
+        let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let remote = &system.cpu_remotes[1];
+        remote.mark_online();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 1);
+
+        publish_test_scheduler_work(remote, test_inbox_node(&node), 1);
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+        assert!(system.scheduler_ipi_retry_pending());
+        assert_eq!(remote.scheduler_ipi_fault_count(), 1);
+
+        assert_eq!(system.service_scheduler_ipi_retries(64), Ok(1));
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 2);
+        assert!(!system.scheduler_ipi_retry_pending());
+    }
+
+    #[test]
+    fn permanent_scheduler_ipi_failure_is_quarantined_and_not_silent() {
+        let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let remote = &system.cpu_remotes[1];
+        remote.mark_online();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::InvalidArgument, 0);
+
+        publish_test_scheduler_work(remote, test_inbox_node(&node), 2);
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = system.service_scheduler_ipi_retries(64);
+        }));
+        assert!(
+            failure.is_err(),
+            "permanent transport failure must fail-stop"
+        );
+        assert!(!system.scheduler_ipi_retry_pending());
+    }
+
+    #[test]
+    fn registered_remote_endpoint_is_separate_from_owner_mutable_state() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        let allocation_address = (cpu.as_ref().get_ref() as *const CpuLocal).addr();
+        let owner_address = (cpu.as_ref().get_ref() as *const CpuLocal).addr();
+        let endpoint_address = Arc::as_ptr(cpu.as_ref().get_ref().remote()).addr();
+        assert_ne!(owner_address, endpoint_address);
 
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         assert_eq!(
-            (system.state.lock().cpu_local(CpuId::new(0)).unwrap() as *const CpuLocal).addr(),
-            allocation_address
+            (system.state.lock().cpu_remote(CpuId::new(0)).unwrap() as *const CpuRemote).addr(),
+            endpoint_address
         );
 
         cpu.as_mut().set_current(None);
         assert_eq!(
-            (system.state.lock().cpu_local(CpuId::new(0)).unwrap() as *const CpuLocal).addr(),
-            allocation_address,
-            "owner reborrowing must not invalidate the registered raw endpoint"
+            (system.state.lock().cpu_remote(CpuId::new(0)).unwrap() as *const CpuRemote).addr(),
+            endpoint_address,
+            "owner reborrowing must not alias or invalidate the remote endpoint"
         );
     }
 
@@ -3716,10 +4126,12 @@ mod tests {
     struct InstalledTaskHandles;
 
     impl InstalledTaskHandles {
-        fn new(system: Pin<&TaskSystem>, cpu: Pin<&CpuLocal>) -> Self {
+        fn new(system: Pin<&TaskSystem>, cpu: Pin<&mut CpuLocal>) -> Self {
             crate::test_runtime::install_task_handles(
                 (system.get_ref() as *const TaskSystem).expose_provenance(),
-                (cpu.get_ref() as *const CpuLocal).expose_provenance(),
+                // SAFETY: the test fixture keeps the owner object pinned and
+                // serializes every scheduler access until the handle is cleared.
+                (unsafe { Pin::get_unchecked_mut(cpu) } as *mut CpuLocal).expose_provenance(),
             );
             Self
         }
@@ -3849,6 +4261,43 @@ mod tests {
     }
 
     #[test]
+    fn switch_tail_defers_exit_callback_until_scheduler_guards_are_released() {
+        EXIT_CALLBACK_INVOCATIONS.store(0, Ordering::Release);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        // SAFETY: the test callback table owns no external resource and treats
+        // the zero payload as an opaque value.
+        let extension = unsafe { ThreadExtension::new(0, &EXIT_CALLBACK_TEST_OPS) };
+        let bootstrap = system
+            .install_bootstrap_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+            )
+            .unwrap();
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+        let exiting = bootstrap.id();
+        drop(bootstrap);
+        system.exit_current(cpu.as_mut()).unwrap();
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+
+        assert_eq!(
+            EXIT_CALLBACK_INVOCATIONS.load(Ordering::Acquire),
+            0,
+            "context-switch tail must not invoke task-context exit callbacks"
+        );
+        assert_eq!(system.dispatch_exit_callbacks(1).unwrap(), 1);
+        assert_eq!(EXIT_CALLBACK_INVOCATIONS.load(Ordering::Acquire), 1);
+        assert_eq!(system.thread_state(exiting), Ok(ThreadState::Exited));
+    }
+
+    #[test]
     fn scheduler_work_without_preemption_preserves_current_dispatch() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -3858,12 +4307,10 @@ mod tests {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
 
         cpu.request_scheduler_work();
-        assert!(
-            system
-                .schedule_if_requested(cpu.as_mut(), 1)
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            system.schedule_if_requested(cpu.as_mut(), 1).unwrap(),
+            SchedulerOutcome::Quiescent
+        ));
         system
             .charge_current(cpu.as_mut(), 2, 1, 0)
             .expect("scheduler-only work must not discard the running dispatch");
@@ -3912,8 +4359,9 @@ mod tests {
             .fair()
             .unwrap();
         assert_eq!(before.vruntime(), 650_000);
-        assert_eq!(before.remaining_request_ns(), 750_000);
-        assert_eq!(cpu.run_queue.virtual_time(), 400_000);
+        assert_eq!(before.remaining_request_ns(), 350_000);
+        let virtual_time = cpu.run_queue.virtual_time();
+        assert_eq!(virtual_time, 825_000);
 
         let nice = Nice::new(5).unwrap();
         system
@@ -3930,12 +4378,12 @@ mod tests {
             .entity
             .fair()
             .unwrap();
-        let lag =
-            (400_000_i128 - 650_000_i128) * Nice::ZERO.weight() as i128 / nice.weight() as i128;
-        let expected_vruntime = (400_000_i128 - lag) as u64;
-        let expected_remaining_delta = (750_000_u128 * 1024 / nice.weight() as u128) as u64;
+        let lag = (virtual_time as i128 - 650_000_i128) * Nice::ZERO.weight() as i128
+            / nice.weight() as i128;
+        let expected_vruntime = (virtual_time as i128 - lag) as u64;
+        let expected_remaining_delta = (350_000_u128 * 1024 / nice.weight() as u128) as u64;
         assert_eq!(reweighted.vruntime(), expected_vruntime);
-        assert_eq!(reweighted.remaining_request_ns(), 750_000);
+        assert_eq!(reweighted.remaining_request_ns(), 350_000);
         assert_eq!(
             reweighted.virtual_deadline(),
             expected_vruntime + expected_remaining_delta
@@ -3957,7 +4405,7 @@ mod tests {
             .unwrap();
         assert_eq!(batch.vruntime(), reweighted.vruntime());
         assert_eq!(batch.virtual_deadline(), reweighted.virtual_deadline());
-        assert_eq!(batch.remaining_request_ns(), 750_000);
+        assert_eq!(batch.remaining_request_ns(), 350_000);
 
         system
             .set_thread_policy(
@@ -3977,7 +4425,94 @@ mod tests {
             .fair()
             .unwrap();
         assert_eq!(idle.nice(), Nice::LOWEST);
-        assert_eq!(idle.remaining_request_ns(), 750_000);
+        assert_eq!(idle.remaining_request_ns(), 350_000);
+    }
+
+    #[test]
+    fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let idle = system
+            .install_bootstrap_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+        let normal = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(normal.id()).unwrap();
+        system.enqueue(cpu.as_mut(), normal.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu.as_mut(), 0).unwrap().next(),
+            normal.id()
+        );
+        system
+            .charge_current(cpu.as_mut(), 1_000_000, 1_000_000, 0)
+            .unwrap();
+        assert_eq!(
+            system.block_current(cpu.as_mut()).unwrap().next(),
+            idle.id()
+        );
+        system
+            .charge_current(cpu.as_mut(), 1_001_000, 1_000, 0)
+            .unwrap();
+
+        let normal_virtual_time = cpu.run_queue.virtual_time();
+        assert_eq!(normal_virtual_time, 1_000_000);
+        system
+            .set_thread_policy(idle.id(), SchedulePolicy::default())
+            .unwrap();
+        system
+            .drain_policy_updates(cpu.as_mut(), 1_001_000)
+            .unwrap();
+
+        let transitioned = system
+            .state
+            .lock()
+            .thread_record(idle.id())
+            .unwrap()
+            .entity
+            .fair()
+            .unwrap();
+        assert_eq!(
+            transitioned.vruntime(),
+            normal_virtual_time,
+            "a zero-lag entity must be rebased onto the destination class's V",
+        );
+    }
+
+    #[test]
+    fn running_normal_to_idle_transition_settles_then_rebases_lag() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let normal = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+        system
+            .set_thread_policy(
+                normal.id(),
+                SchedulePolicy::fair(Nice::ZERO, FairMode::Idle),
+            )
+            .unwrap();
+        system
+            .drain_policy_updates(cpu.as_mut(), 1_000_000)
+            .unwrap();
+
+        let state = system.state.lock();
+        let record = state.thread_record(normal.id()).unwrap();
+        let transitioned = record.entity.fair().unwrap();
+        assert_eq!(record.charged_runtime_ns, 1_000_000);
+        assert_eq!(transitioned.mode(), FairMode::Idle);
+        assert_eq!(
+            transitioned.vruntime(),
+            cpu.run_queue.virtual_time_for_mode(FairMode::Idle),
+            "settled zero lag must be expressed relative to the destination V domain",
+        );
     }
 
     #[test]
@@ -3989,17 +4524,16 @@ mod tests {
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
 
-        for slot in 0..=cpu.batch_limit() {
-            let node = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-                crate::inbox::InboxNode::new(crate::inbox::InboxKind::RemoteWake),
-            ));
-            // SAFETY: the test leaks every node, so its address remains stable
-            // for the complete inbox publication and drain lifetime.
-            let node = unsafe { Pin::new_unchecked(&*node) };
+        let mut nodes = Vec::with_capacity(cpu.batch_limit() * 2 + 1);
+        for slot in 0..=cpu.batch_limit() * 2 {
+            nodes.push(Box::pin(crate::inbox::InboxNode::new(
+                crate::inbox::InboxKind::RemoteWake,
+            )));
             let message =
                 InboxMessage::remote_wake(ThreadId::from_parts(slot as u32, 1), CpuId::new(0));
             assert_eq!(
-                cpu.publish_remote_wake(node, message).0,
+                cpu.remote()
+                    .publish_remote_wake(test_inbox_node(nodes.last().unwrap()), message),
                 PublishResult::Published
             );
         }
@@ -4011,19 +4545,17 @@ mod tests {
             system
                 .schedule_if_requested(cpu.as_mut(), 1)
                 .unwrap()
-                .is_none()
+                .owner_work_pending()
         );
         assert!(cpu.needs_reschedule());
 
         let second = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
         assert_eq!(second.drained(), 1);
         assert!(!second.pending());
-        assert!(
-            system
-                .schedule_if_requested(cpu.as_mut(), 2)
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            system.schedule_if_requested(cpu.as_mut(), 2).unwrap(),
+            SchedulerOutcome::Quiescent
+        ));
         system.charge_current(cpu.as_mut(), 3, 1, 0).unwrap();
     }
 
@@ -4058,12 +4590,85 @@ mod tests {
         let decision = system
             .schedule_if_requested(cpu0.as_mut(), 1)
             .unwrap()
+            .decision()
             .unwrap();
         assert_eq!(decision.previous(), Some(thread.id()));
         assert!(!cpu1.has_remote_work());
 
         system.complete_context_switch(cpu0.as_mut()).unwrap();
         assert!(cpu1.has_remote_work());
+        let transfer = system.drain_policy_updates(cpu1.as_mut(), 2).unwrap();
+        assert_eq!(transfer.drained(), 1);
+        assert!(!transfer.pending());
+    }
+
+    #[test]
+    fn selection_rejects_a_thread_still_executing_on_another_cpu() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+
+        // Model a stale remote publication reaching this owner while the
+        // physical switch tail still proves that the same context executes on
+        // another CPU. Selection must reject the contradiction instead of
+        // overwriting the sole `on_cpu` authority.
+        system
+            .state
+            .lock()
+            .thread_record_mut(thread.id())
+            .unwrap()
+            .on_cpu = Some(CpuId::new(1));
+
+        assert!(matches!(
+            system.schedule(cpu0.as_mut(), 1),
+            Err(TaskError::InvalidConfiguration)
+        ));
+    }
+
+    #[test]
+    fn owner_current_affinity_change_does_not_publish_a_self_request() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+
+        let mut target_only = CpuSet::empty(2);
+        target_only.insert(CpuId::new(1));
+        assert!(
+            system
+                .set_current_affinity(cpu0.as_mut(), target_only)
+                .unwrap()
+        );
+        assert!(
+            !cpu0.has_remote_work(),
+            "the owner can commit its migration directly at the next schedule-out"
+        );
+        assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Running));
     }
 
     #[test]
@@ -4177,7 +4782,6 @@ mod tests {
             system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
         }
         let lock = PiLockId::new(1);
-        system.pi_mutex_acquired(lock, owner.id()).unwrap();
 
         let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
 
@@ -4213,12 +4817,6 @@ mod tests {
             .unwrap();
         let first_lock = PiLockId::new(11);
         let second_lock = PiLockId::new(12);
-        system
-            .pi_mutex_acquired(first_lock, first_owner.id())
-            .unwrap();
-        system
-            .pi_mutex_acquired(second_lock, second_owner.id())
-            .unwrap();
         let chained = system
             .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
             .unwrap();
@@ -4255,7 +4853,6 @@ mod tests {
             .create_thread(ThreadSpec::new(deadline).with_extension(extension))
             .unwrap();
         let lock = PiLockId::new(21);
-        system.pi_mutex_acquired(lock, owner.id()).unwrap();
         for thread in [&owner, &donor] {
             system.make_ready(thread.id()).unwrap();
             system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
@@ -4286,14 +4883,15 @@ mod tests {
 
     #[test]
     fn wake_before_park_is_consumed_without_blocking() {
-        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let running = system
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
 
-        let _result = running.wake_handle().wake();
+        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
 
         assert_eq!(
             system.prepare_park(cpu.as_mut()).unwrap(),
@@ -4303,21 +4901,53 @@ mod tests {
             system.thread_state(running.id()).unwrap(),
             ThreadState::Running
         );
+        let wake = system.drain_remote_wakes(cpu.as_mut(), 0).unwrap();
+        assert_eq!(wake.drained(), 1);
+        assert!(!wake.pending());
     }
 
     #[test]
-    fn wake_during_parking_cancels_schedule_out() {
-        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    fn consumed_running_wake_does_not_notify_a_later_park() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let running = system
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
+        assert_eq!(
+            system
+                .drain_remote_wakes(cpu.as_mut(), 0)
+                .unwrap()
+                .drained(),
+            1,
+        );
+        assert_eq!(
+            system.thread_state(running.id()).unwrap(),
+            ThreadState::Running,
+        );
+        assert!(matches!(
+            system.prepare_park(cpu.as_mut()).unwrap(),
+            ParkPrepare::Prepared(_),
+        ));
+    }
+
+    #[test]
+    fn wake_during_parking_cancels_schedule_out() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let ParkPrepare::Prepared(park) = system.prepare_park(cpu.as_mut()).unwrap() else {
             panic!("fresh park must publish PARKING");
         };
 
-        let _result = running.wake_handle().wake();
+        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
 
         assert!(matches!(
             system.commit_park(cpu.as_mut(), park).unwrap(),
@@ -4337,7 +4967,7 @@ mod tests {
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_ref());
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let ParkPrepare::Prepared(park) = system.prepare_park(cpu.as_mut()).unwrap() else {
             panic!("fresh park must publish PARKING");
         };
@@ -4361,14 +4991,14 @@ mod tests {
             system
                 .schedule_if_requested(cpu.as_mut(), 0)
                 .unwrap()
-                .is_none(),
+                .parking_deferred(),
             "IRQ-return scheduling must defer while current owns a PARKING token"
         );
         assert_eq!(
             system.thread_state(running.id()).unwrap(),
             ThreadState::Parking
         );
-        assert!(system.snapshot(cpu.as_ref()).need_resched());
+        assert!(!system.snapshot(cpu.as_ref()).need_resched());
 
         assert!(matches!(
             system.commit_park(cpu.as_mut(), park).unwrap(),
@@ -4379,12 +5009,12 @@ mod tests {
             ThreadState::Running
         );
         assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
-        assert!(system.snapshot(cpu.as_ref()).need_resched());
+        assert!(!system.snapshot(cpu.as_ref()).need_resched());
         assert!(
-            system
-                .schedule_if_requested(cpu.as_mut(), 0)
-                .unwrap()
-                .is_none(),
+            matches!(
+                system.schedule_if_requested(cpu.as_mut(), 0).unwrap(),
+                SchedulerOutcome::Quiescent
+            ),
             "a work-only wake must not be upgraded into a preemption"
         );
         assert_eq!(system.snapshot(cpu.as_ref()).current(), Some(running.id()));
@@ -4400,6 +5030,16 @@ mod tests {
         drop: no_extension_drop,
     };
 
+    static EXIT_CALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    static EXIT_CALLBACK_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
+        on_switch_in: no_extension_hook,
+        on_switch_out: no_extension_switch_out,
+        on_exit: count_exit_callback,
+        on_deadline_overrun: no_extension_hook,
+        drop: no_extension_drop,
+    };
+
     unsafe extern "Rust" fn no_extension_hook(_data: usize, _thread: ThreadId) {}
 
     unsafe extern "Rust" fn no_extension_switch_out(
@@ -4411,6 +5051,10 @@ mod tests {
 
     unsafe extern "Rust" fn count_deadline_overrun(_data: usize, _thread: ThreadId) {
         DEADLINE_OVERRUN_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe extern "Rust" fn count_exit_callback(_data: usize, _thread: ThreadId) {
+        EXIT_CALLBACK_INVOCATIONS.fetch_add(1, Ordering::Release);
     }
 
     unsafe extern "Rust" fn no_extension_drop(_data: usize) {}

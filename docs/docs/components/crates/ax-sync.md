@@ -1,188 +1,225 @@
 # `ax-sync`
 
 > 路径：`os/arceos/modules/axsync`
-> 类型：库 crate
+>
+> 类型：`no_std` 库 crate
+>
 > 分层：ArceOS 层 / ArceOS 内核模块
-> 版本：`0.3.0-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/mutex.rs`
+>
+> 版本：`0.5.28`
 
-`ax-sync` 是 ArceOS 提供统一同步原语的模块。它的设计很克制：不是实现一整套锁家族，而是把“阻塞互斥锁”和“自旋锁”统一收敛到一个稳定的 `Mutex` 名称上，并通过 feature 决定当前系统拿到的到底是哪一种语义。
+`ax-sync` 提供两类语义必须由调用者显式区分的互斥锁：始终非睡眠的
+`SpinMutex`，以及仅在 `multitask` feature 下可用的优先级继承睡眠锁
+`PiMutex`。兼容名称 `Mutex` 固定为 `SpinMutex` 的别名，不会再因 Cargo feature
+合并而改变锁语义。
 
-## 架构设计
-### 设计定位
-`ax-sync` 的目标不是做一个庞大的同步库，而是解决两个现实问题：
+## 公共 API 与固定语义
 
-- 对大多数上层模块来说，只需要一个统一的 `Mutex` 名字，不想在代码里到处分辨当前是“多任务可阻塞锁”还是“无调度环境自旋锁”。
-- 对需要显式控制抢占/中断语义的低层代码来说，仍然要能直接访问 `ax-kspin` 提供的自旋锁家族。
+| API | 可用条件 | 语义 |
+| --- | --- | --- |
+| `SpinMutex<T>` / `SpinMutexGuard` | 始终可用 | `ax_kspin::SpinNoIrq` 的显式名称；非睡眠、IRQ-safe，guard 不可跨线程或 CPU 发送。 |
+| `Mutex<T>` / `MutexGuard` | 始终可用 | `SpinMutex` 的兼容别名；打开 `multitask` 后仍是同一种非睡眠锁。新代码应优先写显式名称。 |
+| `PiMutex<T>` / `PiMutexGuard` | `multitask` | 非重入、按有效调度紧迫度排序的优先级继承睡眠锁，guard 为 `GuardNoSend`。 |
+| `RawPiMutex` | `multitask` | `PiMutex` 使用的 `lock_api::RawMutex`；兼容名称 `RawMutex` 当前仍保留。 |
+| `spin` | 始终可用 | 直接再导出 `ax-kspin`，供调用者选择其他 IRQ/抢占组合。 |
 
-因此，`ax-sync` 的职责边界是：
+Cargo 的 feature 会在整个依赖图中合并，因此 feature 不能安全地承担“同一个类型名
+切换成另一种并发语义”的职责。现在 `multitask` 只增加 `PiMutex`、PI lockdep 和相关
+实现，不改变 `Mutex`、`MutexGuard` 的类型或行为。
 
-- 向上提供统一的 `Mutex` / `MutexGuard` / 可选 `RawMutex`。
-- 向下复用 `ax-kspin`、`lock_api`、`event-listener` 和 `ax-task`，而不是重复造轮子。
-
-### 模块结构
-- `src/lib.rs`：feature 分流入口。决定 `Mutex` 是 `ax_kspin::SpinNoIrq` 的别名，还是本 crate 自己的阻塞 mutex。
-- `src/mutex.rs`：只在 `multitask` 开启时编译，定义 `RawMutex`、`Mutex<T>` 和 `MutexGuard`。
-- `README.md`：说明 `multitask` feature 的语义与使用方式。
-
-### 1.3 关键类型与锁语义
-- `ax-sync::spin`：直接再导出 `ax-kspin` crate，供调用者显式使用自旋锁。
-- `Mutex` / `MutexGuard`：
-  - 未启用 `multitask` 时：别名到 `SpinNoIrq` 与其 guard。
-  - 启用 `multitask` 时：别名到 `lock_api::Mutex<RawMutex, T>`。
-- `RawMutex`：`multitask` 路径中的底层锁实现，内部维护：
-  - `owner_id: AtomicU64`：锁拥有者任务 ID，`0` 表示未持有。
-  - `event: Event`：等待与唤醒队列。
-
-### 1.4 阻塞 mutex 的主线
-`RawMutex::lock()` 的实现路径很值得单独说明：
+## 架构边界
 
 ```mermaid
 flowchart TD
-    A["lock()"] --> B{"owner_id == 0 ?"}
-    B -- yes --> C["CAS 抢锁成功 -> 返回"]
-    B -- no --> D["Spin 状态机短自旋"]
-    D --> E{"仍未拿到锁?"}
-    E -- no --> C
-    E -- yes --> F["注册 event listener"]
-    F --> G["再次检查 owner_id"]
-    G --> H{"仍被占用?"}
-    H -- no --> B
-    H -- yes --> I["block_on(listener) 阻塞等待"]
-    I --> B
+    Consumer["ArceOS / StarryOS / components"] --> Spin["SpinMutex / Mutex"]
+    Consumer --> Pi["PiMutex (multitask)"]
+    Spin --> Kspin["ax-kspin SpinNoIrq"]
+    Pi --> Kspin
+    Pi --> LockApi["lock_api safe wrapper"]
+    Pi --> Task["ax-task PI scheduler API"]
+    Lockdep["ax-lockdep (optional)"] --> Pi
 ```
 
-这条路径体现了三个层次：
+职责划分如下：
 
-- 先尝试快速 CAS 抢锁。
-- 若失败，先做一小段指数退避式自旋与 `yield_now()`。
-- 再进一步进入 `event-listener` + `ax-task::future::block_on()` 的阻塞等待。
+- `ax-kspin` 提供短临界区所需的原子锁、IRQ/抢占 guard 和 lockdep 接入。
+- `ax-sync` 维护 PI mutex 的本地 owner、waiter intrusive queue 与 handoff 协议。
+- `ax-task` 维护线程的 base/effective 调度策略、传递式 donation、远端 owner
+  reschedule、Deadline donor 记账以及 park/wake 状态机。
+- OS runtime 通过 `TaskRuntime` 和 `LockRuntime` 提供 IRQ、抢占、IPI 与上下文切换能力。
 
-因此 `ax-sync` 的阻塞 mutex 不是纯 parking lock，也不是纯自旋锁，而是“短自旋 + 让出 + 阻塞”的混合策略。
+`ax-task` 不反向依赖 `ax-sync`。PI 边界只传 `PiLockId`、`ThreadId`、
+`PiWaitToken` 和定向 wake handle，不把 `ax-sync` 的锁对象或 waiter 指针交给调度器。
 
-### 1.5 解锁与非重入约束
-- `unlock()` 通过 `swap(0, Release)` 清空 `owner_id`，然后调用 `event.notify(1)` 唤醒等待者。
-- `lock()` 中显式断言当前任务不能重复获取自己已持有的锁，因此 `RawMutex` 是 **非重入 mutex**。
-- `GuardMarker = GuardSend`，表明 guard 的发送语义遵循 `lock_api` 的该类约定。
+### 模块结构
 
-### 1.6 `multitask` feature 的决定性作用
-这是 `ax-sync` 最关键的 feature：
+- `src/lib.rs`：导出固定语义的 `SpinMutex` / `Mutex`，并在 `multitask` 下显式导出
+  `PiMutex`。
+- `src/mutex.rs`：实现 PI raw mutex、本地 owner/waiter 状态、handoff 和
+  `lock_api` 适配。
+- `src/pi.rs`：实现栈上 pinned waiter 节点及按紧迫度排序的 intrusive queue。
+- `src/lockdep.rs`：在 `lockdep` feature 下记录 PI mutex 的 acquire/release。
 
-- 打开 `multitask`：
-  - 编译 `src/mutex.rs`
-  - 导出 `RawMutex`
-  - `Mutex` 变为真正可阻塞的互斥锁
-  - 同时要求 `ax-task/multitask`
-- 关闭 `multitask`：
-  - `RawMutex` 不存在
-  - `Mutex` 只是 `SpinNoIrq` 的别名
+## 非睡眠锁
 
-需要注意的是，源码注释里曾有“`multitask` 默认启用”的描述，但 `Cargo.toml` 实际以 `default = []` 为准。也就是说，当前仓库中应以 manifest 为真，而不是以旧注释为真。
+`SpinMutex` 和兼容 `Mutex` 都是 `SpinNoIrq`：持锁期间关闭本地 IRQ，并通过
+`LockRuntime` 保持相应抢占约束。它们适合 IRQ 与任务上下文共享的短状态、固定容量
+队列和无需睡眠的快速路径。
 
-## 核心功能
-### 功能概览
-- 在多任务环境中提供阻塞式互斥锁。
-- 在无多任务环境中把同名 `Mutex` 退化为关中断自旋锁。
-- 通过 `ax-sync::spin` 暴露完整的 `ax-kspin` 自旋锁家族。
+持有这类锁时不得：
 
-### 使用场景
-- `Mutex<T>`：上层模块最常用的统一互斥抽象。
-- `MutexGuard`：保护临界区访问。
-- `RawMutex`：在需要和 `lock_api` 深度集成时使用，但只在 `multitask` 下存在。
-- `ax-sync::spin::*`：需要显式使用自旋锁或中断屏蔽语义时使用。
+- park、sleep、yield 或等待另一个任务；
+- 执行可能阻塞的 I/O、reclaim 或未知后端回调；
+- fault 用户内存；
+- 进行可能无界扩容的分配。
 
-### 使用方式
-最典型的调用方式是把它当成统一互斥抽象：
+`SpinMutex` 的 `try_lock()` 同样不会睡眠，但成功后仍进入上述非睡眠临界区。
+
+## PI 睡眠锁
+
+`PiMutex` 只应在已经建立当前线程和调度器的普通任务上下文使用。hard IRQ、早期启动
+或其他不可阻塞上下文必须使用非睡眠锁或重新划分临界区。
+
+### 无竞争路径不进入 PI 图
+
+无竞争 acquisition 只在 mutex 本地元数据中设置 owner；无 waiter 的 release 也只清除
+本地 owner。两者都不会向 `TaskSystem` 注册锁所有权或 donation edge。这样，普通快速
+路径不会维护一个全局“所有 PI 锁”表。
+
+只有观察到其他 owner 后，waiter 才调用调度器 PI API：
+
+```mermaid
+flowchart TD
+    A["PiMutex::lock"] --> B["验证可阻塞上下文和当前线程"]
+    B --> C{"本地 owner 为空?"}
+    C -- yes --> D["本地记录 owner，直接返回"]
+    C -- no --> E["pi_wait_start：建立 donation 与 generation token"]
+    E --> F["把栈上 pinned waiter 发布到 intrusive queue"]
+    F --> G{"handoff 已提前 grant?"}
+    G -- yes --> H["接收本地 ownership grant"]
+    G -- no --> I["pi_block_current：park 当前线程"]
+    I --> H
+    H --> J["返回 guard"]
+```
+
+`try_lock()` 只检查本地 owner：成功时记录 owner，失败时立即返回，不 donation、不 park。
+
+### waiter 发布与 handoff 顺序
+
+竞争路径遵守以下顺序：
+
+1. waiter 在释放 mutex 元数据锁后调用 `pi_wait_start`，先建立 scheduler donation。
+2. donation 成功后，才把栈上 pinned waiter 节点发布到本地 intrusive queue。
+3. owner 解锁时先关闭新 waiter 注册窗口，等待已经开始的注册完成，再按有效调度 key
+   选择最紧迫 waiter。
+4. 本地 owner 和 waiter grant 先发布，然后调用 `pi_mutex_handoff` 原子转移 scheduler
+   donation，再在所有元数据锁之外定向 wake 新 owner。
+
+等待排序使用线程最新的 effective scheduling key，因此 Deadline、FIFO/RR 与 Fair
+donor 能按调度器紧迫度参与同一队列。相同 key 使用单调 sequence 保持 FIFO。
+`ax-task` 继续沿 `blocked_on` owner 链传播 donation；检测到环时按内核不变量错误
+终止，而不是留下部分 donation。
+
+同 CPU 的 waiter 注册和 owner handoff 会暂时持有嵌套 `PreemptGuard`，避免一方被另一方
+抢占后永久等待注册窗口。所有 donation、park、handoff 与 wake 都在本地 waiter 元数据
+锁之外执行。
+
+### 预分配与零分配调度操作
+
+PI 等待状态不在竞争发生时动态创建：
+
+- 每个 `ThreadCore` 创建时已经内嵌一个 `PiWaitState`，包含 generation 与 granted
+  generation 原子字段。
+- `ThreadRecord` 已经内嵌 `blocked_on: Option<PiWaitRegistration>`、waiter 计数和
+  effective policy/donor 状态。
+- `PiWaitToken` 是引用上述预分配状态的按值 handshake token；克隆其中已有的
+  `Arc<ThreadCore>` 只增加引用计数，不进行堆分配。
+- `ax-sync` 的 `WaiterNode` 固定在当前 `PiMutex::lock` 调用栈上，并以 intrusive node
+  入队，不为 waiter 分配容器节点。
+
+无竞争 acquisition/release 完全停留在 mutex-local owner 元数据中；调度器不提供也不需要
+“登记无竞争 owner”的接口。`pi_wait_start`、`pi_wait_cancel` 和 `pi_mutex_handoff` 只修改
+现有线程注册表和预分配状态，不扩容、不分配或释放内存。
+`components/ax-task/tests/pi_allocation_contract.rs` 使用计数 allocator 固定这一契约。
+
+generation token 同时覆盖 wake-before-block：handoff 若先发生，waiter 会观察 grant 而
+不再 park；若 waiter 已进入 parking，定向 wake 会推进同一个线程状态机。取消被 owner
+变化追越的注册同样只清理现有状态。
+
+## 使用方式
+
+### 显式非睡眠锁
 
 ```rust
-use ax-sync::Mutex;
+use ax_sync::SpinMutex;
 
-static COUNTER: Mutex<u64> = Mutex::new(0);
+static COUNTER: SpinMutex<u64> = SpinMutex::new(0);
 
 let mut guard = COUNTER.lock();
 *guard += 1;
 ```
 
-同一段代码在 `multitask` 打开与关闭时可以保持相同接口，但底层语义会分别落到阻塞 mutex 或 `SpinNoIrq`。
+旧代码可以继续使用 `ax_sync::Mutex`，但它只是 `SpinMutex` 的兼容名称。不要用这个兼容
+名称表达“可睡眠”。
 
-## 依赖关系
-```mermaid
-graph LR
-    ax_kspin["ax-kspin"] --> ax-sync["ax-sync"]
-    lock_api["lock_api"] --> ax-sync
-    event_listener["event-listener"] --> ax-sync
-    ax-task["ax-task"] --> ax-sync
+### 显式 PI 睡眠锁
 
-    ax-sync --> ax-api["ax-api"]
-    ax-sync --> ax-posix-api["ax-posix-api"]
-    ax-sync --> ax-display["ax-display"]
-    ax-sync --> ax-input["ax-input"]
-    ax-sync --> ax-net["ax-net / ax-net"]
-    ax-sync --> starry_kernel["starry-kernel"]
-```
+依赖侧先启用 feature：
 
-### 直接依赖
-- `ax-kspin`：提供自旋锁实现，并通过 `spin` 再导出。
-- `lock_api`：提供 `RawMutex` trait 与泛型 `Mutex<T>` 框架。
-- `event-listener`：提供等待/唤醒事件机制。
-- `ax-task`：提供当前任务 ID、`yield_now()` 与 `block_on()`，使阻塞 mutex 真正能与调度器协作。
-
-### 主要消费者
-- `ax-api`：在 `multitask` 路径下把 `RawMutex` 作为公开类型再导出。
-- `ax-posix-api`：用于 pipe、fs、net、pthread mutex 等路径。
-- `ax-net` / `ax-net`、`ax-input`、`ax-display`、`ax-fs-ng`：用 `Mutex` 保护全局状态或共享对象。
-- `starry-kernel`：大量复用 `ax-sync::Mutex`，同时与 `spin::SpinNoIrq` 并存。
-
-### 3.3 间接消费者
-- 通过 `ax-std` / `ax-api` 共享多任务同步路径的上层应用。
-- Axvisor，经 `ax-std` 和 `ax-api` 间接复用统一同步原语栈。
-
-## 开发指南
-### 接入方式
 ```toml
 [dependencies]
 ax-sync = { workspace = true, features = ["multitask"] }
 ```
 
-若不打开 `multitask`，则 `Mutex` 会退化为 `SpinNoIrq`，这是语义级变化，不只是性能差异。
+然后显式使用 `PiMutex`：
 
-### 4.2 使用与修改约束
-1. 若代码需要“可睡眠、可让出 CPU 的锁”，必须确保依赖链上启用了 `multitask`。
-2. 若代码运行在中断上下文、早期启动期或调度器尚未建立的路径，应优先考虑 `ax-sync::spin::*`。
-3. 修改 `RawMutex` 时，要同时考虑自旋阶段、阻塞阶段和唤醒阶段是否仍保持一致语义。
-4. 任何改动都必须保留“非重入”这一约束，否则会改变上层大量代码的错误模型。
+```rust
+use ax_sync::PiMutex;
 
-### 4.3 开发建议
-- 对上层模块，优先直接写 `Mutex<T>`，把 feature 差异留给 `ax-sync` 内部处理。
-- 对极低层路径，不要滥用 `Mutex`，而应显式选择 `spin::SpinNoIrq` 等自旋锁。
-- 若要扩展更多同步原语，应先确认是否真的属于 `ax-sync` 的职责，而不是应由更专门的 crate 承担。
+static STATE: PiMutex<u64> = PiMutex::new(0);
 
-## 测试
-### 测试覆盖
-`ax-sync` 当前最重要的测试位于 `src/mutex.rs`，即 `lots_and_lots` 压力测试。它会初始化调度器、spawn 多任务并发更新一个静态 `Mutex<u32>`，验证阻塞 mutex 在激烈竞争下的正确性。
+let mut guard = STATE.lock();
+*guard += 1;
+```
 
-### 单元测试
-- `RawMutex::try_lock()` 与 `lock()` 的所有权状态转换。
-- 非重入断言。
-- `unlock()` 后的唤醒行为。
-- `Spin` 辅助状态机从短自旋到 `yield_now()` 的切换。
+若临界区需要等待、I/O 或 fault，应先尽量把这些操作移到锁外；确实需要睡眠互斥时才
+选择 `PiMutex`。不能通过启用 `multitask` 期待现有 `Mutex` 自动变成睡眠锁。
 
-### 集成测试
-- 在 `multitask` 打开时验证真实调度环境下的互斥行为。
-- 在 `multitask` 关闭时验证 `Mutex` 退化为 `SpinNoIrq` 后的代码仍能编译并保持预期语义。
-- 覆盖 StarryOS 和 POSIX API 层对 `Mutex` 的高频使用场景。
+## Feature 与依赖
 
-### 覆盖率
-- 对 `ax-sync`，重点是并发行为覆盖而不是普通路径覆盖。
-- 至少应覆盖抢锁成功、短自旋失败后阻塞、被唤醒重试、重复加锁失败这几条主线。
-- 若改动唤醒策略或 `event-listener` 交互方式，应补系统级压力测试。
+- `default = []`：仍然提供 `SpinMutex`、兼容 `Mutex` 和 `spin`。
+- `multitask`：增加 `PiMutex`、`PiMutexGuard`、`RawPiMutex`、`RawMutex` 和 PI 模块。
+- `lockdep`：隐含 `multitask`，并接入 `ax-kspin/lockdep` 与 `ax-lockdep` task context。
 
-## 跨项目定位
-### ArceOS
-`ax-sync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `ax-task`、`ax-runtime`、`ax-runtime` 联动，确保“调度器语义”和“锁语义”一起切换。
+直接依赖：
 
-### StarryOS
-StarryOS 大量复用 `ax-sync::Mutex` 作为内核内部同步原语之一。因此在 StarryOS 中，`ax-sync` 扮演的是“兼容内核与 ArceOS 模块共享的基础锁层”。
+- `ax-kspin`：非睡眠锁、PI 元数据短锁和抢占 guard。
+- `ax-task`：线程身份、PI donation、park/handoff/wake 与有效调度策略。
+- `lock_api`：`PiMutex` 的 safe wrapper。
+- `ax-lockdep`：仅在 `lockdep` feature 下使用。
 
-### Axvisor
-Axvisor 不直接实现自己的 `ax-sync`，而是通过 `ax-std` / `ax-api` 间接共享同一套同步原语栈。因此 `ax-sync` 在 Axvisor 中属于宿主侧统一基础设施，而不是 hypervisor 专用锁库。
+## 测试与修改约束
+
+当前回归覆盖：
+
+- 默认和 `multitask` 配置下，`Mutex == SpinMutex` 的类型契约，以及显式 `PiMutex`
+  API 是否存在。
+- 无竞争 acquisition/release 不进入 scheduler PI 图。
+- waiter donation 必须先于本地 intrusive publication，handoff grant 必须先于 wake。
+- donation 紧迫度排序、相同紧迫度 FIFO、传递式 donation、撤销、远端 owner
+  reschedule、Deadline donor 与 cycle fatal。
+- Loom waiter registration/unlock 交错。
+- scheduler PI register/cancel/handoff 的零分配契约。
+
+修改时必须保持：
+
+1. `Mutex` 的非睡眠语义不随 feature 改变。
+2. 无竞争 `PiMutex` 不注册 scheduler PI edge。
+3. scheduler donation 先于 waiter 指针发布；handoff grant 先于 wake。
+4. 不在 PI 元数据锁内调用调度器、阻塞或 wake。
+5. scheduler PI 操作保持零分配，等待状态继续由线程对象预分配。
+6. `PiMutex` 保持非重入且 guard 不可发送。
+
+StarryOS、文件系统和其他历史消费者若确实依赖睡眠互斥，应逐点显式迁移到
+`PiMutex`，并同时审计临界区中的 I/O、fault、分配和回调；不能再把兼容 `Mutex`
+解释为睡眠锁。

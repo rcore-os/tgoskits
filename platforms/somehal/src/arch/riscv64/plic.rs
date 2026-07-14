@@ -86,8 +86,105 @@ pub fn irq_set_affinity(
     with_plic("setting PLIC IRQ affinity", |plic| {
         plic.set_source_affinity(source, affinity)
     })
-    .flatten()
-    .ok_or(crate::irq::IrqError::InvalidIrq)
+    .ok_or(crate::irq::IrqError::Controller)?
+}
+
+/// Immutable IRQ-side capability for one leased physical PLIC source.
+///
+/// The control plane validates and enables the source before constructing this
+/// value. Its data-plane methods touch only the source-owned priority register:
+/// they do not perform a domain lookup, acquire a driver lock, or log.
+pub struct RiscvPlicIrqEndpoint {
+    handler: PlicIrqHandler,
+    source: NonZeroU32,
+    restore_priority: u32,
+}
+
+impl RiscvPlicIrqEndpoint {
+    /// Returns the leased physical PLIC source ID.
+    pub const fn source(&self) -> u32 {
+        self.source.get()
+    }
+
+    /// Masks the source through its independent priority register.
+    #[inline]
+    pub fn mask(&self) {
+        self.handler.set_priority(self.source, 0);
+        plic_fence_output_to_output();
+    }
+
+    /// Restores the spec-required first nonzero PLIC priority.
+    #[inline]
+    pub fn unmask(&self) {
+        // The endpoint, wake target, and ingress route are normal-memory
+        // publications. Order them before making the PLIC source observable.
+        plic_fence_memory_to_output();
+        self.handler
+            .set_priority(self.source, self.restore_priority);
+        // The caller clears its normal-memory `masked` generation after this
+        // returns. Ensure the MMIO restore reaches the PLIC first.
+        plic_fence_output_to_memory();
+    }
+}
+
+#[inline]
+fn plic_fence_memory_to_output() {
+    // SAFETY: `fence` changes only architectural ordering; it does not access
+    // memory or depend on register operands.
+    unsafe {
+        core::arch::asm!("fence rw, ow", options(nostack, preserves_flags));
+    }
+}
+
+#[inline]
+fn plic_fence_output_to_output() {
+    // SAFETY: `fence` changes only architectural ordering; it does not access
+    // memory or depend on register operands.
+    unsafe {
+        core::arch::asm!("fence ow, ow", options(nostack, preserves_flags));
+    }
+}
+
+#[inline]
+fn plic_fence_output_to_memory() {
+    // SAFETY: `fence` changes only architectural ordering; it does not access
+    // memory or depend on register operands.
+    unsafe {
+        core::arch::asm!("fence ow, rw", options(nostack, preserves_flags));
+    }
+}
+
+/// Leases one physical PLIC source for IRQ-side ownership transfer.
+///
+/// This is a control-plane operation. It resolves the driver, fixes affinity,
+/// enables the source's context bits while priority remains zero, records the
+/// first nonzero architectural priority, and then rejects subsequent generic
+/// affinity/enable changes for the leased source. The caller must publish the
+/// endpoint and its consumer before calling [`RiscvPlicIrqEndpoint::unmask`].
+pub fn lease_irq_endpoint(
+    hwirq: rdif_intc::HwIrq,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<RiscvPlicIrqEndpoint, crate::irq::IrqError> {
+    let mut endpoints = lease_irq_endpoints(core::slice::from_ref(&hwirq), affinity)?;
+    Ok(endpoints
+        .pop()
+        .expect("one validated PLIC source must produce one endpoint"))
+}
+
+/// Atomically leases a set of physical PLIC sources for one fixed owner.
+///
+/// The controller lock is held across validation and commit. Every source,
+/// duplicate, target context, and existing lease is validated before affinity,
+/// enable, or lease ownership is changed for any member. Live sources are not
+/// probed with a transient nonzero priority during validation.
+pub fn lease_irq_endpoints(
+    hwirqs: &[rdif_intc::HwIrq],
+    affinity: crate::irq::IrqAffinity,
+) -> Result<Vec<RiscvPlicIrqEndpoint>, crate::irq::IrqError> {
+    with_plic("leasing PLIC IRQ endpoint batch", |plic| {
+        plic.lease_irq_endpoints(hwirqs, affinity)
+    })
+    .ok_or(crate::irq::IrqError::Controller)?
 }
 
 enum Completion {
@@ -164,14 +261,86 @@ pub fn secondary_init_intc(cpu_idx: usize) {
     enable_local_interrupts();
 }
 
-pub fn send_ipi_to_cpu(cpu_id: usize) {
-    let Some(hart_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-        warn!("failed to resolve hart id for logical CPU {cpu_id}");
-        return;
+pub(super) fn send_ipi_to_cpu(cpu: irq_framework::CpuId) -> crate::irq::IpiSendStatus {
+    let Some(hart_id) = checked_ipi_hart_id(cpu) else {
+        return crate::irq::IpiSendStatus::Invalid;
     };
-    let res = sbi_rt::send_ipi(HartMask::from_mask_base(1, hart_id));
-    if !res.is_ok() {
-        warn!("send_ipi to hart {hart_id} failed: {res:?}");
+    send_ipi_to_hart(hart_id)
+}
+
+pub(super) fn checked_ipi_hart_id(cpu: irq_framework::CpuId) -> Option<usize> {
+    let hart_id = crate::cpu::runtime_cpu_target(cpu)?.as_usize();
+    // `usize::MAX` is SBI's special all-harts base and cannot represent one
+    // physical target in a single-bit HartMask.
+    (hart_id != HartMask::IGNORE_MASK).then_some(hart_id)
+}
+
+fn send_ipi_to_hart(hart_id: usize) -> crate::irq::IpiSendStatus {
+    publish_before_sbi_ipi();
+    let response = sbi_rt::send_ipi(HartMask::from_mask_base(1, hart_id));
+    ipi_status_from_sbi_error(response.error)
+}
+
+#[inline]
+fn publish_before_sbi_ipi() {
+    // Make normal-memory inbox publication globally observable before the SBI
+    // implementation asserts the remote software interrupt.
+    // SAFETY: `fence` changes ordering only and has no register operands.
+    unsafe { core::arch::asm!("fence rw, rw", options(nostack, preserves_flags)) }
+}
+
+const SBI_SUCCESS: usize = 0;
+const SBI_ERR_FAILED: usize = (-1isize) as usize;
+const SBI_ERR_TIMEOUT: usize = (-12isize) as usize;
+const SBI_ERR_IO: usize = (-13isize) as usize;
+
+const fn ipi_status_from_sbi_error(error: usize) -> crate::irq::IpiSendStatus {
+    match error {
+        SBI_SUCCESS => crate::irq::IpiSendStatus::Success,
+        // These failures may clear on a later bounded retry. Every validation,
+        // policy, state, unsupported, and custom error is permanent for this
+        // request and must converge to Invalid instead of spinning forever.
+        SBI_ERR_FAILED | SBI_ERR_TIMEOUT | SBI_ERR_IO => crate::irq::IpiSendStatus::Retry,
+        _ => crate::irq::IpiSendStatus::Invalid,
+    }
+}
+
+#[cfg(test)]
+mod ipi_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_transient_and_permanent_sbi_errors() {
+        assert_eq!(
+            ipi_status_from_sbi_error(SBI_SUCCESS),
+            crate::irq::IpiSendStatus::Success
+        );
+        assert_eq!(
+            ipi_status_from_sbi_error(SBI_ERR_FAILED),
+            crate::irq::IpiSendStatus::Retry
+        );
+        assert_eq!(
+            ipi_status_from_sbi_error(SBI_ERR_TIMEOUT),
+            crate::irq::IpiSendStatus::Retry
+        );
+        assert_eq!(
+            ipi_status_from_sbi_error(SBI_ERR_IO),
+            crate::irq::IpiSendStatus::Retry
+        );
+        for permanent in -2isize..=-11 {
+            assert_eq!(
+                ipi_status_from_sbi_error(permanent as usize),
+                crate::irq::IpiSendStatus::Invalid,
+            );
+        }
+        assert_eq!(
+            ipi_status_from_sbi_error((-14isize) as usize),
+            crate::irq::IpiSendStatus::Invalid
+        );
+        assert_eq!(
+            ipi_status_from_sbi_error(usize::MAX / 2),
+            crate::irq::IpiSendStatus::Invalid
+        );
     }
 }
 
@@ -220,6 +389,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         context_by_cpu: contexts,
         affinity_by_source: vec![crate::irq::IrqAffinity::Any; ndev.saturating_add(1)],
         enabled_by_source: vec![false; ndev.saturating_add(1)],
+        leased_by_source: vec![false; ndev.saturating_add(1)],
         sources: ndev,
     };
     enable_local_interrupts();
@@ -321,6 +491,7 @@ struct RiscvPlic {
     context_by_cpu: Vec<Option<usize>>,
     affinity_by_source: Vec<crate::irq::IrqAffinity>,
     enabled_by_source: Vec<bool>,
+    leased_by_source: Vec<bool>,
     sources: usize,
 }
 
@@ -425,13 +596,16 @@ impl RiscvPlic {
         &mut self,
         source: NonZeroU32,
         affinity: crate::irq::IrqAffinity,
-    ) -> Option<()> {
+    ) -> Result<(), crate::irq::IrqError> {
         if source.get() as usize > self.sources {
             warn!(
                 "skip setting affinity for out-of-range PLIC source {}",
                 source.get()
             );
-            return None;
+            return Err(crate::irq::IrqError::InvalidIrq);
+        }
+        if self.leased_by_source[source.get() as usize] {
+            return Err(crate::irq::IrqError::Busy);
         }
         if let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity
             && self
@@ -441,7 +615,7 @@ impl RiscvPlic {
                 .is_none()
         {
             warn!("PLIC supervisor context for affinity CPU {cpu_id} is not found");
-            return None;
+            return Err(crate::irq::IrqError::InvalidIrq);
         }
 
         let was_enabled = self.enabled_by_source[source.get() as usize];
@@ -452,7 +626,74 @@ impl RiscvPlic {
                 self.inner.enable(source, context);
             }
         }
-        Some(())
+        Ok(())
+    }
+
+    fn lease_irq_endpoints(
+        &mut self,
+        hwirqs: &[rdif_intc::HwIrq],
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<Vec<RiscvPlicIrqEndpoint>, crate::irq::IrqError> {
+        if let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity
+            && self
+                .context_by_cpu
+                .get(cpu_id)
+                .and_then(|context| *context)
+                .is_none()
+        {
+            return Err(crate::irq::IrqError::InvalidIrq);
+        }
+
+        let handler = self.inner.irq_handler();
+        let mut prepared = Vec::with_capacity(hwirqs.len());
+        let mut endpoints = Vec::with_capacity(hwirqs.len());
+        for &hwirq in hwirqs {
+            let source = NonZeroU32::new(self.source_from_hwirq(hwirq)? as u32)
+                .ok_or(crate::irq::IrqError::InvalidIrq)?;
+            if self.leased_by_source[source.get() as usize] || prepared.contains(&source) {
+                return Err(crate::irq::IrqError::Busy);
+            }
+            prepared.push(source);
+        }
+
+        // PLIC priority zero is architecturally reserved for "never interrupt"
+        // and every implemented source supports the first nonzero priority.
+        // Do not probe a live host source by transiently writing a nonzero
+        // priority before its context enables are disabled.
+        for &source in &prepared {
+            handler.set_priority(source, 0);
+        }
+        plic_fence_output_to_output();
+
+        // All remaining operations are infallible controller writes under the
+        // same lock. Keep priority zero throughout the commit, publish every
+        // immutable endpoint, and let the caller activate only after its
+        // software route and wake target are visible.
+        for source in prepared {
+            self.disable_source_contexts(source);
+            self.affinity_by_source[source.get() as usize] = affinity;
+            self.enabled_by_source[source.get() as usize] = true;
+            match affinity {
+                crate::irq::IrqAffinity::Any => {
+                    for context in self.context_by_cpu.iter().filter_map(|context| *context) {
+                        self.inner.enable(source, context);
+                    }
+                }
+                crate::irq::IrqAffinity::Fixed { cpu_id } => {
+                    let context = self.context_by_cpu[cpu_id]
+                        .expect("fixed PLIC affinity was validated before commit");
+                    self.inner.enable(source, context);
+                }
+            }
+            self.leased_by_source[source.get() as usize] = true;
+            endpoints.push(RiscvPlicIrqEndpoint {
+                handler,
+                source,
+                restore_priority: DEFAULT_PRIORITY,
+            });
+        }
+        plic_fence_output_to_output();
+        Ok(endpoints)
     }
 
     fn contexts_for_source(&self, source: NonZeroU32) -> Vec<usize> {
@@ -517,6 +758,9 @@ impl Interface for RiscvPlic {
     ) -> Result<(), rdif_intc::IrqError> {
         let source = NonZeroU32::new(self.source_from_hwirq(hwirq)? as u32)
             .ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        if self.leased_by_source[source.get() as usize] {
+            return Err(rdif_intc::IrqError::Busy);
+        }
         if enabled {
             self.enable_source(source)
         } else {

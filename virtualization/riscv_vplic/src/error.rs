@@ -7,6 +7,32 @@ use axdevice_base::{AccessWidth, DeviceError};
 /// Result type returned by virtual PLIC operations.
 pub type VplicResult<T = ()> = Result<T, VplicError>;
 
+/// Failure phase for a bounded physical-forwarding batch.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ForwardedBatchError {
+    /// Validation rejected the batch before any vPLIC state changed.
+    #[error("vPLIC rejected forwarded batch before commit: {0}")]
+    Rejected(#[source] VplicError),
+    /// Forwarded/pending state committed, but line refresh failed afterward.
+    #[error("vPLIC forwarded batch committed but line refresh failed: {0}")]
+    Committed(#[source] VplicError),
+}
+
+impl ForwardedBatchError {
+    /// Returns the underlying vPLIC error.
+    pub fn into_cause(self) -> VplicError {
+        match self {
+            Self::Rejected(error) | Self::Committed(error) => error,
+        }
+    }
+}
+
+impl From<VplicError> for ForwardedBatchError {
+    fn from(error: VplicError) -> Self {
+        Self::Rejected(error)
+    }
+}
+
 /// Errors reported by the virtual platform-level interrupt controller.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum VplicError {
@@ -42,6 +68,18 @@ pub enum VplicError {
         /// The unassigned source identifier.
         source_id: usize,
     },
+    /// A physical source already has completion ownership in flight.
+    #[error("vPLIC forwarded source ID {source_id} is already in flight")]
+    ForwardedSourceBusy {
+        /// The source whose previous physical claim has not completed.
+        source_id: usize,
+    },
+    /// A virtual pending or active event already owns the same source ID.
+    #[error("vPLIC forwarded source ID {source_id} collides with virtual pending/active state")]
+    ForwardedSourceCollision {
+        /// The source whose virtual state must drain before physical transfer.
+        source_id: usize,
+    },
     /// A context identifier is outside the configured range.
     #[error("vPLIC context ID {context} is outside the configured range 0..{contexts}")]
     InvalidContext {
@@ -49,6 +87,14 @@ pub enum VplicError {
         context: usize,
         /// The number of configured contexts.
         contexts: usize,
+    },
+    /// An enable-register word is outside the PLIC source bitmap.
+    #[error("vPLIC enable word {word} is outside the valid range 0..{words}")]
+    InvalidEnableWord {
+        /// The rejected word index.
+        word: usize,
+        /// The number of enable words per context.
+        words: usize,
     },
     /// A register access uses an unsupported width.
     #[error("invalid vPLIC access width: expected {expected:?}, got {actual:?}")]
@@ -81,7 +127,10 @@ impl From<VplicError> for DeviceError {
         match error {
             VplicError::InvalidSource { .. }
             | VplicError::SourceNotAssigned { .. }
+            | VplicError::ForwardedSourceBusy { .. }
+            | VplicError::ForwardedSourceCollision { .. }
             | VplicError::InvalidContext { .. }
+            | VplicError::InvalidEnableWord { .. }
             | VplicError::InvalidAccessWidth { .. }
             | VplicError::MissingRegionSize
             | VplicError::AddressOverflow

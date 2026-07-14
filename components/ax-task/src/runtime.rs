@@ -18,7 +18,21 @@ macro_rules! opaque_handle {
             pub const NONE: Self = Self(0);
 
             /// Creates a handle from the runtime-owned opaque value.
-            pub const fn from_raw(raw: usize) -> Self {
+            ///
+            /// # Safety
+            ///
+            /// A non-zero `raw` value must identify a live runtime-owned object
+            /// or resource of this exact handle type. The caller must uphold all
+            /// provenance, lifetime, pinning, aliasing, and ownership invariants
+            /// required by operations that consume or dereference the handle.
+            /// Use [`Self::NONE`] for the absent-handle sentinel.
+            #[doc = concat!(
+                "\n```compile_fail\n",
+                "use ax_task::runtime::", stringify!($name), ";\n",
+                "let _handle = ", stringify!($name), "::from_raw(1);\n",
+                "```"
+            )]
+            pub const unsafe fn from_raw(raw: usize) -> Self {
                 Self(raw)
             }
 
@@ -40,8 +54,24 @@ opaque_handle!(
     TaskSystemHandle
 );
 opaque_handle!(
-    /// Opaque pointer-sized handle to one pinned CPU-local scheduler object.
-    CpuLocalHandle
+    /// Opaque address of the current CPU's pinned owner-only scheduler object.
+    ///
+    /// Consumers must claim the corresponding [`crate::CpuRemote`] owner gate
+    /// before reconstructing any reference from this address.
+    CurrentCpuLocalHandle
+);
+opaque_handle!(
+    /// Opaque pointer-sized handle to one Arc-backed remote CPU endpoint.
+    ///
+    /// Remote and owner-only CPU handles are intentionally not interchangeable:
+    ///
+    /// ```compile_fail
+    /// use ax_task::runtime::{CpuRemoteHandle, CurrentCpuLocalHandle};
+    ///
+    /// fn borrow_owner(_handle: CurrentCpuLocalHandle) {}
+    /// borrow_owner(CpuRemoteHandle::NONE);
+    /// ```
+    CpuRemoteHandle
 );
 opaque_handle!(
     /// Opaque handle to an architecture execution context.
@@ -101,6 +131,56 @@ pub enum RuntimeStatus {
     Busy            = 6,
     /// A platform operation failed.
     Platform        = 7,
+    /// The caller holds an IRQ/preemption guard or is otherwise non-sleepable.
+    UnsafeContext   = 8,
+}
+
+/// Scheduler entry whose context constraints the runtime must validate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RuntimeScheduleOrigin {
+    /// A thread is about to publish or commit a blocking state.
+    Block   = 0,
+    /// A thread voluntarily yields its remaining service.
+    Yield   = 1,
+    /// A thread permanently exits.
+    Exit    = 2,
+    /// A sticky preemption request is serviced from task context.
+    Preempt = 3,
+}
+
+/// Typed source of one scheduler-frame baton.
+///
+/// The runtime uses this value to validate and atomically transform its
+/// CPU-local preemption state. In particular, preemption-guard exits retain
+/// their final lock depth until the scheduler frame owns the baton, closing the
+/// interrupt window between enabling preemption and entering the scheduler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RuntimeSchedulerEntry {
+    /// Ordinary task context with IRQs enabled and no preemption guard.
+    Task        = 0,
+    /// Final task-context preemption guard exit with IRQs disabled.
+    ///
+    /// The runtime retains the final preemption depth while it disables raw
+    /// IRQs, then atomically converts that depth into the scheduler baton.
+    PreemptExit = 1,
+    /// Final IRQ-return preemption guard exit with IRQs still disabled.
+    IrqReturn   = 2,
+}
+
+/// Raw IRQ state expected by the suspended scheduler continuation.
+///
+/// This is continuation-local rather than CPU-local: a context resumed by an
+/// IRQ-return schedule may itself have been suspended in an ordinary task
+/// schedule, and vice versa.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RuntimeSchedulerReturn {
+    /// Resume ordinary task context with local IRQs enabled.
+    Task      = 0,
+    /// Resume the architecture trap epilogue with local IRQs disabled.
+    IrqReturn = 1,
 }
 
 /// Result of an operation that creates one opaque runtime resource.
@@ -216,13 +296,43 @@ pub struct SchedSwitchRecord {
 #[def_extern_trait(mod_path = "runtime", abi = "rust")]
 pub trait TaskRuntime {
     /// Returns the runtime-owned task-system handle, or `NONE` before setup.
-    fn task_system_handle() -> TaskSystemHandle;
+    ///
+    /// # Safety
+    ///
+    /// A non-`NONE` result must identify a pinned [`crate::TaskSystem`] that
+    /// remains live until shutdown. The linked runtime provider is the trust
+    /// root for this raw handle; callers cannot validate it dynamically.
+    unsafe fn task_system_handle() -> TaskSystemHandle;
 
     /// Returns the pinned CPU-local object for the calling CPU.
-    fn current_cpu_local_handle() -> CpuLocalHandle;
+    ///
+    /// This is a CPU-owned capability, not a migration-stable task handle. The
+    /// caller must retain an IRQ guard or scheduler-frame baton from before this
+    /// query until every dereference of the returned object has completed.
+    ///
+    /// # Safety
+    ///
+    /// A non-`NONE` result must identify the pinned [`crate::CpuLocal`] owned by
+    /// the calling CPU and kept live until shutdown. Its address must originate
+    /// from the allocation's mutable owner capability, not from a shared
+    /// `CpuLocal` borrow. Before reconstructing a reference, the caller must
+    /// claim the matching [`crate::CpuRemote`] gate and retain both that claim
+    /// and its CPU pin for the complete derived-borrow lifetime. Runtime-side
+    /// direct owner accesses must use the same gate as the ax-task facade.
+    unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle;
 
-    /// Returns the pinned CPU-local object for `cpu`, or `NONE` while offline.
-    fn cpu_local_handle(cpu: RuntimeCpuId) -> CpuLocalHandle;
+    /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
+    ///
+    /// Unlike [`Self::current_cpu_local_handle`], this handle must never point
+    /// at [`crate::CpuLocal`]. Remote producers may retain and dereference the
+    /// endpoint without aliasing the owner CPU's mutable runqueue borrow.
+    ///
+    /// # Safety
+    ///
+    /// A non-`NONE` result must identify the Arc-backed [`crate::CpuRemote`]
+    /// endpoint for `cpu` and remain live until shutdown. It must not identify
+    /// a [`crate::CpuLocal`] or any other allocation.
+    unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle;
 
     /// Returns the calling CPU's logical identifier.
     fn current_cpu_id() -> RuntimeCpuId;
@@ -241,28 +351,44 @@ pub trait TaskRuntime {
     /// must be exited exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn irq_guard_exit(token: IrqGuardToken);
 
-    /// Consumes the scheduler IRQ-guard baton on a freshly entered context.
+    /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///
-    /// A resumed context consumes the baton by dropping the guard suspended on
-    /// its own stack. A fresh context has no guard object, so its trampoline
-    /// calls this hook exactly once after completing scheduler switch tail.
+    /// The baton is not an [`IrqGuardToken`] and never belongs to a task. A
+    /// resumed scheduler frame consumes the current CPU's baton after the raw
+    /// switch returns; a fresh trampoline calls this hook exactly once after
+    /// completing the switch tail.
     fn finish_initial_context_switch();
 
-    /// Prevents the outgoing thread from nesting another scheduler frame.
+    /// Enters the current CPU's exact scheduler switch phase.
     ///
-    /// Unlike the IRQ-guard baton, this nesting belongs to the execution
-    /// context. The runtime must save it with the outgoing context and restore
-    /// the incoming context's own value in `switch_context`.
-    fn scheduler_frame_guard_enter();
+    /// The runtime validates `entry`, disables hardware IRQs, and atomically
+    /// creates one CPU-local baton. For [`RuntimeSchedulerEntry::PreemptExit`]
+    /// and [`RuntimeSchedulerEntry::IrqReturn`], it must transform the exact
+    /// final lock-preemption depth into the scheduler depth without exposing a
+    /// fully preemptible intermediate state. It must not save this phase in an
+    /// execution context or migrate ordinary IRQ tokens with tasks.
+    fn scheduler_frame_guard_enter(
+        origin: RuntimeScheduleOrigin,
+        entry: RuntimeSchedulerEntry,
+    ) -> RuntimeStatus;
 
-    /// Leaves the context-local scheduler-frame guard after a switch returns.
+    /// Consumes the current CPU's scheduler switch baton after switch tail.
     ///
-    /// This hook must only update nesting. It must not schedule recursively;
-    /// the caller still has context-switch tail work and an IRQ guard to unwind.
-    fn scheduler_frame_guard_exit();
+    /// This hook restores task-context hardware IRQ state and must not schedule
+    /// recursively. It returns `true` only when deferred callbacks may run with
+    /// IRQs enabled and every ordinary guard clear.
+    fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool;
 
     /// Returns whether execution is currently inside a hard interrupt.
     fn in_hard_irq() -> bool;
+
+    /// Validates an entry before it publishes task state or creates a baton.
+    ///
+    /// This is the runtime equivalent of Linux `might_sleep()` plus the final
+    /// scheduler-entry context check. It must return [`RuntimeStatus::UnsafeContext`]
+    /// while any ordinary IRQ/preemption guard is live or hardware execution is
+    /// still in hard IRQ context.
+    fn validate_schedule_context(origin: RuntimeScheduleOrigin) -> RuntimeStatus;
 
     /// Returns monotonic time in nanoseconds.
     fn monotonic_ns() -> u64;
@@ -280,21 +406,33 @@ pub trait TaskRuntime {
     fn wait_for_interrupt();
 
     /// Allocates a guarded stack satisfying `request`.
+    ///
+    /// On success, `handle` must be non-zero and uniquely identify a live stack
+    /// accepted by [`Self::deallocate_stack`] until ownership is transferred.
     fn allocate_stack(request: StackRequest) -> RuntimeHandleResult;
 
     /// Releases a stack after the reaper proves no context can reference it.
     fn deallocate_stack(stack: StackHandle) -> RuntimeStatus;
 
     /// Allocates a TLS area satisfying `request`.
+    ///
+    /// On success, `handle` must be non-zero and uniquely identify a live TLS
+    /// allocation accepted by [`Self::deallocate_tls`] until ownership moves.
     fn allocate_tls(request: TlsRequest) -> RuntimeHandleResult;
 
     /// Releases a TLS area after its execution context has been destroyed.
     fn deallocate_tls(tls: TlsHandle) -> RuntimeStatus;
 
     /// Creates a kernel execution context.
+    ///
+    /// On success, `handle` must be non-zero and uniquely identify a live
+    /// context accepted by [`Self::destroy_context`].
     fn create_kernel_context(request: KernelContextRequest) -> RuntimeHandleResult;
 
     /// Creates a user-capable execution context with a mandatory address space.
+    ///
+    /// On success, `handle` must follow the same ownership contract as
+    /// [`Self::create_kernel_context`].
     fn create_user_context(request: UserContextRequest) -> RuntimeHandleResult;
 
     /// Destroys an execution context that cannot be scheduled again.

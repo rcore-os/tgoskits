@@ -22,35 +22,195 @@ use axvm_types::VMInterruptMode;
 
 use crate::{AxVmResult, ax_err};
 
-/// Host platform hook for registering the RISC-V physical IRQ injector.
+/// Opaque claim for one physical PLIC source completed under a host IRQ-off
+/// capture and kept masked until its guest completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RiscvPhysicalIrqClaim {
+    source: u32,
+    generation: u64,
+}
+
+impl RiscvPhysicalIrqClaim {
+    const MAX_GENERATION: u64 = u64::MAX >> 2;
+
+    /// Creates a claim from the embedding platform's canonical generation.
+    pub const fn try_new(source: u32, generation: u64) -> Option<Self> {
+        if source == 0 || generation == 0 || generation > Self::MAX_GENERATION {
+            None
+        } else {
+            Some(Self { source, generation })
+        }
+    }
+
+    /// Returns the PLIC source ID delivered to the software vPLIC.
+    pub const fn source(self) -> u32 {
+        self.source
+    }
+
+    /// Returns the platform generation that rejects stale guest completions.
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Opaque callback capability whose construction acknowledges the hard-IRQ
+/// execution contract.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct RiscvHardIrqSink(unsafe extern "C" fn(u32, u64) -> bool);
+
+impl RiscvHardIrqSink {
+    /// Wraps a shutdown-stable hard-IRQ callback.
+    ///
+    /// # Safety
+    ///
+    /// The callback and all referenced state must remain valid until shutdown.
+    /// It must not allocate, free, block, acquire a lock, invoke guest code, or
+    /// unwind. It may only publish preallocated atomic state and perform a
+    /// hard-IRQ-safe direct thread wake.
+    pub const unsafe fn new(callback: unsafe extern "C" fn(u32, u64) -> bool) -> Self {
+        Self(callback)
+    }
+
+    /// Returns the callback after its safety contract was acknowledged.
+    pub const fn callback(self) -> unsafe extern "C" fn(u32, u64) -> bool {
+        self.0
+    }
+}
+
+/// Result category for VM-wide physical PLIC route installation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RiscvPlatformIrqRouteStatus {
+    /// Every source is leased and published while still masked.
+    Prepared          = 0,
+    /// Every source was activated after route publication.
+    Activated         = 1,
+    /// A source was invalid or duplicated.
+    InvalidSource     = 2,
+    /// A different host CPU already owns the monitor-wide route.
+    ConflictingTarget = 3,
+    /// The physical PLIC domain is unavailable.
+    DomainUnavailable = 4,
+    /// The platform failed to lease one physical endpoint.
+    LeaseFailed       = 5,
+    /// Immutable endpoint ownership conflicts with an existing route.
+    EndpointConflict  = 6,
+    /// The same canonical route is in another transaction phase.
+    TransactionBusy   = 7,
+    /// A different canonical VM/CPU/source owner is reserved or active.
+    RouteConflict     = 8,
+}
+
+/// Typed route transaction result returned across the platform interface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RiscvPlatformIrqRouteResult {
+    /// Route result category.
+    pub status: RiscvPlatformIrqRouteStatus,
+    /// First failing PLIC source, or zero for a route-wide failure.
+    pub source: u32,
+}
+
+impl RiscvPlatformIrqRouteResult {
+    /// Returns whether all sources are published while still masked.
+    pub const fn is_prepared(self) -> bool {
+        matches!(self.status, RiscvPlatformIrqRouteStatus::Prepared)
+    }
+
+    /// Returns whether every requested source was activated.
+    pub const fn is_activated(self) -> bool {
+        matches!(self.status, RiscvPlatformIrqRouteStatus::Activated)
+    }
+}
+
+/// Host platform capability for RISC-V physical IRQ ownership transfer.
 #[ax_crate_interface::def_interface]
-pub trait RiscvPlatformIrqInjectorIf {
-    /// Registers a callback that forwards a physical IRQ line into the current guest.
-    fn register_virtual_irq_injector(injector: fn(usize) -> bool);
+pub trait RiscvPlatformIrqIf {
+    /// Installs the fixed hard-IRQ publication sink used while the owner vCPU
+    /// is not currently bound to a host CPU.
+    fn register_sink(sink: RiscvHardIrqSink) -> bool;
+
+    /// Claims, masks, and completes the current physical interrupt while host
+    /// IRQ delivery is still disabled. Host-owned sources are handled inside
+    /// the platform and return `None`.
+    fn claim_and_mask(vector: usize) -> Option<RiscvPhysicalIrqClaim>;
+
+    /// Unmasks a source after the guest completed its software PLIC claim.
+    /// The caller must be pinned to `current_cpu` with local IRQ delivery
+    /// disabled; the platform rejects a CPU different from the leased target.
+    fn unmask(claim: RiscvPhysicalIrqClaim, current_cpu: usize) -> bool;
 
     /// Routes physical PLIC IRQs that may be forwarded to a guest toward the vCPU CPU.
-    fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]);
+    fn prepare_virtual_irq_targets(
+        cpu_id: usize,
+        irq_sources: &[u32],
+        cpu_pin: &ax_cpu_local::CpuPin,
+    ) -> RiscvPlatformIrqRouteResult;
+
+    /// Activates a previously prepared batch after the owner route and wake
+    /// target are globally visible.
+    fn activate_virtual_irq_targets(
+        cpu_id: usize,
+        irq_sources: &[u32],
+        cpu_pin: &ax_cpu_local::CpuPin,
+    ) -> RiscvPlatformIrqRouteResult;
 }
 
-#[expect(
-    dead_code,
-    reason = "the RISC-V architecture backend is not compiled for this target"
-)]
-pub(crate) fn register_riscv_virtual_irq_injector(injector: fn(usize) -> bool) {
-    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(
-        injector
-    ));
-}
+/// RISC-V host-IRQ routing capability supplied by the embedding monitor.
+///
+/// Keeping the crate-interface invocation behind this object prevents
+/// architecture backends from depending on macro-generated ABI symbols.
+pub struct RiscvPlatformIrq;
 
-#[expect(
-    dead_code,
-    reason = "the RISC-V architecture backend is not compiled for this target"
-)]
-pub(crate) fn set_riscv_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
-    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::set_virtual_irq_targets(
-        cpu_id,
-        irq_sources
-    ));
+impl RiscvPlatformIrq {
+    /// Installs the monitor-wide hard-IRQ publication sink.
+    /// # Safety
+    ///
+    /// `sink` must remain valid until shutdown and obey the allocation-free,
+    /// lock-free, non-blocking, non-unwinding hard-IRQ contract.
+    pub unsafe fn register_sink(sink: unsafe extern "C" fn(u32, u64) -> bool) -> bool {
+        // SAFETY: the caller owns the callback contract stated above.
+        let sink = unsafe { RiscvHardIrqSink::new(sink) };
+        ax_crate_interface::call_interface!(RiscvPlatformIrqIf::register_sink(sink))
+    }
+
+    /// Captures the current guest-owned PLIC source before host IRQ restore.
+    pub fn claim_and_mask(vector: usize) -> Option<RiscvPhysicalIrqClaim> {
+        ax_crate_interface::call_interface!(RiscvPlatformIrqIf::claim_and_mask(vector))
+    }
+
+    /// Releases a masked physical source after guest completion.
+    pub fn unmask(claim: RiscvPhysicalIrqClaim, current_cpu: usize) -> bool {
+        ax_crate_interface::call_interface!(RiscvPlatformIrqIf::unmask(claim, current_cpu))
+    }
+
+    /// Routes guest-owned physical PLIC sources toward one host CPU.
+    pub fn prepare_virtual_irq_targets(
+        cpu_id: usize,
+        irq_sources: &[u32],
+        cpu_pin: &ax_cpu_local::CpuPin,
+    ) -> RiscvPlatformIrqRouteResult {
+        ax_crate_interface::call_interface!(RiscvPlatformIrqIf::prepare_virtual_irq_targets(
+            cpu_id,
+            irq_sources,
+            cpu_pin
+        ))
+    }
+
+    /// Activates all prepared physical PLIC endpoints.
+    pub fn activate_virtual_irq_targets(
+        cpu_id: usize,
+        irq_sources: &[u32],
+        cpu_pin: &ax_cpu_local::CpuPin,
+    ) -> RiscvPlatformIrqRouteResult {
+        ax_crate_interface::call_interface!(RiscvPlatformIrqIf::activate_virtual_irq_targets(
+            cpu_id,
+            irq_sources,
+            cpu_pin
+        ))
+    }
 }
 
 /// Resolves device interrupt lines against one VM's interrupt backend.

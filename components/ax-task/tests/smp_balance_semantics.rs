@@ -115,7 +115,6 @@ fn load_summary_publishes_effective_current_and_top_pushable_keys() {
     );
     let before = cpu0.load_summary().epoch();
     let lock = PiLockId::new(99);
-    system.pi_mutex_acquired(lock, owner.id()).unwrap();
     let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
     system.enqueue(cpu0.as_mut(), pushable.id(), 1).unwrap();
@@ -273,12 +272,9 @@ fn remote_wake_sent_to_old_cpu_follows_latest_affinity() {
 
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu0.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu0.as_mut(),
     );
-    support::install_cpu(
-        1,
-        (cpu1.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
-    );
+    support::install_cpu(1, cpu1.as_mut());
     support::set_online_cpu_count(2);
 
     assert_eq!(blocked.wake_handle().wake(), WakeResult::Notified);

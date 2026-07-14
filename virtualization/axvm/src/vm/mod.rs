@@ -145,6 +145,9 @@ pub(crate) struct VmRuntimeHandle {
 }
 
 impl VmRuntimeHandle {
+    const STARTUP_FAILED: usize = 1usize << (usize::BITS - 1);
+    const VCPU_COUNT_MASK: usize = !Self::STARTUP_FAILED;
+
     pub(crate) fn new() -> Self {
         Self {
             wait_queue: crate::WaitQueue::new(),
@@ -159,30 +162,10 @@ impl VmRuntimeHandle {
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
 
-    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
-            .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        self.pending_interrupts
-            .lock()
-            .entry(vcpu_id)
-            .or_default()
-            .push(PendingInterrupt::Normal(vector));
-        Ok(task.cpu_id() as usize)
-    }
-
-    #[expect(
-        dead_code,
-        reason = "only the LoongArch IRQ backend queues physical interrupts"
-    )]
-    pub(crate) fn queue_external_interrupt(
+    pub(crate) fn queue_pending_interrupt(
         &self,
         vcpu_id: usize,
-        vector: usize,
-        physical_irq: usize,
+        interrupt: PendingInterrupt,
     ) -> AxVmResult<usize> {
         let task = self
             .vcpu_task_list
@@ -194,10 +177,7 @@ impl VmRuntimeHandle {
             .lock()
             .entry(vcpu_id)
             .or_default()
-            .push(PendingInterrupt::External {
-                vector,
-                physical_irq,
-            });
+            .push(interrupt);
         Ok(task.cpu_id() as usize)
     }
 
@@ -218,24 +198,66 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn notify_one(&self) {
-        self.wait_queue.notify_one(false);
+        self.wait_queue.notify_one();
     }
 
     pub(crate) fn notify_all(&self) {
-        self.wait_queue.notify_all(false);
+        self.wait_queue.notify_all();
     }
 
-    pub(crate) fn mark_vcpu_running(&self) {
+    pub(crate) fn try_mark_vcpu_running(&self) -> bool {
+        let mut observed = self.running_halting_vcpu_count.load(Ordering::Acquire);
+        loop {
+            if observed & Self::STARTUP_FAILED != 0 {
+                return false;
+            }
+            let count = observed & Self::VCPU_COUNT_MASK;
+            let Some(next_count) = count.checked_add(1) else {
+                return false;
+            };
+            if next_count > Self::VCPU_COUNT_MASK {
+                return false;
+            }
+            match self.running_halting_vcpu_count.compare_exchange_weak(
+                observed,
+                next_count,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(current) => observed = current,
+            }
+        }
+    }
+
+    /// Prevents later vCPUs from publishing Running after one first-run hook
+    /// failed. Returns `true` when no already-running vCPU remains to finish
+    /// the VM stop transition.
+    pub(crate) fn mark_vcpu_startup_failed(&self) -> bool {
         self.running_halting_vcpu_count
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_or(Self::STARTUP_FAILED, Ordering::AcqRel)
+            & Self::VCPU_COUNT_MASK
+            == 0
     }
 
     pub(crate) fn mark_vcpu_exiting(&self) -> bool {
-        self.running_halting_vcpu_count.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |count| count.checked_sub(1),
-        ) == Ok(1)
+        let mut observed = self.running_halting_vcpu_count.load(Ordering::Acquire);
+        loop {
+            let count = observed & Self::VCPU_COUNT_MASK;
+            if count == 0 {
+                return false;
+            }
+            let updated = (observed & Self::STARTUP_FAILED) | (count - 1);
+            match self.running_halting_vcpu_count.compare_exchange_weak(
+                observed,
+                updated,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return count == 1,
+                Err(current) => observed = current,
+            }
+        }
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {
@@ -824,7 +846,11 @@ impl AxVM {
         Ok(())
     }
 
-    pub(crate) fn handle_nested_page_fault(
+    /// Resolves a nested page fault against this VM's stage-2 address space.
+    ///
+    /// Architecture backends call this after excluding emulated MMIO faults;
+    /// external monitors may also use it for a custom exit path.
+    pub fn handle_nested_page_fault(
         &self,
         addr: GuestPhysAddr,
         access_flags: MappingFlags,
@@ -1366,5 +1392,25 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    #[test]
+    fn startup_failure_prevents_late_vcpu_running_publication() {
+        let runtime = VmRuntimeHandle::new();
+
+        assert!(runtime.mark_vcpu_startup_failed());
+        assert!(!runtime.try_mark_vcpu_running());
+        assert!(!runtime.mark_vcpu_exiting());
+    }
+
+    #[test]
+    fn startup_failure_waits_for_an_already_running_vcpu_to_exit() {
+        let runtime = VmRuntimeHandle::new();
+
+        assert!(runtime.try_mark_vcpu_running());
+        assert!(!runtime.mark_vcpu_startup_failed());
+        assert!(!runtime.try_mark_vcpu_running());
+        assert!(runtime.mark_vcpu_exiting());
+        assert!(!runtime.mark_vcpu_exiting());
     }
 }

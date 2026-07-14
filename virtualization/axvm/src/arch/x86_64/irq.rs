@@ -1,7 +1,12 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(not(test))]
 use ax_kspin::SpinRaw as Mutex;
-use axvm_types::VmArchVcpuOps;
+#[cfg(test)]
+use ax_kspin::{RawContext, RawSpinLock, SpinMutex};
+
+#[cfg(test)]
+type Mutex<T> = SpinMutex<RawSpinLock<RawContext>, T>;
 
 use crate::{
     InterruptTriggerMode,
@@ -107,16 +112,15 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     };
 
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .expect("PIT interrupt injection requires an accessible vCPU backend");
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
@@ -137,16 +141,15 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     };
 
     trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .expect("serial interrupt injection requires an accessible vCPU backend");
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -173,16 +176,15 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        irq.vector as _,
+        if irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .expect("IOAPIC reinjection requires an accessible vCPU backend");
 }
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
@@ -440,16 +442,15 @@ fn forward_passthrough_gsi(
         return false;
     };
 
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            guest_irq.vector as _,
-            if guest_irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        guest_irq.vector as _,
+        if guest_irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .expect("forwarded IOAPIC injection requires an accessible vCPU backend");
     true
 }
 
@@ -597,13 +598,11 @@ fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use ax_kspin::SpinRaw as Mutex;
-
     use super::{
         COM1_GSI, INVALID_RAW_IRQ, IOAPIC_GSI_COUNT, IOAPIC_HOST_IRQ_EXPLICIT,
         IOAPIC_HOST_IRQ_LEVEL_TRIGGERED, IOAPIC_HOST_IRQS, IOAPIC_IRQ_ACTIVATED,
         IOAPIC_IRQ_ACTIVATORS, IOAPIC_IRQ_MASKED, IOAPIC_IRQ_PENDING, IOAPIC_IRQ_PENDING_LEVEL,
-        PIT_TIMER_GSI, activate_ready_ioapic_forwarding_route_for_test,
+        Mutex, PIT_TIMER_GSI, activate_ready_ioapic_forwarding_route_for_test,
         clear_forwarded_ioapic_gsi_state, forwarded_ioapic_gsi_state_for_test, gsi_bit,
         guest_gsi_for_host_irq, host_irq_to_raw, ioapic_irq_hook_gsis,
         is_level_triggered_forwarded_host_gsi, mark_forwarded_ioapic_gsi_state_for_test,

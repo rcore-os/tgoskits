@@ -357,6 +357,7 @@ dependencies = [
  "ax-driver",
  "ax-hal",
  "ax-kspin",
+ "ax-percpu",
  "ax-std",
  "axbacktrace",
  "axfs-ng-vfs",
@@ -413,6 +414,7 @@ name = "arm_vcpu"
 version = "0.5.16"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-cpu-local",
  "log",
  "numeric-enum-macro",
  "spin",
@@ -585,6 +587,7 @@ name = "ax-cpu"
 version = "0.8.3"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "ax-cpu-local",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-page-table-entry",
@@ -599,6 +602,10 @@ dependencies = [
  "x86",
  "x86_64",
 ]
+
+[[package]]
+name = "ax-cpu-local"
+version = "0.1.0"
 
 [[package]]
 name = "ax-cpumask"
@@ -826,6 +833,7 @@ dependencies = [
 name = "ax-kspin"
 version = "0.3.15"
 dependencies = [
+ "ax-cpu-local",
  "lock_api",
  "spin",
  "trait-ffi",
@@ -958,18 +966,16 @@ dependencies = [
 name = "ax-percpu"
 version = "0.4.14"
 dependencies = [
- "ax-kspin",
+ "ax-cpu-local",
  "ax-percpu-macros",
- "cfg-if",
  "spin",
- "x86",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "ax-percpu-macros"
 version = "0.4.10"
 dependencies = [
- "cfg-if",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -1035,6 +1041,7 @@ version = "0.10.4"
 dependencies = [
  "aic8800",
  "ax-alloc",
+ "ax-cpu-local",
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
@@ -1326,6 +1333,7 @@ dependencies = [
  "ax-cpu",
  "ax-driver",
  "ax-errno 0.6.1",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
  "ax-plat",
@@ -1424,6 +1432,7 @@ name = "axvisor"
 version = "0.5.21"
 dependencies = [
  "anyhow",
+ "ax-cpu-local",
  "ax-crate-interface",
  "ax-driver",
  "ax-hal",
@@ -1452,6 +1461,7 @@ dependencies = [
  "arm-gic-driver",
  "arm_vcpu",
  "arm_vgic",
+ "ax-cpu-local",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
@@ -1463,7 +1473,6 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "ax-std",
- "ax-timer-list",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
@@ -1484,6 +1493,7 @@ dependencies = [
  "page-table-generic",
  "rdif-intc",
  "rdrive",
+ "riscv-h",
  "riscv_vcpu",
  "riscv_vplic",
  "spin",
@@ -1497,6 +1507,7 @@ dependencies = [
 name = "axvm-types"
 version = "0.7.0"
 dependencies = [
+ "ax-cpu-local",
  "ax-cpumask",
  "ax-memory-addr",
  "bitflags 2.13.0",
@@ -4807,6 +4818,7 @@ dependencies = [
 name = "loongarch_vcpu"
 version = "0.5.12"
 dependencies = [
+ "ax-cpu-local",
  "bitflags 2.13.0",
  "log",
  "spin",
@@ -6644,6 +6656,7 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 name = "riscv_vcpu"
 version = "0.5.18"
 dependencies = [
+ "ax-cpu-local",
  "bitflags 2.13.0",
  "log",
  "memoffset",
@@ -6661,14 +6674,11 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.20"
 dependencies = [
- "ax-crate-interface",
  "ax-kspin",
- "ax-memory-addr",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
  "log",
- "riscv-h",
  "thiserror 2.0.18",
 ]
 
@@ -7065,6 +7075,7 @@ dependencies = [
 name = "scope-local"
 version = "0.4.2"
 dependencies = [
+ "ax-kspin",
  "ax-percpu",
  "ctor 0.6.3",
  "spin",
@@ -9670,6 +9681,7 @@ dependencies = [
 name = "x86_vcpu"
 version = "0.5.19"
 dependencies = [
+ "ax-cpu-local",
  "bit_field",
  "bitflags 2.13.0",
  "cfg-if",

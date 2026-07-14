@@ -5,6 +5,9 @@ use core::{
     ptr::{NonNull, addr_of},
 };
 
+use ax_kspin::PreemptGuard;
+use ax_percpu::CpuPin;
+
 use crate::scope::{ActiveScope, Scope};
 
 #[doc(hidden)]
@@ -53,6 +56,74 @@ impl<T> LocalItem<T> {
         }
     }
 
+    /// Runs `operation` with the value selected by the current active scope.
+    ///
+    /// The current CPU stays pinned for the complete operation. The
+    /// higher-ranked closure prevents a reference into the selected scope from
+    /// escaping after the pin is released.
+    ///
+    /// This entry is intended for task context. Callers that already hold an
+    /// IRQ or preemption guard should use [`Self::with_pinned`] to avoid a
+    /// context transition on return. `operation` must not block, sleep, yield,
+    /// or retain another context-aware guard; clone an owned handle and perform
+    /// potentially blocking work after this method returns instead.
+    ///
+    /// ```compile_fail
+    /// use scope_local::scope_local;
+    ///
+    /// scope_local! {
+    ///     static VALUE: usize = 1;
+    /// }
+    ///
+    /// let escaped: &'static usize = VALUE.with(|value| value);
+    /// ```
+    pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
+        let guard = PreemptGuard::new();
+        self.with_pinned(guard.cpu_pin(), operation)
+    }
+
+    /// Runs `operation` with the current value under an existing CPU pin.
+    ///
+    /// It never enters or leaves preemption state itself. First access to an
+    /// item can allocate, so hard-IRQ callers must use
+    /// [`Self::try_with_pinned`] after task context has initialized the item.
+    /// The caller remains responsible for making `operation` valid in the
+    /// context represented by `pin`.
+    pub fn with_pinned<R>(
+        &self,
+        pin: &CpuPin,
+        operation: impl for<'access> FnOnce(&'access T) -> R,
+    ) -> R {
+        ActiveScope::with_item(self.item, pin, |item| operation(item.as_ref()))
+    }
+
+    /// Runs `operation` under an existing CPU pin without lazy initialization.
+    ///
+    /// Returns `None` when this item has not been initialized in the active
+    /// scope. Once initialized in task context, this path performs no
+    /// allocation, context transition, or user callback other than
+    /// `operation`, making it suitable for a caller holding an IRQ-derived pin
+    /// when that operation is itself hard-IRQ-safe.
+    pub fn try_with_pinned<R>(
+        &self,
+        pin: &CpuPin,
+        operation: impl for<'access> FnOnce(&'access T) -> R,
+    ) -> Option<R> {
+        ActiveScope::try_with_item(self.item, pin, |item| operation(item.as_ref()))
+    }
+
+    /// Clones the value selected by the current active scope.
+    ///
+    /// This is the preferred entry for `Arc`-backed lock owners: the CPU pin is
+    /// released before the returned owner is locked or used by potentially
+    /// blocking code.
+    pub fn clone_current(&self) -> T
+    where
+        T: Clone,
+    {
+        self.with(Clone::clone)
+    }
+
     /// Returns a reference to this item within the given scope.
     pub fn scope<'scope>(&self, scope: &'scope Scope) -> ScopeItem<'scope, T> {
         ScopeItem {
@@ -69,15 +140,6 @@ impl<T> LocalItem<T> {
             scope,
             _p: PhantomData,
         }
-    }
-}
-
-impl<T> Deref for LocalItem<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        ActiveScope::get(self.item).as_ref()
     }
 }
 

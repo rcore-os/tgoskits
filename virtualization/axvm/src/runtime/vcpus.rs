@@ -84,33 +84,13 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    let vm = crate::get_vm_by_id(vm_id)
-        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return Err(ax_err_type!(
-            BadState,
-            format!("VM[{vm_id}] is not accepting interrupts")
-        ));
-    }
-
-    let cpu_id = vm.with_runtime(|runtime| runtime.queue_interrupt(vcpu_id, vector))?;
-    vm.with_runtime(|runtime| {
-        runtime.notify_all();
-        Ok(())
-    })?;
-    crate::host::task::send_ipi(cpu_id);
-    Ok(())
+    queue_pending_interrupt(vm_id, vcpu_id, crate::vm::PendingInterrupt::Normal(vector))
 }
 
-#[expect(
-    dead_code,
-    reason = "only the LoongArch IRQ backend queues physical interrupts"
-)]
-pub(crate) fn queue_external_interrupt(
+pub(crate) fn queue_pending_interrupt(
     vm_id: usize,
     vcpu_id: usize,
-    vector: usize,
-    physical_irq: usize,
+    interrupt: crate::vm::PendingInterrupt,
 ) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
@@ -121,13 +101,12 @@ pub(crate) fn queue_external_interrupt(
         ));
     }
 
-    let cpu_id =
-        vm.with_runtime(|runtime| runtime.queue_external_interrupt(vcpu_id, vector, physical_irq))?;
+    let cpu_id = vm.with_runtime(|runtime| runtime.queue_pending_interrupt(vcpu_id, interrupt))?;
     vm.with_runtime(|runtime| {
         runtime.notify_all();
         Ok(())
     })?;
-    crate::host::task::send_ipi(cpu_id);
+    crate::host::task::send_ipi(cpu_id)?;
     Ok(())
 }
 
@@ -173,14 +152,6 @@ pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     }
 }
 
-/// Marks the VCpu of the specified VM as running.
-fn mark_vcpu_running(vm: &VMRef) {
-    let _ = vm.with_runtime(|runtime| {
-        runtime.mark_vcpu_running();
-        Ok(())
-    });
-}
-
 /// Boot target VCpu on the specified VM.
 /// This function is used to boot a secondary VCpu on a VM, setting the entry point and argument for the VCpu.
 ///
@@ -190,12 +161,8 @@ fn mark_vcpu_running(vm: &VMRef) {
 /// * `vcpu_id` - The ID of the VCpu to be booted.
 /// * `entry_point` - The entry point of the VCpu.
 /// * `arg` - The argument to be passed to the VCpu.
-#[expect(
-    dead_code,
-    reason = "only non-x86 guest firmware boots secondary vCPUs"
-)]
-pub(crate) fn vcpu_on(
-    vm: VMRef,
+pub fn vcpu_on(
+    vm: crate::AxVMRef,
     vcpu_id: usize,
     entry_point: GuestPhysAddr,
     arg: usize,
@@ -223,10 +190,6 @@ pub(crate) fn vcpu_on(
     Ok(())
 }
 
-#[expect(
-    dead_code,
-    reason = "only non-x86 guest firmware boots secondary vCPUs"
-)]
 pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
     crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
 }
@@ -307,12 +270,26 @@ fn vcpu_run() {
     wait_for(&runtime, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
-    CurrentArch::before_first_run(&vm, &vcpu);
-    mark_vcpu_running(&vm);
+    if let Err(error) = CurrentArch::before_first_run(&vm, &vcpu) {
+        error!("VM[{vm_id}] VCpu[{vcpu_id}] first-run preparation failed: {error:?}");
+        if let Err(stop_error) = vm.stop(StopReason::Fault(format!("{error:?}"))) {
+            warn!("VM[{vm_id}] shutdown failed after first-run preparation: {stop_error:?}");
+        }
+        let no_running_vcpu = runtime.mark_vcpu_startup_failed();
+        notify_all_vcpus(vm_id);
+        if no_running_vcpu {
+            complete_vm_stop(&vm, vm_id, vcpu_id);
+        }
+        return;
+    }
+    if !runtime.try_mark_vcpu_running() {
+        // A peer failed first-run preparation after this vCPU's hook
+        // succeeded. The shared startup-failed bit prevents this task from
+        // publishing Running after the VM entered Stopping.
+        return;
+    }
 
     loop {
-        CurrentArch::before_vcpu_run(&vm, &vcpu);
-
         match CurrentArch::run_vcpu(&vm, &vcpu) {
             Ok(VcpuRunAction {
                 stop_reason: Some(reason),
@@ -356,23 +333,30 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
 
-            if runtime.mark_vcpu_exiting() {
-                info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
-
-                if let Err(err) = vm.finish_stop() {
-                    warn!("VM[{vm_id}] finish stop failed: {err:?}");
-                }
-                info!("VM[{}] state changed to Stopped", vm_id);
-
-                CurrentArch::on_last_vcpu_exit(vm_id);
-
-                sub_running_vm_count(1);
-                crate::host::task::wait_queue_wake(&super::VMM, 1);
-            }
+            finish_stopping_vcpu(&vm, &runtime, vm_id, vcpu_id);
 
             break;
         }
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+fn finish_stopping_vcpu(vm: &VMRef, runtime: &VmRuntimeHandle, vm_id: usize, vcpu_id: usize) {
+    if !runtime.mark_vcpu_exiting() {
+        return;
+    }
+
+    complete_vm_stop(vm, vm_id, vcpu_id);
+}
+
+fn complete_vm_stop(vm: &VMRef, vm_id: usize, vcpu_id: usize) {
+    info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
+    if let Err(err) = vm.finish_stop() {
+        warn!("VM[{vm_id}] finish stop failed: {err:?}");
+    }
+    info!("VM[{vm_id}] state changed to Stopped");
+    CurrentArch::on_last_vcpu_exit(vm_id);
+    sub_running_vm_count(1);
+    crate::host::task::wait_queue_wake(&super::VMM, 1);
 }

@@ -21,7 +21,8 @@ sidebar_label: "锁使用问题跟踪"
 
 当时采用了保守策略：
 
-- `spin::Mutex` 按非睡眠自旋锁处理，优先迁移到 `ax-kspin` 家族，而不是机械迁移到 `ax_sync::Mutex`。
+- `spin::Mutex` 按非睡眠自旋锁处理，优先迁移到 `ax-kspin` 家族或语义明确的
+  `ax_sync::SpinMutex`，不要用兼容名称 `ax_sync::Mutex` 隐藏其非睡眠语义。
 - `SpinNoPreempt` 存在同 CPU IRQ 重入风险时，先改成 `SpinNoIrq`。
 - 对早期启动、rootfs 挂载、pseudofs 初始化等当前还不完全 sleepable 的路径，先保留非阻塞锁，避免 `might_sleep()` 在启动阶段直接 panic。
 
@@ -34,7 +35,9 @@ sidebar_label: "锁使用问题跟踪"
 1. `spin::Mutex` 的名字不能按 sleepable mutex 理解。它是忙等互斥锁，迁移时应先确认临界区是否真正允许睡眠。
 2. `SpinNoPreempt` 只关闭抢占，不关闭本地 IRQ。若锁可能在 IRQ handler、IRQ waker 或 IRQ-enabled 任务上下文之间共享，应优先怀疑同 CPU IRQ 重入死锁。
 3. `SpinNoIrq` 只解决 IRQ 重入风险。它仍然让代码处在原子上下文，不能包住会睡眠、重调度、fault user memory、执行 block I/O 或调用未知后端回调的逻辑。
-4. `ax_sync::Mutex` 适合需要 sleepable 互斥的路径，但不能在早期启动、IRQ-disabled、preempt-disabled 或其他原子上下文中随意使用。
+4. `ax_sync::SpinMutex` 和兼容 `ax_sync::Mutex` 固定为非睡眠锁；需要 sleepable
+   互斥时必须显式选择 feature-gated `ax_sync::PiMutex`，且仍不能在早期启动、
+   IRQ-disabled、preempt-disabled 或其他原子上下文中使用。
 5. 改锁类型不是最终目标。更好的修复通常是缩小临界区、移出后端回调、移出用户内存访问、拆分粗粒度文件系统锁，或把初始化工作移动到正常任务上下文。
 6. lockdep subclass 只应用于同一抽象下的合法嵌套，不应掩盖真实 ABBA 顺序问题。
 7. 近期不以新增或引入 RwLock 作为修复方向。已有 `spin::RwLock` 先作为 lockdep 盲区记录；如果读写分离不是必要语义，可以评估 mutex 化，否则先保持现状并禁止扩大使用面。
@@ -48,7 +51,7 @@ sidebar_label: "锁使用问题跟踪"
 | `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` | lwext4 文件系统对象使用 `SpinNoIrq`。 | 多个 VFS 操作持锁进入 `lwext4_rust`，`flush()` 也直接在锁内调用后端 flush。 | 与 rsext4 一起复查 ext4 系列锁策略，避免长期在原子上下文包住文件系统实现。 |
 | `components/axfs-ng-vfs/src/node/dir.rs` | dentry cache 使用 `SpinNoIrq`，当前已缩小锁范围。 | 旧问题是 cache guard 下调用 filesystem `lookup`、`create`、`unlink`、`open_file` 等后端操作。当前已调整为 VFS cache 锁内只访问 cache map，后端操作在锁外执行。 | 保持当前边界。新增 dentry cache 路径时禁止在 cache guard 内调用后端 FS、socket、设备或用户态相关回调。 |
 | `components/axfs-ng-vfs/src/mount.rs` | mountpoint location / children / propagation / peer 关系使用 `SpinNoIrq`，已缩小 bind mount 目标 dentry 锁范围。 | 旧问题是 `bind_mount()` 在目标 mountpoint guard 下构造 bind mount、复制递归子 mount 并更新传播组。当前目标 dentry guard 只检查和安装 mountpoint slot；递归复制、传播组维护在该 guard 外执行。 | 保持 mountpoint slot 锁只保护 slot 本身。后续新增 mount tree 逻辑时，不要在 dentry mountpoint guard 内做递归复制、传播组更新、后端 FS 调用或可能扩大的跨 mount 操作。 |
-| `os/StarryOS/kernel/src/pseudofs/tmp.rs` | tmpfs root、目录 entries、metadata 使用 `SpinNoIrq`，length / symlink 使用 `ax_sync::Mutex`；`read_dir()` 已把 sink callback 移到 entries 锁外。 | tmpfs directory map 仍保留在自旋锁下，以兼容 inode release 和早期启动约束；当前 `read_dir()` 锁内只快照目录项，不再持 entries guard 调用外部 sink 或读取 inode metadata。 | 继续保持 entries 锁内不做回调、不访问用户内存、不进入 VFS 后端。后续再评估 create/link/rename 的 HashMap 分配和跨目录锁顺序，暂不机械改成 sleepable mutex。 |
+| `os/StarryOS/kernel/src/pseudofs/tmp.rs` | tmpfs root、目录 entries、metadata 使用 `SpinNoIrq`，length / symlink 使用兼容 `ax_sync::Mutex`（同样是 `SpinNoIrq`）；`read_dir()` 已把 sink callback 移到 entries 锁外。 | tmpfs 状态当前全部处于非睡眠锁保护下，以兼容 inode release 和早期启动约束；`read_dir()` 锁内只快照目录项，不再持 guard 调用外部 sink 或读取 inode metadata。 | 继续保持锁内不做回调、不访问用户内存、不进入 VFS 后端。后续若确认运行在可睡眠任务上下文，再逐点评估显式 `PiMutex` 或进一步缩短锁范围。 |
 | `os/StarryOS/kernel/src/file/epoll.rs` | `mode`、`interests`、`ready_queue` 使用 `SpinNoIrq`，ready queue fast path 已调整。 | 旧问题是 `ready_queue` 可从 waker 路径入队，`VecDeque::push_back` 可能扩容。当前 `EPOLL_CTL_ADD` 预留 ready queue 容量，消费队列时保留全局 queue capacity，waker 入队只使用已有容量；容量意外不足时设置 overflow 标志，后续在 `epoll_wait` 任务上下文扫描恢复 ready 项。 | 保持 waker fast path 不做堆扩容。`PollSet::wake()` 本身若进入 IRQ 路径仍属于更大范围的 poll/waker bridge 设计问题，后续单独审计。 |
 | `os/StarryOS/kernel/src/pseudofs/dev/loop_block.rs` | loop block cache blocks 使用 `SpinNoIrq`。 | 当前临界区主要是 bounded memory copy，风险可控；但它处在 ext4 block-device 回调路径上，不能在锁内做 VFS writeback 或分配。 | 继续保持锁内只做内存拷贝。若以后增加 writeback、动态扩容或 VFS 调用，必须重新设计。 |
 | `os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs` | `window_size`、`termios` 使用 `SpinNoIrq`；job-control `session` / `foreground` 已合并为一个短状态锁。 | ioctl 路径先完成用户内存访问，再短暂持锁更新值；job-control 不再存在 `foreground -> session` 和 `session -> foreground` 的相反加锁顺序。 | 保持“copy user 在锁外，锁内只拷贝小对象”的规则。job-control 复合状态继续用单锁保护，`PollSet::wake()` 放在锁外执行。 |

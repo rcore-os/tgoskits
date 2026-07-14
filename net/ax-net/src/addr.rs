@@ -1,7 +1,7 @@
 //! Shared address and ephemeral-port helpers.
 
 use ax_errno::{AxResult, ax_bail};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use smoltcp::wire::{IpAddress, Ipv4Address};
 
 const EPHEMERAL_PORT_START: u16 = 0xc000;
@@ -14,7 +14,7 @@ pub(crate) fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) 
 
 /// Allocates an ephemeral port accepted by `check_available`.
 pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> AxResult<u16> {
-    static CURR: Mutex<u16> = Mutex::new(EPHEMERAL_PORT_START);
+    static CURR: SpinMutex<u16> = SpinMutex::new(EPHEMERAL_PORT_START);
 
     let mut curr = CURR.lock();
     let mut tries = 0;

@@ -12,7 +12,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{
@@ -47,18 +47,18 @@ struct InotifyState {
 
 pub struct Inotify {
     non_blocking: AtomicBool,
-    state: Mutex<InotifyState>,
+    state: PiMutex<InotifyState>,
     poll_rx: PollSet,
 }
 
-static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static INOTIFY_INSTANCES: LazyLock<PiMutex<Vec<Weak<Inotify>>>> =
+    LazyLock::new(|| PiMutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {
         let inotify = Arc::new(Self {
             non_blocking: AtomicBool::new(false),
-            state: Mutex::new(InotifyState {
+            state: PiMutex::new(InotifyState {
                 next_wd: 1,
                 ..InotifyState::default()
             }),

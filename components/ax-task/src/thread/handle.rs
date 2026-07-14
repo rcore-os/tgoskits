@@ -7,15 +7,17 @@ use core::{
 };
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
     SchedulingKey, ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
-    runtime::{RuntimeCpuId, task_runtime},
     timer::TimerNode,
 };
 
 const REAP_CLAIMED: usize = 1 << (usize::BITS - 1);
 const REAP_MAX_UPGRADE_READERS: usize = REAP_CLAIMED - 1;
+const WAKE_PENDING: u8 = 1 << 0;
+const PARK_NOTIFIED: u8 = 1 << 1;
+const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 
 /// A strong reference used to inspect and control a live thread.
 #[derive(Clone, Debug)]
@@ -117,22 +119,22 @@ impl ThreadWakeHandle {
         if self.core.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        // This sticky bit closes wake-before-park independently from inbox
-        // delivery. The owner consumes it while publishing/committing PARKING.
-        self.core.notify_park();
-        if self.core.wake_pending.swap(true, Ordering::AcqRel) {
-            return WakeResult::AlreadyPending;
-        }
         let Some(target) = self.target_cpu() else {
-            // No inbox owns this request. Roll the publication bit back so a
-            // later placement can retry instead of observing a phantom wake.
-            self.core.wake_pending.store(false, Ordering::Release);
             return WakeResult::Unavailable;
         };
         let Some(cpu) = crate::facade::cpu_local_for_wake(target) else {
-            self.core.wake_pending.store(false, Ordering::Release);
             return WakeResult::Unavailable;
         };
+        // Publish the inbox request and wake-before-park notification as one
+        // atomic state transition. Owner-side consumption can then preserve
+        // the notification only while PARKING without racing a newer wake.
+        if self.core.publish_wake() {
+            // A coalesced wake is also a recovery path for a doorbell claimed
+            // concurrently by the owner. Reassert scheduler work even though
+            // the first producer still owns the intrusive publication.
+            cpu.kick_scheduler_work();
+            return WakeResult::AlreadyPending;
+        }
         let core = Arc::as_ptr(&self.core);
         // SAFETY: this retained strong count is transferred to the inbox
         // payload and released by the owner drain after consuming the node.
@@ -146,25 +148,17 @@ impl ThreadWakeHandle {
             core.expose_provenance(),
         );
         match cpu.publish_remote_wake(node, message) {
-            (PublishResult::Published, send_ipi) => {
-                // The sticky inbox request remains visible even when the IPI
-                // transport reports an error; idle recheck still consumes it.
-                if send_ipi {
-                    let _status =
-                        task_runtime::send_scheduler_ipi(RuntimeCpuId::new(target.as_u32()));
-                }
-                WakeResult::Notified
-            }
-            (PublishResult::AlreadyPending, _) => {
+            PublishResult::Published => WakeResult::Notified,
+            PublishResult::AlreadyPending => {
                 // SAFETY: publication did not take ownership of the retained
                 // reference, so this path releases it immediately.
                 unsafe { Arc::decrement_strong_count(core) };
                 WakeResult::AlreadyPending
             }
-            (PublishResult::WrongKind, _) => {
+            PublishResult::WrongKind => {
                 // SAFETY: publication rejected the node before taking ownership.
                 unsafe { Arc::decrement_strong_count(core) };
-                self.core.wake_pending.store(false, Ordering::Release);
+                self.core.discard_failed_wake();
                 WakeResult::Unavailable
             }
         }
@@ -223,8 +217,7 @@ pub(crate) struct ThreadCore {
     effective_deadline_ns: AtomicU64,
     state: AtomicU8,
     reap_gate: AtomicUsize,
-    wake_pending: AtomicBool,
-    park_notification: AtomicBool,
+    wake_state: AtomicU8,
     park_generation: AtomicU64,
     target_cpu: AtomicU32,
     remote_wake_node: InboxNode,
@@ -237,6 +230,7 @@ pub(crate) struct ThreadCore {
     charged_runtime_ns: AtomicU64,
     runtime_accounted_until_ns: AtomicU64,
     runtime_running: AtomicBool,
+    pi_wait_state: PiWaitState,
 }
 
 impl ThreadCore {
@@ -249,8 +243,7 @@ impl ThreadCore {
             effective_deadline_ns: AtomicU64::new(0),
             state: AtomicU8::new(ThreadState::New as u8),
             reap_gate: AtomicUsize::new(0),
-            wake_pending: AtomicBool::new(false),
-            park_notification: AtomicBool::new(false),
+            wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
             target_cpu: AtomicU32::new(u32::MAX),
             remote_wake_node: InboxNode::new(InboxKind::RemoteWake),
@@ -263,6 +256,7 @@ impl ThreadCore {
             charged_runtime_ns: AtomicU64::new(0),
             runtime_accounted_until_ns: AtomicU64::new(0),
             runtime_running: AtomicBool::new(false),
+            pi_wait_state: PiWaitState::new(),
         }
     }
 
@@ -423,6 +417,10 @@ impl ThreadCore {
         self.id
     }
 
+    pub(crate) const fn pi_wait_state(&self) -> &PiWaitState {
+        &self.pi_wait_state
+    }
+
     pub(crate) const fn policy_update_node(&self) -> &InboxNode {
         &self.policy_update_node
     }
@@ -431,8 +429,25 @@ impl ThreadCore {
         &self.migration_node
     }
 
-    pub(crate) fn take_wake(&self) -> bool {
-        self.wake_pending.swap(false, Ordering::AcqRel)
+    pub(crate) fn publish_wake(&self) -> bool {
+        self.wake_state
+            .fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel)
+            & WAKE_PENDING
+            != 0
+    }
+
+    pub(crate) fn consume_wake(&self, preserve_park_notification: bool) -> bool {
+        let consumed = if preserve_park_notification {
+            WAKE_PENDING
+        } else {
+            WAKE_STATE_PUBLISHED
+        };
+        self.wake_state.fetch_and(!consumed, Ordering::AcqRel) & WAKE_PENDING != 0
+    }
+
+    fn discard_failed_wake(&self) {
+        self.wake_state
+            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
     }
 
     pub(crate) fn register_sleep_timer(&self, cpu: CpuId, generation: u64) {
@@ -469,12 +484,11 @@ impl ThreadCore {
         true
     }
 
-    pub(crate) fn notify_park(&self) {
-        self.park_notification.store(true, Ordering::Release);
-    }
-
     pub(crate) fn take_park_notification(&self) -> bool {
-        self.park_notification.swap(false, Ordering::AcqRel)
+        self.wake_state
+            .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel)
+            & PARK_NOTIFIED
+            != 0
     }
 
     pub(crate) fn next_park_generation(&self) -> u64 {
@@ -485,7 +499,7 @@ impl ThreadCore {
         self.park_generation.load(Ordering::Acquire)
     }
 
-    fn state(&self) -> ThreadState {
+    pub(crate) fn state(&self) -> ThreadState {
         match self.state.load(Ordering::Acquire) {
             0 => ThreadState::New,
             1 => ThreadState::Ready,

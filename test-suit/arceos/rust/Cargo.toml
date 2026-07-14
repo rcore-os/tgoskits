@@ -14,8 +14,22 @@ task-affinity = ["ax-std", "ax-std/multitask"]
 task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/paging"]
-task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
+task-irq = [
+    "ax-std",
+    "dep:ax-kspin",
+    "dep:ax-percpu",
+    "ax-std/multitask",
+    "ax-std/irq",
+    "ax-std/paging",
+]
+task-tls = [
+    "ax-std",
+    "ax-std/tls",
+    "ax-std/fp-simd",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/irq",
+]
 task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
 task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
 task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
@@ -65,5 +79,6 @@ ax-std = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
+ax-percpu = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

@@ -155,15 +155,11 @@ flowchart TD
 
 ```toml
 [features]
-alloc = ["dep:ax-alloc"]
 paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
-dma = ["paging"]
-multitask = ["ax-task/multitask"]
-smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
-irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
-fs = ["ax-driver", "dep:ax-fs"]
-net = ["ax-driver", "dep:ax-net"]
-display = ["ax-driver", "dep:ax-display"]
+irq = ["paging", "ax-hal/irq", "dep:rdif-intc", "ax-driver/irq"]
+wake-ipi = ["irq", "ax-hal/ipi"]
+multitask = ["irq", "dep:ax-task"]
+smp = ["ax-hal/smp", "wake-ipi"]
 ```
 
 ### API 封装策略
@@ -203,7 +199,18 @@ sequenceDiagram
 
 `ax-task` 是 ArceOS 并发模型的核心。它本身始终按 IRQ、抢占和 SMP 安全语义编译，`ax-runtime` 通过 `TaskRuntime` 接入 per-CPU、时间、中断、IPI 和上下文切换能力。调度类由线程策略选择，不再通过 Cargo feature 构造不同的全局调度器。
 
-硬中断处理程序只完成确认、受限批量记账和 `need_resched` 发布。控制器 EOI 完成且 IRQ framework 清除 hard-IRQ 标记后，`ax-hal` 在返回架构 trap frame 前建立调度安全点：保持最外层 preempt guard，短暂打开本地 IRQ，再释放 guard；若需要调度，调度器会立即用自己的 IRQ guard 重新关闭 IRQ 并完成状态提交、hook 和上下文切换，原中断帧恢复后再次关闭 IRQ 再执行架构返回。这样 timer/IPI 的抢占不会在 hard IRQ 回调中发生，也不会被推迟到任务主动 yield。
+硬中断处理程序只完成确认、受限批量记账和 `need_resched` 发布。控制器 EOI 完成且 IRQ framework 清除 hard-IRQ 标记后，`ax-hal` 在返回架构 trap frame 前建立调度安全点：硬件 IRQ 始终保持关闭，最外层 preempt depth 通过 `RuntimeSchedulerEntry::IrqReturn` 原子移交给 scheduler baton。状态提交、hook 和上下文切换都发生在该 baton 内，不存在“先开启抢占或 IRQ、再进入调度器”的竞态窗口。
+
+CPU-local anchor、内核任务 TLS 和用户寄存器由不同层拥有，不能随任务上下文一起迁移：
+
+| 架构 | CPU-local anchor | 内核任务 TLS | 用户态 round-trip |
+| --- | --- | --- | --- |
+| x86_64 | kernel GS base | FS base | user FS/GS |
+| AArch64 | TPIDR_EL1/EL2 | TPIDR_EL0 | user TPIDR_EL0 |
+| RISC-V | `sscratch -> CpuAreaHeader` | `tp` | user `gp/tp` |
+| LoongArch | live `r21` 与 KS3 mirror | `tp` | user `r21/tp` |
+
+`ax-cpu-local` 独占少量寄存器指令和固定 `CpuAreaHeader` ABI；`ax-percpu` 只负责布局、offset 与普通 Rust 地址计算。`IrqGuard` 或 `PreemptGuard` 借出的 `CpuPin` 只证明不会迁移；安全 current accessor 必须再经 `ax_percpu::bound_current` 验证 live anchor 与 layout/header，接收借用该迁移证明的 `BoundCpuPin`。`TaskContext` 只保存 callee-saved 寄存器、SP、任务 TLS 与可选 FPU 状态；页表根统一由 `TaskRuntime::install_address_space` 安装，CPU anchor 与 CR3/TTBR/SATP/PGDL 都不得进入任务上下文。
 
 ```mermaid
 stateDiagram-v2

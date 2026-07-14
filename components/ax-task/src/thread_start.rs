@@ -1,11 +1,14 @@
 //! Runtime-backed construction and ownership of portable kernel threads.
 
 use alloc::{boxed::Box, string::String};
-use core::ptr;
+use core::{
+    ptr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::{
     CpuSet, SchedulePolicy, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
-    ThreadHandle, ThreadId, ThreadResources, ThreadSpec, ThreadState, WaitQueue,
+    ThreadHandle, ThreadId, ThreadResources, ThreadSpec, WaitQueue,
     facade::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system},
     lock::IrqTicketLock,
     runtime::{
@@ -121,7 +124,7 @@ impl KernelThreadHandle {
             .id()
     }
 
-    /// Waits for thread exit and reclaims its registry slot and runtime resources.
+    /// Waits for logical thread exit and hands reclamation to the bounded reaper.
     ///
     /// # Errors
     ///
@@ -134,7 +137,7 @@ impl KernelThreadHandle {
         }
         let data = kernel_thread_data(&handle)?;
         data.join_wait
-            .try_wait_until(|| handle.state() == ThreadState::Exited)?;
+            .try_wait_until(|| data.exit_completed.load(Ordering::Acquire))?;
         reap_joined_thread(handle)
     }
 
@@ -148,17 +151,21 @@ impl KernelThreadHandle {
 }
 
 fn reap_joined_thread(mut handle: ThreadHandle) -> Result<(), TaskError> {
-    loop {
-        match runtime_task_system()?.reap_thread_handle(handle) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.task_error() == TaskError::ThreadBusy => {
-                handle = error
-                    .into_retry_handle()
-                    .expect("busy owned reap must return its handle");
-                let _decision = crate::yield_current_cpu()?;
-            }
-            Err(error) => return Err(error.task_error()),
+    match runtime_task_system()?.reap_thread_handle(handle) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.task_error(),
+                TaskError::ThreadBusy | TaskError::NotExited
+            ) =>
+        {
+            handle = error
+                .into_retry_handle()
+                .expect("retryable owned reap must return its handle");
+            drop(handle);
+            Ok(())
         }
+        Err(error) => Err(error.task_error()),
     }
 }
 
@@ -268,10 +275,11 @@ where
     }
     let handle = system.create_thread(thread_spec)?;
 
-    let irq_guard = RuntimeIrqGuard::enter();
-    let result = runtime_current_cpu_mut().and_then(|mut cpu| {
+    let mut irq_guard = RuntimeIrqGuard::enter();
+    let now_ns = task_runtime::monotonic_ns();
+    let result = runtime_current_cpu_mut(&mut irq_guard).and_then(|mut cpu| {
         system.make_ready(handle.id())?;
-        system.place_ready(cpu.as_mut(), handle.id(), task_runtime::monotonic_ns())
+        system.place_ready(cpu.as_mut(), handle.id(), now_ns)
     });
     drop(irq_guard);
     if let Err(error) = result {
@@ -288,6 +296,7 @@ type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
 struct KernelThreadData {
     entry: IrqTicketLock<Option<KernelThreadEntry>>,
     join_wait: WaitQueue,
+    exit_completed: AtomicBool,
     os_extension: Option<ThreadExtension>,
     _name: String,
 }
@@ -301,6 +310,7 @@ impl KernelThreadData {
         Self {
             entry: IrqTicketLock::new(Some(Box::new(entry))),
             join_wait: WaitQueue::new(),
+            exit_completed: AtomicBool::new(false),
             os_extension,
             _name: name,
         }
@@ -341,7 +351,17 @@ unsafe extern "Rust" fn kernel_thread_exit(data: usize, thread: ThreadId) {
         // SAFETY: exit is already deferred to ordinary task context.
         unsafe { (extension.ops().on_exit)(extension.data(), thread) };
     }
-    data.join_wait.notify_all(false);
+    publish_kernel_thread_exit_completion(data);
+}
+
+fn publish_kernel_thread_exit_completion(data: &KernelThreadData) {
+    if data
+        .exit_completed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        data.join_wait.notify_all();
+    }
 }
 
 unsafe extern "Rust" fn kernel_thread_deadline_overrun(data: usize, thread: ThreadId) {
@@ -392,10 +412,14 @@ unsafe extern "C" fn kernel_thread_entry() -> ! {
         task_runtime::fatal_invariant(13, data_raw);
     };
     entry();
-    match crate::exit_current_thread() {
-        Ok(()) => task_runtime::fatal_invariant(14, data_raw),
-        Err(error) => task_runtime::fatal_invariant(15, error_code(error)),
-    }
+    let exit_permit = crate::prepare_current_exit()
+        .unwrap_or_else(|error| task_runtime::fatal_invariant(15, error_code(error)));
+    // Logical completion is observable before the final non-returning
+    // schedule-out only after every recoverable scheduler precondition has
+    // been validated. Registry state, `on_cpu`, and the exit callback continue
+    // to gate physical reclamation independently.
+    publish_kernel_thread_exit_completion(data);
+    crate::commit_current_exit(exit_permit)
 }
 
 fn validate_spec(spec: &KernelThreadSpec) -> Result<(), TaskError> {
@@ -425,17 +449,30 @@ fn allocate_thread_resources(request: StackRequest) -> Result<ThreadResources, T
     if stack_result.status != RuntimeStatus::Success {
         return Err(runtime_error(stack_result.status));
     }
-    let stack = StackHandle::from_raw(stack_result.handle);
+    if stack_result.handle == 0 {
+        return Err(TaskError::InvalidRuntimeHandle);
+    }
+    // SAFETY: successful TaskRuntime stack allocation returns one non-zero,
+    // uniquely owned handle that remains live until deallocation.
+    let stack = unsafe { StackHandle::from_raw(stack_result.handle) };
     let tls_result = task_runtime::allocate_tls(TlsRequest {
         template_start: 0,
         initialized_size: 0,
         total_size: 0,
         alignment: 1,
     });
-    let tls = match tls_result.status {
-        RuntimeStatus::Success => TlsHandle::from_raw(tls_result.handle),
-        RuntimeStatus::Unsupported => TlsHandle::NONE,
-        status => {
+    let tls = match (tls_result.status, tls_result.handle) {
+        (RuntimeStatus::Success, 0) => {
+            let _status = task_runtime::deallocate_stack(stack);
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
+        (RuntimeStatus::Success, handle) => {
+            // SAFETY: successful TaskRuntime TLS allocation returns one
+            // non-zero, uniquely owned handle live until deallocation.
+            unsafe { TlsHandle::from_raw(handle) }
+        }
+        (RuntimeStatus::Unsupported, _) => TlsHandle::NONE,
+        (status, _) => {
             let _status = task_runtime::deallocate_stack(stack);
             return Err(runtime_error(status));
         }
@@ -452,6 +489,13 @@ fn allocate_thread_resources(request: StackRequest) -> Result<ThreadResources, T
         }
         let _status = task_runtime::deallocate_stack(stack);
         return Err(runtime_error(context_result.status));
+    }
+    if context_result.handle == 0 {
+        if !tls.is_none() {
+            let _status = task_runtime::deallocate_tls(tls);
+        }
+        let _status = task_runtime::deallocate_stack(stack);
+        return Err(TaskError::InvalidRuntimeHandle);
     }
     Ok(unsafe {
         // SAFETY: all handles were just created by the active runtime and their

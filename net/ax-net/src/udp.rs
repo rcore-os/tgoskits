@@ -33,7 +33,7 @@ use core::{
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
 use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axpoll::{IoEvents, Pollable};
 use smoltcp::{
     iface::SocketHandle,
@@ -79,10 +79,10 @@ pub struct UdpSocket {
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
     /// Egress IP_TOS policies registered for recently used UDP destinations.
-    tos_keys: Mutex<Vec<EgressIpTosKey>>,
+    tos_keys: SpinMutex<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
-    cork: Mutex<Option<CorkState>>,
+    cork: SpinMutex<Option<CorkState>>,
 }
 
 impl UdpSocket {
@@ -97,8 +97,8 @@ impl UdpSocket {
             peer_addr: RwLock::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
-            tos_keys: Mutex::new(Vec::new()),
-            cork: Mutex::new(None),
+            tos_keys: SpinMutex::new(Vec::new()),
+            cork: SpinMutex::new(None),
         }
     }
 

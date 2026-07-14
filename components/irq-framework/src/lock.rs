@@ -44,7 +44,9 @@ mod tests {
         restored: Cell<bool>,
     }
 
-    impl IrqOps for TestIrqOps {
+    // SAFETY: This unit-test adapter executes no deferred CPU thunk, is used on
+    // one thread, and restores every local IRQ token synchronously.
+    unsafe impl IrqOps for TestIrqOps {
         type LocalIrqState = NonCopyIrqState;
 
         fn current_cpu(&self) -> CpuId {

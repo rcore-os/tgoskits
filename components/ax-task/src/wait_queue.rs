@@ -6,8 +6,8 @@ use core::time::Duration;
 use crate::{
     ParkPrepare, TaskError, ThreadHandle, ThreadId, ThreadWakeHandle,
     facade::{
-        arm_current_sleep_timer, cancel_current_park, cancel_current_sleep_timer,
-        commit_current_park, prepare_current_park,
+        acquire_blocking_permit, arm_current_sleep_timer, cancel_current_park,
+        cancel_current_sleep_timer, commit_current_park, prepare_current_park,
     },
     lock::IrqTicketLock,
     runtime::task_runtime,
@@ -53,6 +53,10 @@ impl WaitQueue {
     }
 
     /// Blocks until `condition` observes true after holding the queue lock.
+    ///
+    /// The predicate runs with local IRQs disabled and the internal waiter lock
+    /// held. It must be bounded, non-blocking, and must not re-enter this wait
+    /// queue or any scheduler operation.
     #[track_caller]
     pub fn wait_until<F>(&self, condition: F)
     where
@@ -63,6 +67,9 @@ impl WaitQueue {
     }
 
     /// Fallible form of [`Self::wait_until`] for runtime and OS glue.
+    ///
+    /// The predicate follows the same bounded, non-blocking, non-reentrant
+    /// contract as [`Self::wait_until`].
     ///
     /// # Errors
     ///
@@ -110,10 +117,24 @@ impl WaitQueue {
     where
         F: Fn() -> bool,
     {
-        let deadline_ns = deadline_after(timeout);
+        self.wait_until_deadline(Duration::from_nanos(deadline_after(timeout)), condition)
+    }
+
+    /// Blocks until `condition` becomes true or an absolute deadline elapses.
+    ///
+    /// `deadline` is measured against the runtime monotonic clock. Unlike a
+    /// relative timeout loop, this method never rebases the deadline after a
+    /// spurious wake, so repeated notifications cannot extend the wait.
+    /// Returns `true` for timeout and `false` when the condition wins.
+    #[track_caller]
+    pub fn wait_until_deadline<F>(&self, deadline: Duration, condition: F) -> bool
+    where
+        F: Fn() -> bool,
+    {
+        let deadline_ns = deadline.as_nanos().min(u64::MAX as u128) as u64;
         loop {
             if task_runtime::monotonic_ns() >= deadline_ns {
-                return true;
+                return !condition();
             }
             let condition_met = self
                 .wait_once_if(Some(deadline_ns), &condition)
@@ -127,7 +148,13 @@ impl WaitQueue {
     }
 
     /// Selects and wakes the oldest waiter from ordinary task context.
-    pub fn notify_one(&self, _reschedule: bool) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics in hard IRQ context. IRQ producers must use
+    /// [`crate::IrqWaitCell`] to wake one fixed service thread.
+    pub fn notify_one(&self) -> bool {
+        assert_task_context_notification();
         let Some(waiter) = self.pop_front_task_context() else {
             return false;
         };
@@ -137,13 +164,11 @@ impl WaitQueue {
 
     /// Selects one waiter, performs handoff bookkeeping under the queue lock,
     /// then wakes the selected thread after releasing the lock.
-    pub fn notify_one_with<F>(&self, _reschedule: bool, operation: F) -> bool
+    pub fn notify_one_with<F>(&self, operation: F) -> bool
     where
         F: Fn(u64),
     {
-        if task_runtime::in_hard_irq() {
-            return false;
-        }
+        assert_task_context_notification();
         let waiter = {
             let mut waiters = self.waiters.lock();
             let waiter = waiters.pop_front();
@@ -158,8 +183,8 @@ impl WaitQueue {
     }
 
     /// Wakes every waiter, releasing the queue lock before each direct wake.
-    pub fn notify_all(&self, reschedule: bool) {
-        while self.notify_one(reschedule) {}
+    pub fn notify_all(&self) {
+        while self.notify_one() {}
     }
 
     fn wait_once(&self, deadline_ns: Option<u64>) -> Result<WaitOutcome, TaskError> {
@@ -182,17 +207,15 @@ impl WaitQueue {
         deadline_ns: Option<u64>,
         condition: Option<&dyn Fn() -> bool>,
     ) -> Result<WaitOutcome, TaskError> {
-        if task_runtime::in_hard_irq() {
-            return Err(TaskError::UnsafeContext);
-        }
         let thread = crate::current_thread_handle()?;
         let (park, timer) = {
+            let permit = acquire_blocking_permit()?;
             let mut waiters = self.waiters.lock();
             if condition.is_some_and(|condition| condition()) {
                 return Ok(WaitOutcome::Condition);
             }
             waiters.push_back(Waiter::new(&thread));
-            let park = match prepare_current_park() {
+            let park = match prepare_current_park(&permit) {
                 Err(error) => {
                     remove_waiter(&mut waiters, thread.id());
                     return Err(error);
@@ -218,10 +241,17 @@ impl WaitQueue {
         };
 
         if let Err(error) = commit_current_park(park) {
-            if let Some(timer) = timer {
-                let _cancelled = cancel_current_sleep_timer(&thread, timer)?;
-            }
+            let timer_result = timer
+                .map(|timer| cancel_current_sleep_timer(&thread, timer))
+                .transpose();
             remove_waiter(&mut self.waiters.lock(), thread.id());
+            if cancel_current_park(park).is_err() {
+                // A fallible blocking API may return only after restoring the
+                // caller to Running. Failure here means commit crossed its
+                // mutation boundary before reporting an error.
+                task_runtime::fatal_invariant(0x5041_0001, thread.id().as_u64() as usize);
+            }
+            let _cancelled = timer_result?;
             return Err(error);
         }
         if let Some(timer) = timer {
@@ -236,11 +266,15 @@ impl WaitQueue {
     }
 
     fn pop_front_task_context(&self) -> Option<Waiter> {
-        if task_runtime::in_hard_irq() {
-            return None;
-        }
         self.waiters.lock().pop_front()
     }
+}
+
+fn assert_task_context_notification() {
+    assert!(
+        !task_runtime::in_hard_irq(),
+        "WaitQueue notification is task-context-only; use IrqWaitCell from hard IRQ"
+    );
 }
 
 impl Default for WaitQueue {
@@ -311,7 +345,7 @@ mod tests {
         let queue = WaitQueue::new();
         queue.waiters.lock().push_back(Waiter::new(&thread));
 
-        assert!(queue.notify_one(false));
+        assert!(queue.notify_one());
         assert!(!remove_waiter(&mut queue.waiters.lock(), thread.id()));
     }
 
@@ -325,6 +359,16 @@ mod tests {
         queue.waiters.lock().push_back(Waiter::new(&thread));
 
         assert!(remove_waiter(&mut queue.waiters.lock(), thread.id()));
-        assert!(!queue.notify_one(false));
+        assert!(!queue.notify_one());
+    }
+
+    #[test]
+    fn hard_irq_notification_is_rejected_instead_of_silently_losing_the_wake() {
+        let queue = WaitQueue::new();
+        crate::test_runtime::set_hard_irq(true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queue.notify_one()));
+        crate::test_runtime::set_hard_irq(false);
+
+        assert!(result.is_err());
     }
 }

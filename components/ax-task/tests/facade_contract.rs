@@ -37,7 +37,7 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu.as_mut(),
     );
 
     assert_eq!(current_thread_id().unwrap(), bootstrap.id());
@@ -50,7 +50,7 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
     assert_eq!(current_thread_extension().unwrap().unwrap().data(), 0x1234);
     cpu.request_reschedule();
     assert!(current_cpu_needs_resched().unwrap());
-    assert!(schedule_current_cpu().unwrap().is_some());
+    assert!(schedule_current_cpu().unwrap().decision().is_some());
     assert!(!current_cpu_needs_resched().unwrap());
 
     let sleeper = system
@@ -89,17 +89,18 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
         )
         .unwrap(),
     );
+    let timers = [timer(1), timer(2), timer(3)];
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
-    for owner in 1..=3 {
-        unsafe { cpu.as_mut().timer_queue().arm(timer(owner), 0).unwrap() };
+    for node in &timers {
+        unsafe { cpu.as_mut().timer_queue().arm(node.as_ref(), 0).unwrap() };
     }
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu.as_mut(),
     );
 
     let first = timer_interrupt_current_cpu(1, 0).unwrap();
@@ -121,9 +122,8 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
     support::clear_handles();
 }
 
-fn timer(owner: usize) -> Pin<&'static TimerNode> {
-    let node = Box::leak(Box::new(TimerNode::new(owner)));
-    unsafe { Pin::new_unchecked(node) }
+fn timer(owner: usize) -> Pin<Box<TimerNode>> {
+    Box::pin(TimerNode::new(owner))
 }
 
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {

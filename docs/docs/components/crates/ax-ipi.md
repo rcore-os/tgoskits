@@ -3,7 +3,7 @@
 > 路径：`os/arceos/modules/axipi`
 > 类型：库 crate
 > 分层：ArceOS 层 / IPI 运行时基础件
-> 版本：`0.3.0-preview.3`
+> 版本：`0.5.27`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/event.rs`、`src/queue.rs`
 
 `ax-ipi` 是 ArceOS 的跨核回调分发模块。它基于 `ax-hal` 的 IPI 发送能力，为每个 CPU 维护一个本地事件队列，并向上暴露“在某个 CPU 上运行闭包”或“在所有其他 CPU 上广播闭包”的接口。它属于运行时叶子基础件：负责 IPI 事件排队和派发，不负责 SMP bring-up、调度策略或通用消息总线。
@@ -15,7 +15,9 @@
 1. 把闭包包装成可发送的 IPI 事件。
 2. 放入目标 CPU 的本地队列。
 3. 通过 `ax-hal::irq::send_ipi()` 触发对方 CPU 进入 IPI 中断。
-4. 在 IPI handler 中把队列里的事件逐个取出执行。
+4. hard-IRQ handler 只发布当前 CPU 有 deferred work。
+5. `ax-runtime` 在 IRQ 框架清除 hard-IRQ marker 后执行一个有界批次。
+6. 如果队列仍非空，向当前 CPU 发送 follow-up IPI，继续下一批。
 
 因此，`ax-ipi` 更像“IPI 回调投递器”，而不是调度器、work queue 或通用 RPC 层。
 
@@ -42,18 +44,26 @@ flowchart TD
     D --> E["push(src_cpu_id, callback)"]
     E --> F["ax-hal::irq::send_ipi()"]
     F --> G["目标 CPU 进入 ipi_handler()"]
-    G --> H["循环 pop_one() 并执行"]
+    G --> H["只设置 IPI_DEFERRED_PENDING"]
+    H --> I["IRQ EOI 并清除 hard-IRQ marker"]
+    I --> J["IRQ-return safe point 最多执行 64 个"]
+    J --> K{"队列仍非空?"}
+    K -- 是 --> L["向当前 CPU 发送 follow-up IPI"]
+    K -- 否 --> M["返回被中断上下文"]
 ```
 
 实现里的重要细节：
 
 - `run_on_cpu()` 遇到目标就是当前 CPU 时不会排队，而是同步立即执行。
 - `run_on_each_cpu()` 会先在当前 CPU 上立刻执行一份，再把 clone 后的回调投给其他 CPU。
-- `ipi_handler()` 会循环 drain 当前 CPU 队列，而不是只处理一个事件。
+- `ipi_handler()` 不访问回调队列，只发布 pending；因此 hard IRQ 不会执行或析构 `Box<dyn FnOnce()>`。
+- `drain_deferred_callbacks()` 只能在本地 IRQ 关闭且 hard-IRQ marker 已清除后运行，每次最多执行 64 个回调。
+- 同步 raw call 使用 `Queued → Running/Cancelled → Done` 生命周期；调用方成功取消后，迟到回调不会读取调用方栈参数。
 
 ### 1.5 能力边界
 - `ax-ipi` 队列是 FIFO，但不提供优先级、取消、重试或返回值汇总。
-- 回调运行在 IPI 处理上下文里，默认应保持短小且不可阻塞。
+- 远端回调运行在目标 CPU 的 IRQ-return 安全点，本地 IRQ 仍关闭，但已不属于 hard-IRQ 上下文；回调仍必须短小且不可阻塞。
+- 安全的回调投递 API 拒绝 hard-IRQ 调用，因为 `Box`/`Arc` 构造和 `VecDeque` 扩容可能分配。
 - 这个 crate 没有自己的 feature 门控，但它依赖 `ax-hal` 已开启 `ipi` 能力。
 
 ## 核心功能
@@ -61,22 +71,25 @@ flowchart TD
 - 初始化每 CPU 的 IPI 队列。
 - 向指定 CPU 投递单次回调。
 - 向所有其他 CPU 广播回调。
-- 在 IPI 中断处理函数里取出并执行待处理事件。
+- 在 IPI 中断中只发布 deferred work，并在 IRQ-return 安全点有界执行。
 
 ### 使用场景
 - `init()`：由 `ax-runtime/src/mp.rs` 在次核 bring-up 路径中调用，为当前 CPU 建立 IPI 队列。
-- `ipi_handler()`：由 `ax-runtime/src/lib.rs` 的 IRQ 处理路径调用。
+- `ipi_handler()`：由 `ax-runtime/src/lib.rs` 的 hard-IRQ 路径调用，只设置 pending。
+- `drain_deferred_callbacks()`：由 `ax-runtime` 的 IRQ-return preemption hook 调用。
 - `run_on_cpu()` / `run_on_each_cpu()`：是这个 crate 的核心公开 API，也是 `ax-api` / `ax-runtime` 暴露 IPI 能力的底层基础。
 
 ### 边界说明
 - 它不是 SMP 启动器；启动 CPU 的逻辑在 `ax_runtime::start_secondary_cpus()`。
 - 它不是通用异步执行框架；没有 future、返回值或 work stealing。
-- 它也不是调度器；闭包何时运行只受 IPI 到达和 handler 执行控制。
+- 它也不是调度器；闭包只在 IPI 到达后的 IRQ-return 安全点运行。
 
 ## 依赖关系
 ```mermaid
 graph LR
     ax-hal["ax-hal (ipi)"] --> ax-ipi["ax-ipi"]
+```
+
 - `ax-runtime`：负责在启动链中初始化队列，并在 IRQ 处理里调用 `ipi_handler()`。
 - `ax-api` / `ax-runtime`：把 IPI 能力向上层 feature 与 API 暴露。
 
@@ -94,6 +107,7 @@ ax-ipi = { workspace = true }
 2. `run_on_each_cpu()` 当前包含“立即执行当前 CPU”这一步，修改时不能无意改变这个语义。
 3. `Callback` / `MulticastCallback` 的封装关系要保持清晰，避免把广播路径退化成共享可变闭包。
 4. 不要把复杂的等待、应答、重传协议塞进 `ax-ipi`；这层应该继续保持单纯。
+5. 不得把 callback 的执行或析构移回 hard IRQ；批次上限和 follow-up IPI 是 hard-IRQ 延迟边界的一部分。
 
 ### 4.3 开发建议
 - IPI 回调应尽量短小，只做必要的跨核通知或状态翻转。
@@ -102,7 +116,7 @@ ax-ipi = { workspace = true }
 
 ## 测试
 ### 测试覆盖
-`ax-ipi` 没有独立的 crate 内测试，当前验证主要依赖真实 SMP 路径：
+`ax-ipi` 同时使用 crate 内生命周期测试、runtime source-contract 测试和真实 SMP 路径：
 
 - `ax-runtime` 在启用 `ipi`/`smp`/`irq` 组合下的启动与中断处理；
 - API 层对 IPI 能力的集成；
@@ -112,10 +126,12 @@ ax-ipi = { workspace = true }
 - `IpiEventQueue` 的 FIFO 行为。
 - `MulticastCallback::into_unicast()` 的语义是否保持“一份广播拆成多份单播”。
 - 当前 CPU 快路径是否绕过排队。
+- hard-IRQ pending publication 不调用也不析构已排队回调。
+- 同步调用 timeout 后的迟到回调不访问调用方参数。
 
 ### 集成测试
 - QEMU/真实多核环境下的单播与广播是否都能触发。
-- `ipi_handler()` 是否能正确 drain 多个连续事件。
+- IRQ-return drain 是否遵守 64 个回调的批次上限，并通过 follow-up IPI 继续剩余工作。
 - 与 `ax-runtime` 的 IRQ 注册/处理中断链是否匹配。
 
 ### 覆盖率

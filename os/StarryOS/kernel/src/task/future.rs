@@ -39,11 +39,12 @@ pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let wait = WaitQueue::new();
     let executor = LocalExecutor::new(scheduler_thread.wake_handle())
         .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
-    let output = executor.run(future.into_future(), || {
-        if starry_task.as_ref().is_some_and(|task| task.interrupted()) {
+    let output = executor.run(future.into_future(), |condition| {
+        let interrupted = || starry_task.as_ref().is_some_and(|task| task.interrupted());
+        if interrupted() {
             let _decision = scheduler::yield_current_cpu();
         } else {
-            wait.wait();
+            wait.wait_until(|| condition.should_abort() || interrupted());
         }
     });
     drop(executor);
@@ -416,7 +417,7 @@ fn timer_worker() {
 
 fn publish_timer_change() {
     TIMER_EPOCH.fetch_add(1, Ordering::AcqRel);
-    TIMER_WAIT.notify_one(false);
+    TIMER_WAIT.notify_one();
 }
 
 fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {

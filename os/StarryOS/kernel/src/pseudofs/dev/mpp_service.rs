@@ -16,7 +16,7 @@ use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
 use ax_runtime::hal::cpu::asm::user_copy;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps};
@@ -50,14 +50,14 @@ struct TaskState {
 
 /// The `/dev/mpp_service` device.
 pub struct MppService {
-    state: Mutex<TaskState>,
+    state: PiMutex<TaskState>,
 }
 
 impl MppService {
     /// Create the device (one global session; MPP serializes one decode at a time).
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(TaskState {
+            state: PiMutex::new(TaskState {
                 session: mpp::MppSession::new(),
                 read_dst: 0,
             }),

@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult, current_fs_context};
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr, vm_load};
 use crate::{
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
-        close_file_like, get_file_like, memfd::Memfd, with_fs,
+        close_file_like, current_fd_table, get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
@@ -135,7 +135,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
                     // TODO: this is cursed
-                    let pts = FS_CONTEXT.lock().resolve("/dev/pts")?;
+                    let pts = current_fs_context().lock().resolve("/dev/pts")?;
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
@@ -156,7 +156,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         warn!("unknown controlling terminal type for /dev/tty");
                         AxError::BadState
                     })?;
-                    let loc = FS_CONTEXT.lock().resolve(&path)?;
+                    let loc = current_fs_context().lock().resolve(&path)?;
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
@@ -494,14 +494,15 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
         let proc_data = &curr.as_thread().proc_data;
-        let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
+        let new_files = Arc::new(ax_kspin::SpinRwLock::new(current_fd_table().read().clone()));
         proc_data.with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });
     }
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
-    let mut fd_table = FD_TABLE.write();
+    let fd_table_owner = current_fd_table();
+    let mut fd_table = fd_table_owner.write();
     // Collect closed fds and defer `release_locks_on_close` until after the
     // table write lock is dropped. `release_locks_on_close()` walks every fd
     // table through `fd_tables_contain_file()` (which acquires `FD_TABLE`),
@@ -540,7 +541,8 @@ fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
     }
     let f = get_file_like(old_fd)?;
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
-    let mut fd_table = FD_TABLE.write();
+    let fd_table_owner = current_fd_table();
+    let mut fd_table = fd_table_owner.write();
     for candidate in min_fd..max_nofile {
         let entry = FileDescriptor {
             inner: f.clone(),
@@ -582,7 +584,8 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let mut fd_table = FD_TABLE.write();
+    let fd_table_owner = current_fd_table();
+    let mut fd_table = fd_table_owner.write();
     let mut f = fd_table
         .get(old_fd as _)
         .cloned()
@@ -648,7 +651,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
             Ok(ret as _)
         }
         F_GETFD => {
-            let cloexec = FD_TABLE
+            let cloexec = current_fd_table()
                 .read()
                 .get(fd as _)
                 .ok_or(AxError::BadFileDescriptor)?
@@ -657,7 +660,7 @@ pub fn sys_fcntl(fd: c_int, cmd: c_int, arg: usize) -> AxResult<isize> {
         }
         F_SETFD => {
             let cloexec = arg & FD_CLOEXEC as usize != 0;
-            FD_TABLE
+            current_fd_table()
                 .write()
                 .get_mut(fd as _)
                 .ok_or(AxError::BadFileDescriptor)?

@@ -8,7 +8,15 @@ use ax_task::{
 
 mod support;
 
+// The ordinary host gate retains the full semantic workload required by the
+// scheduler contract. Miri interprets every operation and is used here for
+// provenance/aliasing validation; keeping all fixed seeds and policies while
+// sampling two events per policy makes the complete integration suite
+// practical under Miri.
+#[cfg(not(miri))]
 const EVENTS_PER_SEED: usize = 10_000;
+#[cfg(miri)]
+const EVENTS_PER_SEED: usize = 8;
 const SEEDS: [u64; 32] = [
     0x0000_0000_0000_0001,
     0x9e37_79b9_7f4a_7c15,
@@ -257,6 +265,7 @@ impl ReferenceScheduler {
 
     fn charge(&mut self, now_ns: u64, runtime_ns: u64) -> bool {
         let expired = self.current.entity.charge(runtime_ns);
+        self.advance_fair_virtual_time(true);
         self.accounted_until_ns = now_ns;
         if expired {
             self.need_resched = true;
@@ -269,6 +278,7 @@ impl ReferenceScheduler {
         if self.current.entity.charge(runtime_ns) {
             self.need_resched = true;
         }
+        self.advance_fair_virtual_time(true);
         self.accounted_until_ns = now_ns;
     }
 
@@ -290,12 +300,39 @@ impl ReferenceScheduler {
         } else {
             self.ready.push(current);
         }
+        self.advance_fair_virtual_time(false);
     }
 
     fn select_next(&mut self, now_ns: u64) -> ThreadId {
         self.current = pick_reference(self.scenario, &mut self.ready, &mut self.virtual_time);
         self.accounted_until_ns = now_ns;
         self.current.id
+    }
+
+    fn advance_fair_virtual_time(&mut self, include_current: bool) {
+        if self.scenario != Scenario::Fair {
+            return;
+        }
+        let mut sum = 0_u128;
+        let mut count = 0_u128;
+        for vruntime in self
+            .ready
+            .iter()
+            .filter_map(|thread| fair_vruntime(thread.entity))
+            .chain(
+                include_current
+                    .then(|| fair_vruntime(self.current.entity))
+                    .flatten(),
+            )
+        {
+            sum = sum.saturating_add(u128::from(vruntime));
+            count += 1;
+        }
+        if count != 0 {
+            self.virtual_time = self
+                .virtual_time
+                .max(u64::try_from(sum / count).unwrap_or(u64::MAX));
+        }
     }
 }
 
@@ -359,7 +396,11 @@ impl ReferenceEntity {
                     *vruntime = virtual_time;
                     *virtual_deadline = virtual_deadline.saturating_add(shift);
                 }
-                if matches!(reason, ReferenceEnqueue::Yield) || *remaining_request_ns == 0 {
+                if matches!(reason, ReferenceEnqueue::Yield) && *vruntime <= virtual_time {
+                    *vruntime = (*vruntime).max(*virtual_deadline);
+                    *remaining_request_ns = FAIR_SLICE_NS;
+                    *virtual_deadline = (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
+                } else if *remaining_request_ns == 0 {
                     *remaining_request_ns = FAIR_SLICE_NS;
                     *virtual_deadline = (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
                 }
@@ -391,15 +432,14 @@ fn pick_reference(
     );
     let index = match scenario {
         Scenario::Fair => {
-            let minimum_vruntime = ready
-                .iter()
-                .filter_map(|thread| match thread.entity {
-                    ReferenceEntity::Fair { vruntime, .. } => Some(vruntime),
-                    _ => None,
-                })
-                .min()
-                .unwrap();
-            *virtual_time = (*virtual_time).max(minimum_vruntime);
+            let vruntimes = ready.iter().filter_map(|thread| match thread.entity {
+                ReferenceEntity::Fair { vruntime, .. } => Some(vruntime),
+                _ => None,
+            });
+            let (sum, count) = vruntimes.fold((0_u128, 0_u128), |(sum, count), vruntime| {
+                (sum.saturating_add(u128::from(vruntime)), count + 1)
+            });
+            *virtual_time = (*virtual_time).max(u64::try_from(sum / count).unwrap_or(u64::MAX));
             ready
                 .iter()
                 .enumerate()
@@ -432,6 +472,15 @@ fn pick_reference(
         Scenario::Fifo | Scenario::RoundRobin => 0,
     };
     ready.remove(index)
+}
+
+const fn fair_vruntime(entity: ReferenceEntity) -> Option<u64> {
+    match entity {
+        ReferenceEntity::Fair { vruntime, .. } => Some(vruntime),
+        ReferenceEntity::Fifo
+        | ReferenceEntity::RoundRobin { .. }
+        | ReferenceEntity::Deadline { .. } => None,
+    }
 }
 
 struct XorShift64(u64);

@@ -1,7 +1,6 @@
 //! AArch64 guest IPI target resolution and injection.
 
-use super::Aarch64DeferredRunWork;
-use crate::{AxVmResult, architecture::BoundVcpuExit};
+use crate::{AxVmResult, architecture::VcpuRunAction};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SendIpiExit {
@@ -12,11 +11,11 @@ pub(crate) struct SendIpiExit {
     pub(crate) vector: u64,
 }
 
-pub(crate) fn handle(
+pub(crate) fn finish(
     vm: &crate::AxVMRef,
     vcpu_id: usize,
     exit: SendIpiExit,
-) -> AxVmResult<BoundVcpuExit<Aarch64DeferredRunWork>> {
+) -> AxVmResult<VcpuRunAction> {
     let vm_id = vm.id();
     debug!(
         "VM[{vm_id}] run VCpu[{vcpu_id}] SendIPI, target_cpu={:#x}, target_cpu_aux={:#x}, \
@@ -29,34 +28,25 @@ pub(crate) fn handle(
             "VM[{vm_id}] SendIPI has no target: target_cpu={:#x}, target_cpu_aux={:#x}",
             exit.target_cpu, exit.target_cpu_aux
         );
-        return Ok(BoundVcpuExit::Complete(
-            crate::architecture::VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            },
-        ));
+        return Ok(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        });
     }
 
-    if targets.get(vcpu_id) {
-        crate::inject_current_vcpu_interrupt(exit.vector as _)
-            .expect("failed to inject self IPI into current vCPU");
-    }
-    let mut remote_targets = targets;
-    remote_targets.set(vcpu_id, false);
-    if !remote_targets.is_empty()
-        && let Err(err) = vm.inject_interrupt_to_vcpu(remote_targets, exit.vector as _)
-    {
+    // Deferred work runs after CURRENT_VCPU has been unpublished. Queue every
+    // target uniformly so a self-directed SGI is delivered on the next bound
+    // entry instead of relying on a stale current-vCPU publication.
+    if let Err(err) = vm.inject_interrupt_to_vcpu(targets, exit.vector as _) {
         warn!(
-            "Failed to inject interrupt {} to VM[{vm_id}] targets {remote_targets:?}: {err:?}",
+            "Failed to inject interrupt {} to VM[{vm_id}] targets {targets:?}: {err:?}",
             exit.vector
         );
     }
-    Ok(BoundVcpuExit::Complete(
-        crate::architecture::VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        },
-    ))
+    Ok(VcpuRunAction {
+        waits_for_event: false,
+        stop_reason: None,
+    })
 }
 
 fn ipi_targets(

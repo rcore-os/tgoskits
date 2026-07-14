@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_sync::Mutex;
+use ax_fs_ng::vfs::current_fs_context;
+use ax_sync::PiMutex;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
@@ -122,8 +122,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
-    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: spin::LazyLock<PiMutex<SyslogState>> =
+    spin::LazyLock::new(|| PiMutex::new(SyslogState::new()));
 
 pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
     if !current().as_thread().cred().has_cap_sys_boot() {
@@ -853,7 +853,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
         "/dev/urandom"
     };
 
-    let f = FS_CONTEXT.lock().resolve(path)?;
+    let f = current_fs_context().lock().resolve(path)?;
     let mut kbuf = vec![0; len];
     let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
 

@@ -103,17 +103,19 @@ flowchart TD
 #[somehal::entry(Kernel)]
 fn main() {
     let cpu_idx = somehal::smp::early_current_cpu_idx();
-    ax_percpu::init_percpu_reg(cpu_idx);
+    install_percpu_layout();
+    bind_current_cpu(cpu_idx);
     ax_plat::call_main(cpu_idx, args)
 }
 
 #[somehal::secondary_entry]
 fn secondary_main() {
-    let cpu_idx = somehal::smp::early_current_cpu_idx();
-    ax_percpu::init_percpu_reg(cpu_idx);
-    ax_plat::call_secondary_main(cpu_idx)
+    bind_current_cpu(meta.cpu_idx);
+    ax_plat::call_secondary_main(meta.cpu_idx)
 }
 ```
+
+`install_percpu_layout()` 把 someboot 的连续 `runtime_base/area_stride/area_count` 一次注册为 `PerCpuLayoutV1`；`bind_current_cpu()` 在 IRQ 尚未开放、CPU 尚未 online 时初始化 header 并安装架构 anchor。ax-runtime 后续只验证 CPU index、generation 和 cookie，不重复绑定。
 
 `struct Kernel` 同时实现 `somehal::KernelOp` 与 `somehal::setup::MmioOp`：后者把 ioremap 委托给 `axklib::mmio::op()`，前者把 `current_cpu_idx` 委托给 `somehal::cpu::current_cpu_idx`。
 
@@ -151,7 +153,7 @@ fn platform_name() -> &'static str {
 | `RESERVED_LIST` | 32 | `MemoryType::Reserved \| KImage \| PerCpuData`，并附加架构相关空洞（x86 低 2 MiB、loongarch 低 256 MiB） |
 | `MMIO_LIST` | 16 | `MemoryType::Mmio`，以及 x86 固定区（IOAPIC `0xfec0_0000`、HPET `0xfed0_0000`、LAPIC `0xfee0_0000`） |
 
-`push_non_overlapping` 负责合并/拆分相邻或重叠的 range，确保最终列表单调不重叠。模块还导出 `_percpu_base_ptr(idx)` 给 `ax-percpu/custom-base`，让它能找到 `somehal` 维护的 percpu 区域基址。
+`push_non_overlapping` 负责合并/拆分相邻或重叠的 range，确保最终列表单调不重叠。per-CPU remote lookup 不经过 `mem.rs` 或外部函数，而由已安装 layout 直接计算。
 
 `phys_to_virt` / `virt_to_phys` 直接转发到 `somehal::mem`。
 

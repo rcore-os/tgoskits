@@ -3,6 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use ax_cpu_local::CpuPin;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub const CSR_GSTAT: u16 = 0x50;
@@ -429,30 +430,6 @@ pub(crate) unsafe fn gintc_set_hwi_passthrough(mask: usize) {
 }
 
 #[inline(always)]
-pub(crate) unsafe fn set_ecfg_line_enabled(line: usize, enabled: bool) {
-    let bit = ecfg_line_mask(line);
-    let current = csr_read::<CSR_ECFG>();
-    let new_value = if enabled {
-        current | bit
-    } else {
-        current & !bit
-    };
-    csr_write::<CSR_ECFG>(new_value);
-}
-
-#[inline(always)]
-pub(crate) unsafe fn set_ecfg_vs(vs: usize) {
-    let current = csr_read::<CSR_ECFG>();
-    let field = ECFG::VS.val(vs);
-    csr_write::<CSR_ECFG>((current & !field.mask()) | field.value);
-}
-
-#[inline(always)]
-pub(crate) unsafe fn get_ecfg_vs() -> usize {
-    LocalRegisterCopy::<usize, ECFG::Register>::new(csr_read::<CSR_ECFG>()).read(ECFG::VS)
-}
-
-#[inline(always)]
 pub(crate) unsafe fn set_prmd_pie(pie: bool) {
     let current = csr_read::<CSR_PRMD>();
     let field = if pie { PRMD::PIE::SET.value } else { 0 };
@@ -464,11 +441,11 @@ pub(crate) fn gcsr_eentry_read() -> usize {
     unsafe { gcsr_read::<GCSR_EENTRY>() }
 }
 
-fn read_gintc() -> usize {
+pub(crate) fn read_gintc() -> usize {
     unsafe { csr_read::<CSR_GINTC>() }
 }
 
-unsafe fn write_gintc(value: usize) {
+pub(crate) unsafe fn write_gintc(value: usize) {
     csr_write::<CSR_GINTC>(value);
 }
 
@@ -476,7 +453,7 @@ fn current_hwis() -> usize {
     LocalRegisterCopy::<usize, GINTC::Register>::new(read_gintc()).read(GINTC::HWIS)
 }
 
-pub fn set_hwi_interrupts(mask: usize) {
+pub(crate) fn set_hwi_interrupts(_cpu_pin: &CpuPin, mask: usize) {
     let hwis = (mask >> INT_HWI0) & GINTC_HWIS_MASK;
     unsafe {
         let mut gintc = read_gintc();
@@ -501,7 +478,7 @@ unsafe fn pulse_hwi(vector: usize) {
     write_gintc(gintc);
 }
 
-pub fn inject_interrupt(vector: usize) {
+pub fn inject_interrupt(_cpu_pin: &CpuPin, vector: usize) {
     if vector > INT_IPI {
         log::warn!("LoongArch64: invalid interrupt vector {vector}");
         return;

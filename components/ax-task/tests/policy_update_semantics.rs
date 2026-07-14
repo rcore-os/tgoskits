@@ -66,12 +66,9 @@ fn remote_running_policy_update_is_delivered_to_its_owner_cpu() {
     system.bring_cpu_online(cpu1.as_mut()).unwrap();
     support::install_handles(
         (&system as *const TaskSystem).expose_provenance(),
-        (cpu0.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu0.as_mut(),
     );
-    support::install_cpu(
-        1,
-        (cpu1.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
-    );
+    support::install_cpu(1, cpu1.as_mut());
     support::set_online_cpu_count(2);
 
     let running = ready_thread(&system, SchedulePolicy::default());
@@ -205,6 +202,18 @@ fn pending_fair_to_deadline_update_reserves_before_owner_apply() {
         system.create_thread(ThreadSpec::new(deadline(10, 100))),
         Err(TaskError::DeadlineAdmission)
     ));
+
+    // The policy inbox carries an intrusive Arc publication that is normally
+    // consumed by the owner CPU at its next scheduler safe point. Complete
+    // that ownership transfer before the isolated fixture is torn down so the
+    // test does not strand the publication outside TaskSystem's registry.
+    assert_eq!(
+        system
+            .drain_policy_updates(cpu.as_mut(), 1)
+            .unwrap()
+            .drained(),
+        1
+    );
 }
 
 fn online_system(cpu_count: usize) -> (TaskSystem, core::pin::Pin<Box<ax_task::CpuLocal>>) {

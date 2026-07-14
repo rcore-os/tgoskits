@@ -10,7 +10,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, mem::size_of};
 
 use ax_errno::AxError;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use cvi_vdec_uapi::{
     COLOR_GAMUT_BT601, COMPRESS_MODE_NONE, CVI_VC_VDEC_CREATE_CHN, CVI_VC_VDEC_DESTROY_CHN,
@@ -243,14 +243,14 @@ impl VdecState {
 }
 
 pub(super) struct CviVdec {
-    state: Mutex<VdecState>,
+    state: PiMutex<VdecState>,
     jpu: Arc<CviJpu>,
 }
 
 impl CviVdec {
     pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
-            state: Mutex::new(VdecState::default()),
+            state: PiMutex::new(VdecState::default()),
             jpu,
         }
     }

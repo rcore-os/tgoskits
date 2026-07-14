@@ -5,7 +5,7 @@
 //!
 //! 异步模型（复刻原 Linux 驱动 `cvi_tpu_interface.c`）：`submit` 只把任务
 //! 入队并唤醒常驻 worker 线程后立即返回；worker 线程串行调用
-//! [`Sg2002Tpu::run_one`] 跑硬件，等待 TDMA 完成时通过 `IRQ_WQ` 睡眠让出
+//! [`Sg2002Tpu::run_one`] 跑硬件，等待 TDMA 完成时通过单 waiter IRQ cell 睡眠让出
 //! CPU；`wait` 按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 完成时唤醒。
 //!
 //! SG2002 默认单核，worker 等硬件时必须真正睡眠让出 CPU，相机前处理才能
@@ -25,15 +25,20 @@
 //!   因此用户在 worker 跑完前 `close(fd)` 不会导致 DMA 物理页被回收
 //!   （防 use-after-free）。
 
-use alloc::{collections::VecDeque, string::String, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc};
 use core::{
+    pin::Pin,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
-use ax_std::os::arceos::task::WaitQueue;
+use ax_std::os::arceos::task::{
+    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
+    ThreadId, ThreadWakeHandle, WaitQueue,
+};
 use sg2002_tpu::{
     ion::IonBuffer,
     tpu::{
@@ -86,8 +91,10 @@ const DONE_LIST_MAX: usize = 64;
 static TASK_WQ: WaitQueue = WaitQueue::new();
 /// 唤醒等待结果的提交者（对应 Linux `done_wait_queue`）。
 static DONE_WQ: WaitQueue = WaitQueue::new();
-/// TDMA 硬件中断到达时唤醒在此睡眠的 worker。
-static IRQ_WQ: WaitQueue = WaitQueue::new();
+/// Worker 在普通任务上下文完成 park；IRQ 只直接唤醒这个固定 waiter。
+static TPU_IRQ_PARK: WaitQueue = WaitQueue::new();
+static TPU_IRQ_NOTIFY: IrqWaitCell = IrqWaitCell::new();
+static TPU_IRQ_WAITER: LazyInit<TpuIrqWaiter> = LazyInit::new();
 /// worker 线程是否已启动（保证只 spawn 一次）。
 static WORKER_SPAWNED: AtomicBool = AtomicBool::new(false);
 /// 指向唯一 TPU 硬件实例，供注入的 [`tpu_wait_irq`] 读取中断标志。
@@ -217,9 +224,9 @@ fn register_tpu_irq(
         if hw.handle_irq() {
             warn!("[TPU] TDMA IRQ {irq:?} reports error status");
         }
-        // 唤醒在 IRQ_WQ 上睡眠的 worker。中断上下文不重调度（resched=false），
-        // 对齐 kpu.rs 的做法；WaitQueue 由 SpinNoIrq 守护，IRQ 内 notify 安全。
-        IRQ_WQ.notify_all(false);
+        // Hard IRQ performs one bounded direct wake. Wait-queue fan-out and
+        // parking remain in the fixed worker's ordinary task context.
+        let _result = TPU_IRQ_NOTIFY.notify();
         ax_runtime::hal::irq::IrqReturn::Handled
     }) {
         Ok(registration) => registration,
@@ -238,9 +245,9 @@ fn register_tpu_irq(
 
 /// 注入给 driver core 的阻塞等待函数：在超时内睡眠等待 TDMA 中断到达。
 ///
-/// 由 worker 线程上下文调用（普通可调度任务），睡眠让出 CPU；硬件中断到达时
-/// `tpu_tdma_irq_handler` 经 `IRQ_WQ` 唤醒。返回 `true` 表示中断已到达，
-/// `false` 表示本轮超时。
+/// 由 worker 线程上下文调用（普通可调度任务），睡眠让出 CPU。TDMA IRQ 仅
+/// 直接唤醒固定 worker registration；返回 `true` 表示观察到硬件完成，`false`
+/// 表示本轮超时或 registration 不变量被破坏。
 fn tpu_wait_irq(timeout_us: u64) -> bool {
     let hw = HW_PTR.load(Ordering::Acquire);
     if hw.is_null() {
@@ -248,9 +255,52 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
     }
     // SAFETY: HW_PTR 指向 worker 持有的 Arc 内的实例，生命周期与内核同长。
     let hw = unsafe { &*hw };
-    // wait_timeout_until 在睡前于队列锁内复检谓词，等价 Linux wait_event，
-    // 无唤醒先于等待的丢失风险。返回 true 表示超时。
-    !IRQ_WQ.wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending())
+    // IrqWaitCell 的 pending/register handshake 覆盖 IRQ-before-register；
+    // WaitQueue 的 park generation 再覆盖 wake-before-park。
+    let current = scheduler::current_thread_handle()
+        .unwrap_or_else(|error| panic!("TPU worker has no scheduler thread: {error}"));
+    let waiter = TPU_IRQ_WAITER.get_or_init(|| create_tpu_irq_waiter(&current));
+    assert_eq!(
+        waiter.owner,
+        current.id(),
+        "TPU IRQ notifications must target the fixed worker thread"
+    );
+    match TPU_IRQ_NOTIFY.register(waiter.registration.as_ref()) {
+        IrqRegisterResult::Registered | IrqRegisterResult::ConsumedPending => {
+            let timed_out = TPU_IRQ_PARK
+                .wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending());
+            if timed_out {
+                let _removed = TPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
+            }
+            hw.irq_pending()
+        }
+        IrqRegisterResult::Occupied => false,
+    }
+}
+
+struct TpuIrqWaiter {
+    owner: ThreadId,
+    registration: Pin<Box<IrqWaitRegistration>>,
+    _wake: &'static ThreadWakeHandle,
+}
+
+fn create_tpu_irq_waiter(current: &scheduler::ThreadHandle) -> TpuIrqWaiter {
+    let wake = Box::leak(Box::new(current.wake_handle()));
+    // SAFETY: the fixed worker and its wake handle live until shutdown. The
+    // direct wake is allocation-free, non-blocking, and hard-IRQ-safe.
+    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_tpu_worker) };
+    TpuIrqWaiter {
+        owner: current.id(),
+        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
+        _wake: wake,
+    }
+}
+
+unsafe fn wake_tpu_worker(data: usize) {
+    // SAFETY: `create_tpu_irq_waiter` publishes only the leaked wake handle
+    // retained by the shutdown-lifetime waiter.
+    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
+    let _result = wake.wake();
 }
 
 /// 常驻 worker 线程主循环（对应 Linux `work_thread_main`）。
@@ -291,7 +341,7 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
                 }
             }
         }
-        DONE_WQ.notify_all(false);
+        DONE_WQ.notify_all();
     }
 }
 
@@ -387,7 +437,7 @@ impl TpuDevice {
 
         // 入队并唤醒 worker，随后立即返回（submit 不等推理）。
         TASK_LIST.lock().push_back(task);
-        TASK_WQ.notify_one(true);
+        TASK_WQ.notify_one();
 
         Ok(0)
     }

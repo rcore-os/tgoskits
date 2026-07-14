@@ -26,6 +26,7 @@ extern crate log;
 mod arch;
 mod architecture;
 pub mod boot;
+mod current_vcpu;
 mod error;
 mod host;
 pub mod irq;
@@ -66,20 +67,17 @@ pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm,
+    inject_current_vcpu_interrupt, inject_vm_vcpu_interrupt, register_vm,
 };
+pub use runtime::vcpus::vcpu_on as boot_secondary_vcpu;
 pub(crate) use task::{AsVCpuTask, VCpuTask};
+pub use timer::{cancel_timer as cancel_vm_timer, register_timer as register_vm_timer};
 pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
 };
 
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
-
-/// Check and dispatch pending AxVM timer events on the current CPU.
-pub fn check_timer_events() {
-    timer::check_events();
-}
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {

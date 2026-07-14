@@ -10,7 +10,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
@@ -23,7 +23,7 @@ use crate::mm::flush_tlb_range_sync;
 #[doc(hidden)]
 pub struct FileBackendInner {
     shared: bool,
-    file_data: Mutex<FileBackendInnerData>,
+    file_data: PiMutex<FileBackendInnerData>,
     cache: CachedFile,
     flags: FileFlags,
     handle: AtomicUsize,
@@ -47,7 +47,7 @@ impl Drop for FileBackendInner {
     }
 }
 impl FileBackendInner {
-    pub fn register_listener(self: &Arc<Self>, aspace: &Arc<Mutex<AddrSpace>>) {
+    pub fn register_listener(self: &Arc<Self>, aspace: &Arc<PiMutex<AddrSpace>>) {
         if self.handle.load(Ordering::Acquire) != 0 {
             panic!("Listener already registered");
         }
@@ -176,7 +176,7 @@ impl FileBackendInner {
 
 /// File-backed mapping backend.
 #[derive(Clone)]
-pub struct FileBackend(Arc<FileBackendInner>, Weak<Mutex<AddrSpace>>);
+pub struct FileBackend(Arc<FileBackendInner>, Weak<PiMutex<AddrSpace>>);
 impl FileBackend {
     fn check_flags(&self, flags: MappingFlags) -> AxResult {
         let mut required_flags = FileFlags::empty();
@@ -194,12 +194,12 @@ impl FileBackend {
     }
 
     /// Clone with a different start address and a fresh evict listener.
-    pub fn with_start(&self, new_start: VirtAddr, aspace: &Arc<Mutex<AddrSpace>>) -> Self {
+    pub fn with_start(&self, new_start: VirtAddr, aspace: &Arc<PiMutex<AddrSpace>>) -> Self {
         let mut file_data = self.0.file_data.lock().clone();
         file_data.start = new_start;
         let inner = Arc::new(FileBackendInner {
             shared: self.0.shared,
-            file_data: Mutex::new(file_data),
+            file_data: PiMutex::new(file_data),
             cache: self.0.cache.clone(),
             flags: self.0.flags,
             handle: AtomicUsize::new(0),
@@ -453,7 +453,7 @@ impl BackendOps for FileBackend {
         _flags: MappingFlags,
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
-        new_aspace: &Arc<Mutex<AddrSpace>>,
+        new_aspace: &Arc<PiMutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         let start = self.0.file_data.lock().start;
@@ -468,7 +468,7 @@ impl BackendOps for FileBackend {
         let file_data = self.0.file_data.lock();
         let inner = Arc::new(FileBackendInner {
             shared: self.0.shared,
-            file_data: Mutex::new(FileBackendInnerData {
+            file_data: PiMutex::new(FileBackendInnerData {
                 start: file_data.start + align_diff,
                 offset_page: file_data.offset_page + (align_diff / PAGE_SIZE_4K) as u32,
             }),
@@ -505,13 +505,13 @@ impl Backend {
         cache: CachedFile,
         flags: FileFlags,
         offset: usize,
-        aspace: &Arc<Mutex<AddrSpace>>,
+        aspace: &Arc<PiMutex<AddrSpace>>,
         shared: bool,
     ) -> Self {
         let offset_page = (offset / PAGE_SIZE_4K) as u32;
         let inner = Arc::new(FileBackendInner {
             shared,
-            file_data: Mutex::new(FileBackendInnerData { start, offset_page }),
+            file_data: PiMutex::new(FileBackendInnerData { start, offset_page }),
             cache,
             flags,
             handle: AtomicUsize::new(0),

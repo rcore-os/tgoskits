@@ -81,7 +81,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use ax_task::{IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
@@ -121,7 +121,7 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
+static SERVICE: Once<SpinMutex<Service>> = Once::new();
 static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
@@ -131,8 +131,8 @@ static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
-static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static DEFERRED_POLL_WAKES: LazyLock<SpinMutex<Vec<DeferredPollEntry>>> =
+    LazyLock::new(|| SpinMutex::new(Vec::new()));
 
 pub(crate) struct DeferPollWake {
     pub(crate) poll: Arc<PollSet>,
@@ -158,8 +158,8 @@ impl Wake for DeferPollWake {
 /// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
 /// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
 /// `ioctl`) reach the device's [`WifiControl`] by name.
-static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static WIFI_CONTROLS: LazyLock<SpinMutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
+    LazyLock::new(|| SpinMutex::new(Vec::new()));
 
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
@@ -168,7 +168,7 @@ static NET_IRQ_REGISTRATION: Once<&'static IrqWaitRegistration> = Once::new();
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-fn get_service() -> ax_sync::MutexGuard<'static, Service> {
+fn get_service() -> ax_sync::SpinMutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")
@@ -313,7 +313,7 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     }
     let dhcp_enabled = service.dhcp_enabled();
     NET_CONTROL.call_once(|| control);
-    SERVICE.call_once(|| Mutex::new(service));
+    SERVICE.call_once(|| SpinMutex::new(service));
     get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
@@ -497,7 +497,7 @@ fn poll_until_idle() {
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
     publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
+        NET_POLL_WAKE.notify_one();
     });
 }
 
@@ -510,7 +510,7 @@ fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
     if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
-        NET_POLL_WAKE.notify_one(true);
+        NET_POLL_WAKE.notify_one();
     }
 }
 
@@ -1002,7 +1002,7 @@ pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
     use std::sync::{Mutex as StdMutex, MutexGuard, Once};
 
-    use ax_sync::Mutex;
+    use ax_sync::SpinMutex;
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
 
     use crate::{
@@ -1086,7 +1086,7 @@ pub(crate) mod test_support {
             });
 
             NET_CONTROL.call_once(|| control);
-            SERVICE.call_once(|| Mutex::new(service));
+            SERVICE.call_once(|| SpinMutex::new(service));
         });
     }
 }

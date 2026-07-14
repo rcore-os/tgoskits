@@ -57,35 +57,40 @@ pub enum LockKind {
 #[def_extern_trait(abi = "rust")]
 pub trait LockRuntime {
     /// Enters one nested local-IRQ-disabled section.
+    ///
+    /// Until the matching [`Self::irq_exit`], the runtime must reject every
+    /// scheduling path that could migrate the caller. This is stronger than a
+    /// raw hardware IRQ mask and allows [`IrqGuard::cpu_pin`] to expose a
+    /// migration proof. A CPU-local provider must separately validate that the
+    /// current architecture anchor names one of its installed areas.
     fn irq_enter();
 
     /// Leaves one nested local-IRQ-disabled section.
     fn irq_exit();
 
-    /// Returns whether local interrupts are currently enabled.
-    fn irqs_enabled() -> bool;
-
     /// Enters one nested preemption-disabled section.
+    ///
+    /// The caller must remain on the same CPU until the matching outermost
+    /// preemption exit or its typed scheduler-baton transfer.
     fn preempt_enter();
 
-    /// Leaves one nested preemption-disabled section.
+    /// Leaves one nested preemption-disabled section and performs any pending
+    /// task-context preemption at the runtime's validated scheduler safe point.
     ///
-    /// Returns `true` only when the outermost section was left and scheduling
-    /// is permitted by the scheduler's preemption state.
-    fn preempt_exit() -> bool;
+    /// The decrement, eligibility recheck, and scheduler entry are one runtime
+    /// operation. Keeping that sequence below this boundary prevents a stale
+    /// "outermost" result from crossing an interrupt or task migration.
+    fn preempt_exit();
 
-    /// Returns whether the current execution context is a hard interrupt.
-    fn in_hard_irq() -> bool;
-
-    /// Returns whether the current CPU has a pending reschedule request.
-    fn need_resched() -> bool;
-
-    /// Enters the scheduler at a runtime-validated safe point.
+    /// Leaves the IRQ handler's preemption guard and performs any pending
+    /// IRQ-return preemption while hardware interrupts remain disabled.
     ///
-    /// Ordinary guard exit calls this with IRQs enabled. Architecture IRQ
-    /// return may call it with IRQs disabled after controller EOI and hard-IRQ
-    /// marker teardown; the trap frame then restores the interrupted flags.
-    fn schedule();
+    /// # Safety
+    ///
+    /// Controller EOI and hard-IRQ bookkeeping must be complete. The caller
+    /// must return through a trap frame that owns restoration of the interrupted
+    /// hardware IRQ state.
+    unsafe fn preempt_exit_irq_return();
 
     /// Returns the current generation-bearing thread identifier.
     fn current_thread_id() -> u64;

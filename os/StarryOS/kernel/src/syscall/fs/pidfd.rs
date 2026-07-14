@@ -7,7 +7,7 @@ use starry_signal::{SignalInfo, Signo};
 use starry_vm::VmPtr;
 
 use crate::{
-    file::{FD_TABLE, FileLike, PidFd, add_file_like},
+    file::{FD_TABLE, FileLike, PidFd, add_file_like, current_fd_table},
     syscall::signal::check_kill_permission,
     task::{
         current, get_process_data, get_task, send_signal_to_process, send_signal_to_process_group,
@@ -101,7 +101,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
     let fd_entry = if is_current {
         // Use the live fd table for the current process. `proc_data.scope` is only
         // refreshed on clone/dup paths; syscalls like pipe() update ActiveScope only.
-        FD_TABLE.read().get(target_fd as usize).cloned()
+        current_fd_table().read().get(target_fd as usize).cloned()
     } else {
         FD_TABLE
             .scope(&proc_data.scope.read())

@@ -339,8 +339,6 @@ mod tests {
         let low_lock = PiLockId::new(1);
         let high_lock = PiLockId::new(2);
 
-        system.pi_mutex_acquired(low_lock, owner.id()).unwrap();
-        system.pi_mutex_acquired(high_lock, owner.id()).unwrap();
         let low_wait = system
             .pi_wait_start(low_lock, low_donor.id(), owner.id())
             .unwrap();
@@ -372,12 +370,6 @@ mod tests {
         let first_lock = PiLockId::new(11);
         let second_lock = PiLockId::new(12);
 
-        system
-            .pi_mutex_acquired(first_lock, first_owner.id())
-            .unwrap();
-        system
-            .pi_mutex_acquired(second_lock, second_owner.id())
-            .unwrap();
         let middle_wait = system
             .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
             .unwrap();
@@ -405,7 +397,6 @@ mod tests {
         system.enqueue(remote_cpu.as_mut(), owner.id(), 0).unwrap();
         let donor = create_thread(&system, fifo_policy(70));
         let lock = PiLockId::new(21);
-        system.pi_mutex_acquired(lock, owner.id()).unwrap();
         crate::test_runtime::reset_scheduler_ipis();
 
         let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
@@ -426,8 +417,6 @@ mod tests {
         let second = create_thread(&system, fair_policy());
         let first_lock = PiLockId::new(31);
         let second_lock = PiLockId::new(32);
-        system.pi_mutex_acquired(first_lock, first.id()).unwrap();
-        system.pi_mutex_acquired(second_lock, second.id()).unwrap();
         let _first_wait = system
             .pi_wait_start(first_lock, second.id(), first.id())
             .unwrap();

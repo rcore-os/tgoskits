@@ -2,16 +2,17 @@
 
 #[cfg(feature = "lockdep")]
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::{LockRuntime, LockdepEvent, impl_trait as impl_lock_runtime};
 use ax_task::{
-    impl_trait as impl_task_runtime,
+    CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
     runtime::{
-        AddressSpaceHandle, CpuLocalHandle, ExecutionContextHandle, IrqGuardToken,
-        KernelContextRequest, RuntimeCpuId, RuntimeHandleResult, RuntimeStatus, SchedSwitchRecord,
-        StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle, TlsRequest,
-        UserContextRequest,
+        AddressSpaceHandle, CpuRemoteHandle, CurrentCpuLocalHandle, ExecutionContextHandle,
+        IrqGuardToken, KernelContextRequest, RuntimeCpuId, RuntimeHandleResult,
+        RuntimeScheduleOrigin, RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus,
+        SchedSwitchRecord, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle,
+        TlsRequest, UserContextRequest,
     },
 };
 
@@ -23,6 +24,7 @@ static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_IPIS: AtomicUsize = AtomicUsize::new(0);
 static LAST_SCHEDULER_IPI_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULE_CONTEXT_SAFE: AtomicBool = AtomicBool::new(true);
 static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(feature = "lockdep")]
@@ -35,16 +37,15 @@ impl_lock_runtime! {
     impl LockRuntime for UnitTestLockRuntime {
         fn irq_enter() {}
         fn irq_exit() {}
-        fn irqs_enabled() -> bool { true }
         fn preempt_enter() {
             PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
         }
-        fn preempt_exit() -> bool {
-            PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) == 1
+        fn preempt_exit() {
+            assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
         }
-        fn in_hard_irq() -> bool { false }
-        fn need_resched() -> bool { false }
-        fn schedule() {}
+        unsafe fn preempt_exit_irq_return() {
+            assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
+        }
         fn current_thread_id() -> u64 { 1 }
         fn lockdep_acquire(_event: LockdepEvent) {}
         fn lockdep_release(_event: LockdepEvent) {}
@@ -55,23 +56,54 @@ impl_lock_runtime! {
 
 impl_task_runtime! {
     impl TaskRuntime for UnitTestTaskRuntime {
-        fn task_system_handle() -> TaskSystemHandle {
-            TaskSystemHandle::from_raw(TASK_SYSTEM.load(Ordering::Acquire))
+        unsafe fn task_system_handle() -> TaskSystemHandle {
+            // SAFETY: install/clear bracket the pinned fixture TaskSystem.
+            unsafe { TaskSystemHandle::from_raw(TASK_SYSTEM.load(Ordering::Acquire)) }
         }
-        fn current_cpu_local_handle() -> CpuLocalHandle {
-            CpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire))
+        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+            // SAFETY: install/clear bracket the pinned owner CpuLocal fixture.
+            unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire)) }
         }
-        fn cpu_local_handle(_cpu: RuntimeCpuId) -> CpuLocalHandle {
-            Self::current_cpu_local_handle()
+        unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+            let raw = TASK_SYSTEM.load(Ordering::Acquire);
+            if raw == 0 {
+                return CpuRemoteHandle::NONE;
+            }
+            // SAFETY: install/clear keep the pinned fixture TaskSystem alive.
+            let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(raw) };
+            system
+                .cpu_remote(CpuId::new(cpu.as_u32()))
+                .map_or(CpuRemoteHandle::NONE, |remote| {
+                    // SAFETY: TaskSystem owns the Arc-backed endpoint while the
+                    // fixture handle remains installed.
+                    unsafe {
+                        CpuRemoteHandle::from_raw(
+                            (remote as *const CpuRemote).expose_provenance(),
+                        )
+                    }
+                })
         }
         fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn online_cpu_count() -> u32 { 1 }
-        fn irq_guard_enter() -> IrqGuardToken { IrqGuardToken::from_raw(1) }
+        fn irq_guard_enter() -> IrqGuardToken {
+            // SAFETY: this single-CPU test runtime models one balanced token.
+            unsafe { IrqGuardToken::from_raw(1) }
+        }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
         fn finish_initial_context_switch() {}
-        fn scheduler_frame_guard_enter() {}
-        fn scheduler_frame_guard_exit() {}
+        fn scheduler_frame_guard_enter(
+            _origin: RuntimeScheduleOrigin,
+            _entry: RuntimeSchedulerEntry,
+        ) -> RuntimeStatus { RuntimeStatus::Success }
+        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool { true }
         fn in_hard_irq() -> bool { false }
+        fn validate_schedule_context(_origin: ax_task::runtime::RuntimeScheduleOrigin) -> RuntimeStatus {
+            if SCHEDULE_CONTEXT_SAFE.load(Ordering::Acquire) {
+                RuntimeStatus::Success
+            } else {
+                RuntimeStatus::UnsafeContext
+            }
+        }
         fn monotonic_ns() -> u64 { 0 }
         fn timer_resolution_ns() -> u64 { 1 }
         fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
@@ -150,6 +182,7 @@ pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexG
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     TASK_SYSTEM.store(task_system, Ordering::Release);
     CPU_LOCAL.store(cpu_local, Ordering::Release);
+    SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
     guard
 }
 
@@ -157,6 +190,11 @@ pub(crate) fn clear() {
     CPU_LOCAL.store(0, Ordering::Release);
     TASK_SYSTEM.store(0, Ordering::Release);
     PREEMPT_DEPTH.store(0, Ordering::Release);
+    SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
+}
+
+pub(crate) fn set_schedule_context_safe(safe: bool) {
+    SCHEDULE_CONTEXT_SAFE.store(safe, Ordering::Release);
 }
 
 pub(crate) fn reset_scheduler_ipis() {

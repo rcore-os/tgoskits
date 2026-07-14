@@ -1,6 +1,6 @@
 use ax_task::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiLockId, RtPriority, SchedulePolicy,
-    TaskSystem, TaskSystemConfig, ThreadSpec,
+    TaskError, TaskSystem, TaskSystemConfig, ThreadId, ThreadSpec,
 };
 
 mod support;
@@ -16,7 +16,6 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
     let late = ready_thread(&system, deadline(1, 10, 100));
     let early = ready_thread(&system, deadline(1, 10, 100));
     let lock = PiLockId::new(0xA501);
-    system.pi_mutex_acquired(lock, owner.id()).unwrap();
 
     system.enqueue(cpu.as_mut(), early.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), early.id());
@@ -49,9 +48,6 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
 fn exhausted_deadline_with_only_an_uncontended_lock_is_throttled() {
     let (system, mut cpu) = online_system();
     let deadline = ready_thread(&system, deadline(2, 10, 100));
-    system
-        .pi_mutex_acquired(PiLockId::new(0xA502), deadline.id())
-        .unwrap();
     system.enqueue(cpu.as_mut(), deadline.id(), 0).unwrap();
     assert_eq!(
         system.schedule(cpu.as_mut(), 0).unwrap().next(),
@@ -86,12 +82,6 @@ fn exhausted_deadline_donation_rescues_every_contended_owner_in_the_chain() {
     let donor = ready_thread(&system, deadline(1, 10, 100));
     let first_lock = PiLockId::new(0xA503);
     let second_lock = PiLockId::new(0xA504);
-    system
-        .pi_mutex_acquired(first_lock, first_owner.id())
-        .unwrap();
-    system
-        .pi_mutex_acquired(second_lock, second_owner.id())
-        .unwrap();
 
     system.enqueue(cpu.as_mut(), donor.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), donor.id());
@@ -131,7 +121,6 @@ fn queued_owner_receives_an_exhausted_donor_as_runnable_rescue_work() {
     let owner = ready_thread(&system, SchedulePolicy::default());
     let donor = ready_thread(&system, deadline(1, 10, 100));
     let lock = PiLockId::new(0xA508);
-    system.pi_mutex_acquired(lock, owner.id()).unwrap();
 
     system.enqueue(cpu.as_mut(), donor.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), donor.id());
@@ -160,9 +149,6 @@ fn uncontended_rt_lock_owner_does_not_bypass_exhausted_rt_bandwidth() {
     let (system, mut cpu) = online_system();
     let rt = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(80).unwrap()));
     let fair = ready_thread(&system, SchedulePolicy::default());
-    system
-        .pi_mutex_acquired(PiLockId::new(0xA505), rt.id())
-        .unwrap();
     system.enqueue(cpu.as_mut(), rt.id(), 0).unwrap();
     system.enqueue(cpu.as_mut(), fair.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), rt.id());
@@ -187,8 +173,6 @@ fn a_pi_wait_cycle_reports_the_fatal_scheduler_invariant() {
         .unwrap();
     let first_lock = PiLockId::new(0xA506);
     let second_lock = PiLockId::new(0xA507);
-    system.pi_mutex_acquired(first_lock, first.id()).unwrap();
-    system.pi_mutex_acquired(second_lock, second.id()).unwrap();
     let _edge = system
         .pi_wait_start(first_lock, second.id(), first.id())
         .unwrap();
@@ -197,6 +181,56 @@ fn a_pi_wait_cycle_reports_the_fatal_scheduler_invariant() {
         let _never = system.pi_wait_start(second_lock, first.id(), second.id());
     }));
     assert!(cycle.is_err());
+}
+
+#[test]
+fn stale_pi_owner_returns_a_typed_error_instead_of_reporting_a_cycle() {
+    let (system, _cpu) = online_system();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let stale_owner = ThreadId::from_parts(u32::MAX, 1);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        system.pi_wait_start(PiLockId::new(0xA509), waiter.id(), stale_owner)
+    }));
+
+    assert!(matches!(result.unwrap(), Err(TaskError::StaleThreadId)));
+}
+
+#[test]
+fn threads_with_live_pi_edges_cannot_exit_and_leave_dangling_donations() {
+    let (system, _cpu) = online_system();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let wait = system
+        .pi_wait_start(PiLockId::new(0xA50A), waiter.id(), owner.id())
+        .unwrap();
+
+    assert_eq!(
+        system.mark_exited(owner.id()),
+        Err(TaskError::InvalidPiState)
+    );
+    assert_eq!(
+        system.mark_exited(waiter.id()),
+        Err(TaskError::InvalidPiState)
+    );
+
+    system.pi_wait_cancel(wait).unwrap();
+    system.mark_exited(waiter.id()).unwrap();
+    system.mark_exited(owner.id()).unwrap();
+
+    let live_waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    assert!(matches!(
+        system.pi_wait_start(PiLockId::new(0xA50B), live_waiter.id(), owner.id()),
+        Err(TaskError::InvalidPiState)
+    ));
 }
 
 fn online_system() -> (TaskSystem, core::pin::Pin<Box<ax_task::CpuLocal>>) {

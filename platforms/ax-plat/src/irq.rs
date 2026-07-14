@@ -2,12 +2,12 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_kspin::IrqGuard;
+use ax_kspin::{IrqGuard, PreemptGuard};
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
-    CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
-    ShareMode, TrapVector,
+    CpuId, CpuIpiTarget, CpuMask, HwIrq, IpiSendStatus, IrqAffinity, IrqContext, IrqDomainId,
+    IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
+    IrqSource, IrqStatus, Registry, ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -66,25 +66,49 @@ pub fn IrqNumber(raw: usize) -> Result<IrqId, IrqError> {
     legacy_irq(raw)
 }
 
-/// Raw synchronous cross-CPU call used by the IRQ registry.
+/// Raw synchronous cross-CPU call used after the adapter proves the target is remote.
 pub type RunOnCpuSync = unsafe fn(usize, unsafe fn(*mut ()), *mut ()) -> Result<(), IrqError>;
 
 static RUN_ON_CPU_SYNC: AtomicUsize = AtomicUsize::new(0);
 
 /// Installs the runtime-provided synchronous cross-CPU call implementation.
-pub fn set_run_on_cpu_sync(run_on_cpu_sync: RunOnCpuSync) {
-    RUN_ON_CPU_SYNC.store(run_on_cpu_sync as usize, Ordering::Release);
+///
+/// Reinstalling the same function is idempotent. Installing a different
+/// implementation after the first successful call is a fatal initialization
+/// error because an IRQ operation may already be executing through the old
+/// function pointer.
+///
+/// # Safety
+///
+/// The installed function must execute `f(arg)` synchronously on exactly the
+/// requested logical CPU with local IRQs disabled. On every return path,
+/// including timeout and error paths, it must guarantee that `f` cannot begin
+/// or continue later and that neither `f` nor `arg` is retained. The
+/// implementation and all state it uses must remain valid until shutdown.
+/// Installation must complete before IRQ consumers become reachable.
+///
+/// # Panics
+///
+/// Panics if a different implementation was installed previously.
+pub unsafe fn set_run_on_cpu_sync(run_on_cpu_sync: RunOnCpuSync) {
+    assert!(
+        crate::install_runtime_hook_once(&RUN_ON_CPU_SYNC, run_on_cpu_sync as *const () as usize,),
+        "attempted to replace the synchronous cross-CPU call implementation"
+    );
 }
 
 /// Runs a raw thunk synchronously on the requested CPU.
 ///
 /// This is the generic owner-CPU execution bridge used by device runtimes that
 /// must keep register access on one non-reentrant CPU context.
+/// Local thunks run with local IRQs disabled. Remote calls from IRQ context are
+/// rejected with [`IrqError::InIrqContext`].
 ///
 /// # Safety
 ///
-/// `arg` must stay valid until this function returns, and `f` must be safe to
-/// execute in the target CPU's IRQ/IPI context.
+/// `arg` must stay valid until this function returns. `f` must not block and
+/// must be safe to execute with local IRQs disabled at the target CPU's
+/// IRQ-return safe point.
 pub unsafe fn run_on_cpu_sync(
     cpu: CpuId,
     f: unsafe fn(*mut ()),
@@ -95,7 +119,11 @@ pub unsafe fn run_on_cpu_sync(
 
 struct PlatIrqOps;
 
-impl IrqOps for PlatIrqOps {
+// SAFETY: Local thunks run inline under the routing pin. The remote bridge is a
+// synchronous rendezvous and guarantees that no callback can execute after it
+// returns, including timeout/error paths. PlatIrqOps has no mutable instance
+// state and is safe to share between CPUs.
+unsafe impl IrqOps for PlatIrqOps {
     type LocalIrqState = IrqGuard;
 
     fn current_cpu(&self) -> CpuId {
@@ -108,7 +136,7 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn in_irq_context(&self) -> bool {
-        in_irq_context_on(self.current_cpu())
+        current_cpu_in_irq_context()
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -125,18 +153,30 @@ impl IrqOps for PlatIrqOps {
         f: unsafe fn(*mut ()),
         arg: *mut (),
     ) -> Result<(), IrqError> {
-        if cpu == self.current_cpu() {
+        let route_guard = PreemptGuard::new();
+        let irq_guard = IrqGuard::new();
+        let current_cpu = CpuId(crate::percpu::this_cpu_id_pinned(irq_guard.cpu_pin()));
+
+        if cpu == current_cpu {
             unsafe { f(arg) };
-            Ok(())
-        } else {
-            let run_on_cpu_sync = RUN_ON_CPU_SYNC.load(Ordering::Acquire);
-            if run_on_cpu_sync == 0 {
-                return Err(IrqError::Unsupported);
-            }
-            let run_on_cpu_sync =
-                unsafe { core::mem::transmute::<usize, RunOnCpuSync>(run_on_cpu_sync) };
-            unsafe { run_on_cpu_sync(cpu.0, f, arg) }
+            drop(irq_guard);
+            drop(route_guard);
+            return Ok(());
         }
+        if in_irq_context_on(current_cpu) {
+            return Err(IrqError::InIrqContext);
+        }
+        drop(irq_guard);
+
+        let run_on_cpu_sync = RUN_ON_CPU_SYNC.load(Ordering::Acquire);
+        if run_on_cpu_sync == 0 {
+            return Err(IrqError::Unsupported);
+        }
+        let run_on_cpu_sync =
+            unsafe { core::mem::transmute::<usize, RunOnCpuSync>(run_on_cpu_sync) };
+        let result = unsafe { run_on_cpu_sync(cpu.0, f, arg) };
+        drop(route_guard);
+        result
     }
 
     fn set_enabled(&self, irq: IrqId, _cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError> {
@@ -174,7 +214,15 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    in_irq_context_on(PlatIrqOps.current_cpu())
+    current_cpu_in_irq_context()
+}
+
+fn current_cpu_in_irq_context() -> bool {
+    let guard = IrqGuard::new();
+    let cpu = CpuId(crate::percpu::this_cpu_id_pinned(guard.cpu_pin()));
+    let result = in_irq_context_on(cpu);
+    drop(guard);
+    result
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -290,27 +338,6 @@ pub fn resolve_percpu_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     resolve_percpu(hwirq)
 }
 
-/// Target specification for inter-processor interrupts (IPIs).
-pub enum IpiTarget {
-    /// Send to the current CPU.
-    Current {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-    },
-    /// Send to a specific CPU.
-    Other {
-        /// The CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
-}
-
 /// IRQ management interface.
 #[def_plat_interface]
 pub trait IrqIf {
@@ -345,7 +372,15 @@ pub trait IrqIf {
     fn handle(vector: TrapVector) -> Option<IrqId>;
 
     /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(irq_num: IrqId, target: IpiTarget);
+    ///
+    /// The IRQ guard keeps the caller on one logical CPU and excludes a nested
+    /// local sender while implementations validate the target and commit the
+    /// controller transaction. This is required by split xAPIC ICR writes.
+    fn send_ipi(
+        irq_num: IrqId,
+        target: CpuIpiTarget,
+        irq_guard: &ax_kspin::IrqGuard,
+    ) -> IpiSendStatus;
 
     /// Returns the platform IRQ id used for runtime IPIs.
     fn ipi_irq() -> IrqId;
@@ -398,7 +433,13 @@ mod tests {
             None
         }
 
-        fn send_ipi(_irq_num: IrqId, _target: IpiTarget) {}
+        fn send_ipi(
+            _irq_num: IrqId,
+            _target: CpuIpiTarget,
+            _irq_guard: &ax_kspin::IrqGuard,
+        ) -> IpiSendStatus {
+            IpiSendStatus::Invalid
+        }
 
         fn ipi_irq() -> IrqId {
             IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))

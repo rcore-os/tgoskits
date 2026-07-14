@@ -25,7 +25,7 @@ use core::{
 use ax_errno::AxResult;
 use ax_kspin::{PreemptIrqGuard, SpinRwLock as RwLock};
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
-use ax_sync::{Mutex, spin::SpinNoIrq};
+use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
@@ -105,6 +105,12 @@ pub struct Thread {
 
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
+
+    /// Linux task nice value retained independently of the active class.
+    ///
+    /// RT/Deadline threads keep this value so switching back to Fair restores
+    /// the thread's own priority rather than a thread-group-wide default.
+    nice: AtomicI32,
 
     /// The clear thread tid field
     ///
@@ -228,6 +234,7 @@ impl Thread {
                 signal_mask,
             ),
             proc_data,
+            nice: AtomicI32::new(0),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
             cpu_time: CpuTimeAccounting::new(),
@@ -271,6 +278,16 @@ impl Thread {
     /// step to transfer the leader's TID to a non-leader caller.
     pub(crate) fn set_tid(&self, tid: u32) {
         self.tid.store(tid, Ordering::Release);
+    }
+
+    /// Returns this Linux task's nice value.
+    pub fn nice(&self) -> i32 {
+        self.nice.load(Ordering::Acquire)
+    }
+
+    /// Updates this Linux task's retained nice value.
+    pub fn set_nice(&self, nice: i32) {
+        self.nice.store(nice, Ordering::Release);
     }
 
     /// Returns the generation-bearing scheduler identity, if it has been bound.
@@ -640,12 +657,12 @@ pub struct ProcessData {
     pub auxv: RwLock<Vec<AuxEntry>>,
     /// The virtual memory address space.
     // TODO: scopify
-    aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
+    aspace: SpinNoIrq<Arc<PiMutex<AddrSpace>>>,
     /// The per-process uprobe manager. Each process has its own because user
     /// code can be modified independently.
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
-    pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
+    pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
     /// The resource scope
     pub scope: RwLock<Scope>,
     /// The namespace proxy — aggregates all namespace types for this process.
@@ -666,7 +683,7 @@ pub struct ProcessData {
     /// Serializes `execve` within the process. Only one thread can be
     /// tearing down the thread group at a time; concurrent attempts return
     /// `EINTR` (the loser is about to be zapped anyway).
-    pub exec_lock: Mutex<()>,
+    pub exec_lock: PiMutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
     /// The thread in the parent thread group that created this process.
@@ -689,9 +706,6 @@ pub struct ProcessData {
 
     /// The default mask for file permissions.
     umask: AtomicU32,
-
-    /// The process nice value used by getpriority/setpriority compatibility.
-    nice: AtomicI32,
 
     /// Process-local membarrier(2) registration state bitmask.
     membarrier_state: AtomicU32,
@@ -835,7 +849,7 @@ impl ProcessData {
     pub fn new(
         proc: Arc<Process>,
         image: ProcessImage,
-        aspace: Arc<Mutex<AddrSpace>>,
+        aspace: Arc<PiMutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
@@ -848,7 +862,7 @@ impl ProcessData {
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
-            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
+            uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
             scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
@@ -857,7 +871,7 @@ impl ProcessData {
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
             thread_exit_event: Arc::default(),
-            exec_lock: Mutex::new(()),
+            exec_lock: PiMutex::new(()),
             exit_signal,
             wait_parent_tid,
 
@@ -873,7 +887,6 @@ impl ProcessData {
             vfork_done: SpinNoIrq::new(None),
 
             umask: AtomicU32::new(0o022),
-            nice: AtomicI32::new(0),
             membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
             thp_disable: AtomicU32::new(0),
@@ -908,7 +921,7 @@ impl ProcessData {
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
         // from `lock()` lives until the end of the statement, so calling
-        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // `attach_process_slot` (which locks `PiMutex<AddrSpace>`) in the same
         // expression would nest a sleepable lock inside atomic context.
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
@@ -945,14 +958,16 @@ impl ProcessData {
     /// The closure runs with preemption and local IRQs disabled, so it should
     /// only install already-prepared scope entries.
     pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
-        let _guard = PreemptIrqGuard::new();
-        ActiveScope::set_global();
+        let guard = PreemptIrqGuard::new();
+        ActiveScope::set_global_pinned(guard.cpu_pin());
         unsafe { self.scope.force_read_decrement() };
         let mut scope = self.scope.write();
         let ret = f(&mut scope);
         drop(scope);
         let scope = self.scope.read();
-        unsafe { ActiveScope::set(&scope) };
+        // SAFETY: the leaked read ownership below keeps this scope alive until
+        // the next scheduler switch or mutation of the same process data.
+        unsafe { ActiveScope::set_pinned(&scope, guard.cpu_pin()) };
         core::mem::forget(scope);
         ret
     }
@@ -986,16 +1001,6 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
-    }
-
-    /// Get the process nice value.
-    pub fn nice(&self) -> i32 {
-        self.nice.load(Ordering::SeqCst)
-    }
-
-    /// Set the process nice value.
-    pub fn set_nice(&self, nice: i32) {
-        self.nice.store(nice, Ordering::SeqCst);
     }
 
     /// Get the membarrier(2) registration state bitmask.
@@ -1693,7 +1698,7 @@ impl ProcessData {
     }
 
     /// Returns a clone of the address space Arc.
-    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
+    pub fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
         self.aspace.lock().clone()
     }
 
@@ -1701,24 +1706,24 @@ impl ProcessData {
     ///
     /// # Why `mem::replace` instead of `*guard = new_aspace`
     ///
-    /// `self.aspace` is a `SpinNoIrq<Arc<Mutex<AddrSpace>>>`. Locking it
+    /// `self.aspace` is a `SpinNoIrq<Arc<PiMutex<AddrSpace>>>`. Locking it
     /// disables IRQs and increments `preempt_count`, putting us in atomic
     /// context. A plain assignment (`*guard = new_aspace`) would drop the
-    /// **old** `Arc<Mutex<AddrSpace>>` while the `SpinNoIrq` guard is still
+    /// **old** `Arc<PiMutex<AddrSpace>>` while the `SpinNoIrq` guard is still
     /// alive. If that was the last strong reference (e.g. after a
     /// `CLONE_VM` + `execve`), the destructor chain would be:
     ///
     /// ```text
-    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
+    /// Arc::drop → PiMutex<AddrSpace>::drop → AddrSpace::drop
     ///   → self.clear() → areas.clear() → FileBackendInner::drop
     ///     → cache.remove_evict_listener()
-    ///       → evict_listeners.lock()        ← sleeping Mutex
+    ///       → evict_listeners.lock()        ← sleeping PiMutex
     ///         → might_sleep()               ← PANIC (atomic context)
     /// ```
     ///
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
     /// **after** the `SpinNoIrq` guard, in normal preemptible context.
-    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+    pub fn replace_aspace(&self, new_aspace: Arc<PiMutex<AddrSpace>>) {
         let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)

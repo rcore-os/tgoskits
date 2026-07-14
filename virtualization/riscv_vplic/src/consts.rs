@@ -9,6 +9,9 @@
 /// Source IDs range from 1 to 1023 (inclusive). Source 0 is reserved and does not exist.
 pub const PLIC_NUM_SOURCES: usize = 1024;
 
+/// Number of 32-bit enable or pending words required for all sources.
+pub const PLIC_ENABLE_WORDS: usize = PLIC_NUM_SOURCES / 32;
+
 /// Offset to priority register for interrupt source 0 (reserved).
 /// Priority for source N is at: PLIC_PRIORITY_OFFSET + N * 4
 pub const PLIC_PRIORITY_OFFSET: usize = 0x000000;

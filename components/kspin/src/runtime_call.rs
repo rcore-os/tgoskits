@@ -14,33 +14,19 @@ pub(crate) fn irq_exit() {
 }
 
 #[inline(always)]
-pub(crate) fn irqs_enabled() -> bool {
-    imp::irqs_enabled()
-}
-
-#[inline(always)]
 pub(crate) fn preempt_enter() {
     imp::preempt_enter();
 }
 
 #[inline(always)]
-pub(crate) fn preempt_exit() -> bool {
-    imp::preempt_exit()
+pub(crate) fn preempt_exit() {
+    imp::preempt_exit();
 }
 
 #[inline(always)]
-pub(crate) fn in_hard_irq() -> bool {
-    imp::in_hard_irq()
-}
-
-#[inline(always)]
-pub(crate) fn need_resched() -> bool {
-    imp::need_resched()
-}
-
-#[inline(always)]
-pub(crate) fn schedule() {
-    imp::schedule();
+pub(crate) unsafe fn preempt_exit_irq_return() {
+    // SAFETY: the caller forwards the LockRuntime IRQ-return contract.
+    unsafe { imp::preempt_exit_irq_return() };
 }
 
 #[inline(always)]
@@ -117,10 +103,6 @@ pub(crate) mod imp {
         });
     }
 
-    pub(crate) fn irqs_enabled() -> bool {
-        with(|state| state.irq_depth == 0)
-    }
-
     pub(crate) fn preempt_enter() {
         update(|state| {
             state.preempt_depth += 1;
@@ -128,27 +110,29 @@ pub(crate) mod imp {
         });
     }
 
-    pub(crate) fn preempt_exit() -> bool {
-        update_with_result(|state| {
+    pub(crate) fn preempt_exit() {
+        update(|state| {
             assert!(state.preempt_depth > 0, "unbalanced test preempt exit");
             state.preempt_depth -= 1;
             state.events.push("preempt-exit");
-            state.preempt_depth == 0
-        })
+            if state.preempt_depth == 0 && state.need_resched {
+                state.need_resched = false;
+                state.scheduled += 1;
+                state.events.push("schedule");
+            }
+        });
     }
 
-    pub(crate) fn in_hard_irq() -> bool {
-        false
-    }
-
-    pub(crate) fn need_resched() -> bool {
-        with(|state| state.need_resched)
-    }
-
-    pub(crate) fn schedule() {
+    pub(crate) unsafe fn preempt_exit_irq_return() {
         update(|state| {
-            state.scheduled += 1;
-            state.events.push("schedule");
+            assert!(state.preempt_depth > 0, "unbalanced test preempt exit");
+            state.preempt_depth -= 1;
+            state.events.push("preempt-exit-irq-return");
+            if state.preempt_depth == 0 && state.need_resched {
+                state.need_resched = false;
+                state.scheduled += 1;
+                state.events.push("schedule-irq-return");
+            }
         });
     }
 
@@ -194,9 +178,5 @@ pub(crate) mod imp {
 
     fn update(f: impl FnOnce(&mut State)) {
         STATE.with(|state| f(&mut state.borrow_mut()));
-    }
-
-    fn update_with_result<T>(f: impl FnOnce(&mut State) -> T) -> T {
-        STATE.with(|state| f(&mut state.borrow_mut()))
     }
 }

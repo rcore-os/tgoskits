@@ -3,18 +3,20 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 #[cfg(not(test))]
 use ax_kspin::SpinNoIrq as IrqRouteMutex;
-use ax_kspin::SpinRaw as Mutex;
 #[cfg(test)]
 use ax_kspin::SpinRaw as IrqRouteMutex;
+use ax_kspin::{IrqGuard, SpinRaw as Mutex};
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
 pub use irq_framework::{
-    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqError,
-    IrqId, IrqSource,
+    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, CpuIpiTarget, HwIrq,
+    IpiSendStatus, IrqDomainId, IrqError, IrqId, IrqSource,
 };
 use rdrive::{Device, DeviceId};
 
+#[cfg(target_arch = "riscv64")]
+pub use crate::arch::RiscvPlicIrqEndpoint;
 use crate::{arch::Plat, common::PlatOp};
 
 /// CPU-local interrupt domain for architecture trap causes such as timers/IPIs.
@@ -263,8 +265,13 @@ pub struct ActiveIrq {
 }
 
 impl ActiveIrq {
+    /// Returns the controller IRQ before any parent-to-leaf route is applied.
+    pub fn controller_id(&self) -> IrqId {
+        Plat::active_irq_id(&self.inner)
+    }
+
     pub fn id(&self) -> IrqId {
-        resolve_irq_route(Plat::active_irq_id(&self.inner))
+        resolve_irq_route(self.controller_id())
     }
 }
 
@@ -353,28 +360,6 @@ pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
         .map(|route| route.parent)
 }
 
-/// Target specification for inter-processor interrupts.
-#[derive(Clone, Copy, Debug)]
-pub enum IpiTarget {
-    /// Send to the current CPU.
-    Current {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-    },
-    /// Send to a specific CPU.
-    Other {
-        /// The logical CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
-}
-
 /// Hardware routing preference for a global IRQ line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrqAffinity {
@@ -428,8 +413,47 @@ pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqErro
     Plat::irq_set_affinity(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
 }
 
-pub fn send_ipi(irq: IrqId, target: IpiTarget) {
-    Plat::send_ipi(irq, target);
+/// Resolves and permanently leases one RISC-V PLIC source for a fixed IRQ-side
+/// endpoint. This is a control-plane operation and must run before the source
+/// can enter hard-IRQ forwarding.
+#[cfg(target_arch = "riscv64")]
+pub fn lease_riscv_plic_irq_endpoint(
+    irq: IrqId,
+    affinity: IrqAffinity,
+) -> Result<RiscvPlicIrqEndpoint, IrqError> {
+    crate::arch::lease_riscv_plic_irq_endpoint(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
+}
+
+/// Atomically leases a validated batch of RISC-V PLIC sources.
+///
+/// No source changes affinity, enablement, or ownership unless the complete
+/// batch can commit under the controller lock.
+#[cfg(target_arch = "riscv64")]
+pub fn lease_riscv_plic_irq_endpoints(
+    irqs: &[IrqId],
+    affinity: IrqAffinity,
+) -> Result<Vec<RiscvPlicIrqEndpoint>, IrqError> {
+    let mut parents = Vec::with_capacity(irqs.len());
+    for &irq in irqs {
+        parents.push(parent_irq_for_leaf(irq).unwrap_or(irq));
+    }
+    crate::arch::lease_riscv_plic_irq_endpoints(&parents, affinity)
+}
+
+/// Sends an IPI while local IRQ nesting excludes every nested sender.
+///
+/// The lowest public sender requires the guard because xAPIC commits one IPI
+/// through a shared high/low register pair. Keeping the guard across current
+/// CPU identification, target validation, and the architecture transaction
+/// makes that pair structurally non-reentrant.
+pub fn send_ipi(irq: IrqId, target: CpuIpiTarget, irq_guard: &IrqGuard) -> IpiSendStatus {
+    // Materialize the pin before observing the logical CPU. Its lifetime is
+    // tied to `irq_guard`, which remains borrowed through the transaction.
+    let _cpu_pin = irq_guard.cpu_pin();
+    let Some(current_cpu) = crate::cpu::runtime_current_cpu() else {
+        return IpiSendStatus::Invalid;
+    };
+    Plat::send_ipi(irq, target, current_cpu)
 }
 
 pub fn ipi_irq() -> IrqId {
@@ -449,8 +473,7 @@ pub enum CpuBootRole {
 pub fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
     if !rdrive::is_initialized() {
         warn!("rdrive is not initialized; skip boot IRQ probe");
-        Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
-        return Ok(());
+        return Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
     }
 
     finish_boot_irq_probe_stage(
@@ -461,8 +484,7 @@ pub fn init_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
         BootIrqProbeStage::Optional("MSI"),
         rdrive::probe_pre_kernel_until(rdrive::register::ProbePriority::MSI, false),
     )?;
-    Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary);
-    Ok(())
+    Plat::init_boot_irq_cpu(cpu_id, CpuBootRole::Primary)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -491,8 +513,8 @@ fn finish_boot_irq_probe_stage(
     }
 }
 
-pub fn init_secondary_boot_irqs(cpu_id: usize) {
-    Plat::init_secondary_boot_irqs(cpu_id);
+pub fn init_secondary_boot_irqs(cpu_id: usize) -> Result<(), IrqError> {
+    Plat::init_secondary_boot_irqs(cpu_id)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -511,10 +533,6 @@ pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
 
 pub fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
     Plat::resolve_irq_source(source)
-}
-
-pub fn send_ipi_to_cpu(cpu_id: usize) {
-    Plat::send_ipi_to_cpu(cpu_id);
 }
 
 #[cfg(test)]

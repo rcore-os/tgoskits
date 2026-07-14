@@ -133,7 +133,7 @@ cfg_task! {
         .topology_len();
         let affinity = cpu_set_from_mask(cpumask, topology_len)?;
         task_result(
-            ax_runtime::task::set_thread_affinity(thread, affinity),
+            ax_runtime::task::set_current_thread_affinity(affinity),
             "set current task affinity",
         )
     }
@@ -170,12 +170,36 @@ cfg_task! {
         false
     }
 
+    /// Blocks until `until_condition` becomes true or the absolute monotonic
+    /// `deadline` elapses.
+    ///
+    /// Returns `true` only when the deadline wins.
+    #[track_caller]
+    pub fn ax_wait_queue_wait_until_deadline(
+        wq: &AxWaitQueueHandle,
+        deadline: Duration,
+        until_condition: impl Fn() -> bool,
+    ) -> bool {
+        #[cfg(feature = "irq")]
+        return wq.0.wait_until_deadline(deadline, until_condition);
+
+        #[cfg(not(feature = "irq"))]
+        {
+            let _ = deadline;
+            ax_log::warn!(
+                "ax_wait_queue_wait_until_deadline: the deadline is ignored without the `irq` feature"
+            );
+            wq.0.wait_until(until_condition);
+            false
+        }
+    }
+
     pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) {
         if count == u32::MAX {
-            wq.0.notify_all(true);
+            wq.0.notify_all();
         } else {
             for _ in 0..count {
-                if !wq.0.notify_one(true) {
+                if !wq.0.notify_one() {
                     break;
                 }
             }
@@ -186,7 +210,7 @@ cfg_task! {
     where
         F: Fn(u64),
     {
-        wq.0.notify_one_with(true, func);
+        wq.0.notify_one_with(func);
     }
 
     fn task_result<T>(
@@ -220,6 +244,7 @@ cfg_task! {
             TaskError::StaleThreadId => crate::AxError::NotFound,
             TaskError::NotInitialized
             | TaskError::InvalidRuntimeHandle
+            | TaskError::CpuOwnerBorrowed
             | TaskError::CpuOwnerMismatch { .. }
             | TaskError::ExecutorOwnerMismatch { .. }
             | TaskError::CpuAlreadyOnline(_)

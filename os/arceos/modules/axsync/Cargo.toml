@@ -8,7 +8,7 @@ description = "ArceOS synchronization primitives"
 license.workspace = true
 
 [features]
-multitask = []
+multitask = ["dep:ax-task"]
 lockdep = [
   "multitask",
   "ax-kspin/lockdep",
@@ -19,7 +19,7 @@ default = []
 
 [dependencies]
 ax-lockdep = { workspace = true, optional = true }
-ax-task.workspace = true
+ax-task = { workspace = true, optional = true }
 ax-kspin.workspace = true
 lock_api.workspace = true
 

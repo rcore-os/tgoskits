@@ -19,6 +19,7 @@ use core::{
     mem::size_of,
 };
 
+use ax_cpu_local::CpuPin;
 use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
@@ -1690,7 +1691,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         )
     }
 
-    pub fn run(&mut self) -> X86VcpuResult<X86VmExit> {
+    pub fn run(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 X86VmExit::FailEntry {
@@ -1831,11 +1832,11 @@ impl<H: X86HostOps> VmxVcpu<H> {
         }
     }
 
-    pub fn bind(&mut self) -> X86VcpuResult {
+    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
         self.bind_to_current_processor()
     }
 
-    pub fn unbind(&mut self) -> X86VcpuResult {
+    pub fn unbind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
         self.launched = false;
         self.unbind_from_current_processor()
     }

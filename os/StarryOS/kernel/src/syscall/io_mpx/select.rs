@@ -12,7 +12,7 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
-    file::FD_TABLE,
+    file::current_fd_table,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::{
@@ -85,7 +85,8 @@ fn do_select(
          {except_set:?}] timeout: {timeout:?}"
     );
 
-    let fd_table = FD_TABLE.read();
+    let fd_table_owner = current_fd_table();
+    let fd_table = fd_table_owner.read();
     let fd_bitmap = read_set.0 | write_set.0 | except_set.0;
     let fd_count = fd_bitmap.len();
     let mut fds = Vec::with_capacity(fd_count);

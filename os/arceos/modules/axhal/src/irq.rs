@@ -16,7 +16,7 @@ pub use ax_plat::irq::{
     try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
-pub use ax_plat::irq::{IpiTarget, send_ipi};
+pub use ax_plat::irq::{CpuIpiTarget, IpiSendStatus, send_ipi};
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
 #[cfg(feature = "ipi")]

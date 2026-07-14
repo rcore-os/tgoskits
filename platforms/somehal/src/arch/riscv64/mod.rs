@@ -1,9 +1,11 @@
 use crate::{
     common::PlatOp,
-    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource},
+    irq::{CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
 };
 
 mod plic;
+
+pub use plic::RiscvPlicIrqEndpoint;
 
 use crate::irq_routing::{
     RISCV_INTERRUPT_BIT, RISCV_S_SOFT_CAUSE, riscv_cpu_local_hwirq_is_runtime_irq,
@@ -28,6 +30,30 @@ fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     } else {
         Err(IrqError::InvalidIrq)
     }
+}
+
+pub fn lease_riscv_plic_irq_endpoint(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<RiscvPlicIrqEndpoint, IrqError> {
+    if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
+        return Err(IrqError::InvalidIrq);
+    }
+    plic::lease_irq_endpoint(irq.hwirq, affinity)
+}
+
+pub fn lease_riscv_plic_irq_endpoints(
+    irqs: &[IrqId],
+    affinity: crate::irq::IrqAffinity,
+) -> Result<alloc::vec::Vec<RiscvPlicIrqEndpoint>, IrqError> {
+    let mut hwirqs = alloc::vec::Vec::with_capacity(irqs.len());
+    for irq in irqs {
+        if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
+            return Err(IrqError::InvalidIrq);
+        }
+        hwirqs.push(irq.hwirq);
+    }
+    plic::lease_irq_endpoints(&hwirqs, affinity)
 }
 
 impl PlatOp for Plat {
@@ -94,37 +120,57 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) {
+    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) -> Result<(), IrqError> {
         match role {
             crate::irq::CpuBootRole::Primary => {}
             crate::irq::CpuBootRole::Secondary => plic::secondary_init_intc(cpu_idx),
         }
+        Ok(())
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(
+        irq: IrqId,
+        target: CpuIpiTarget,
+        current_cpu: irq_framework::CpuId,
+    ) -> IpiSendStatus {
         if irq != Self::ipi_irq() {
-            warn!("refuse to send non-runtime RISC-V IPI IRQ {irq:?}");
-            return;
+            return IpiSendStatus::Invalid;
         }
         match target {
-            crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
-                plic::send_ipi_to_cpu(cpu_id);
+            CpuIpiTarget::Current { cpu } => {
+                if current_cpu != cpu {
+                    return IpiSendStatus::Invalid;
+                }
+                plic::send_ipi_to_cpu(cpu)
             }
-            crate::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                for target_cpu in 0..cpu_num {
-                    if target_cpu != cpu_id {
-                        plic::send_ipi_to_cpu(target_cpu);
+            CpuIpiTarget::Other { cpu } => plic::send_ipi_to_cpu(cpu),
+            CpuIpiTarget::AllExceptCurrent { current, cpu_count } => {
+                if cpu_count != someboot::smp::runtime_cpu_count() || current_cpu != current {
+                    return IpiSendStatus::Invalid;
+                }
+                // Reject every permanent target error before committing the
+                // first SBI transaction; transient Retry remains idempotent.
+                if (0..cpu_count)
+                    .filter(|cpu| *cpu != current.0)
+                    .any(|cpu| plic::checked_ipi_hart_id(irq_framework::CpuId(cpu)).is_none())
+                {
+                    return IpiSendStatus::Invalid;
+                }
+                for target_cpu in 0..cpu_count {
+                    let target_cpu = irq_framework::CpuId(target_cpu);
+                    if target_cpu != current {
+                        let status = plic::send_ipi_to_cpu(target_cpu);
+                        if status != IpiSendStatus::Success {
+                            return status;
+                        }
                     }
                 }
+                IpiSendStatus::Success
             }
         }
     }
 
     fn ipi_irq() -> IrqId {
         IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(RISCV_S_SOFT_CAUSE as u32))
-    }
-
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        plic::send_ipi_to_cpu(cpu_id);
     }
 }

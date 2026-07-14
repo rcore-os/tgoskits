@@ -37,6 +37,7 @@ fn reclaim_starts_only_after_the_blocked_reservation_zero_lag_time() {
         system
             .schedule_if_requested(cpu.as_mut(), 4)
             .unwrap()
+            .decision()
             .is_none()
     );
     let activity = system.deadline_activity(donor.id()).unwrap();
@@ -114,7 +115,7 @@ fn wake_before_zero_lag_cancels_the_pending_inactive_transition() {
     system.block_current(cpu.as_mut()).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
-    install_runtime_handles(&system, cpu.as_ref().get_ref());
+    install_runtime_handles(&system, cpu.as_mut());
     assert_eq!(thread.wake_handle().wake(), WakeResult::Notified);
     system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
     let activity = system.deadline_activity(thread.id()).unwrap();
@@ -162,7 +163,7 @@ fn throttled_wake_cannot_restore_cbs_budget_before_replenishment() {
         0
     );
 
-    install_runtime_handles(&system, cpu.as_ref().get_ref());
+    install_runtime_handles(&system, cpu.as_mut());
     assert_eq!(thread.wake_handle().wake(), WakeResult::Notified);
     system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
     assert_eq!(thread.state(), ThreadState::Blocked);
@@ -173,7 +174,11 @@ fn throttled_wake_cannot_restore_cbs_budget_before_replenishment() {
             .remaining_runtime_ns(),
         0
     );
-    if let Some(decision) = system.schedule_if_requested(cpu.as_mut(), 9).unwrap() {
+    if let Some(decision) = system
+        .schedule_if_requested(cpu.as_mut(), 9)
+        .unwrap()
+        .decision()
+    {
         assert_ne!(decision.next(), thread.id());
     }
     assert_eq!(thread.state(), ThreadState::Blocked);
@@ -279,9 +284,6 @@ fn ready_deadline(
     thread
 }
 
-fn install_runtime_handles(system: &TaskSystem, cpu: &ax_task::CpuLocal) {
-    support::install_handles(
-        (system as *const TaskSystem).expose_provenance(),
-        (cpu as *const ax_task::CpuLocal).expose_provenance(),
-    );
+fn install_runtime_handles(system: &TaskSystem, cpu: core::pin::Pin<&mut ax_task::CpuLocal>) {
+    support::install_handles((system as *const TaskSystem).expose_provenance(), cpu);
 }

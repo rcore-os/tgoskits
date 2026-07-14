@@ -6,6 +6,8 @@ use riscv::{
     register::{satp, sstatus, stvec},
 };
 
+use crate::KernelTlsBase;
+
 /// Allows the current CPU to respond to interrupts.
 #[inline]
 pub fn enable_irqs() {
@@ -126,26 +128,29 @@ pub unsafe fn write_trap_vector_base(stvec: usize) {
     unsafe { stvec::write(reg) }
 }
 
-/// Reads the thread pointer of the current CPU (`tp`).
+/// Reads the current task's kernel thread pointer (`tp`).
 ///
-/// It is used to implement TLS (Thread Local Storage).
+/// The value is task-owned kernel TLS. CPU-local state is anchored by
+/// `sscratch` and must not be inferred from this register.
 #[inline]
-pub fn read_thread_pointer() -> usize {
+pub fn read_thread_pointer() -> KernelTlsBase {
     let tp;
     unsafe { core::arch::asm!("mv {}, tp", out(reg) tp) };
-    tp
+    KernelTlsBase::new(tp)
 }
 
-/// Writes the thread pointer of the current CPU (`tp`).
+/// Writes the current task's kernel thread pointer (`tp`).
 ///
-/// It is used to implement TLS (Thread Local Storage).
+/// The value is task-owned kernel TLS. CPU-local state is anchored by
+/// `sscratch` and must not be installed through this API.
 ///
 /// # Safety
 ///
-/// This function is unsafe as it changes the CPU states.
+/// The caller must ensure that `tls_base` belongs to the execution context
+/// currently being installed and remains valid while that context can run.
 #[inline]
-pub unsafe fn write_thread_pointer(tp: usize) {
-    unsafe { core::arch::asm!("mv tp, {}", in(reg) tp) }
+pub unsafe fn write_thread_pointer(tls_base: KernelTlsBase) {
+    unsafe { core::arch::asm!("mv tp, {}", in(reg) tls_base.as_usize()) }
 }
 
 #[cfg(feature = "uspace")]

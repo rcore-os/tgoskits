@@ -56,6 +56,7 @@ struct MockOps {
 #[derive(Default)]
 struct MockInner {
     current_cpu: AtomicUsize,
+    current_cpu_snapshots: AtomicUsize,
     in_irq: AtomicBool,
     unsupported_status: AtomicBool,
     online: Mutex<Vec<bool>>,
@@ -63,7 +64,7 @@ struct MockInner {
     calls: Mutex<Vec<OpCall>>,
     fail_set_enabled: Mutex<Vec<(usize, Option<usize>, bool)>>,
     fail_set_affinity: AtomicBool,
-    remote_calls: AtomicUsize,
+    cpu_sync_calls: AtomicUsize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,10 +165,15 @@ impl MockOps {
     }
 }
 
-impl IrqOps for MockOps {
+// SAFETY: The mock invokes the CPU thunk inline before returning and never
+// retains its raw argument. Shared state is synchronized or atomic.
+unsafe impl IrqOps for MockOps {
     type LocalIrqState = ();
 
     fn current_cpu(&self) -> CpuId {
+        self.inner
+            .current_cpu_snapshots
+            .fetch_add(1, Ordering::SeqCst);
         CpuId(self.inner.current_cpu.load(Ordering::SeqCst))
     }
 
@@ -195,11 +201,14 @@ impl IrqOps for MockOps {
         f: unsafe fn(*mut ()),
         arg: *mut (),
     ) -> Result<(), IrqError> {
-        self.inner.remote_calls.fetch_add(1, Ordering::SeqCst);
-        let old = self.current_cpu();
+        let old = self.inner.current_cpu.load(Ordering::SeqCst);
+        if old != cpu.0 && self.inner.in_irq.load(Ordering::SeqCst) {
+            return Err(IrqError::InIrqContext);
+        }
+        self.inner.cpu_sync_calls.fetch_add(1, Ordering::SeqCst);
         self.set_current_cpu(cpu.0);
         unsafe { f(arg) };
-        self.set_current_cpu(old.0);
+        self.set_current_cpu(old);
         Ok(())
     }
 
@@ -663,7 +672,7 @@ fn percpu_request_temporarily_disables_and_restores_online_target_cpu_line() {
             },
         ]
     );
-    assert_eq!(ops.inner.remote_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 2);
     assert_eq!(registry.dispatch(irq(35), CpuId(2)).called, 0);
 }
 
@@ -1079,6 +1088,80 @@ fn per_cpu_concurrent_action_allows_parallel_dispatch_on_different_cpus() {
 }
 
 #[test]
+fn local_per_cpu_enable_uses_run_on_cpu_sync() {
+    let ops = MockOps::with_cpus(2);
+    ops.set_current_cpu(0);
+    ops.set_line_enabled(14, Some(0), false);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+
+    let handle = registry
+        .request(
+            irq(14),
+            count_request(&counter)
+                .scope(IrqScope::PerCpu {
+                    cpus: CpuMask::from_cpu(CpuId(0)),
+                })
+                .auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+    ops.inner.cpu_sync_calls.store(0, Ordering::SeqCst);
+    ops.inner.current_cpu_snapshots.store(0, Ordering::SeqCst);
+    ops.clear_calls();
+
+    registry.enable(handle).unwrap();
+
+    assert_eq!(
+        ops.inner.cpu_sync_calls.load(Ordering::SeqCst),
+        1,
+        "CPU-owned line changes must not bypass the pinned execution bridge"
+    );
+    assert_eq!(
+        ops.inner.current_cpu_snapshots.load(Ordering::SeqCst),
+        0,
+        "CPU-owned line changes must not use the observational CPU snapshot"
+    );
+    assert!(ops.calls().contains(&OpCall::SetEnabled {
+        irq: 14,
+        cpu: Some(0),
+        enabled: true,
+    }));
+}
+
+#[test]
+fn local_per_cpu_enable_from_irq_context_stays_local() {
+    let ops = MockOps::with_cpus(2);
+    ops.set_current_cpu(0);
+    ops.set_line_enabled(15, Some(0), false);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+
+    let handle = registry
+        .request(
+            irq(15),
+            count_request(&counter)
+                .scope(IrqScope::PerCpu {
+                    cpus: CpuMask::from_cpu(CpuId(0)),
+                })
+                .auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+    ops.inner.cpu_sync_calls.store(0, Ordering::SeqCst);
+    ops.clear_calls();
+
+    ops.set_in_irq(true);
+    assert_eq!(registry.enable(handle), Ok(()));
+    ops.set_in_irq(false);
+
+    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 1);
+    assert!(ops.calls().contains(&OpCall::SetEnabled {
+        irq: 15,
+        cpu: Some(0),
+        enabled: true,
+    }));
+}
+
+#[test]
 fn remote_per_cpu_enable_uses_run_on_cpu_sync() {
     let ops = MockOps::with_cpus(4);
     ops.set_current_cpu(0);
@@ -1096,12 +1179,12 @@ fn remote_per_cpu_enable_uses_run_on_cpu_sync() {
                 .auto_enable(AutoEnable::No),
         )
         .unwrap();
-    ops.inner.remote_calls.store(0, Ordering::SeqCst);
+    ops.inner.cpu_sync_calls.store(0, Ordering::SeqCst);
     ops.clear_calls();
 
     registry.enable(handle).unwrap();
 
-    assert_eq!(ops.inner.remote_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 1);
     assert!(ops.calls().contains(&OpCall::SetEnabled {
         irq: 12,
         cpu: Some(2),
@@ -1127,14 +1210,14 @@ fn remote_per_cpu_enable_from_irq_context_is_rejected_without_ipi() {
                 .auto_enable(AutoEnable::No),
         )
         .unwrap();
-    ops.inner.remote_calls.store(0, Ordering::SeqCst);
+    ops.inner.cpu_sync_calls.store(0, Ordering::SeqCst);
     ops.clear_calls();
 
     ops.set_in_irq(true);
     assert_eq!(registry.enable(handle), Err(IrqError::InIrqContext));
     ops.set_in_irq(false);
 
-    assert_eq!(ops.inner.remote_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 0);
     assert!(!ops.calls().contains(&OpCall::SetEnabled {
         irq: 13,
         cpu: Some(2),
@@ -1375,7 +1458,9 @@ impl BlockingLineOps {
     }
 }
 
-impl IrqOps for BlockingLineOps {
+// SAFETY: This adapter never defers a CPU thunk; the unreachable method is not
+// used by its global-line tests. All shared state is synchronized or atomic.
+unsafe impl IrqOps for BlockingLineOps {
     type LocalIrqState = ();
 
     fn current_cpu(&self) -> CpuId {

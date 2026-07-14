@@ -17,7 +17,7 @@ rtc = []
 efi = ["somehal/efi"]
 fp-simd = ["ax-cpu/fp-simd"]
 uspace = ["somehal/uspace"]
-hv = ["somehal/hv", "ax-cpu/arm-el2"]
+hv = ["somehal/hv", "ax-cpu/arm-el2", "ax-percpu/arm-el2"]
 thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 
 [dependencies]
@@ -27,10 +27,11 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 axklib = { workspace = true, features = ["buddy-slab"] }
 ax-plat.workspace = true
+ax-kspin.workspace = true
 heapless = "0.9"
 log.workspace = true
 ax-memory-addr.workspace = true
-ax-percpu = { workspace = true, features = ["custom-base"] }
+ax-percpu = { workspace = true, features = ["custom-base", "linked-template"] }
 rdrive.workspace = true
 someboot.workspace = true
 somehal.workspace = true

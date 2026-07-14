@@ -31,6 +31,28 @@ pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 
 use crate::common::PlatOp;
 
+#[cfg(test)]
+mod test_lock_runtime {
+    use ax_kspin::{LockRuntime, LockdepEvent, impl_trait};
+
+    struct TestLockRuntime;
+
+    impl_trait! {
+        impl LockRuntime for TestLockRuntime {
+            fn irq_enter() {}
+            fn irq_exit() {}
+            fn preempt_enter() {}
+            fn preempt_exit() {}
+            unsafe fn preempt_exit_irq_return() {}
+            fn current_thread_id() -> u64 { 1 }
+            fn lockdep_acquire(_event: LockdepEvent) {}
+            fn lockdep_release(_event: LockdepEvent) {}
+            fn lockdep_set_trace_enabled(_enabled: bool) {}
+            fn lockdep_dump_trace() {}
+        }
+    }
+}
+
 #[cfg(target_arch = "loongarch64")]
 #[path = "arch/loongarch64/mod.rs"]
 pub mod arch;
@@ -75,9 +97,16 @@ pub fn __somehal_secondary_default() -> ! {
 
 #[someboot::secondary_entry]
 fn secondary_entry() -> ! {
+    let binding = setup::cpu_register_binding(meta.cpu_idx)
+        .expect("someboot must publish the secondary CPU-local area");
+    setup::kernel()
+        .bind_current_cpu(binding)
+        .expect("the platform must bind CPU-local state before secondary HAL initialization");
+
     someboot::set_kernel_page_table_paddr(meta.primary_table_paddr);
     arch::Plat::secondary_init();
-    irq::init_secondary_boot_irqs(meta.cpu_idx);
+    irq::init_secondary_boot_irqs(meta.cpu_idx)
+        .expect("secondary interrupt-controller initialization failed");
 
     unsafe extern "Rust" {
         fn __somehal_secondary(meta: &crate::smp::PerCpuMeta);

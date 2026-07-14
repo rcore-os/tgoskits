@@ -1,208 +1,8 @@
-use core::{
-    cell::UnsafeCell,
-    fmt::{Debug, Display},
-};
-
-mod tp;
-
-#[cfg(feature = "preempt")]
-use ax_kspin::PreemptGuard;
-pub use tp::*;
-
-#[repr(transparent)]
-pub struct PerCpuData<T> {
-    data: UnsafeCell<T>,
-}
-
-unsafe impl<T> Sync for PerCpuData<T> {}
-unsafe impl<T> Send for PerCpuData<T> {}
-
-fn with_preempt<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    #[cfg(feature = "preempt")]
-    let g = PreemptGuard::new();
-    let res = f();
-    #[cfg(feature = "preempt")]
-    drop(g);
-    res
-}
-
-impl<T> PerCpuData<T> {
-    /// Creates a new per-CPU static variable with the given initial value.
-    pub const fn new(data: T) -> PerCpuData<T> {
-        PerCpuData {
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    /// Returns the offset relative to the per-CPU data area base.
-    #[inline]
-    pub fn offset(&self) -> usize {
-        self.data.get() as usize - percpu_link_start()
-    }
-
-    /// Returns the raw pointer of this per-CPU static variable on the given CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that
-    /// - the CPU ID is valid, and
-    /// - data races will not happen.
-    #[inline]
-    pub fn remote_ptr(&self, cpu_idx: usize) -> *mut T {
-        let addr = unsafe { _percpu_base_ptr(cpu_idx) } as usize + self.offset();
-        addr as *mut T
-    }
-
-    /// Returns the raw pointer of this per-CPU static variable on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that preemption is disabled on the current CPU.
-    #[inline]
-    pub unsafe fn current_ptr(&self) -> *mut T {
-        let addr = read_percpu_reg() + self.offset();
-        addr as *mut T
-    }
-
-    /// Returns the reference of the per-CPU static variable on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that preemption is disabled on the current CPU.
-    #[inline]
-    pub unsafe fn current_ref_raw(&self) -> &T {
-        unsafe { &*self.current_ptr() }
-    }
-
-    /// Returns the mutable reference of the per-CPU static variable on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that preemption is disabled on the current CPU.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn current_ref_mut_raw(&self) -> &mut T {
-        unsafe { &mut *self.current_ptr() }
-    }
-
-    /// Set the value of the per-CPU static variable on the current CPU. Preemption will be disabled during the
-    /// call.
-    pub fn write_current(&self, val: T) {
-        with_preempt(|| unsafe { self.write_current_raw(val) });
-    }
-
-    /// Set the value of the per-CPU static variable on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that preemption is disabled on the current CPU.
-    pub unsafe fn write_current_raw(&self, val: T) {
-        unsafe {
-            *self.current_ptr() = val;
-        }
-    }
-
-    /// Write the value to the per-CPU variable on the specified CPU.
-    ///
-    /// # Safety
-    ///
-    /// This function should called with a mutex or before the cpu is online.
-    pub unsafe fn write_remote(&self, cpu_idx: usize, val: T) {
-        with_preempt(|| unsafe {
-            *self.remote_ptr(cpu_idx) = val;
-        })
-    }
-
-    /// Manipulate the per-CPU data on the current CPU in the given closure.
-    /// Preemption will be disabled during the call.
-    pub fn with_current<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        with_preempt(|| unsafe { f(&mut *self.current_ptr()) })
-    }
-
-    /// Returns the reference of the per-CPU static variable on the given CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that
-    /// - the CPU ID is valid, and
-    /// - data races will not happen.
-    #[inline]
-    pub unsafe fn remote_ref_raw(&self, cpu_id: usize) -> &T {
-        unsafe { &*self.remote_ptr(cpu_id) }
-    }
-
-    /// Returns the mutable reference of the per-CPU static variable on the given CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that
-    /// - the CPU ID is valid, and
-    /// - data races will not happen.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn remote_ref_mut_raw(&self, cpu_id: usize) -> &mut T {
-        unsafe { &mut *self.remote_ptr(cpu_id) }
-    }
-}
-
-impl<T: Clone> PerCpuData<T> {
-    /// Returns the value of the per-CPU static variable on the current CPU. Preemption will be disabled during
-    /// the call.
-    pub fn read_current(&self) -> T {
-        with_preempt(|| unsafe { self.read_current_raw() })
-    }
-
-    /// Returns the value of the per-CPU static variable on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure that preemption is disabled on the current CPU.
-    pub unsafe fn read_current_raw(&self) -> T {
-        unsafe { (*self.current_ptr()).clone() }
-    }
-
-    /// Returns the value of the per-CPU static variable on the given CPU.
-    pub fn read_remote(&self, cpu_idx: usize) -> T {
-        with_preempt(|| unsafe { (*self.remote_ptr(cpu_idx)).clone() })
-    }
-}
-
-impl<T: Debug> Debug for PerCpuData<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        with_preempt(|| unsafe { &*self.data.get() }.fmt(f))
-    }
-}
-
-impl<T: Display> Display for PerCpuData<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        with_preempt(|| unsafe { &*self.data.get() }.fmt(f))
-    }
-}
-
-unsafe extern "C" {
-    fn _percpu_load_start();
-    fn _percpu_base_ptr(idx: usize) -> *mut u8;
-}
-
-#[inline]
-fn percpu_link_start() -> usize {
-    _percpu_load_start as *const () as usize
-}
-
-/// Initialize all per-CPU data areas.
-///
-/// Returns the number of areas initialized. If this function has been called
-/// before, it does nothing and returns 0.
+/// Initializes host-test CPU-local storage.
 pub fn init() -> usize {
     #[cfg(feature = "host-test")]
     {
-        _linux::init(4)
+        host::init(4)
     }
     #[cfg(not(feature = "host-test"))]
     {
@@ -210,64 +10,99 @@ pub fn init() -> usize {
     }
 }
 
-/// Initializes the per-CPU data register.
-///
-/// It is equivalent to `write_percpu_reg(percpu_area_base(cpu_id))`, which set
-/// the architecture-specific per-CPU data register to the base address of the
-/// corresponding per-CPU data area.
-///
-/// `cpu_id` indicates which per-CPU data area to use.
-pub fn init_percpu_reg(cpu_idx: usize) {
-    unsafe {
-        let ptr = _percpu_base_ptr(cpu_idx);
-        write_percpu_reg(ptr as usize);
-    }
+/// Returns the linked CPU-local template size.
+#[cfg(any(feature = "host-test", feature = "linked-template"))]
+pub(crate) fn percpu_area_size() -> usize {
+    ax_cpu_local::cpu_area_template_size()
+        .expect("CPU-area template end sentinel must follow the fixed prefix")
 }
 
-/// Returns the base address of the per-CPU data area on the given CPU.
-pub fn percpu_area_base(cpu_idx: usize) -> usize {
-    unsafe { _percpu_base_ptr(cpu_idx) as usize }
+/// Rejects host execution unless the consumer selected an explicit storage
+/// fixture. Merely linking source-level tests must not require kernel linker
+/// symbols, while actual access must not silently invent a runtime layout.
+#[cfg(not(any(feature = "host-test", feature = "linked-template")))]
+pub(crate) fn percpu_area_size() -> usize {
+    panic!("custom-base CPU-local access requires an explicit host-test storage fixture")
 }
 
-/// Returns the per-CPU data area size for one CPU.
-pub fn percpu_area_size() -> usize {
-    unsafe extern "C" {
-        fn _percpu_load_end();
-    }
-    _percpu_load_end as *const () as usize - percpu_link_start()
+/// Returns the link-time base used by symbol relocation.
+#[doc(hidden)]
+#[cfg(any(feature = "host-test", feature = "linked-template"))]
+pub(crate) fn percpu_link_base() -> usize {
+    ax_cpu_local::cpu_area_header_link_address()
+}
+
+/// Rejects host execution unless the consumer selected an explicit storage
+/// fixture; see [`percpu_area_size`].
+#[doc(hidden)]
+#[cfg(not(any(feature = "host-test", feature = "linked-template")))]
+pub(crate) fn percpu_link_base() -> usize {
+    panic!("custom-base CPU-local access requires an explicit host-test storage fixture")
 }
 
 #[cfg(feature = "host-test")]
-mod _linux {
-    use std::sync::Mutex;
+mod host {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use super::*;
 
-    static PERCPU_DATA: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-    static mut PERCPU_BASE: usize = 0;
+    static STORAGE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    static IS_INIT: AtomicBool = AtomicBool::new(false);
 
-    fn percpu_section_size() -> usize {
-        unsafe extern "C" {
-            fn _percpu_load_end();
+    pub fn init(area_count: usize) -> usize {
+        if IS_INIT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return 0;
         }
-        _percpu_load_end as *const () as usize - percpu_link_start()
+        let required_alignment = crate::required_area_alignment()
+            .expect("linked CPU-local alignment metadata must be valid");
+        let stride = align_up(percpu_area_size(), required_alignment)
+            .expect("host CPU-local stride calculation must not overflow");
+        let mut storage = STORAGE
+            .lock()
+            .expect("host CPU-local storage mutex must not be poisoned");
+        let storage_size = stride
+            .checked_mul(area_count)
+            .and_then(|size| size.checked_add(required_alignment - 1))
+            .expect("host CPU-local storage size must not overflow");
+        storage.resize(storage_size, 0);
+        let raw_base = storage.as_mut_ptr() as usize;
+        let runtime_base = align_up(raw_base, required_alignment)
+            .expect("host CPU-local base alignment must not overflow");
+        let layout = crate::PerCpuLayoutV1 {
+            runtime_base,
+            area_stride: stride,
+            area_count: u32::try_from(area_count).expect("host area count must fit u32"),
+            flags: 0,
+        };
+        layout
+            .validate()
+            .expect("host CPU-local layout must be valid");
+        for cpu_index in 0..area_count {
+            // SAFETY: the custom host linker script maps the initialized
+            // template. Each destination lies in a distinct, writable slice
+            // of the storage allocation held for the process lifetime.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    percpu_link_base() as *const u8,
+                    (runtime_base + cpu_index * stride) as *mut u8,
+                    percpu_area_size(),
+                );
+            }
+        }
+        // SAFETY: `storage` owns the complete aligned region, every area has
+        // received the linked template, and the fixture leaks it until exit.
+        unsafe { crate::install_layout(layout) }.expect("host CPU-local layout must install once");
+        area_count
     }
 
-    pub fn init(cpu_count: usize) -> usize {
-        let size = cpu_count * percpu_section_size();
-        let mut g = PERCPU_DATA.lock().unwrap();
-        g.resize(size, 0);
-
-        unsafe {
-            let base = g.as_slice().as_ptr() as usize;
-            PERCPU_BASE = base;
-            println!("alloc ax-percpu data @{:#x}, size: {:#x}", base, size);
-        }
-        cpu_count
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe fn _percpu_base_ptr(idx: usize) -> *mut u8 {
-        unsafe { (PERCPU_BASE + idx * percpu_section_size()) as *mut u8 }
+    fn align_up(value: usize, alignment: usize) -> Option<usize> {
+        let mask = alignment - 1;
+        value.checked_add(mask).map(|aligned| aligned & !mask)
     }
 }

@@ -30,21 +30,20 @@ fn backend() -> GicBackend {
     }
 }
 
-pub fn init_current_cpu() {
-    let cpu_idx = crate::cpu::current_cpu_idx()
-        .unwrap_or_else(|| panic!("current logical CPU index is not available for GIC init"));
-    init_cpu(cpu_idx);
+pub fn init_current_cpu() -> Result<(), crate::irq::IrqError> {
+    let cpu_idx = crate::cpu::current_cpu_idx().ok_or(crate::irq::IrqError::InvalidCpu)?;
+    init_cpu(cpu_idx)
 }
 
-pub fn init_cpu(cpu_idx: usize) {
+pub fn init_cpu(cpu_idx: usize) -> Result<(), crate::irq::IrqError> {
     match backend() {
-        GicBackend::V2 => v2::init_cpu(),
-        GicBackend::V3 => v3::init_cpu(cpu_idx),
+        GicBackend::V2 => v2::init_cpu(cpu_idx).map_err(|_| crate::irq::IrqError::Controller),
+        GicBackend::V3 => v3::init_cpu(cpu_idx).map_err(|_| crate::irq::IrqError::Controller),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::init_cpu(cpu_idx);
+                v3::init_cpu(cpu_idx).map_err(|_| crate::irq::IrqError::Controller)
             } else {
-                v2::init_cpu();
+                v2::init_cpu(cpu_idx).map_err(|_| crate::irq::IrqError::Controller)
             }
         }
     }
@@ -117,23 +116,23 @@ pub fn setup_irq_by_fdt(cells: &[u32]) -> Result<rdif_intc::IrqTranslation, crat
     Ok(translation)
 }
 
-pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+pub(crate) fn send_ipi(
+    irq: rdrive::IrqId,
+    target: crate::irq::CpuIpiTarget,
+    current_cpu: irq_framework::CpuId,
+) -> crate::irq::IpiSendStatus {
     let raw = irq.into();
     match backend() {
-        GicBackend::V2 => v2::send_ipi(raw, target),
-        GicBackend::V3 => v3::send_ipi(raw, target),
+        GicBackend::V2 => v2::send_ipi(raw, target, current_cpu),
+        GicBackend::V3 => v3::send_ipi(raw, target, current_cpu),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::send_ipi(raw, target);
+                v3::send_ipi(raw, target, current_cpu)
             } else {
-                v2::send_ipi(raw, target);
+                v2::send_ipi(raw, target, current_cpu)
             }
         }
     }
-}
-
-fn hardware_cpu_id(cpu_idx: usize) -> usize {
-    someboot::smp::cpu_idx_to_id(cpu_idx).unwrap_or(cpu_idx)
 }
 
 pub enum ActiveIrq {

@@ -30,7 +30,7 @@ fn executor_identity_comes_from_the_direct_thread_wake_handle() {
         .expect("CPU must come online");
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu.as_mut(),
     );
     let executor = LocalExecutor::new(thread.wake_handle()).expect("owner identity must match");
 
@@ -59,7 +59,7 @@ fn executor_rejects_a_wake_header_owned_by_another_thread() {
         .expect("CPU must come online");
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        cpu.as_mut(),
     );
     let other = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))

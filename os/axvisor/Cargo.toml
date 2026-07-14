@@ -78,6 +78,7 @@ ax-driver.workspace = true
 axplat-dyn.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-cpu-local.workspace = true
 axplat-dyn = { workspace = true, features = ["hv"] }
 
 [dev-dependencies]

@@ -1,9 +1,9 @@
 //! Priority-inheritance mutex identities and wait handshake tokens.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::ThreadId;
+use crate::{TaskError, ThreadCore, ThreadId};
 
 /// Stable identity of one kernel PI mutex.
 #[repr(transparent)]
@@ -23,48 +23,60 @@ impl PiLockId {
 }
 
 /// Token joining ax-sync's waiter grant with ax-task's parking transition.
-#[derive(Clone, Debug)]
+///
+/// The token retains the thread's preallocated wait state. Creating, granting,
+/// cancelling, and dropping it never allocates memory.
+#[must_use = "a PI wait token must be granted or explicitly cancelled"]
+#[derive(Debug)]
 pub struct PiWaitToken {
-    pub(crate) state: Arc<PiWaitState>,
+    pub(crate) core: Arc<ThreadCore>,
+    pub(crate) generation: u64,
 }
 
 impl PiWaitToken {
     /// Returns whether ownership handoff has already selected this waiter.
     pub fn is_granted(&self) -> bool {
-        self.state.granted.load(Ordering::Acquire)
+        self.core.pi_wait_state().is_granted(self.generation)
     }
 
     pub(crate) fn waiter(&self) -> ThreadId {
-        self.state.waiter
+        self.core.id()
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct PiWaitState {
-    pub(crate) lock: PiLockId,
-    pub(crate) waiter: ThreadId,
-    owner: AtomicU64,
-    pub(crate) granted: AtomicBool,
-    pub(crate) cancelled: AtomicBool,
+    generation: AtomicU64,
+    granted_generation: AtomicU64,
 }
 
 impl PiWaitState {
-    pub(crate) fn new(lock: PiLockId, waiter: ThreadId, owner: ThreadId, granted: bool) -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
-            lock,
-            waiter,
-            owner: AtomicU64::new(owner.as_u64()),
-            granted: AtomicBool::new(granted),
-            cancelled: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+            granted_generation: AtomicU64::new(0),
         }
     }
 
-    pub(crate) fn owner(&self) -> ThreadId {
-        let raw = self.owner.load(Ordering::Acquire);
-        ThreadId::from_parts(raw as u32, (raw >> 32) as u32)
+    pub(crate) fn begin(&self) -> Result<u64, TaskError> {
+        self.granted_generation.store(0, Ordering::Relaxed);
+        self.generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .map(|generation| generation + 1)
+            .map_err(|_| TaskError::InvalidPiState)
     }
 
-    pub(crate) fn set_owner(&self, owner: ThreadId) {
-        self.owner.store(owner.as_u64(), Ordering::Release);
+    pub(crate) fn grant(&self, generation: u64) -> Result<(), TaskError> {
+        if self.generation.load(Ordering::Acquire) != generation {
+            return Err(TaskError::InvalidPiState);
+        }
+        self.granted_generation.store(generation, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_granted(&self, generation: u64) -> bool {
+        self.granted_generation.load(Ordering::Acquire) == generation
     }
 }

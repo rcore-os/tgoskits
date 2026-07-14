@@ -87,7 +87,6 @@ fn pi_boosted_rt_owner_runs_past_quota_to_release_the_lock() {
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
 
     let lock = PiLockId::new(0x5254);
-    system.pi_mutex_acquired(lock, owner.id()).unwrap();
     let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     system.enqueue(cpu.as_mut(), competitor.id(), 0).unwrap();
@@ -115,6 +114,30 @@ fn deadline_admission_enforces_the_root_domain_cap() {
         system.create_thread(ThreadSpec::new(SchedulePolicy::deadline(over_cap))),
         Err(TaskError::DeadlineAdmission)
     ));
+}
+
+#[test]
+fn exited_deadline_releases_admission_before_late_handles_are_reaped() {
+    let (system, cpu) = online_system(TaskSystemConfig::new(1));
+    let policy = SchedulePolicy::deadline(deadline_policy(95, 100, 100, DeadlineFlags::NONE));
+    let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+    let first_id = first.id();
+
+    system.mark_exited(first_id).unwrap();
+    let second = system
+        .create_thread(ThreadSpec::new(policy))
+        .expect("Exited must release admission even while a strong handle remains");
+
+    drop(first);
+    system.reap_thread(first_id).unwrap();
+    assert_eq!(
+        system.create_thread(ThreadSpec::new(policy)).unwrap_err(),
+        TaskError::DeadlineAdmission,
+        "reaping a zeroed reservation must not release the live reservation twice",
+    );
+
+    system.mark_exited(second.id()).unwrap();
+    drop(cpu);
 }
 
 #[test]

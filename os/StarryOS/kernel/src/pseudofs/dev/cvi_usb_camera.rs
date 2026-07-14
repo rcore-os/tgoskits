@@ -4,7 +4,7 @@ use core::{any::Any, time::Duration};
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
@@ -82,7 +82,7 @@ struct UsbCameraState {
 }
 
 pub struct CviCamera {
-    state: Mutex<UsbCameraState>,
+    state: PiMutex<UsbCameraState>,
     jpu: Arc<CviJpu>,
 }
 
@@ -337,7 +337,7 @@ impl UsbCameraState {
 impl CviCamera {
     pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
-            state: Mutex::new(UsbCameraState::default()),
+            state: PiMutex::new(UsbCameraState::default()),
             jpu,
         }
     }

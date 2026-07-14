@@ -20,7 +20,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
@@ -178,7 +178,7 @@ impl Connection {
 
     #[inline]
     pub fn tx_wait_queue_notify(&mut self) {
-        self.tx_wait_queue.notify_all(true);
+        self.tx_wait_queue.notify_all();
     }
 
     #[inline]
@@ -312,8 +312,8 @@ impl ListenQueue {
 
 /// Global connection manager
 pub struct VsockConnectionManager {
-    connections: BTreeMap<VsockConnId, Arc<Mutex<Connection>>>,
-    listen_queues: BTreeMap<u32, Arc<Mutex<ListenQueue>>>,
+    connections: BTreeMap<VsockConnId, Arc<SpinMutex<Connection>>>,
+    listen_queues: BTreeMap<u32, Arc<SpinMutex<ListenQueue>>>,
     next_ephemeral_port: u32,
 }
 
@@ -330,7 +330,7 @@ impl VsockConnectionManager {
     }
 
     /// Get listen queue from specified port
-    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<Mutex<ListenQueue>>> {
+    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<SpinMutex<ListenQueue>>> {
         self.listen_queues.get(&port).cloned()
     }
 
@@ -366,7 +366,7 @@ impl VsockConnectionManager {
             ax_bail!(AddrInUse, "port already in use");
         }
 
-        let queue = Arc::new(Mutex::new(ListenQueue::new(local_addr)));
+        let queue = Arc::new(SpinMutex::new(ListenQueue::new(local_addr)));
         self.listen_queues.insert(local_addr.port, queue);
         Ok(())
     }
@@ -406,9 +406,9 @@ impl VsockConnectionManager {
         local_addr: VsockAddr,
         peer_addr: Option<VsockAddr>,
         state: ConnectionState,
-    ) -> Arc<Mutex<Connection>> {
+    ) -> Arc<SpinMutex<Connection>> {
         let conn = Connection::new(local_addr, peer_addr, state);
-        let conn = Arc::new(Mutex::new(conn));
+        let conn = Arc::new(SpinMutex::new(conn));
         if self.connections.contains_key(&conn_id) {
             info!("Connection {:?} already exists, overwriting", conn_id);
         } else {
@@ -423,7 +423,7 @@ impl VsockConnectionManager {
     }
 
     /// get a connection by id
-    pub fn get_connection(&self, conn_id: VsockConnId) -> Option<Arc<Mutex<Connection>>> {
+    pub fn get_connection(&self, conn_id: VsockConnId) -> Option<Arc<SpinMutex<Connection>>> {
         self.connections.get(&conn_id).cloned()
     }
 
@@ -550,5 +550,5 @@ impl VsockConnectionManager {
     }
 }
 
-pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
-    Mutex::new(VsockConnectionManager::new());
+pub static VSOCK_CONN_MANAGER: SpinMutex<VsockConnectionManager> =
+    SpinMutex::new(VsockConnectionManager::new());

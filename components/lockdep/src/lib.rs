@@ -69,12 +69,9 @@ mod test_runtime {
         impl LockRuntime for TestLockRuntime {
             fn irq_enter() {}
             fn irq_exit() {}
-            fn irqs_enabled() -> bool { true }
             fn preempt_enter() {}
-            fn preempt_exit() -> bool { true }
-            fn in_hard_irq() -> bool { false }
-            fn need_resched() -> bool { false }
-            fn schedule() {}
+            fn preempt_exit() {}
+            unsafe fn preempt_exit_irq_return() {}
             fn current_thread_id() -> u64 { 1 }
             fn lockdep_acquire(_event: LockdepEvent) {}
             fn lockdep_release(_event: LockdepEvent) {}

@@ -72,14 +72,12 @@ unsafe impl GlobalAlloc for AuditAllocator {
 fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     support::clear_handles();
     assert_eq!(support::last_oneshot_ns(), 0);
-    let system = Box::leak(Box::new(
-        TaskSystem::new(TaskSystemConfig::new(1)).expect("task system must initialize"),
-    ));
-    let cpu = Box::leak(Box::new(
-        system
-            .create_cpu_local(CpuId::new(0))
-            .expect("CPU local must initialize"),
-    ));
+    let system =
+        Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).expect("task system must initialize"));
+    let system_ref = system.as_ref().get_ref();
+    let mut cpu = system_ref
+        .create_cpu_local(CpuId::new(0))
+        .expect("CPU local must initialize");
     let executor_thread = system
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .expect("bootstrap thread must initialize");
@@ -87,8 +85,8 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         .bring_cpu_online(cpu.as_mut())
         .expect("CPU must come online");
     support::install_handles(
-        (system as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        (system_ref as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
     );
 
     let thread = system
@@ -108,10 +106,10 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     assert_eq!(support::ipi_count(0), 1);
 
     let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
-    let inbox_node = leaked_inbox_node();
+    let inbox_node = OwnedInboxNode::new(InboxKind::RemoteWake);
     let inbox_audit = audit(|| {
         inbox.publish(
-            inbox_node,
+            inbox_node.pinned(),
             InboxMessage::remote_wake(ThreadId::from_parts(7, 1), CpuId::new(0)),
         )
     });
@@ -119,10 +117,10 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     assert_zero_allocator_activity(inbox_audit);
 
     let mut timer_queue = TimerQueue::new(1);
-    let timer = leaked_timer_node();
+    let timer = Box::pin(TimerNode::new(11));
     unsafe {
         timer_queue
-            .arm(timer, 10)
+            .arm(timer.as_ref(), 10)
             .expect("preallocated timer slot must be available");
     }
     let mut expired = [ExpiredTimer::EMPTY; 1];
@@ -201,6 +199,19 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         .expect("owner must consume the direct wake reference");
     drop(executor);
     support::clear_handles();
+
+    // Keep teardown explicit so default Miri leak checking verifies the same
+    // fixture that audits hard-IRQ allocator activity. Both intrusive nodes
+    // have been detached from their owner queues before their storage drops.
+    drop(timer_queue);
+    drop(timer);
+    drop(inbox);
+    drop(inbox_node);
+    drop(wake);
+    drop(thread);
+    drop(executor_thread);
+    drop(cpu);
+    drop(system);
 }
 
 fn audit<T>(operation: impl FnOnce() -> T) -> AuditResult<T> {
@@ -234,12 +245,28 @@ struct AuditResult<T> {
     deallocations: usize,
 }
 
-fn leaked_inbox_node() -> Pin<&'static InboxNode> {
-    let node = Box::leak(Box::new(InboxNode::new(InboxKind::RemoteWake)));
-    unsafe { Pin::new_unchecked(node) }
+struct OwnedInboxNode {
+    node: *mut InboxNode,
 }
 
-fn leaked_timer_node() -> Pin<&'static TimerNode> {
-    let node = Box::leak(Box::new(TimerNode::new(11)));
-    unsafe { Pin::new_unchecked(node) }
+impl OwnedInboxNode {
+    fn new(kind: InboxKind) -> Self {
+        Self {
+            node: Box::into_raw(Box::new(InboxNode::new(kind))),
+        }
+    }
+
+    fn pinned(&self) -> Pin<&'static InboxNode> {
+        // SAFETY: `node` comes from Box, remains pinned until this owner's Drop,
+        // and the test drops the drained SchedulerInbox before this owner.
+        unsafe { Pin::new_unchecked(&*self.node) }
+    }
+}
+
+impl Drop for OwnedInboxNode {
+    fn drop(&mut self) {
+        // SAFETY: the test drains and drops the only inbox that observed this
+        // pointer before dropping the owner, and no producer retains it.
+        unsafe { drop(Box::from_raw(self.node)) };
+    }
 }

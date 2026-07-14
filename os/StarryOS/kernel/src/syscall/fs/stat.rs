@@ -4,7 +4,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
@@ -231,13 +231,8 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    buf.vm_write(statfs(
-        &FS_CONTEXT
-            .lock()
-            .resolve(path)?
-            .mountpoint()
-            .root_location(),
-    )?)?;
+    let location = current_fs_context().lock().resolve(path)?;
+    buf.vm_write(statfs(&location.mountpoint().root_location())?)?;
     Ok(0)
 }
 

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use bitflags::bitflags;
@@ -13,12 +13,14 @@ use starry_vm::VmMutPtr;
 use super::schedule_abi::fork_schedule_policy;
 #[cfg(target_arch = "riscv64")]
 use crate::task::spawn_starry_user_thread_with_fp_state_and_policy;
+#[cfg(not(target_arch = "riscv64"))]
+use crate::task::spawn_starry_user_thread_with_policy;
 use crate::{
-    file::{FD_TABLE, FileLike, PidFd, close_file_like},
+    file::{FD_TABLE, FileLike, PidFd, close_file_like, current_fd_table},
     mm::copy_from_kernel,
     task::{
         ProcessData, ProcessImage, Thread, add_task_to_table, allocate_user_tid, current,
-        new_user_task, spawn_starry_user_thread_with_policy,
+        new_user_task,
     },
 };
 
@@ -219,6 +221,10 @@ impl CloneArgs {
         let old_proc_data = &curr_thread.proc_data;
         let (child_policy, child_reset_on_fork) =
             fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
+        let child_nice = match child_policy {
+            ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => i32::from(nice.get()),
+            _ => curr_thread.nice(),
+        };
 
         let tid = allocate_user_tid()?;
         #[cfg(target_arch = "riscv64")]
@@ -278,13 +284,6 @@ impl CloneArgs {
                 flags.contains(CloneFlags::VM),
             );
             proc_data.set_umask(old_proc_data.umask());
-            let child_nice = match child_policy {
-                ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => {
-                    i32::from(nice.get())
-                }
-                _ => old_proc_data.nice(),
-            };
-            proc_data.set_nice(child_nice);
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -339,23 +338,27 @@ impl CloneArgs {
 
             {
                 let mut scope = proc_data.scope.write();
+                let current_files = current_fd_table();
                 if flags.contains(CloneFlags::FILES) {
                     // Synchronize with close_all_fds: holding a read lock
                     // ensures close_all_fds either observes our strong_count
                     // increment or blocks on write lock until we release.
-                    let _guard = FD_TABLE.read();
-                    FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
+                    let _guard = current_files.read();
+                    FD_TABLE.scope_mut(&mut scope).clone_from(&current_files);
                 } else {
                     FD_TABLE
                         .scope_mut(&mut scope)
                         .write()
-                        .clone_from(&FD_TABLE.read());
+                        .clone_from(&current_files.read());
                 }
 
                 if flags.contains(CloneFlags::FS) {
-                    FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
+                    FS_CONTEXT
+                        .scope_mut(&mut scope)
+                        .clone_from(&current_fs_context());
                 } else {
-                    let mut fs_context = FS_CONTEXT.lock().clone();
+                    let current_fs = current_fs_context();
+                    let mut fs_context = current_fs.lock().clone();
                     if flags.contains(CloneFlags::NEWNS) {
                         fs_context.unshare_mount_namespace()?;
                     }
@@ -375,6 +378,7 @@ impl CloneArgs {
             parent_cred,
             curr_thread.signal.blocked(),
         );
+        thr.set_nice(child_nice);
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
         }

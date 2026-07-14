@@ -179,6 +179,14 @@ pub mod task {
             until_condition: impl Fn() -> bool,
             timeout: Option<core::time::Duration>,
         ) -> bool;
+        /// Blocks until the condition becomes true or an absolute monotonic
+        /// deadline elapses. Returns `true` only when the deadline wins.
+        #[track_caller]
+        pub fn ax_wait_queue_wait_until_deadline(
+            wq: &AxWaitQueueHandle,
+            deadline: core::time::Duration,
+            until_condition: impl Fn() -> bool,
+        ) -> bool;
         /// Wakes up one or more tasks in the wait queue.
         ///
         /// The maximum number of tasks to wake up is specified by `count`. If

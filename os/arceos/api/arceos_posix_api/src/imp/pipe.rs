@@ -3,7 +3,7 @@ use core::ffi::c_int;
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_io::PollState;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 
 use super::fd_ops::{FileLike, add_file_like, close_file_like};
 use crate::ctypes;
@@ -109,12 +109,12 @@ impl PipeRingBuffer {
 
 pub struct Pipe {
     readable: bool,
-    buffer: Arc<Mutex<PipeRingBuffer>>,
+    buffer: Arc<SpinMutex<PipeRingBuffer>>,
 }
 
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
-        let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
+        let buffer = Arc::new(SpinMutex::new(PipeRingBuffer::new()));
         let read_end = Pipe {
             readable: true,
             buffer: buffer.clone(),

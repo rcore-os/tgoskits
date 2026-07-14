@@ -1,6 +1,12 @@
-use core::{arch::naked_asm, fmt};
+use core::{
+    arch::naked_asm,
+    fmt,
+    mem::{align_of, offset_of, size_of},
+};
 
 use ax_memory_addr::VirtAddr;
+
+use crate::KernelTlsBase;
 
 /// Saved registers when a trap (exception) occurs.
 #[repr(C)]
@@ -38,6 +44,15 @@ impl fmt::Debug for TrapFrame {
 }
 
 impl TrapFrame {
+    /// Returns the privilege domain represented by this register image.
+    pub const fn origin(&self) -> crate::TrapOrigin {
+        if self.spsr & 0b1_1111 == 0 {
+            crate::TrapOrigin::User
+        } else {
+            crate::TrapOrigin::Kernel
+        }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.x[0] as _
@@ -179,27 +194,39 @@ impl FpState {
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct TaskContext {
-    pub sp: u64,
-    pub r19: u64,
-    pub r20: u64,
-    pub r21: u64,
-    pub r22: u64,
-    pub r23: u64,
-    pub r24: u64,
-    pub r25: u64,
-    pub r26: u64,
-    pub r27: u64,
-    pub r28: u64,
-    pub r29: u64,
-    pub lr: u64, // r30
-    /// Thread Pointer
-    pub tpidr_el0: u64,
-    /// The `ttbr0_el1` register value, i.e., the page table root.
-    #[cfg(feature = "uspace")]
-    pub ttbr0_el1: ax_memory_addr::PhysAddr,
+    sp: u64,
+    r19: u64,
+    r20: u64,
+    r21: u64,
+    r22: u64,
+    r23: u64,
+    r24: u64,
+    r25: u64,
+    r26: u64,
+    r27: u64,
+    r28: u64,
+    r29: u64,
+    lr: u64, // r30
+    /// Kernel task-local storage base held in TPIDR_EL0.
+    kernel_tls: KernelTlsBase,
     #[cfg(feature = "fp-simd")]
-    pub fp_state: FpState,
+    fp_state: FpState,
 }
+
+// `stp`/`ldp` address only the first member of each pair. Prove the paired
+// fields are adjacent and that the task TLS newtype has the register width.
+const _: () = {
+    assert!(size_of::<KernelTlsBase>() == size_of::<usize>());
+    assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
+    assert!(offset_of!(TaskContext, sp) == 0);
+    assert!(offset_of!(TaskContext, r20) == offset_of!(TaskContext, r19) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, r22) == offset_of!(TaskContext, r21) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, r24) == offset_of!(TaskContext, r23) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, r26) == offset_of!(TaskContext, r25) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, r28) == offset_of!(TaskContext, r27) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, lr) == offset_of!(TaskContext, r29) + size_of::<u64>());
+    assert!(offset_of!(TaskContext, kernel_tls) == offset_of!(TaskContext, lr) + size_of::<u64>());
+};
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
@@ -215,19 +242,10 @@ impl TaskContext {
 
     /// Initializes the context for a new task, with the given entry point and
     /// kernel stack.
-    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
+    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         self.sp = kstack_top.as_usize() as u64;
         self.lr = entry as u64;
-        self.tpidr_el0 = tls_area.as_usize() as u64;
-    }
-
-    /// Changes the page table root in this context.
-    ///
-    /// The hardware register for user page table root (`ttbr0_el1` for aarch64 in EL1)
-    /// will be updated to the next task's after [`Self::switch_to`].
-    #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, ttbr0_el1: ax_memory_addr::PhysAddr) {
-        self.ttbr0_el1 = ttbr0_el1;
+        self.kernel_tls = kernel_tls;
     }
 
     /// Switches to another task.
@@ -235,20 +253,10 @@ impl TaskContext {
     /// It first saves the current task's context from CPU to this place, and then
     /// restores the next task's context from `next_ctx` to CPU.
     pub fn switch_to(&mut self, next_ctx: &Self) {
-        #[cfg(feature = "tls")]
-        {
-            self.tpidr_el0 = crate::asm::read_thread_pointer() as _;
-            unsafe { crate::asm::write_thread_pointer(next_ctx.tpidr_el0 as _) };
-        }
         #[cfg(feature = "fp-simd")]
         {
             self.fp_state.save();
             next_ctx.fp_state.restore();
-        }
-        #[cfg(feature = "uspace")]
-        if self.ttbr0_el1 != next_ctx.ttbr0_el1 {
-            unsafe { crate::asm::write_user_page_table(next_ctx.ttbr0_el1) };
-            crate::asm::flush_tlb(None); // currently flush the entire TLB
         }
         unsafe { context_switch(self, next_ctx) }
     }
@@ -259,26 +267,38 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
     naked_asm!(
         "
         // save old context (callee-saved registers)
-        stp     x29, x30, [x0, 11 * 8]
-        stp     x27, x28, [x0, 9 * 8]
-        stp     x25, x26, [x0, 7 * 8]
-        stp     x23, x24, [x0, 5 * 8]
-        stp     x21, x22, [x0, 3 * 8]
-        stp     x19, x20, [x0, 1 * 8]
+        stp     x29, x30, [x0, {r29_offset}]
+        stp     x27, x28, [x0, {r27_offset}]
+        stp     x25, x26, [x0, {r25_offset}]
+        stp     x23, x24, [x0, {r23_offset}]
+        stp     x21, x22, [x0, {r21_offset}]
+        stp     x19, x20, [x0, {r19_offset}]
         mov     x19, sp
-        str     x19, [x0]
+        str     x19, [x0, {sp_offset}]
+        mrs     x9, tpidr_el0
+        str     x9, [x0, {kernel_tls_offset}]
 
         // restore new context
-        ldr     x19, [x1]
+        ldr     x9, [x1, {kernel_tls_offset}]
+        msr     tpidr_el0, x9
+        ldr     x19, [x1, {sp_offset}]
         mov     sp, x19
-        ldp     x19, x20, [x1, 1 * 8]
-        ldp     x21, x22, [x1, 3 * 8]
-        ldp     x23, x24, [x1, 5 * 8]
-        ldp     x25, x26, [x1, 7 * 8]
-        ldp     x27, x28, [x1, 9 * 8]
-        ldp     x29, x30, [x1, 11 * 8]
+        ldp     x19, x20, [x1, {r19_offset}]
+        ldp     x21, x22, [x1, {r21_offset}]
+        ldp     x23, x24, [x1, {r23_offset}]
+        ldp     x25, x26, [x1, {r25_offset}]
+        ldp     x27, x28, [x1, {r27_offset}]
+        ldp     x29, x30, [x1, {r29_offset}]
 
         ret",
+        sp_offset = const offset_of!(TaskContext, sp),
+        r19_offset = const offset_of!(TaskContext, r19),
+        r21_offset = const offset_of!(TaskContext, r21),
+        r23_offset = const offset_of!(TaskContext, r23),
+        r25_offset = const offset_of!(TaskContext, r25),
+        r27_offset = const offset_of!(TaskContext, r27),
+        r29_offset = const offset_of!(TaskContext, r29),
+        kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
     )
 }
 

@@ -59,6 +59,8 @@ core::arch::global_asm!(
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
     trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
+    guest_tpidr_el0_offset = const crate::vcpu::ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
+    host_tpidr_el0_offset = const crate::vcpu::ARM_VCPU_HOST_TPIDR_EL0_OFFSET,
 );
 
 /// Handles synchronous exceptions that occur during the execution of a guest VM.
@@ -318,8 +320,10 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
 ///       This function firstly adjusts the `sp` to skip the exception frame
 ///       according to the memory layout of [`crate::ArmVcpu`], which makes current `sp`
 ///       point to the address of `host.stack_top`.
-///       The saved host `SP_EL0` is restored before any host Rust runs again, then
-///       the host stack top value is restored by `ldr`.
+///       Guest `TPIDR_EL0` has already been saved and host `TPIDR_EL0` restored
+///       by the lower-EL assembly before this trampoline is entered. The saved
+///       host `SP_EL0` is then restored before any host Rust runs again, followed
+///       by the host stack top value.
 ///
 /// 2. **Restore Host Context:**
 ///     - The `restore_regs_from_stack!()` macro is invoked to restore the host function context

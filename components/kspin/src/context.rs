@@ -1,6 +1,8 @@
 //! Context policies and standalone context guards.
 
-use core::{marker::PhantomData, mem::ManuallyDrop};
+use core::mem::ManuallyDrop;
+
+use ax_cpu_local::CpuPin;
 
 use crate::runtime_call;
 
@@ -32,19 +34,19 @@ pub struct NoPreemptIrqSaveContext;
 /// A local-IRQ guard backed by the runtime's nested IRQ service.
 #[must_use = "dropping the guard leaves the IRQ-disabled section"]
 pub struct IrqGuard {
-    _not_send: PhantomData<*mut ()>,
+    cpu_pin: CpuPin,
 }
 
 /// A preemption guard backed by the runtime's nested preemption service.
 #[must_use = "dropping the guard leaves the preemption-disabled section"]
 pub struct PreemptGuard {
-    _not_send: PhantomData<*mut ()>,
+    cpu_pin: CpuPin,
 }
 
 /// A combined preemption and local-IRQ guard.
 #[must_use = "dropping the guard restores the runtime context"]
 pub struct PreemptIrqGuard {
-    _not_send: PhantomData<*mut ()>,
+    cpu_pin: CpuPin,
 }
 
 impl IrqGuard {
@@ -53,8 +55,16 @@ impl IrqGuard {
     pub fn new() -> Self {
         IrqSaveContext::enter();
         Self {
-            _not_send: PhantomData,
+            // SAFETY: LockRuntime's IRQ nesting is a scheduler barrier until
+            // this same-CPU guard leaves the IRQ-disabled section.
+            cpu_pin: unsafe { CpuPin::new_unchecked() },
         }
+    }
+
+    /// Borrows proof that CPU-local address calculation cannot race migration.
+    #[inline(always)]
+    pub const fn cpu_pin(&self) -> &CpuPin {
+        &self.cpu_pin
     }
 }
 
@@ -77,8 +87,16 @@ impl PreemptGuard {
     pub fn new() -> Self {
         NoPreemptContext::enter();
         Self {
-            _not_send: PhantomData,
+            // SAFETY: LockRuntime keeps the calling execution context pinned
+            // until this guard performs its matching preemption exit.
+            cpu_pin: unsafe { CpuPin::new_unchecked() },
         }
+    }
+
+    /// Borrows proof that CPU-local address calculation cannot race migration.
+    #[inline(always)]
+    pub const fn cpu_pin(&self) -> &CpuPin {
+        &self.cpu_pin
     }
 
     /// Leaves the guard at the architecture IRQ-return scheduler safe point.
@@ -95,7 +113,9 @@ impl PreemptGuard {
     #[inline(always)]
     pub unsafe fn finish_irq_return(self) {
         let _guard = ManuallyDrop::new(self);
-        leave_preempt_context_inner(true);
+        // SAFETY: forwarded caller contract is exactly the LockRuntime IRQ-return
+        // contract. The runtime owns the atomic eligibility recheck and schedule.
+        unsafe { runtime_call::preempt_exit_irq_return() };
     }
 }
 
@@ -118,8 +138,16 @@ impl PreemptIrqGuard {
     pub fn new() -> Self {
         NoPreemptIrqSaveContext::enter();
         Self {
-            _not_send: PhantomData,
+            // SAFETY: both preemption and local IRQ nesting remain active for
+            // this guard's complete lifetime.
+            cpu_pin: unsafe { CpuPin::new_unchecked() },
         }
+    }
+
+    /// Borrows proof that CPU-local address calculation cannot race migration.
+    #[inline(always)]
+    pub const fn cpu_pin(&self) -> &CpuPin {
+        &self.cpu_pin
     }
 }
 
@@ -184,32 +212,7 @@ impl LockContext for NoPreemptIrqSaveContext {
 
 #[inline(always)]
 fn leave_preempt_context() {
-    leave_preempt_context_inner(false);
-}
-
-#[inline(always)]
-fn leave_preempt_context_inner(irq_return: bool) {
-    let outermost = runtime_call::preempt_exit();
-    if outermost && should_schedule(irq_return) {
-        // Keep this task non-preemptible across the context switch. The runtime
-        // saves this depth in the outgoing execution context and restores the
-        // incoming task's own depth, so another task never inherits it. When
-        // this task resumes, the retained depth prevents a second scheduling
-        // frame from nesting before the first one has unwound.
-        runtime_call::preempt_enter();
-        runtime_call::schedule();
-        debug_assert!(
-            runtime_call::preempt_exit(),
-            "scheduler changed the caller's preemption nesting"
-        );
-    }
-}
-
-#[inline(always)]
-fn should_schedule(irq_return: bool) -> bool {
-    (irq_return || runtime_call::irqs_enabled())
-        && !runtime_call::in_hard_irq()
-        && runtime_call::need_resched()
+    runtime_call::preempt_exit();
 }
 
 mod private {
@@ -256,9 +259,7 @@ mod tests {
                 "irq-enter",
                 "irq-exit",
                 "preempt-exit",
-                "preempt-enter",
                 "schedule",
-                "preempt-exit",
             ]
         );
     }
@@ -283,10 +284,8 @@ mod tests {
             [
                 "irq-enter",
                 "preempt-enter",
-                "preempt-exit",
-                "preempt-enter",
-                "schedule",
-                "preempt-exit",
+                "preempt-exit-irq-return",
+                "schedule-irq-return",
             ]
         );
         imp::irq_exit();

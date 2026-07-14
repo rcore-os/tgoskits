@@ -1,5 +1,6 @@
 use core::ptr::NonNull;
 
+use aarch64_cpu::asm::barrier;
 use log::trace;
 use tock_registers::{LocalRegisterCopy, interfaces::*};
 
@@ -191,28 +192,6 @@ impl Gic {
         }
     }
 
-    /// Send a Software Generated Interrupt (SGI) to target CPUs
-    ///
-    /// # Arguments
-    /// * `sgi_id` - SGI interrupt ID (0-15)
-    /// * `target` - Target CPUs for the SGI
-    pub fn send_sgi(&self, sgi_id: IntId, target: SGITarget) {
-        let sgi_id = sgi_id.to_u32();
-        assert!(sgi_id < 16, "Invalid SGI ID: {sgi_id}");
-        let (filter, target_list) = match target {
-            SGITarget::TargetList(list) => (
-                gicd::SGIR::TargetListFilter::TargetList,
-                list.as_u8() as u32,
-            ),
-            SGITarget::AllOther => (gicd::SGIR::TargetListFilter::AllOther, 0),
-            SGITarget::Current => (gicd::SGIR::TargetListFilter::Current, 0),
-        };
-
-        self.gicd().SGIR.write(
-            gicd::SGIR::SGIINTID.val(sgi_id) + gicd::SGIR::CPUTargetList.val(target_list) + filter,
-        );
-    }
-
     pub fn set_active(&self, id: IntId, active: bool) {
         if active {
             self.gicd().ISACTIVER.set_irq_bit(id.into());
@@ -273,6 +252,11 @@ pub enum SGITarget {
 pub struct TargetList(u8);
 
 impl TargetList {
+    /// Creates a target list from one controller-reported CPU-interface bit.
+    pub fn from_one_hot(raw: u8) -> Option<Self> {
+        (raw.count_ones() == 1).then_some(Self(raw))
+    }
+
     /// Create a new TargetList with a specific CPU target list. list is Cpu interface IDs.
     pub fn new(list: impl Iterator<Item = usize>) -> Self {
         let mut raw = 0;
@@ -295,6 +279,13 @@ impl TargetList {
     pub fn cpu_id_list(&self) -> impl Iterator<Item = usize> {
         (0..8).filter(move |i| (self.0 & (1 << i)) != 0)
     }
+}
+
+/// Failure to encode one bounded GICv2 SGI transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SgiError {
+    /// The interrupt is not an SGI.
+    InvalidIntId,
 }
 
 impl SGITarget {
@@ -351,6 +342,11 @@ pub struct CpuInterface {
 }
 
 unsafe impl Send for CpuInterface {}
+// SAFETY: GICC and distributor SGI/PPI state are architecturally banked by the
+// executing CPU. GICD_SGIR is an atomic write-only command port explicitly
+// designed for concurrent CPU senders, and its MMIO wrapper uses interior
+// mutability. Other shared SPI state remains owned by `Gic`.
+unsafe impl Sync for CpuInterface {}
 
 impl CpuInterface {
     fn gicc(&self) -> &CpuInterfaceReg {
@@ -362,7 +358,7 @@ impl CpuInterface {
     }
 
     /// Initialize the CPU interface for the current CPU
-    pub fn init_current_cpu(&mut self) {
+    pub fn init_current_cpu(&self) {
         let gicc = self.gicc();
 
         // 1. Disable CPU interface first
@@ -382,6 +378,11 @@ impl CpuInterface {
 
         // 6. Set default priority for sgi and ppi interrupts
         self.gicd().set_default_sgi_ppi_priorities();
+    }
+
+    /// Reads the implementation-defined SGI target bit for this CPU interface.
+    pub fn current_cpu_target(&self) -> Option<TargetList> {
+        TargetList::from_one_hot(self.gicd().ITARGETSR[0].get())
     }
     /// Set the EOI mode for non-secure interrupts
     ///
@@ -530,10 +531,12 @@ impl CpuInterface {
         self.gicd().ISPENDR.get_irq_bit(id.into())
     }
 
-    /// Send a Software Generated Interrupt (SGI) to target CPUs.
-    pub fn send_sgi(&self, sgi_id: IntId, target: SGITarget) {
+    /// Sends an SGI without logging or panicking in the data path.
+    pub fn try_send_sgi(&self, sgi_id: IntId, target: SGITarget) -> Result<(), SgiError> {
         let sgi_id = sgi_id.to_u32();
-        assert!(sgi_id < 16, "Invalid SGI ID: {sgi_id}");
+        if sgi_id >= 16 {
+            return Err(SgiError::InvalidIntId);
+        }
         let (filter, target_list) = match target {
             SGITarget::TargetList(list) => (
                 gicd::SGIR::TargetListFilter::TargetList,
@@ -543,9 +546,13 @@ impl CpuInterface {
             SGITarget::Current => (gicd::SGIR::TargetListFilter::Current, 0),
         };
 
+        // Complete normal-memory doorbell/inbox publication before the SGI
+        // becomes observable at a target CPU.
+        barrier::dsb(barrier::ISHST);
         self.gicd().SGIR.write(
             gicd::SGIR::SGIINTID.val(sgi_id) + gicd::SGIR::CPUTargetList.val(target_list) + filter,
         );
+        Ok(())
     }
 
     pub fn set_cfg(&self, id: IntId, trigger: Trigger) {

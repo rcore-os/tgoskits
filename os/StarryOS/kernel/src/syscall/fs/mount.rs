@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_fs_ng::vfs::{current_fs_context, is_mount_busy as fs_is_mount_busy};
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
@@ -136,7 +136,7 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
 
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let target = current_fs_context().lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
@@ -152,7 +152,7 @@ pub fn sys_mount(
     }
 
     if (flags & MS_REMOUNT) != 0 {
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let target = current_fs_context().lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
@@ -163,7 +163,8 @@ pub fn sys_mount(
     }
 
     if (flags & MS_MOVE) != 0 {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         source.move_mount(&target)?;
@@ -171,7 +172,8 @@ pub fn sys_mount(
     }
 
     if (flags & MS_BIND) != 0 {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
@@ -184,7 +186,7 @@ pub fn sys_mount(
     match fs_type.as_str() {
         "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
             let fs = MemoryFs::new();
-            let target = FS_CONTEXT.lock().resolve(target)?;
+            let target = current_fs_context().lock().resolve(target)?;
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -192,7 +194,7 @@ pub fn sys_mount(
         }
         "cgroup2" => {
             let fs = crate::pseudofs::cgroup::new_cgroup2fs();
-            let target = FS_CONTEXT.lock().resolve(target)?;
+            let target = current_fs_context().lock().resolve(target)?;
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -204,7 +206,8 @@ pub fn sys_mount(
         }
         "overlay" => {
             let (lower_paths, upper_path, work_path) = parse_overlay_options(data)?;
-            let ctx = FS_CONTEXT.lock();
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
             let mut lower_dirs = Vec::new();
             for lower in lower_paths {
                 lower_dirs.push(ctx.resolve(lower)?);
@@ -233,7 +236,8 @@ pub fn sys_mount(
 fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 
-    let ctx = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let ctx = fs_context.lock();
 
     // Resolve source device path (e.g., "/dev/loop0") to a block device
     let source_loc = ctx.resolve(source)?;
@@ -308,10 +312,11 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
+    let fs_context = current_fs_context();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        FS_CONTEXT.lock().resolve_no_follow(target)?
+        fs_context.lock().resolve_no_follow(target)?
     } else {
-        FS_CONTEXT.lock().resolve(target)?
+        fs_context.lock().resolve(target)?
     };
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
@@ -381,7 +386,8 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         return Err(AxError::InvalidInput);
     }
 
-    let mut ctx = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let mut ctx = fs_context.lock();
 
     // The caller's current root must itself be a mount point (Linux
     // EINVAL if e.g. the process chroot'd into a subdirectory).

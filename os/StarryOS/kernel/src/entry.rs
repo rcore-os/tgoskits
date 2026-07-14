@@ -3,10 +3,10 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 use ax_kspin::PreemptIrqGuard;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use starry_process::{Pid, Process};
 
 use crate::{
@@ -35,7 +35,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
-    let loc = FS_CONTEXT
+    let loc = current_fs_context()
         .lock()
         .resolve(&args[0])
         .expect("Failed to resolve executable path");
@@ -77,7 +77,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = ProcessData::new(
         proc,
         ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
-        Arc::new(Mutex::new(uspace)),
+        Arc::new(PiMutex::new(uspace)),
         Arc::default(),
         None,
         pid,
@@ -111,7 +111,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let exit_code = task.join();
     info!("Init process exited with code: {exit_code:?}");
 
-    let cx = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let cx = fs_context.lock();
     cx.root_dir()
         .unmount_all()
         .expect("Failed to unmount all filesystems");

@@ -13,7 +13,29 @@ extern crate ax_memory_addr;
 #[macro_use]
 pub mod trap;
 
+pub use trap::TrapOrigin;
+
 pub mod cap;
+
+/// Kernel task-local storage base owned by one execution context.
+///
+/// This value follows a task across CPUs. It must never be used as a CPU-local
+/// anchor or initialized from an architecture per-CPU register.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KernelTlsBase(usize);
+
+impl KernelTlsBase {
+    /// Creates a kernel TLS base from its virtual address.
+    pub const fn new(address: usize) -> Self {
+        Self(address)
+    }
+
+    /// Returns the virtual address represented by this TLS base.
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+}
 
 #[cfg(feature = "exception-table")]
 mod exception_table;

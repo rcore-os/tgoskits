@@ -5,7 +5,16 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_memory_addr::VirtAddr;
 pub use ax_page_table_entry::MappingFlags as PageFaultFlags;
 
-pub use crate::TrapFrame;
+pub use crate::{KernelTrapFrame, UserRegisters};
+
+/// Privilege domain that owns a saved register image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapOrigin {
+    /// The trap interrupted kernel execution.
+    Kernel,
+    /// The trap interrupted a less-privileged user context.
+    User,
+}
 
 /// IRQ trap hook type.
 pub type IrqHandler = fn(usize) -> bool;
@@ -104,7 +113,7 @@ pub(crate) fn call_page_fault_handler_with_parent_irqs(
 
 /// Breakpoint handler.
 ///
-/// The handler is invoked with a mutable reference to the trapped [`TrapFrame`]
+/// The handler is invoked with a typed view of the trapped kernel registers
 /// and must return a boolean indicating whether it has fully handled the trap:
 ///
 /// - `true` means the breakpoint has been handled and control should resume
@@ -117,11 +126,11 @@ pub(crate) fn call_page_fault_handler_with_parent_irqs(
 /// the target architecture. In particular, the handler must ensure that,
 /// upon resuming from the trap, execution does not immediately re-trigger the
 /// same breakpoint instruction or condition, which could otherwise lead to an
-/// infinite trap loop. The exact way to advance or modify the PC is
-/// architecture-specific and depends on how [`TrapFrame`] encodes the saved
-/// context.
+/// infinite trap loop. Register changes must go through
+/// [`KernelTrapFrame::apply_registers`], which preserves CPU-owned and
+/// privilege-origin state.
 #[eii]
-pub fn breakpoint_handler(_tf: &mut TrapFrame) -> bool {
+pub fn breakpoint_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
     false
 }
 
@@ -129,8 +138,8 @@ pub fn breakpoint_handler(_tf: &mut TrapFrame) -> bool {
 ///
 /// On `x86_64`, the handler is invoked for debug-related traps (for
 /// example, hardware breakpoints, single-step traps, or other debug
-/// exceptions). The handler receives a mutable reference to the trapped
-/// [`TrapFrame`] and returns a boolean with the following meaning:
+/// exceptions). The handler receives a typed kernel-register view and returns
+/// a boolean with the following meaning:
 ///
 /// - `true` means the debug trap has been fully handled and execution should
 ///   resume from the state stored in the trap frame.
@@ -142,9 +151,11 @@ pub fn breakpoint_handler(_tf: &mut TrapFrame) -> bool {
 /// the architecture so that resuming execution does not immediately cause the
 /// same debug condition to fire again. Callers must take the architecture-
 /// specific PC semantics into account when deciding how to advance or modify
-/// the PC.
+/// the PC. Register changes must go through
+/// [`KernelTrapFrame::apply_registers`], which preserves CPU-owned and
+/// privilege-origin state.
 #[cfg(target_arch = "x86_64")]
 #[eii]
-pub fn debug_handler(_tf: &mut TrapFrame) -> bool {
+pub fn debug_handler(_tf: &mut KernelTrapFrame<'_>) -> bool {
     false
 }

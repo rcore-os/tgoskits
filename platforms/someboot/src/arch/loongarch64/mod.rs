@@ -94,14 +94,6 @@ impl ArchTrait for Arch {
         }
     }
 
-    fn init_runtime_percpu_reg(cpu_idx: usize) {
-        if let Some(percpu) = crate::smp::percpu_data_ptr(cpu_idx) {
-            unsafe {
-                core::arch::asm!("move $r21, {}", in(reg) percpu as usize);
-            }
-        }
-    }
-
     fn per_cpu_trap_init(is_primary: bool) {
         trap::per_cpu_trap_init(is_primary);
     }

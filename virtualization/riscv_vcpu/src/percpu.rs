@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ax_cpu_local::CpuPin;
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 
 use crate::{
-    has_hardware_support,
     registers::{delegated_exception_bits, delegated_interrupt_bits},
     types::{RiscvVcpuError, RiscvVcpuResult},
 };
@@ -25,6 +25,7 @@ use crate::{
 pub struct RiscvPerCpu {
     cpu_id: usize,
     enabled: bool,
+    max_guest_page_table_levels: usize,
 }
 
 impl RiscvPerCpu {
@@ -33,6 +34,7 @@ impl RiscvPerCpu {
         Ok(Self {
             cpu_id,
             enabled: false,
+            max_guest_page_table_levels: 0,
         })
     }
 
@@ -42,20 +44,22 @@ impl RiscvPerCpu {
     }
 
     /// Enables RISC-V hypervisor state on this CPU.
-    pub fn hardware_enable(&mut self) -> RiscvVcpuResult {
-        if !has_hardware_support() {
+    pub fn hardware_enable(&mut self, cpu_pin: &CpuPin) -> RiscvVcpuResult {
+        let max_guest_page_table_levels = crate::max_guest_page_table_levels(cpu_pin);
+        if max_guest_page_table_levels == 0 {
             return Err(RiscvVcpuError::Unsupported);
         }
         unsafe {
             setup_csrs();
         }
         self.enabled = true;
+        self.max_guest_page_table_levels = max_guest_page_table_levels;
         let _ = self.cpu_id;
         Ok(())
     }
 
     /// Disables guest-visible hypervisor state owned by this CPU state object.
-    pub fn hardware_disable(&mut self) -> RiscvVcpuResult {
+    pub fn hardware_disable(&mut self, _cpu_pin: &CpuPin) -> RiscvVcpuResult {
         unsafe {
             hvip::clear_vssip();
             hvip::clear_vstip();
@@ -64,17 +68,18 @@ impl RiscvPerCpu {
             core::arch::riscv64::hfence_gvma_all();
         }
         self.enabled = false;
+        self.max_guest_page_table_levels = 0;
         Ok(())
     }
 
     /// Returns the max guest page-table levels supported by this CPU.
     pub fn max_guest_page_table_levels(&self) -> usize {
-        crate::max_guest_page_table_levels()
+        self.max_guest_page_table_levels
     }
 
     /// Returns the guest physical address width supported by this CPU.
     pub fn guest_phys_addr_bits(&self) -> usize {
-        match crate::max_guest_page_table_levels() {
+        match self.max_guest_page_table_levels {
             3 => 41,
             4 => 50,
             _ => 0,

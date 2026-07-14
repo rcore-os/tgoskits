@@ -90,7 +90,7 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn notify_waiters(&self) {
-        BLOCK_IO_WAIT_WQ.notify_all(false);
+        BLOCK_IO_WAIT_WQ.notify_all();
     }
 
     fn notify_drain(&self) {

@@ -14,19 +14,33 @@ struct NetTestTaskRuntime;
 
 impl_task_runtime! {
     impl TaskRuntime for NetTestTaskRuntime {
-        fn task_system_handle() -> TaskSystemHandle { TaskSystemHandle::NONE }
-        fn current_cpu_local_handle() -> CpuLocalHandle { CpuLocalHandle::NONE }
-        fn cpu_local_handle(_cpu: RuntimeCpuId) -> CpuLocalHandle { CpuLocalHandle::NONE }
+        unsafe fn task_system_handle() -> TaskSystemHandle { TaskSystemHandle::NONE }
+        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+            CurrentCpuLocalHandle::NONE
+        }
+        unsafe fn cpu_remote_handle(_cpu: RuntimeCpuId) -> CpuRemoteHandle {
+            CpuRemoteHandle::NONE
+        }
         fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn online_cpu_count() -> u32 { 1 }
         fn irq_guard_enter() -> IrqGuardToken {
-            IrqGuardToken::from_raw(NEXT_IRQ_TOKEN.fetch_add(1, Ordering::Relaxed))
+            // SAFETY: the monotonically issued token remains live until the
+            // matching no-op test exit consumes its modeled guard scope.
+            unsafe {
+                IrqGuardToken::from_raw(NEXT_IRQ_TOKEN.fetch_add(1, Ordering::Relaxed))
+            }
         }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
         fn finish_initial_context_switch() {}
-        fn scheduler_frame_guard_enter() {}
-        fn scheduler_frame_guard_exit() {}
+        fn scheduler_frame_guard_enter(
+            _origin: RuntimeScheduleOrigin,
+            _entry: RuntimeSchedulerEntry,
+        ) -> RuntimeStatus { RuntimeStatus::Success }
+        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool { true }
         fn in_hard_irq() -> bool { false }
+        fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
         fn monotonic_ns() -> u64 { ax_hal::time::monotonic_time_nanos() }
         fn timer_resolution_ns() -> u64 { 1 }
         fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
@@ -76,12 +90,9 @@ impl_lock_runtime! {
     impl LockRuntime for NetTestLockRuntime {
         fn irq_enter() {}
         fn irq_exit() {}
-        fn irqs_enabled() -> bool { true }
         fn preempt_enter() {}
-        fn preempt_exit() -> bool { true }
-        fn in_hard_irq() -> bool { false }
-        fn need_resched() -> bool { false }
-        fn schedule() {}
+        fn preempt_exit() {}
+        unsafe fn preempt_exit_irq_return() {}
         fn current_thread_id() -> u64 { 0 }
         fn lockdep_acquire(_event: LockdepEvent) {}
         fn lockdep_release(_event: LockdepEvent) {}

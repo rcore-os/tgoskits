@@ -3,6 +3,8 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_cpu_local::CpuPin;
+
 use crate::{
     context_frame::LoongArchContextFrame,
     guest_addr::{
@@ -28,11 +30,29 @@ use crate::{
     },
 };
 
+const LOONGARCH_KSAVE_CSR_BASE: usize = 0x30;
+
+// exception.S requires literal `.equ` values. Bind them to the shared
+// allocation so ax-cpu, ax-percpu, and the vCPU cannot drift independently.
+const _: () = {
+    use ax_cpu_local::loongarch64::{
+        HOST_PERCPU_KS, HOST_VCPU_KS, HOST_VCPU_TMP_KS, KSAVE_KSP, KSAVE_T0, KSAVE_T1,
+    };
+
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_KSP == 0x30);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T0 == 0x31);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T1 == 0x32);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_PERCPU_KS == 0x33);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_KS == 0x34);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_TMP_KS == 0x35);
+};
+
 static NESTED_FAULT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static SYNC_EXIT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static TARGET_GSPR_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 fn emulate_gspr<H: LoongArchHostOps>(
+    cpu_pin: &CpuPin,
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
@@ -91,7 +111,7 @@ fn emulate_gspr<H: LoongArchHostOps>(
         return emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer_token);
     }
     if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        return emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id);
+        return emulate_iocsr::<H>(cpu_pin, state, ctx, ins, vm_id, vcpu_id);
     }
 
     panic!(
@@ -102,6 +122,7 @@ fn emulate_gspr<H: LoongArchHostOps>(
 }
 
 pub fn handle_exception_sync<H: LoongArchHostOps>(
+    cpu_pin: &CpuPin,
     iocsr_state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
@@ -189,6 +210,7 @@ pub fn handle_exception_sync<H: LoongArchHostOps>(
             Ok(LoongArchVmExit::Hypercall { nr, args })
         }
         ECODE_GSPR => Ok(emulate_gspr::<H>(
+            cpu_pin,
             iocsr_state,
             ctx,
             vm_id,
@@ -340,7 +362,8 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         "ld.d $s8, $sp, 72",
         "ld.d $fp, $sp, 80",
         "ld.d $tp, $sp, 88",
-        "ld.d $r21, $sp, 96",
+        // SAVE_GUEST_REGS restored the CPU-owned r21 from the KS3 shadow
+        // before branching to this host return trampoline.
         "addi.d $sp, $sp, 14 * 8",
         "jr $ra",
         ctx_size = const core::mem::size_of::<LoongArchContextFrame>(),

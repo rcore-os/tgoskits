@@ -17,24 +17,72 @@ std::thread_local! {
     static SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
     static MAX_SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
     static IRQ_ENTER_SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static IRQ_GUARDS_AT_CONTEXT_SWITCH: Cell<usize> = const { Cell::new(usize::MAX) };
+    static ALLOW_CONTEXT_SWITCH: Cell<bool> = const { Cell::new(false) };
+    static SCHEDULE_CONTEXT_SAFE: Cell<bool> = const { Cell::new(true) };
+    static SCHEDULER_FRAME_ENTER_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static SCHEDULER_IPI_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static SCHEDULER_IPI_BUSY_REMAINING: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULER_IPI_SEND_COUNT: Cell<usize> = const { Cell::new(0) };
+    static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
+    static HOOK_REENTRY_QUERY: Cell<HookReentryQuery> = const { Cell::new(HookReentryQuery::None) };
+    static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+enum HookReentryQuery {
+    None,
+    CurrentThread,
+    NeedsReschedule,
+}
+
+fn run_hook_reentry_query() {
+    let query = HOOK_REENTRY_QUERY.with(|query| query.replace(HookReentryQuery::None));
+    let error = match query {
+        HookReentryQuery::None => return,
+        HookReentryQuery::CurrentThread => crate::current_thread_id().err(),
+        HookReentryQuery::NeedsReschedule => crate::current_cpu_needs_resched().err(),
+    };
+    HOOK_REENTRY_ERROR.with(|observed| observed.set(error));
 }
 
 struct UnitTestRuntime;
 
 #[crate::runtime::impl_extern_trait(name = "ax-task_0_7", abi = "rust")]
 impl TaskRuntime for UnitTestRuntime {
-    fn task_system_handle() -> TaskSystemHandle {
-        TASK_SYSTEM_HANDLE.with(|handle| TaskSystemHandle::from_raw(handle.get()))
+    unsafe fn task_system_handle() -> TaskSystemHandle {
+        TASK_SYSTEM_HANDLE.with(|handle| {
+            // SAFETY: unit fixtures keep this pinned system alive until the
+            // thread-local handle is cleared.
+            unsafe { TaskSystemHandle::from_raw(handle.get()) }
+        })
     }
-    fn current_cpu_local_handle() -> CpuLocalHandle {
-        CPU_LOCAL_HANDLE.with(|handle| CpuLocalHandle::from_raw(handle.get()))
+    unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+        CPU_LOCAL_HANDLE.with(|handle| {
+            // SAFETY: unit fixtures install only the current thread's pinned
+            // CpuLocal and clear the handle before destroying it.
+            unsafe { CurrentCpuLocalHandle::from_raw(handle.get()) }
+        })
     }
-    fn cpu_local_handle(cpu: RuntimeCpuId) -> CpuLocalHandle {
-        if cpu.as_u32() == 0 {
-            Self::current_cpu_local_handle()
-        } else {
-            CpuLocalHandle::NONE
+    unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+        let raw = TASK_SYSTEM_HANDLE.with(Cell::get);
+        if raw == 0 {
+            return CpuRemoteHandle::NONE;
         }
+        // SAFETY: unit fixtures keep the pinned system alive until clearing
+        // these thread-local handles.
+        let system = unsafe { &*core::ptr::with_exposed_provenance::<crate::TaskSystem>(raw) };
+        system
+            .cpu_remote(crate::CpuId::new(cpu.as_u32()))
+            .map_or(CpuRemoteHandle::NONE, |remote| {
+                // SAFETY: CpuRemote is Arc-backed by TaskSystem and the fixture
+                // keeps that system alive while this handle is published.
+                unsafe {
+                    CpuRemoteHandle::from_raw(
+                        (remote as *const crate::CpuRemote).expose_provenance(),
+                    )
+                }
+            })
     }
     fn current_cpu_id() -> RuntimeCpuId {
         RuntimeCpuId::new(0)
@@ -45,10 +93,13 @@ impl TaskRuntime for UnitTestRuntime {
 
     fn irq_guard_enter() -> IrqGuardToken {
         let scheduler_depth = SCHEDULER_FRAME_DEPTH.with(Cell::get);
-        IRQ_ENTER_SCHEDULER_FRAME_DEPTH.with(|observed| observed.set(scheduler_depth));
+        IRQ_ENTER_SCHEDULER_FRAME_DEPTH
+            .with(|observed| observed.set(observed.get().max(scheduler_depth)));
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
         ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow_mut().push(token));
-        IrqGuardToken::from_raw(token)
+        // SAFETY: the token was just inserted into ACTIVE_IRQ_TOKENS and stays
+        // valid until the matching irq_guard_exit call removes it.
+        unsafe { IrqGuardToken::from_raw(token) }
     }
 
     unsafe fn irq_guard_exit(token: IrqGuardToken) {
@@ -63,15 +114,24 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     fn finish_initial_context_switch() {
-        ACTIVE_IRQ_TOKENS.with(|tokens| {
-            tokens
-                .borrow_mut()
-                .pop()
-                .expect("initial context must inherit one IRQ guard");
+        SCHEDULER_FRAME_DEPTH.with(|depth| {
+            let current = depth.get();
+            assert_eq!(
+                current, 1,
+                "initial context must inherit one scheduler baton"
+            );
+            depth.set(0);
         });
     }
 
-    fn scheduler_frame_guard_enter() {
+    fn scheduler_frame_guard_enter(
+        _origin: RuntimeScheduleOrigin,
+        _entry: RuntimeSchedulerEntry,
+    ) -> RuntimeStatus {
+        let status = SCHEDULER_FRAME_ENTER_STATUS.with(Cell::get);
+        if status != RuntimeStatus::Success {
+            return status;
+        }
         SCHEDULER_FRAME_DEPTH.with(|depth| {
             let next = depth
                 .get()
@@ -80,30 +140,57 @@ impl TaskRuntime for UnitTestRuntime {
             depth.set(next);
             MAX_SCHEDULER_FRAME_DEPTH.with(|maximum| maximum.set(maximum.get().max(next)));
         });
+        RuntimeStatus::Success
     }
 
-    fn scheduler_frame_guard_exit() {
-        SCHEDULER_FRAME_DEPTH.with(|depth| {
+    fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool {
+        let scheduler_clear = SCHEDULER_FRAME_DEPTH.with(|depth| {
             let current = depth.get();
             assert!(current > 0, "unbalanced test scheduler frame exit");
             depth.set(current - 1);
+            current == 1
         });
+        scheduler_clear && ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
     }
 
     fn in_hard_irq() -> bool {
-        false
+        IN_HARD_IRQ.with(Cell::get)
+    }
+    fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
+        if SCHEDULE_CONTEXT_SAFE.with(Cell::get) {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::UnsafeContext
+        }
     }
     fn monotonic_ns() -> u64 {
+        run_hook_reentry_query();
         0
     }
     fn timer_resolution_ns() -> u64 {
         1
     }
     fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus {
+        run_hook_reentry_query();
         RuntimeStatus::Success
     }
     fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus {
-        RuntimeStatus::Success
+        run_hook_reentry_query();
+        SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(count.get() + 1));
+        let busy = SCHEDULER_IPI_BUSY_REMAINING.with(|remaining| {
+            let current = remaining.get();
+            if current == 0 {
+                false
+            } else {
+                remaining.set(current - 1);
+                true
+            }
+        });
+        if busy {
+            RuntimeStatus::Busy
+        } else {
+            SCHEDULER_IPI_STATUS.with(Cell::get)
+        }
     }
     fn wait_for_interrupt() {}
     fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
@@ -132,7 +219,13 @@ impl TaskRuntime for UnitTestRuntime {
         RuntimeStatus::Unsupported
     }
     unsafe fn switch_context(_previous: ExecutionContextHandle, _next: ExecutionContextHandle) {
-        panic!("unit-test runtime has no execution contexts")
+        assert!(
+            ALLOW_CONTEXT_SWITCH.with(Cell::get),
+            "unit-test context switches must be explicitly scoped"
+        );
+        IRQ_GUARDS_AT_CONTEXT_SWITCH.with(|observed| {
+            observed.set(ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len()));
+        });
     }
     fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
         INSTALLED_ADDRESS_SPACE.store(address_space.into_raw(), Ordering::Release);
@@ -143,6 +236,16 @@ impl TaskRuntime for UnitTestRuntime {
     fn fatal_invariant(_code: u32, _argument: usize) -> ! {
         panic!("scheduler invariant reported by unit test")
     }
+}
+
+pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus, busy_before_status: usize) {
+    SCHEDULER_IPI_STATUS.with(|current| current.set(status));
+    SCHEDULER_IPI_BUSY_REMAINING.with(|remaining| remaining.set(busy_before_status));
+    SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(0));
+}
+
+pub(crate) fn scheduler_ipi_send_count() -> usize {
+    SCHEDULER_IPI_SEND_COUNT.with(Cell::get)
 }
 
 pub(crate) fn reset_irq_state() {
@@ -161,6 +264,33 @@ pub(crate) fn reset_scheduler_frame_state() {
     SCHEDULER_FRAME_DEPTH.with(|depth| depth.set(0));
     MAX_SCHEDULER_FRAME_DEPTH.with(|depth| depth.set(0));
     IRQ_ENTER_SCHEDULER_FRAME_DEPTH.with(|depth| depth.set(0));
+    IRQ_GUARDS_AT_CONTEXT_SWITCH.with(|count| count.set(usize::MAX));
+}
+
+pub(crate) fn set_schedule_context_safe(safe: bool) {
+    SCHEDULE_CONTEXT_SAFE.with(|state| state.set(safe));
+}
+
+pub(crate) fn set_scheduler_frame_enter_status(status: RuntimeStatus) {
+    SCHEDULER_FRAME_ENTER_STATUS.with(|state| state.set(status));
+}
+
+pub(crate) fn set_hard_irq(active: bool) {
+    IN_HARD_IRQ.with(|state| state.set(active));
+}
+
+pub(crate) fn reenter_current_thread_from_next_hook() {
+    HOOK_REENTRY_ERROR.with(|observed| observed.set(None));
+    HOOK_REENTRY_QUERY.with(|query| query.set(HookReentryQuery::CurrentThread));
+}
+
+pub(crate) fn reenter_needs_reschedule_from_next_hook() {
+    HOOK_REENTRY_ERROR.with(|observed| observed.set(None));
+    HOOK_REENTRY_QUERY.with(|query| query.set(HookReentryQuery::NeedsReschedule));
+}
+
+pub(crate) fn take_hook_reentry_error() -> Option<crate::TaskError> {
+    HOOK_REENTRY_ERROR.with(|observed| observed.take())
 }
 
 pub(crate) fn scheduler_frame_state() -> (usize, usize, usize) {
@@ -169,6 +299,25 @@ pub(crate) fn scheduler_frame_state() -> (usize, usize, usize) {
         MAX_SCHEDULER_FRAME_DEPTH.with(Cell::get),
         IRQ_ENTER_SCHEDULER_FRAME_DEPTH.with(Cell::get),
     )
+}
+
+pub(crate) fn irq_guards_at_context_switch() -> usize {
+    IRQ_GUARDS_AT_CONTEXT_SWITCH.with(Cell::get)
+}
+
+pub(crate) struct AllowedContextSwitch;
+
+impl Drop for AllowedContextSwitch {
+    fn drop(&mut self) {
+        ALLOW_CONTEXT_SWITCH.with(|allowed| allowed.set(false));
+    }
+}
+
+pub(crate) fn allow_context_switch() -> AllowedContextSwitch {
+    ALLOW_CONTEXT_SWITCH.with(|allowed| {
+        assert!(!allowed.replace(true), "nested test context-switch scope");
+    });
+    AllowedContextSwitch
 }
 
 pub(crate) fn installed_address_space() -> Option<usize> {

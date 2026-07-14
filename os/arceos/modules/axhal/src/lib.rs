@@ -91,9 +91,10 @@ pub mod trap {
 /// There are two types of context:
 ///
 /// - [`TaskContext`][ax_cpu::TaskContext]: The context of a task.
-/// - [`TrapFrame`][ax_cpu::TrapFrame]: The context of an interrupt or an exception.
+/// - [`UserRegisters`][ax_cpu::UserRegisters]: User-owned registers saved at a trap boundary.
+/// - [`KernelTrapFrame`][ax_cpu::KernelTrapFrame]: A CPU-pinned view of a kernel trap.
 pub mod context {
-    pub use ax_cpu::{TaskContext, TrapFrame};
+    pub use ax_cpu::{KernelTlsBase, KernelTrapFrame, TaskContext, UserRegisters};
 }
 
 pub use ax_cpu as cpu;
@@ -178,12 +179,9 @@ mod test_lock_runtime {
         impl LockRuntime for TestLockRuntime {
             fn irq_enter() {}
             fn irq_exit() {}
-            fn irqs_enabled() -> bool { true }
             fn preempt_enter() {}
-            fn preempt_exit() -> bool { true }
-            fn in_hard_irq() -> bool { false }
-            fn need_resched() -> bool { false }
-            fn schedule() {}
+            fn preempt_exit() {}
+            unsafe fn preempt_exit_irq_return() {}
             fn current_thread_id() -> u64 { 1 }
             fn lockdep_acquire(_event: LockdepEvent) {}
             fn lockdep_release(_event: LockdepEvent) {}

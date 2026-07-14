@@ -1,5 +1,7 @@
 use core::marker::PhantomData;
 
+use ax_cpu_local::CpuPin;
+
 use crate::{
     context_frame::LoongArchContextFrame,
     exception::{handle_exception_irq, handle_exception_sync},
@@ -10,11 +12,10 @@ use crate::{
     },
     registers::{
         CSR_ASID, CSR_CRMD, CSR_ECFG, CSR_KSAVE_KSP, CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH,
-        CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0, INT_HWI7, INT_IPI, INT_TIMER, csr_read,
-        csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
-        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough,
-        gstat_set_gid, gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled,
-        set_ecfg_vs, set_prmd_pie,
+        CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_IPI, INT_TIMER, csr_read, csr_write,
+        gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu, gcfg_set_top,
+        gcfg_set_topi, gcfg_set_toti, gstat_set_gid, gstat_set_pgm, gtlbc_set_tgid,
+        gtlbc_set_use_tgid, set_prmd_pie,
     },
     trap::{TrapKind, current_badi},
     types::{
@@ -48,7 +49,7 @@ struct HostTranslationState {
     prmd: usize,
     ksave_ksp: usize,
     guest_exit_eentry: usize,
-    ecfg_vs: usize,
+    ecfg: usize,
     pgdl: usize,
     pgdh: usize,
     pwcl: usize,
@@ -163,11 +164,12 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(())
     }
 
-    pub fn run(&mut self) -> LoongArchVcpuResult<LoongArchVmExit> {
+    pub fn run(&mut self, cpu_pin: &CpuPin) -> LoongArchVcpuResult<LoongArchVmExit> {
         unsafe {
             self.enable_guest_mode();
         }
-        if inject_enabled_pending_interrupt(&self.iocsr_state, &mut self.ctx, self.vcpu_id) {
+        if inject_enabled_pending_interrupt(cpu_pin, &self.iocsr_state, &mut self.ctx, self.vcpu_id)
+        {
             log::trace!(
                 "LoongArch guest pending interrupt injected before entry: VM[{}] VCpu[{}] \
                  sepc={:#x}, era={:#x}, estat={:#x}, ecfg={:#x}",
@@ -191,10 +193,10 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         );
         let trap_kind =
             TrapKind::try_from(exit_reason as u8).map_err(|_| LoongArchVcpuError::BadState)?;
-        self.vmexit_handler(trap_kind)
+        self.vmexit_handler(cpu_pin, trap_kind)
     }
 
-    pub fn bind(&mut self) -> LoongArchVcpuResult {
+    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> LoongArchVcpuResult {
         let _ = self.cpu_id;
         unsafe {
             self.save_host_translation_state();
@@ -202,9 +204,8 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(())
     }
 
-    pub fn unbind(&mut self) -> LoongArchVcpuResult {
+    pub fn unbind(&mut self, _cpu_pin: &CpuPin) -> LoongArchVcpuResult {
         unsafe {
-            set_ecfg_line_enabled(INT_TIMER, true);
             self.restore_host_translation_state();
         }
         Ok(())
@@ -257,14 +258,12 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     }
 
     pub fn inject_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
-        if (INT_HWI0..=INT_HWI7).contains(&vector) {
-            crate::registers::inject_interrupt(vector);
-        } else if vector <= INT_IPI {
+        if vector <= INT_IPI {
             self.ctx.gcsr_estat |= 1usize << vector;
         } else if let Some(hwi) =
             inject_guest_eiointc_vector(&self.iocsr_state, self.vm_id, self.vcpu_id, vector)
         {
-            crate::registers::inject_interrupt(hwi);
+            self.ctx.gcsr_estat |= 1usize << hwi;
         } else {
             log::warn!("Ignoring unsupported LoongArch interrupt vector {vector}");
         }
@@ -331,9 +330,6 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     fn init_hv(&mut self, config: LoongArchVCpuSetupConfig) {
         self.init_vm_context(config);
         init_guest_iocsr(&self.iocsr_state, self.vcpu_id);
-        unsafe {
-            gintc_set_hwi_passthrough(0);
-        }
     }
 
     fn init_vm_context(&mut self, config: LoongArchVCpuSetupConfig) {
@@ -389,7 +385,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             prmd: csr_read::<CSR_PRMD>(),
             ksave_ksp: csr_read::<CSR_KSAVE_KSP>(),
             guest_exit_eentry: csr_read::<{ crate::registers::CSR_EENTRY }>(),
-            ecfg_vs: get_ecfg_vs(),
+            ecfg: csr_read::<CSR_ECFG>(),
             pgdl: csr_read::<CSR_PGDL>(),
             pgdh: csr_read::<CSR_PGDH>(),
             pwcl: csr_read::<CSR_PWCL>(),
@@ -407,7 +403,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.ctx.host_tlbrentry = state.tlbrentry;
         self.ctx.host_asid = state.asid;
         self.ctx.host_eentry = state.guest_exit_eentry;
-        self.ctx.host_ecfg = csr_read::<CSR_ECFG>();
+        self.ctx.host_ecfg = state.ecfg;
         self.ctx.guest_tlbrentry =
             Self::host_dmw_alias(_guest_tlb_refill_vector as *const () as usize);
         self.ctx.guest_eentry =
@@ -436,7 +432,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     unsafe fn restore_host_translation_state(&self) {
         let state = self.host_translation_state;
         csr_write::<{ crate::registers::CSR_EENTRY }>(state.guest_exit_eentry);
-        set_ecfg_vs(state.ecfg_vs);
+        csr_write::<CSR_ECFG>(state.ecfg);
         csr_write::<CSR_PGDL>(state.pgdl);
         csr_write::<CSR_PGDH>(state.pgdh);
         csr_write::<CSR_PWCL>(state.pwcl);
@@ -466,7 +462,8 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             "st.d $s8, $sp, 72",
             "st.d $fp, $sp, 80",
             "st.d $tp, $sp, 88",
-            "st.d $r21, $sp, 96",
+            // r21 is the physical CPU's per-CPU base. Guest exit restores it
+            // from the KS3 shadow instead of treating it as vCPU task state.
             "move $s0, $a0",
             "move $t0, $sp",
             "addi.d $t1, $a0, {host_stack_top_offset}",
@@ -495,7 +492,11 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         panic!("run_guest_panic: control returned to run_guest");
     }
 
-    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> LoongArchVcpuResult<LoongArchVmExit> {
+    fn vmexit_handler(
+        &mut self,
+        cpu_pin: &CpuPin,
+        exit_reason: TrapKind,
+    ) -> LoongArchVcpuResult<LoongArchVmExit> {
         self.last_badi = if self.ctx.host_badi != 0 {
             self.ctx.host_badi
         } else {
@@ -504,6 +505,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
 
         match exit_reason {
             TrapKind::Synchronous => handle_exception_sync::<H>(
+                cpu_pin,
                 &self.iocsr_state,
                 &mut self.ctx,
                 self.vm_id,

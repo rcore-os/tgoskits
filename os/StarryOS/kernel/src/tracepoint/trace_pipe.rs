@@ -1,6 +1,6 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 
@@ -17,12 +17,12 @@ use crate::{
 /// this node cannot faithfully reserve and release a reader slot yet. Keep the
 /// limitation documented here until tracefs files can move their read state to
 /// open-file private data.
-pub struct TracePipeFile(Mutex<super::TextDrain>);
+pub struct TracePipeFile(SpinMutex<super::TextDrain>);
 
 impl TracePipeFile {
     /// Creates a new `TracePipeFile` instance.
     pub const fn new() -> Self {
-        Self(Mutex::new(super::TextDrain::new()))
+        Self(SpinMutex::new(super::TextDrain::new()))
     }
 
     fn readable(&self) -> bool {

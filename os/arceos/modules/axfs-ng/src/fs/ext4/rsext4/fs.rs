@@ -15,7 +15,7 @@ use rsext4::{
 use super::{Ext4Disk, Inode, util::into_vfs_err};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+    os::sync::{PiMutex, PiMutexGuard},
 };
 
 const EXT4_ROOT_INO: u32 = 2;
@@ -97,7 +97,7 @@ impl Ext4State {
 }
 
 pub struct Ext4Filesystem {
-    inner: Mutex<Ext4State>,
+    inner: PiMutex<Ext4State>,
     root_dir: OnceCell<DirEntry>,
     readonly: bool,
 }
@@ -143,7 +143,7 @@ impl Ext4Filesystem {
         };
 
         let fs = Arc::new(Self {
-            inner: Mutex::new(Ext4State {
+            inner: PiMutex::new(Ext4State {
                 fs,
                 dev,
                 live_refs: BTreeMap::new(),
@@ -201,7 +201,7 @@ impl Ext4Filesystem {
     /// this guard is held. Submit/poll block devices without IRQ support can
     /// yield while waiting for completion, so the outer filesystem state guard
     /// must not disable interrupts or preemption.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
+    pub(crate) fn lock(&self) -> PiMutexGuard<'_, Ext4State> {
         self.inner.lock()
     }
 

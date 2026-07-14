@@ -57,7 +57,7 @@ pub(super) fn update_cpu_node(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
     let mut tree = core::tree::FdtTree::from_fdt(fdt.clone());
-    tree.inner_mut().remove_by_path("/cpus");
+    tree.remove_subtree("/cpus");
 
     if let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") {
         let cpus_id =
@@ -72,17 +72,17 @@ pub(super) fn update_cpu_node(
             })
             .collect::<Vec<_>>();
         for path in cpu_paths {
-            tree.inner_mut().remove_by_path(&path);
+            tree.remove_subtree(&path);
         }
-        if let Some(cpus) = tree.inner_mut().node_mut(cpus_id) {
-            for property in [
+        tree.edit_node(cpus_id, |node| {
+            for property_name in [
                 "riscv,cbop-block-size",
                 "riscv,cboz-block-size",
                 "riscv,cbom-block-size",
             ] {
-                cpus.remove_property(property);
+                node.remove_property(property_name);
             }
-        }
+        })?;
     }
 
     Ok(tree.finish())

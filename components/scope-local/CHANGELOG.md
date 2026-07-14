@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Require a CPU pin for active per-CPU scope lookup and replace
+  `LocalItem::Deref` with non-escaping closure access. `clone_current` keeps
+  pins short for owned values, while `try_with_pinned` provides a
+  non-allocating IRQ path after task-context initialization.
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.1...scope-local-v0.4.2) - 2026-07-07
 
 ### Other

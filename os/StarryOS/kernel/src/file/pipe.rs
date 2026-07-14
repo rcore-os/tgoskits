@@ -7,7 +7,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
@@ -34,7 +34,7 @@ const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 const RING_BUFFER_MAX_SIZE: usize = 1024 * 1024; // 1 MiB
 
 struct Shared {
-    state: Mutex<PipeState>,
+    state: PiMutex<PipeState>,
     poll_rx: PollSet,
     poll_tx: PollSet,
 }
@@ -82,7 +82,7 @@ impl Drop for Pipe {
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Arc::new(Shared {
-            state: Mutex::new(PipeState {
+            state: PiMutex::new(PipeState {
                 buffer: HeapRb::new(RING_BUFFER_INIT_SIZE),
                 readers: 1,
                 writers: 1,

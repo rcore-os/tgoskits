@@ -7,20 +7,20 @@
 //!
 //! **Lock hierarchy (outermost → innermost):**
 //!
-//! 1. **SERVICE** (`Mutex<Service>`)
+//! 1. **SERVICE** (`SpinMutex<Service>`)
 //!    - Outermost, protects entire protocol stack
 //!    - Held during `Service::poll()` and waker registration
 //!
-//! 2. **SOCKET_SET.inner** (`Mutex<SocketSet>`)
+//! 2. **SOCKET_SET.inner** (`SpinMutex<SocketSet>`)
 //!    - smoltcp socket set (all TCP/UDP/raw/DNS sockets)
 //!    - Acquired during poll, socket operations, and state queries
 //!    - ⚠️ Never acquire SERVICE while holding this lock
 //!
-//! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
+//! 3. **TCP_BOUND_PORTS** (`SpinMutex<HashMap<u16, Vec<...>>>`)
 //!    - Tracks TCP bind() registrations
 //!    - Hold duration: registration/unregistration only
 //!
-//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<Mutex<Vec<ListenTableEntryInner>>>`)
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<SpinMutex<Vec<ListenTableEntryInner>>>`)
 //!    - Innermost, most granular (one mutex per TCP port)
 //!
 //! **Acquisition order rule:**

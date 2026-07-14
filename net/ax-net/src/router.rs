@@ -50,7 +50,7 @@ use core::{
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
 use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
@@ -170,7 +170,7 @@ fn tx_metadata() -> RxMetadata {
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
-    inner: Mutex<VecDeque<T>>,
+    inner: SpinMutex<VecDeque<T>>,
     capacity: usize,
     len: AtomicUsize,
 }
@@ -178,7 +178,7 @@ struct BoundedPacketQueue<T> {
 impl<T> BoundedPacketQueue<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            inner: SpinMutex::new(VecDeque::with_capacity(capacity)),
             capacity,
             len: AtomicUsize::new(0),
         }
@@ -259,7 +259,7 @@ struct DeviceHandle {
     /// Device name used for logs and userspace queries.
     name: String,
     /// Concrete device implementation.
-    inner: Arc<Mutex<Box<dyn Device>>>,
+    inner: Arc<SpinMutex<Box<dyn Device>>>,
     /// Shared router RX queue.
     rx_queue: Arc<BoundedPacketQueue<RxPacket>>,
     /// Per-device TX queue.
@@ -292,7 +292,7 @@ impl DeviceHandle {
         Arc::new_cyclic(|weak| Self {
             interface_id,
             name,
-            inner: Arc::new(Mutex::new(device)),
+            inner: Arc::new(SpinMutex::new(device)),
             rx_queue: queues.rx.clone(),
             tx_queue: Arc::new(BoundedPacketQueue::new(DEVICE_TX_QUEUE_SIZE)),
             rx_wake: Arc::new(WaitQueue::new()),
@@ -333,7 +333,7 @@ impl DeviceHandle {
 
     fn wake_rx(&self) {
         self.rx_ready.store(true, Ordering::Release);
-        self.rx_wake.notify_one(true);
+        self.rx_wake.notify_one();
     }
 
     fn take_rx_ready(&self) -> bool {
@@ -359,7 +359,7 @@ impl DeviceHandle {
             return false;
         }
         self.count_tx(packet.len());
-        self.tx_wake.notify_one(true);
+        self.tx_wake.notify_one();
         true
     }
 }

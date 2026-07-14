@@ -2,14 +2,17 @@
 //!
 //! Currently supported primitives:
 //!
-//! - [`Mutex`]: A mutual exclusion primitive.
-//! - mod [`spin`]: spinlocks imported from the [`ax-kspin`] crate.
+//! - [`SpinMutex`]: A non-sleeping, IRQ-safe mutual exclusion primitive.
+//! - [`Mutex`]: A compatibility alias of [`SpinMutex`] whose semantics do not
+//!   change with Cargo features.
+//! - `PiMutex`: An urgency-ordered priority-inheritance sleeping mutex,
+//!   available with `multitask`.
+//! - mod [`spin`]: spinlocks imported from the `ax-kspin` crate.
 //!
 //! # Cargo Features
 //!
 //! - `multitask`: Enables the urgency-ordered priority-inheritance sleeping
-//!   [`Mutex`]. Without it, [`Mutex`] is a compatibility alias of
-//!   [`spin::SpinNoIrq`].
+//!   `PiMutex`. It never changes the behavior of [`Mutex`].
 
 #![cfg_attr(any(not(test), target_os = "none"), no_std)]
 #![cfg_attr(all(test, target_os = "none"), no_main)]
@@ -23,6 +26,16 @@
 extern crate alloc;
 
 pub use ax_kspin as spin;
+pub use ax_kspin::{SpinNoIrq as SpinMutex, SpinNoIrqGuard as SpinMutexGuard};
+
+/// Backwards-compatible non-sleeping mutex.
+///
+/// This alias always has [`SpinMutex`] semantics, including when `multitask` is
+/// enabled. Code that may sleep while waiting must use `PiMutex` explicitly.
+pub type Mutex<T> = SpinMutex<T>;
+
+/// Guard returned by [`Mutex`].
+pub type MutexGuard<'a, T> = SpinMutexGuard<'a, T>;
 
 #[cfg(all(test, target_os = "none"))]
 fn bare_metal_test_runner(_tests: &[&dyn Fn()]) {}
@@ -53,10 +66,36 @@ mod pi;
 #[cfg(all(test, feature = "multitask", not(target_os = "none")))]
 mod test_runtime;
 
-#[cfg(not(feature = "multitask"))]
-#[cfg_attr(doc, doc(cfg(not(feature = "multitask"))))]
-pub use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
-
 #[cfg(feature = "multitask")]
 #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
-pub use self::mutex::{LockSubclass, LockdepMutexExt, Mutex, MutexGuard, RawMutex};
+pub use self::mutex::{LockSubclass, LockdepMutexExt, RawMutex};
+#[cfg(feature = "multitask")]
+#[cfg_attr(doc, doc(cfg(feature = "multitask")))]
+pub use self::mutex::{Mutex as PiMutex, MutexGuard as PiMutexGuard, RawMutex as RawPiMutex};
+
+#[cfg(all(test, not(target_os = "none")))]
+mod public_api_tests {
+    #[cfg(feature = "multitask")]
+    use core::marker::PhantomData;
+
+    use super::{Mutex, MutexGuard, SpinMutex, SpinMutexGuard};
+
+    trait SameType<T: ?Sized> {}
+
+    impl<T: ?Sized> SameType<T> for T {}
+
+    fn assert_same_type<T: ?Sized + SameType<U>, U: ?Sized>() {}
+
+    #[test]
+    fn compatibility_mutex_has_feature_invariant_spin_semantics() {
+        assert_same_type::<Mutex<u8>, SpinMutex<u8>>();
+        assert_same_type::<MutexGuard<'static, u8>, SpinMutexGuard<'static, u8>>();
+    }
+
+    #[cfg(feature = "multitask")]
+    #[test]
+    fn multitask_exposes_priority_inheritance_mutex_explicitly() {
+        let _mutex = PhantomData::<super::PiMutex<u8>>;
+        let _guard = PhantomData::<super::PiMutexGuard<'static, u8>>;
+    }
+}

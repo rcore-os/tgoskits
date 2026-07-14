@@ -4,7 +4,7 @@ use core::{any::Any, ops::Deref};
 use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
@@ -157,7 +157,7 @@ impl BackendOps for SharedBackend {
         _flags: MappingFlags,
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _new_aspace: &Arc<PiMutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         Ok(Backend::Shared(self.clone()))

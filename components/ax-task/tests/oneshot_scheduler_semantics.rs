@@ -121,6 +121,7 @@ fn deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
         system
             .schedule_if_requested(cpu.as_mut(), 2)
             .unwrap()
+            .decision()
             .is_none()
     );
     assert_eq!(support::last_oneshot_ns(), 10);
@@ -128,8 +129,48 @@ fn deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
     let decision = system
         .schedule_if_requested(cpu.as_mut(), 10)
         .unwrap()
+        .decision()
         .expect("replenishment must be reconsidered before leaving this safe point");
     assert_eq!(decision.next(), deadline.id());
+}
+
+#[test]
+fn yielded_deadline_rearms_replenishment_after_earlier_zero_lag_event() {
+    let (system, mut cpu) = online_system();
+    let deadline = ready_thread(
+        &system,
+        SchedulePolicy::deadline(DeadlinePolicy::new(2, 10, 100, DeadlineFlags::NONE).unwrap()),
+    );
+    system.enqueue(cpu.as_mut(), deadline.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        deadline.id()
+    );
+
+    system.yield_current(cpu.as_mut(), 1).unwrap();
+    assert_eq!(support::last_oneshot_ns(), 10, "zero-lag must fire first");
+
+    support::install_handles(
+        (&system as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+    support::set_monotonic_ns(10);
+    assert!(
+        ax_task::timer_interrupt_current_cpu(0, 0)
+            .unwrap()
+            .pending()
+    );
+    system.schedule(cpu.as_mut(), 10).unwrap();
+    assert_eq!(
+        support::last_oneshot_ns(),
+        100,
+        "zero-lag servicing must preserve the later CBS replenishment",
+    );
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 100).unwrap().next(),
+        deadline.id()
+    );
+    support::clear_handles();
 }
 
 fn online_system() -> (TaskSystem, core::pin::Pin<Box<ax_task::CpuLocal>>) {

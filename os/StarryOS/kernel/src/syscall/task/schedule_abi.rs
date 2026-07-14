@@ -31,7 +31,10 @@ pub(crate) struct SchedAttr {
 /// Validated scheduler update resolved against the target's current policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ScheduleUpdate {
+    /// Policy and parameters that are committed to the target thread.
     pub(crate) policy: SchedulePolicy,
+    /// Requested policy combined with the parameters Linux validates.
+    pub(crate) permission_policy: SchedulePolicy,
     pub(crate) reset_on_fork: bool,
 }
 
@@ -69,16 +72,77 @@ pub(crate) fn parse_sched_attr(
         linux_schedule_class(attr.sched_policy)?
     };
     let reset_on_fork = attr.sched_flags & SCHED_FLAG_RESET_ON_FORK as u64 != 0;
-    let policy = if keep_params {
-        current_policy
+    let (policy, permission_policy) = if keep_params {
+        (
+            current_policy,
+            policy_from_kept_params(effective_class, current_policy, attr)?,
+        )
     } else {
-        policy_from_sched_attr(effective_class, attr)?
+        let policy = policy_from_sched_attr(effective_class, attr)?;
+        (policy, policy)
     };
 
     Ok(ScheduleUpdate {
         policy,
+        permission_policy,
         reset_on_fork,
     })
+}
+
+fn policy_from_kept_params(
+    requested_class: LinuxScheduleClass,
+    current_policy: SchedulePolicy,
+    mut attr: SchedAttr,
+) -> AxResult<SchedulePolicy> {
+    let deadline_flag_mask = (SCHED_FLAG_RECLAIM | SCHED_FLAG_DL_OVERRUN) as u64;
+    match current_policy {
+        SchedulePolicy::Fair { nice, .. } => {
+            attr.sched_nice = i32::from(nice.get());
+            // Linux get_params() also replaces sched_runtime with the current
+            // fair slice. ax-task keeps that request in its entity rather than
+            // SchedulePolicy; zero still makes a Fair-to-Deadline validation
+            // fail instead of trusting user-supplied parameters that will not
+            // be committed.
+            attr.sched_runtime = 0;
+        }
+        SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
+            attr.sched_priority = u32::from(priority.get());
+        }
+        SchedulePolicy::Deadline(deadline) => {
+            attr.sched_priority = 0;
+            attr.sched_runtime = deadline.runtime_ns();
+            attr.sched_deadline = deadline.deadline_ns();
+            attr.sched_period = deadline.period_ns();
+            attr.sched_flags =
+                (attr.sched_flags & !deadline_flag_mask) | linux_deadline_flags(deadline.flags());
+        }
+    }
+
+    match requested_class {
+        LinuxScheduleClass::Fair(mode) => {
+            if attr.sched_priority != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let nice = Nice::new(attr.sched_nice.clamp(-20, 19) as i8)
+                .map_err(|_| AxError::InvalidInput)?;
+            Ok(SchedulePolicy::fair(nice, mode))
+        }
+        LinuxScheduleClass::Fifo => Ok(SchedulePolicy::fifo(parse_rt_priority(attr)?)),
+        LinuxScheduleClass::RoundRobin => Ok(SchedulePolicy::round_robin(parse_rt_priority(attr)?)),
+        LinuxScheduleClass::Deadline => {
+            if attr.sched_priority != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            let deadline = DeadlinePolicy::new(
+                attr.sched_runtime,
+                attr.sched_deadline,
+                attr.sched_period,
+                deadline_flags(attr.sched_flags),
+            )
+            .map_err(|_| AxError::InvalidInput)?;
+            Ok(SchedulePolicy::deadline(deadline))
+        }
+    }
 }
 
 /// Serializes a core policy into Linux's current `sched_attr` layout.
@@ -572,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_policy_and_params_preserve_the_requested_parts() {
+    fn keep_policy_and_params_validate_the_requested_class() {
         let current = SchedulePolicy::fair(Nice::new(7).unwrap(), FairMode::Batch);
         let mut keep_policy = SchedAttr::fair(SCHED_FIFO, 4);
         keep_policy.sched_flags = SCHED_FLAG_KEEP_POLICY as u64;
@@ -595,6 +659,56 @@ mod tests {
         keep_params_only.sched_flags = SCHED_FLAG_KEEP_PARAMS as u64;
         let update = parse_sched_attr(keep_params_only, current).unwrap();
         assert_eq!(update.policy, current);
+        assert!(matches!(
+            update.permission_policy,
+            SchedulePolicy::Fifo { priority } if priority.get() == 99
+        ));
+
+        let current = SchedulePolicy::fifo(RtPriority::new(7).unwrap());
+        let mut compatible = SchedAttr::realtime(SCHED_RR, 99);
+        compatible.sched_flags = SCHED_FLAG_KEEP_PARAMS as u64;
+        let update = parse_sched_attr(compatible, current).unwrap();
+        assert_eq!(update.policy, current);
+        assert!(matches!(
+            update.permission_policy,
+            SchedulePolicy::RoundRobin { priority, .. } if priority.get() == 7
+        ));
+        let unprivileged = SchedulerPermission {
+            owns_target: true,
+            has_cap_sys_nice: false,
+            rlimit_rtprio: 0,
+            rlimit_nice: 0,
+            stored_nice: Nice::ZERO,
+        };
+        assert_eq!(
+            check_policy_permission(unprivileged, current, update.permission_policy,),
+            Err(AxError::OperationNotPermitted),
+        );
+        assert_eq!(
+            check_policy_permission(
+                SchedulerPermission {
+                    has_cap_sys_nice: true,
+                    ..unprivileged
+                },
+                current,
+                update.permission_policy,
+            ),
+            Ok(()),
+        );
+
+        let current =
+            SchedulePolicy::deadline(DeadlinePolicy::new(10, 20, 30, DeadlineFlags::NONE).unwrap());
+        let mut keep_deadline_params = SchedAttr::fair(SCHED_NORMAL, 0);
+        keep_deadline_params.sched_flags = SCHED_FLAG_KEEP_PARAMS as u64;
+        let update = parse_sched_attr(keep_deadline_params, current).unwrap();
+        assert_eq!(update.policy, current);
+        assert!(matches!(
+            update.permission_policy,
+            SchedulePolicy::Fair {
+                mode: FairMode::Normal,
+                ..
+            }
+        ));
     }
 
     #[test]

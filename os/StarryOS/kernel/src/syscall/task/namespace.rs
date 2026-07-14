@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::FS_CONTEXT;
-use ax_sync::Mutex;
+use ax_fs_ng::{FS_CONTEXT, current_fs_context};
+use ax_sync::PiMutex;
 use linux_raw_sys::general::{
     CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
@@ -52,17 +52,17 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         }
     }
 
-    // Phase 2: FsContext ops (mount-ns + CLONE_FS) require a Mutex
+    // Phase 2: FsContext ops (mount-ns + CLONE_FS) require a PiMutex
     // (blocking), which must not be held inside SpinNoIrq.
     //
     // Both CLONE_NEWNS and CLONE_FS require the caller's task-local
     // FS_CONTEXT to be rebound to a private copy before any mutation.
-    // clone(CLONE_FS) shares the same Arc<Mutex<FsContext>> between parent
+    // clone(CLONE_FS) shares the same Arc<PiMutex<FsContext>> between parent
     // and child, so operating directly on the shared Arc (e.g. unshare
     // mount namespace or chdir) would leak to the other sharer.
     if want_ns || want_fs {
-        let cloned_inner = FS_CONTEXT.lock().clone();
-        let new_fs = Arc::new(Mutex::new(cloned_inner));
+        let cloned_inner = current_fs_context().lock().clone();
+        let new_fs = Arc::new(PiMutex::new(cloned_inner));
 
         // scope.write() would self-deadlock because on_enter holds a
         // leaked scope.read() guard for the task's lifetime.  Temporarily
@@ -72,7 +72,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         });
     }
     if want_ns {
-        FS_CONTEXT.lock().unshare_mount_namespace()?;
+        current_fs_context().lock().unshare_mount_namespace()?;
         proc_data.nsproxy.lock().unshare_mnt();
     }
 
@@ -152,7 +152,9 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
         NsFd::Mnt { ns, fs_ns } => {
             drop(nsproxy);
-            FS_CONTEXT.lock().set_mount_namespace(fs_ns.clone())?;
+            current_fs_context()
+                .lock()
+                .set_mount_namespace(fs_ns.clone())?;
             proc_data.nsproxy.lock().set_ns_mnt(ns.clone());
         }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
@@ -236,7 +238,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
     if nstype & CLONE_NEWNS != 0 {
         drop(nsproxy);
-        FS_CONTEXT
+        current_fs_context()
             .lock()
             .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
         nsproxy = proc_data.nsproxy.lock();

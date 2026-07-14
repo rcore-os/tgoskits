@@ -99,6 +99,49 @@ pub struct AcpiGsiRoute {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct CpuId(pub usize);
 
+/// Logical CPU selection for one inter-processor interrupt transaction.
+///
+/// Hardware identifiers are deliberately absent from this type. The platform
+/// resolves [`CpuId`] through immutable boot metadata immediately before the
+/// architecture send primitive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuIpiTarget {
+    /// Deliver to the CPU executing the send operation.
+    Current {
+        /// Logical identity of the current CPU, used for contract validation.
+        cpu: CpuId,
+    },
+    /// Deliver to one logical CPU.
+    Other {
+        /// Logical identity of the destination CPU.
+        cpu: CpuId,
+    },
+    /// Deliver to every configured CPU except the caller.
+    ///
+    /// Platforms without a hardware broadcast command may deliver this as a
+    /// bounded best-effort sequence. Repeating the transaction after
+    /// [`IpiSendStatus::Retry`] can therefore redeliver to an earlier CPU;
+    /// callers must coalesce the work carried by a broadcast doorbell.
+    AllExceptCurrent {
+        /// Logical identity of the current CPU.
+        current: CpuId,
+        /// Number of logical CPUs covered by this transaction.
+        cpu_count: usize,
+    },
+}
+
+/// Result of a bounded, allocation-free IPI send attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum IpiSendStatus {
+    /// The architecture accepted the interrupt request.
+    Success = 0,
+    /// The transport was temporarily unable to accept the request.
+    Retry   = 1,
+    /// The IRQ or CPU target does not satisfy the platform contract.
+    Invalid = 2,
+}
+
 /// A compact CPU mask for low-level IRQ affinity.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CpuMask {
@@ -309,11 +352,23 @@ pub(crate) enum IrqHandler {
 }
 
 /// External capabilities supplied by the OS/platform adapter.
-pub trait IrqOps {
+///
+/// # Safety
+///
+/// Implementations must preserve the lifetime and CPU-ownership contracts of
+/// [`IrqOps::run_on_cpu_sync`]. In particular, a returned call must never leave
+/// a deferred invocation that can retain or use its raw argument. When an
+/// implementation is [`Sync`], every operation must additionally be safe to
+/// invoke concurrently from different CPUs.
+pub unsafe trait IrqOps {
     /// Saved local IRQ state.
     type LocalIrqState;
 
-    /// Returns the current CPU.
+    /// Returns a transient snapshot of the current CPU for status reporting.
+    ///
+    /// The returned ID does not pin execution and must not be used to choose
+    /// whether a CPU-owned operation runs locally or remotely. Such operations
+    /// must use [`IrqOps::run_on_cpu_sync`].
     fn current_cpu(&self) -> CpuId;
 
     /// Returns whether the CPU is online.
@@ -328,7 +383,14 @@ pub trait IrqOps {
     /// Restores local IRQ state saved by [`IrqOps::local_irq_save`].
     fn local_irq_restore(&self, state: Self::LocalIrqState);
 
-    /// Runs a thunk synchronously on the target CPU.
+    /// Runs a CPU-owned thunk synchronously on the target CPU.
+    ///
+    /// Implementations must make the local-versus-remote decision while the
+    /// caller is pinned. A local thunk must run under that same pin. A remote
+    /// request from IRQ context must return [`IrqError::InIrqContext`] rather
+    /// than attempting a cross-CPU rendezvous. On success, `f(arg)` must have
+    /// completed exactly once on `cpu`. On failure it may have completed or not,
+    /// but the implementation must not invoke `f` after this method returns.
     fn run_on_cpu_sync(
         &self,
         cpu: CpuId,

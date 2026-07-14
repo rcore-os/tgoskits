@@ -12,8 +12,7 @@ static RESOURCE_RELEASE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 
 #[test]
 fn runtime_snapshot_includes_the_running_residual_before_switch_commit() {
-    support::install_handles(0, 0);
-    support::install_cpu(0, 0);
+    support::clear_handles();
     support::set_online_cpu_count(1);
     support::set_hard_irq(false);
     assert_eq!(support::ipi_count(0), 0);
@@ -81,15 +80,15 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
     );
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), AddressSpaceHandle::from_raw(5))
+            .replace_current_address_space(cpu.as_mut(), test_address_space(5))
             .unwrap(),
-        AddressSpaceHandle::from_raw(4)
+        test_address_space(4)
     );
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), AddressSpaceHandle::from_raw(6))
+            .replace_current_address_space(cpu.as_mut(), test_address_space(6))
             .unwrap(),
-        AddressSpaceHandle::from_raw(5)
+        test_address_space(5)
     );
 
     let next_resources = unsafe {
@@ -118,9 +117,9 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), AddressSpaceHandle::from_raw(7))
+            .replace_current_address_space(cpu.as_mut(), test_address_space(7))
             .unwrap(),
-        AddressSpaceHandle::from_raw(6),
+        test_address_space(6),
         "switching away and back must retain the exec-time address-space token"
     );
 }
@@ -259,6 +258,12 @@ fn context_destroy_failure_keeps_context_dependent_resources_live() {
         (1, 0, 0),
         "a live context may still reference its stack and TLS"
     );
+}
+
+fn test_address_space(raw: usize) -> AddressSpaceHandle {
+    // SAFETY: the integration runtime treats these non-zero scalar values as
+    // inert address-space identities and never dereferences them.
+    unsafe { AddressSpaceHandle::from_raw(raw) }
 }
 
 static DROP_COUNT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {

@@ -17,7 +17,7 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
-use ax_sync::{LockdepMutexExt, Mutex};
+use ax_sync::{LockdepMutexExt, PiMutex};
 use hashbrown::HashMap;
 
 use crate::{
@@ -36,7 +36,7 @@ pub struct WaitQueue {
     // Futex waits must re-check the user value while serializing with wakeups.
     // That re-check may fault and sleep, so this queue cannot use a no-IRQ
     // spinlock.
-    inner: Mutex<WaitQueueInner>,
+    inner: PiMutex<WaitQueueInner>,
 }
 
 #[derive(Default)]
@@ -53,7 +53,7 @@ struct Waiter {
 struct WaiterState {
     woken: AtomicBool,
     cancelled: AtomicBool,
-    cleanup: Mutex<Option<FutexWaitCleanup>>,
+    cleanup: PiMutex<Option<FutexWaitCleanup>>,
 }
 
 impl WaiterState {
@@ -61,7 +61,7 @@ impl WaiterState {
         Self {
             woken: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-            cleanup: Mutex::new(cleanup),
+            cleanup: PiMutex::new(cleanup),
         }
     }
 
@@ -510,13 +510,13 @@ impl FutexEntry {
 }
 
 /// A table mapping memory addresses to futex wait queues.
-pub struct FutexTable(Mutex<HashMap<usize, Arc<FutexEntry>>>);
+pub struct FutexTable(PiMutex<HashMap<usize, Arc<FutexEntry>>>);
 
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(PiMutex::new(HashMap::new()))
     }
 
     /// Checks if the futex table is empty.
@@ -631,7 +631,7 @@ impl FutexTables {
     }
 }
 
-static SHARED_FUTEX_TABLES: Mutex<FutexTables> = Mutex::new(FutexTables::new());
+static SHARED_FUTEX_TABLES: PiMutex<FutexTables> = PiMutex::new(FutexTables::new());
 
 /// Returns the futex table for the given key.
 pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {

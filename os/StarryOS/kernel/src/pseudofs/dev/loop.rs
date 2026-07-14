@@ -5,7 +5,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileBackend;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
@@ -36,13 +36,13 @@ pub struct LoopDevice {
     number: u32,
     dev_id: DeviceId,
     /// Underlying file for the loop device, if any.
-    pub file: Mutex<Option<FileBackend>>,
+    pub file: PiMutex<Option<FileBackend>>,
     /// Read-only flag for the loop device.
     pub ro: AtomicBool,
     /// Read-ahead size for the loop device, in bytes.
     pub ra: AtomicU32,
     /// Backing file name for the loop device.
-    file_name: Mutex<[u8; 64]>,
+    file_name: PiMutex<[u8; 64]>,
     /// Bit mask of `LO_FLAGS_*` (READ_ONLY, AUTOCLEAR, PARTSCAN, DIRECT_IO).
     flags: AtomicU32,
     /// Whether the device is opened exclusively (O_EXCL).
@@ -50,7 +50,7 @@ pub struct LoopDevice {
     /// Block-device data cache.  Populated by `as_dyn_block_device()`,
     /// written back and cleared by `LOOP_CLR_FD`.
     #[cfg(feature = "ext4")]
-    pub(super) block_cache: Mutex<BlockCache>,
+    pub(super) block_cache: PiMutex<BlockCache>,
 }
 
 impl LoopDevice {
@@ -58,14 +58,14 @@ impl LoopDevice {
         Self {
             number,
             dev_id,
-            file: Mutex::new(None),
+            file: PiMutex::new(None),
             ro: AtomicBool::new(false),
             ra: AtomicU32::new(512),
-            file_name: Mutex::new([0u8; 64]),
+            file_name: PiMutex::new([0u8; 64]),
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
             #[cfg(feature = "ext4")]
-            block_cache: Mutex::new(BlockCache::new()),
+            block_cache: PiMutex::new(BlockCache::new()),
         }
     }
 

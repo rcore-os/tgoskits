@@ -8,7 +8,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
 use ax_runtime::hal::irq::IrqId;
-use ax_sync::Mutex as BlockingMutex;
+use ax_sync::PiMutex;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
     usb_if::{
@@ -78,7 +78,7 @@ struct UsbDeviceRecord {
 type EndpointHandle = Arc<Mutex<Endpoint>>;
 
 struct LiveDeviceState {
-    device: BlockingMutex<Device>,
+    device: PiMutex<Device>,
     endpoints: RwLock<BTreeMap<u8, EndpointHandle>>,
     endpoint_interfaces: RwLock<BTreeMap<u8, u8>>,
     interface_owners: Mutex<BTreeMap<u8, u64>>,
@@ -231,7 +231,7 @@ fn wait_control(
 
 pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
-    open_lock: BlockingMutex<()>,
+    open_lock: PiMutex<()>,
     usb_activity: UsbActivity,
     irq_notify: IrqNotify,
 }
@@ -388,7 +388,7 @@ impl UsbFsManager {
 
         Self {
             state: Mutex::new(UsbFsState { hosts, devices }),
-            open_lock: BlockingMutex::new(()),
+            open_lock: PiMutex::new(()),
             usb_activity: UsbActivity::new(),
             irq_notify: IrqNotify::new(),
         }
@@ -709,7 +709,7 @@ impl UsbFsManager {
                     let mut state = self.state.lock();
                     let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
                     record.live_device = Some(Arc::new(LiveDeviceState {
-                        device: BlockingMutex::new(live_device),
+                        device: PiMutex::new(live_device),
                         endpoints: RwLock::new(BTreeMap::new()),
                         endpoint_interfaces: RwLock::new(BTreeMap::new()),
                         interface_owners: Mutex::new(BTreeMap::new()),

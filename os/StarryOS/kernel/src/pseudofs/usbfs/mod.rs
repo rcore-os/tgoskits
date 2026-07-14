@@ -17,7 +17,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_sync::Mutex as BlockingMutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
@@ -181,10 +181,10 @@ pub(crate) fn open_usbfs_file(
         bus_num: ops.bus_num,
         device_num: ops.device_num,
         snapshot,
-        lease: BlockingMutex::new(None),
-        lifecycle_lock: BlockingMutex::new(()),
+        lease: PiMutex::new(None),
+        lifecycle_lock: PiMutex::new(()),
         claimed_interfaces: Mutex::new(Default::default()),
-        submitted_urbs: Arc::new(BlockingMutex::new(VecDeque::new())),
+        submitted_urbs: Arc::new(PiMutex::new(VecDeque::new())),
         pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
         urb_worker: Arc::new(UrbWorker::new()),
@@ -200,10 +200,10 @@ struct UsbDeviceFile {
     bus_num: u8,
     device_num: u8,
     snapshot: descriptor::UsbDeviceSnapshot,
-    lease: BlockingMutex<Option<Arc<manager::UsbDeviceLease>>>,
-    lifecycle_lock: BlockingMutex<()>,
+    lease: PiMutex<Option<Arc<manager::UsbDeviceLease>>>,
+    lifecycle_lock: PiMutex<()>,
     claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
-    submitted_urbs: Arc<BlockingMutex<VecDeque<SubmittedUrb>>>,
+    submitted_urbs: Arc<PiMutex<VecDeque<SubmittedUrb>>>,
     pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
     urb_worker: Arc<UrbWorker>,

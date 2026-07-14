@@ -1,260 +1,107 @@
 # `ax-percpu`
 
 > 路径：`components/percpu/percpu`
-> 类型：库 crate
-> 分层：组件层 / 每核局部数据基础设施
-> 版本：`0.2.3-preview.1`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/imp.rs`、`src/custom/*`、`components/percpu/percpu_macros/src/*`
+> 分层：通用 CPU-local 语义层（`no_std`）
 
-`ax-percpu` 是整个仓库里所有“当前 CPU 局部状态”能力的基础设施。它通过 `.percpu` 段、架构相关的每核基址寄存器和过程宏 `#[def_percpu]`，让系统能够为每个逻辑 CPU 保持一份独立数据副本，并在运行时以极低成本访问“当前核”的那份数据。调度器、当前任务指针、CPU ID、虚拟化每核状态、SMP 辅助状态都建立在这套机制之上。
+`ax-percpu` 管理 per-CPU 模板布局、符号 offset、CPU area 注册，以及 current/remote 地址计算。它不包含任何架构汇编，也不直接读写 GS、TPIDR、`sscratch`、`r21` 等寄存器；这些最小指令统一属于零依赖叶子 crate `ax-cpu-local`。
 
-## 架构设计
+## 分层与所有权
 
-### 设计定位
+```text
+ax-cpu-local
+  ├─ CpuAreaHeader / CpuPin / CpuIndex
+  └─ 四架构 CPU anchor 的最小 inline asm
 
-`ax-percpu` 解决的是 SMP/多核系统中一个基础而关键的问题：
-
-- 同一静态变量需要每个 CPU 一份副本
-- 当前 CPU 访问自己的副本应尽量快
-- 初始化阶段要把模板数据复制到各 CPU 私有区域
-
-因此它本质上是“每核局部静态数据运行时”，而不是普通同步原语库。
-
-### 模块结构
-
-`src/lib.rs` 根据 feature 选择三条实现路径：
-
-| 路径 | 模块 | 场景 |
-| --- | --- | --- |
-| `sp-naive` | `naive.rs` | 单核或测试环境，退化为普通全局变量 |
-| `custom-base` | `custom/mod.rs` | 平台自管每核基址，库只负责访问模型 |
-| 默认 | `imp.rs` | 标准 SMP 模式，负责拷贝模板、设置寄存器和运行时访问 |
-
-此外：
-
-| 模块 | 作用 |
-| --- | --- |
-| `ax-percpu-macros` | `#[def_percpu]`、符号偏移与架构汇编生成 |
-| `custom/tp.rs` | custom-base 模式下的线程指针/基址辅助 |
-
-### 1.3 `#[def_percpu]`：最核心的接口
-
-`ax-percpu` 对外最重要的能力不是一个普通函数，而是过程宏：
-
-- `#[def_percpu]`
-
-这个宏负责：
-
-- 把真实存储放入 `.percpu` 段
-- 生成当前 CPU 的访问入口
-- 生成偏移量与原始指针访问能力
-- 在特定架构上生成高效的当前核访问汇编
-
-从使用者视角看，它让“每核静态变量”像普通静态变量一样易用；从实现视角看，它其实是一套链接、初始化和寄存器访问协议。
-
-### 1.4 运行时核心模型
-
-标准 SMP 模式下，运行时模型可概括为：
-
-1. 链接脚本把 `.percpu` 模板放入镜像
-2. 系统为所有 CPU 预留若干等大小 per-CPU 区域
-3. 启动时把 CPU0 模板复制到每个 CPU 对应区域
-4. 每个 CPU 把自己的区域基址写入架构相关寄存器
-5. `#[def_percpu]` 生成的访问代码用“基址 + 变量偏移”定位当前核副本
-
-这是一种典型、成熟且高性能的 per-CPU 数据实现方式。
-
-### 1.5 `imp.rs`：标准实现主线
-
-默认实现中最关键的几个能力是：
-
-- `percpu_area_size()`
-- `percpu_area_num()`
-- `percpu_area_base(cpu_id)`
-- `init()`
-- `init_percpu_reg(cpu_id)`
-- `read_percpu_reg()`
-- `write_percpu_reg()`
-
-其中：
-
-- `init()` 负责准备模板复制和整体区域初始化
-- `init_percpu_reg()` 负责把某个 CPU 的 per-CPU 基址写入寄存器
-- `read/write_percpu_reg()` 是所有“当前 CPU 局部访问”的硬件入口
-
-### 1.6 架构差异
-
-当前仓库里，per-CPU 基址的实现会根据架构切换：
-
-- x86_64：GS base 路径
-- AArch64：`TPIDR_EL1`，在 `arm-el2` 下切换到 `TPIDR_EL2`
-- ARMv7：`TPIDRURO`
-- RISC-V：`gp`
-- LoongArch：专用通用寄存器
-
-这说明 `ax-percpu` 虽然是通用基础件，但其运行时性能与正确性高度依赖架构相关寄存器约定。
-
-### 1.7 `custom-base` 与 `sp-naive`
-
-#### `custom-base`
-
-适合平台自己掌管每核基址、而不完全走默认 runtime 模型的场景。此时：
-
-- `ax-percpu` 仍然提供数据布局与访问接口
-- 但基址来源由外部符号或平台逻辑提供
-
-这一模式对动态平台、定制 HAL 或特殊引导流程尤其重要。
-
-#### `sp-naive`
-
-这是最轻量的退化路径，用于：
-
-- 单核
-- host-side 测试
-- 不需要真实每核副本的简单环境
-
-它牺牲真实多核语义，换来更简单的构建和测试体验。
-
-## 核心功能
-
-### 功能概览
-
-- 定义每 CPU 一份的静态数据
-- 初始化 per-CPU 数据区
-- 设置和读取当前 CPU 的 per-CPU 基址寄存器
-- 为当前 CPU 提供高效局部访问接口
-- 支持单核退化模式、EL2 模式、非零 VMA 和自定义基址模式
-
-### 使用场景
-
-| 场景 | 用法 |
-| --- | --- |
-| CPU 标识 | 用 `#[def_percpu]` 保存 `CPU_ID`、是否 BSP |
-| 当前任务指针 | 保存当前核正在运行的 task 指针 |
-| 调度器状态 | 保存 run queue、idle task、时钟状态等 |
-| 虚拟化每核状态 | 保存当前物理核上的 VMM/per-CPU VMX/EL2 状态 |
-| SMP 辅助数据 | 保存 IPI、启动辅助或局部缓存数据 |
-
-### 2.3 典型初始化链路
-
-在 ArceOS/Axvisor 体系里，典型主线是：
-
-1. 平台或运行时早期完成基本内存和 CPU 初始化
-2. 调用 `ax_percpu::init()` 准备 per-CPU 区域
-3. 对主核调用 `init_percpu_reg(cpu_id)`
-4. 通过 `#[def_percpu]` 变量写入 CPU ID、当前任务等字段
-5. SMP 次核启动后重复设置自己的 per-CPU 基址
-
-### 2.4 与抢占和上下文切换的关系
-
-`preempt` feature 表明 `ax-percpu` 不只是“静态副本容器”，它还需要与：
-
-- 抢占关闭
-- 当前任务切换
-- 调度器局部状态一致性
-
-这些运行时语义配合。因此启用 `preempt` 时它通过 `ax-kspin::PreemptGuard` 使用 OS runtime 的抢占能力。
-
-## 依赖关系
-
-### 直接依赖
-
-| 依赖 | 作用 |
-| --- | --- |
-| `ax-percpu-macros` | 生成 per-CPU 静态变量与访问代码 |
-| `cfg-if` | 选择不同实现路径 |
-| `ax-kspin`（可选） | `preempt` 模式下提供 runtime-backed 抢占保护 |
-| `x86`（x86_64） | x86 per-CPU 基址相关辅助 |
-| `spin`（非裸机目标） | host/test 环境辅助初始化 |
-
-### 主要消费者
-
-仓库内直接或间接依赖 `ax-percpu` 的关键组件包括：
-
-- `axplat`
-- `ax-hal`
-- `ax-runtime`
-- `ax-task`
-- `ax-alloc`
-- `axvm`
-- `axvm`
-- `arm_vcpu`
-- `os/axvisor`
-- `os/StarryOS/kernel`
-
-### 3.3 关系示意
-
-```mermaid
-graph TD
-    A[ax-percpu-macros] --> B[ax-percpu]
-    B --> C[axplat]
-    C --> D[ax-hal]
-    D --> E[ax-runtime]
-    D --> F[ax-task]
-    B --> G[axvm]
-    G --> H[axvm / Axvisor]
-    B --> I[StarryOS kernel]
+ax-percpu
+  ├─ .percpu 模板与 symbol offset
+  ├─ PerCpuLayoutV1 / PerCpuArea / BoundCpuPin
+  ├─ current = area base + symbol offset
+  └─ remote = runtime_base + cpu * stride + offset
 ```
 
-## 开发指南
+每个 area 从固定的 `CpuAreaPrefix` 开始：第一条 cache line 是只读身份 `CpuAreaHeader`，第二条 cache line 是 trap entry scratch。header 保存 `self_base`、relocation、`CpuIndex`、generation 与 cookie。链接脚本必须把 `.percpu.000.header` 放在模板 offset 0，并保证至少 64 字节对齐。64 字节只是 header 的下限，不是变量的上限；宏在 `.ax_percpu.align` 中记录每个 storage 的实际对齐，链接器以 `MAX(64, ALIGNOF(.percpu))` 对齐模板、runtime base 和 stride，Rust 注册逻辑再次核对两份元数据。
 
-### 4.1 定义一个新的 per-CPU 变量
+CPU anchor 的归属如下：
 
-最常见写法是：
+| 架构 | CPU-owned anchor |
+| --- | --- |
+| x86_64 | kernel GS base 指向 `CpuAreaHeader` |
+| AArch64 | TPIDR_EL1/EL2 指向 `CpuAreaHeader` |
+| RISC-V | `sscratch` 指向 `CpuAreaHeader` |
+| LoongArch | `r21` 与 KS3 保存 relocation mirror |
 
-1. 在需要的模块中声明 `#[def_percpu] static XXX: T = ...;`
-2. 在主核和次核初始化阶段确保基址寄存器已设置
-3. 通过宏生成的 `with_current`、原始读写接口或包装 API 访问当前核变量
+anchor 永远不进入任务上下文。RISC-V `gp` 是标准 psABI global pointer，`tp` 是任务 TLS；LoongArch 用户 `r21` 只在 user trap frame 中保存和恢复。
 
-### 4.2 选择 feature 的建议
+## 初始化协议
 
-- 真实多核内核/Hypervisor：使用默认路径
-- 单元测试或单核：可考虑 `sp-naive`
-- EL2 Hypervisor：AArch64 下打开 `arm-el2`
-- 平台自己维护 per-CPU 基址：使用 `custom-base`
-- 用户态/Linux 测试或非零映射地址：按需使用 `non-zero-vma`
+平台先准备连续、CPU-lifetime 的区域，并一次注册：
 
-### 4.3 维护时的关键注意事项
+```rust,ignore
+unsafe {
+    ax_percpu::install_layout(ax_percpu::PerCpuLayoutV1 {
+        runtime_base,
+        area_stride,
+        area_count,
+        flags: 0,
+})?;
+}
+```
 
-- 修改 `.percpu` 布局或符号约定时，要同步核对链接脚本
-- 修改寄存器选择逻辑时，要同时核对架构启动路径
-- 若改动 `#[def_percpu]` 生成逻辑，必须回归所有依赖它的高层组件
-- `custom-base` 和默认实现是两套不同契约，不能混淆
+`install_layout` 是 `unsafe`，因为数值校验无法证明 runtime range 已映射、可读写且持续到关机；平台调用者必须提供该存储生命周期保证。
 
-## 测试
+每个 CPU 在 IRQ/trap 尚不可进入、调度尚未开放时执行唯一绑定：
 
-### 5.1 当前测试覆盖
+```rust,ignore
+let cpu = ax_percpu::CpuIndex::try_from(cpu_id)?;
+let area = ax_percpu::area(cpu)?;
+unsafe { ax_percpu::bind_current(area)? };
+```
 
-当前仓库内已经有针对 Linux/测试环境的 per-CPU 测试，覆盖：
+`bind_current` 在写 header 或架构寄存器前完成所有可恢复校验；一旦进入 commit，后续 verify 失败属于不可回滚的架构不变量并立即 fatal，不能把已经发布的 CPU anchor 伪装成普通 `Err` 返回。
 
-- 初始化
-- 基址切换
-- 当前 CPU 变量访问
-- 非零 VMA 相关构建路径
+相同 layout 的重复注册是幂等的，冲突 layout 会返回错误。`flags` 当前必须为零；stride、对齐、模板大小、CPU 数量和地址溢出都会被校验。layout 与 area 持续到关机，本版本不支持 CPU hotplug 或重绑定。
 
-这类测试非常重要，因为 per-CPU 机制往往在裸机外更难直接调试。
+ArceOS 动态平台的唯一 binder 是 `axplat-dyn` platform entry。`ax-plat` 和 `ax-runtime` 只能验证 header 并发布自己的 per-CPU 字段，不得再次写 CPU anchor。
 
-### 5.2 推荐继续补充的测试
+## 访问 API
 
-- `custom-base` 路径的契约测试
-- 多核模板复制边界测试
-- 二次初始化和错误初始化顺序测试
-- `preempt` 模式下访问时序测试
+`#[def_percpu]` 生成统一的 `PerCpu<T, Symbol, AccessKind>` 描述符；`custom-base` 不再生成另一套包装类型。
 
-### 5.3 风险点
+`CpuPin` 只证明操作期间不会迁移，不证明架构 anchor 已指向已安装 area。安全 current access 必须先调用 `bound_current(&CpuPin)`，得到同时借用迁移证明并验证 layout、stride、header index/generation/cookie 的 `BoundCpuPin`。`PreemptGuard`、`IrqGuard` 和 `PreemptIrqGuard` 只能借出 `CpuPin`，不能直接构造更强的绑定证明；两种 pin 都不证明 IRQ 排他或可变别名排他。
 
-- 这是启动早期和调度核心路径使用的基础设施，一旦出错通常影响范围极大
-- 基址寄存器没设对时，所有 per-CPU 访问都会错位
-- 链接脚本、宏展开和运行时初始化三者之间必须严格一致
+```rust,ignore
+#[ax_percpu::def_percpu]
+static CPU_NUMBER: usize = 0;
 
-## 跨项目定位
+fn publish(pin: &ax_percpu::CpuPin, value: usize) -> Result<(), ax_percpu::PerCpuError> {
+    let bound = ax_percpu::bound_current(pin)?;
+    CPU_NUMBER.write_current(&bound, value);
+    assert_eq!(CPU_NUMBER.read_current(&bound), value);
+    Ok(())
+}
+```
 
-| 项目 | 位置 | 角色 | 核心作用 |
-| --- | --- | --- | --- |
-| ArceOS | 启动、调度、CPU 局部状态底座 | 每核局部数据基础设施 | 支撑 CPU ID、当前任务、运行队列等核心运行时状态 |
-| StarryOS | 内核 SMP 基础件 | 每核状态承载层 | 为 StarryOS 进程调度和 CPU 局部内核状态提供统一机制 |
-| Axvisor | Hypervisor 每核状态底座 | EL2/每核虚拟化状态承载层 | 支撑每核 VMM 状态、当前 vCPU 绑定关系和定时器等局部数据 |
+- `bool/u8/u16/u32/u64/usize` 使用对应 `Atomic*` 模板，安全 `read_current/write_current` 是 Relaxed atomic，hard IRQ 重入不会产生 Rust data race。
+- 对象只在 `T: Sync` 时提供 HRTB `with_current_ref`，闭包不能安全导出临时引用。
+- 对象可变访问仅提供 `unsafe with_current_mut_raw`/raw pointer API；调用者必须额外证明 IRQ、嵌套调用和 remote access 均不产生别名。
+- remote access 接收 typed `CpuIndex`，通过已安装 layout 做 O(1) 计算；产生引用的 remote API 是 `unsafe`。
+- `repr(align(...))` 可高于 cache line 或 page；平台分配器必须使用链接器发布的实际 template alignment，不得把 64B header alignment 或 4K page size 当成 symbol alignment 上限。
 
-## 总结
+旧的 `init_percpu_reg`、`read_percpu_reg`、`write_percpu_reg`、整数式 `percpu_area_base` API 已删除。early boot、trap prologue 和 LockRuntime 只能使用清楚标注且局部封装的 raw API。
 
-`ax-percpu` 是一个非常底层、但对整个系统运行时结构影响极大的 crate。它把链接布局、架构寄存器、过程宏和启动初始化组合成一套完整的 per-CPU 数据机制，让上层调度器、平台层和虚拟化组件都能以统一方式持有当前核局部状态。对多核内核和 Hypervisor 来说，它不是便利工具，而是运行时结构能够成立的前提之一。
+## Feature
+
+- `custom-base`：区域由平台外部分配；仍使用相同 layout、area 和变量 API。
+- `sp-naive`：单核退化模型，不读取架构 anchor。
+- `host-test`：host 线程本地 anchor 与测试存储。
+- `non-zero-vma`：允许 host/test 的模板不是零 VMA。
+- `arm-el2`：AArch64 使用 TPIDR_EL2。
+
+## 验证重点
+
+- `ax-percpu` 与 `percpu_macros` 中不得出现 `asm!`/`global_asm!` 或架构寄存器名。
+- `ax-percpu` 不依赖 `ax-task`、`ax-runtime`、`ax-hal` 或具体平台。
+- 无 `BoundCpuPin` 不能调用安全 current accessor；它必须借用仍存活的 `CpuPin`，且二者与 guard 都不可跨线程。
+- normal、`custom-base`、`sp-naive` 三种模式必须共享同一变量 API。
+- 链接脚本必须分别保留 `.percpu` 模板与 `.ax_percpu.align` descriptor 表；runtime base 和 stride 必须满足 descriptor 最大值，且 linker `ALIGNOF(.percpu)` 与 Rust descriptor 最大值必须一致。
+- 四架构启动必须在 CPU online 前完成 header 初始化与 anchor 验证。

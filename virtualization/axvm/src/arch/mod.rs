@@ -3,7 +3,7 @@
 pub(crate) use crate::architecture::*;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform},
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -14,6 +14,25 @@ mod loongarch64;
 mod riscv64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
+
+#[cfg(test)]
+mod riscv_forwarding_contract_tests {
+    mod completion_restore {
+        include!("riscv64/completion_restore.rs");
+    }
+
+    mod forwarded_ingress {
+        include!("riscv64/forwarded_ingress.rs");
+    }
+
+    mod owner_doorbell {
+        include!("riscv64/owner_doorbell.rs");
+    }
+
+    mod route_transaction {
+        include!("riscv64/route_transaction.rs");
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::Aarch64Arch as CurrentArch;
@@ -66,24 +85,13 @@ pub mod platform {
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
     };
-    #[cfg(all(
-        any(target_arch = "x86_64", target_arch = "loongarch64"),
-        any(feature = "fs", feature = "host-fs")
-    ))]
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub use crate::host::arceos::shutdown_host_filesystems;
 }
 
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
-
-pub(crate) fn register_timer_callback() {
-    CurrentArch::register_timer_callback();
-}
-
-pub(crate) fn set_oneshot_timer(deadline_ns: u64) {
-    CurrentArch::set_oneshot_timer(deadline_ns);
-}
 
 pub(crate) fn init_guest_boot_resources() {
     CurrentArch::init_guest_boot_resources();

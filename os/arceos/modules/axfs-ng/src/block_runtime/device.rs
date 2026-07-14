@@ -23,7 +23,7 @@ use super::{
 use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
-    sync::IrqMutex as SpinNoIrq, task_can_block, task_wait_timeout, task_yield,
+    sync::SpinMutex as SpinNoIrq, task_can_block, task_wait_timeout, task_yield,
     wait_for_drain_notification, wake_task,
 };
 

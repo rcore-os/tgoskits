@@ -79,14 +79,15 @@ pub fn run() -> crate::TestResult {
     let remote_count = cpu_num - 1;
     for remote_cpu in 1..cpu_num {
         let expected_cpu = remote_cpu;
-        ax_ipi::run_on_cpu(remote_cpu, move || {
+        ax_ipi::run_on_cpu(ax_ipi::CpuId(remote_cpu), move || {
             assert_eq!(
                 this_cpu_id(),
                 expected_cpu,
                 "IPI callback ran on the wrong CPU"
             );
             IPI_ACKS.fetch_add(1, Ordering::Relaxed);
-        });
+        })
+        .expect("failed to queue SMP-online callback IPI");
     }
 
     if !wait_for_ipi_acks(remote_count) {

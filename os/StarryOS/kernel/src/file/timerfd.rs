@@ -30,7 +30,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
@@ -71,7 +71,7 @@ pub struct Timerfd {
     /// absolute deadline (which is always in this domain) into the
     /// internal wall-time domain before arming the monotonic timer wheel.
     clockid: u32,
-    state: Mutex<State>,
+    state: PiMutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
     non_blocking: AtomicBool,
@@ -93,7 +93,7 @@ impl Timerfd {
         }
         let this = Arc::new(Self {
             clockid,
-            state: Mutex::new(State::default()),
+            state: PiMutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),

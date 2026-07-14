@@ -532,7 +532,7 @@ fn kpu_irq_service() {
             || {
                 let _removed = KPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
             },
-            || KPU_DONE_WQ.notify_all(false),
+            || KPU_DONE_WQ.notify_all(),
         ) {
             panic!("KPU IRQ service registration was occupied concurrently");
         }

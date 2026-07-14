@@ -12,9 +12,10 @@ use ax_task::{
 
 #[test]
 fn timer_irq_work_is_bounded() {
+    let timers = [timer(0), timer(1), timer(2)];
     let mut queue = TimerQueue::new(3);
-    for owner in 0..3 {
-        unsafe { queue.arm(timer(owner), 10).unwrap() };
+    for node in &timers {
+        unsafe { queue.arm(node.as_ref(), 10).unwrap() };
     }
     let mut output = [ExpiredTimer::EMPTY; 3];
 
@@ -33,15 +34,15 @@ fn remote_inbox_publication_coalesces_and_drain_is_bounded() {
     let first_message = InboxMessage::remote_wake(thread(1), CpuId::new(1));
     let second_message = InboxMessage::remote_wake(thread(2), CpuId::new(1));
     assert_eq!(
-        inbox.publish(first, first_message),
+        inbox.publish(first.pin(), first_message),
         PublishResult::Published
     );
     assert_eq!(
-        inbox.publish(first, first_message),
+        inbox.publish(first.pin(), first_message),
         PublishResult::AlreadyPending
     );
     assert_eq!(
-        inbox.publish(second, second_message),
+        inbox.publish(second.pin(), second_message),
         PublishResult::Published
     );
     let mut output = [InboxMessage::EMPTY; 2];
@@ -56,16 +57,16 @@ fn remote_inbox_publication_coalesces_and_drain_is_bounded() {
 #[test]
 fn irq_before_register_is_delivered_to_the_single_waiter() {
     let cell = IrqWaitCell::new();
-    let wakes = Box::leak(Box::new(AtomicUsize::new(0)));
+    let wakes = Box::new(AtomicUsize::new(0));
     let wake = unsafe {
-        // The counter and callback remain valid for the leaked registration.
-        IrqWakeHandle::from_raw(wakes as *const AtomicUsize as usize, count_wake)
+        // The boxed counter remains stable until the pending wake is consumed.
+        IrqWakeHandle::from_raw((&*wakes as *const AtomicUsize) as usize, count_wake)
     };
-    let registration: &'static IrqWaitRegistration =
-        Box::leak(Box::new(IrqWaitRegistration::new(wake)));
+    let registration_owner = Box::pin(IrqWaitRegistration::new(wake));
     let registration = unsafe {
-        // The leaked registration remains pinned for every wait-cell operation.
-        Pin::new_unchecked(registration)
+        // The pending notification consumes the pinned registration before
+        // the owning box is dropped at the end of this test.
+        Pin::new_unchecked(&*(registration_owner.as_ref().get_ref() as *const IrqWaitRegistration))
     };
 
     assert_eq!(cell.notify(), IrqNotifyResult::Pending);
@@ -76,20 +77,24 @@ fn irq_before_register_is_delivered_to_the_single_waiter() {
     assert_eq!(wakes.load(Ordering::Relaxed), 1);
 }
 
-fn timer(owner: usize) -> Pin<&'static TimerNode> {
-    let node = Box::leak(Box::new(TimerNode::new(owner)));
-    unsafe {
-        // The leaked node outlives all queue entries.
-        Pin::new_unchecked(node)
+fn timer(owner: usize) -> Pin<Box<TimerNode>> {
+    Box::pin(TimerNode::new(owner))
+}
+
+struct TestInboxNode(Pin<Box<InboxNode>>);
+
+impl TestInboxNode {
+    fn pin(&self) -> Pin<&'static InboxNode> {
+        let node = self.0.as_ref().get_ref() as *const InboxNode;
+        unsafe {
+            // The test drains every published node before dropping the fixture.
+            Pin::new_unchecked(&*node)
+        }
     }
 }
 
-fn inbox_node(kind: InboxKind) -> Pin<&'static InboxNode> {
-    let node = Box::leak(Box::new(InboxNode::new(kind)));
-    unsafe {
-        // The leaked node outlives every inbox publication.
-        Pin::new_unchecked(node)
-    }
+fn inbox_node(kind: InboxKind) -> TestInboxNode {
+    TestInboxNode(Box::pin(InboxNode::new(kind)))
 }
 
 fn thread(slot: u32) -> ThreadId {
@@ -100,10 +105,10 @@ fn thread(slot: u32) -> ThreadId {
 ///
 /// # Safety
 ///
-/// `data` must point to the leaked atomic installed by the test.
+/// `data` must point to the boxed atomic installed by the test.
 unsafe fn count_wake(data: usize) {
     let wakes = unsafe {
-        // The test passes the leaked atomic address unchanged.
+        // The test passes the boxed atomic address unchanged.
         &*(data as *const AtomicUsize)
     };
     wakes.fetch_add(1, Ordering::Relaxed);

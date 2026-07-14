@@ -294,7 +294,13 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     {
         ax_ipi::init();
         #[cfg(feature = "irq")]
-        ax_hal::irq::set_run_on_cpu_sync(ax_ipi_run_on_cpu_sync);
+        // SAFETY: ax-ipi's synchronous lifecycle either completes the thunk or
+        // cancels it before returning and never retains the raw argument. The
+        // immutable hook is installed after the local queue exists and before
+        // interrupt handlers or online scheduler CPUs expose it to consumers.
+        unsafe {
+            ax_hal::irq::set_run_on_cpu_sync(ax_ipi_run_on_cpu_sync)
+        };
     }
 
     #[cfg(feature = "irq")]
@@ -444,7 +450,7 @@ unsafe fn ax_ipi_run_on_cpu_sync(
     f: unsafe fn(*mut ()),
     arg: *mut (),
 ) -> Result<(), ax_hal::irq::IrqError> {
-    unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, f, arg) }
+    unsafe { ax_ipi::run_on_cpu_sync_raw(ax_ipi::CpuId(cpu), f, arg) }
 }
 
 #[cfg(feature = "irq")]
@@ -588,7 +594,11 @@ fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
 #[cfg(all(feature = "tls", not(feature = "multitask")))]
 fn init_tls() {
     let main_tls = ax_hal::tls::TlsArea::alloc();
-    unsafe { ax_hal::asm::write_thread_pointer(main_tls.tls_ptr() as usize) };
+    unsafe {
+        ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
+            main_tls.tls_ptr() as usize
+        ))
+    };
     core::mem::forget(main_tls);
 }
 

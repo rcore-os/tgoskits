@@ -1,11 +1,9 @@
 #[cfg(not(test))]
-pub use ax_kspin::{SpinNoIrq as IrqMutex, SpinNoIrqGuard as IrqMutexGuard};
-#[cfg(not(test))]
-pub use ax_sync::{Mutex as SleepMutex, MutexGuard as SleepMutexGuard};
+pub use ax_sync::{PiMutex, PiMutexGuard, SpinMutex, SpinMutexGuard};
 #[cfg(test)]
 pub use tests::{
-    TestMutex as IrqMutex, TestMutex as SleepMutex, TestMutexGuard as IrqMutexGuard,
-    TestMutexGuard as SleepMutexGuard,
+    TestMutex as PiMutex, TestMutex as SpinMutex, TestMutexGuard as PiMutexGuard,
+    TestMutexGuard as SpinMutexGuard,
 };
 
 #[cfg(test)]

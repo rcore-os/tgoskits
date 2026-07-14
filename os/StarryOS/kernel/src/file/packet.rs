@@ -9,7 +9,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -108,7 +108,7 @@ struct PacketSocketState {
 }
 
 pub struct PacketSocket {
-    state: Mutex<PacketSocketState>,
+    state: PiMutex<PacketSocketState>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -120,7 +120,7 @@ impl PacketSocket {
         }
         let info = first_visible_ethernet()?;
         Ok(Self {
-            state: Mutex::new(PacketSocketState {
+            state: PiMutex::new(PacketSocketState {
                 bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,
             }),

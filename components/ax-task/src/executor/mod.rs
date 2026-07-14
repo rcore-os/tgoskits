@@ -11,10 +11,11 @@ mod waker;
 use alloc::{boxed::Box, rc::Rc, sync::Arc};
 use core::{
     cell::{Cell, RefCell},
+    fmt,
     future::Future,
     marker::PhantomData,
     ptr,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll},
 };
 
@@ -108,13 +109,15 @@ impl LocalExecutor {
     /// Runs one possibly borrowing future to completion on the owner thread.
     ///
     /// `park` is called only after the executor-side lost-wake handshake has
-    /// completed. It should block or yield the current scheduler thread, then
-    /// return so the root future can be polled again. The future is dropped on
-    /// the owner before this method returns or unwinds.
+    /// completed. It must pass the supplied [`ExecutorParkCondition`] into the
+    /// OS scheduler's predicate-aware park operation. Checking the condition
+    /// before an unconditional park is insufficient because scheduler wake
+    /// consumption may race between those two operations. The future is dropped
+    /// on the owner before this method returns or unwinds.
     pub fn run<F, P>(&self, future: F, mut park: P) -> F::Output
     where
         F: Future,
-        P: FnMut(),
+        P: FnMut(&ExecutorParkCondition<'_>),
     {
         self.assert_owner_context();
         let output = RefCell::new(None);
@@ -143,7 +146,8 @@ impl LocalExecutor {
             let Some(token) = self.prepare_park() else {
                 continue;
             };
-            park();
+            let condition = ExecutorParkCondition { executor: self };
+            park(&condition);
             let _owner_work = token.finish();
             unsafe {
                 // Returning from the OS park path is also a reason to recheck a
@@ -481,6 +485,36 @@ impl LocalExecutor {
     }
 }
 
+/// Borrowed executor predicate for one OS scheduler park attempt.
+///
+/// The OS adapter must evaluate [`Self::should_abort`] from inside its own
+/// generation-checked park handshake. The predicate performs only owner-local
+/// reads and atomic observations; it does not poll futures or invoke callbacks.
+pub struct ExecutorParkCondition<'executor> {
+    executor: &'executor LocalExecutor,
+}
+
+impl ExecutorParkCondition<'_> {
+    /// Reports whether executor work or a wake publication must cancel the OS park.
+    ///
+    /// This operation is bounded, non-blocking, and scheduler-non-reentrant, so
+    /// an OS adapter may call it from an IRQ-disabled wait-queue predicate.
+    pub fn should_abort(&self) -> bool {
+        self.executor.shared.park_state.load(Ordering::Acquire) & NOTIFIED != 0
+            || self.executor.has_owner_work()
+    }
+}
+
+impl fmt::Debug for ExecutorParkCondition<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutorParkCondition")
+            .field("owner_thread", &self.executor.owner_thread())
+            .field("should_abort", &self.should_abort())
+            .finish()
+    }
+}
+
 impl Drop for LocalExecutor {
     fn drop(&mut self) {
         self.assert_owner_context();
@@ -545,9 +579,11 @@ pub(super) struct SharedExecutor {
     owner_wake: ThreadWakeHandle,
     ready: IntrusiveInbox,
     park_state: AtomicUsize,
-    closed: AtomicBool,
-    ready_publishers: AtomicUsize,
+    ready_publication: AtomicUsize,
 }
+
+const READY_PUBLICATION_CLOSED: usize = 1usize << (usize::BITS - 1);
+const READY_PUBLISHER_COUNT_MASK: usize = READY_PUBLICATION_CLOSED - 1;
 
 impl SharedExecutor {
     fn new(owner_wake: ThreadWakeHandle) -> Self {
@@ -556,8 +592,7 @@ impl SharedExecutor {
             owner_wake,
             ready: IntrusiveInbox::new(InboxKind::Ready),
             park_state: AtomicUsize::new(0),
-            closed: AtomicBool::new(false),
-            ready_publishers: AtomicUsize::new(0),
+            ready_publication: AtomicUsize::new(0),
         }
     }
 
@@ -576,19 +611,32 @@ impl SharedExecutor {
     }
 
     fn begin_ready_publish(&self) -> bool {
-        if self.closed.load(Ordering::Acquire) {
-            return false;
+        let mut state = self.ready_publication.load(Ordering::Acquire);
+        loop {
+            if state & READY_PUBLICATION_CLOSED != 0 {
+                return false;
+            }
+            if state & READY_PUBLISHER_COUNT_MASK == READY_PUBLISHER_COUNT_MASK {
+                crate::runtime::task_runtime::fatal_invariant(
+                    0x4558_0007,
+                    self.owner_thread.as_u64() as usize,
+                );
+            }
+            match self.ready_publication.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(updated) => state = updated,
+            }
         }
-        self.ready_publishers.fetch_add(1, Ordering::Acquire);
-        if self.closed.load(Ordering::Acquire) {
-            self.finish_ready_publish();
-            return false;
-        }
-        true
     }
 
     fn finish_ready_publish(&self) {
-        self.ready_publishers.fetch_sub(1, Ordering::Release);
+        let previous = self.ready_publication.fetch_sub(1, Ordering::Release);
+        debug_assert_ne!(previous & READY_PUBLISHER_COUNT_MASK, 0);
     }
 
     fn notify_owner(&self) {
@@ -599,8 +647,9 @@ impl SharedExecutor {
     }
 
     fn close_and_wait_for_publishers(&self) {
-        self.closed.store(true, Ordering::Release);
-        while self.ready_publishers.load(Ordering::Acquire) != 0 {
+        self.ready_publication
+            .fetch_or(READY_PUBLICATION_CLOSED, Ordering::AcqRel);
+        while self.ready_publication.load(Ordering::Acquire) != READY_PUBLICATION_CLOSED {
             core::hint::spin_loop();
         }
     }

@@ -7,7 +7,7 @@ mod support;
 
 #[test]
 fn rejects_invalid_policy_parameters() {
-    support::install_handles(0, 0);
+    support::clear_handles();
     support::clear_handles();
     assert_eq!(Nice::new(-21), Err(TaskError::InvalidNice(-21)));
     assert_eq!(RtPriority::new(0), Err(TaskError::InvalidRtPriority(0)));

@@ -16,7 +16,7 @@ use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
@@ -33,7 +33,7 @@ const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
 // The registry entry is locked from the tracepoint fire path, which for
 // `sched:sched_switch` runs from the ax-task switch path (IRQ off,
-// preemption disabled). A sleeping `ax_sync::Mutex` would trip the
+// preemption disabled). A sleeping `ax_sync::PiMutex` would trip the
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
 // uses for exactly this reason.
@@ -64,10 +64,10 @@ pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
 
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: Mutex<TracePipeRaw>,
+    raw_pipe: SpinMutex<TracePipeRaw>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
-    cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
+    cmdline_cache: LazyInit<SpinMutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
 
@@ -75,7 +75,7 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: SpinMutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
@@ -280,7 +280,7 @@ pub fn tracepoint_init() -> AxResult<()> {
     TRACE_STATE.ext_tracepoints.init_once(ext_tps);
     TRACE_STATE
         .cmdline_cache
-        .init_once(Mutex::new(TraceCmdLineCache::new(
+        .init_once(SpinMutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
     sched::install();

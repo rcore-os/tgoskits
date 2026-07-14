@@ -25,7 +25,7 @@ mod tests {
     use super::*;
     use crate::os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockTaskOps, install_dma_op,
-        set_irq_registrar, set_task_ops, sync::IrqMutex as SpinNoIrq,
+        set_irq_registrar, set_task_ops, sync::SpinMutex as SpinNoIrq,
     };
 
     static TEST_TASK_OPS: TestTaskOps = TestTaskOps;

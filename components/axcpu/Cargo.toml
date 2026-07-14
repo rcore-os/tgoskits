@@ -48,9 +48,11 @@ aarch64-cpu = "11.0"
 tock-registers = "0.10"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+ax-cpu-local = { workspace = true }
 riscv.workspace = true
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-cpu-local = { workspace = true }
 loongArch64 = "0.2"
 ax-page-table-multiarch = { workspace = true }
 [lints.clippy]

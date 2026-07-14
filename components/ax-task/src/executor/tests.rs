@@ -102,6 +102,49 @@ fn closes_the_wake_during_park_window() {
 }
 
 #[test]
+fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
+    let fixture = executor();
+    let completed = Rc::new(Cell::new(false));
+    let saved_waker = Rc::new(RefCell::new(None::<Waker>));
+    let executor = fixture.local();
+    let owner_wake = executor.shared.owner_wake.clone();
+    let system = fixture.system();
+
+    executor.run(
+        {
+            let completed = Rc::clone(&completed);
+            let saved_waker = Rc::clone(&saved_waker);
+            poll_fn(move |context| {
+                if completed.get() {
+                    return Poll::Ready(());
+                }
+                *saved_waker.borrow_mut() = Some(context.waker().clone());
+                Poll::Pending
+            })
+        },
+        |condition| {
+            completed.set(true);
+            saved_waker
+                .borrow()
+                .as_ref()
+                .expect("pending future must publish its waker")
+                .wake_by_ref();
+
+            assert!(
+                !system
+                    .consume_wake(&owner_wake)
+                    .expect("running owner must consume the direct wake"),
+                "a running owner must not be enqueued by a direct wake"
+            );
+            assert!(
+                condition.should_abort(),
+                "executor readiness must survive scheduler notification consumption"
+            );
+        },
+    );
+}
+
+#[test]
 fn reclaims_a_completed_coroutine_only_after_the_last_waker_drop() {
     let fixture = executor();
     let executor = fixture.local();
@@ -180,7 +223,7 @@ fn run_supports_a_borrowing_non_send_future_without_leaking_its_header() {
             borrowed.set(7);
             11
         },
-        || panic!("a ready future must not park"),
+        |_| panic!("a ready future must not park"),
     );
 
     assert_eq!(output, 11);
@@ -201,7 +244,7 @@ fn borrowing_root_late_waker_is_safe_after_run_returns() {
             *saved_waker.borrow_mut() = Some(context.waker().clone());
             Poll::Ready(13)
         }),
-        || panic!("a ready future must not park"),
+        |_| panic!("a ready future must not park"),
     );
 
     assert_eq!(output, 13);
@@ -227,7 +270,7 @@ fn poll_panic_cancels_and_drops_a_borrowing_future_on_its_owner() {
                 borrowed_state: &borrowed_state,
                 dropped_on: &dropped_on,
             },
-            || panic!("a panicking first poll must not park"),
+            |_| panic!("a panicking first poll must not park"),
         )
     }));
 
@@ -261,7 +304,7 @@ fn shutdown_waits_for_an_inflight_ready_publisher() {
     let worker = std::thread::spawn(move || {
         assert!(publisher.begin_ready_publish());
         publisher_entered.wait();
-        while !publisher.closed.load(Ordering::Acquire) {
+        while publisher.ready_publication.load(Ordering::Acquire) & READY_PUBLICATION_CLOSED == 0 {
             core::hint::spin_loop();
         }
         publisher.finish_ready_publish();
@@ -312,7 +355,10 @@ fn executor() -> ExecutorFixture {
         .expect("CPU must come online");
     crate::test_runtime::install_task_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-        (cpu.as_ref().get_ref() as *const crate::CpuLocal).expose_provenance(),
+        // SAFETY: the fixture keeps this owner object pinned and serializes
+        // every scheduler borrow until it clears the runtime handle.
+        (unsafe { Pin::get_unchecked_mut(cpu.as_mut()) } as *mut crate::CpuLocal)
+            .expose_provenance(),
     );
     let executor =
         LocalExecutor::new(thread.wake_handle()).expect("executor owner identity must match");

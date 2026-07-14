@@ -1,9 +1,12 @@
 //! Per-integration-binary fake TaskRuntime.
 
-use core::cell::{Cell, RefCell};
+use core::{
+    cell::{Cell, RefCell},
+    pin::Pin,
+};
 
 use ax_task::{
-    impl_trait,
+    CpuId, CpuLocal, CpuRemote, TaskSystem, impl_trait,
     runtime::{TaskRuntime, *},
 };
 
@@ -34,18 +37,41 @@ struct IntegrationRuntime;
 
 impl_trait! {
     impl TaskRuntime for IntegrationRuntime {
-        fn task_system_handle() -> TaskSystemHandle {
-            TASK_SYSTEM.with(|handle| TaskSystemHandle::from_raw(handle.get()))
+        unsafe fn task_system_handle() -> TaskSystemHandle {
+            TASK_SYSTEM.with(|handle| {
+                // SAFETY: each fixture keeps its pinned TaskSystem alive until
+                // clearing this thread-local handle.
+                unsafe { TaskSystemHandle::from_raw(handle.get()) }
+            })
         }
 
-        fn current_cpu_local_handle() -> CpuLocalHandle {
-            CURRENT_CPU.with(|cpu| Self::cpu_local_handle(RuntimeCpuId::new(cpu.get())))
-        }
-
-        fn cpu_local_handle(cpu: RuntimeCpuId) -> CpuLocalHandle {
-            let index = cpu.as_u32() as usize;
+        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+            let index = CURRENT_CPU.with(|cpu| cpu.get() as usize);
             let raw = CPU_LOCALS.with(|handles| handles.borrow().get(index).copied().unwrap_or(0));
-            CpuLocalHandle::from_raw(raw)
+            // SAFETY: the fixture publishes only the selected CPU's pinned
+            // CpuLocal and clears every entry before destroying the objects.
+            unsafe { CurrentCpuLocalHandle::from_raw(raw) }
+        }
+
+        unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+            let raw = TASK_SYSTEM.with(Cell::get);
+            if raw == 0 {
+                return CpuRemoteHandle::NONE;
+            }
+            // SAFETY: each fixture keeps its pinned TaskSystem alive until it
+            // clears these thread-local handles.
+            let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(raw) };
+            system
+                .cpu_remote(CpuId::new(cpu.as_u32()))
+                .map_or(CpuRemoteHandle::NONE, |remote| {
+                    // SAFETY: CpuRemote is Arc-backed by the fixture-owned
+                    // TaskSystem for the complete published-handle lifetime.
+                    unsafe {
+                        CpuRemoteHandle::from_raw(
+                            (remote as *const CpuRemote).expose_provenance(),
+                        )
+                    }
+                })
         }
 
         fn current_cpu_id() -> RuntimeCpuId {
@@ -62,7 +88,9 @@ impl_trait! {
                 token
             });
             ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow_mut().push(token));
-            IrqGuardToken::from_raw(token)
+            // SAFETY: the token is present in ACTIVE_IRQ_TOKENS until the
+            // matching test-runtime exit operation consumes it.
+            unsafe { IrqGuardToken::from_raw(token) }
         }
 
         unsafe fn irq_guard_exit(token: IrqGuardToken) {
@@ -77,19 +105,29 @@ impl_trait! {
         }
 
         fn finish_initial_context_switch() {
-            ACTIVE_IRQ_TOKENS.with(|tokens| {
-                tokens
-                    .borrow_mut()
-                    .pop()
-                    .expect("initial context must inherit one IRQ guard");
-            });
+            // Integration tests do not execute real architecture context
+            // switches; their scheduler baton is modeled by the facade tests.
         }
 
-        fn scheduler_frame_guard_enter() {}
+        fn scheduler_frame_guard_enter(
+            _origin: RuntimeScheduleOrigin,
+            _entry: RuntimeSchedulerEntry,
+        ) -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
 
-        fn scheduler_frame_guard_exit() {}
+        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool {
+            ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
+        }
 
         fn in_hard_irq() -> bool { IN_HARD_IRQ.with(Cell::get) }
+        fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
+            if IN_HARD_IRQ.with(Cell::get) {
+                RuntimeStatus::UnsafeContext
+            } else {
+                RuntimeStatus::Success
+            }
+        }
         fn monotonic_ns() -> u64 { MONOTONIC_NS.with(Cell::get) }
         fn timer_resolution_ns() -> u64 { TIMER_RESOLUTION_NS.with(Cell::get) }
         fn program_oneshot_timer(deadline_ns: u64) -> RuntimeStatus {
@@ -156,14 +194,31 @@ impl_trait! {
     }
 }
 
-pub fn install_handles(task_system: usize, cpu_local: usize) {
+pub fn install_handles(task_system: usize, cpu_local: Pin<&mut CpuLocal>) {
     TASK_SYSTEM.with(|handle| handle.set(task_system));
-    CPU_LOCALS.with(|handles| handles.borrow_mut()[0] = cpu_local);
+    install_cpu_raw(0, owner_cpu_handle(cpu_local));
     CURRENT_CPU.with(|cpu| cpu.set(0));
     ONLINE_CPU_COUNT.with(|count| count.set(1));
 }
 
-pub fn install_cpu(cpu: u32, cpu_local: usize) {
+pub fn install_cpu(cpu: u32, cpu_local: Pin<&mut CpuLocal>) {
+    install_cpu_raw(cpu, owner_cpu_handle(cpu_local));
+}
+
+// Every integration-test crate compiles this shared runtime provider as its
+// own module. Keep both typed installation entry points part of that provider
+// even when a particular test exercises only the global facade.
+const _: fn(usize, Pin<&mut CpuLocal>) = install_handles;
+const _: fn(u32, Pin<&mut CpuLocal>) = install_cpu;
+
+/// Exposes the mutable provenance of a pinned owner-CPU scheduler object.
+fn owner_cpu_handle(cpu: Pin<&mut CpuLocal>) -> usize {
+    // SAFETY: test fixtures keep the allocation pinned and serialize every
+    // owner access until they clear the installed fake-runtime handle.
+    (unsafe { Pin::get_unchecked_mut(cpu) } as *mut CpuLocal).expose_provenance()
+}
+
+fn install_cpu_raw(cpu: u32, cpu_local: usize) {
     CPU_LOCALS.with(|handles| handles.borrow_mut()[cpu as usize] = cpu_local);
 }
 
@@ -206,9 +261,9 @@ pub fn reset_resource_release_counts() {
 }
 
 pub fn clear_handles() {
-    install_handles(0, 0);
+    TASK_SYSTEM.with(|handle| handle.set(0));
     for cpu in 0..MAX_TEST_CPUS as u32 {
-        install_cpu(cpu, 0);
+        install_cpu_raw(cpu, 0);
         IPI_COUNTS.with(|counts| counts.borrow_mut()[cpu as usize] = 0);
         let _cleared = ipi_count(cpu);
     }

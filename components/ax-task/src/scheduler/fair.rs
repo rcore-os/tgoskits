@@ -16,6 +16,23 @@ pub struct FairEntity {
 }
 
 impl FairEntity {
+    #[cfg(test)]
+    pub(crate) const fn test_state(
+        nice: Nice,
+        mode: FairMode,
+        vruntime: u64,
+        virtual_deadline: u64,
+    ) -> Self {
+        Self {
+            nice,
+            mode,
+            vruntime,
+            service_request_ns: 1,
+            remaining_request_ns: 1,
+            virtual_deadline,
+        }
+    }
+
     /// Creates a fair entity at a run queue's current virtual time.
     pub fn new(nice: Nice, mode: FairMode, request_ns: u64, virtual_time: u64) -> Self {
         let nice = if mode == FairMode::Idle {
@@ -65,8 +82,29 @@ impl FairEntity {
             .saturating_add(weighted_delta(self.service_request_ns, self.nice.weight()));
     }
 
-    /// Reweights one active request without discarding its service history.
-    pub(crate) fn reconfigure(mut self, nice: Nice, mode: FairMode, virtual_time: u64) -> Self {
+    /// Forfeits an eligible request when the thread explicitly yields.
+    ///
+    /// Moving to the active virtual deadline lets positive-lag peers advance
+    /// the runqueue virtual time instead of allowing the yielding thread to
+    /// anchor eligibility at its old vruntime. An already ineligible entity
+    /// keeps its request because it has already yielded its execution position.
+    pub(crate) fn yield_request(&mut self, virtual_time: u64) {
+        if self.is_eligible(virtual_time) {
+            self.vruntime = self.vruntime.max(self.virtual_deadline);
+            self.renew_request(virtual_time);
+        } else if self.request_exhausted() {
+            self.renew_request(virtual_time);
+        }
+    }
+
+    /// Reweights and rebases one active request without discarding its lag.
+    pub(crate) fn reconfigure(
+        mut self,
+        nice: Nice,
+        mode: FairMode,
+        source_virtual_time: u64,
+        destination_virtual_time: u64,
+    ) -> Self {
         let nice = if mode == FairMode::Idle {
             Nice::LOWEST
         } else {
@@ -74,15 +112,12 @@ impl FairEntity {
         };
         let old_weight = self.nice.weight();
         let new_weight = nice.weight();
+        let lag = source_virtual_time as i128 - self.vruntime as i128;
+        let reweighted_lag = lag.saturating_mul(old_weight as i128) / new_weight as i128;
         self.nice = nice;
         self.mode = mode;
-        if old_weight == new_weight {
-            return self;
-        }
-
-        let lag = virtual_time as i128 - self.vruntime as i128;
-        let reweighted_lag = lag.saturating_mul(old_weight as i128) / new_weight as i128;
-        self.vruntime = (virtual_time as i128 - reweighted_lag).clamp(0, u64::MAX as i128) as u64;
+        self.vruntime =
+            (destination_virtual_time as i128 - reweighted_lag).clamp(0, u64::MAX as i128) as u64;
         self.virtual_deadline = self
             .vruntime
             .saturating_add(weighted_delta(self.remaining_request_ns, new_weight));
@@ -112,6 +147,11 @@ impl FairEntity {
     /// Returns accumulated weighted virtual runtime.
     pub const fn vruntime(self) -> u64 {
         self.vruntime
+    }
+
+    /// Returns the Linux-compatible load weight used for lag accounting.
+    pub(crate) const fn weight(self) -> u32 {
+        self.nice.weight()
     }
 
     /// Returns the EEVDF virtual deadline.

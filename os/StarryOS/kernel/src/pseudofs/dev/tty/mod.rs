@@ -19,7 +19,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -63,7 +63,7 @@ pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
 pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
-    ldisc: Mutex<LineDiscipline<R, W>>,
+    ldisc: PiMutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
@@ -73,7 +73,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
-        let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
+        let ldisc = PiMutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
             terminal,

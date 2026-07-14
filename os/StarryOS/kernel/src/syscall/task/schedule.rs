@@ -19,9 +19,9 @@ use super::schedule_abi::{
 };
 use crate::{
     task::{
-        Cred, ProcessData, current,
+        Cred, ProcessData, StarryTaskRef, current,
         future::{block_on, interruptible, sleep},
-        get_process_data, get_process_group, get_task, is_zombie_pid, processes,
+        get_process_group, get_task, is_zombie_pid, processes,
     },
     time::TimeValueLike,
 };
@@ -200,7 +200,13 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
     if !any_cpu {
         return Err(AxError::InvalidInput);
     }
-    scheduler::set_thread_affinity(scheduler_thread_id(pid)?, affinity).map_err(map_task_error)?;
+    let target_tid = scheduler_tid(pid)?;
+    if target_tid == current().as_thread().tid() {
+        scheduler::set_current_thread_affinity(affinity).map_err(map_task_error)?;
+    } else {
+        scheduler::set_thread_affinity(scheduler_thread_id(pid)?, affinity)
+            .map_err(map_task_error)?;
+    }
 
     Ok(0)
 }
@@ -336,7 +342,7 @@ fn apply_scheduler_update(
             stored_nice: scheduler_stored_nice(pid, current_policy)?,
         },
         current_policy,
-        update.policy,
+        update.permission_policy,
     )?;
     let current_reset_on_fork = task.reset_on_fork();
     check_reset_on_fork_permission(
@@ -351,7 +357,7 @@ fn apply_scheduler_update(
     task.set_accounting_policy(update.policy);
     task.set_reset_on_fork(update.reset_on_fork);
     if let scheduler::SchedulePolicy::Fair { nice, .. } = update.policy {
-        task.as_thread().proc_data.set_nice(i32::from(nice.get()));
+        task.as_thread().set_nice(i32::from(nice.get()));
     }
     Ok(())
 }
@@ -374,7 +380,7 @@ fn scheduler_stored_nice(
         return Ok(nice);
     }
     let task = get_task(scheduler_tid(pid)?)?;
-    let nice = i8::try_from(task.as_thread().proc_data.nice()).map_err(|_| AxError::BadState)?;
+    let nice = i8::try_from(task.as_thread().nice()).map_err(|_| AxError::BadState)?;
     scheduler::Nice::new(nice).map_err(map_task_error)
 }
 
@@ -470,7 +476,9 @@ fn map_task_error(error: scheduler::TaskError) -> AxError {
         | TaskError::ActiveTimerAffinity
         | TaskError::ThreadBusy => AxError::ResourceBusy,
         TaskError::StaleThreadId => AxError::NoSuchProcess,
-        TaskError::NotInitialized | TaskError::InvalidRuntimeHandle => AxError::BadState,
+        TaskError::NotInitialized
+        | TaskError::InvalidRuntimeHandle
+        | TaskError::CpuOwnerBorrowed => AxError::BadState,
         TaskError::UnsafeContext => AxError::OperationNotPermitted,
         TaskError::TimerCapacity => AxError::NoMemory,
         TaskError::CpuOwnerMismatch { .. }
@@ -492,12 +500,8 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
     debug!("sys_getpriority <= which: {which}, who: {who}");
 
     match which {
-        PRIO_PROCESS => match get_process_data(if who == 0 {
-            current().as_thread().proc_data.proc.pid()
-        } else {
-            who
-        }) {
-            Ok(proc) => Ok(raw_priority(proc.nice())),
+        PRIO_PROCESS => match get_task(if who == 0 { 0 } else { who }) {
+            Ok(task) => Ok(raw_priority(task.as_thread().nice())),
             Err(AxError::NoSuchProcess) if who != 0 && is_zombie_pid(who) => Ok(20),
             Err(err) => Err(err),
         },
@@ -507,11 +511,11 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
             } else {
                 get_process_group(who)?.pgid()
             };
-            min_priority_for_processes(
+            min_priority_for_tasks(tasks_for_processes(
                 processes()
                     .into_iter()
                     .filter(|proc| proc.proc.group().pgid() == pgid),
-            )
+            ))
         }
         PRIO_USER => {
             let uid = if who == 0 {
@@ -519,7 +523,11 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
             } else {
                 who
             };
-            min_priority_for_processes(processes_for_uid(uid).into_iter())
+            min_priority_for_tasks(
+                tasks_for_processes(processes())
+                    .into_iter()
+                    .filter(|task| task.as_thread().cred().uid == uid),
+            )
         }
         _ => Err(AxError::InvalidInput),
     }
@@ -531,14 +539,9 @@ pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
     let nice = prio.clamp(-20, 19);
     match which {
         PRIO_PROCESS => {
-            let pid = if who == 0 {
-                current().as_thread().proc_data.proc.pid()
-            } else {
-                who
-            };
-            let proc = get_process_data(pid)?;
-            check_setpriority_permission(&proc, nice)?;
-            set_process_scheduler_nice(&proc, nice)?;
+            let task = get_task(if who == 0 { 0 } else { who })?;
+            check_setpriority_permission(&task, nice)?;
+            set_thread_scheduler_nice(&task, nice)?;
             Ok(0)
         }
         PRIO_PGRP => {
@@ -547,10 +550,12 @@ pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
             } else {
                 get_process_group(who)?.pgid()
             };
-            set_priority_for_processes(
-                processes()
-                    .into_iter()
-                    .filter(|proc| proc.proc.group().pgid() == pgid),
+            set_priority_for_tasks(
+                tasks_for_processes(
+                    processes()
+                        .into_iter()
+                        .filter(|proc| proc.proc.group().pgid() == pgid),
+                ),
                 nice,
             )
         }
@@ -560,7 +565,12 @@ pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
             } else {
                 who
             };
-            set_priority_for_processes(processes_for_uid(uid).into_iter(), nice)
+            set_priority_for_tasks(
+                tasks_for_processes(processes())
+                    .into_iter()
+                    .filter(|task| task.as_thread().cred().uid == uid),
+                nice,
+            )
         }
         _ => Err(AxError::InvalidInput),
     }
@@ -570,54 +580,43 @@ fn raw_priority(nice: i32) -> isize {
     (20 - nice) as isize
 }
 
-fn min_priority_for_processes(
-    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
-) -> AxResult<isize> {
-    procs
-        .map(|proc| proc.nice())
+fn min_priority_for_tasks(tasks: impl IntoIterator<Item = StarryTaskRef>) -> AxResult<isize> {
+    tasks
+        .into_iter()
+        .map(|task| task.as_thread().nice())
         .min()
         .map(raw_priority)
         .ok_or(AxError::NoSuchProcess)
 }
 
-fn processes_for_uid(uid: u32) -> Vec<Arc<ProcessData>> {
-    processes()
+fn tasks_for_processes(
+    processes: impl IntoIterator<Item = Arc<ProcessData>>,
+) -> Vec<StarryTaskRef> {
+    processes
         .into_iter()
-        .filter(|proc| {
-            process_cred(proc)
-                .map(|cred| cred.uid == uid)
-                .unwrap_or(false)
-        })
+        .flat_map(|proc| proc.proc.threads())
+        .filter_map(|tid| get_task(tid).ok())
         .collect()
-}
-
-fn process_cred(proc: &ProcessData) -> AxResult<Arc<Cred>> {
-    for tid in proc.proc.threads() {
-        if let Ok(task) = get_task(tid)
-            && let Some(thread) = task.try_as_thread()
-        {
-            return Ok(thread.cred());
-        }
-    }
-    Err(AxError::NoSuchProcess)
 }
 
 fn setpriority_cred_matches(caller: &Cred, target: &Cred) -> bool {
     caller.euid == target.uid || caller.euid == target.euid
 }
 
-fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
+fn check_setpriority_permission(task: &StarryTaskRef, nice: i32) -> AxResult<()> {
     let caller = current().as_thread().cred();
     if caller.has_cap_sys_nice() {
         return Ok(());
     }
 
-    let target = process_cred(proc)?;
+    let target = task.as_thread().cred();
     if !setpriority_cred_matches(&caller, &target) {
         return Err(AxError::OperationNotPermitted);
     }
-    if nice < proc.nice() {
-        let rlimit_nice = proc.rlim.read()[RLIMIT_NICE].current.min(40);
+    if nice < task.as_thread().nice() {
+        let rlimit_nice = task.as_thread().proc_data.rlim.read()[RLIMIT_NICE]
+            .current
+            .min(40);
         let lowest_allowed = 20_i64 - rlimit_nice as i64;
         if i64::from(nice) < lowest_allowed {
             return Err(AxError::PermissionDenied);
@@ -626,35 +625,30 @@ fn check_setpriority_permission(proc: &ProcessData, nice: i32) -> AxResult<()> {
     Ok(())
 }
 
-fn set_priority_for_processes(
-    procs: impl Iterator<Item = alloc::sync::Arc<ProcessData>>,
+fn set_priority_for_tasks(
+    tasks: impl IntoIterator<Item = StarryTaskRef>,
     nice: i32,
 ) -> AxResult<isize> {
-    let procs: Vec<_> = procs.collect();
-    if procs.is_empty() {
+    let tasks: Vec<_> = tasks.into_iter().collect();
+    if tasks.is_empty() {
         return Err(AxError::NoSuchProcess);
     }
-    for proc in &procs {
-        check_setpriority_permission(proc, nice)?;
+    for task in &tasks {
+        check_setpriority_permission(task, nice)?;
     }
-    for proc in procs {
-        set_process_scheduler_nice(&proc, nice)?;
+    for task in tasks {
+        set_thread_scheduler_nice(&task, nice)?;
     }
     Ok(0)
 }
 
-fn set_process_scheduler_nice(proc: &ProcessData, nice: i32) -> AxResult<()> {
+fn set_thread_scheduler_nice(task: &StarryTaskRef, nice: i32) -> AxResult<()> {
     let nice = scheduler::Nice::new(nice as i8).map_err(map_task_error)?;
-    for tid in proc.proc.threads() {
-        let Ok(task) = get_task(tid) else {
-            continue;
-        };
-        let policy = task.policy();
-        if let scheduler::SchedulePolicy::Fair { mode, .. } = policy {
-            scheduler::set_thread_policy(task.id(), scheduler::SchedulePolicy::fair(nice, mode))
-                .map_err(map_task_error)?;
-        }
+    let policy = task.policy();
+    if let scheduler::SchedulePolicy::Fair { mode, .. } = policy {
+        scheduler::set_thread_policy(task.id(), scheduler::SchedulePolicy::fair(nice, mode))
+            .map_err(map_task_error)?;
     }
-    proc.set_nice(i32::from(nice.get()));
+    task.as_thread().set_nice(i32::from(nice.get()));
     Ok(())
 }

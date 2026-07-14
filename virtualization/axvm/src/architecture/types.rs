@@ -22,6 +22,18 @@ pub(crate) enum BoundVcpuExit<D> {
     Defer(D),
 }
 
+/// Architecture-neutral work copied out of a bound vCPU exit.
+///
+/// Every variant is plain data. Device callbacks, allocation, scheduler
+/// interaction, and guest register updates happen only after backend unbind
+/// restores the host CPU register state and releases the CPU pin.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CommonDeferredRunWork {
+    Hypercall(HypercallExit),
+    MmioRead(MmioReadExit),
+    MmioWrite(MmioWriteExit),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MmioReadExit {
     pub(crate) addr: GuestPhysAddr,

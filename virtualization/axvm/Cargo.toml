@@ -28,6 +28,7 @@ spin = { workspace = true }
 thiserror = { workspace = true }
 
 # System independent crates provided by ArceOS.
+ax-cpu-local = { workspace = true }
 ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
 ax-kspin.workspace = true
@@ -46,7 +47,6 @@ ax-std = { workspace = true, features = [
     "wake-ipi",
 ] }
 ax-hal = { workspace = true, features = ["ipi"] }
-ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
@@ -58,11 +58,17 @@ axvmconfig = { workspace = true, default-features = false }
 fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
 hashbrown = "0.14"
+
+[dev-dependencies]
+ax-cpu-local = { workspace = true, features = ["host-test"] }
+ax-percpu = { workspace = true, features = ["sp-naive"] }
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv-h = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]

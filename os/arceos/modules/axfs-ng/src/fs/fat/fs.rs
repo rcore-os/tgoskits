@@ -9,7 +9,7 @@ use slab::Slab;
 use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{IrqMutex as Mutex, IrqMutexGuard as MutexGuard},
+    os::sync::{PiMutex, PiMutexGuard, SpinMutex},
 };
 
 pub struct FatFilesystemInner {
@@ -29,8 +29,8 @@ impl FatFilesystemInner {
 }
 
 pub struct FatFilesystem {
-    inner: Mutex<FatFilesystemInner>,
-    root_dir: Mutex<Option<DirEntry>>,
+    inner: PiMutex<FatFilesystemInner>,
+    root_dir: SpinMutex<Option<DirEntry>>,
 }
 
 impl FatFilesystem {
@@ -44,8 +44,8 @@ impl FatFilesystem {
         };
         let root_inode = inner.alloc_inode();
         let result = Arc::new(Self {
-            inner: Mutex::new(inner),
-            root_dir: Mutex::default(),
+            inner: PiMutex::new(inner),
+            root_dir: SpinMutex::new(None),
         });
 
         let root_dir = DirEntry::new_dir(
@@ -67,12 +67,10 @@ impl FatFilesystem {
 impl FatFilesystem {
     /// Locks the shared FAT state.
     ///
-    /// FAT operations may perform block I/O while this guard is held. The
-    /// current rootfs setup can also run in early atomic contexts where a
-    /// blocking mutex trips `might_sleep()`, so use an IRQ-safe mutex instead
-    /// of a sleepable lock to close same-CPU IRQ reentry without changing the
-    /// boot-time calling contract.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
+    /// FAT operations may perform block I/O while this guard is held, so
+    /// contention must park the current task without disabling IRQs. Runtime
+    /// filesystem initialization happens after the bootstrap task is installed.
+    pub(crate) fn lock(&self) -> PiMutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()
     }
 }

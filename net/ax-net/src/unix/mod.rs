@@ -27,7 +27,7 @@ use core::task::Context;
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
@@ -112,13 +112,13 @@ impl Pollable for Transport {
 #[derive(Default)]
 pub struct BindSlot {
     /// Stream listener bound at this address.
-    stream: Mutex<Option<stream::Bind>>,
+    stream: SpinMutex<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
-    dgram: Mutex<Option<dgram::Bind>>,
+    dgram: SpinMutex<Option<dgram::Bind>>,
 }
 
-static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static ABSTRACT_BINDS: LazyLock<SpinMutex<HashMap<Arc<[u8]>, BindSlot>>> =
+    LazyLock::new(|| SpinMutex::new(HashMap::new()));
 
 /// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(
@@ -164,17 +164,17 @@ pub struct UnixSocket {
     /// Concrete stream or datagram transport.
     transport: Transport,
     /// Public local Unix address.
-    local_addr: Mutex<UnixSocketAddr>,
+    local_addr: SpinMutex<UnixSocketAddr>,
     /// Public remote Unix address.
-    remote_addr: Mutex<UnixSocketAddr>,
+    remote_addr: SpinMutex<UnixSocketAddr>,
 }
 impl UnixSocket {
     /// Create a new Unix socket with the given transport.
     pub fn new(transport: impl Into<Transport>) -> Self {
         Self {
             transport: transport.into(),
-            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
-            remote_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            local_addr: SpinMutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: SpinMutex::new(UnixSocketAddr::Unnamed),
         }
     }
 }
@@ -230,8 +230,8 @@ impl SocketOps for UnixSocket {
             })?;
         Ok(Self {
             transport,
-            local_addr: Mutex::new(self.local_addr.lock().clone()),
-            remote_addr: Mutex::new(peer_addr),
+            local_addr: SpinMutex::new(self.local_addr.lock().clone()),
+            remote_addr: SpinMutex::new(peer_addr),
         }
         .into())
     }

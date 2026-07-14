@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use ax_ipi::run_on_cpu;
+use ax_ipi::{CpuId, run_on_cpu};
 use ax_kspin::{PreemptIrqGuard, SpinNoIrq};
 use ax_runtime::hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 
@@ -74,7 +74,8 @@ where
         }
 
         let state = state.clone();
-        run_on_cpu(cpu_id, move || park_remote_cpu(state));
+        run_on_cpu(CpuId(cpu_id), move || park_remote_cpu(state))
+            .unwrap_or_else(|error| panic!("stop_machine: failed to park CPU {cpu_id}: {error:?}"));
     }
 
     const MAX_WAIT_NS: u64 = 5_000_000_000; // 5 seconds

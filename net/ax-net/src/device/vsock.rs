@@ -23,7 +23,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use rdif_vsock::{Interface, VsockAddr, VsockConnId, VsockError, VsockEvent};
 
 use crate::vsock::connection_manager::VSOCK_CONN_MANAGER;
@@ -32,8 +32,8 @@ pub type VsockDevice = alloc::boxed::Box<dyn Interface>;
 pub type VsockDeviceList = alloc::vec::Vec<VsockDevice>;
 
 // we need a global and static only one vsock device
-static VSOCK_DEVICE: Mutex<Option<VsockDevice>> = Mutex::new(None);
-static PENDING_EVENTS: Mutex<VecDeque<VsockEvent>> = Mutex::new(VecDeque::new());
+static VSOCK_DEVICE: SpinMutex<Option<VsockDevice>> = SpinMutex::new(None);
+static PENDING_EVENTS: SpinMutex<VecDeque<VsockEvent>> = SpinMutex::new(VecDeque::new());
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
 
@@ -48,7 +48,7 @@ pub fn register_vsock_device(dev: VsockDevice) -> AxResult {
     Ok(())
 }
 
-static POLL_REF_COUNT: Mutex<usize> = Mutex::new(0);
+static POLL_REF_COUNT: SpinMutex<usize> = SpinMutex::new(0);
 static POLL_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
 static POLL_FREQUENCY: PollFrequencyController = PollFrequencyController::new();
 

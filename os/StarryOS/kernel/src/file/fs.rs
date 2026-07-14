@@ -7,9 +7,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, FsContext};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
 use ax_io::{Seek, SeekFrom};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
@@ -26,7 +26,8 @@ use crate::{
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let mut fs = fs_context.lock();
     if dirfd == AT_FDCWD {
         f(&mut fs)
     } else {
@@ -287,7 +288,7 @@ impl Pollable for File {
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
-    pub offset: Mutex<u64>,
+    pub offset: PiMutex<u64>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
@@ -298,7 +299,7 @@ impl Directory {
     pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            offset: PiMutex::new(0),
             open_flags,
         }
     }

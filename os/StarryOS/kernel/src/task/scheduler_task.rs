@@ -290,6 +290,7 @@ where
 }
 
 /// Creates a Starry user thread with inherited Linux scheduling state.
+#[cfg(not(target_arch = "riscv64"))]
 pub fn spawn_starry_user_thread_with_policy<F>(
     entry: F,
     name: String,
@@ -309,34 +310,6 @@ where
         stack_size,
         thread,
         StarryContextState::user_with_policy(address_space, policy, reset_on_fork),
-    )
-}
-
-/// Creates a RISC-V Starry user thread with an inherited FP snapshot.
-#[cfg(target_arch = "riscv64")]
-pub fn spawn_starry_user_thread_with_fp_state<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-    page_table_root: usize,
-    fp_state: ax_cpu::FpState,
-    thread: Box<Thread>,
-) -> Result<StarryTaskRef, scheduler::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let address_space = scheduler::TaskAddressSpace::from_page_table_root(page_table_root)?;
-    spawn_starry_thread_inner(
-        entry,
-        name,
-        stack_size,
-        thread,
-        StarryContextState {
-            address_space: Some(address_space),
-            fp_state: Some(fp_state),
-            policy: scheduler::SchedulePolicy::default(),
-            reset_on_fork: false,
-        },
     )
 }
 
@@ -389,6 +362,7 @@ impl StarryContextState {
         }
     }
 
+    #[cfg(not(target_arch = "riscv64"))]
     fn user_with_policy(
         address_space: scheduler::TaskAddressSpace,
         policy: scheduler::SchedulePolicy,

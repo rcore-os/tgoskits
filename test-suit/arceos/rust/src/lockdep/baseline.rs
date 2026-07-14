@@ -101,11 +101,13 @@ fn mutex_two_task_abba() {
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
@@ -135,17 +137,21 @@ fn spin_two_task_abba() {
     let thread_stage = stage.clone();
 
     let handle = thread::spawn(move || {
-        let _guard_a = thread_lock_a.lock();
-        let _guard_b = thread_lock_b.lock();
+        {
+            let _guard_a = thread_lock_a.lock();
+            let _guard_b = thread_lock_b.lock();
+        }
         thread_stage.store(1, Ordering::Release);
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
@@ -155,7 +161,9 @@ fn mixed_single_task_abba() {
 
     {
         let _guard_a = lock_a.lock();
-        let _guard_b = lock_b.lock();
+        let _guard_b = lock_b
+            .try_lock()
+            .expect("uncontended mutex try_lock unexpectedly failed");
     }
 
     let _guard_b = lock_b.lock();
@@ -177,17 +185,21 @@ fn mixed_two_task_abba() {
     let handle = thread::spawn(move || {
         {
             let _guard_a = thread_lock_a.lock();
-            let _guard_b = thread_lock_b.lock();
+            let _guard_b = thread_lock_b
+                .try_lock()
+                .expect("uncontended mutex try_lock unexpectedly failed");
         }
         thread_stage.store(1, Ordering::Release);
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
@@ -225,11 +237,13 @@ fn mixed_ms_two_task_abba() {
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 

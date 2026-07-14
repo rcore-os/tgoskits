@@ -13,7 +13,10 @@ use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
 
 use crate::{
     common::PlatOp,
-    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId, IrqSource, X86_LAPIC_DOMAIN},
+    irq::{
+        CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqDomainId, IrqError, IrqId,
+        IrqSource, X86_LAPIC_DOMAIN,
+    },
 };
 
 mod lapic;
@@ -431,35 +434,52 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(
+        irq: IrqId,
+        target: CpuIpiTarget,
+        current_cpu: irq_framework::CpuId,
+    ) -> IpiSendStatus {
         let Ok(vector) = lapic::ipi_vector(irq) else {
-            warn!("refuse to send non-runtime IPI IRQ {irq:?}");
-            return;
+            return IpiSendStatus::Invalid;
         };
 
         let result = match target {
-            crate::irq::IpiTarget::Current { .. } => lapic::send_ipi(
-                0,
-                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_SELF | u32::from(vector),
-            ),
-            crate::irq::IpiTarget::Other { cpu_id } => {
-                let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-                    warn!("failed to resolve CPU index {cpu_id} to APIC ID");
-                    return;
-                };
-                lapic::send_ipi_to_apic_id(
-                    apic_id as u32,
-                    lapic::ICR_FIXED_BASE | u32::from(vector),
+            CpuIpiTarget::Current { cpu } => {
+                if current_cpu != cpu || crate::cpu::runtime_cpu_target(cpu).is_none() {
+                    return IpiSendStatus::Invalid;
+                }
+                lapic::send_ipi(
+                    0,
+                    lapic::ICR_FIXED_BASE | lapic::ICR_DEST_SELF | u32::from(vector),
                 )
             }
-            crate::irq::IpiTarget::AllExceptCurrent { .. } => lapic::send_ipi(
-                0,
-                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_ALL_EXCLUDING_SELF | u32::from(vector),
-            ),
+            CpuIpiTarget::Other { cpu } => {
+                let Some(apic_id) = crate::cpu::runtime_cpu_target(cpu) else {
+                    return IpiSendStatus::Invalid;
+                };
+                let Ok(apic_id) = u32::try_from(apic_id.as_usize()) else {
+                    return IpiSendStatus::Invalid;
+                };
+                lapic::send_ipi_to_apic_id(apic_id, lapic::ICR_FIXED_BASE | u32::from(vector))
+            }
+            CpuIpiTarget::AllExceptCurrent { current, cpu_count } => {
+                if cpu_count != someboot::smp::runtime_cpu_count()
+                    || current_cpu != current
+                    || crate::cpu::runtime_cpu_target(current).is_none()
+                {
+                    return IpiSendStatus::Invalid;
+                }
+                lapic::send_ipi(
+                    0,
+                    lapic::ICR_FIXED_BASE | lapic::ICR_DEST_ALL_EXCLUDING_SELF | u32::from(vector),
+                )
+            }
         };
 
-        if let Err(err) = result {
-            warn!("failed to send runtime IPI vector {vector:#x}: {err:?}");
+        match result {
+            Ok(()) => IpiSendStatus::Success,
+            Err(IrqError::Timeout | IrqError::Busy | IrqError::Controller) => IpiSendStatus::Retry,
+            Err(_) => IpiSendStatus::Invalid,
         }
     }
 
@@ -512,10 +532,8 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
-
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        Self::send_ipi(lapic_ipi_irq_id(), crate::irq::IpiTarget::Other { cpu_id });
+    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) -> Result<(), IrqError> {
+        Ok(())
     }
 }
 

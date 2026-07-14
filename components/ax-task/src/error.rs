@@ -20,6 +20,9 @@ pub enum TaskError {
         /// CPU attempting the operation.
         actual: u32,
     },
+    /// The calling CPU's scheduler object already has an active owner borrow.
+    #[error("CPU-local scheduler owner is already borrowed")]
+    CpuOwnerBorrowed,
     /// The CPU is already registered or online.
     #[error("CPU {0} is already online")]
     CpuAlreadyOnline(u32),

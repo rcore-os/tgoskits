@@ -1,6 +1,12 @@
-use core::{arch::naked_asm, fmt};
+use core::{
+    arch::naked_asm,
+    fmt,
+    mem::{align_of, offset_of, size_of},
+};
 
 use ax_memory_addr::VirtAddr;
+
+use crate::KernelTlsBase;
 
 /// Saved registers when a trap (interrupt or exception) occurs.
 #[allow(missing_docs)]
@@ -36,6 +42,15 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// Returns the privilege domain represented by this register image.
+    pub const fn origin(&self) -> crate::TrapOrigin {
+        if self.cs & 0b11 == 0 {
+            crate::TrapOrigin::Kernel
+        } else {
+            crate::TrapOrigin::User
+        }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.rdi as _
@@ -334,21 +349,29 @@ impl fmt::Debug for ExtendedState {
 ///
 /// [`rsp`]: TaskContext::rsp
 /// [`kstack_top`]: TaskContext::kstack_top
+#[repr(C)]
 #[derive(Debug)]
 pub struct TaskContext {
     /// The kernel stack top of the task.
-    pub kstack_top: VirtAddr,
+    kstack_top: VirtAddr,
     /// `RSP` after all callee-saved registers are pushed.
-    pub rsp: u64,
-    /// Thread pointer (FS segment base address)
-    pub fs_base: usize,
+    rsp: u64,
+    /// Kernel task-local storage base held in the FS segment base.
+    kernel_tls: KernelTlsBase,
     /// Extended states, i.e., FP/SIMD states.
     #[cfg(feature = "fp-simd")]
-    pub ext_state: ExtendedState,
-    /// The `CR3` register value, i.e., the page table root.
-    #[cfg(feature = "uspace")]
-    pub cr3: ax_memory_addr::PhysAddr,
+    ext_state: ExtendedState,
 }
+
+// The naked switch loads these fields with machine-word instructions. Keep the
+// representation and adjacency assumptions executable as compile-time checks.
+const _: () = {
+    assert!(size_of::<KernelTlsBase>() == size_of::<usize>());
+    assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
+    assert!(offset_of!(TaskContext, kstack_top) == 0);
+    assert!(offset_of!(TaskContext, rsp) == size_of::<VirtAddr>());
+    assert!(offset_of!(TaskContext, kernel_tls) == offset_of!(TaskContext, rsp) + size_of::<u64>());
+};
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
@@ -362,9 +385,7 @@ impl TaskContext {
         Self {
             kstack_top: va!(0),
             rsp: 0,
-            fs_base: 0,
-            #[cfg(feature = "uspace")]
-            cr3: crate::asm::read_kernel_page_table(),
+            kernel_tls: KernelTlsBase::new(0),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
         }
@@ -372,7 +393,7 @@ impl TaskContext {
 
     /// Initializes the context for a new task, with the given entry point and
     /// kernel stack.
-    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
+    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         unsafe {
             // x86_64 calling convention: the stack must be 16-byte aligned before
             // calling a function. That means when entering a new task (`ret` in `context_switch`
@@ -389,16 +410,7 @@ impl TaskContext {
             self.rsp = frame_ptr as u64;
         }
         self.kstack_top = kstack_top;
-        self.fs_base = tls_area.as_usize();
-    }
-
-    /// Changes the page table root in this context.
-    ///
-    /// The hardware register for page table root (`CR3` for x86) will be
-    /// updated to the next task's after [`Self::switch_to`].
-    #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, cr3: ax_memory_addr::PhysAddr) {
-        self.cr3 = cr3;
+        self.kernel_tls = kernel_tls;
     }
 
     /// Switches to another task.
@@ -411,24 +423,12 @@ impl TaskContext {
             self.ext_state.save();
             next_ctx.ext_state.restore();
         }
-        #[cfg(feature = "tls")]
-        unsafe {
-            self.fs_base = crate::asm::read_thread_pointer();
-            crate::asm::write_thread_pointer(next_ctx.fs_base);
-        }
-        #[cfg(feature = "uspace")]
-        unsafe {
-            if next_ctx.cr3 != self.cr3 {
-                crate::asm::write_user_page_table(next_ctx.cr3);
-                // writing to CR3 has flushed the TLB
-            }
-        }
-        unsafe { context_switch(&mut self.rsp, &next_ctx.rsp) }
+        unsafe { context_switch(self, next_ctx) }
     }
 }
 
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64) {
+unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         "
         .code64
@@ -438,9 +438,21 @@ unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64)
         push    r13
         push    r14
         push    r15
-        mov     [rdi], rsp
+        mov     [rdi + {rsp_offset}], rsp
 
-        mov     rsp, [rsi]
+        // Save and restore task TLS only after all Rust helpers have finished.
+        mov     ecx, {fs_base_msr}
+        rdmsr
+        shl     rdx, 32
+        or      rax, rdx
+        mov     [rdi + {kernel_tls_offset}], rax
+        mov     rax, [rsi + {kernel_tls_offset}]
+        mov     rdx, rax
+        shr     rdx, 32
+        mov     ecx, {fs_base_msr}
+        wrmsr
+
+        mov     rsp, [rsi + {rsp_offset}]
         pop     r15
         pop     r14
         pop     r13
@@ -448,5 +460,8 @@ unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64)
         pop     rbx
         pop     rbp
         ret",
+        rsp_offset = const offset_of!(TaskContext, rsp),
+        kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
+        fs_base_msr = const 0xc000_0100_u32,
     )
 }

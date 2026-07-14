@@ -1,21 +1,22 @@
 //! Structures and functions for user space.
 
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem::{offset_of, size_of},
+    ops::{Deref, DerefMut},
+};
 
 use ax_memory_addr::VirtAddr;
 use x86_64::{
     registers::{
         control::Cr2,
-        model_specific::{Efer, EferFlags, KernelGsBase, LStar, SFMask, Star},
+        model_specific::{Efer, EferFlags, LStar, SFMask, Star},
         rflags::RFlags,
     },
     structures::idt::ExceptionVector,
 };
 
 use super::{
-    TrapFrame,
-    asm::{read_thread_pointer, write_thread_pointer},
-    gdt,
+    TrapFrame, gdt,
     trap::{IRQ_VECTOR_END, IRQ_VECTOR_START, LEGACY_SYSCALL_VECTOR, err_code_to_flags},
 };
 pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
@@ -29,7 +30,18 @@ pub struct UserContext {
     pub fs_base: u64,
     /// GS Segment Base
     pub gs_base: u64,
+    /// Kernel FS base saved and restored exclusively by `enter_user`.
+    kernel_fs_base: u64,
 }
+
+const _: () = {
+    assert!(offset_of!(UserContext, tf) == 0);
+    assert!(offset_of!(UserContext, fs_base) == size_of::<TrapFrame>());
+    assert!(offset_of!(UserContext, gs_base) == size_of::<TrapFrame>() + size_of::<u64>());
+    assert!(
+        offset_of!(UserContext, kernel_fs_base) == size_of::<TrapFrame>() + 2 * size_of::<u64>()
+    );
+};
 
 impl UserContext {
     /// Creates a new context with the given entry point, user stack pointer,
@@ -48,6 +60,7 @@ impl UserContext {
             },
             fs_base: 0,
             gs_base: 0,
+            kernel_fs_base: 0,
         }
     }
 
@@ -101,15 +114,7 @@ impl UserContext {
 
         crate::asm::disable_irqs();
 
-        let kernel_fs_base = read_thread_pointer();
-        unsafe { write_thread_pointer(self.fs_base as _) };
-        KernelGsBase::write(x86_64::VirtAddr::new_truncate(self.gs_base));
-
         unsafe { enter_user(self) };
-
-        self.gs_base = KernelGsBase::read().as_u64();
-        self.fs_base = read_thread_pointer() as _;
-        unsafe { write_thread_pointer(kernel_fs_base) };
 
         let vector = self.vector as u8;
 

@@ -6,9 +6,10 @@ use core::{
     cell::UnsafeCell,
     pin::Pin,
     ptr::{self, NonNull},
-    sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering},
 };
 
+use ax_cpu_local::CpuPin;
 use ax_kspin::{IrqGuard, SpinNoIrq};
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
@@ -17,17 +18,18 @@ pub use ax_task::{
     ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState, ThreadWakeHandle,
     WaitQueue, WakeResult, current_cpu_needs_resched, current_thread_extension,
     current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
-    runtime::SchedSwitchRecord, schedule_current_cpu, set_thread_affinity, set_thread_policy,
-    sleep, sleep_until, thread_affinity, thread_handle, thread_policy,
-    thread_round_robin_interval_ns, thread_runtime, yield_current_cpu,
+    runtime::SchedSwitchRecord, schedule_current_cpu, set_current_thread_affinity,
+    set_thread_affinity, set_thread_policy, sleep, sleep_until, thread_affinity, thread_handle,
+    thread_policy, thread_round_robin_interval_ns, thread_runtime, yield_current_cpu,
 };
 use ax_task::{
-    CpuLocal, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
-    impl_trait as impl_task_runtime,
+    CpuLocal, CpuLocalOwnerBorrow, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources,
+    ThreadSpec, impl_trait as impl_task_runtime,
     runtime::{
-        AddressSpaceHandle, CpuLocalHandle, ExecutionContextHandle, IrqGuardToken,
-        KernelContextRequest, RuntimeCpuId, RuntimeHandleResult, RuntimeStatus, StackHandle,
-        StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle, TlsRequest, UserContextRequest,
+        AddressSpaceHandle, CpuRemoteHandle, CurrentCpuLocalHandle, ExecutionContextHandle,
+        IrqGuardToken, KernelContextRequest, RuntimeCpuId, RuntimeHandleResult, RuntimeStatus,
+        StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle, TlsRequest,
+        UserContextRequest,
     },
 };
 
@@ -39,6 +41,14 @@ static SCHED_SWITCH_TRACE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_m
 
 #[ax_percpu::def_percpu]
 static CPU_LOCAL: LazyInit<Pin<Box<CpuLocal>>> = LazyInit::new();
+
+/// Owner-capability address published once before this CPU becomes online.
+///
+/// The pointer originates from the unique pinned allocation, rather than a
+/// shared `CpuLocal` borrow, so the scheduler may later reconstruct a mutable
+/// owner borrow while no shared query is live.
+#[ax_percpu::def_percpu]
+static CPU_LOCAL_OWNER_HANDLE: usize = 0;
 
 #[ax_percpu::def_percpu]
 static CURRENT_RUNTIME_STACK: usize = 0;
@@ -78,7 +88,10 @@ impl TaskAddressSpace {
         if root == 0 {
             Err(TaskError::InvalidRuntimeHandle)
         } else {
-            Ok(Self(AddressSpaceHandle::from_raw(root)))
+            // SAFETY: the non-zero root is the runtime's address-space token;
+            // the OS that creates this wrapper owns the corresponding page
+            // tables for every scheduler record that retains the token.
+            Ok(Self(unsafe { AddressSpaceHandle::from_raw(root) }))
         }
     }
 }
@@ -152,29 +165,20 @@ pub fn switch_current_page_table(root: usize) -> Result<(), TaskError> {
     #[cfg(feature = "uspace")]
     {
         let _irq = IrqGuard::new();
-        // SAFETY: the current CPU publishes this pointer before switching into
-        // the context; only that running context mutates its saved root.
-        let context = ptr::with_exposed_provenance_mut::<RuntimeContext>(unsafe {
-            CURRENT_RUNTIME_CONTEXT.read_current_raw()
-        });
-        if context.is_null() {
-            return Err(TaskError::NotInitialized);
-        }
         let root = ax_memory_addr::PhysAddr::from(root);
-        let address_space = AddressSpaceHandle::from_raw(root.as_usize());
-        // Keep the scheduler endpoint, saved architecture context and hardware
-        // root coherent across exec. The nested facade guard returns before
-        // this outer guard, so no IRQ-return safe point can observe a partial
-        // replacement.
+        // SAFETY: the exec caller transfers a live process page-table root;
+        // the scheduler retains only its opaque identity while the process MM
+        // remains the allocation owner.
+        let address_space = unsafe { AddressSpaceHandle::from_raw(root.as_usize()) };
+        // Keep the scheduler endpoint and hardware root coherent across exec.
+        // TaskContext deliberately owns no address-space register state.
         let _old_address_space = ax_task::replace_current_address_space(address_space)?;
-        // SAFETY: the pointer identifies the calling context, which has unique
-        // execution ownership until the next scheduler switch.
-        unsafe { (*(*context).inner.get()).set_page_table_root(root) };
-        // SAFETY: Starry installed the matching address-space object before
-        // committing exec, and this call runs on its current CPU.
-        unsafe { ax_hal::asm::write_user_page_table(root) };
-        ax_hal::asm::flush_tlb(None);
-        Ok(())
+        let status = install_runtime_address_space(address_space);
+        if status == RuntimeStatus::Success {
+            Ok(())
+        } else {
+            Err(runtime_status_error(status))
+        }
     }
     #[cfg(not(feature = "uspace"))]
     {
@@ -204,7 +208,6 @@ enum StackBacking {
 struct RuntimeContext {
     inner: UnsafeCell<ax_hal::context::TaskContext>,
     stack: StackHandle,
-    preempt_depth: u32,
 }
 
 struct InitialContextState {
@@ -241,6 +244,7 @@ type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
 struct RuntimeThreadData {
     entry: SpinNoIrq<Option<KernelThreadEntry>>,
     exit_code: AtomicI32,
+    exit_completed: AtomicBool,
     join_wait: WaitQueue,
     os_extension: Option<ThreadExtension>,
     _name: String,
@@ -291,6 +295,7 @@ impl RuntimeThreadData {
         Self {
             entry: SpinNoIrq::new(Some(entry)),
             exit_code: AtomicI32::new(0),
+            exit_completed: AtomicBool::new(false),
             join_wait: WaitQueue::new(),
             os_extension,
             _name: name,
@@ -333,7 +338,20 @@ unsafe extern "Rust" fn runtime_thread_exit_hook(data: usize, thread: ThreadId) 
         // SAFETY: the TaskSystem invokes this in task context after committing exit.
         unsafe { (extension.ops().on_exit)(extension.data(), thread) };
     }
-    runtime.join_wait.notify_all(false);
+    // Runtime threads normally publish completion before their final schedule,
+    // Linux-zombie style. Keep this idempotent fallback for externally marked
+    // exits and failed-spawn cleanup paths that never ran the trampoline.
+    publish_runtime_exit_completion(runtime);
+}
+
+fn publish_runtime_exit_completion(runtime: &RuntimeThreadData) {
+    if runtime
+        .exit_completed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        runtime.join_wait.notify_all();
+    }
 }
 
 unsafe extern "Rust" fn runtime_thread_deadline_overrun_hook(data: usize, thread: ThreadId) {
@@ -386,7 +404,9 @@ pub(crate) fn initialize_early_bootstrap_tls() -> Result<(), TaskError> {
         // Publishing the owner before the hardware pointer keeps an early
         // failure from losing the allocation's destruction right.
         EARLY_BOOTSTRAP_TLS.write_current_raw(result.handle);
-        ax_hal::asm::write_thread_pointer(runtime_tls_pointer(TlsHandle::from_raw(result.handle)));
+        ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
+            runtime_tls_pointer(TlsHandle::from_raw(result.handle)),
+        ));
     }
     Ok(())
 }
@@ -406,7 +426,27 @@ pub(crate) fn publish_current_cpu_online() -> Result<(), TaskError> {
 
 /// Runs the owner CPU's scheduler/idle handshake forever.
 pub(crate) fn run_idle() -> ! {
+    let guard = IrqGuard::new();
+    let (current, idle) = current_cpu_remote(guard.cpu_pin())
+        .map(|cpu| (cpu.current_thread(), cpu.idle_thread()))
+        .unwrap_or((None, None));
+    drop(guard);
+    let entry_action = idle_entry_action(current, idle)
+        .unwrap_or_else(|error| panic!("idle loop entered without scheduler ownership: {error}"));
+    if entry_action == IdleEntryAction::RetireBootstrap {
+        match ax_task::exit_current_thread() {
+            Err(error) => panic!("failed to retire secondary bootstrap thread: {error}"),
+            Ok(()) => panic!("retired secondary bootstrap thread unexpectedly resumed"),
+        }
+    }
     loop {
+        #[cfg(feature = "ipi")]
+        {
+            ax_ipi::service_callback_ipi_retries(64);
+        }
+        // A persistently busy callback-IPI transport must not keep the idle
+        // owner away from its scheduler. Remote task wakes have their own
+        // persistent doorbell and may already have made local work runnable.
         ax_task::schedule_current_cpu()
             .unwrap_or_else(|error| panic!("idle scheduler safe point failed: {error}"));
         ax_task::idle_current_cpu_once()
@@ -414,13 +454,30 @@ pub(crate) fn run_idle() -> ! {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdleEntryAction {
+    RetireBootstrap,
+    RunIdle,
+}
+
+fn idle_entry_action(
+    current: Option<ThreadId>,
+    idle: Option<ThreadId>,
+) -> Result<IdleEntryAction, TaskError> {
+    match (current, idle) {
+        (Some(current), Some(idle)) if current == idle => Ok(IdleEntryAction::RunIdle),
+        (Some(_), Some(_)) => Ok(IdleEntryAction::RetireBootstrap),
+        _ => Err(TaskError::InvalidConfiguration),
+    }
+}
+
 /// Stores the exit code, marks the current thread exited, and switches away.
 pub fn exit_current(exit_code: i32) -> ! {
-    set_current_runtime_exit_code(exit_code);
-    match ax_task::exit_current_thread() {
-        Err(error) => panic!("failed to exit current scheduler thread: {error}"),
-        Ok(()) => panic!("exited scheduler context unexpectedly returned"),
-    }
+    let exit_permit = ax_task::prepare_current_exit()
+        .unwrap_or_else(|error| panic!("failed to prepare scheduler thread exit: {error}"));
+    publish_current_runtime_exit(exit_code)
+        .unwrap_or_else(|error| panic!("failed to publish thread exit: {error}"));
+    ax_task::commit_current_exit(exit_permit)
 }
 
 /// Returns the aggregate number of scheduler timer interrupts since boot.
@@ -687,20 +744,21 @@ where
     }
     let handle = system.create_thread(spec)?;
 
-    let guard = IrqGuard::new();
-    let Some(mut cpu) = current_cpu_local_mut_owner() else {
-        drop(guard);
-        cleanup_failed_thread(system, handle);
-        return Err(TaskError::NotInitialized);
+    let mut cpu = match current_cpu_local_mut_owner() {
+        Ok(cpu) => cpu,
+        Err(error) => {
+            cleanup_failed_thread(system, handle);
+            return Err(error);
+        }
     };
     let result = system.make_ready(handle.id()).and_then(|()| {
         system.place_ready(
-            cpu.as_mut(),
+            cpu.as_pin_mut(),
             handle.id(),
             ax_hal::time::monotonic_time_nanos(),
         )
     });
-    drop(guard);
+    drop(cpu);
     if let Err(error) = result {
         cleanup_failed_thread(system, handle);
         return Err(error);
@@ -755,39 +813,46 @@ pub fn current_os_extension() -> Result<Option<ThreadOsExtensionLease>, TaskErro
         }))
 }
 
-/// Waits for a thread to exit without consuming its owning handle.
+/// Waits for a thread to finish executing without consuming its owning handle.
 ///
 /// This split wait operation lets handle registries keep their raw-pointer or
-/// map entry valid while the target still runs. After it succeeds, the caller
-/// must remove that registry entry and pass its original handle to
-/// [`join_thread`] so the scheduler can reap the thread resources.
+/// map entry valid while the target still runs. Completion is published by the
+/// exiting thread after its entry function and exit code are final, before the
+/// non-returning scheduler exit. Physical off-CPU completion and final resource
+/// reclamation are separate phases.
 pub fn wait_thread(handle: &ThreadHandle) -> Result<i32, TaskError> {
     if current_thread_id()? == handle.id() {
         return Err(TaskError::InvalidConfiguration);
     }
     let data = runtime_thread_data(handle)?;
     data.join_wait
-        .try_wait_until(|| handle.state() == ThreadState::Exited)?;
+        .try_wait_until(|| data.exit_completed.load(Ordering::Acquire))?;
     Ok(data.exit_code.load(Ordering::Acquire))
 }
 
-/// Waits for an exited thread, returns its exit code, and reaps its resources.
+/// Waits for an exited thread and returns its exit code.
+///
+/// Resource teardown is attempted synchronously once. A late IRQ wake or other
+/// stable header reference may legitimately defer final reclamation, so join
+/// releases its owning handle to the bounded task-system reaper instead of
+/// spinning until unrelated references disappear.
 pub fn join_thread(handle: ThreadHandle) -> Result<i32, TaskError> {
     let exit_code = wait_thread(&handle)?;
-    let mut handle = handle;
-    loop {
-        match task_system()
-            .ok_or(TaskError::NotInitialized)?
-            .reap_thread_handle(handle)
-        {
-            Ok(()) => break,
-            Err(error) if error.task_error() == TaskError::ThreadBusy => {
-                handle = error
-                    .into_retry_handle()
-                    .expect("busy owned reap must return its handle");
-                let _decision = ax_task::yield_current_cpu()?;
+    match task_system()
+        .ok_or(TaskError::NotInitialized)?
+        .reap_thread_handle(handle)
+    {
+        Ok(()) => {}
+        Err(error) => {
+            let task_error = error.task_error();
+            if !matches!(task_error, TaskError::ThreadBusy | TaskError::NotExited) {
+                return Err(task_error);
             }
-            Err(error) => return Err(error.task_error()),
+            drop(
+                error
+                    .into_retry_handle()
+                    .expect("busy owned reap must return its handle"),
+            );
         }
     }
     Ok(exit_code)
@@ -834,7 +899,9 @@ pub(crate) fn on_timer_irq(scheduler_tick: bool) {
                 || outcome.deadline_overrun()
                 || outcome.expired() != 0
                 || outcome.pending())
-                && let Some(cpu) = current_cpu_local()
+                // SAFETY: hard IRQ execution cannot migrate until this handler
+                // returns, and the platform CPU-local binding is already live.
+                && let Some(cpu) = unsafe { current_cpu_remote_unchecked() }
             {
                 cpu.request_reschedule();
             }
@@ -844,12 +911,15 @@ pub(crate) fn on_timer_irq(scheduler_tick: bool) {
     }
 }
 
-/// Acknowledges a coalesced scheduler IPI and publishes a sticky safe-point request.
+/// Observes a published scheduler reason delivered by this or any coalesced IPI.
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) fn on_scheduler_ipi() {
-    if let Some(cpu) = current_cpu_local().filter(|cpu| cpu.is_online()) {
+    // SAFETY: scheduler IPI handling is a hard-IRQ scope and therefore cannot
+    // migrate during the complete CPU-ID/endpoint lookup.
+    if let Some(cpu) = unsafe { current_cpu_remote_unchecked() }
+        .filter(|cpu| cpu.is_online() && cpu.needs_reschedule())
+    {
         cpu.request_reschedule();
-        cpu.acknowledge_scheduler_ipi();
     }
 }
 
@@ -898,7 +968,9 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<(), TaskError> {
     unsafe {
         // SAFETY: the installed bootstrap record now retains the matching TLS
         // allocation until its context can no longer execute on this CPU.
-        ax_hal::asm::write_thread_pointer(runtime_tls_pointer(bootstrap_tls));
+        ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
+            runtime_tls_pointer(bootstrap_tls),
+        ));
         let early_tls = TlsHandle::from_raw(EARLY_BOOTSTRAP_TLS.read_current_raw());
         assert!(
             !early_tls.is_none(),
@@ -918,8 +990,15 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<(), TaskError> {
             .with_affinity(owner_affinity)
             .with_resources(idle_resources)
     })?;
-    let slot = current_cpu_slot();
+    // SAFETY: platform entry installed the CPU area and this owner has not yet
+    // published its scheduler object online.
+    let owner_handle =
+        (unsafe { Pin::get_unchecked_mut(cpu.as_mut()) } as *mut CpuLocal).expose_provenance();
+    let slot = unsafe { current_cpu_slot_for_boot() };
     slot.init_once(cpu);
+    // SAFETY: this CPU exclusively initializes its per-CPU runtime state and
+    // remains offline until the pinned owner capability has been published.
+    unsafe { CPU_LOCAL_OWNER_HANDLE.write_current_raw(owner_handle) };
     #[cfg(feature = "irq")]
     {
         let now_ns = ax_hal::time::monotonic_time_nanos();
@@ -953,7 +1032,13 @@ fn create_idle_resources() -> ThreadResources {
         alignment: 1,
     });
     let tls = if tls.status == RuntimeStatus::Success {
-        TlsHandle::from_raw(tls.handle)
+        assert_ne!(
+            tls.handle, 0,
+            "successful idle TLS allocation returned NONE"
+        );
+        // SAFETY: allocate_runtime_tls returned a fresh, non-zero allocation
+        // whose ownership moves into the idle thread resources below.
+        unsafe { TlsHandle::from_raw(tls.handle) }
     } else if tls.status == RuntimeStatus::Unsupported {
         TlsHandle::NONE
     } else {
@@ -990,10 +1075,15 @@ fn create_bootstrap_resources() -> Result<ThreadResources, TaskError> {
         total_size: 0,
         alignment: 1,
     });
-    let tls = match tls_result.status {
-        RuntimeStatus::Success => TlsHandle::from_raw(tls_result.handle),
-        RuntimeStatus::Unsupported => TlsHandle::NONE,
-        status => return Err(runtime_status_error(status)),
+    let tls = match (tls_result.status, tls_result.handle) {
+        (RuntimeStatus::Success, 0) => return Err(TaskError::InvalidRuntimeHandle),
+        (RuntimeStatus::Success, handle) => {
+            // SAFETY: the runtime returned a fresh, non-zero TLS allocation
+            // whose unique ownership is transferred into bootstrap resources.
+            unsafe { TlsHandle::from_raw(handle) }
+        }
+        (RuntimeStatus::Unsupported, _) => TlsHandle::NONE,
+        (status, _) => return Err(runtime_status_error(status)),
     };
     let context = create_bootstrap_context();
     match assemble_bootstrap_resources(context, tls) {
@@ -1094,10 +1184,18 @@ fn create_thread_resources(
         total_size: 0,
         alignment: 1,
     });
-    let tls = match tls_result.status {
-        RuntimeStatus::Success => TlsHandle::from_raw(tls_result.handle),
-        RuntimeStatus::Unsupported => TlsHandle::NONE,
-        status => {
+    let tls = match (tls_result.status, tls_result.handle) {
+        (RuntimeStatus::Success, 0) => {
+            let _ = deallocate_runtime_stack(stack);
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
+        (RuntimeStatus::Success, handle) => {
+            // SAFETY: the runtime returned a fresh, non-zero TLS allocation
+            // whose unique ownership moves into this thread's resources.
+            unsafe { TlsHandle::from_raw(handle) }
+        }
+        (RuntimeStatus::Unsupported, _) => TlsHandle::NONE,
+        (status, _) => {
             let _ = deallocate_runtime_stack(stack);
             return Err(runtime_status_error(status));
         }
@@ -1155,13 +1253,12 @@ fn runtime_thread_data(thread: &ThreadHandle) -> Result<&RuntimeThreadData, Task
     Ok(unsafe { &*ptr::with_exposed_provenance::<RuntimeThreadData>(extension.data()) })
 }
 
-fn set_current_runtime_exit_code(exit_code: i32) {
-    let Ok(thread) = current_thread_handle() else {
-        return;
-    };
-    if let Ok(data) = runtime_thread_data(&thread) {
-        data.exit_code.store(exit_code, Ordering::Release);
-    }
+fn publish_current_runtime_exit(exit_code: i32) -> Result<(), TaskError> {
+    let thread = current_thread_handle()?;
+    let data = runtime_thread_data(&thread)?;
+    data.exit_code.store(exit_code, Ordering::Release);
+    publish_runtime_exit_completion(data);
+    Ok(())
 }
 
 fn cleanup_failed_thread(system: &TaskSystem, handle: ThreadHandle) {
@@ -1190,10 +1287,6 @@ fn task_system() -> Option<&'static TaskSystem> {
     TASK_SYSTEM.get().map(|system| system.as_ref().get_ref())
 }
 
-pub(crate) fn current_cpu_local() -> Option<&'static CpuLocal> {
-    current_cpu_slot().get().map(|cpu| cpu.as_ref().get_ref())
-}
-
 fn current_cpu_local_mut_for_boot() -> Option<Pin<&'static mut CpuLocal>> {
     // SAFETY: this is called exactly once by the owner CPU before it is
     // published online. PerCpuData stores its value in UnsafeCell, and no
@@ -1202,25 +1295,67 @@ fn current_cpu_local_mut_for_boot() -> Option<Pin<&'static mut CpuLocal>> {
     slot.get_mut().map(Pin::as_mut)
 }
 
-fn current_cpu_local_mut_owner() -> Option<Pin<&'static mut CpuLocal>> {
-    // SAFETY: callers hold the runtime IRQ guard on the owner CPU and scheduler
-    // operations are the sole mutable users of owner-only CpuLocal fields.
-    let slot = unsafe { CPU_LOCAL.current_ref_mut_raw() };
-    slot.get_mut().map(Pin::as_mut)
-}
-
-fn current_cpu_slot() -> &'static LazyInit<Pin<Box<CpuLocal>>> {
-    // SAFETY: runtime task entry points run only after the architecture per-CPU
-    // register is installed. The slot remains allocated for the CPU lifetime.
+/// Returns the current CPU's unpublished scheduler slot during bring-up.
+///
+/// # Safety
+///
+/// The architecture CPU-area anchor must be installed, and the calling CPU
+/// must not yet be online or reachable by scheduler/remote-wake paths.
+unsafe fn current_cpu_slot_for_boot() -> &'static LazyInit<Pin<Box<CpuLocal>>> {
+    // SAFETY: forwarded caller contract covers current-area validity and the
+    // shutdown lifetime of the per-CPU allocation.
     unsafe { CPU_LOCAL.current_ref_raw() }
 }
 
-fn cpu_local(cpu: RuntimeCpuId) -> Option<&'static CpuLocal> {
-    let slot = CPU_LOCAL.remote_ptr(cpu.as_u32() as usize);
-    // SAFETY: `cpu_local_handle` is queried only for topology-valid CPUs. Each
-    // per-CPU slot lives until shutdown and LazyInit publishes with Release.
-    unsafe { (&*slot).get().map(|local| local.as_ref().get_ref()) }
-        .filter(|local| local.is_online())
+struct RuntimeCpuOwnerBorrow {
+    cpu: CpuLocalOwnerBorrow<'static>,
+    _guard: IrqGuard,
+}
+
+impl RuntimeCpuOwnerBorrow {
+    fn as_pin_mut(&mut self) -> Pin<&mut CpuLocal> {
+        self.cpu.as_pin_mut()
+    }
+}
+
+fn current_cpu_local_mut_owner() -> Result<RuntimeCpuOwnerBorrow, TaskError> {
+    let guard = IrqGuard::new();
+    let remote = current_cpu_remote(guard.cpu_pin()).ok_or(TaskError::NotInitialized)?;
+    // SAFETY: the guard pins this lookup to one CPU and the owner address was
+    // published from the unique pinned allocation before that CPU came online.
+    let raw = unsafe { CPU_LOCAL_OWNER_HANDLE.read_current_raw() };
+    if raw == 0 {
+        return Err(TaskError::NotInitialized);
+    }
+    // SAFETY: publication pairs this raw owner capability with `remote`; the
+    // separately allocated remote gate rejects every overlapping owner borrow.
+    // The claim is stored before the guard so Rust field-drop order releases
+    // owner access before IRQ migration protection is removed.
+    let cpu = unsafe { remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(raw))? };
+    Ok(RuntimeCpuOwnerBorrow { cpu, _guard: guard })
+}
+
+pub(crate) fn current_cpu_remote(cpu_pin: &CpuPin) -> Option<&'static CpuRemote> {
+    let cpu = u32::try_from(ax_hal::percpu::this_cpu_id_pinned(cpu_pin)).ok()?;
+    task_system()?.cpu_remote(CpuId::new(cpu))
+}
+
+/// Returns the current CPU endpoint when migration is excluded externally.
+///
+/// # Safety
+///
+/// A valid CPU-local binding must be installed, and the caller must guarantee
+/// that execution cannot migrate during this complete lookup. This is intended
+/// only for hard-IRQ/trap paths that cannot hold an ordinary guard token.
+unsafe fn current_cpu_remote_unchecked() -> Option<&'static CpuRemote> {
+    // SAFETY: the caller's no-migration guarantee covers the returned token's
+    // complete use inside `current_cpu_remote`.
+    let cpu_pin = unsafe { CpuPin::new_unchecked() };
+    current_cpu_remote(&cpu_pin)
+}
+
+fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
+    task_system()?.cpu_remote(CpuId::new(cpu.as_u32()))
 }
 
 fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
@@ -1258,9 +1393,9 @@ fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStat
         usable_top,
         backing: StackBacking::Heap { pointer, layout },
     });
-    Ok(StackHandle::from_raw(
-        Box::into_raw(stack).expose_provenance(),
-    ))
+    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
+    // stays live until deallocate_runtime_stack consumes this exact handle.
+    Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
 }
 
 #[cfg(feature = "paging")]
@@ -1308,9 +1443,9 @@ fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
             guard_size: request.guard_size,
         },
     });
-    Ok(StackHandle::from_raw(
-        Box::into_raw(stack).expose_provenance(),
-    ))
+    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
+    // stays live until deallocate_runtime_stack consumes this exact handle.
+    Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
 }
 
 fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
@@ -1422,39 +1557,30 @@ fn create_runtime_context_parts(
     context.init(
         entry as usize,
         ax_memory_addr::VirtAddr::from(stack.usable_top),
-        ax_memory_addr::VirtAddr::from(tls_pointer),
+        ax_hal::context::KernelTlsBase::new(tls_pointer),
     );
-    #[cfg(feature = "uspace")]
-    context.set_page_table_root(ax_memory_addr::PhysAddr::from(resolve_address_space_root(
-        address_space,
-    )));
     #[cfg(not(feature = "uspace"))]
     if !address_space.is_none() {
         return RuntimeHandleResult::failure(RuntimeStatus::Unsupported);
     }
+    #[cfg(feature = "uspace")]
+    let _ = address_space;
     let context = Box::new(RuntimeContext {
         inner: UnsafeCell::new(context),
         stack: stack_handle,
-        preempt_depth: 0,
     });
     RuntimeHandleResult::success(Box::into_raw(context).expose_provenance())
 }
 
 fn create_bootstrap_context() -> ExecutionContextHandle {
-    #[cfg(feature = "uspace")]
-    let mut context = ax_hal::context::TaskContext::new();
-    #[cfg(feature = "uspace")]
-    context.set_page_table_root(ax_memory_addr::PhysAddr::from(resolve_address_space_root(
-        AddressSpaceHandle::NONE,
-    )));
-    #[cfg(not(feature = "uspace"))]
     let context = ax_hal::context::TaskContext::new();
     let context = Box::new(RuntimeContext {
         inner: UnsafeCell::new(context),
         stack: StackHandle::NONE,
-        preempt_depth: 0,
     });
-    ExecutionContextHandle::from_raw(Box::into_raw(context).expose_provenance())
+    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeContext
+    // that stays live until destroy_runtime_context consumes the handle.
+    unsafe { ExecutionContextHandle::from_raw(Box::into_raw(context).expose_provenance()) }
 }
 
 #[cfg(feature = "uspace")]
@@ -1473,17 +1599,37 @@ fn resolve_address_space_root(address_space: AddressSpaceHandle) -> usize {
     }
 }
 
+fn install_runtime_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
+    #[cfg(feature = "uspace")]
+    {
+        let root = ax_memory_addr::PhysAddr::from(resolve_address_space_root(address_space));
+        if ax_hal::asm::read_user_page_table() != root {
+            // SAFETY: both scheduler switch and exec replacement invoke this
+            // with local IRQs disabled after committing the selected address
+            // space to the current scheduler endpoint.
+            unsafe { ax_hal::asm::write_user_page_table(root) };
+            ax_hal::asm::flush_tlb(None);
+        }
+        RuntimeStatus::Success
+    }
+    #[cfg(not(feature = "uspace"))]
+    {
+        if address_space.is_none() {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::Unsupported
+        }
+    }
+}
+
 fn destroy_runtime_context(handle: ExecutionContextHandle) -> RuntimeStatus {
     if handle.is_none() {
         return RuntimeStatus::InvalidHandle;
     }
+    let context = ptr::with_exposed_provenance_mut::<RuntimeContext>(handle.into_raw());
     // SAFETY: the scheduler proves this context cannot run again and consumes
     // its runtime handle exactly once.
-    drop(unsafe {
-        Box::from_raw(ptr::with_exposed_provenance_mut::<RuntimeContext>(
-            handle.into_raw(),
-        ))
-    });
+    drop(unsafe { Box::from_raw(context) });
     RuntimeStatus::Success
 }
 
@@ -1518,23 +1664,35 @@ struct ArceOsTaskRuntime;
 
 impl_task_runtime! {
     impl TaskRuntime for ArceOsTaskRuntime {
-        fn task_system_handle() -> TaskSystemHandle {
+        unsafe fn task_system_handle() -> TaskSystemHandle {
             task_system().map_or(TaskSystemHandle::NONE, |system| {
-                TaskSystemHandle::from_raw(
-                    (system as *const TaskSystem).expose_provenance(),
-                )
+                // SAFETY: TASK_SYSTEM owns this pinned allocation through
+                // shutdown and exposes it only through shared scheduler APIs.
+                unsafe {
+                    TaskSystemHandle::from_raw(
+                        (system as *const TaskSystem).expose_provenance(),
+                    )
+                }
             })
         }
 
-        fn current_cpu_local_handle() -> CpuLocalHandle {
-            current_cpu_local().map_or(CpuLocalHandle::NONE, |cpu| {
-                CpuLocalHandle::from_raw((cpu as *const CpuLocal).expose_provenance())
-            })
+        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+            // SAFETY: the ax-task caller already owns a CPU pin, and the slot
+            // is initialized from the unique pinned CpuLocal allocation before
+            // that CPU becomes visible to scheduler entry paths.
+            let raw = unsafe { CPU_LOCAL_OWNER_HANDLE.read_current_raw() };
+            // SAFETY: zero denotes pre-initialization; every nonzero value is
+            // the shutdown-lifetime owner capability installed above.
+            unsafe { CurrentCpuLocalHandle::from_raw(raw) }
         }
 
-        fn cpu_local_handle(cpu: RuntimeCpuId) -> CpuLocalHandle {
-            cpu_local(cpu).map_or(CpuLocalHandle::NONE, |cpu| {
-                CpuLocalHandle::from_raw((cpu as *const CpuLocal).expose_provenance())
+        unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+            cpu_remote(cpu).map_or(CpuRemoteHandle::NONE, |cpu| {
+                // SAFETY: TaskSystem owns this Arc-backed CpuRemote endpoint
+                // through shutdown and the lookup preserves its CPU identity.
+                unsafe {
+                    CpuRemoteHandle::from_raw((cpu as *const CpuRemote).expose_provenance())
+                }
             })
         }
 
@@ -1551,35 +1709,60 @@ impl_task_runtime! {
         }
 
         fn irq_guard_enter() -> IrqGuardToken {
-            crate::guard::enter_irq();
-            IrqGuardToken::from_raw(1)
+            #[cfg(test)]
+            {
+                // SAFETY: test mode models one balanced runtime IRQ token.
+                unsafe { IrqGuardToken::from_raw(1) }
+            }
+            #[cfg(not(test))]
+            {
+                crate::guard::enter_irq();
+                // SAFETY: enter_irq established the matching live guard state.
+                unsafe { IrqGuardToken::from_raw(1) }
+            }
         }
 
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {
-            crate::guard::exit_irq();
+            #[cfg(not(test))]
+            crate::guard::exit_irq("task runtime");
         }
 
         fn finish_initial_context_switch() {
             crate::guard::finish_initial_context_switch();
         }
 
-        fn scheduler_frame_guard_enter() {
-            crate::guard::enter_scheduler_frame_guard();
+        fn scheduler_frame_guard_enter(
+            origin: ax_task::runtime::RuntimeScheduleOrigin,
+            entry: ax_task::runtime::RuntimeSchedulerEntry,
+        ) -> RuntimeStatus {
+            crate::guard::enter_scheduler_frame_guard(origin, entry)
         }
 
-        fn scheduler_frame_guard_exit() {
-            crate::guard::exit_scheduler_frame_guard();
+        fn scheduler_frame_guard_exit(
+            return_to: ax_task::runtime::RuntimeSchedulerReturn,
+        ) -> bool {
+            crate::guard::exit_scheduler_frame_guard(return_to)
         }
 
         fn in_hard_irq() -> bool {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::in_irq_context()
-            }
-            #[cfg(not(feature = "irq"))]
+            #[cfg(test)]
             {
                 false
             }
+            #[cfg(all(not(test), feature = "irq"))]
+            {
+                ax_hal::irq::in_irq_context()
+            }
+            #[cfg(all(not(test), not(feature = "irq")))]
+            {
+                false
+            }
+        }
+
+        fn validate_schedule_context(
+            origin: ax_task::runtime::RuntimeScheduleOrigin,
+        ) -> RuntimeStatus {
+            crate::guard::validate_schedule_context(origin)
         }
 
         fn monotonic_ns() -> u64 {
@@ -1615,13 +1798,18 @@ impl_task_runtime! {
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
             #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
             {
-                ax_hal::irq::send_ipi(
+                let irq_guard = IrqGuard::new();
+                match ax_hal::irq::send_ipi(
                     ax_hal::irq::ipi_irq(),
-                    ax_hal::irq::IpiTarget::Other {
-                        cpu_id: cpu.as_u32() as usize,
+                    ax_hal::irq::CpuIpiTarget::Other {
+                        cpu: ax_hal::irq::CpuId(cpu.as_u32() as usize),
                     },
-                );
-                RuntimeStatus::Success
+                    &irq_guard,
+                ) {
+                    ax_hal::irq::IpiSendStatus::Success => RuntimeStatus::Success,
+                    ax_hal::irq::IpiSendStatus::Retry => RuntimeStatus::Busy,
+                    ax_hal::irq::IpiSendStatus::Invalid => RuntimeStatus::InvalidArgument,
+                }
             }
             #[cfg(not(any(feature = "ipi", feature = "wake-ipi")))]
             {
@@ -1631,6 +1819,13 @@ impl_task_runtime! {
         }
 
         fn wait_for_interrupt() {
+            #[cfg(feature = "ipi")]
+            {
+                ax_ipi::service_callback_ipi_retries(64);
+                if ax_ipi::callback_ipi_retry_pending() {
+                    return;
+                }
+            }
             ax_hal::asm::wait_for_irqs();
         }
 
@@ -1671,55 +1866,35 @@ impl_task_runtime! {
         ) {
             assert!(!previous.is_none(), "previous task context is missing");
             assert!(!next.is_none(), "next task context is missing");
+            assert_ne!(previous, next, "raw context switch requires distinct contexts");
+            crate::guard::assert_scheduler_switch_baton();
+            let previous_raw = previous.into_raw();
+            let next_raw = next.into_raw();
             let published_previous = unsafe { CURRENT_RUNTIME_CONTEXT.read_current_raw() };
             assert_eq!(
                 published_previous,
-                previous.into_raw(),
+                previous_raw,
                 "scheduler previous context differs from the executing context"
             );
-            let previous = ptr::with_exposed_provenance_mut::<RuntimeContext>(previous.into_raw());
-            let next = ptr::with_exposed_provenance::<RuntimeContext>(next.into_raw());
+            let previous = ptr::with_exposed_provenance_mut::<RuntimeContext>(previous_raw);
+            let next = ptr::with_exposed_provenance_mut::<RuntimeContext>(next_raw);
             // SAFETY: this owner CPU publishes the next context's live stack
             // before transferring execution to it.
             unsafe { CURRENT_RUNTIME_STACK.write_current_raw((*next).stack.into_raw()) };
             // SAFETY: the same owner CPU exclusively publishes the current
             // execution-context pointer for exec-time address-space updates.
             unsafe { CURRENT_RUNTIME_CONTEXT.write_current_raw(next.expose_provenance()) };
-            // Preemption nesting belongs to the execution context, unlike the
-            // CPU-local IRQ-guard baton. Save it immediately before the
-            // architecture switch so the incoming task observes its own
-            // nesting and a resumed task remains protected until its original
-            // scheduling frame unwinds.
-            let next_preempt_depth = unsafe { (*next).preempt_depth };
-            let previous_preempt_depth =
-                crate::guard::replace_preempt_depth_for_context_switch(next_preempt_depth);
-            unsafe { (*previous).preempt_depth = previous_preempt_depth };
+            crate::guard::transfer_scheduler_switch_baton();
             // SAFETY: the scheduler commits unique ownership of the previous
             // running context and immutable access to the selected next context.
+            // TaskSystem is the sole `on_cpu` authority and completes that
+            // ownership handoff only after this call resumes on the incoming
+            // stack (or in its fresh entry trampoline).
             unsafe { (&mut *(*previous).inner.get()).switch_to(&*(*next).inner.get()) };
         }
 
         fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
-            #[cfg(feature = "uspace")]
-            {
-                let root = ax_memory_addr::PhysAddr::from(resolve_address_space_root(address_space));
-                if ax_hal::asm::read_user_page_table() != root {
-                    // SAFETY: ax-task invokes this after committing scheduler
-                    // state, with local IRQs disabled and before the next OS
-                    // switch-in hook can access its address-space-owned data.
-                    unsafe { ax_hal::asm::write_user_page_table(root) };
-                    ax_hal::asm::flush_tlb(None);
-                }
-                RuntimeStatus::Success
-            }
-            #[cfg(not(feature = "uspace"))]
-            {
-                if address_space.is_none() {
-                    RuntimeStatus::Success
-                } else {
-                    RuntimeStatus::Unsupported
-                }
-            }
+            install_runtime_address_space(address_space)
         }
 
         fn flush_tlb_local(_start: usize, _size: usize) {
@@ -1749,7 +1924,6 @@ mod tests {
 
     use super::*;
 
-    static EXTENSION_DROPS: AtomicUsize = AtomicUsize::new(0);
     static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: ignore_extension_thread_event,
         on_switch_out: ignore_extension_switch_out,
@@ -1760,11 +1934,12 @@ mod tests {
 
     #[test]
     fn invalid_spawn_releases_transferred_extension() {
-        let drops_before = EXTENSION_DROPS.load(Ordering::Acquire);
-        // SAFETY: the static counter remains live and every callback accepts its address.
+        let extension_drops = AtomicUsize::new(0);
+        // SAFETY: the call fails synchronously and drops the extension before
+        // this stack-owned counter leaves scope.
         let extension = unsafe {
             ThreadExtension::new(
-                (&EXTENSION_DROPS as *const AtomicUsize).expose_provenance(),
+                (&extension_drops as *const AtomicUsize).expose_provenance(),
                 &TEST_EXTENSION_OPS,
             )
         };
@@ -1781,16 +1956,31 @@ mod tests {
         };
 
         assert!(matches!(result, Err(TaskError::InvalidConfiguration)));
-        assert_eq!(EXTENSION_DROPS.load(Ordering::Acquire), drops_before + 1);
+        assert_eq!(extension_drops.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn secondary_bootstrap_retires_before_entering_idle_loop() {
+        let bootstrap = ThreadId::from_parts(1, 1);
+        let idle = ThreadId::from_parts(2, 1);
+
+        assert_eq!(
+            idle_entry_action(Some(bootstrap), Some(idle)).unwrap(),
+            IdleEntryAction::RetireBootstrap,
+        );
+        assert_eq!(
+            idle_entry_action(Some(idle), Some(idle)).unwrap(),
+            IdleEntryAction::RunIdle,
+        );
     }
 
     #[test]
     fn entry_extension_lookup_does_not_pin_exited_thread() {
-        let drops_before = EXTENSION_DROPS.load(Ordering::Acquire);
+        let extension_drops = AtomicUsize::new(0);
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
-        let extension_data = (&EXTENSION_DROPS as *const AtomicUsize).expose_provenance();
-        // SAFETY: the static counter remains valid until the test-owned thread
-        // record invokes the matching drop callback.
+        let extension_data = (&extension_drops as *const AtomicUsize).expose_provenance();
+        // SAFETY: this test reaps the thread and runs the matching drop callback
+        // before the stack-owned counter leaves scope.
         let extension = unsafe { ThreadExtension::new(extension_data, &TEST_EXTENSION_OPS) };
         let spec = ThreadSpec::new(SchedulePolicy::default()).with_extension(extension);
         let handle = system.create_thread(spec).unwrap();
@@ -1805,7 +1995,7 @@ mod tests {
         );
         system.mark_exited(handle.id()).unwrap();
         system.reap_thread_handle(handle).unwrap();
-        assert_eq!(EXTENSION_DROPS.load(Ordering::Acquire), drops_before + 1);
+        assert_eq!(extension_drops.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -1824,8 +2014,10 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn bootstrap_thread_rejects_a_missing_tls_resource() {
-        let result =
-            assemble_bootstrap_resources(ExecutionContextHandle::from_raw(1), TlsHandle::NONE);
+        // SAFETY: this inert non-zero identity is never dereferenced because
+        // validation rejects the missing TLS resource first.
+        let context = unsafe { ExecutionContextHandle::from_raw(1) };
+        let result = assemble_bootstrap_resources(context, TlsHandle::NONE);
 
         assert!(matches!(result, Err(TaskError::InvalidRuntimeHandle)));
     }
@@ -1844,7 +2036,8 @@ mod tests {
     }
 
     unsafe extern "Rust" fn count_extension_drop(data: usize) {
-        // SAFETY: the test extension stores this static AtomicUsize address.
+        // SAFETY: each test keeps its stack-owned counter live until it
+        // synchronously observes the extension's matching drop callback.
         let drops = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
         drops.fetch_add(1, Ordering::Release);
     }
