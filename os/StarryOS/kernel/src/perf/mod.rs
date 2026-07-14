@@ -50,7 +50,13 @@ pub mod tracepoint;
 pub mod unwind;
 pub mod uprobe;
 
-use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 use core::{
     any::Any,
     ffi::c_void,
@@ -227,6 +233,11 @@ const PERF_FORMAT_ID: u64 = 1 << 2;
 /// appended last, after `id`. Without it, `perf record` prints "read LOST count
 /// failed" because the read returns a short buffer.
 const PERF_FORMAT_LOST: u64 = 1 << 4;
+/// `read_format` bit: a leader read returns the WHOLE group's counters in one
+/// buffer (`perf stat -e '{a,b}'`). Layout: `u64 nr`, then `time_enabled` /
+/// `time_running` once (if requested), then per event (leader first) `value`
+/// plus `id` (`PERF_FORMAT_ID`) / `lost` (`PERF_FORMAT_LOST`).
+const PERF_FORMAT_GROUP: u64 = 1 << 3;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -261,6 +272,14 @@ pub struct PerfEvent {
     /// would block (e.g. reading from an empty ring buffer) should return
     /// `EAGAIN` instead.
     nonblocking: AtomicBool,
+    /// Group members led by THIS event: events opened with `group_fd` set to this
+    /// event's fd (`perf stat -e '{a,b}'`). Empty for a solo event or a member.
+    /// The leader drives the group — `ioctl(ENABLE/DISABLE)` propagates to members
+    /// (Linux group scheduling), and a leader read with `PERF_FORMAT_GROUP`
+    /// returns every member's counter in one buffer. `Weak` so a member closing
+    /// its fd is not kept alive here; dead members are reaped on the next
+    /// enable/disable/read.
+    members: SpinNoPreempt<Vec<Weak<PerfEvent>>>,
 }
 
 impl Debug for PerfEvent {
@@ -279,6 +298,7 @@ impl PerfEvent {
             event: SpinNoPreempt::new(event),
             id,
             nonblocking: AtomicBool::new(false),
+            members: SpinNoPreempt::new(Vec::new()),
         }
     }
 
@@ -319,6 +339,70 @@ impl PerfEvent {
         }
         Ok(0)
     }
+
+    /// Enable (`on`) or disable every live group member, reaping any that have
+    /// closed. Called after the leader's own enable/disable so the group is
+    /// scheduled as a unit (Linux group semantics: members follow the leader).
+    fn propagate_members(&self, on: bool) {
+        self.members.lock().retain(|w| {
+            let Some(m) = w.upgrade() else {
+                return false; // reap a closed member
+            };
+            let mut ev = m.event.lock();
+            let _ = if on { ev.enable() } else { ev.disable() };
+            true
+        });
+    }
+
+    /// Serialize a `PERF_FORMAT_GROUP` read: the whole group's counters in one
+    /// buffer — `nr`, then `time_enabled`/`time_running` once (from the leader),
+    /// then per event (leader first, then live members) `value` plus `id` /
+    /// `lost` when requested. `leader` is the already-read leader snapshot.
+    fn read_group(&self, dst: &mut crate::file::IoDst, leader: &PerfReadValues) -> AxResult<usize> {
+        let rf = leader.read_format;
+        let live: Vec<Arc<PerfEvent>> = self
+            .members
+            .lock()
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .collect();
+
+        let mut out: Vec<u64> = Vec::with_capacity(3 + 3 * (1 + live.len()));
+        out.push(1 + live.len() as u64); // nr
+        if rf & PERF_FORMAT_TOTAL_TIME_ENABLED != 0 {
+            out.push(leader.time_enabled);
+        }
+        if rf & PERF_FORMAT_TOTAL_TIME_RUNNING != 0 {
+            out.push(leader.time_running);
+        }
+        // Leader entry, then each member's.
+        out.push(leader.value);
+        if rf & PERF_FORMAT_ID != 0 {
+            out.push(self.id);
+        }
+        if rf & PERF_FORMAT_LOST != 0 {
+            out.push(leader.lost);
+        }
+        for m in &live {
+            let mv = m.event.lock().read_values()?;
+            out.push(mv.value);
+            if rf & PERF_FORMAT_ID != 0 {
+                out.push(m.id);
+            }
+            if rf & PERF_FORMAT_LOST != 0 {
+                out.push(mv.lost);
+            }
+        }
+
+        let total = out.len() * core::mem::size_of::<u64>();
+        if dst.remaining_mut() < total {
+            return Err(AxError::InvalidInput);
+        }
+        for v in &out {
+            dst.write(&v.to_ne_bytes())?;
+        }
+        Ok(total)
+    }
 }
 
 impl Pollable for PerfEvent {
@@ -342,6 +426,12 @@ impl FileLike for PerfEvent {
         // (M0 behaviour). The tracing variants keep the default `read_values`
         // and propagate `Unsupported` here.
         let values = self.event.lock().read_values()?;
+
+        // Group-leader read (`PERF_FORMAT_GROUP`): return the whole group's
+        // counters in one buffer instead of the flat single-event layout.
+        if values.read_format & PERF_FORMAT_GROUP != 0 {
+            return self.read_group(dst, &values);
+        }
 
         // Build the field sequence gated by `read_format`, in Linux order.
         let mut fields = [0u64; 5];
@@ -429,9 +519,12 @@ impl FileLike for PerfEvent {
         match req {
             PerfEventIoc::Enable => {
                 self.event.lock().enable()?;
+                // A group leader enable starts the whole group (members follow).
+                self.propagate_members(true);
             }
             PerfEventIoc::Disable => {
                 self.event.lock().disable()?;
+                self.propagate_members(false);
             }
             PerfEventIoc::SetBpf => {
                 let bpf_prog_fd = arg as i32;
@@ -553,7 +646,21 @@ pub fn perf_event_open(
             }
         }
     };
-    let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event));
+    let perf_event = Arc::new(PerfEvent::new(event));
+    // Group membership: a non-negative `group_fd` makes this event a member of the
+    // group led by that fd (`perf stat -e '{a,b}'`). The member follows the
+    // leader's enable state, so open it disabled until the leader's `ioctl(ENABLE)`
+    // starts the whole group; the leader records it (weakly) for group
+    // enable/disable propagation and `PERF_FORMAT_GROUP` reads.
+    if group_fd >= 0 {
+        let leader = get_file_like(group_fd)?
+            .into_any_arc()
+            .downcast::<PerfEvent>()
+            .map_err(|_| AxError::InvalidInput)?;
+        perf_event.event.lock().disable().ok();
+        leader.members.lock().push(Arc::downgrade(&perf_event));
+    }
+    let event_arc: Arc<dyn FileLike> = perf_event;
     // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC when
     // the caller sets this flag, otherwise the fd survives execve.
     let cloexec = flags & PERF_FLAG_FD_CLOEXEC != 0;
