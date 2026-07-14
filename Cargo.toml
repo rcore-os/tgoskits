@@ -306,7 +306,7 @@ event-listener = { version = "5.4.0", default-features = false }
 futures = { version = "0.3", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
-toml = "1"
+toml = { version = "1.1.2", default-features = false }
 dma-api = { version = "0.9.3", path = "memory/dma-api" }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 lock_api = { version = "0.4", default-features = false }

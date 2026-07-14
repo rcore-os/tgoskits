@@ -6,6 +6,7 @@ use core::fmt::Display;
 use axaddrspace::AddrSpaceError;
 use axdevice::DeviceManagerError;
 use axdevice_base::{DeviceError, IrqError, RegistryError};
+use axvmconfig::AxVmConfigError;
 
 use crate::{VMId, VmStatus};
 
@@ -227,6 +228,12 @@ impl From<DeviceError> for AxVmError {
     }
 }
 
+impl From<AxVmConfigError> for AxVmError {
+    fn from(error: AxVmConfigError) -> Self {
+        Self::invalid_config(error)
+    }
+}
+
 impl From<IrqError> for AxVmError {
     fn from(error: IrqError) -> Self {
         Self::interrupt("route virtual device interrupt", error)
@@ -409,5 +416,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn configuration_errors_map_to_invalid_config() {
+        let config_error = AxVmConfigError::UnsupportedBootProtocol {
+            protocol: axvmconfig::VMBootProtocol::Uefi,
+            arch: "aarch64".to_string(),
+        };
+
+        let error: AxVmError = config_error.into();
+
+        assert!(matches!(error, AxVmError::InvalidConfig { .. }));
+        assert!(error.to_string().contains("Uefi"));
+        assert!(error.to_string().contains("aarch64"));
     }
 }

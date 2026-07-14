@@ -86,6 +86,8 @@ fn axvisor_uses_anyhow_without_axerrno() {
     assert!(!config.contains("ax_errno"));
     assert!(manager.contains("use anyhow::{Context, Result};"));
     assert!(config.contains("AxVmError::Boot"));
+    assert!(config.contains(".context(\"parse VM TOML configuration\")?"));
+    assert!(!config.contains("map_err(|error| anyhow!"));
     assert!(shell.contains("{err:#}"));
     assert!(!shell.contains("Err(\"Failed to boot VM\")"));
 }
