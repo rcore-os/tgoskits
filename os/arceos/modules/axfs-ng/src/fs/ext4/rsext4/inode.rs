@@ -224,6 +224,7 @@ impl FileNodeOps for Inode {
             // Path-based write_file() fails with NotFound after unlink.
             rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         }
+        self.fs.sync_to_disk()?;
         Ok(buf.len())
     }
 
@@ -236,6 +237,7 @@ impl FileNodeOps for Inode {
             rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
             length
         };
+        self.fs.sync_to_disk()?;
         Ok((buf.len(), length + buf.len() as u64))
     }
 
@@ -522,7 +524,6 @@ impl DirNodeOps for Inode {
             let target_ino = InodeNumber::new(node.inode() as u32).map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, target_ino)?;
         }
-        self.fs.sync_to_disk()?;
         self.lookup_locked(name)
     }
 

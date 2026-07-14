@@ -18,7 +18,7 @@
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
 use axvm::{
@@ -107,8 +107,8 @@ pub fn init_guest_vms() {
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
-    let vm_create_config = AxVMCrateConfig::from_toml(raw_cfg)
-        .map_err(|error| anyhow!("parse VM TOML configuration: {error}"))?;
+    let vm_create_config =
+        AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
     #[cfg(all(

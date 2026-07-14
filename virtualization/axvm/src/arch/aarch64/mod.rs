@@ -440,14 +440,14 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     }
 
     fn current_vm_id() -> usize {
-        crate::vcpu::current_vcpu_identity_for_task()
+        super::current_vcpu_identity_for_task()
             .expect("current AArch64 VM is not set")
             .into_ids()
             .0
     }
 
     fn current_vcpu_id() -> usize {
-        crate::vcpu::current_vcpu_identity_for_task()
+        super::current_vcpu_identity_for_task()
             .expect("current AArch64 vCPU is not set")
             .into_ids()
             .1

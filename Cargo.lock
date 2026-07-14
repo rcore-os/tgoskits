@@ -1269,7 +1269,7 @@ dependencies = [
 name = "axhvc"
 version = "0.4.10"
 dependencies = [
- "ax-errno 0.6.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1518,7 +1518,6 @@ dependencies = [
 name = "axvmconfig"
 version = "0.8.1"
 dependencies = [
- "ax-errno 0.6.1",
  "axvm-types",
  "clap",
  "env_logger",
@@ -1526,7 +1525,8 @@ dependencies = [
  "schemars",
  "serde",
  "serde_repr",
- "toml 0.9.12+spec-1.1.0",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]

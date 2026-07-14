@@ -6,7 +6,7 @@ use axvmconfig::AxVMCrateConfig;
 use byte_unit::Byte;
 
 use super::{BootImageProvider, StaticVmImage};
-use crate::{AxVMRef, AxVmError, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_type};
+use crate::{AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_type};
 
 mod linux;
 
@@ -74,10 +74,7 @@ impl<'a> ImageLoaderCore<'a> {
     }
 
     pub(crate) fn load(&mut self) -> AxVmResult {
-        self.config
-            .kernel
-            .validate_boot_config()
-            .map_err(AxVmError::invalid_config)?;
+        self.config.kernel.validate_boot_config()?;
         debug!(
             "Loading VM[{}] images into memory region: gpa={:#x}, hva={:#x}, size={:#}",
             self.vm.id(),

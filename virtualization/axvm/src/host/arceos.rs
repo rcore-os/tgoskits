@@ -141,17 +141,12 @@ pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 
-pub(crate) fn current_task() -> ArceOsCurrentTask {
-    try_current_task().unwrap_or_else(|| panic!("AxVM current task is unavailable"))
-}
-
 pub(crate) fn try_current_task() -> Option<ArceOsCurrentTask> {
     modules::ax_task::current_thread_handle()
         .ok()
         .map(|inner| ArceOsCurrentTask { inner })
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) fn in_hard_irq() -> bool {
     modules::ax_hal::irq::in_irq_context()
 }

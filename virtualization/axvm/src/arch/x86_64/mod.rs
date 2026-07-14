@@ -22,11 +22,14 @@ use x86_vlapic::{
     X86VlapicResult, X86VmId,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{
+    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction,
+    current_vcpu_identity_for_task,
+};
 use crate::{
     AxVmError, AxVmResult, StopReason,
     host::{HostMemory, default_host},
-    vcpu::{current_vcpu_identity, current_vcpu_identity_for_task},
+    vcpu::current_vcpu_identity,
 };
 
 pub(crate) mod boot;

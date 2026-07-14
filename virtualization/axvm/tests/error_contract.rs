@@ -86,6 +86,21 @@ fn axvisor_uses_anyhow_without_axerrno() {
     assert!(!config.contains("ax_errno"));
     assert!(manager.contains("use anyhow::{Context, Result};"));
     assert!(config.contains("AxVmError::Boot"));
+    assert!(config.contains(".context(\"parse VM TOML configuration\")?"));
+    assert!(!config.contains("map_err(|error| anyhow!"));
     assert!(shell.contains("{err:#}"));
     assert!(!shell.contains("Err(\"Failed to boot VM\")"));
+}
+
+#[test]
+fn hvc_translates_current_vcpu_errors_by_public_semantics() {
+    let hvc = include_str!("../src/runtime/hvc.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(hvc.contains("AxVmError::CurrentVcpuUnavailable => HyperCallError::InvalidState"));
+    assert!(hvc.contains(
+        "AxVmError::CurrentVcpuInterruptOutOfRange { .. } => HyperCallError::InvalidParameter"
+    ));
 }

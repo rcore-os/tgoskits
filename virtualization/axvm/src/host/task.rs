@@ -9,15 +9,17 @@ pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 
 pub(crate) fn current_task() -> CurrentTask {
-    arceos::current_task()
+    assert!(
+        !in_hard_irq(),
+        "AxVM cannot acquire an owning task handle from hard IRQ context"
+    );
+    try_current_task().unwrap_or_else(|| panic!("AxVM current task is unavailable"))
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) fn try_current_task() -> Option<CurrentTask> {
     arceos::try_current_task()
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) fn in_hard_irq() -> bool {
     arceos::in_hard_irq()
 }

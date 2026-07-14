@@ -95,6 +95,12 @@ cargo starry app qemu --all --cap board:OrangePi-5-Plus
 # 运行单个应用
 cargo starry app qemu -t dual-net
 
+# 在 x86_64 QEMU 来宾中自编译 StarryOS
+cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
+
 # 板端应用
 cargo starry app board -t my-board-app -b OrangePi-5-Plus
 ```
+
+自编译应用需要独立的持久化 rootfs、KVM 和较长运行时间，完整环境与验证边界见
+[StarryOS 自编译](./self-compilation)。

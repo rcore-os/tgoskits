@@ -71,14 +71,16 @@ fn finish_hypercall<V: VmArchVcpuOps>(
         Ok(hypercall) => {
             let ret_val = match hypercall.execute() {
                 Ok(ret_val) => ret_val as isize,
-                Err(err) => {
+                Err(error) => {
+                    let err = AxVmError::from(error);
                     warn!("Hypercall [{:#x}] failed: {err:?}", exit.nr);
                     -1
                 }
             };
             vcpu.set_return_value(ret_val as usize);
         }
-        Err(err) => {
+        Err(error) => {
+            let err = AxVmError::from(error);
             warn!("Hypercall [{:#x}] failed: {err:?}", exit.nr);
         }
     }

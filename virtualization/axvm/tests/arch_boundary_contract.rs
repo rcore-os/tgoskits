@@ -389,23 +389,24 @@ fn aarch64_deferred_ipi_queues_self_after_current_vcpu_cleanup() {
 
 #[test]
 fn deferred_device_identity_uses_live_header_then_task_fallback_outside_irq() {
+    let arch = include_str!("../src/arch/mod.rs");
     let vcpu = include_str!("../src/vcpu.rs");
     let host_task = include_str!("../src/host/task.rs");
     let host_arceos = include_str!("../src/host/arceos.rs");
     let aarch64 = include_str!("../src/arch/aarch64/mod.rs");
     let x86_64 = include_str!("../src/arch/x86_64/mod.rs");
 
-    let identity = vcpu
+    let identity = arch
         .split_once("pub(crate) fn current_vcpu_identity_for_task")
         .expect("deferred device callbacks need a task-context identity API")
         .1
         .split_once("fn select_vcpu_execution_identity")
         .expect("task identity selection must be independently testable")
         .0;
-    assert!(identity.contains("current_vcpu_identity()"));
+    assert!(identity.contains("vcpu::current_vcpu_identity()"));
     assert!(identity.contains("host::task::in_hard_irq()"));
     assert!(identity.contains("host::task::try_current_task()"));
-    assert!(identity.contains("use crate::task::AsVCpuTask;"));
+    assert!(arch.contains("use crate::task::AsVCpuTask;"));
     let imports = vcpu
         .split_once("#[cfg(test)]\ntype Mutex")
         .expect("vCPU module imports must remain separate from test lock aliases")
@@ -415,11 +416,11 @@ fn deferred_device_identity_uses_live_header_then_task_fallback_outside_irq() {
         "the task-extension capability must not compile on unrelated architectures"
     );
 
-    let selector = vcpu
+    let selector = arch
         .split_once("fn select_vcpu_execution_identity")
         .expect("task identity selection helper must exist")
         .1
-        .split_once("/// Publishes an interrupt")
+        .split_once("pub(crate) fn init_guest_boot_resources")
         .expect("identity selection must remain separate from IRQ publication")
         .0;
     assert_in_order(
@@ -434,28 +435,13 @@ fn deferred_device_identity_uses_live_header_then_task_fallback_outside_irq() {
     );
     assert!(host_task.contains("pub(crate) fn in_hard_irq() -> bool"));
     assert!(host_task.contains("pub(crate) fn try_current_task() -> Option<CurrentTask>"));
+    assert!(host_task.contains("!in_hard_irq()"));
     assert!(host_arceos.contains("modules::ax_hal::irq::in_irq_context()"));
     assert!(host_arceos.contains("modules::ax_task::current_thread_handle()"));
     assert!(host_arceos.contains(".ok()"));
-
-    let device_identity_arches = "#[cfg(any(target_arch = \"aarch64\", target_arch = \"x86_64\"))]";
-    for (source, item) in [
-        (vcpu, "pub(crate) struct VcpuExecutionIdentity"),
-        (vcpu, "pub(crate) fn current_vcpu_identity_for_task"),
-        (vcpu, "fn select_vcpu_execution_identity"),
-        (host_task, "pub(crate) fn try_current_task"),
-        (host_task, "pub(crate) fn in_hard_irq"),
-        (host_arceos, "pub(crate) fn in_hard_irq"),
-    ] {
-        let prefix = source
-            .split_once(item)
-            .unwrap_or_else(|| panic!("missing architecture-specific item: {item}"))
-            .0;
-        assert!(
-            prefix.ends_with(&format!("{device_identity_arches}\n")),
-            "{item} must only compile for architectures that consume task identity"
-        );
-    }
+    assert!(arch.contains("pub(crate) struct VcpuExecutionIdentity"));
+    assert!(!vcpu.contains("pub(crate) struct VcpuExecutionIdentity"));
+    assert!(!vcpu.contains("pub(crate) fn current_vcpu_identity_for_task"));
 
     for architecture in [aarch64, x86_64] {
         assert!(
@@ -552,10 +538,12 @@ fn riscv_passthrough_irq_affinity_has_one_deterministic_vm_owner() {
     assert!(owner_check < pin && pin < live_cpu && live_cpu < configure);
 
     let route = include_str!("../src/arch/riscv64/irq.rs");
+    let route_transaction = include_str!("../src/arch/riscv64/route_transaction.rs");
     assert!(
-        route.contains(
-            "static PLATFORM_VPLIC_ROUTE_CONTROL: SpinNoPreempt<PlatformVplicRouteState>"
-        ),
+        route
+            .contains("static PLATFORM_VPLIC_ROUTE_CONTROL: RouteControl<PlatformVplicRouteState>")
+            && route_transaction
+                .contains("pub(super) type RouteControl<T> = ax_kspin::SpinNoPreempt<T>"),
         "AxVM route ownership needs an explicit transactional state machine"
     );
 
