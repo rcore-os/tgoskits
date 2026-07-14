@@ -371,6 +371,68 @@ impl TaskSystem {
         Self::program_local_timer(cpu.as_mut(), now_ns)
     }
 
+    /// Places a newly ready thread on an allowed online CPU.
+    ///
+    /// If `cpu` is allowed, placement is a normal local enqueue. Otherwise the
+    /// thread is transferred directly to the least-loaded allowed CPU through
+    /// its owner-only migration inbox. This avoids ever publishing a pinned
+    /// thread on a disallowed run queue while keeping [`Self::enqueue`] strict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source CPU is offline, the thread is not a
+    /// unique unqueued Ready thread, no allowed CPU is online, or local timer
+    /// programming fails.
+    pub fn place_ready(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        thread: ThreadId,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
+        let placed_locally = {
+            let mut state = self.state.lock();
+            state.ensure_cpu_online(&cpu)?;
+            let owner = cpu.owner();
+            let affinity = state.thread_record(thread)?.affinity.clone();
+            if affinity.contains(owner) {
+                self.enqueue_with_reason(
+                    &mut state,
+                    cpu.as_mut(),
+                    thread,
+                    now_ns,
+                    EnqueueReason::Wake,
+                )?;
+                true
+            } else {
+                let target = state
+                    .select_allowed_cpu(&affinity)
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                let core = {
+                    let record = state.thread_record_mut(thread)?;
+                    if record.lifecycle.state() != ThreadState::Ready {
+                        return Err(TaskError::NotReady);
+                    }
+                    if record.queued_cpu.is_some()
+                        || record.running_cpu.is_some()
+                        || record.on_cpu.is_some()
+                    {
+                        return Err(TaskError::AlreadyQueued);
+                    }
+                    record.migration_target = Some(target);
+                    record.core.set_target_cpu(target);
+                    Arc::clone(&record.core)
+                };
+                state.publish_migration_to(&core, target, owner, target)?;
+                false
+            }
+        };
+        if placed_locally {
+            Self::program_local_timer(cpu.as_mut(), now_ns)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Removes a ready thread from its owner run queue for migration or update.
     pub fn dequeue(&self, mut cpu: Pin<&mut CpuLocal>, thread: ThreadId) -> Result<(), TaskError> {
         let mut state = self.state.lock();
@@ -4002,6 +4064,30 @@ mod tests {
 
         system.complete_context_switch(cpu0.as_mut()).unwrap();
         assert!(cpu1.has_remote_work());
+    }
+
+    #[test]
+    fn initial_placement_hands_affinity_pinned_thread_to_its_owner_cpu() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+
+        let mut cpu1_only = CpuSet::empty(2);
+        cpu1_only.insert(CpuId::new(1));
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu1_only))
+            .unwrap();
+        system.make_ready(thread.id()).unwrap();
+
+        system.place_ready(cpu0.as_mut(), thread.id(), 0).unwrap();
+        assert!(cpu1.has_remote_work());
+        system.drain_policy_updates(cpu1.as_mut(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu1.as_mut(), 0).unwrap().next(),
+            thread.id()
+        );
     }
 
     #[test]

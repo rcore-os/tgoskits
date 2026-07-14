@@ -694,7 +694,7 @@ where
         return Err(TaskError::NotInitialized);
     };
     let result = system.make_ready(handle.id()).and_then(|()| {
-        system.enqueue(
+        system.place_ready(
             cpu.as_mut(),
             handle.id(),
             ax_hal::time::monotonic_time_nanos(),

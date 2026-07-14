@@ -271,7 +271,7 @@ where
     let irq_guard = RuntimeIrqGuard::enter();
     let result = runtime_current_cpu_mut().and_then(|mut cpu| {
         system.make_ready(handle.id())?;
-        system.enqueue(cpu.as_mut(), handle.id(), task_runtime::monotonic_ns())
+        system.place_ready(cpu.as_mut(), handle.id(), task_runtime::monotonic_ns())
     });
     drop(irq_guard);
     if let Err(error) = result {
