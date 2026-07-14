@@ -625,6 +625,8 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64, owner_pid: u32, owner_tid
                 // Per-task event: attribute samples to the monitored thread even
                 // if the overflow IRQ lands after a switch away from it.
                 owner_ids: Some((owner_pid, owner_tid)),
+                read_format: ptc.read_format,
+                read_value: 0,
             },
         );
         ax_cpu::pmu::overflow::enable_irq(n);

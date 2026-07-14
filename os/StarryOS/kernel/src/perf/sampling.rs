@@ -123,7 +123,7 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// MAX_STACK_DEPTH` instruction pointers (a kernel region + a user region).
 /// [`build_sample`] writes into a stack buffer of this size and returns the
 /// actual length.
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
+const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + 8 + 2 * 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). The scalar fields
 // below plus `PERF_SAMPLE_CALLCHAIN` are supported; every other bit (READ, RAW,
@@ -151,6 +151,17 @@ const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
 /// u64 instruction pointers, split into kernel/user regions by the
 /// `PERF_CONTEXT_*` markers below. Set by `perf record -g` / `--call-graph fp`.
 const PERF_SAMPLE_CALLCHAIN: u64 = 1 << 5;
+/// `PERF_SAMPLE_READ`: each sample carries the event's read value (`read(2)`'s
+/// `read_format` block). Supported for a single event with `read_format` in
+/// `{0, PERF_FORMAT_ID}` — the sample emits the running count and, if requested,
+/// the event id. Group-leader sampling (`read_format & PERF_FORMAT_GROUP`) and
+/// the `TOTAL_TIME_*` fields need per-event/per-group accounting reachable from
+/// the IRQ handler and are rejected at open (see `perf_event_open_hw`).
+pub const PERF_SAMPLE_READ: u64 = 1 << 10;
+
+/// `read_format` bit `PERF_FORMAT_ID` (mirrors `super::PERF_FORMAT_ID`), needed
+/// here to lay out the `PERF_SAMPLE_READ` block.
+const READ_FORMAT_ID: u64 = 1 << 2;
 
 /// Callchain marker: the entries that follow are kernel (EL1) instruction
 /// pointers (Linux `PERF_CONTEXT_KERNEL`). Counts as one callchain entry.
@@ -178,7 +189,17 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
     | PERF_SAMPLE_IDENTIFIER
-    | PERF_SAMPLE_CALLCHAIN;
+    | PERF_SAMPLE_CALLCHAIN
+    | PERF_SAMPLE_READ;
+
+/// Whether a sampling event's `PERF_SAMPLE_READ` request is supported. `true`
+/// unless `PERF_SAMPLE_READ` is combined with a `read_format` other than `0` or
+/// exactly `PERF_FORMAT_ID`: group-format (`PERF_FORMAT_GROUP`) and time-format
+/// (`TOTAL_TIME_*`) / `LOST` reads need per-event/per-group accounting reachable
+/// from the IRQ handler, which is a follow-up. Checked at open.
+pub fn sample_read_supported(sample_type: u64, read_format: u64) -> bool {
+    sample_type & PERF_SAMPLE_READ == 0 || read_format & !READ_FORMAT_ID == 0
+}
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
 /// alloc-free `Copy` POD.
@@ -240,6 +261,14 @@ pub struct SampleSlot {
     ///
     /// [`Thread`]: crate::task::Thread
     pub owner_ids: Option<(u32, u32)>,
+    /// `attr.read_format` — which fields a `PERF_SAMPLE_READ` block carries (only
+    /// `value` and, if `PERF_FORMAT_ID`, the id are supported; validated at open).
+    pub read_format: u64,
+    /// Running event count emitted in the `PERF_SAMPLE_READ` block: incremented by
+    /// the sampling `period` each overflow (each overflow means ~`period` more
+    /// events counted). `0` for an event without `PERF_SAMPLE_READ`. Mutated in
+    /// place by the handler.
+    pub read_value: u64,
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -399,6 +428,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         // can be mutated below without aliasing the borrow).
         let sample_type = slot.sample_type;
         let id = slot.id;
+        let read_format = slot.read_format;
         let notify_ptr = slot.notify;
         let lost_ptr = slot.lost;
         let lost_reported_ptr = slot.lost_reported;
@@ -445,6 +475,23 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         } else {
             0
         };
+        // PERF_SAMPLE_READ block: the event's running count (+ id if requested).
+        // Each overflow means ~`period` more events were counted, so advance the
+        // running total by the period (validated at open to be a single event
+        // with read_format in {0, PERF_FORMAT_ID}).
+        let mut read_blk = [0u64; 2];
+        let nread = if sample_type & PERF_SAMPLE_READ != 0 {
+            slot.read_value = slot.read_value.wrapping_add(cur_period as u64);
+            read_blk[0] = slot.read_value;
+            if read_format & READ_FORMAT_ID != 0 {
+                read_blk[1] = id;
+                2
+            } else {
+                1
+            }
+        } else {
+            0
+        };
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
@@ -457,6 +504,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             cpu,
             period: cur_period as u64,
             callchain: &chain[..nchain],
+            read: &read_blk[..nread],
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
 
@@ -617,6 +665,9 @@ struct SampleData<'a> {
     /// the `nr` count followed by the entries. Borrows the handler's fixed on-stack
     /// chain buffer.
     callchain: &'a [u64],
+    /// The `PERF_SAMPLE_READ` block (`value`, optionally `id`), or an empty slice
+    /// when the event did not request `PERF_SAMPLE_READ`. Emitted verbatim.
+    read: &'a [u64],
 }
 
 /// Serialize a `PERF_RECORD_LOST` into `buf`: `perf_event_header` (`type`,
@@ -682,6 +733,13 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData<'_>)
     }
     if sample_type & PERF_SAMPLE_PERIOD != 0 {
         put!(d.period);
+    }
+    if sample_type & PERF_SAMPLE_READ != 0 {
+        // The `read_format` block (`value`, optionally `id`), pre-built by the
+        // handler; empty when the event did not request `PERF_SAMPLE_READ`.
+        for &v in d.read {
+            put!(v);
+        }
     }
     if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
         // `u64 nr` count (the `PERF_CONTEXT_*` markers count as entries) followed
