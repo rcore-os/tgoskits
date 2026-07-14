@@ -6,6 +6,7 @@ use core::fmt::Display;
 use axaddrspace::AddrSpaceError;
 use axdevice::DeviceManagerError;
 use axdevice_base::{DeviceError, IrqError, RegistryError};
+use axhvc::HyperCallError;
 use axvmconfig::AxVmConfigError;
 
 use crate::{VMId, VmStatus};
@@ -234,6 +235,64 @@ impl From<AxVmConfigError> for AxVmError {
     }
 }
 
+impl From<HyperCallError> for AxVmError {
+    fn from(error: HyperCallError) -> Self {
+        match error {
+            HyperCallError::InvalidCode(error) => Self::invalid_input("decode hypercall", error),
+            HyperCallError::Unsupported { code, detail } => Self::Unsupported {
+                operation: "execute hypercall",
+                detail: format!("hypercall {code:?}: {detail}"),
+            },
+            HyperCallError::InvalidParameter {
+                code,
+                parameter,
+                detail,
+            } => Self::InvalidInput {
+                operation: "execute hypercall",
+                detail: format!("hypercall {code:?} parameter {parameter}: {detail}"),
+            },
+            HyperCallError::InvalidState { code, detail } => Self::InvalidState {
+                operation: "execute hypercall",
+                detail: format!("hypercall {code:?}: {detail}"),
+            },
+            HyperCallError::ResourceNotFound {
+                code,
+                resource,
+                detail,
+            } => Self::resource_unavailable(
+                "hypercall resource",
+                format_args!("hypercall {code:?} could not find {resource}: {detail}"),
+            ),
+            HyperCallError::ResourceConflict {
+                code,
+                resource,
+                detail,
+            } => Self::resource_conflict(
+                "hypercall resource",
+                format_args!("hypercall {code:?} conflict for {resource}: {detail}"),
+            ),
+            HyperCallError::OutOfMemory { operation, .. } => Self::OutOfMemory { operation },
+            HyperCallError::GuestMemoryAccess {
+                code,
+                operation,
+                address,
+                detail,
+            } => Self::Memory {
+                operation,
+                detail: format!("hypercall {code:?} guest address {address:#x}: {detail}"),
+            },
+            HyperCallError::Internal {
+                code,
+                operation,
+                detail,
+            } => Self::Host {
+                operation,
+                detail: format!("hypercall {code:?}: {detail}"),
+            },
+        }
+    }
+}
+
 impl From<IrqError> for AxVmError {
     fn from(error: IrqError) -> Self {
         Self::interrupt("route virtual device interrupt", error)
@@ -430,5 +489,62 @@ mod tests {
         assert!(matches!(error, AxVmError::InvalidConfig { .. }));
         assert!(error.to_string().contains("Uefi"));
         assert!(error.to_string().contains("aarch64"));
+    }
+
+    #[test]
+    fn hypercall_errors_map_to_matching_axvm_domains() {
+        let code = axhvc::HyperCallCode::HIVCPublishChannel;
+        let invalid_code = AxVmError::from(HyperCallError::from(axhvc::InvalidHyperCallCode(0xff)));
+        let cases = [
+            AxVmError::from(HyperCallError::InvalidParameter {
+                code,
+                parameter: "shm_size_ptr",
+                detail: "unaligned".to_string(),
+            }),
+            AxVmError::from(HyperCallError::InvalidState {
+                code,
+                detail: "channel is unpublished".to_string(),
+            }),
+            AxVmError::from(HyperCallError::ResourceNotFound {
+                code,
+                resource: "IVC channel 7".to_string(),
+                detail: "not registered".to_string(),
+            }),
+            AxVmError::from(HyperCallError::ResourceConflict {
+                code,
+                resource: "IVC channel 7".to_string(),
+                detail: "already registered".to_string(),
+            }),
+            AxVmError::from(HyperCallError::OutOfMemory {
+                code,
+                operation: "allocate IVC frame",
+            }),
+            AxVmError::from(HyperCallError::GuestMemoryAccess {
+                code,
+                operation: "write IVC result",
+                address: 0x4000,
+                detail: "unmapped".to_string(),
+            }),
+            AxVmError::from(HyperCallError::Unsupported {
+                code,
+                detail: "disabled".to_string(),
+            }),
+            AxVmError::from(HyperCallError::Internal {
+                code,
+                operation: "map IVC frame",
+                detail: "mapping failed".to_string(),
+            }),
+        ];
+
+        assert!(matches!(invalid_code, AxVmError::InvalidInput { .. }));
+        assert!(invalid_code.to_string().contains("0xff"));
+        assert!(matches!(cases[0], AxVmError::InvalidInput { .. }));
+        assert!(matches!(cases[1], AxVmError::InvalidState { .. }));
+        assert!(matches!(cases[2], AxVmError::ResourceUnavailable { .. }));
+        assert!(matches!(cases[3], AxVmError::ResourceConflict { .. }));
+        assert!(matches!(cases[4], AxVmError::OutOfMemory { .. }));
+        assert!(matches!(cases[5], AxVmError::Memory { .. }));
+        assert!(matches!(cases[6], AxVmError::Unsupported { .. }));
+        assert!(matches!(cases[7], AxVmError::Host { .. }));
     }
 }
