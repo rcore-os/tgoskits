@@ -78,6 +78,18 @@ impl FrameTableRefCount {
 
 static FRAME_TABLE: IrqMutex<FrameTableRefCount> = IrqMutex::new(FrameTableRefCount::new());
 
+/// Length of the leading run of consecutive pages in `addrs` for which `absent`
+/// holds.
+///
+/// [`CowBackend::populate`] uses this to coalesce a run of not-mapped
+/// file-backed pages into a single backing read ([`CowBackend::alloc_file_run`]).
+/// An already-resident page (`absent` returns `false`) ends the run, so a
+/// resident page inside a readahead window splits it into separate reads instead
+/// of one read spanning the resident page.
+fn absent_run_len(addrs: &[VirtAddr], absent: impl Fn(VirtAddr) -> bool) -> usize {
+    addrs.iter().take_while(|&&addr| absent(addr)).count()
+}
+
 fn cow_file_max_read_len(
     file_len: u64,
     file_end: Option<u64>,
@@ -537,19 +549,15 @@ impl BackendOps for CowBackend {
                 }
                 Err(PagingError::NotMapped) => {
                     if self.file.is_some() {
-                        let run_start = i;
-                        while i < addrs.len()
-                            && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
-                        {
-                            i += 1;
-                        }
-                        pages += self.alloc_file_run(
-                            &addrs[run_start..i],
-                            flags,
-                            access_flags,
-                            acct,
-                            pt,
-                        )?;
+                        // Coalesce the maximal run of consecutive not-mapped pages
+                        // into a single readahead read; a resident page ends the run.
+                        let run_len = absent_run_len(&addrs[i..], |addr| {
+                            matches!(pt.query(addr), Err(PagingError::NotMapped))
+                        });
+                        let run_end = i + run_len;
+                        pages +=
+                            self.alloc_file_run(&addrs[i..run_end], flags, access_flags, acct, pt)?;
+                        i = run_end;
                     } else {
                         self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
                         pages += 1;
@@ -679,4 +687,77 @@ pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
         && matches!(cow_file_max_read_len(8192, Some(4096), 8192, 4096), Ok(0))
         // Explicit end == offset yields zero (EOF reached within bounds).
         && matches!(cow_file_max_read_len(8192, Some(4096), 4096, 4096), Ok(0))
+}
+
+/// Observes the file-backed COW readahead batching end to end: the widened
+/// window ([`super::super::fault_readahead_window`]) fed through the same
+/// run-splitting [`populate`](CowBackend::populate) uses ([`absent_run_len`]),
+/// asserting the batch read count/range under VMA-tail truncation and an
+/// already-resident-page gap. The single-page baseline would produce one 1-page
+/// read per fault, so these multi-page/coalesced expectations fail without the
+/// readahead window.
+#[cfg(axtest)]
+pub(crate) fn readahead_window_batches_absent_runs_for_test() -> bool {
+    use super::super::fault_readahead_window;
+
+    const READAHEAD_PAGES: usize = 32;
+    let ps = PAGE_SIZE_4K;
+    let base = VirtAddr::from(0x1000usize * 0x40);
+    let page = |i: usize| base + i * ps;
+    let idx_of = |addr: VirtAddr| (addr.as_usize() - base.as_usize()) / ps;
+
+    // Split a fault window into the runs of consecutive absent pages a
+    // file-backed COW fault coalesces into one backing read each, given the set
+    // of already-resident page indices. Mirrors `populate`: a resident page ends
+    // a run and is not re-read. Each run is reported as `(first_index, len)`.
+    let segment = |window: VirtAddrRange, present: &[usize]| -> alloc::vec::Vec<(usize, usize)> {
+        let addrs: alloc::vec::Vec<VirtAddr> = match pages_in(window, ps) {
+            Ok(iter) => iter.collect(),
+            Err(_) => return alloc::vec::Vec::new(),
+        };
+        let absent = |addr: VirtAddr| !present.contains(&idx_of(addr));
+        let mut runs = alloc::vec::Vec::new();
+        let mut i = 0;
+        while i < addrs.len() {
+            if absent(addrs[i]) {
+                let len = absent_run_len(&addrs[i..], &absent);
+                runs.push((idx_of(addrs[i]), len));
+                i += len;
+            } else {
+                i += 1;
+            }
+        }
+        runs
+    };
+
+    // 1) Large area: a page-0 read/exec fault widens to a 32-page window, and
+    //    with every page absent coalesces into ONE 32-page backing read.
+    let area_end = page(64);
+    let full = fault_readahead_window(page(0), ps, area_end, true);
+    let full_batch = full.start == page(0)
+        && full.end == page(READAHEAD_PAGES)
+        && segment(full, &[]) == alloc::vec![(0usize, READAHEAD_PAGES)];
+
+    // 2) VMA-tail truncation: an area ending 5 pages past the fault clamps the
+    //    window to 5 pages (window end == VMA end), one 5-page read.
+    let tail_end = page(5);
+    let tail = fault_readahead_window(page(0), ps, tail_end, true);
+    let tail_clamped = tail.start == page(0)
+        && tail.end == tail_end
+        && segment(tail, &[]) == alloc::vec![(0usize, 5usize)];
+
+    // 3) Already-resident-page gap: pages 3 and 4 resident inside a 32-page
+    //    window split the batch into two reads [0,3) and [5,32) — the resident
+    //    pages are not re-read (count == 2).
+    let gap = fault_readahead_window(page(0), ps, area_end, true);
+    let present_gap = segment(gap, &[3, 4]) == alloc::vec![(0usize, 3usize), (5usize, 27usize)];
+
+    // 4) A non-widening fault (write / anonymous / non-4K) stays a single page:
+    //    exactly one 1-page read regardless of following absent pages.
+    let single = fault_readahead_window(page(0), ps, area_end, false);
+    let single_page = single.start == page(0)
+        && single.end == page(1)
+        && segment(single, &[]) == alloc::vec![(0usize, 1usize)];
+
+    full_batch && tail_clamped && present_gap && single_page
 }

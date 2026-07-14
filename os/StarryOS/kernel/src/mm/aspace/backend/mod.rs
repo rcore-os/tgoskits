@@ -25,6 +25,7 @@ mod shared;
 #[cfg(axtest)]
 pub(crate) use self::cow::{
     cow_file_max_read_len_boundary_rules_hold_for_test, private_mmap_eof_check_for_test,
+    readahead_window_batches_absent_runs_for_test,
 };
 pub use self::shared::SharedPages;
 pub use super::accounting::RssKind;
@@ -163,6 +164,19 @@ pub struct BackendFileInfo {
 }
 
 impl Backend {
+    /// Whether a page fault in this area should also fault a short forward run of
+    /// following pages (readahead).
+    ///
+    /// Only file-backed COW areas benefit: their [`populate`](BackendOps::populate)
+    /// coalesces a run of absent pages into a single backing read (see
+    /// `CowBackend::alloc_file_run`), which is what makes demand-paged ELF/`.so`
+    /// exec loads fast. Anonymous areas are excluded on purpose — eagerly faulting
+    /// their lazily-reserved pages would inflate RSS (and regress the lazy-RSS
+    /// tests), for no I/O to batch.
+    pub fn wants_fault_readahead(&self) -> bool {
+        matches!(self, Backend::Cow(c) if !c.is_anonymous())
+    }
+
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
