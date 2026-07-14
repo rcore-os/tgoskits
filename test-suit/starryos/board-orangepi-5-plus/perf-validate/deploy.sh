@@ -62,11 +62,17 @@ deploy() {
     exit 1
   }
   # shellcheck disable=SC2029
+  # NOTE the trailing `sync`: the board's ext4 rootfs is mounted `commit=600`
+  # (dirty pages flushed to the SD only every 10 min). Without an explicit sync,
+  # the freshly-installed binary lives only in Linux's page cache; a power-cycle
+  # into StarryOS before the commit interval mounts the ext4 fresh and does NOT
+  # see the file -> `/usr/local/bin/perf-validate: not found`. `sync` forces the
+  # flush so the binary is durably on the SD before StarryOS boots.
   ssh "$BOARD_USER@$BOARD_IP" \
-    "echo $BOARD_PW | sudo -S sh -c 'mv /tmp/perf-validate $BOARD_DEST && chmod +x $BOARD_DEST' && ls -l $BOARD_DEST" || {
+    "echo $BOARD_PW | sudo -S sh -c 'mv /tmp/perf-validate $BOARD_DEST && chmod +x $BOARD_DEST && sync' && ls -l $BOARD_DEST" || {
     echo "sudo-install failed" >&2; exit 1
   }
-  echo "[perf-validate] deployed. Power-cycle into StarryOS, then run the board test."
+  echo "[perf-validate] deployed + synced. Power-cycle into StarryOS, then run the board test."
 }
 
 case "${1:-build}" in
