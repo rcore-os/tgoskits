@@ -3,8 +3,8 @@
 //! This crate ports the [SD Host Controller Standard Specification][sdhci]
 //! v3.x register layout and PIO data path into a physical
 //! [`sdio_host2::SdioHost`] implementation that
-//! [`sdmmc_protocol::sdio::SdioSdmmc`] drives through
-//! [`sdmmc_protocol::sdio::SdioSdmmc::new_host2`].
+//! [`sdmmc_protocol::sdio::card::SdioSdmmc`] drives through
+//! [`sdmmc_protocol::sdio::card::SdioSdmmc::new_host2`].
 //!
 //! # Scope
 //!
@@ -24,7 +24,7 @@
 //! use core::ptr::NonNull;
 //!
 //! use sdhci_host::Sdhci;
-//! use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
+//! use sdmmc_protocol::sdio::{card::SdioSdmmc, init::SdioInitScratch};
 //!
 //! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
 //! let host = unsafe { Sdhci::new(mmio) };
@@ -103,7 +103,7 @@ use sdmmc_protocol::{
     DataCommandPoll, OperationPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::{
+    sdio::host::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
         SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
         poll_ready_bus_op, submit_ready_bus_op,
@@ -1096,19 +1096,16 @@ impl Sdhci {
         polls: &mut u32,
     ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
         if !*started {
-            if mask == RESET_ALL
-                && let Some(hook) = self.reset_hook
-            {
-                hook.before_reset_all(self).map_err(map_protocol_error)?;
+            if mask == RESET_ALL {
+                self.call_before_reset_all_hook()
+                    .map_err(map_protocol_error)?;
             }
             self.write_u8(REG_SOFTWARE_RESET, mask);
             *started = true;
         }
         if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
             if mask == RESET_ALL {
-                if let Some(hook) = self.reset_hook {
-                    hook.after_reset(self).map_err(map_protocol_error)?;
-                }
+                self.call_after_reset_hook().map_err(map_protocol_error)?;
                 self.restore_completion_irq_after_reset(was_irq_enabled);
             }
             return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
@@ -1365,16 +1362,13 @@ impl Sdhci {
 
     fn reset_controller_for_host2_abort(&mut self) -> Result<(), sdio_host2::Error> {
         let was_irq_enabled = self.completion_irq_enabled();
-        if let Some(hook) = self.reset_hook {
-            hook.before_reset_all(self).map_err(map_protocol_error)?;
-        }
+        self.call_before_reset_all_hook()
+            .map_err(map_protocol_error)?;
         self.write_u8(REG_SOFTWARE_RESET, RESET_ALL);
         if !self.reset_with_mask_best_effort(RESET_ALL) {
             return Err(sdio_host2::Error::Timeout);
         }
-        if let Some(hook) = self.reset_hook {
-            hook.after_reset(self).map_err(map_protocol_error)?;
-        }
+        self.call_after_reset_hook().map_err(map_protocol_error)?;
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
@@ -1820,7 +1814,7 @@ mod tests {
 
     #[test]
     fn event_reports_data_completion_source_for_runtime_wakeup() {
-        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+        use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
         let event = event_from_status(NORMAL_INT_XFER_COMPLETE, 0);
 
@@ -1831,7 +1825,7 @@ mod tests {
 
     #[test]
     fn merged_command_and_data_irq_reports_queue_ready() {
-        use sdmmc_protocol::sdio::{HostEvent, HostEventKind, HostEventSource};
+        use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
         let event = event_from_status(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE, 0);
 

@@ -43,7 +43,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Waker,
     time::Duration,
 };
@@ -75,6 +75,21 @@ use crate::{
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
 const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Per-interface cumulative RX/TX byte and packet counters.
+///
+/// Populated from the router data paths and read by `/proc/net/dev`. Byte
+/// counts use the IP packet length carried on the `Medium::Ip` links exposed by
+/// this stack.
+#[derive(Debug, Clone)]
+pub struct NetDevStats {
+    pub interface_id: InterfaceId,
+    pub name: String,
+    pub rx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_bytes: u64,
+    pub tx_packets: u64,
+}
 
 #[derive(Debug)]
 pub struct Rule {
@@ -259,6 +274,12 @@ struct DeviceHandle {
     /// sticky, so a device wake that races with the worker entering `wait()`
     /// must be preserved here until the worker observes it.
     rx_ready: AtomicBool,
+    /// Cumulative bytes/packets received on and transmitted by this interface,
+    /// exposed through `/proc/net/dev`.
+    rx_bytes: AtomicU64,
+    rx_packets: AtomicU64,
+    tx_bytes: AtomicU64,
+    tx_packets: AtomicU64,
 }
 
 impl DeviceHandle {
@@ -280,7 +301,34 @@ impl DeviceHandle {
                 device: weak.clone(),
             })),
             rx_ready: AtomicBool::new(false),
+            rx_bytes: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            tx_packets: AtomicU64::new(0),
         })
+    }
+
+    /// Records `len` bytes received on this interface.
+    fn count_rx(&self, len: usize) {
+        self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        self.rx_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records `len` bytes transmitted by this interface.
+    fn count_tx(&self, len: usize) {
+        self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        self.tx_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn stats(&self) -> NetDevStats {
+        NetDevStats {
+            interface_id: self.interface_id,
+            name: self.name.clone(),
+            rx_bytes: self.rx_bytes.load(Ordering::Relaxed),
+            rx_packets: self.rx_packets.load(Ordering::Relaxed),
+            tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
+            tx_packets: self.tx_packets.load(Ordering::Relaxed),
+        }
     }
 
     fn wake_rx(&self) {
@@ -310,6 +358,7 @@ impl DeviceHandle {
             );
             return false;
         }
+        self.count_tx(packet.len());
         self.tx_wake.notify_one(true);
         true
     }
@@ -525,6 +574,13 @@ impl Router {
         self.devices.get(dev).map(|device| device.interface_id)
     }
 
+    /// Finds the router device index for a public interface id.
+    pub fn device_index_for_interface_id(&self, interface_id: InterfaceId) -> Option<usize> {
+        self.devices
+            .iter()
+            .position(|device| device.interface_id == interface_id)
+    }
+
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
@@ -674,6 +730,12 @@ impl Router {
     ) -> bool {
         let device = &self.devices[dev];
         if device.interface_id == InterfaceId::LOOPBACK {
+            // Loopback traffic is transmitted and received on the same
+            // interface. RX is counted here (not in `poll`) because the injected
+            // packet is drained from the shared RX queue without an owning
+            // device.
+            device.count_tx(packet.len());
+            device.count_rx(packet.len());
             return inject_loopback_rx(&self.queues.rx, next_hop, packet);
         }
         device.enqueue_tx(next_hop, packet)
@@ -686,6 +748,11 @@ impl Router {
             entries.extend(device.inner.lock().arp_entries(timestamp));
         }
         entries
+    }
+
+    /// Returns a per-interface snapshot of RX/TX byte and packet counters.
+    pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
+        self.devices.iter().map(|device| device.stats()).collect()
     }
 
     /// Registers a global device-readiness waker for all devices.
@@ -808,7 +875,10 @@ fn dispatch_unicast_packet(
     let dev = &devices[route.dev];
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
-        // buffer, bypassing per-device workers and the shared RX queue.
+        // buffer, bypassing per-device workers and the shared RX queue. This
+        // fast path never reaches `poll`, so both directions are counted here.
+        dev.count_tx(packet.len());
+        dev.count_rx(packet.len());
         inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
     } else {
         dev.enqueue_tx(route.next_hop, packet)
@@ -898,6 +968,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
+            let packet_len = packet.len();
             let rx = RxPacket {
                 interface_id,
                 bytes: match QueuedPacket::new(packet) {
@@ -918,6 +989,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
                 ax_task::yield_now();
                 break;
             }
+            device.count_rx(packet_len);
             crate::request_poll();
             received = true;
         }

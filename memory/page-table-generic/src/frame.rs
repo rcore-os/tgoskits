@@ -8,6 +8,7 @@ use crate::{
 pub struct Frame<T: TableMeta, A: FrameAllocator> {
     pub paddr: PhysAddr,
     pub allocator: A,
+    frames: usize,
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -28,6 +29,9 @@ where
     pub(crate) const PT_INDEX_BITS: usize = cal_index_bits::<T>();
     pub(crate) const PT_VALID_BITS: usize = Self::PT_INDEX_BITS + Self::PT_INDEX_SHIFT;
     pub(crate) const LEN: usize = T::PAGE_SIZE / core::mem::size_of::<T::P>();
+    pub(crate) const ROOT_LEN: usize = 1usize << T::LEVEL_BITS[0];
+    pub(crate) const ROOT_FRAMES: usize =
+        (Self::ROOT_LEN * core::mem::size_of::<T::P>()).div_ceil(T::PAGE_SIZE);
     pub(crate) const PT_LEVEL: usize = T::LEVEL_BITS.len();
 
     /// 创建新的页表帧（分配并清零）
@@ -41,6 +45,26 @@ where
         Ok(Self {
             paddr,
             allocator,
+            frames: 1,
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// 创建新的根页表帧。
+    pub fn new_root(allocator: A) -> PagingResult<Self> {
+        let align = T::PAGE_SIZE * Self::ROOT_FRAMES;
+        let paddr = allocator
+            .alloc_frames(Self::ROOT_FRAMES, align)
+            .ok_or(PagingError::NoMemory)?;
+        unsafe {
+            let vaddr = allocator.phys_to_virt(paddr);
+            core::ptr::write_bytes(vaddr, 0, T::PAGE_SIZE * Self::ROOT_FRAMES);
+        }
+
+        Ok(Self {
+            paddr,
+            allocator,
+            frames: Self::ROOT_FRAMES,
             _marker: core::marker::PhantomData,
         })
     }
@@ -50,6 +74,17 @@ where
         Self {
             paddr,
             allocator,
+            frames: 1,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// 从根页表物理地址创建Frame（不分配）
+    pub fn from_root_paddr(paddr: PhysAddr, allocator: A) -> Self {
+        Self {
+            paddr,
+            allocator,
+            frames: Self::ROOT_FRAMES,
             _marker: core::marker::PhantomData,
         }
     }
@@ -63,13 +98,22 @@ where
     /// 获取页表项的可变切片
     pub fn as_slice_mut(&mut self) -> &mut [T::P] {
         let vaddr = self.allocator.phys_to_virt(self.paddr);
-        unsafe { core::slice::from_raw_parts_mut(vaddr as *mut T::P, Self::LEN) }
+        unsafe { core::slice::from_raw_parts_mut(vaddr as *mut T::P, self.len()) }
     }
 
     /// 获取页表项的不可变切片
     pub fn as_slice(&self) -> &[T::P] {
         let vaddr = self.allocator.phys_to_virt(self.paddr);
-        unsafe { core::slice::from_raw_parts(vaddr as *const T::P, Self::LEN) }
+        unsafe { core::slice::from_raw_parts(vaddr as *const T::P, self.len()) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.frames * Self::LEN
+    }
+
+    /// Returns whether this frame range contains no page-table entries.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// 计算指定级别对应的映射大小
@@ -152,7 +196,8 @@ where
         self.deallocate_children(level);
 
         // 再释放当前帧
-        self.allocator.dealloc_frame(self.paddr);
+        self.allocator
+            .dealloc_frames(self.paddr, self.frames, T::PAGE_SIZE);
     }
 
     /// 只释放子页表帧，保留当前帧
@@ -165,7 +210,7 @@ where
     /// - `level`: 当前帧所在的页表级别（1=叶子，数字越大级别越高）
     pub fn deallocate_children(&mut self, level: usize) {
         // 反向遍历以避免索引变化问题
-        for i in (0..Self::LEN).rev() {
+        for i in (0..self.len()).rev() {
             // 先获取当前PTE的状态
             let entry_info = {
                 let entries = self.as_slice();
@@ -272,7 +317,7 @@ where
     /// - `index`: 要释放的PTE索引
     /// - `level`: 当前帧所在的页表级别
     pub fn dealloc_entry_recursive(&mut self, index: usize, level: usize) -> bool {
-        if index >= Self::LEN || level <= 1 {
+        if index >= self.len() || level <= 1 {
             return false;
         }
 

@@ -1,6 +1,7 @@
-use axvcpu::{AccessWidth, AxVCpuExitReason, GuestPhysAddr, MappingFlags};
-
-use crate::context_frame::LoongArchContextFrame;
+use crate::{
+    context_frame::LoongArchContextFrame,
+    types::{LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchVmExit},
+};
 
 const INSN_RJ_SHIFT: usize = 5;
 const INSN_REG_MASK: usize = 0x1f;
@@ -45,86 +46,100 @@ const LDX_WU_OP: usize = 0x7050;
 pub fn decode_mmio_fault(
     ctx: &mut LoongArchContextFrame,
     insn: usize,
-    fault_addr: GuestPhysAddr,
-    access_flags: MappingFlags,
-) -> Option<AxVCpuExitReason> {
+    fault_addr: LoongArchGuestPhysAddr,
+    access_flags: LoongArchAccessFlags,
+) -> Option<LoongArchVmExit> {
     let access_flags = refine_access_flags_from_insn(insn, access_flags);
-    let fault_addr = fault_addr.as_usize();
+    let fault_addr_raw = fault_addr.as_usize();
     let op = (insn >> MEMORY_ACCESS_OP_SHIFT) & MEMORY_ACCESS_OP_MASK;
     let rd = (insn >> MEMORY_ACCESS_RD_SHIFT) & INSN_REG_MASK;
     let exit_reason = match op {
-        LD_B_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
+        LD_B_OP if access_flags.contains(LoongArchAccessFlags::READ) => LoongArchVmExit::MmioRead {
+            addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+            width: LoongArchAccessWidth::Byte,
             reg: rd,
-            reg_width: AccessWidth::Qword,
+            reg_width: LoongArchAccessWidth::Qword,
             signed_ext: true,
         },
-        LD_H_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
+        LD_H_OP if access_flags.contains(LoongArchAccessFlags::READ) => LoongArchVmExit::MmioRead {
+            addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+            width: LoongArchAccessWidth::Word,
             reg: rd,
-            reg_width: AccessWidth::Qword,
+            reg_width: LoongArchAccessWidth::Qword,
             signed_ext: true,
         },
-        LD_W_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
+        LD_W_OP if access_flags.contains(LoongArchAccessFlags::READ) => LoongArchVmExit::MmioRead {
+            addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+            width: LoongArchAccessWidth::Dword,
             reg: rd,
-            reg_width: AccessWidth::Qword,
+            reg_width: LoongArchAccessWidth::Qword,
             signed_ext: true,
         },
-        LD_D_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Qword,
+        LD_D_OP if access_flags.contains(LoongArchAccessFlags::READ) => LoongArchVmExit::MmioRead {
+            addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+            width: LoongArchAccessWidth::Qword,
             reg: rd,
-            reg_width: AccessWidth::Qword,
+            reg_width: LoongArchAccessWidth::Qword,
             signed_ext: false,
         },
-        LD_BU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        LD_HU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        LD_WU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        ST_B_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
-            data: ctx.gpr(rd) as u64,
-        },
-        ST_H_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
-            data: ctx.gpr(rd) as u64,
-        },
-        ST_W_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            data: ctx.gpr(rd) as u64,
-        },
-        ST_D_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Qword,
-            data: ctx.gpr(rd) as u64,
-        },
+        LD_BU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Byte,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        LD_HU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Word,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        LD_WU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Dword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        ST_B_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Byte,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        ST_H_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Word,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        ST_W_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Dword,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        ST_D_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr_raw),
+                width: LoongArchAccessWidth::Qword,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
         _ => {
-            return decode_ptr_mmio_fault(ctx, insn, fault_addr, access_flags)
-                .or_else(|| decode_indexed_mmio_fault(ctx, insn, fault_addr, access_flags));
+            return decode_ptr_mmio_fault(ctx, insn, fault_addr_raw, access_flags)
+                .or_else(|| decode_indexed_mmio_fault(ctx, insn, fault_addr_raw, access_flags));
         }
     };
 
@@ -132,11 +147,14 @@ pub fn decode_mmio_fault(
     Some(exit_reason)
 }
 
-fn refine_access_flags_from_insn(insn: usize, fallback: MappingFlags) -> MappingFlags {
+fn refine_access_flags_from_insn(
+    insn: usize,
+    fallback: LoongArchAccessFlags,
+) -> LoongArchAccessFlags {
     if is_load_insn(insn) {
-        MappingFlags::READ
+        LoongArchAccessFlags::READ
     } else if is_store_insn(insn) {
-        MappingFlags::WRITE
+        LoongArchAccessFlags::WRITE
     } else {
         fallback
     }
@@ -186,36 +204,40 @@ fn decode_ptr_mmio_fault(
     ctx: &mut LoongArchContextFrame,
     insn: usize,
     fault_addr: usize,
-    access_flags: MappingFlags,
-) -> Option<AxVCpuExitReason> {
+    access_flags: LoongArchAccessFlags,
+) -> Option<LoongArchVmExit> {
     let op = (insn >> PTR_OP_SHIFT) & PTR_OP_MASK;
     let rd = (insn >> MEMORY_ACCESS_RD_SHIFT) & INSN_REG_MASK;
     let exit_reason = match op {
-        LDPTR_W_PREFIX if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: true,
-        },
-        LDPTR_D_PREFIX if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Qword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        STPTR_W_PREFIX if access_flags.contains(MappingFlags::WRITE) => {
-            AxVCpuExitReason::MmioWrite {
-                addr: GuestPhysAddr::from(fault_addr),
-                width: AccessWidth::Dword,
+        LDPTR_W_PREFIX if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Dword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: true,
+            }
+        }
+        LDPTR_D_PREFIX if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Qword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        STPTR_W_PREFIX if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Dword,
                 data: ctx.gpr(rd) as u64,
             }
         }
-        STPTR_D_PREFIX if access_flags.contains(MappingFlags::WRITE) => {
-            AxVCpuExitReason::MmioWrite {
-                addr: GuestPhysAddr::from(fault_addr),
-                width: AccessWidth::Qword,
+        STPTR_D_PREFIX if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Qword,
                 data: ctx.gpr(rd) as u64,
             }
         }
@@ -230,81 +252,103 @@ fn decode_indexed_mmio_fault(
     ctx: &mut LoongArchContextFrame,
     insn: usize,
     fault_addr: usize,
-    access_flags: MappingFlags,
-) -> Option<AxVCpuExitReason> {
+    access_flags: LoongArchAccessFlags,
+) -> Option<LoongArchVmExit> {
     let op = (insn >> INDEXED_ACCESS_OP_SHIFT) & INDEXED_ACCESS_OP_MASK;
     let rd = (insn >> MEMORY_ACCESS_RD_SHIFT) & INSN_REG_MASK;
 
     let exit_reason = match op {
-        LDX_B_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: true,
-        },
-        LDX_H_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: true,
-        },
-        LDX_W_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: true,
-        },
-        LDX_D_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Qword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        LDX_BU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        LDX_HU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        LDX_WU_OP if access_flags.contains(MappingFlags::READ) => AxVCpuExitReason::MmioRead {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            reg: rd,
-            reg_width: AccessWidth::Qword,
-            signed_ext: false,
-        },
-        STX_B_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Byte,
-            data: ctx.gpr(rd) as u64,
-        },
-        STX_H_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Word,
-            data: ctx.gpr(rd) as u64,
-        },
-        STX_W_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Dword,
-            data: ctx.gpr(rd) as u64,
-        },
-        STX_D_OP if access_flags.contains(MappingFlags::WRITE) => AxVCpuExitReason::MmioWrite {
-            addr: GuestPhysAddr::from(fault_addr),
-            width: AccessWidth::Qword,
-            data: ctx.gpr(rd) as u64,
-        },
+        LDX_B_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Byte,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: true,
+            }
+        }
+        LDX_H_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Word,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: true,
+            }
+        }
+        LDX_W_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Dword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: true,
+            }
+        }
+        LDX_D_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Qword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        LDX_BU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Byte,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        LDX_HU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Word,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        LDX_WU_OP if access_flags.contains(LoongArchAccessFlags::READ) => {
+            LoongArchVmExit::MmioRead {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Dword,
+                reg: rd,
+                reg_width: LoongArchAccessWidth::Qword,
+                signed_ext: false,
+            }
+        }
+        STX_B_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Byte,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        STX_H_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Word,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        STX_W_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Dword,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
+        STX_D_OP if access_flags.contains(LoongArchAccessFlags::WRITE) => {
+            LoongArchVmExit::MmioWrite {
+                addr: LoongArchGuestPhysAddr::from(fault_addr),
+                width: LoongArchAccessWidth::Qword,
+                data: ctx.gpr(rd) as u64,
+            }
+        }
         _ => return None,
     };
 

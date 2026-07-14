@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.28](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.27...ax-hal-v0.5.28) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.26...ax-hal-v0.5.27) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.25...ax-hal-v0.5.26) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu, ax-plat, ax-alloc, axplat-dyn
+
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.24...ax-hal-v0.5.25) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive, ax-plat, ax-alloc, axplat-dyn
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.23...ax-hal-v0.5.24) - 2026-07-07
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.22...ax-hal-v0.5.23) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(irq-framework)* use domain-scoped irq ids
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(starry-kernel)* move arch runtime helpers into HAL ([#1427](https://github.com/rcore-os/tgoskits/pull/1427))
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.21...ax-hal-v0.5.22) - 2026-06-27
 
 ### Added

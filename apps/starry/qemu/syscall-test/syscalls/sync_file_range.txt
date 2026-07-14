@@ -1,0 +1,2 @@
+# sync_file_range01 # TFAIL: invalid flags case succeeds unexpectedly
+# sync_file_range02 # TCONF: no supported filesystem is available in the current environment

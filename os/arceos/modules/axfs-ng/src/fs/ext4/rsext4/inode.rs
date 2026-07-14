@@ -4,7 +4,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::any::Any;
+use core::{any::Any, cell::Cell};
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
@@ -33,6 +33,10 @@ impl Inode {
         this: Option<WeakDirEntry>,
         path: Option<String>,
     ) -> Arc<Self> {
+        // NOTE: callers MUST call state.inc_ref(ino) before or after
+        // creating the Inode Arc.  We cannot lock here because many
+        // callers already hold the Ext4State lock (lookup_locked,
+        // create, link) and SpinNoIrq is not recursive.
         Arc::new(Self {
             fs,
             ino,
@@ -81,6 +85,7 @@ impl Inode {
         let (ino, inode) = rsext4::dir::get_inode_with_num(fs, dev, &path)
             .map_err(into_vfs_err)?
             .ok_or(VfsError::NotFound)?;
+        state.inc_ref(ino);
         Ok(self.create_entry(ino, &inode, name))
     }
 
@@ -90,11 +95,23 @@ impl Inode {
         ino: InodeNumber,
     ) -> VfsResult<()> {
         fs.modify_inode(dev, ino, |inode| {
-            if cfg!(feature = "times") {
-                inode.i_ctime = crate::os::wall_time().as_secs() as u32;
-            }
+            inode.i_ctime = crate::os::wall_time().as_secs() as u32;
         })
         .map_err(into_vfs_err)
+    }
+}
+
+impl Drop for Inode {
+    fn drop(&mut self) {
+        let mut state = self.fs.lock();
+        let is_last = state.dec_ref(self.ino);
+        if is_last && state.is_zero_link(self.ino) {
+            state.clear_zero_link(self.ino);
+            let (fs, dev) = state.split();
+            if let Ok(mut on_disk) = fs.get_inode_by_num(dev, self.ino) {
+                let _ = rsext4::free_inode(fs, dev, self.ino, &mut on_disk);
+            }
+        }
     }
 }
 
@@ -159,9 +176,7 @@ impl NodeOps for Inode {
                 if let Some(mtime) = update.mtime {
                     inode.i_mtime = mtime.as_secs() as u32;
                 }
-                if cfg!(feature = "times") {
-                    inode.i_ctime = crate::os::wall_time().as_secs() as u32;
-                }
+                inode.i_ctime = crate::os::wall_time().as_secs() as u32;
             })
             .map_err(into_vfs_err)?;
         }
@@ -204,11 +219,12 @@ impl FileNodeOps for Inode {
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
-            // Use inode-number-based write to avoid path re-resolution.
-            // Path-based write_file() fails with NotFound after rename/unlink,
-            // which causes dirty page loss when jcode atomically replaces files.
+            // Use inode-number-based write so open-unlinked regular files
+            // remain writable after their directory entry has been removed.
+            // Path-based write_file() fails with NotFound after unlink.
             rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         }
+        self.fs.sync_to_disk()?;
         Ok(buf.len())
     }
 
@@ -221,19 +237,20 @@ impl FileNodeOps for Inode {
             rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
             length
         };
+        self.fs.sync_to_disk()?;
         Ok((buf.len(), length + buf.len() as u64))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        let mut state = self.fs.lock();
-        let (fs, dev) = state.split();
-        rsext4::truncate(
-            dev,
-            fs,
-            &self.path.clone().ok_or(VfsError::InvalidInput)?,
-            len,
-        )
-        .map_err(into_vfs_err)
+        {
+            let mut state = self.fs.lock();
+            let (fs, dev) = state.split();
+            // An open-unlinked regular file stays alive by inode number, not by
+            // a directory entry.  set_len must operate on the inode directly
+            // because path re-resolution would fail after unlink.
+            rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)?;
+        }
+        self.fs.sync_to_disk()
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
@@ -458,6 +475,7 @@ impl DirNodeOps for Inode {
             })
             .map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, ino)?;
+            state.inc_ref(ino);
             ino
         };
 
@@ -506,14 +524,13 @@ impl DirNodeOps for Inode {
             let target_ino = InodeNumber::new(node.inode() as u32).map_err(into_vfs_err)?;
             Self::update_ctime_with(fs, dev, target_ino)?;
         }
-        self.fs.sync_to_disk()?;
         self.lookup_locked(name)
     }
 
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         let dir_path = self.dir_path()?;
         let path = join_child_path(&dir_path, name);
-        let mut forget_file_ino = None;
+        let forget_file_ino: Cell<Option<InodeNumber>> = Cell::new(None);
         {
             let mut state = self.fs.lock();
             let (fs, dev) = state.split();
@@ -528,20 +545,46 @@ impl DirNodeOps for Inode {
                 (false, true) => return Err(VfsError::NotADirectory),
                 _ => {}
             }
+            let mut deferred_zero_link: Option<InodeNumber> = None;
             if inode.is_dir() {
                 let mut dir_inode = inode; // Ext4Inode is Copy
                 if !rsext4::is_dir_empty(fs, dev, &mut dir_inode).map_err(into_vfs_err)? {
                     return Err(VfsError::DirectoryNotEmpty);
                 }
                 rsext4::delete_dir(fs, dev, &path).map_err(into_vfs_err)?;
-            } else {
-                if inode.i_links_count <= 1 {
-                    forget_file_ino = Some(ino);
-                }
+            } else if inode.i_links_count > 1 {
+                // Multiple hard links remain after this one is removed.
                 rsext4::unlink(fs, dev, &path).map_err(into_vfs_err)?;
+            } else {
+                // Last (or only) link.  Mark the inode zero-link,
+                // remove the directory entry, and defer the
+                // zero-link / free_inode check until after the
+                // fs/dev split borrow ends.
+                fs.modify_inode(dev, ino, |on_disk| {
+                    on_disk.i_links_count = 0;
+                })
+                .map_err(into_vfs_err)?;
+                rsext4::remove_inodeentry_from_parentdir(fs, dev, &dir_path, name)
+                    .map_err(into_vfs_err)?;
+                deferred_zero_link = Some(ino);
+            }
+            // Capture the inode number for page-cache key cleanup.
+            // This must be set before the fs/dev borrow ends because
+            // deferred_zero_link is bound inside this scope.
+            forget_file_ino.set(deferred_zero_link);
+            // fs/dev borrow ends here (last use in all branches).
+            // `state` is accessible again.
+            if let Some(ino) = deferred_zero_link
+                && state.mark_zero_link(ino)
+            {
+                // No live Inode Arcs — free immediately.
+                let (fs, dev) = state.split();
+                if let Ok(mut on_disk) = fs.get_inode_by_num(dev, ino) {
+                    let _ = rsext4::free_inode(fs, dev, ino, &mut on_disk);
+                }
             }
         }
-        if let Some(ino) = forget_file_ino {
+        if let Some(ino) = forget_file_ino.get() {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
         self.fs.sync_to_disk()

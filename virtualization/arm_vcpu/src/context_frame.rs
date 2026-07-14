@@ -176,7 +176,6 @@ pub struct GuestSystemRegisters {
     pub vmpidr_el2: u64,
 
     // 64bit EL1/EL0 register
-    pub sp_el0: u64,
     sp_el1: u64,
     elr_el1: u64,
     spsr_el1: u32,
@@ -251,7 +250,6 @@ impl GuestSystemRegisters {
             // MRS!("self.vpidr_el2, VPIDR_EL2, "x");
             asm!("mrs {0}, VMPIDR_EL2", out(reg) self.vmpidr_el2);
 
-            asm!("mrs {0}, SP_EL0", out(reg) self.sp_el0);
             asm!("mrs {0}, SP_EL1", out(reg) self.sp_el1);
             asm!("mrs {0}, ELR_EL1", out(reg) self.elr_el1);
             asm!("mrs {0:x}, SPSR_EL1", out(reg) self.spsr_el1);
@@ -311,9 +309,7 @@ impl GuestSystemRegisters {
             asm!("msr CNTV_CVAL_EL0, {0}", in(reg) timer.cntv_cval_el0);
             asm!("msr CNTP_CTL_EL0, {0:x}", in(reg) timer.cntp_ctl_el0);
             asm!("msr CNTV_CTL_EL0, {0:x}", in(reg) timer.cntv_ctl_el0);
-            // The restoration of SP_EL0 is done in `exception_return_el2`,
-            // which move the value from `self.ctx.sp_el0` to `SP_EL0`.
-            // asm!("msr SP_EL0, {0}", in(reg) self.sp_el0);
+            // Guest SP_EL0 is part of TrapFrame and is restored by `exception_return_el2`.
             asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);
             asm!("msr ELR_EL1, {0}", in(reg) self.elr_el1);
             asm!("msr SPSR_EL1, {0:x}", in(reg) self.spsr_el1);

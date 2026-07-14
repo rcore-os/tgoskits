@@ -8,7 +8,7 @@ use core::fmt::{Debug, Display};
 /// # 示例
 ///
 /// ```
-/// use rockchip_soc::pinctrl::PinId;
+/// use rockchip_soc::PinId;
 ///
 /// // GPIO0_A0 = PinId 0
 /// let pin0 = PinId::new(0).unwrap();
@@ -17,7 +17,7 @@ use core::fmt::{Debug, Display};
 /// let pin32 = PinId::new(32).unwrap();
 ///
 /// // 从 bank 和 pin 创建
-/// use rockchip_soc::pinctrl::BankId;
+/// use rockchip_soc::BankId;
 /// let pin = PinId::from_bank_pin(BankId::new(1).unwrap(), 0).unwrap();
 /// assert_eq!(pin.raw(), 32);
 /// ```
@@ -96,7 +96,7 @@ impl PinId {
 /// # 示例
 ///
 /// ```
-/// use rockchip_soc::pinctrl::BankId;
+/// use rockchip_soc::BankId;
 ///
 /// let bank0 = BankId::new(0).unwrap();
 /// assert_eq!(bank0.raw(), 0);

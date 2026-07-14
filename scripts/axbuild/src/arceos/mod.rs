@@ -4,10 +4,14 @@ use std::{
     process::Command as StdCommand,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use log::warn;
-use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+use ostool::{
+    board::{RunBoardOptions, config::BoardRunConfig},
+    build::config::Cargo,
+    run::qemu::QemuConfig,
+};
 
 use crate::{
     context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
@@ -77,8 +81,10 @@ fn should_recreate_runtime_image(workspace_root: &Path, image: &Path) -> bool {
     image.starts_with(crate::context::axbuild_tmp_dir(workspace_root).join("runtime-assets"))
 }
 
+mod board;
 pub mod build;
 pub mod cbuild;
+pub mod config;
 pub mod rootfs;
 pub mod test;
 
@@ -106,10 +112,16 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run ArceOS application in QEMU
     Qemu(ArgsQemu),
+    /// Generate a default ArceOS dynamic board config
+    Defconfig(ArgsDefconfig),
+    /// ArceOS board config helpers
+    Config(ArgsConfig),
     /// Run ArceOS test suites
     Test(test::ArgsTest),
     /// Build and run ArceOS application with U-Boot
     Uboot(ArgsUboot),
+    /// Build and run ArceOS application on a remote board
+    Board(ArgsBoard),
 }
 
 #[derive(Args)]
@@ -122,8 +134,6 @@ pub struct ArgsBuild {
     pub arch: Option<String>,
     #[arg(short, long)]
     pub target: Option<String>,
-    #[arg(long = "plat_dyn", alias = "plat-dyn")]
-    pub plat_dyn: Option<bool>,
 
     #[arg(long, value_name = "CPUS")]
     pub smp: Option<usize>,
@@ -154,6 +164,41 @@ pub struct ArgsUboot {
     pub uboot_config: Option<PathBuf>,
 }
 
+#[derive(Args)]
+pub struct ArgsBoard {
+    #[command(flatten)]
+    pub build: ArgsBuild,
+
+    #[arg(long = "board-config")]
+    pub board_config: Option<PathBuf>,
+
+    #[arg(short = 'b', long = "board-type")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+}
+
+#[derive(Args)]
+pub struct ArgsDefconfig {
+    pub board: String,
+}
+
+#[derive(Args)]
+pub struct ArgsConfig {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// List available board names
+    Ls,
+}
+
 // ---------------------------------------------------------------------------
 // ArceOS executor
 // ---------------------------------------------------------------------------
@@ -169,7 +214,6 @@ impl From<&ArgsBuild> for BuildCliArgs {
             package: args.package.clone(),
             arch: args.arch.clone(),
             target: args.target.clone(),
-            plat_dyn: args.plat_dyn,
             smp: args.smp,
             debug: args.debug,
         }
@@ -186,7 +230,10 @@ impl ArceOS {
         match command {
             Command::Build(args) => self.build(args).await,
             Command::Qemu(args) => self.qemu(args).await,
+            Command::Defconfig(args) => self.defconfig(args),
+            Command::Config(args) => self.config(args),
             Command::Uboot(args) => self.uboot(args).await,
+            Command::Board(args) => self.board(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -219,6 +266,38 @@ impl ArceOS {
             SnapshotPersistence::Store,
         )?;
         self.run_uboot_request(request).await
+    }
+
+    fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
+        let path = config::write_defconfig(self.app.workspace_root(), &args.board)?;
+        println!("Generated {} for board {}", path.display(), args.board);
+        Ok(())
+    }
+
+    fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
+        match args.command {
+            ConfigCommand::Ls => {
+                for board in config::available_board_names(self.app.workspace_root())? {
+                    println!("{board}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn board(&mut self, args: ArgsBoard) -> anyhow::Result<()> {
+        let request =
+            self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
+        self.run_board_request(
+            request,
+            args.board_config,
+            RunBoardOptions {
+                board_type: args.board_type,
+                server: args.server,
+                port: args.port,
+            },
+        )
+        .await
     }
 
     // ---- test dispatch ----
@@ -282,6 +361,33 @@ impl ArceOS {
         }
     }
 
+    async fn load_board_config(
+        &mut self,
+        cargo: &Cargo,
+        board_config_path: Option<&Path>,
+    ) -> anyhow::Result<BoardRunConfig> {
+        match board_config_path {
+            Some(path) => {
+                self.app
+                    .read_board_run_config_from_path_for_cargo(cargo, path)
+                    .await
+            }
+            None => {
+                let workspace_root = self.app.workspace_root().to_path_buf();
+                self.app
+                    .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
+                    .await
+            }
+        }
+    }
+
+    fn validate_board_request(request: &ResolvedBuildRequest) -> anyhow::Result<()> {
+        if request.build_info_path.exists() {
+            board::load_build_file(&request.build_info_path)?;
+        }
+        Ok(())
+    }
+
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         match build::load_arceos_build_mode(&request.build_info_path)? {
             build::ArceosBuildMode::RustStd => {
@@ -290,6 +396,61 @@ impl ArceOS {
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
                 self.run_c_app_qemu_request(request, app_dir, app_name)
+                    .await
+            }
+        }
+    }
+
+    async fn run_board_request(
+        &mut self,
+        request: ResolvedBuildRequest,
+        board_config_path: Option<PathBuf>,
+        options: RunBoardOptions,
+    ) -> anyhow::Result<()> {
+        self.run_board_request_with_extra_rustflags(request, board_config_path, options, &[])
+            .await
+    }
+
+    pub(super) async fn run_board_request_with_extra_rustflags(
+        &mut self,
+        request: ResolvedBuildRequest,
+        board_config_path: Option<PathBuf>,
+        options: RunBoardOptions,
+        extra_rustflags: &[&str],
+    ) -> anyhow::Result<()> {
+        Self::validate_board_request(&request)?;
+        self.app.set_debug_mode(request.debug)?;
+        match build::load_arceos_build_mode(&request.build_info_path)? {
+            build::ArceosBuildMode::RustStd => {
+                let mut cargo = build::load_cargo_config(&request)?;
+                if !extra_rustflags.is_empty() {
+                    crate::build::append_encoded_rustflags(&mut cargo, extra_rustflags);
+                }
+                let board_config = self
+                    .load_board_config(&cargo, board_config_path.as_deref())
+                    .await?;
+                self.app
+                    .board(cargo, request.build_info_path, board_config, options)
+                    .await
+            }
+            build::ArceosBuildMode::AppC { app_dir, app_name } => {
+                if !extra_rustflags.is_empty() {
+                    bail!("ArceOS board extra rustflags are only supported for RustStd packages");
+                }
+                let request = c_app_internal_request(&request);
+                let cargo = build::load_c_app_cargo_config(&request)?;
+                let board_config = self
+                    .load_board_config(&cargo, board_config_path.as_deref())
+                    .await?;
+                let output = self.build_c_app_request(&request, app_dir, app_name)?;
+                self.app
+                    .board_prepared_elf(
+                        output.elf_path,
+                        cargo.to_bin,
+                        request.build_info_path,
+                        board_config,
+                        options,
+                    )
                     .await
             }
         }
@@ -433,9 +594,65 @@ fn c_app_internal_request(request: &ResolvedBuildRequest) -> ResolvedBuildReques
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use tempfile::tempdir;
 
     use super::*;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    fn parse(args: impl IntoIterator<Item = &'static str>) -> Command {
+        Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[test]
+    fn command_parses_defconfig() {
+        match parse(["arceos", "defconfig", "orangepi-5-plus"]) {
+            Command::Defconfig(args) => assert_eq!(args.board, "orangepi-5-plus"),
+            _ => panic!("expected defconfig command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_config_ls() {
+        match parse(["arceos", "config", "ls"]) {
+            Command::Config(args) => match args.command {
+                ConfigCommand::Ls => {}
+            },
+            _ => panic!("expected config ls command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_board() {
+        match parse([
+            "arceos",
+            "board",
+            "--config",
+            "build.toml",
+            "--board-config",
+            "board.toml",
+            "-b",
+            "OrangePi-5-Plus",
+            "--server",
+            "10.0.0.2",
+            "--port",
+            "9000",
+        ]) {
+            Command::Board(args) => {
+                assert_eq!(args.build.config, Some(PathBuf::from("build.toml")));
+                assert_eq!(args.board_config, Some(PathBuf::from("board.toml")));
+                assert_eq!(args.board_type.as_deref(), Some("OrangePi-5-Plus"));
+                assert_eq!(args.server.as_deref(), Some("10.0.0.2"));
+                assert_eq!(args.port, Some(9000));
+            }
+            _ => panic!("expected board command"),
+        }
+    }
 
     #[test]
     fn qemu_runtime_disk_images_finds_disk_img_drive_paths() {
@@ -488,7 +705,6 @@ body = "fixture"
             package: "arceos-httpclient".to_string(),
             arch: "x86_64".to_string(),
             target: "x86_64-unknown-none".to_string(),
-            plat_dyn: Some(true),
             smp: Some(1),
             debug: false,
             build_info_path: root.path().join("build.toml"),

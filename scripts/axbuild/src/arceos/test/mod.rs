@@ -1,5 +1,7 @@
 mod args;
 mod assets;
+mod axtest_qemu;
+mod board;
 mod c_qemu;
 mod discovery;
 mod generic_qemu;
@@ -8,16 +10,19 @@ mod runner;
 mod rust_qemu;
 mod types;
 
-pub use args::{ArgsTest, ArgsTestQemu, TestCommand};
+pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
 
 use crate::arceos::ArceOS;
 
 const ARCEOS_RUST_TEST_GROUP: &str = "rust";
 const ARCEOS_C_TEST_GROUP: &str = "c";
+const ARCEOS_AXTEST_GROUP: &str = "axtest";
 const ARCEOS_TEST_SUITE_OS: &str = "arceos";
 const ARCEOS_RUST_TEST_PACKAGE: &str = "arceos-test-suit";
 const ARCEOS_RUST_TEST_BUILD_GROUP: &str = "arceos-test-suit";
 const ARCEOS_C_TEST_BUILD_GROUP: &str = "arceos-c-test-suit";
+pub(super) const ARCEOS_AXTEST_RUSTFLAGS: &[&str] =
+    &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
 
 const ARCEOS_RUST_ALL_FEATURE: &str = "all";
 const ARCEOS_C_ALL_FEATURE: &str = "all";
@@ -78,5 +83,6 @@ const ARCEOS_C_QEMU_LISTED_CASES: &[&str] = &[
 pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
         TestCommand::Qemu(args) => runner::test_qemu(arceos, args).await,
+        TestCommand::Board(args) => arceos.test_board(args).await,
     }
 }

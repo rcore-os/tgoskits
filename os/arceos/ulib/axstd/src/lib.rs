@@ -4,10 +4,6 @@
 //! to rust [std], but calling the functions directly in ArceOS modules, instead
 //! of using libc and system calls.
 //!
-//! These features are exactly the same as those in [ax-feat], they are used to
-//! provide users with the selection of features in ax-feat, without import
-//! [ax-feat] additionally:
-//!
 //! ## Cargo Features
 //!
 //! - CPU
@@ -21,11 +17,12 @@
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
 //!     - `multitask`: Enable multi-threading support.
-//!     - `sched-fifo`: Use the FIFO cooperative scheduler.
 //!     - `sched-rr`: Use the Round-robin preemptive scheduler.
 //!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
 //! - Upperlayer stacks
 //!     - `fs`: Enable file system support.
+//!     - `ext4fs`: Enable the ext4 filesystem.
+//!     - `fatfs`: Enable the FAT filesystem.
 //!     - `net`: Enable networking support.
 //!     - `dns`: Enable DNS lookup support.
 //!     - `display`: Enable graphics support.

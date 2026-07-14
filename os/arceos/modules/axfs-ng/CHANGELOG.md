@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.2...ax-fs-ng-v0.8.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.1...ax-fs-ng-v0.8.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-sync
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.0...ax-fs-ng-v0.8.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, axfs-ng-vfs, rsext4, rdif-block, ax-sync
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.7.0...ax-fs-ng-v0.8.0) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+- *(starry)* back /proc/diskstats, /proc/net/dev and /proc/mounts with real data ([#1504](https://github.com/rcore-os/tgoskits/pull/1504))
+
+### Fixed
+
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+- *(starry-mm)* bound per-file page-cache pre-allocation to avoid OOM ([#1499](https://github.com/rcore-os/tgoskits/pull/1499))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.6.0...ax-fs-ng-v0.7.0) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(ax-fs-ng)* keep early IRQ block events ([#1429](https://github.com/rcore-os/tgoskits/pull/1429))
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.5.21...ax-fs-ng-v0.6.0) - 2026-06-27
 
 ### Fixed

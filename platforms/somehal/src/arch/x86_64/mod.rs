@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
@@ -12,7 +13,7 @@ use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
 
 use crate::{
     common::PlatOp,
-    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource, X86_LAPIC_DOMAIN},
+    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId, IrqSource, X86_LAPIC_DOMAIN},
 };
 
 mod lapic;
@@ -26,6 +27,9 @@ use vector::{
 };
 
 const MASKED_IOAPIC_PLACEHOLDER_VECTOR: u8 = 0x21;
+const IRQ_ROUTE_VALID: u64 = 1 << 63;
+
+static IOAPIC_CPU_IF: X86IoApicCpuInterface = X86IoApicCpuInterface::new();
 
 pub struct Plat;
 
@@ -41,6 +45,49 @@ module_driver!(
         on_probe: probe_ioapic
     }],
 );
+
+struct X86IoApicCpuInterface {
+    vector_routes: [AtomicU64; 256],
+}
+
+impl X86IoApicCpuInterface {
+    const fn new() -> Self {
+        Self {
+            vector_routes: [const { AtomicU64::new(0) }; 256],
+        }
+    }
+
+    fn remember_vector_route(&self, vector: usize, irq: IrqId) -> Result<u8, IrqError> {
+        let vector_u8 = validate_external_vector(vector)?;
+        let encoded = encode_irq_id(irq);
+        let slot = &self.vector_routes[usize::from(vector_u8)];
+
+        match slot.compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(vector_u8),
+            Err(existing) if existing == encoded => Ok(vector_u8),
+            Err(_) => Err(IrqError::Busy),
+        }
+    }
+
+    fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
+        let vector = u8::try_from(vector).ok()?;
+        decode_irq_id(self.vector_routes[usize::from(vector)].load(Ordering::Acquire))
+    }
+}
+
+fn encode_irq_id(irq: IrqId) -> u64 {
+    IRQ_ROUTE_VALID | ((u64::from(irq.domain.0)) << 32) | u64::from(irq.hwirq.0)
+}
+
+fn decode_irq_id(encoded: u64) -> Option<IrqId> {
+    if encoded & IRQ_ROUTE_VALID == 0 {
+        return None;
+    }
+
+    let domain = IrqDomainId(((encoded >> 32) & u64::from(u16::MAX)) as u16);
+    let hwirq = HwIrq((encoded & u64::from(u32::MAX)) as u32);
+    Some(IrqId::new(domain, hwirq))
+}
 
 struct X86IoApicIntc {
     ioapics: Vec<X86IoApic>,
@@ -72,10 +119,12 @@ impl X86IoApicIntc {
             return Err(IrqError::Busy);
         }
 
+        IOAPIC_CPU_IF.remember_vector_route(vector, irq)?;
         self.vector_routes.push((vector, irq));
         Ok(vector_u8)
     }
 
+    #[cfg(test)]
     fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
         self.vector_routes
             .iter()
@@ -428,14 +477,9 @@ impl PlatOp for Plat {
         }
 
         match ioapic_irq_for_vector(raw) {
-            Ok(Some(irq)) => Some(ActiveIrq::new(irq)),
-            Ok(None) => {
+            Some(irq) => Some(ActiveIrq::new(irq)),
+            None => {
                 warn!("unrouted x86 interrupt vector {raw:#x}");
-                lapic::eoi();
-                None
-            }
-            Err(err) => {
-                warn!("failed to resolve x86 interrupt vector {raw:#x}: {err:?}");
                 lapic::eoi();
                 None
             }
@@ -468,9 +512,7 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn secondary_init_intc(_cpu_idx: usize) {}
-
-    fn secondary_init_systick() {}
+    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
 
     fn send_ipi_to_cpu(cpu_id: usize) {
         Self::send_ipi(lapic_ipi_irq_id(), crate::irq::IpiTarget::Other { cpu_id });
@@ -578,16 +620,8 @@ fn set_ioapic_gsi_destination(
     Ok(ioapic.set_gsi_destination(gsi, dest))
 }
 
-fn ioapic_irq_for_vector(vector: usize) -> Result<Option<IrqId>, IrqError> {
-    let Some(domain) = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::X86IoApic) else {
-        return Ok(None);
-    };
-    let intc = crate::irq::intc_by_domain(domain)?;
-    let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
-    let ioapic = intc
-        .typed_mut::<X86IoApicIntc>()
-        .ok_or(IrqError::Unsupported)?;
-    Ok(ioapic.irq_for_vector(vector))
+fn ioapic_irq_for_vector(vector: usize) -> Option<IrqId> {
+    IOAPIC_CPU_IF.irq_for_vector(vector)
 }
 
 fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {
@@ -646,6 +680,34 @@ mod tests {
 
         assert_eq!(intc.irq_for_vector(vector), Some(irq));
         assert_ne!(intc.irq_for_vector(vector), Some(ioapic_gsi_irq_id(3)));
+    }
+
+    #[test]
+    fn ioapic_cpu_interface_resolves_vector_without_controller_device() {
+        let vector = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 5;
+        let irq = ioapic_gsi_irq_id(21);
+        let cpu_if = X86IoApicCpuInterface::new();
+
+        cpu_if.remember_vector_route(vector, irq).unwrap();
+
+        assert_eq!(cpu_if.irq_for_vector(vector), Some(irq));
+        assert_eq!(cpu_if.irq_for_vector(vector + 1), None);
+    }
+
+    #[test]
+    fn ioapic_cpu_interface_rejects_vector_conflicts() {
+        let vector = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 6;
+        let irq = ioapic_gsi_irq_id(22);
+        let conflicting = ioapic_gsi_irq_id(23);
+        let cpu_if = X86IoApicCpuInterface::new();
+
+        assert_eq!(cpu_if.remember_vector_route(vector, irq), Ok(vector as u8));
+        assert_eq!(cpu_if.remember_vector_route(vector, irq), Ok(vector as u8));
+        assert_eq!(
+            cpu_if.remember_vector_route(vector, conflicting),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(cpu_if.irq_for_vector(vector), Some(irq));
     }
 
     #[test]

@@ -34,9 +34,8 @@
 graph LR
     current["ax-posix-api"]
     current --> ax-alloc["ax-alloc"]
-    current --> axconfig["ax-config"]
     current --> ax_errno["ax-errno"]
-    current --> ax-feat["ax-feat"]
+    current --> ax-runtime["ax-runtime"]
     current --> ax-fs["ax-fs"]
     current --> ax-hal["ax-hal"]
     current --> axio["ax-io"]
@@ -46,9 +45,8 @@ graph LR
 
 ### 直接依赖
 - `ax-alloc`
-- `axconfig`
 - `ax-errno`
-- `ax-feat`
+- `ax-runtime`
 - `ax-fs`
 - `ax-hal`
 - `axio`
@@ -64,8 +62,6 @@ graph LR
 - `axaddrspace`
 - `ax-allocator`
 - `axbacktrace`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-display`
 - `ax-dma`

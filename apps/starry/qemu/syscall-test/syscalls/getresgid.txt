@@ -1,0 +1,6 @@
+getresgid01
+# getresgid01_16 # TCONF: 16-bit getresgid is not supported on x86_64
+getresgid02
+# getresgid02_16 # TCONF: 16-bit getresgid is not supported on x86_64
+getresgid03
+# getresgid03_16 # TCONF: 16-bit getresgid is not supported on x86_64

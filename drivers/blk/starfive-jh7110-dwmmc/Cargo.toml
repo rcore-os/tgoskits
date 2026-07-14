@@ -1,0 +1,20 @@
+[package]
+name = "starfive-jh7110-dwmmc"
+version = "0.1.2"
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "StarFive JH7110 DWMMC host wrapper for sdmmc-protocol"
+keywords = ["starfive", "jh7110", "dwmmc", "sdmmc", "no_std"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[dependencies]
+dma-api.workspace = true
+dwmmc-host.workspace = true
+rdif-block.workspace = true
+sdio-host2.workspace = true
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
+log.workspace = true
+
+[features]
+default = []

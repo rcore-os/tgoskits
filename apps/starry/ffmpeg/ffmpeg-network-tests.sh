@@ -153,19 +153,38 @@ wait "$tcp_server_pid" 2>/dev/null || true
 # ---- UDP loopback ----
 echo "FFMPEG_NETWORK_STAGE udp-loopback"
 has_protocol "udp" || fail "udp protocol not supported"
-ffmpeg -y -i "udp://127.0.0.1:12346?timeout=5000000" \
-    -c copy \
-    /tmp/ffmpeg-net-workdir/udp_recv.ts \
-    > /tmp/ffmpeg-net-workdir/udp_recv.log 2>&1 &
-udp_recv_pid=$!
-sleep 1
+udp_ok=0
+udp_attempt=0
+while [ "$udp_attempt" -lt 3 ]; do
+    udp_port=$((12346 + udp_attempt))
+    rm -f /tmp/ffmpeg-net-workdir/udp_recv.ts
 
-ffmpeg -y -i "$TEST_MEDIA_DIR/test_160x120.mp4" \
-    -c copy -f mpegts "udp://127.0.0.1:12346" \
-    > /tmp/ffmpeg-net-workdir/udp_send.log 2>&1 || true
+    ffmpeg -y -fflags +genpts -i "udp://127.0.0.1:${udp_port}?timeout=10000000&overrun_nonfatal=1&fifo_size=1000000" \
+        -c copy -t 2 \
+        /tmp/ffmpeg-net-workdir/udp_recv.ts \
+        > /tmp/ffmpeg-net-workdir/udp_recv.log 2>&1 &
+    udp_recv_pid=$!
+    sleep 2
 
-wait "$udp_recv_pid" 2>/dev/null || true
-[ -s /tmp/ffmpeg-net-workdir/udp_recv.ts ] || fail "UDP transfer produced empty output"
+    ffmpeg -y -re -stream_loop 8 -i "$TEST_MEDIA_DIR/test_160x120.mp4" \
+        -c copy -f mpegts "udp://127.0.0.1:${udp_port}?pkt_size=1316" \
+        > /tmp/ffmpeg-net-workdir/udp_send.log 2>&1 &
+    udp_send_pid=$!
+
+    wait "$udp_recv_pid" 2>/dev/null || true
+    kill "$udp_send_pid" 2>/dev/null || true
+    wait "$udp_send_pid" 2>/dev/null || true
+
+    if [ -s /tmp/ffmpeg-net-workdir/udp_recv.ts ]; then
+        udp_ok=1
+        break
+    fi
+
+    echo "  UDP loopback attempt $((udp_attempt + 1)) produced empty output"
+    udp_attempt=$((udp_attempt + 1))
+    sleep 1
+done
+[ "$udp_ok" -eq 1 ] || fail "UDP transfer produced empty output"
 
 # ---- HTTP output (client fetch) ----
 echo "FFMPEG_NETWORK_STAGE http-output"

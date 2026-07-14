@@ -68,7 +68,7 @@ socket 入口：
 | `ax-sync` / `ax-kspin` | 锁与同步 |
 | `ax-io` | I/O buffer 与读写抽象 |
 | `ax-errno` | `AxError` / `AxResult` |
-| `ax-config` | `AX_IP`、`AX_GW`、`AX_DNS` 等构建期配置 |
+| build env | `AX_IP`、`AX_GW`、`AX_DNS` 等构建期网络参数 |
 | `ax-hal` | 时间等底层能力 |
 | `ax-fs-ng` / `axfs-ng-vfs` | Unix domain socket 路径绑定 |
 | `rd-net` | Ethernet queue/DMA 设备抽象 |
@@ -77,7 +77,7 @@ socket 入口：
 主要消费者：
 
 - `ax-runtime`：网络和 vsock 初始化。
-- `ax-feat`：`net` / `vsock` feature 装配。
+- `ax-runtime`：`net` / `vsock` feature 装配。
 - `ax-api`、`ax-posix-api`：ArceOS 网络 API 和 POSIX socket 路径。
 - `ax-std`、`ax-libc`：通过上层 API 间接消费网络能力。
 - `starry-kernel`：Linux syscall socket 底层实现。

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.12](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.11...ax-alloc-v0.8.12) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.11](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.10...ax-alloc-v0.8.11) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.10](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.9...ax-alloc-v0.8.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.8.9](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.8...ax-alloc-v0.8.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-plat
+
+## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.7...ax-alloc-v0.8.8) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, axbacktrace, ax-percpu, ax-plat
+
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.6...ax-alloc-v0.8.7) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-errno, ax-plat
+
 ## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.5...ax-alloc-v0.8.6) - 2026-06-27
 
 ### Other

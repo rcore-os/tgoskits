@@ -9,6 +9,23 @@ const CSI_PCIE_ZRXDC_NONCOMPL: u32 = 1 << 20;
 const CSI_L1_ENTRY_LATENCY: u32 = 0x0719;
 const CSI_L1_ENTRY_LATENCY_DEFAULT: u8 = 0x27;
 
+const MII_BMCR: u32 = 0x00;
+const MII_CTRL1000: u32 = 0x09;
+
+const BMCR_ANRESTART: u16 = 0x0200;
+const BMCR_ANENABLE: u16 = 0x1000;
+const BMCR_AUTONEG_MASK: u16 = BMCR_ANENABLE | BMCR_ANRESTART;
+
+const ADVERTISE_1000HALF: u16 = 0x0100;
+const ADVERTISE_1000FULL: u16 = 0x0200;
+const ADVERTISE_1000_MASK: u16 = ADVERTISE_1000HALF | ADVERTISE_1000FULL;
+
+trait PhyRegisterAccess {
+    fn read_phy(&mut self, reg: u32) -> Result<u16>;
+
+    fn write_phy(&mut self, reg: u32, value: u16) -> Result<()>;
+}
+
 impl Rtl8125 {
     pub(crate) fn hw_init_8125(&self) -> Result<()> {
         self.enable_rxdv_gate();
@@ -334,7 +351,8 @@ impl Rtl8125 {
         match self.chip {
             ChipVersion::Rtl8125A => self.hw_phy_config_8125a(),
             ChipVersion::Rtl8125B | ChipVersion::Unknown(_) => self.hw_phy_config_8125b(),
-        }
+        }?;
+        configure_default_copper_autoneg(self)
     }
 
     fn hw_phy_config_8125a(&mut self) -> Result<()> {
@@ -406,6 +424,32 @@ impl Rtl8125 {
             core::hint::spin_loop();
         }
         warn!("RTL8125: timed out waiting for link-list FIFO ready");
+    }
+}
+
+fn configure_default_copper_autoneg(phy: &mut impl PhyRegisterAccess) -> Result<()> {
+    // Standard MII registers are available from the default PHY page.
+    phy.write_phy(0x1f, 0)?;
+    let ctrl1000 = phy.read_phy(MII_CTRL1000)?;
+    phy.write_phy(
+        MII_CTRL1000,
+        (ctrl1000 & !ADVERTISE_1000_MASK) | ADVERTISE_1000FULL,
+    )?;
+    // Restart negotiation only after the gigabit mode is advertised.
+    let bmcr = phy.read_phy(MII_BMCR)?;
+    phy.write_phy(
+        MII_BMCR,
+        (bmcr & !BMCR_AUTONEG_MASK) | BMCR_ANENABLE | BMCR_ANRESTART,
+    )
+}
+
+impl PhyRegisterAccess for Rtl8125 {
+    fn read_phy(&mut self, reg: u32) -> Result<u16> {
+        self.phy_read(reg)
+    }
+
+    fn write_phy(&mut self, reg: u32, value: u16) -> Result<()> {
+        self.phy_write(reg, value)
     }
 }
 
@@ -525,3 +569,65 @@ const RTL8125B_EPHY: [EphyInfo; 6] = [
         bits: 0x0020,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum OperationKind {
+        Read,
+        Write,
+    }
+
+    struct RecordingPhy {
+        page: u16,
+        operations: Vec<(OperationKind, u16, u32, u16)>,
+    }
+
+    impl PhyRegisterAccess for RecordingPhy {
+        fn read_phy(&mut self, reg: u32) -> Result<u16> {
+            // Seed target and unrelated bits to verify clear/set behavior and preservation.
+            let value = match (self.page, reg) {
+                (0, 0x09) => 0x0500,
+                (0, 0x00) => 0x0140,
+                _ => 0,
+            };
+            self.operations
+                .push((OperationKind::Read, self.page, reg, value));
+            Ok(value)
+        }
+
+        fn write_phy(&mut self, reg: u32, value: u16) -> Result<()> {
+            self.operations
+                .push((OperationKind::Write, self.page, reg, value));
+            if reg == 0x1f {
+                self.page = value;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_copper_autoneg_advertises_gigabit_before_restarting() {
+        let mut phy = RecordingPhy {
+            page: 0x0b87,
+            operations: Vec::new(),
+        };
+
+        configure_default_copper_autoneg(&mut phy).unwrap();
+
+        assert_eq!(
+            phy.operations,
+            [
+                (OperationKind::Write, 0x0b87, 0x1f, 0),
+                (OperationKind::Read, 0, 0x09, 0x0500),
+                (OperationKind::Write, 0, 0x09, 0x0600),
+                (OperationKind::Read, 0, 0x00, 0x0140),
+                (OperationKind::Write, 0, 0x00, 0x1340),
+            ]
+        );
+    }
+}

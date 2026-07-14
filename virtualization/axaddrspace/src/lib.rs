@@ -19,23 +19,13 @@
 extern crate log;
 extern crate alloc;
 
-#[cfg(all(feature = "vmx", feature = "svm"))]
-compile_error!("features `vmx` and `svm` are mutually exclusive");
-
 mod address_space;
+mod error;
 mod memory_accessor;
-mod npt;
+mod paging;
 
-pub use address_space::{AddrSpace, MappingFlags};
-use ax_errno::AxError;
-use ax_memory_set::MappingError;
+pub use address_space::{AddrSpace, Backend};
+pub use axvm_types::MappingFlags;
+pub use error::{AddrSpaceError, AddrSpaceResult};
 pub use memory_accessor::GuestMemoryAccessor;
-
-fn mapping_err_to_ax_err(err: MappingError) -> AxError {
-    warn!("Mapping error: {err:?}");
-    match err {
-        MappingError::InvalidParam => AxError::InvalidInput,
-        MappingError::AlreadyExists => AxError::AlreadyExists,
-        MappingError::BadState => AxError::BadState,
-    }
-}
+pub use paging::{NestedPageTableOps, PageSize};

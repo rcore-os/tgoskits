@@ -1,10 +1,9 @@
 target = "loongarch64-unknown-none-softfloat"
 log = "Warn"
 features = [
-  "ax-hal/plat-dyn",
   "axplat-dyn/efi",
-  "ax-feat/display",
-  "ax-feat/rtc",
+  "ax-runtime/display",
+  "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",

@@ -46,8 +46,7 @@ fn rejects_mismatched_build_target_filename() {
         root.path(),
         "demo",
         "build-aarch64-unknown-none-softfloat.toml",
-        "target = \"x86_64-unknown-none\"\nenv = {}\nfeatures = []\nlog = \"Info\"\nplat_dyn = \
-         false\n",
+        "target = \"x86_64-unknown-none\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
     );
 
     let err = discover_case_build_config(
@@ -67,7 +66,7 @@ fn qemu_build_config_comes_from_app_dir() {
         root.path(),
         "codex-cli",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),
@@ -94,33 +93,32 @@ fn qemu_build_config_can_come_from_nearest_parent() {
     let root = tempdir().unwrap();
     let outer = write_case_file(
         root.path(),
-        "qemu-smp1",
+        "qemu",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     let inner = write_case_file(
         root.path(),
-        "qemu-smp1/nested",
+        "qemu/nested",
         "build-x86_64-unknown-none.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = [\"nearest\"]\nlog = \"Info\"\nplat_dyn = \
-         false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = [\"nearest\"]\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),
-        "qemu-smp1/nested/codex-cli",
+        "qemu/nested/codex-cli",
         "prebuild.sh",
         "#!/usr/bin/env bash\n",
     );
     write_case_file(
         root.path(),
-        "qemu-smp1/nested/codex-cli",
+        "qemu/nested/codex-cli",
         "qemu-x86_64.toml",
         "args = []\n",
     );
     let app = discover_apps(root.path())
         .unwrap()
         .into_iter()
-        .find(|app| app.name == "qemu-smp1/nested/codex-cli")
+        .find(|app| app.name == "qemu/nested/codex-cli")
         .unwrap();
 
     let selected = discover_optional_build_config(&app.case_dir, "x86_64-unknown-none")
@@ -138,7 +136,7 @@ fn qemu_build_config_rejects_legacy_arch_name() {
         root.path(),
         "codex-cli",
         "build-x86_64.toml",
-        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\nplat_dyn = false\n",
+        "target = \"x86_64-unknown-none\"\nfeatures = []\nlog = \"Info\"\n",
     );
     write_case_file(
         root.path(),

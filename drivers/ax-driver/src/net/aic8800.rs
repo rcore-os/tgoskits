@@ -27,8 +27,6 @@
 //! attached to the device via `WifiLinkPolicy`, which the runtime reads back
 //! generically through `wifi_control()` once the network service is up.
 
-use core::ptr::NonNull;
-
 use log::{error, info};
 use rd_net::WifiLinkPolicy;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
@@ -106,14 +104,11 @@ fn resolve_fdt_irq(
     Ok(translation.id)
 }
 
-/// Raw IRQ trampoline: the SDIO1 controller interrupt is forwarded to the SDHCI
+/// IRQ trampoline: the SDIO1 controller interrupt is forwarded to the SDHCI
 /// handler (CARD_INT detection). This is a *controller-level* IRQ, distinct from
 /// a NIC's rx/tx-queue IRQ, so the net device itself registers with `irq=None`
 /// and RX is driven out-of-band via the chip's RX-data callback.
-unsafe fn sdio1_raw_irq_handler(
-    _ctx: axklib::irq::IrqContext,
-    _data: NonNull<()>,
-) -> axklib::irq::IrqReturn {
+fn sdio1_irq_handler(_ctx: axklib::irq::IrqContext) -> axklib::irq::IrqReturn {
     sdhci_cv1800::irq::sdhci_irq_handler(0);
     axklib::irq::IrqReturn::Handled
 }
@@ -152,13 +147,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // Register the SDIO1 controller IRQ (shared). Resolved from the FDT node.
     let irq = resolve_fdt_irq(&info)?;
     info!("[wifi] SDIO1 IRQ resolved to {irq:?}");
-    let irq_handle =
-        axklib::irq::request_shared_disabled(irq, sdio1_raw_irq_handler, NonNull::dangling())
-            .map_err(|e| {
-                OnProbeError::other(alloc::format!(
-                    "[wifi] failed to register SDIO1 IRQ {irq:?}: {e:?}"
-                ))
-            })?;
+    let irq_handle = axklib::irq::request_shared_disabled(irq, sdio1_irq_handler).map_err(|e| {
+        OnProbeError::other(alloc::format!(
+            "[wifi] failed to register SDIO1 IRQ {irq:?}: {e:?}"
+        ))
+    })?;
 
     // SDHCI init.
     let mut sdio = CviSdhci::new(cfg.sdio1_base_va);
@@ -204,6 +197,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             "[wifi] failed to enable SDIO1 IRQ {irq:?}: {e:?}"
         )));
     }
+    info!("[wifi] SDIO1 IRQ {irq:?} registered and enabled");
 
     // Attach the board's SoftAP link policy to the device, then register it
     // through the ordinary net device path. The runtime reads the policy back

@@ -43,7 +43,7 @@ sidebar_label: "锁使用问题跟踪"
 
 | 区域 | 当前状态 | 风险 | 后续方向 |
 | --- | --- | --- | --- |
-| `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fatfs`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
+| `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fat`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
 | `os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` | rsext4 主状态使用 `SpinNoIrq`。 | `sync_to_disk`、读写、truncate、create、unlink、rename 等路径可能持锁执行 cache、journal、allocation 和 block-device 操作。 | 不应再机械换成其他自旋锁。需要设计 ext4 粗锁拆分、I/O 外移或早期 rootfs 工作上下文调整。 |
 | `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` | lwext4 文件系统对象使用 `SpinNoIrq`。 | 多个 VFS 操作持锁进入 `lwext4_rust`，`flush()` 也直接在锁内调用后端 flush。 | 与 rsext4 一起复查 ext4 系列锁策略，避免长期在原子上下文包住文件系统实现。 |
 | `components/axfs-ng-vfs/src/node/dir.rs` | dentry cache 使用 `SpinNoIrq`，当前已缩小锁范围。 | 旧问题是 cache guard 下调用 filesystem `lookup`、`create`、`unlink`、`open_file` 等后端操作。当前已调整为 VFS cache 锁内只访问 cache map，后端操作在锁外执行。 | 保持当前边界。新增 dentry cache 路径时禁止在 cache guard 内调用后端 FS、socket、设备或用户态相关回调。 |
@@ -100,6 +100,7 @@ sidebar_label: "锁使用问题跟踪"
 - VFS cache / user_data guard 内不应执行文件系统、socket、设备等后端回调。应先复制出必要的 `Arc` 或小状态，再释放 guard。
 - 文件系统粗锁包住 block I/O 是当前最大的未完成项。把 `SpinNoPreempt` 改成 `SpinNoIrq` 只是关闭 IRQ 重入风险，不代表 I/O under spin lock 合理。
 - 早期启动阶段的 `might_sleep()` 误伤和真实运行期 atomic sleep bug 需要区分。长期方向是让启动阶段进入更清晰的 sleepability 状态，或把 rootfs / pseudofs 初始化移动到正常任务上下文。
+- `might_sleep()` 已纳入显式 IRQ context，并能在 `lockdep` 构建下输出 held-lock stack；held non-sleep lock 作为直接触发条件仍待后续阶段。锁策略调整仍应先消除 spin guard 内的 fault、alloc、I/O、callback，而不是依赖诊断机制长期兜底；详细计划见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。
 
 ## 复查命令
 

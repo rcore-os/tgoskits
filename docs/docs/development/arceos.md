@@ -65,9 +65,8 @@ os/arceos/
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()
-│   └── axconfig/     # 编译时配置生成
 ├── api/              # 对外 API 层
-│   ├── axfeat/       # 顶层 feature 聚合（单一真相源）
+│   ├── feature/       # 顶层 feature 聚合（单一真相源）
 │   ├── arceos_api/   # 公共 API 和类型
 │   └── arceos_posix_api/  # POSIX 兼容 API
 ├── ulib/             # 用户侧库
@@ -85,8 +84,7 @@ apps/arceos/
 ├── thread_test/
 ├── tokio_test/
 ├── arce_agent/
-├── shell/
-└── helloworld-myplat/
+└── shell/
 ```
 
 ---
@@ -158,7 +156,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ax-feat = { path = "../../api/axfeat" }
+ax-runtime = { path = "../../api/feature" }
 log = "0.4"
 
 [features]
@@ -201,9 +199,9 @@ pub fn do_something() -> i32 {
 ax_mymod::init();
 ```
 
-**6) 在 `axfeat` 中注册 feature**
+**6) 在 `feature` 中注册 feature**
 
-在 `os/arceos/api/axfeat/Cargo.toml` 中添加：
+在 `os/arceos/api/feature/Cargo.toml` 中添加：
 
 ```toml
 [features]
@@ -221,9 +219,9 @@ cargo xtask arceos qemu --package arceos-helloworld --arch aarch64 --features my
 
 ### 3.3 Feature 驱动编译
 
-ArceOS 的核心设计是 **feature 聚合**：应用在 `Cargo.toml` 中声明需要的 feature，`axfeat` 将它们传播到对应模块。
+ArceOS 的核心设计是 **feature 聚合**：应用在 `Cargo.toml` 中声明需要的 feature，`feature` 将它们传播到对应模块。
 
-`axfeat` 中的 feature 定义示例（简化）：
+`feature` 中的 feature 定义示例（简化）：
 
 ```toml
 [features]
@@ -237,7 +235,7 @@ paging = ["alloc", "ax-hal/paging", "ax-runtime/paging"]
 
 # 任务
 multitask = ["alloc", "ax-task/multitask", "ax-sync/multitask", "ax-runtime/multitask"]
-sched-fifo = ["ax-task/sched-fifo"]
+multitask = ["ax-task/multitask"]
 sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]
 
@@ -368,52 +366,36 @@ C 应用覆盖由 `test-suit/arceos/c` 维护；`apps/arceos` 只保留 Rust std
 
 ## 5. 平台开发
 
-### 5.1 平台 crate 结构
+### 5.1 动态平台扩展点
 
-以 `ax-plat-riscv64-sg2002` 为例：
+仓库内置平台路径固定为 `axplat-dyn`。新增板卡或 QEMU 变体时，优先把平台事实接入运行时发现链路：
 
-```
-platforms/ax-plat-riscv64-sg2002/
-├── Cargo.toml
-├── axconfig.toml     # 平台配置（内存布局、SMP 数等）
-├── build.rs          # 构建脚本
-└── src/
-    └── lib.rs        # 实现 console/time/irq 等平台接口
-```
+- **somehal**：启动入口、FDT/ACPI/UEFI、内存图、CPU、时钟和中断事实来源。
+- **axplat-dyn**：把 somehal 的运行时事实转成 `ax-plat` 契约，并接入设备探测 glue。
+- **ax-driver / rdrive**：通过 FDT/ACPI/PCI 或外部自定义 probe 注册设备。
 
-平台 crate 需要实现的接口由 `axconfig` 和 `axhal` 定义，包括：
-
-- **console**：`write_text_bytes()` — 字符输出
-- **time**：`current_time()`, `set_oneshot_timer()` — 时钟
-- **irq**：`set_extern_irq_handler()`, `enable_irq()` — 中断管理
+外部 `ax-plat-*` crate 只作为兼容边界存在，不是当前仓库内置维护路径，也不再通过 build feature 或 `--platform` 在内置构建链中选择。
 
 ### 5.2 平台目录
 
 | 目录 | 内容 |
 |------|------|
-| `platforms/` | 工作区内 `ax-plat-*` 平台 crate |
+| `platforms/` | 工作区内平台契约和动态平台实现；当前内置平台路径为 `axplat-dyn` |
 | `platforms/axplat-dyn/` | 动态平台加载（UEFI/FDT/ACPI 运行时平台事实与设备探测 glue） |
 
-已有平台：
+AArch64、RISC-V QEMU、x86_64 QEMU、LoongArch QEMU 和 SG2002 板卡默认由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载。仓库不再内置 SG2002 或其他固定板级平台 crate。
 
-| 平台 | 架构 | 目标硬件 |
-|------|------|---------|
-| `ax-plat-riscv64-sg2002` | riscv64 | SG2002 板级平台 |
+旧的按平台 feature 或 `--plat` 选择实现的写法需要迁移：直接使用 `--arch` 选择目标架构。动态路径会进入 `axplat-dyn` 和 UEFI/FDT/ACPI 启动链路。
 
-AArch64、RISC-V QEMU、x86_64 QEMU 和 LoongArch QEMU 默认平台由 `axplat-dyn` 通过 UEFI/设备树/ACPI 等运行时信息加载，不再把 LoongArch QEMU 静态平台 crate 作为当前平台路径。
+### 5.3 添加板卡支持
 
-旧 LoongArch QEMU 写法需要迁移：`ax-hal/loongarch64-qemu-virt` 改为 `ax-hal/plat-dyn`，`ax-driver/plat-static` 改为 `ax-driver/plat-dyn`，`plat_dyn = false` 改为省略或 `true`，命令行不要再写 `--plat loongarch64-qemu-virt`，直接使用 `--arch loongarch64`。动态路径会进入 `axplat-dyn` 和 UEFI/`efi` 启动链路。
-
-### 5.3 添加新平台
-
-1. 在 `platforms/` 下创建新 crate
-2. 实现 `axhal` 要求的平台接口
-3. 编写 `axconfig.toml` 配置内存布局和硬件参数
-4. 在根 `Cargo.toml` 中注册为 workspace member
-5. 验证：
+1. 确认固件表、FDT/ACPI 或 UEFI 能描述必要硬件资源。
+2. 在 `somehal` 或 `axplat-dyn` glue 中补齐运行时事实转译。
+3. 在 `ax-driver`/`rdrive` 中补齐对应设备 probe 或外部自定义 probe。
+4. 验证：
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --arch <arch> --platform <platform-name>
+cargo xtask arceos qemu --package arceos-helloworld --arch <arch>
 ```
 
 ---
@@ -477,7 +459,6 @@ fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
 | `features` | 启用的 ArceOS feature 列表 |
 | `log` | 日志级别（error/warn/info/debug/trace） |
 | `max_cpu_num` | 最大 CPU 数 |
-| `plat_dyn` | 是否使用动态平台 |
 | `args` | QEMU 启动参数 |
 | `success_regex` | 匹配成功的正则 |
 | `fail_regex` | 匹配失败的正则 |

@@ -14,7 +14,6 @@ ax-io
 axklib
 axpoll
 ax-sched
-axvcpu
 axvm
 axvmconfig
 bitmap-allocator
@@ -34,7 +33,6 @@ starry-signal
 starry-vm
 ax-timer-list
 ax-alloc
-ax-config
 ax-display
 ax-driver
 ax-hal
@@ -45,6 +43,7 @@ ax-ipi
 ax-log
 ax-net
 ax-runtime
-ax-feat
 ax-api
+rockchip-jpeg
+rockchip-npu
 rockchip-rga

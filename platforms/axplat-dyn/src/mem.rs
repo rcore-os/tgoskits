@@ -1,5 +1,8 @@
-use ax_plat::mem::{MemIf, PhysAddr, RawRange, VirtAddr};
+use ax_plat::mem::{
+    DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr,
+};
 use heapless::Vec;
+use someboot::ArchTrait;
 use somehal::mem::MemoryType;
 use spin::Once;
 
@@ -118,6 +121,25 @@ impl MemIf for MemIfImpl {
         })
     }
 
+    fn prepare_iomap(
+        addr: PhysAddr,
+        size: usize,
+        attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError> {
+        if size == 0 {
+            return Err(IomapError::InvalidInput);
+        }
+        let paddr: PhysAddr =
+            <someboot::arch::Arch as ArchTrait>::canonicalize_paddr(addr.as_usize()).into();
+        if attrs == IomapAttrs::DEVICE
+            && let Some(vaddr) =
+                <someboot::arch::Arch as ArchTrait>::ioremap_device(paddr.as_usize(), size)
+        {
+            return Ok(IomapDecision::Mapped((vaddr as usize).into()));
+        }
+        Ok(IomapDecision::UseGeneric(paddr))
+    }
+
     fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         (somehal::mem::phys_to_virt(paddr.as_usize()) as usize).into()
     }
@@ -129,6 +151,34 @@ impl MemIf for MemIfImpl {
     fn kernel_aspace() -> (VirtAddr, usize) {
         let range = somehal::mem::kernel_space();
         (range.start.into(), range.len())
+    }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        <someboot::arch::Arch as ArchTrait>::user_aspace_needs_kernel_mappings()
+    }
+
+    fn dcache_range(op: DCacheOp, addr: VirtAddr, size: usize) {
+        somehal::cache::dcache_range(to_somehal_dcache_op(op), addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_make_uncached(addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_restore_cached(addr.as_usize() as *const u8, size);
+    }
+
+    fn dma_coherent_after_mapping_update() {
+        somehal::cache::dma_coherent_after_mapping_update();
+    }
+}
+
+fn to_somehal_dcache_op(op: DCacheOp) -> somehal::cache::DCacheOp {
+    match op {
+        DCacheOp::Clean => somehal::cache::DCacheOp::Clean,
+        DCacheOp::Invalidate => somehal::cache::DCacheOp::Invalidate,
+        DCacheOp::CleanInvalidate => somehal::cache::DCacheOp::CleanInvalidate,
     }
 }
 

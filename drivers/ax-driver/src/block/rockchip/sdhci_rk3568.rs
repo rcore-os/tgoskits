@@ -16,15 +16,21 @@ use alloc::format;
 use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
-use rdrive::{probe::OnProbeError, register::ProbeFdt};
+use rdrive::{
+    probe::{OnProbeError, fdt::ClockLine},
+    register::ProbeFdt,
+};
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
+    },
 };
 
-use super::clock::RockchipClockOps;
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3568 DWCMSHC uses the same SDHCI completion interrupt path as RK3588:
@@ -78,12 +84,10 @@ const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
 
-static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
-
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
-    clock: RockchipClockOps,
+    clock: ClockLine,
 }
 struct RockchipSdhciResetHook;
 
@@ -138,13 +142,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
-    if let Some(clock) = RockchipClockOps::named(info, "core")? {
+    if let Some(clock) = info.find_clock_line_by_name("core")? {
+        clock.enable()?;
         info!("rockchip-rk3568-sdhci: using external CRU clock");
         host.set_external_clock(RockchipSdhciClock { clock });
     } else {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    host.set_reset_hook(&SDHCI_RESET_HOOK);
+    host.set_reset_hook(RockchipSdhciResetHook);
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
@@ -358,10 +363,10 @@ mod tests {
             true,
             axklib::dma::device_with_mask(u32::MAX as u64),
         );
-        let limits = sdmmc_protocol::rdif::queue_limits(&config, u32::MAX as u64);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, u32::MAX as u64);
 
         assert!(limits.max_blocks_per_request > 1);
-        assert!(limits.max_segment_size > sdmmc_protocol::rdif::BLOCK_SIZE);
+        assert!(limits.max_segment_size > sdmmc_protocol::rdif::config::BLOCK_SIZE);
         assert_eq!(limits.max_segments, 1);
     }
 }

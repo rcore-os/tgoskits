@@ -20,13 +20,11 @@ use crate::{
 };
 
 pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
-    let mut build_info = StarryBuildInfo::default();
-    if build_info.effective_plat_dyn(target, None) {
-        build_info.features = Vec::new();
-    } else {
-        build_info.features = vec!["qemu".to_string()];
+    let _ = target;
+    StarryBuildInfo {
+        features: Vec::new(),
+        ..StarryBuildInfo::default()
     }
-    build_info
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -120,33 +118,19 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
-    let plat_dyn = build_info.effective_plat_dyn(&request.target, request.plat_dyn);
     let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
         &request.package,
         &request.target,
-        request.plat_dyn,
         metadata,
     )?;
-    if plat_dyn {
-        cargo.features.retain(|feature| {
-            !matches!(
-                feature.as_str(),
-                "ax-feat/plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn"
-            )
-        });
-        cargo.features.push("plat-dyn".to_string());
-    }
+    cargo
+        .features
+        .retain(|feature| !is_removed_dynamic_platform_feature(feature));
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
 }
 
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
-    let has_sg2002 = features.iter().any(|feature| feature == "sg2002");
-
-    if has_sg2002 {
-        features.push("ax-hal/riscv64-sg2002".to_string());
-    }
-
     features.sort();
     features.dedup();
 }
@@ -156,17 +140,12 @@ fn patch_starry_cargo_config(
     request: &ResolvedStarryRequest,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
-    let platform = crate::context::starry_default_platform_for_arch_checked(&request.arch)?;
-    let uses_default_qemu_platform = uses_default_qemu_platform(&cargo.features);
-
     cargo.package = request.package.clone();
     ensure_starry_bin_arg(&mut cargo.args, &request.package, metadata)?;
-    remove_qemu_feature_for_dynamic_platform(cargo);
-    if uses_default_qemu_platform {
-        cargo.features.push("qemu".to_string());
-        cargo.features.sort();
-        cargo.features.dedup();
-    }
+    apply_starry_bin_override(cargo)?;
+    cargo
+        .features
+        .retain(|feature| !is_removed_dynamic_platform_feature(feature));
 
     cargo
         .env
@@ -174,12 +153,6 @@ fn patch_starry_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    if uses_default_qemu_platform && let Some(platform) = platform {
-        cargo
-            .env
-            .entry("AX_PLATFORM".to_string())
-            .or_insert_with(|| platform.to_string());
-    }
 
     Ok(())
 }
@@ -580,41 +553,34 @@ fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
     Ok(parent.join(format!(".{name}.{suffix}.{}.tmp", std::process::id())))
 }
 
-fn remove_qemu_feature_for_dynamic_platform(cargo: &mut Cargo) {
-    if uses_dynamic_platform(&cargo.features) {
-        cargo.features.retain(|feature| feature != "qemu");
+fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "plat-dyn" | "ax-std/plat-dyn" | "starry-kernel/plat-dyn" | "ax-hal/plat-dyn"
+    )
+}
+
+fn apply_starry_bin_override(cargo: &mut Cargo) -> anyhow::Result<()> {
+    let Some(bin) = cargo.env.get("AXBUILD_STARRY_BIN").cloned() else {
+        return Ok(());
+    };
+    if bin.trim().is_empty() {
+        bail!("AXBUILD_STARRY_BIN must not be empty");
     }
-}
 
-fn uses_dynamic_platform(features: &[String]) -> bool {
-    features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "plat-dyn"
-                | "ax-feat/plat-dyn"
-                | "ax-std/plat-dyn"
-                | "starry-kernel/plat-dyn"
-                | "ax-hal/plat-dyn"
-        )
-    })
-}
-
-fn uses_default_qemu_platform(features: &[String]) -> bool {
-    let has_static_platform = features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "defplat" | "ax-feat/defplat" | "ax-std/defplat"
-        )
-    });
-    let has_dynamic = uses_dynamic_platform(features);
-    let has_custom = features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "myplat" | "ax-feat/myplat" | "ax-std/myplat" | "ax-hal/myplat"
-        )
-    });
-
-    has_static_platform && !has_dynamic && !has_custom
+    let mut args = Vec::with_capacity(cargo.args.len() + 2);
+    let mut iter = cargo.args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--bin" {
+            let _ = iter.next();
+            continue;
+        }
+        args.push(arg.clone());
+    }
+    args.push("--bin".to_string());
+    args.push(bin);
+    cargo.args = args;
+    Ok(())
 }
 
 fn ensure_starry_bin_arg(

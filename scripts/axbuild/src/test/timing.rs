@@ -86,13 +86,13 @@ mod tests {
     fn axbuild_timing_line_contains_stable_fields_and_parseable_seconds() {
         let line = super::format_timing_line(
             "starry-qemu",
-            &[("build_group", "qemu-smp1"), ("phase", "build")],
+            &[("build_group", "qemu"), ("phase", "build")],
             Duration::from_millis(1250),
         );
 
         assert!(line.starts_with("AXBUILD_TIMING: "));
         assert!(line.contains("scope=starry-qemu"));
-        assert!(line.contains("build_group=qemu-smp1"));
+        assert!(line.contains("build_group=qemu"));
         assert!(line.contains("phase=build"));
 
         let elapsed = line
@@ -109,29 +109,26 @@ mod tests {
     fn axbuild_timing_line_normalizes_field_whitespace() {
         let line = super::format_timing_line(
             "qemu case",
-            &[
-                ("case", "qemu-smp1/system test"),
-                ("phase", "prepare assets"),
-            ],
+            &[("case", "qemu/system test"), ("phase", "prepare assets")],
             Duration::from_millis(1),
         );
 
         assert!(line.contains("scope=qemu-case"));
-        assert!(line.contains("case=qemu-smp1/system-test"));
+        assert!(line.contains("case=qemu/system-test"));
         assert!(line.contains("phase=prepare-assets"));
     }
 
     #[test]
     fn axbuild_timing_grouped_c_compile_total_line_includes_mode() {
         let line = super::format_grouped_c_compile_total_line(
-            "qemu-smp1/system",
+            "qemu/system",
             "per-subcase",
             Duration::from_millis(3456),
         );
 
         assert!(line.starts_with("AXBUILD_TIMING: "));
         assert!(line.contains("scope=grouped-c"));
-        assert!(line.contains("case=qemu-smp1/system"));
+        assert!(line.contains("case=qemu/system"));
         assert!(line.contains("phase=compile-total"));
         assert!(line.contains("mode=per-subcase"));
         assert!(line.contains("elapsed_s=3.456"));
@@ -140,14 +137,14 @@ mod tests {
     #[test]
     fn axbuild_timing_grouped_c_root_project_compile_total_line_includes_mode() {
         let line = super::format_grouped_c_compile_total_line(
-            "qemu-smp4/system",
+            "qemu/system",
             "root-project",
             Duration::from_millis(7890),
         );
 
         assert!(line.starts_with("AXBUILD_TIMING: "));
         assert!(line.contains("scope=grouped-c"));
-        assert!(line.contains("case=qemu-smp4/system"));
+        assert!(line.contains("case=qemu/system"));
         assert!(line.contains("phase=compile-total"));
         assert!(line.contains("mode=root-project"));
         assert!(line.contains("elapsed_s=7.890"));

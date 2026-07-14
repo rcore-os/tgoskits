@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{MemIf, RawRange},
+    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -76,6 +76,14 @@ impl MemIf for DummyMem {
         &[]
     }
 
+    fn prepare_iomap(
+        addr: ax_memory_addr::PhysAddr,
+        _size: usize,
+        _attrs: IomapAttrs,
+    ) -> Result<IomapDecision, IomapError> {
+        Ok(IomapDecision::UseGeneric(addr))
+    }
+
     fn phys_to_virt(_paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
         va!(0)
     }
@@ -87,6 +95,18 @@ impl MemIf for DummyMem {
     fn kernel_aspace() -> (ax_memory_addr::VirtAddr, usize) {
         (va!(0), 0)
     }
+
+    fn user_aspace_needs_kernel_mappings() -> bool {
+        true
+    }
+
+    fn dcache_range(_op: DCacheOp, _addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_before_make_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_before_restore_cached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+
+    fn dma_coherent_after_mapping_update() {}
 }
 
 #[impl_plat_interface]
@@ -137,6 +157,17 @@ impl PowerIf for DummyPower {
 #[cfg(feature = "irq")]
 #[impl_plat_interface]
 impl IrqIf for DummyIrq {
+    fn prepare(_vector: TrapVector) {}
+
+    fn init_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "smp")]
+    fn init_secondary_boot_irqs(_cpu_id: usize) -> Result<(), IrqError> {
+        Ok(())
+    }
+
     fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
         Ok(())
     }

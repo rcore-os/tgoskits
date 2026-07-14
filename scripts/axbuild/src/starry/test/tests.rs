@@ -71,8 +71,8 @@ fn write_qemu_build_config_with_max_cpu_num(
     fs::write(
         &path,
         format!(
-            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\nplat_dyn = \
-             true\nmax_cpu_num = {max_cpu_num}\n"
+            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+             \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
         ),
     )
     .unwrap();
@@ -98,7 +98,6 @@ fn starry_request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequ
         package: crate::context::STARRY_PACKAGE.to_string(),
         arch: arch.to_string(),
         target: target.to_string(),
-        plat_dyn: None,
         smp: None,
         debug: false,
         build_info_path: path,
@@ -192,8 +191,8 @@ fn grouped_host_http_test_case(
     grouped_subcase_filter: Option<BTreeSet<String>>,
 ) -> crate::test::case::TestQemuCase {
     crate::test::case::TestQemuCase {
-        name: "qemu-smp1/system".to_string(),
-        display_name: "qemu-smp1/system".to_string(),
+        name: "qemu/system".to_string(),
+        display_name: "qemu/system".to_string(),
         case_dir: case_dir.to_path_buf(),
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),

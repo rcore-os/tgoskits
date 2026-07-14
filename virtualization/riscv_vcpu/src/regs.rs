@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axvcpu::GuestPhysAddr;
+use crate::{registers::guest_page_fault_addr, types::RiscvGuestPhysAddr};
 
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
@@ -241,9 +241,8 @@ impl VmCpuTrapState {
     /// Returns the guest physical address that caused a guest page fault.
     ///
     /// Make sure [`Self::load_from_hw`] has been called before using this method.
-    pub fn gpt_page_fault_addr(&self) -> GuestPhysAddr {
-        let pfa = (self.htval << 2) | (self.stval & 0b11);
-        pfa.into()
+    pub fn gpt_page_fault_addr(&self) -> RiscvGuestPhysAddr {
+        guest_page_fault_addr(self.htval, self.stval)
     }
 }
 

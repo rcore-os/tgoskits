@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.3...ax-runtime-v0.10.4) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.10.3](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.2...ax-runtime-v0.10.3) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.1...ax-runtime-v0.10.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-plat, ax-alloc, axklib, ax-driver, ax-hal, ax-ipi, ax-mm, ax-task, ax-display, ax-fs-ng, ax-net, ax-input
+
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.0...ax-runtime-v0.10.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-task, dma-api, rd-net, aic8800, axfs-ng-vfs, rdrive, ax-plat, ax-alloc, axklib, rdif-block, ax-driver, ax-hal, ax-ipi, ax-mm, ax-display, ax-fs-ng, ax-log, ax-net, ax-input
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.9.0...ax-runtime-v0.10.0) - 2026-07-07
+
+### Added
+
+- *(starfive-jh7110-dwmmc)* add IRQ-driven host ([#1524](https://github.com/rcore-os/tgoskits/pull/1524))
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
+### Fixed
+
+- *(block)* drive virtio-blk completions by IRQ ([#1512](https://github.com/rcore-os/tgoskits/pull/1512))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.8.2...ax-runtime-v0.9.0) - 2026-07-02
+
+### Added
+
+- *(axtest)* add ArceOS QEMU smoke coverage ([#1365](https://github.com/rcore-os/tgoskits/pull/1365))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(ax-driver)* remove static platform compatibility ([#1463](https://github.com/rcore-os/tgoskits/pull/1463))
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(rdif-block)* enable boxed sdmmc irq flow ([#1446](https://github.com/rcore-os/tgoskits/pull/1446))
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.8.1...ax-runtime-v0.8.2) - 2026-06-27
 
 ### Added

@@ -10,7 +10,10 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
+#[cfg(not(test))]
+use ax_kspin::SpinNoIrq as BlockQueueLock;
+#[cfg(test)]
+use ax_kspin::SpinRaw as BlockQueueLock;
 use dma_api::{ContiguousArray, CpuDmaBuffer, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
@@ -20,8 +23,9 @@ use rdif_block::{
 };
 use rdrive::{Device, probe::OnProbeError};
 
+use super::IrqBoundBlock;
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, IrqBindingLease, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -34,7 +38,7 @@ pub struct Block {
     #[cfg(feature = "irq")]
     irq_handler: Option<BlockIrqHandler>,
     interface: Box<dyn Interface>,
-    queues: SpinNoIrq<BlockQueues>,
+    queues: BlockQueueLock<BlockQueues>,
 }
 
 struct BlockQueues {
@@ -68,7 +72,7 @@ pub struct PlatformBlockDevice {
 /// objects directly, installing IRQ handlers according to the OS policy.
 pub struct RdifBlockDevice {
     name: String,
-    irq: Option<BindingIrq>,
+    irqs: Vec<crate::BindingIrqBinding>,
     interface: Box<dyn Interface>,
 }
 
@@ -348,15 +352,36 @@ impl RdifBlockDevice {
     }
 
     pub fn irq(&self) -> Option<&BindingIrq> {
-        self.irq.as_ref()
+        self.irq_for_source(0)
+            .or_else(|| self.irqs.first().map(|binding| &binding.irq))
     }
 
     pub fn irq_cloned(&self) -> Option<BindingIrq> {
-        self.irq.clone()
+        self.irq().cloned()
+    }
+
+    pub fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
+        self.irqs
+            .iter()
+            .find(|binding| binding.source_id == source_id)
+            .map(|binding| &binding.irq)
+    }
+
+    pub fn irq_for_source_cloned(&self, source_id: usize) -> Option<BindingIrq> {
+        self.irq_for_source(source_id).cloned()
+    }
+
+    pub fn irq_sources(&self) -> &[crate::BindingIrqBinding] {
+        &self.irqs
     }
 
     pub fn irq_num(&self) -> Option<usize> {
-        self.irq.as_ref().and_then(BindingIrq::legacy_num)
+        self.irq().and_then(BindingIrq::legacy_num)
+    }
+
+    pub fn irq_num_for_source(&self, source_id: usize) -> Option<usize> {
+        self.irq_for_source(source_id)
+            .and_then(BindingIrq::legacy_num)
     }
 
     pub fn interface(&self) -> &dyn Interface {
@@ -381,7 +406,7 @@ impl RdifBlockDevice {
 
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num()?;
+        let irq_num = self.irq_num_for_source(source_id)?;
         self.interface
             .take_irq_handler(source_id)
             .map(BlockIrqHandler::new_raw)
@@ -596,7 +621,7 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
             #[cfg(feature = "irq")]
             irq_handler,
             interface,
-            queues: SpinNoIrq::new(queues),
+            queues: BlockQueueLock::new(queues),
         })
     }
 }
@@ -607,11 +632,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq = dev.info.irq_cloned();
+        let irqs = dev.info.irq_sources().to_vec();
         let interface = dev.interface.take().ok_or(AxError::BadState)?;
         Ok(Self {
             name,
-            irq,
+            irqs,
             interface,
         })
     }
@@ -620,6 +645,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
 pub trait PlatformDeviceBlock {
     fn register_block<T: Interface>(self, dev: T) -> Option<usize>;
     fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize>;
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        Self: Sized,
+        T: Interface,
+        L: IrqBindingLease;
 }
 
 impl PlatformDeviceBlock for rdrive::PlatformDevice {
@@ -629,6 +659,15 @@ impl PlatformDeviceBlock for rdrive::PlatformDevice {
 
     fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize> {
         register_block_with_info(self, dev, info)
+    }
+
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        T: Interface,
+        L: IrqBindingLease,
+    {
+        let info = irq_lease.binding_info();
+        self.register_block_with_info(IrqBoundBlock::new(dev, irq_lease), info)
     }
 }
 
@@ -1199,7 +1238,7 @@ mod tests {
             #[cfg(feature = "irq")]
             irq_handler: None,
             interface: Box::new(TestInterface),
-            queues: SpinNoIrq::new(BlockQueues {
+            queues: BlockQueueLock::new(BlockQueues {
                 queue: RuntimeQueue::Legacy(queue),
                 pool: BlockBufferPool {
                     dma: DeviceDma::new_legacy(u64::MAX, dma),

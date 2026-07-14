@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.20...axvisor-v0.5.21) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, axplat-dyn, ax-hal, axvm, axbuild, ax-std
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.19...axvisor-v0.5.20) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axplat-dyn, axplat-dyn, ax-hal, axbuild, ax-driver, ax-std, axvm
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.18...axvisor-v0.5.19) - 2026-07-08
+
+### Other
+
+- updated the following local packages: axbuild, ax-driver, axplat-dyn, axplat-dyn, ax-hal, ax-std, axvm
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.17...axvisor-v0.5.18) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, axplat-dyn, ax-hal, ax-std, axvm
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.16...axvisor-v0.5.17) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.15...axvisor-v0.5.16) - 2026-07-02
+
+### Added
+
+- *(axtest)* simplify kernel test targets ([#1470](https://github.com/rcore-os/tgoskits/pull/1470))
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(axvisor)* gate x86 host fs passthrough prepare
+
+### Other
+
+- *(axvm)* decouple axvisor arch logic ([#1471](https://github.com/rcore-os/tgoskits/pull/1471))
+- *(axvm)* move VM boot and memory preparation into axvm ([#1462](https://github.com/rcore-os/tgoskits/pull/1462))
+- *(axvm)* redesign guest address layout planning ([#1454](https://github.com/rcore-os/tgoskits/pull/1454))
+- *(axvm)* redesign VM lifecycle state machine ([#1447](https://github.com/rcore-os/tgoskits/pull/1447))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- *(axvm)* route host IRQs with domain metadata
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.14...axvisor-v0.5.15) - 2026-06-27
 
 ### Other

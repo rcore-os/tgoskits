@@ -1,7 +1,5 @@
 features = [
   "ax-driver/virtio-blk",
-  "axplat-dyn/efi",
-  "ept-level-4",
   "fs",
 ]
 log = "Info"

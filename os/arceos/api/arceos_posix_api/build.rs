@@ -33,10 +33,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LOCKDEP");
-        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PLAT_DYN");
         let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
-        let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some()
-            || std::env::var_os("CARGO_FEATURE_PLAT_DYN").is_some();
+        let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
         let has_lockdep = std::env::var_os("CARGO_FEATURE_LOCKDEP").is_some();
         let (mutex_size, mutex_init) = pthread_mutex_layout(has_multitask, has_smp, has_lockdep);
 

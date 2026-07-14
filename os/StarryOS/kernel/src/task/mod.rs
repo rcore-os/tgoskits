@@ -14,11 +14,14 @@ mod user;
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
     cell::RefCell,
+    future::poll_fn,
     ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+    task::Poll,
 };
 
 use ax_errno::AxResult;
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{Mutex, spin::SpinNoIrq};
@@ -136,6 +139,10 @@ pub struct Thread {
     /// Ready to exit
     pub exit: Arc<AtomicBool>,
 
+    /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
+    /// can observe newly-pending signals even when the signal is blocked.
+    pub signalfd_waker: PollSet,
+
     /// Indicates whether the thread is currently accessing user memory.
     accessing_user_memory: AtomicBool,
 
@@ -236,6 +243,7 @@ impl Thread {
             seccomp: SpinNoIrq::new(SeccompState::default()),
             cred: SpinNoIrq::new(cred),
 
+            signalfd_waker: PollSet::new(),
             fault_dump_signo: AtomicU8::new(0),
             kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
 
@@ -549,6 +557,29 @@ impl VforkDone {
     pub fn new(poll: Arc<PollSet>) -> Self {
         Self { done: false, poll }
     }
+}
+
+/// Waits on a [`PollSet`] after a caller-supplied condition reports no
+/// immediate result.
+///
+/// The condition is checked before and after waker registration, so callers
+/// avoid lost wakeups.
+pub async fn wait_on_pollset<T>(poll: &PollSet, mut check: impl FnMut() -> Option<T>) -> T {
+    poll_fn(move |cx| {
+        if let Some(value) = check() {
+            return Poll::Ready(value);
+        }
+
+        // Registration happens from wait task context.
+        unsafe { poll.register(cx.waker(), IoEvents::IN) };
+
+        if let Some(value) = check() {
+            Poll::Ready(value)
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 /// A pending job-control status change awaiting report to the parent's
@@ -927,7 +958,10 @@ impl ProcessData {
     /// `TaskExt::on_enter` leaves the current task's active scope installed by
     /// holding one read count on [`Self::scope`]. A syscall running in that task
     /// must temporarily release that read count before taking the write side.
+    /// The closure runs with preemption and local IRQs disabled, so it should
+    /// only install already-prepared scope entries.
     pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+        let _guard = NoPreemptIrqSave::new();
         ActiveScope::set_global();
         unsafe { self.scope.force_read_decrement() };
         let mut scope = self.scope.write();

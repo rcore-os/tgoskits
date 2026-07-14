@@ -268,10 +268,12 @@ impl SocketOps for UdpSocket {
                 smol::BindError::Unaddressable => ax_err_type!(ConnectionRefused, "unaddressable"),
             })
         })?;
-        if !self.general.reuse_address()
-            && let Err(err) =
-                SOCKET_SET.udp_bind(self.handle, local_endpoint.addr, local_endpoint.port)
-        {
+        if let Err(err) = SOCKET_SET.udp_bind(
+            self.handle,
+            local_endpoint.addr,
+            local_endpoint.port,
+            self.general.reuse_port(),
+        ) {
             self.with_smol_socket(|socket| socket.close());
             return Err(err);
         }

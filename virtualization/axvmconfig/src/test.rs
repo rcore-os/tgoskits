@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig, VMInterruptMode,
-    VmMemMappingType,
+    AddressSpacePolicy, AxVMCrateConfig, AxVmConfigError, EmulatedDeviceType, VMBootProtocol,
+    VMDevicesConfig, VMInterruptMode, VmMemMappingType,
 };
 
 #[test]
@@ -44,6 +44,8 @@ memory_regions = [
 ]
 
 [devices]
+address_space_policy = "passthrough"
+
 passthrough_devices = [
     ["dev0", 0x0, 0x0, 0x0800_0000, 0x1],
     ["dev1", 0x0900_0000, 0x0900_0000, 0x0a00_0000, 0x2],
@@ -127,6 +129,83 @@ interrupt_mode = "passthrough"
         EmulatedDeviceType::GPPTITS
     );
     assert_eq!(config.devices.interrupt_mode, VMInterruptMode::Passthrough);
+    assert_eq!(
+        config.devices.address_space_policy,
+        AddressSpacePolicy::Passthrough
+    );
+}
+
+#[test]
+fn test_address_space_policy_deser_and_defaults() {
+    const DEFAULT_POLICY_CONFIG: &str = r#"
+[base]
+id = 1
+name = "policy-default"
+vm_type = 1
+cpu_num = 1
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_path = "guest.bin"
+kernel_load_addr = 0x8020_0000
+memory_regions = []
+
+[devices]
+emu_devices = []
+passthrough_devices = []
+    "#;
+
+    let config = AxVMCrateConfig::from_toml(DEFAULT_POLICY_CONFIG).unwrap();
+    assert_eq!(
+        config.devices.address_space_policy,
+        AddressSpacePolicy::Virtualized
+    );
+
+    const PASSTHROUGH_POLICY_CONFIG: &str = r#"
+[base]
+id = 1
+name = "policy-passthrough"
+vm_type = 1
+cpu_num = 1
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_path = "guest.bin"
+kernel_load_addr = 0x8020_0000
+memory_regions = []
+
+[devices]
+address_space_policy = "passthrough"
+emu_devices = []
+passthrough_devices = []
+    "#;
+
+    let config = AxVMCrateConfig::from_toml(PASSTHROUGH_POLICY_CONFIG).unwrap();
+    assert_eq!(
+        config.devices.address_space_policy,
+        AddressSpacePolicy::Passthrough
+    );
+
+    const INVALID_POLICY_CONFIG: &str = r#"
+[base]
+id = 1
+name = "policy-invalid"
+vm_type = 1
+cpu_num = 1
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_path = "guest.bin"
+kernel_load_addr = 0x8020_0000
+memory_regions = []
+
+[devices]
+address_space_policy = "everything"
+emu_devices = []
+passthrough_devices = []
+    "#;
+
+    assert!(AxVMCrateConfig::from_toml(INVALID_POLICY_CONFIG).is_err());
 }
 
 #[test]
@@ -251,7 +330,56 @@ fn test_boot_config_validation_rejects_direct_bios_mix() {
         ..Default::default()
     };
 
-    assert!(direct_with_bios.validate_boot_config().is_err());
+    assert_eq!(
+        direct_with_bios.validate_boot_config(),
+        Err(AxVmConfigError::BootProtocolConflict {
+            protocol: VMBootProtocol::Direct,
+            enable_bios: true,
+        })
+    );
+}
+
+#[test]
+fn test_boot_config_validation_returns_typed_firmware_errors() {
+    let mut uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::MissingFirmwarePath {
+            protocol: VMBootProtocol::Uefi,
+        })
+    );
+
+    uefi_config.uefi_firmware_path = Some("OVMF_CODE.fd".to_string());
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::MissingFirmwareLoadAddress {
+            protocol: VMBootProtocol::Uefi,
+        })
+    );
+}
+
+#[test]
+fn test_boot_config_validation_returns_typed_architecture_error() {
+    let uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        uefi_firmware_path: Some("OVMF_CODE.fd".to_string()),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("aarch64"),
+        Err(AxVmConfigError::UnsupportedBootProtocol {
+            protocol: VMBootProtocol::Uefi,
+            arch: "aarch64".to_string(),
+        })
+    );
 }
 
 #[test]
@@ -419,7 +547,7 @@ fn test_emulated_device_type_display() {
 
 #[test]
 fn test_config_from_toml_error_handling() {
-    use crate::AxVMCrateConfig;
+    use crate::{AxVMCrateConfig, AxVmConfigError};
 
     let invalid_toml = r#"
 [base
@@ -427,7 +555,7 @@ id = "invalid"
     "#;
 
     let result = AxVMCrateConfig::from_toml(invalid_toml);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 
     let invalid_data_type = r#"
 [base]
@@ -438,7 +566,7 @@ cpu_num = 1
     "#;
 
     let result = AxVMCrateConfig::from_toml(invalid_data_type);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 }
 
 #[test]
@@ -502,6 +630,10 @@ fn test_default_implementations() {
     assert!(vm_kernel_config.memory_regions.is_empty());
 
     let vm_devices_config = VMDevicesConfig::default();
+    assert_eq!(
+        vm_devices_config.address_space_policy,
+        AddressSpacePolicy::Virtualized
+    );
     assert!(vm_devices_config.emu_devices.is_empty());
     assert!(vm_devices_config.passthrough_devices.is_empty());
     assert_eq!(vm_devices_config.interrupt_mode, VMInterruptMode::NoIrq);

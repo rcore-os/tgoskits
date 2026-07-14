@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.9...rockchip-npu-v0.2.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.2.9](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.8...rockchip-npu-v0.2.9) - 2026-07-07
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.2.8](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.7...rockchip-npu-v0.2.8) - 2026-07-02
+
+### Added
+
+- *(rockchip-jpeg)* add RK3588 hardware JPEG decoder (VDPU720) with MPP /dev/mpp_service ([#1456](https://github.com/rcore-os/tgoskits/pull/1456))
+
 ## [0.2.7](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.6...rockchip-npu-v0.2.7) - 2026-06-27
 
 ### Added

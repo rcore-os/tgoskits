@@ -297,10 +297,6 @@ pub(super) fn ensure_drive_snapshot_on(drive: &mut String) {
 }
 
 pub(super) fn cargo_dynamic_platform_boot_arch(cargo: &Cargo) -> Option<DynamicPlatformBootArch> {
-    if !cargo_dynamic_platform_features(cargo).any(dynamic_platform_feature) {
-        return None;
-    }
-
     if cargo_target_is_dynamic_x86_64(&cargo.target) {
         Some(DynamicPlatformBootArch::X86_64)
     } else if cargo_target_is_dynamic_loongarch64(&cargo.target) {
@@ -323,34 +319,6 @@ pub(super) fn cargo_target_is_dynamic_loongarch64(target: &str) -> bool {
     let target = target.strip_suffix(".json").unwrap_or(target);
     target.ends_with("loongarch64-unknown-none-softfloat")
         || target.ends_with("loongarch64-unknown-linux-musl")
-}
-
-pub(super) fn dynamic_platform_feature(feature: &str) -> bool {
-    matches!(
-        feature,
-        "plat-dyn"
-            | "ax-feat/plat-dyn"
-            | "ax-std/plat-dyn"
-            | "ax-hal/plat-dyn"
-            | "ax-libc/plat-dyn"
-            | "dyn-plat"
-            | "starry-kernel/plat-dyn"
-    )
-}
-
-pub(super) fn cargo_dynamic_platform_features(cargo: &Cargo) -> impl Iterator<Item = &str> {
-    cargo.features.iter().map(String::as_str).chain(
-        cargo
-            .env
-            .get("ARCEOS_RUST_FEATURES")
-            .into_iter()
-            .flat_map(|features| {
-                features
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|feature| !feature.is_empty())
-            }),
-    )
 }
 
 pub(crate) fn smp_from_qemu_arg(qemu: &QemuConfig) -> Option<usize> {

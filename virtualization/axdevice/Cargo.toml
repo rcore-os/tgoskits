@@ -1,6 +1,6 @@
 [package]
 name = "axdevice"
-version = "0.5.0"
+version = "0.5.4"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
 homepage = "https://github.com/arceos-hypervisor/axdevice"
 repository = "https://github.com/arceos-hypervisor/axdevice"
@@ -20,10 +20,10 @@ cfg-if = "1.0"
 ax-kspin.workspace = true
 
 # System independent crates provided by ArceOS.
-ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
+thiserror = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 arm_vgic = { workspace = true, features = ["vgicv3"] }
 [target.'cfg(target_arch = "riscv64")'.dependencies]

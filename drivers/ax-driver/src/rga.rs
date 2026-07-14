@@ -52,11 +52,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // aclk/hclk/clk. If the clocks cannot be established, skip the core rather than fault the
     // kernel on the version read.
     enable_power(config);
-    if let Err(e) = enable_rga2_clocks() {
-        warn!("RGA2 clock bring-up failed ({e:?}); skipping core to avoid an MMIO abort");
+    if let Err(e) = enable_rga2_clocks(&info) {
+        warn!("RGA2 clock bring-up failed ({e}); skipping core to avoid an MMIO abort");
         return Ok(());
     }
-    deassert_rga2_resets();
+    deassert_rga2_resets(&info);
 
     let irq = crate::binding_info_from_fdt(&info)?.irq_num();
 
@@ -113,30 +113,36 @@ fn enable_power(config: RgaCoreConfig) {
     // domains out of any residual reset to actually execute a submitted op.
 }
 
-/// Ungate the RGA2 core's three CRU bus clocks (hclk, aclk, clk). U-Boot leaves the RGA clocks
-/// gated at handoff, so this is the load-bearing step that makes the version-register read at
-/// base+0x28 succeed (otherwise it aborts on a gated bus). The clock ids are the RK3588 BSP
-/// rk3588-cru.h values; their gate positions (CLKGATE_CON45 bits 7/8/9) live in the rockchip-soc
-/// CRU gate table.
-fn enable_rga2_clocks() -> Result<(), OnProbeError> {
-    // HCLK_RGA2 = 438, ACLK_RGA2 = 439, CLK_RGA2_CORE = 440 (rk3588-cru.h).
-    for &clk_id in &[438u32, 439, 440] {
-        crate::soc::rk3588_enable_clock(clk_id)?;
+/// Ungate the RGA2 core's CRU bus clocks (hclk, aclk, clk) named by the node's `clocks` DT
+/// property. U-Boot leaves the RGA clocks gated at handoff, so this is the load-bearing step that
+/// makes the version-register read at base+0x28 succeed (otherwise it aborts on a gated bus). The
+/// clock phandles resolve to the RK3588 BSP rk3588-cru.h ids (HCLK/ACLK_RGA2, CLK_RGA2_CORE) whose
+/// gate positions (CLKGATE_CON45 bits 7/8/9) live in the rockchip-soc CRU gate table.
+fn enable_rga2_clocks(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    for clock in &info.clock_lines()? {
+        clock.enable()?;
     }
     Ok(())
 }
 
-/// Deassert the RGA2 CRU soft-resets so the AXI/core domains are out of any residual reset before
-/// the engine runs. These are FLAT reg*16+bit ids for this code's no-LUT ResetRockchip: at
-/// SOFTRST_CON45 (0xa00 plus 45*4 = 0xab4), bits 7/8/9 give 727 = SRST_H_RGA2, 728 = SRST_A_RGA2,
-/// and 729 = SRST_RGA2_CORE. These are NOT the Linux dt-binding indices 368/369/370, which are
-/// array indices Linux maps through a LUT; this tree decodes the id directly as bank = id/16 and
-/// offset = id%16, so those would hit the wrong register. Symmetric with the RGA2 clock gates at
-/// CLKGATE_CON45 bits 7/8/9.
-fn deassert_rga2_resets() {
-    for &rst_id in &[727u64, 728, 729] {
-        if let Err(e) = crate::soc::rk3588_reset_deassert(rst_id) {
-            warn!("RGA2 reset_deassert({rst_id}) failed: {e:?}");
+/// Deassert the RGA2 CRU soft-resets named by the node's `resets` DT property so the AXI/core
+/// domains are out of any residual reset before the engine runs. Best-effort and idempotent,
+/// mirroring the JPEG decoder bring-up; symmetric with the RGA2 clock gates at CLKGATE_CON45.
+fn deassert_rga2_resets(info: &FdtInfo<'_>) {
+    let resets = match info.reset_lines() {
+        Ok(resets) => resets,
+        Err(e) => {
+            warn!("RGA2 reset_lines() failed (continuing): {e}");
+            return;
+        }
+    };
+    for reset in &resets {
+        if let Err(e) = reset.deassert() {
+            warn!(
+                "RGA2 reset deassert {:?} ({:#x}) failed (continuing): {e}",
+                reset.name(),
+                reset.id().raw()
+            );
         }
     }
 }

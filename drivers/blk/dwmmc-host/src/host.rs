@@ -19,7 +19,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::{ClockSpeed, SignalVoltage},
+    sdio::host::{ClockSpeed, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -541,6 +541,21 @@ impl DwMmc {
         self.regs.rintsts().write(RIntSts::from_bits(ALL_INT_CLR));
     }
 
+    pub(crate) fn take_task_irq_status(&mut self, mask: u32) -> u32 {
+        if self.completion_irq_enabled() {
+            let cached = self.irq.state.take(mask);
+            if cached != 0 {
+                return cached;
+            }
+        }
+        let raw_status = self.regs.rintsts().read().into_bits();
+        let clear = raw_status & mask;
+        if clear != 0 {
+            self.regs.rintsts().write(RIntSts::from_bits(clear));
+        }
+        raw_status
+    }
+
     pub(crate) fn program_linux_init_baseline(&self) {
         self.regs.tmout().write(DEFAULT_TMOUT);
         self.regs.fifoth().write(DEFAULT_FIFOTH);
@@ -581,8 +596,8 @@ impl DwMmc {
 
     /// Set bus width. DW_mshc encodes width in CTYPE: bit 0 of `width4`
     /// = 4-bit, bit 0 of `width8` = 8-bit; both clear = 1-bit.
-    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::BusWidth) {
-        use sdmmc_protocol::sdio::BusWidth;
+    pub(crate) fn set_card_type(&mut self, width: sdmmc_protocol::sdio::host::BusWidth) {
+        use sdmmc_protocol::sdio::host::BusWidth;
         let ct = match width {
             BusWidth::Bit1 => CType::new(),
             BusWidth::Bit4 => CType::new().with_width4(1),
@@ -666,8 +681,8 @@ impl DwMmc {
     }
 
     /// Raw pointer at `base + fifo_offset`, used for FIFO data accesses.
-    pub(crate) fn fifo_ptr(&self) -> *mut u64 {
-        (self.base_addr + self.fifo_offset) as *mut u64
+    pub(crate) fn fifo_ptr(&self) -> *mut u32 {
+        (self.base_addr + self.fifo_offset) as *mut u32
     }
 }
 

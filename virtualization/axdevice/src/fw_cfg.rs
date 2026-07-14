@@ -1,9 +1,10 @@
 use alloc::{format, vec, vec::Vec};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+
+use crate::{DeviceManagerError, DeviceManagerResult};
 
 const FW_CFG_SIGNATURE: u16 = 0x00;
 const FW_CFG_ID: u16 = 0x01;
@@ -394,7 +395,7 @@ impl FwCfg {
         addr: GuestPhysAddr,
         width: AccessWidth,
         value: usize,
-    ) -> AxResult<Option<GuestPhysAddr>> {
+    ) -> DeviceManagerResult<Option<GuestPhysAddr>> {
         let offset = addr.as_usize() - self.base.as_usize();
         if !self.is_dma_address(addr) {
             return Ok(None);
@@ -421,7 +422,10 @@ impl FwCfg {
                     "unsupported fw_cfg DMA address write: offset={:#x}, width={:?}",
                     offset, width
                 );
-                ax_err!(InvalidInput, "unsupported fw_cfg DMA address write")
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "write fw_cfg DMA address",
+                    detail: format!("offset {offset:#x} does not accept width {width:?}"),
+                })
             }
         }
     }
@@ -432,10 +436,10 @@ impl FwCfg {
         desc_addr: GuestPhysAddr,
         mut read_guest: R,
         mut write_guest: W,
-    ) -> AxResult
+    ) -> DeviceManagerResult
     where
-        R: FnMut(GuestPhysAddr, &mut [u8]) -> AxResult,
-        W: FnMut(GuestPhysAddr, &[u8]) -> AxResult,
+        R: FnMut(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult,
+        W: FnMut(GuestPhysAddr, &[u8]) -> DeviceManagerResult,
     {
         let mut desc = [0u8; FW_CFG_DMA_DESC_SIZE];
         read_guest(desc_addr, &mut desc)?;
@@ -468,10 +472,10 @@ impl FwCfg {
         buffer_addr: GuestPhysAddr,
         read_guest: &mut R,
         write_guest: &mut W,
-    ) -> AxResult
+    ) -> DeviceManagerResult
     where
-        R: FnMut(GuestPhysAddr, &mut [u8]) -> AxResult,
-        W: FnMut(GuestPhysAddr, &[u8]) -> AxResult,
+        R: FnMut(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult,
+        W: FnMut(GuestPhysAddr, &[u8]) -> DeviceManagerResult,
     {
         validate_dma_buffer(buffer_addr, length)?;
 
@@ -509,17 +513,26 @@ impl FwCfg {
             }
             _ => {
                 warn!("invalid fw_cfg DMA control {:#x}", control);
-                ax_err!(InvalidInput, "invalid fw_cfg DMA control")
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "process fw_cfg DMA command",
+                    detail: format!("invalid control value {control:#x}"),
+                })
             }
         }
     }
 }
 
-fn validate_dma_buffer(buffer_addr: GuestPhysAddr, length: usize) -> AxResult {
+fn validate_dma_buffer(buffer_addr: GuestPhysAddr, length: usize) -> DeviceManagerResult {
     buffer_addr
         .as_usize()
         .checked_add(length)
-        .ok_or_else(|| ax_err_type!(InvalidInput, "fw_cfg DMA buffer address overflow"))?;
+        .ok_or_else(|| DeviceManagerError::InvalidInput {
+            operation: "validate fw_cfg DMA buffer",
+            detail: format!(
+                "buffer at {:#x} with length {length:#x} overflows the guest address space",
+                buffer_addr.as_usize()
+            ),
+        })?;
     Ok(())
 }
 
@@ -529,9 +542,9 @@ fn dma_read_entry<W>(
     length: usize,
     buffer_addr: GuestPhysAddr,
     write_guest: &mut W,
-) -> AxResult
+) -> DeviceManagerResult
 where
-    W: FnMut(GuestPhysAddr, &[u8]) -> AxResult,
+    W: FnMut(GuestPhysAddr, &[u8]) -> DeviceManagerResult,
 {
     let mut remaining = length;
     let mut guest_offset = 0usize;
@@ -564,9 +577,9 @@ fn dma_discard_guest_write<R>(
     length: usize,
     buffer_addr: GuestPhysAddr,
     read_guest: &mut R,
-) -> AxResult
+) -> DeviceManagerResult
 where
-    R: FnMut(GuestPhysAddr, &mut [u8]) -> AxResult,
+    R: FnMut(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult,
 {
     let mut scratch = [0u8; FW_CFG_DMA_SCRATCH_SIZE];
     let mut remaining = length;
@@ -581,11 +594,17 @@ where
     Ok(())
 }
 
-fn add_guest_offset(base: GuestPhysAddr, offset: usize) -> AxResult<GuestPhysAddr> {
+fn add_guest_offset(base: GuestPhysAddr, offset: usize) -> DeviceManagerResult<GuestPhysAddr> {
     base.as_usize()
         .checked_add(offset)
         .map(GuestPhysAddr::from_usize)
-        .ok_or_else(|| ax_err_type!(InvalidInput, "fw_cfg DMA buffer address overflow"))
+        .ok_or_else(|| DeviceManagerError::InvalidInput {
+            operation: "advance fw_cfg DMA buffer",
+            detail: format!(
+                "buffer at {:#x} with offset {offset:#x} overflows the guest address space",
+                base.as_usize()
+            ),
+        })
 }
 
 struct FwCfgFile<'a> {
@@ -1407,7 +1426,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for FwCfg {
         GuestPhysAddrRange::from_start_size(self.base, self.size)
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         match addr.as_usize() - self.base.as_usize() {
             FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
             FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
@@ -1415,7 +1434,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for FwCfg {
         }
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
+    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
         let offset = addr.as_usize() - self.base.as_usize();
         if offset == FW_CFG_SELECTOR_OFFSET {
             self.write_selector(width, val);

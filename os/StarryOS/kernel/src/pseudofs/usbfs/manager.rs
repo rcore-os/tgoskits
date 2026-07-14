@@ -15,7 +15,7 @@ use crab_usb::{
     usb_if::{
         endpoint::{RequestId, TransferCompletion, TransferRequest},
         err::{TransferError, USBError},
-        host::ControlSetup,
+        host::{ControlSetup, hub::Speed},
         transfer::{Direction, Recipient, Request, RequestType},
     },
 };
@@ -45,6 +45,7 @@ pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
     pub(super) irq: Option<IrqId>,
+    pub(super) root_hub_speed: Speed,
     pub(super) needs_probe: bool,
     pub(super) next_device_num: u8,
     pub(super) stable_id_to_device_num: BTreeMap<usize, u8>,
@@ -373,7 +374,7 @@ impl UsbFsManager {
                 },
                 UsbDeviceRecord {
                     host_device_id: host.device_id,
-                    snapshot: root_hub_snapshot(host.bus_num),
+                    snapshot: root_hub_snapshot(host.bus_num, host.root_hub_speed),
                     present: true,
                     unopened_info: None,
                     live_device: None,
@@ -1211,16 +1212,11 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             continue;
         }
 
-        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-            Ok(devices) => devices,
-            Err(err) => {
-                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                failed_device_ids.push((device_id, host_irq));
-                continue;
-            }
-        };
-
         if let Some(host_irq) = host_irq {
+            // DWC2 internal-DMA transfers complete through host-channel IRQs.
+            // Enable both the controller interrupt mask and the framework
+            // callback before the initial probe, because enumeration itself
+            // issues control transfers that wait for IRQ completions.
             if let Err(err) = guard.enable_irq() {
                 warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
                 failed_device_ids.push((device_id, Some(host_irq)));
@@ -1236,6 +1232,23 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             }
             irq::bootstrap_irq(host_irq);
         }
+
+        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
+            Ok(devices) => devices,
+            Err(err) => {
+                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                if host_irq.is_some()
+                    && let Err(disable_err) = guard.disable_irq()
+                {
+                    warn!(
+                        "usbfs: failed to disable host IRQ after probe failure on bus {bus_num}: \
+                         {disable_err:?}"
+                    );
+                }
+                failed_device_ids.push((device_id, host_irq));
+                continue;
+            }
+        };
         info!("usbfs: host on bus {} initialized", bus_num);
         initialized += 1;
         manager.apply_probe_results(device_id, bus_num, devices);
@@ -1359,6 +1372,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
                     }
                 }
             });
+        let root_hub_speed = guard.root_hub_speed();
         let irq_handler = guard
             .take_event_handler()
             .map(|handler| (host_irq, handler));
@@ -1377,6 +1391,7 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
             device_id,
             bus_num,
             irq: host_irq,
+            root_hub_speed,
             needs_probe: true,
             next_device_num: 1,
             stable_id_to_device_num: BTreeMap::new(),

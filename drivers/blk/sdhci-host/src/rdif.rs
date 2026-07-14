@@ -1,16 +1,15 @@
 //! RDIF block-device adapter for [`Sdhci`].
 
 use dma_api::DeviceDma;
-pub use protocol_rdif::{BlockConfig, BlockDevice, BlockQueue};
 pub use rdif_block::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
     OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
     RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
 };
-use sdmmc_protocol::{
-    rdif as protocol_rdif,
-    sdio::{SdioHost2Adapter, SdioSdmmc},
-};
+#[cfg(test)]
+use sdmmc_protocol::rdif::config as protocol_rdif_config;
+pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
+use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
 
 use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, Sdhci};
 
@@ -47,10 +46,10 @@ mod tests {
     #[test]
     fn fifo_config_keeps_one_block_limits() {
         let config = fifo_config("sdhci", 16, true);
-        let limits = protocol_rdif::queue_limits(&config, config.dma_mask);
+        let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, 1);
-        assert_eq!(limits.max_segment_size, protocol_rdif::BLOCK_SIZE);
+        assert_eq!(limits.max_segment_size, protocol_rdif_config::BLOCK_SIZE);
         assert!(!config.uses_dma());
     }
 
@@ -62,7 +61,7 @@ mod tests {
             true,
             dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA),
         );
-        let limits = protocol_rdif::queue_limits(&config, config.dma_mask);
+        let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);
@@ -74,7 +73,7 @@ mod tests {
 
     impl dma_api::DmaOp for TestDma {
         fn page_size(&self) -> usize {
-            protocol_rdif::BLOCK_SIZE
+            protocol_rdif_config::BLOCK_SIZE
         }
 
         unsafe fn alloc_contiguous(

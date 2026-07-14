@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 #[cfg(feature = "fs")]
 use alloc::{string::String, vec, vec::Vec};
 
-use ax_errno::AxResult;
+#[cfg(feature = "fs")]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use axvm::{AxVMRef, AxvmRuntime, VMId};
 
 /// AxVM top-level manager.
@@ -21,9 +23,9 @@ pub struct AxvmManager {
 
 impl AxvmManager {
     /// Initialize the AxVM runtime services.
-    pub fn new() -> AxResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
-            runtime: AxvmRuntime::new()?,
+            runtime: AxvmRuntime::new().context("initialize AxVM runtime")?,
         })
     }
 
@@ -40,28 +42,28 @@ impl AxvmManager {
     }
 
     /// Create one VM from a TOML config string.
-    pub fn create_vm_from_toml(raw_cfg: &str) -> AxResult<VMId> {
-        crate::config::init_guest_vm(raw_cfg)
+    pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
+        crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")
     }
 
     /// Start a VM by ID.
-    pub fn start_vm(vm_id: VMId) -> AxResult {
-        AxvmRuntime::start_vm(vm_id)
+    pub fn start_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
     }
 
     /// Stop a VM by ID.
-    pub fn stop_vm(vm_id: VMId) -> AxResult {
-        AxvmRuntime::stop_vm(vm_id)
+    pub fn stop_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))
     }
 
     /// Resume a VM by ID.
-    pub fn resume_vm(vm_id: VMId) -> AxResult {
-        AxvmRuntime::resume_vm(vm_id)
+    pub fn resume_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::resume_vm(vm_id).with_context(|| format!("resume VM[{vm_id}]"))
     }
 
     /// Reset a VM by ID.
-    pub fn reset_vm(vm_id: VMId) -> AxResult {
-        AxvmRuntime::reset_vm(vm_id)
+    pub fn reset_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
     }
 
     /// Remove a VM by ID.
@@ -145,7 +147,7 @@ impl AxvmManager {
             let file_size = match Self::file_size(path_str) {
                 Ok(file_size) => file_size,
                 Err(e) => {
-                    error!("Failed to get config file {} metadata: {:?}", path_str, e);
+                    error!("Failed to get config file {path_str} metadata: {e:#}");
                     continue;
                 }
             };
@@ -159,7 +161,7 @@ impl AxvmManager {
             let buffer = match Self::read_file_exact(path_str, file_size) {
                 Ok(buffer) => buffer,
                 Err(e) => {
-                    error!("Failed to read file {}: {:?}", path_str, e);
+                    error!("Failed to read file {path_str}: {e:#}");
                     continue;
                 }
             };
@@ -174,53 +176,33 @@ impl AxvmManager {
     }
 
     #[cfg(feature = "fs")]
-    fn open_file(file_name: &str) -> AxResult<ax_std::fs::File> {
-        ax_std::fs::File::open(file_name).map_err(|err| {
-            ax_errno::ax_err_type!(
-                NotFound,
-                alloc::format!(
-                    "Failed to open {}, err {:?}, please check your disk.img",
-                    file_name,
-                    err
-                )
-            )
-        })
+    fn open_file(file_name: &str) -> Result<ax_std::fs::File> {
+        ax_std::fs::File::open(file_name)
+            .map_err(|error| anyhow!("open guest image file `{file_name}`: {error}"))
     }
 
     #[cfg(feature = "fs")]
-    pub fn file_size(file_name: &str) -> AxResult<usize> {
+    pub fn file_size(file_name: &str) -> Result<usize> {
         Self::open_file(file_name)?
             .metadata()
-            .map_err(|err| {
-                ax_errno::ax_err_type!(
-                    Io,
-                    alloc::format!(
-                        "Failed to get metadate of file {}, err {:?}",
-                        file_name,
-                        err
-                    )
-                )
-            })
+            .map_err(|error| anyhow!("read metadata for guest image file `{file_name}`: {error}"))
             .map(|metadata| metadata.size() as usize)
     }
 
     #[cfg(feature = "fs")]
-    pub fn read_file_exact(file_name: &str, read_size: usize) -> AxResult<Vec<u8>> {
+    pub fn read_file_exact(file_name: &str, read_size: usize) -> Result<Vec<u8>> {
         use ax_std::io::Read;
 
         let mut file = Self::open_file(file_name)?;
         let mut buffer = vec![0u8; read_size];
-        file.read_exact(&mut buffer).map_err(|err| {
-            ax_errno::ax_err_type!(
-                Io,
-                alloc::format!("Failed in reading from file {}, err {:?}", file_name, err)
-            )
+        file.read_exact(&mut buffer).map_err(|error| {
+            anyhow!("read {read_size} bytes from guest image file `{file_name}`: {error}")
         })?;
         Ok(buffer)
     }
 
     #[cfg(feature = "fs")]
-    pub fn read_file(file_name: &str) -> AxResult<Vec<u8>> {
+    pub fn read_file(file_name: &str) -> Result<Vec<u8>> {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)
     }
@@ -228,7 +210,7 @@ impl AxvmManager {
 
 #[cfg(target_arch = "loongarch64")]
 pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
-    let routes = crate::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
+    let routes = axvm::boot::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
     if routes.is_empty() {
         if let Some(vm) = axvm::get_vm_by_id(vm_id) {
             let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());

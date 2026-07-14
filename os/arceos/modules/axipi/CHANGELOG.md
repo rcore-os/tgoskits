@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.26...ax-ipi-v0.5.27) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-hal
+
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.25...ax-ipi-v0.5.26) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal
+
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.24...ax-ipi-v0.5.25) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.23...ax-ipi-v0.5.24) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-hal
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.22...ax-ipi-v0.5.23) - 2026-07-07
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.21...ax-ipi-v0.5.22) - 2026-07-02
+
+### Other
+
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.20...ax-ipi-v0.5.21) - 2026-06-27
 
 ### Other

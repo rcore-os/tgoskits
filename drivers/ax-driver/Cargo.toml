@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.9.0"
+version = "0.12.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -13,21 +13,20 @@ name = "ax_driver"
 [features]
 default = []
 
-plat-static = []
-plat-dyn = ["dep:fdt-edit"]
 irq = []
-pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-pcie"]
+pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:ax-kspin", "dep:rd-net"]
 display = ["dep:ax-errno", "dep:rdif-display"]
 input = ["dep:ax-errno", "dep:rdif-input"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
-rtc = ["plat-dyn"]
+rtc = []
+pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio", "pci"]
+virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
@@ -36,37 +35,44 @@ virtio-socket = ["vsock", "virtio", "pci"]
 ramdisk = ["block", "dep:ramdisk"]
 bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
 ahci = ["block", "pci", "dep:simple-ahci"]
+ls2k1000-ahci = ["block", "dep:simple-ahci"]
+ls2k1000-gmac = ["net", "dep:ax-kspin"]
 nvme = ["block", "pci", "dep:nvme-driver"]
-cvsd = ["block", "plat-dyn", "dep:sg200x-bsp"]
+cvsd = [
+    "block",
+    "dep:cv181x-sdhci",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
 aic8800-wifi = [
     "net",
-    "plat-dyn",
     "dep:aic8800",
     "dep:sdhci-cv1800",
     "dep:sdio-host",
 ]
 
 usb = ["dep:crab-usb"]
-rockchip-dwc-xhci = ["usb", "plat-dyn", "rockchip-soc", "rockchip-pm"]
-xhci-mmio = ["usb", "plat-dyn"]
+rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
+rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
+sg2002-dwc2 = ["usb", "dep:sg200x-bsp"]
+xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
-    "plat-dyn",
     "dep:ax-errno",
     "dep:ax-kernel-guard",
     "dep:ax-kspin",
     "dep:rdif-serial",
     "dep:some-serial",
 ]
-sg2002-placeholder = ["plat-dyn"]
-rknpu = ["plat-dyn", "rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
-rga = ["plat-dyn", "rockchip-pm", "dep:rockchip-rga"]
+rknpu = ["rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
+rga = ["rockchip-pm", "rockchip-soc", "dep:rockchip-rga"]
+jpeg = ["rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
+jpu-selftest = ["jpeg"]
 rockchip-sdhci = [
     "block",
-    "plat-dyn",
     "rockchip-pm",
     "rockchip-soc",
     "dep:ax-kspin",
@@ -77,7 +83,6 @@ rockchip-sdhci = [
 ]
 phytium-mci = [
     "block",
-    "plat-dyn",
     "dep:ax-kspin",
     "dep:phytium-mci-host",
     "dep:sdmmc-protocol",
@@ -85,14 +90,12 @@ phytium-mci = [
 ]
 k230-sdhci = [
     "block",
-    "plat-dyn",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
 rockchip-dwmmc = [
     "block",
-    "plat-dyn",
     "rockchip-pm",
     "rockchip-soc",
     "dep:arm-scmi-rs",
@@ -104,20 +107,36 @@ rockchip-dwmmc = [
 ]
 starfive-jh7110-dwmmc = [
     "block",
-    "plat-dyn",
-    "dep:dwmmc-host",
+    "starfive-soc",
     "dep:sdmmc-protocol",
+    "dep:starfive-jh7110-dwmmc",
+    "sdmmc-protocol/rdif",
     "sdmmc-protocol/sdio",
+]
+starfive-soc = [
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:tock-registers",
+]
+rk3588-pwm = [
+    "rockchip-soc",
+    "dep:rdif-pwm",
+    "dep:rockchip-pwm",
 ]
 rk3588-pcie = [
     "pci",
-    "plat-dyn",
     "rockchip-soc",
     "rockchip-pm",
     "dep:rk3588-pci",
 ]
-rockchip-soc = ["plat-dyn", "dep:rdif-clk", "dep:rockchip-soc"]
-rockchip-pm = ["rockchip-soc", "dep:rockchip-pm"]
+rockchip-soc = [
+    "pinctrl",
+    "dep:ax-kspin",
+    "dep:rdif-clk",
+    "dep:rdif-reset",
+    "dep:rockchip-soc",
+]
+rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
@@ -133,10 +152,11 @@ ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
 bcm2835-sdhci = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
+cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
 dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
-fdt-edit = { workspace = true, optional = true }
+fdt-edit = { workspace = true }
 fxmac_rs = { workspace = true, optional = true }
 heapless.workspace = true
 irq-framework.workspace = true
@@ -152,14 +172,21 @@ rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
+rdif-msi = { workspace = true, optional = true }
 rdif-pcie = { workspace = true, optional = true }
+rdif-pinctrl = { workspace = true, optional = true }
+rdif-power = { workspace = true, optional = true }
+rdif-pwm = { workspace = true, optional = true }
+rdif-reset = { workspace = true, optional = true }
 rdif-vsock = { workspace = true, optional = true }
 realtek-rtl8125 = { workspace = true, optional = true }
 rdrive.workspace = true
 rdrive-macros.workspace = true
 rk3588-pci = { workspace = true, optional = true }
 rockchip-npu = { workspace = true, optional = true }
+rockchip-pwm = { workspace = true, optional = true }
 rockchip-rga = { workspace = true, optional = true }
+rockchip-jpeg = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }
@@ -171,7 +198,12 @@ sg200x-bsp = { workspace = true, optional = true }
 simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
+starfive-jh7110-dwmmc = { workspace = true, optional = true }
+tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
+
+[dev-dependencies]
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

@@ -1,7 +1,7 @@
 features = [
-  "starry-kernel/sg2002-wifi",
+  "starry-kernel/sg2002",
+  "ax-runtime/aic8800-wifi",
   "axplat-dyn/thead-mae",
-  "ax-driver/sg2002-placeholder",
   "ax-driver/cvsd",
   "ax-driver/serial",
 ]

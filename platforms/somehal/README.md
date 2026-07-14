@@ -413,7 +413,7 @@ impl Platform for PlatformImpl {
 ## 相关文档
 
 - [Sparreal OS CLAUDE.md](../../CLAUDE.md) - 项目总览
-- [someboot 文档](../../crates/someboot/README.md) - 底层架构抽象
+- [someboot 源码](../someboot) - 底层架构抽象
 - [sparreal-kernel 文档](../../crates/sparreal-kernel/CLAUDE.md) - 内核核心
 
 ## 许可证

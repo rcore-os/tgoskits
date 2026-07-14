@@ -601,6 +601,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // this, a child fork → F_SETLK → exit would permanently pin the
         // record in FCNTL_LOCKS and block all later acquirers.
         crate::syscall::release_pid_locks(process.pid());
+        crate::syscall::release_pid_flock_locks(process.pid());
 
         // Snapshot children BEFORE process.exit() reparents them to init
         // via mem::take. Otherwise process.children() returns an empty
@@ -673,6 +674,36 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
         }
 
+        // If this process was the init of a non-root PID namespace,
+        // send SIGKILL to all remaining processes in that namespace
+        // (Linux: zap_pid_ns_processes).
+        {
+            let ns = thr.proc_data.nsproxy.lock();
+            let pid_ns_lock = ns.pid_ns.lock();
+            if pid_ns_lock.level > 0 && pid_ns_lock.init_global_tid() == Some(process.pid() as u64)
+            {
+                let ns_ptr = Arc::as_ptr(&ns.pid_ns) as usize;
+                drop(pid_ns_lock);
+                drop(ns);
+
+                let proc_table = PROCESS_TABLE.read();
+                let victims: Vec<Pid> = proc_table
+                    .values()
+                    .filter(|pd| {
+                        pd.proc.pid() != process.pid()
+                            && Arc::as_ptr(&pd.nsproxy.lock().pid_ns) as usize == ns_ptr
+                    })
+                    .map(|pd| pd.proc.pid())
+                    .collect();
+                drop(proc_table);
+
+                let sig = SignalInfo::new_kernel(Signo::SIGKILL);
+                for pid in victims {
+                    let _ = send_signal_to_process(pid, Some(sig.clone()));
+                }
+            }
+        }
+
         // Process exit state is published before waking pidfd/wait waiters.
         unsafe { thr.proc_data.exit_event.wake(axpoll::IoEvents::IN) };
 
@@ -725,6 +756,11 @@ pub fn zap_thread(tid: Pid) -> AxResult<()> {
     let task = get_task(tid)?;
     let thr = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
     thr.set_exit_request();
-    task.interrupt();
+    // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
+    // (pipe read, futex wait) — no interrupt waker is registered there — so a
+    // SIGKILLed sibling would linger until async GC, deferring `clear()` and
+    // its frame reclaim. `wake_task` force-unblocks the parked thread so it
+    // returns, observes the pending exit, and runs `do_exit` synchronously.
+    ax_task::wake_task(&task);
     Ok(())
 }

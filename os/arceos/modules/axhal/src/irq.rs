@@ -1,17 +1,19 @@
 //! Interrupt management.
 
 use ax_cpu::trap::set_irq_handler;
+#[cfg(feature = "smp")]
+pub use ax_plat::irq::init_secondary_boot_irqs;
 pub use ax_plat::irq::{
     AARCH64_GIC_DOMAIN, AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger,
     AutoEnable, BoxedIrqHandler, CPU_LOCAL_IRQ_DOMAIN, CpuId, CpuMask, HwIrq, IrqAffinity,
     IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
     IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, LEGACY_IRQ_DOMAIN,
-    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, RawIrqHandler,
-    ShareMode, TrapVector, X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq,
-    dispatch_irq, enable_irq, free_irq, handle, irq_status, legacy_irq, legacy_irq_raw,
-    request_boxed_irq, request_boxed_shared_irq, request_irq, request_percpu_irq,
-    request_shared_irq, resolve_irq_source, resolve_percpu_irq, run_on_cpu_sync, set_enable,
-    set_run_on_cpu_sync, synchronize_irq, try_legacy_irq,
+    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, ShareMode, TrapVector,
+    X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
+    free_irq, handle, in_irq_context, init_boot_irqs, irq_status, legacy_irq, legacy_irq_raw,
+    prepare_irq_context, request_irq, request_percpu_irq, request_shared_irq, resolve_irq_source,
+    resolve_percpu_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync, synchronize_irq,
+    try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
@@ -28,6 +30,7 @@ pub fn ipi_irq() -> IrqId {
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
 pub fn handle_irq(vector: usize) -> bool {
+    prepare_irq_context(TrapVector(vector));
     let guard = ax_kernel_guard::NoPreempt::new();
     let handled = handle(TrapVector(vector)).is_some();
 

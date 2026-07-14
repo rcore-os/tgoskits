@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.8...somehal-v0.8.0) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.7...somehal-v0.7.8) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.6...somehal-v0.7.7) - 2026-07-08
+
+### Other
+
+- updated the following local packages: someboot
+
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.5...somehal-v0.7.6) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, rdrive
+
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.4...somehal-v0.7.5) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
+### Other
+
+- *(somehal)* cache IRQ routes in CPU interfaces ([#1494](https://github.com/rcore-os/tgoskits/pull/1494))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.3...somehal-v0.7.4) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(somehal)* validate GIC runtime INTIDs
+- *(somehal)* fast-path x86 IOAPIC IRQ enable
+- *(somehal)* enable GIC private IRQs without controller locks
+- *(irq)* avoid hard irq controller locks
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(somehal)* restructure RISC-V IRQ routing ([#1443](https://github.com/rcore-os/tgoskits/pull/1443))
+- *(somehal)* restructure LoongArch IRQ routing ([#1442](https://github.com/rcore-os/tgoskits/pull/1442))
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.7.2...somehal-v0.7.3) - 2026-06-27
 
 ### Added

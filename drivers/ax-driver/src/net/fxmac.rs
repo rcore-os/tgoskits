@@ -11,9 +11,7 @@ use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xma
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice};
 
-#[cfg(plat_dyn)]
-use crate::binding_info_from_fdt;
-use crate::net::PlatformDeviceNet;
+use crate::{binding_info_from_fdt, net::PlatformDeviceNet};
 
 pub const DEVICE_NAME: &str = "fxmac";
 
@@ -25,7 +23,6 @@ const DMA_ALIGN: usize = 0x1000;
 const DMA_MASK: u64 = u64::MAX;
 const PAGE_SIZE: usize = 0x1000;
 
-#[cfg(plat_dyn)]
 crate::model_register!(
     name: "FXMAC FDT Network",
     level: ProbeLevel::PostKernel,
@@ -36,7 +33,6 @@ crate::model_register!(
     }],
 );
 
-#[cfg(plat_dyn)]
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
     let info = binding_info_from_fdt(probe.info())?;
     let dev = FxmacNet::new();

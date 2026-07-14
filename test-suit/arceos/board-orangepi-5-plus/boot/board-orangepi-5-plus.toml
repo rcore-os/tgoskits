@@ -1,0 +1,9 @@
+board_type = "OrangePi-5-Plus"
+success_regex = ["(?m)^Hello, world!\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)segmentation fault",
+    "(?i)SIGSEGV",
+    "exit with code: 139",
+]
+timeout = 300

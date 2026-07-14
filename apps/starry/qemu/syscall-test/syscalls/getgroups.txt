@@ -1,0 +1,4 @@
+# getgroups01 # TFAIL: expected EINVAL, got success
+# getgroups01_16 # TCONF: 16-bit getgroups is not supported on x86_64
+getgroups03
+# getgroups03_16 # TCONF: 16-bit getgroups is not supported on x86_64

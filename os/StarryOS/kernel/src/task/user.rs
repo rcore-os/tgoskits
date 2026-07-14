@@ -33,10 +33,31 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
             }
             while !thr.pending_exit() {
-                if thr.proc_data.is_ptrace_singlestep_for(thr.tid())
-                    && (thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached())
-                {
-                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, thr.tid(), &mut uctx);
+                let tid = thr.tid();
+                let is_ptraced =
+                    thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached();
+                if thr.proc_data.is_ptrace_singlestep_for(tid) && is_ptraced {
+                    #[cfg(any(
+                        target_arch = "riscv64",
+                        target_arch = "aarch64",
+                        target_arch = "loongarch64"
+                    ))]
+                    {
+                        // An IRQ can return here after the stepped branch reached
+                        // the planted breakpoint PC but before the breakpoint trap
+                        // was delivered. Report that as the completed single-step
+                        // instead of restoring the breakpoint and running past it.
+                        if crate::syscall::ptrace_complete_singlestep_breakpoint_if_at_ip(
+                            &thr.proc_data,
+                            tid,
+                            &mut uctx,
+                        ) && ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
+                        {
+                            continue;
+                        }
+                    }
+
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, tid, &mut uctx);
                 }
 
                 let reason = uctx.run();
@@ -98,6 +119,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
+                        // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
+                        // semantics: all faults, before resolution). Kernel-mode faults on user
+                        // addresses are counted separately in the mm page-fault handler.
+                        crate::mm::PAGE_FAULT_COUNT
+                            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         // Classify si_code while holding the aspace lock: an
                         // existing mapping that rejected the access is a
                         // permission violation (SEGV_ACCERR), otherwise the
@@ -163,42 +189,18 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             && (thr.proc_data.is_ptrace_traceme()
                                 || thr.proc_data.is_ptrace_attached())
                         {
-                            let saved_insn = thr.proc_data.take_ptrace_ss_saved_insn_for(thr.tid());
-                            if let Some((addr, insn)) = saved_insn {
-                                if addr == uctx.ip() {
-                                    #[cfg(any(
-                                        target_arch = "riscv64",
-                                        target_arch = "aarch64",
-                                        target_arch = "loongarch64"
-                                    ))]
-                                    {
-                                        let restored =
-                                            crate::syscall::ptrace_restore_singlestep_insn(
-                                                &thr.proc_data,
-                                                thr.tid(),
-                                                addr,
-                                                insn,
-                                            );
-                                        if restored {
-                                            thr.proc_data
-                                                .set_ptrace_singlestep_for(thr.tid(), false);
-                                        }
-                                    }
-                                    #[cfg(not(any(
-                                        target_arch = "riscv64",
-                                        target_arch = "aarch64",
-                                        target_arch = "loongarch64"
-                                    )))]
-                                    thr.proc_data.set_ptrace_ss_saved_insn_for(
+                            #[cfg(any(
+                                target_arch = "riscv64",
+                                target_arch = "aarch64",
+                                target_arch = "loongarch64"
+                            ))]
+                            {
+                                let _ =
+                                    crate::syscall::ptrace_complete_singlestep_breakpoint_if_at_ip(
+                                        &thr.proc_data,
                                         thr.tid(),
-                                        Some((addr, insn)),
+                                        &mut uctx,
                                     );
-                                } else {
-                                    thr.proc_data.set_ptrace_ss_saved_insn_for(
-                                        thr.tid(),
-                                        Some((addr, insn)),
-                                    );
-                                }
                             }
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
@@ -228,6 +230,26 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                                 break 'exc;
                             }
                         }
+                        if matches!(kind, ExceptionKind::Misaligned) {
+                            #[cfg(target_arch = "loongarch64")]
+                            match unsafe { uctx.emulate_unaligned_at(exc_info.badv as u64) } {
+                                Ok(()) => break 'exc,
+                                Err(err) => {
+                                    let exe_path = thr.proc_data.exe_path.read().clone();
+                                    warn!(
+                                        "loongarch64 unaligned emulation failed: task={}, pid={}, \
+                                         exe='{}', ip={:#x}, fault_addr={:#x}, err={}, info={:?}",
+                                        curr.id_name(),
+                                        thr.proc_data.proc.pid(),
+                                        exe_path,
+                                        uctx.ip(),
+                                        exc_info.fault_addr().unwrap_or(0),
+                                        err,
+                                        exc_info,
+                                    );
+                                }
+                            }
+                        }
                         let syndrome = exc_info.syndrome();
                         warn!(
                             "user exception: ip={:#x}, fault_addr={:#x}, kind={:?}, esr={:#x}, \
@@ -241,13 +263,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             exc_info
                         );
                         let sig_info = match kind {
-                            ExceptionKind::Misaligned => {
-                                #[cfg(target_arch = "loongarch64")]
-                                if unsafe { uctx.emulate_unaligned() }.is_ok() {
-                                    break 'exc;
-                                }
-                                SignalInfo::new_kernel(Signo::SIGBUS)
-                            }
+                            ExceptionKind::Misaligned => SignalInfo::new_kernel(Signo::SIGBUS),
                             ExceptionKind::Breakpoint => SignalInfo::new_kernel(Signo::SIGTRAP),
                             ExceptionKind::IllegalInstruction => {
                                 // AArch64 EL0 reads of ID_AA64*_EL1 (CPU feature

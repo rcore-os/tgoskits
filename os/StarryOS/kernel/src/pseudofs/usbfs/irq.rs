@@ -1,7 +1,6 @@
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
-    ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -94,9 +93,12 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
                     "usbfs: registering IRQ callback for IRQ {:?} (bus {}, host {:?})",
                     irq, slot.bus_num, slot.device_id
                 );
-                let request = IrqRequest::new(usbfs_raw_irq_handler, NonNull::dangling())
-                    .share_mode(ShareMode::Shared)
-                    .auto_enable(AutoEnable::No);
+                let request = IrqRequest::new(|ctx| {
+                    usbfs_irq_handler_by_irq(ctx.irq);
+                    ax_runtime::hal::irq::IrqReturn::Handled
+                })
+                .share_mode(ShareMode::Shared)
+                .auto_enable(AutoEnable::No);
                 match ax_runtime::hal::irq::request_irq(irq, request) {
                     Ok(handle) => {
                         *slot.handle.lock() = Some(handle);
@@ -280,12 +282,4 @@ fn usbfs_event_handler(slot_index: usize) {
             manager.notify_topology_from_irq();
         }
     }
-}
-
-unsafe fn usbfs_raw_irq_handler(
-    ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    usbfs_irq_handler_by_irq(ctx.irq);
-    ax_runtime::hal::irq::IrqReturn::Handled
 }

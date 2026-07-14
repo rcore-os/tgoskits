@@ -12,64 +12,87 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxError, AxResult};
-use axvcpu::AxArchPerCpu;
 use riscv::register::sie;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 
-use crate::{consts::traps, has_hardware_support};
+use crate::{
+    has_hardware_support,
+    registers::{delegated_exception_bits, delegated_interrupt_bits},
+    types::{RiscvVcpuError, RiscvVcpuResult},
+};
 
 /// Risc-V per-CPU state.
-pub struct RISCVPerCpu;
+pub struct RiscvPerCpu {
+    cpu_id: usize,
+    enabled: bool,
+}
 
-impl AxArchPerCpu for RISCVPerCpu {
-    fn new(_cpu_id: usize) -> AxResult<Self> {
+impl RiscvPerCpu {
+    /// Creates per-CPU virtualization state.
+    pub fn new(cpu_id: usize) -> RiscvVcpuResult<Self> {
+        Ok(Self {
+            cpu_id,
+            enabled: false,
+        })
+    }
+
+    /// Whether virtualization has been enabled through this state object.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Enables RISC-V hypervisor state on this CPU.
+    pub fn hardware_enable(&mut self) -> RiscvVcpuResult {
+        if !has_hardware_support() {
+            return Err(RiscvVcpuError::Unsupported);
+        }
         unsafe {
             setup_csrs();
         }
-
-        Ok(Self)
+        self.enabled = true;
+        let _ = self.cpu_id;
+        Ok(())
     }
 
-    fn is_enabled(&self) -> bool {
-        unimplemented!()
+    /// Disables guest-visible hypervisor state owned by this CPU state object.
+    pub fn hardware_disable(&mut self) -> RiscvVcpuResult {
+        unsafe {
+            hvip::clear_vssip();
+            hvip::clear_vstip();
+            hvip::clear_vseip();
+            core::arch::asm!("csrw hgatp, x0");
+            core::arch::riscv64::hfence_gvma_all();
+        }
+        self.enabled = false;
+        Ok(())
     }
 
-    fn hardware_enable(&mut self) -> AxResult<()> {
-        if has_hardware_support() {
-            Ok(())
-        } else {
-            Err(AxError::Unsupported)
+    /// Returns the max guest page-table levels supported by this CPU.
+    pub fn max_guest_page_table_levels(&self) -> usize {
+        crate::max_guest_page_table_levels()
+    }
+
+    /// Returns the guest physical address width supported by this CPU.
+    pub fn guest_phys_addr_bits(&self) -> usize {
+        match crate::max_guest_page_table_levels() {
+            3 => 41,
+            4 => 50,
+            _ => 0,
         }
     }
-
-    fn hardware_disable(&mut self) -> AxResult<()> {
-        unimplemented!()
-    }
 }
+
+/// Backward-compatible per-CPU alias.
+pub type RISCVPerCpu = RiscvPerCpu;
 
 /// Initialize (H)S-level CSRs to a reasonable state.
 unsafe fn setup_csrs() {
     unsafe {
         // Delegate some synchronous exceptions.
-        hedeleg::Hedeleg::from_bits(
-            traps::exception::INST_ADDR_MISALIGN
-                | traps::exception::BREAKPOINT
-                | traps::exception::ENV_CALL_FROM_U_OR_VU
-                | traps::exception::INST_PAGE_FAULT
-                | traps::exception::LOAD_PAGE_FAULT
-                | traps::exception::STORE_PAGE_FAULT
-                | traps::exception::ILLEGAL_INST,
-        )
-        .write();
+        hedeleg::Hedeleg::from_bits(delegated_exception_bits()).write();
 
         // Delegate all interrupts.
-        hideleg::Hideleg::from_bits(
-            traps::interrupt::VIRTUAL_SUPERVISOR_TIMER
-                | traps::interrupt::VIRTUAL_SUPERVISOR_EXTERNAL
-                | traps::interrupt::VIRTUAL_SUPERVISOR_SOFT,
-        )
-        .write();
+        hideleg::Hideleg::from_bits(delegated_interrupt_bits()).write();
 
         // Clear all interrupts.
         hvip::clear_vssip();

@@ -1,0 +1,15 @@
+# gateway riscv64 -- angie 1.11.5 full-directive gateway carpet. riscv64 has no official angie apk, so the
+# binary is source-cross-built WITH the full gateway module set (ssl/v2/gzip/grpc/stream/ssl_preread). uefi=false / to_bin=true = raw boot.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "1024M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-gateway.sh"
+success_regex = ['(?m)^GATEWAY_OK=109/109', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 160000

@@ -1,7 +1,6 @@
 use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
-    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
@@ -249,8 +248,8 @@ impl EventDev {
             return;
         };
 
-        let data = NonNull::from(self.as_ref()).cast();
-        let request = ax_runtime::hal::irq::IrqRequest::new(event_dev_irq_handler, data)
+        let event_dev = Arc::clone(self);
+        let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
             .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
             .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
         match ax_runtime::hal::irq::request_irq(irq, request) {
@@ -325,32 +324,27 @@ impl EventDev {
             "evdev-poll".into(),
         );
     }
-}
 
-unsafe fn event_dev_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
-    let event_dev = unsafe { data.cast::<EventDev>().as_ref() };
-    // Use `lock()` rather than `try_lock()` so the virtio ISR is always
-    // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
-    // disabled, so this IRQ can only fire on a different CPU. Without the
-    // ack, a level-triggered shared IRQ line stays asserted and can starve
-    // other devices on the same line.
-    let mut inner = event_dev.inner.lock();
-    let event = inner.device.handle_irq();
-    if event.input_ready && inner.drain_into_queue() {
-        event_dev
-            .last_irq_event
-            .store(monotonic_time_nanos(), Ordering::Release);
-        drop(inner);
-        event_dev.waiters.wake_from_irq(IoEvents::IN);
-        return ax_runtime::hal::irq::IrqReturn::Wake;
-    }
-    if event.handled {
-        ax_runtime::hal::irq::IrqReturn::Handled
-    } else {
-        ax_runtime::hal::irq::IrqReturn::Unhandled
+    fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
+        // Use `lock()` rather than `try_lock()` so the virtio ISR is always
+        // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
+        // disabled, so this IRQ can only fire on a different CPU. Without the
+        // ack, a level-triggered shared IRQ line stays asserted and can starve
+        // other devices on the same line.
+        let mut inner = self.inner.lock();
+        let event = inner.device.handle_irq();
+        if event.input_ready && inner.drain_into_queue() {
+            self.last_irq_event
+                .store(monotonic_time_nanos(), Ordering::Release);
+            drop(inner);
+            self.waiters.wake_from_irq(IoEvents::IN);
+            return ax_runtime::hal::irq::IrqReturn::Wake;
+        }
+        if event.handled {
+            ax_runtime::hal::irq::IrqReturn::Handled
+        } else {
+            ax_runtime::hal::irq::IrqReturn::Unhandled
+        }
     }
 }
 

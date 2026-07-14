@@ -57,6 +57,16 @@ impl USBHost {
         self.backend.disable_irq()
     }
 
+    #[cfg(kmod)]
+    pub fn dwc2_transfer_stats(&self) -> Option<Dwc2TransferStats> {
+        self.backend.dwc2_transfer_stats()
+    }
+
+    #[cfg(kmod)]
+    pub fn reset_dwc2_transfer_stats(&self) {
+        self.backend.reset_dwc2_transfer_stats();
+    }
+
     pub async fn open_device(&mut self, dev: &DeviceInfo) -> Result<Device> {
         let device = self.backend.open_device(dev.inner.as_ref()).await?;
         let mut device: Device = device.into();

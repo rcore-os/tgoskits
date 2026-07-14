@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.5.23"
+version = "0.6.4"
 
 [features]
 default = []
@@ -13,7 +13,6 @@ default = []
 irq = ["ax-hal/irq", "dep:ax-timer-list"]
 ipi = ["irq", "ax-hal/ipi", "dep:ax-ipi"]
 multitask = [
-  "stack-canary",
   "dep:axpoll",
   "dep:ax-sched",
   "dep:ax-cpumask",
@@ -28,7 +27,6 @@ multitask = [
 ]
 preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
-stack-canary = []
 stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
 lockdep = [
   "multitask",
@@ -47,7 +45,6 @@ tracepoint-hooks = ["multitask"]
 uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
-sched-fifo = ["multitask"]
 sched-rr = ["multitask", "preempt"]
 
 host-test = [
@@ -89,4 +86,3 @@ ax-hal = { workspace = true, features = ["fp-simd"] }
 
 [build-dependencies]
 quote = "1.0"
-toml.workspace = true

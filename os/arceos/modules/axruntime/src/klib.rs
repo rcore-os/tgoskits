@@ -15,8 +15,8 @@ use core::time::Duration;
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
 use axklib::{
-    AxError, AxResult, IrqCpuId, IrqCpuMask, IrqError, IrqHandle, IrqId, Klib, PhysAddr,
-    RawIrqHandler, VirtAddr, impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
+    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -45,44 +45,9 @@ fn map_irq_error(err: IrqError) -> AxError {
     }
 }
 
-#[cfg(all(feature = "paging", target_arch = "aarch64"))]
-fn clean_invalidate_dcache_to_poc(addr: VirtAddr, size: usize) {
-    use core::arch::asm;
-
-    if size == 0 {
-        return;
-    }
-
-    let line_size = ax_hal::asm::dcache_line_size_from_ctr();
-    let start = addr.as_usize() & !(line_size - 1);
-    let end = (addr.as_usize() + size + line_size - 1) & !(line_size - 1);
-    for line in (start..end).step_by(line_size) {
-        unsafe { asm!("dc civac, {0:x}", in(reg) line) };
-    }
+fn dma_cache_range(op: ax_hal::mem::DCacheOp, addr: VirtAddr, size: usize) {
+    ax_hal::mem::dcache_range(op, addr, size);
 }
-
-#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
-fn clean_invalidate_dcache_to_poc(_addr: VirtAddr, _size: usize) {}
-
-#[cfg(all(feature = "paging", target_arch = "aarch64"))]
-#[inline]
-fn dsb_sy() {
-    unsafe { core::arch::asm!("dsb sy") };
-}
-
-#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
-#[inline]
-fn dsb_sy() {}
-
-#[cfg(all(feature = "paging", target_arch = "aarch64"))]
-#[inline]
-fn isb_sy() {
-    unsafe { core::arch::asm!("isb") };
-}
-
-#[cfg(all(feature = "paging", not(target_arch = "aarch64")))]
-#[inline]
-fn isb_sy() {}
 
 impl_trait! {
     impl Klib for KlibImpl {
@@ -107,6 +72,18 @@ impl_trait! {
             ax_hal::mem::virt_to_phys(addr)
         }
 
+        fn dma_cache_clean(addr: VirtAddr, size: usize) {
+            dma_cache_range(ax_hal::mem::DCacheOp::Clean, addr, size);
+        }
+
+        fn dma_cache_invalidate(addr: VirtAddr, size: usize) {
+            dma_cache_range(ax_hal::mem::DCacheOp::Invalidate, addr, size);
+        }
+
+        fn dma_cache_clean_invalidate(addr: VirtAddr, size: usize) {
+            dma_cache_range(ax_hal::mem::DCacheOp::CleanInvalidate, addr, size);
+        }
+
         fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
             #[cfg(feature = "paging")]
             {
@@ -114,8 +91,7 @@ impl_trait! {
                     return Ok(());
                 };
 
-                clean_invalidate_dcache_to_poc(start, size);
-                dsb_sy();
+                ax_hal::mem::dma_coherent_before_make_uncached(start, size);
                 ax_mm::kernel_aspace().lock().protect(
                     start,
                     size,
@@ -124,8 +100,7 @@ impl_trait! {
                         | ax_hal::paging::MappingFlags::UNCACHED,
                 )?;
                 ax_hal::asm::flush_tlb(None);
-                dsb_sy();
-                isb_sy();
+                ax_hal::mem::dma_coherent_after_mapping_update();
                 Ok(())
             }
             #[cfg(not(feature = "paging"))]
@@ -142,15 +117,14 @@ impl_trait! {
                     return Ok(());
                 };
 
-                dsb_sy();
+                ax_hal::mem::dma_coherent_before_restore_cached(start, size);
                 ax_mm::kernel_aspace().lock().protect(
                     start,
                     size,
                     ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
                 )?;
                 ax_hal::asm::flush_tlb(None);
-                dsb_sy();
-                isb_sy();
+                ax_hal::mem::dma_coherent_after_mapping_update();
                 Ok(())
             }
             #[cfg(not(feature = "paging"))]
@@ -221,12 +195,11 @@ impl_trait! {
 
         fn irq_request_shared(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_shared_irq(_irq, _handler, _data).map_err(map_irq_error)
+                ax_hal::irq::request_shared_irq(_irq, _handler).map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]
             {
@@ -236,14 +209,13 @@ impl_trait! {
 
         fn irq_request_shared_disabled(
             _irq: IrqId,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: BoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
                 ax_hal::irq::request_irq(
                     _irq,
-                    ax_hal::irq::IrqRequest::new(_handler, _data)
+                    ax_hal::irq::IrqRequest::new(_handler)
                         .share_mode(ax_hal::irq::ShareMode::Shared)
                         .auto_enable(ax_hal::irq::AutoEnable::No),
                 )
@@ -258,12 +230,11 @@ impl_trait! {
         fn irq_request_percpu(
             _irq: IrqId,
             _cpus: IrqCpuMask,
-            _handler: RawIrqHandler,
-            _data: core::ptr::NonNull<()>,
+            _handler: ConcurrentBoxedIrqHandler,
         ) -> AxResult<IrqHandle> {
             #[cfg(feature = "irq")]
             {
-                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler, _data)
+                ax_hal::irq::request_percpu_irq(_irq, _cpus, _handler)
                     .map_err(map_irq_error)
             }
             #[cfg(not(feature = "irq"))]

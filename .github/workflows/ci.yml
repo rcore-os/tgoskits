@@ -139,6 +139,9 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Validate CI source paths
+        run: python3 scripts/test/check_ci_paths.py
+
       - name: Detect CI-relevant changes
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -155,16 +158,18 @@ jobs:
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
-              - "bootloader/axloader/**"
+              - "apps/**"
+              - "bootloader/**"
               - "components/**"
               - "drivers/**"
+              - "memory/**"
               - "net/**"
               - "os/**"
               - "platforms/**"
-              - "virtualization/**"
-              - "memory/**"
               - "scripts/**"
               - "test-suit/**"
+              - "tools/**"
+              - "virtualization/**"
               - "xtask/**"
             base_container_publish:
               - "container/Dockerfile"
@@ -371,6 +376,7 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: full
+            download_xtask_bin_artifact: true
             limit_to_owner: ""
             main_pr_only: false
           - name: Test with std
@@ -697,6 +703,22 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor self-hosted board asus-nuc15crh-linux
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            timeout_minutes: 20
+            command: |
+              mkdir -p tmp
+              cargo xtask image pull qemu-x86_64 --output-dir tmp
+              cargo xtask image pull initramfs-x86_64-busybox.cpio.gz --output-dir tmp
+              gzip -dc \
+                tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
+                > tmp/initramfs-x86_64-busybox.cpio
+              cargo xtask axvisor test board --board asus-nuc15crh-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           - name: Test starry self-hosted board orangepi-5-plus
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
@@ -705,10 +727,10 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test starry self-hosted board licheerv-nano-sg2002
+          - name: Test starry self-hosted board aka-00-sg2002
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
-            command: cargo xtask starry test board --board licheerv-nano-sg2002
+            command: cargo xtask starry test board --board aka-00-sg2002
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

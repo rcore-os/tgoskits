@@ -3,14 +3,14 @@
 mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
-#[cfg(feature = "dma-heap")]
-pub(crate) mod dma_heap;
+// The real contiguous coherent dma-heap is shared by every accelerator that
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
+mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod irq_byte_ring;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
@@ -21,28 +21,35 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "rga")]
 mod rga;
+#[cfg(feature = "jpeg")]
+mod mpp_service;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
+#[cfg(feature = "sg2002")]
+mod pinmux;
+#[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
+pub(super) mod pwm;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
 pub mod tty;
 
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod cvi_camera;
-#[cfg(feature = "sg2002")]
+#[cfg(feature = "sg2002-cvi-usb-camera")]
+mod cvi_jpu;
+#[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-mod pinmux;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-pub(super) mod pwm;
+#[cfg(feature = "sg2002-cvi-usb-camera")]
+mod cvi_vdec;
 
 use alloc::{format, sync::Arc};
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_errno::AxError;
 use ax_sync::Mutex;
@@ -54,11 +61,13 @@ use spin::Once;
 pub static ION_DEVICE: Once<Arc<ion::IonDevice>> = Once::new();
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
 
-const RANDOM_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
+
+static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) struct IrqRegistration {
@@ -87,10 +96,11 @@ impl Drop for IrqRegistration {
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) fn request_shared_disabled(
     irq: ax_runtime::hal::irq::IrqId,
-    handler: ax_runtime::hal::irq::RawIrqHandler,
-    data: core::ptr::NonNull<()>,
+    handler: impl FnMut(ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn
+    + Send
+    + 'static,
 ) -> Result<IrqRegistration, ax_runtime::hal::irq::IrqError> {
-    let request = ax_runtime::hal::irq::IrqRequest::new(handler, data)
+    let request = ax_runtime::hal::irq::IrqRequest::new(handler)
         .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
         .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
     ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)
@@ -168,24 +178,67 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    rng: Mutex<SmallRng>,
+    state: Mutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            rng: Mutex::new(SmallRng::from_seed(*RANDOM_SEED)),
+            state: Mutex::new(RandomState::new(random_seed())),
         }
+    }
+
+    #[cfg(any(test, axtest))]
+    fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
+        Self {
+            state: Mutex::new(RandomState::new(seed)),
+        }
+    }
+}
+
+struct RandomState {
+    rng: ChaCha20Rng,
+    reseed_count: u64,
+}
+
+impl RandomState {
+    fn new(seed: [u8; 32]) -> Self {
+        Self {
+            rng: ChaCha20Rng::from_seed(seed),
+            reseed_count: 0,
+        }
+    }
+
+    fn fill_bytes(&mut self, buf: &mut [u8]) {
+        self.rng.fill_bytes(buf);
+    }
+
+    fn mix_entropy(&mut self, entropy: &[u8]) {
+        let mut seed = [0; 32];
+        self.rng.fill_bytes(&mut seed);
+
+        self.reseed_count = self.reseed_count.wrapping_add(1);
+        fold_seed_word(&mut seed, entropy.len() as u64);
+        fold_seed_word(&mut seed, self.reseed_count);
+        fold_seed_word(&mut seed, time_entropy());
+
+        for (idx, byte) in entropy.iter().copied().enumerate() {
+            let seed_idx = idx % seed.len();
+            seed[seed_idx] ^= byte.rotate_left((idx & 7) as u32);
+        }
+
+        self.rng = ChaCha20Rng::from_seed(seed);
     }
 }
 
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        self.rng.lock().fill_bytes(buf);
+        self.state.lock().fill_bytes(buf);
         Ok(buf.len())
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        self.state.lock().mix_entropy(buf);
         Ok(buf.len())
     }
 
@@ -196,6 +249,68 @@ impl DeviceOps for Random {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
+}
+
+fn random_seed() -> [u8; 32] {
+    // This counter only perturbs seeds created in the same timer tick; it does
+    // not publish state to other threads.
+    let counter = RANDOM_SEED_COUNTER.fetch_add(RANDOM_SEED_STEP, Ordering::Relaxed);
+    let stack_addr = &counter as *const u64 as usize as u64;
+    let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17);
+    let mut seed = [0; 32];
+
+    for chunk in seed.chunks_exact_mut(core::mem::size_of::<u64>()) {
+        state = splitmix64(state.wrapping_add(RANDOM_SEED_STEP));
+        chunk.copy_from_slice(&state.to_le_bytes());
+    }
+
+    seed
+}
+
+fn time_entropy() -> u64 {
+    ax_runtime::hal::time::monotonic_time_nanos()
+}
+
+fn fold_seed_word(seed: &mut [u8; 32], word: u64) {
+    let mixed = splitmix64(word);
+    for (idx, byte) in mixed.to_le_bytes().into_iter().enumerate() {
+        let seed_idx = idx * 4 % seed.len();
+        seed[seed_idx] ^= byte;
+    }
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[cfg(axtest)]
+pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
+    let seed = *b"0123456789abcdef0123456789abcdef";
+    let baseline = Random::new_with_seed_for_test(seed);
+    let mixed = Random::new_with_seed_for_test(seed);
+    let mut discarded = [0; 32];
+    let mut baseline_next = [0; 32];
+    let mut mixed_next = [0; 32];
+
+    if baseline.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.write_at(b"caller entropy", 0) != Ok(14) {
+        return false;
+    }
+    if baseline.read_at(&mut baseline_next, 0) != Ok(baseline_next.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut mixed_next, 0) != Ok(mixed_next.len()) {
+        return false;
+    }
+
+    baseline_next != mixed_next
 }
 
 struct Full;
@@ -440,6 +555,46 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         }
     }
 
+    // /dev/mpp_service — Rockchip MPP-compatible JPEG decoder node. Registered
+    // unconditionally under `jpeg`; the node itself reports an error if the
+    // hardware was not probed.
+    #[cfg(feature = "jpeg")]
+    {
+        root.add(
+            "mpp_service",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                mpp_service::MPP_SERVICE_DEVICE_ID,
+                Arc::new(mpp_service::MppService::new()),
+            ),
+        );
+    }
+
+    // /dev/dma_heap — the real contiguous, DMA-coherent allocator that the
+    // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
+    // heap name maps to the same allocator. Available under any accelerator
+    // feature, not just `jpeg`.
+    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
+    {
+        let mut dma_heap_dir = DirMapping::new();
+        for name in dmaheap::HEAP_NAMES {
+            dma_heap_dir.add(
+                *name,
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    dmaheap::DMA_HEAP_DEVICE_ID,
+                    Arc::new(dmaheap::DmaHeap),
+                ),
+            );
+        }
+        root.add(
+            "dma_heap",
+            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
+        );
+    }
+
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
@@ -478,36 +633,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         ),
     );
 
-    #[cfg(feature = "dma-heap")]
-    {
-        // Real dma-buf allocator, shared by the NPU and RGA import paths.
-        // /dev/dma_heap/{system,cma} are aliases over the same contiguous allocator.
-        let heap = Arc::new(dma_heap::DmaHeap::new());
-        let mut dma_heap_dir = DirMapping::new();
-        dma_heap_dir.add(
-            "system",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                dma_heap::DMA_HEAP_SYSTEM_DEVICE_ID,
-                heap.clone(),
-            ),
-        );
-        dma_heap_dir.add(
-            "cma",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                dma_heap::DMA_HEAP_CMA_DEVICE_ID,
-                heap,
-            ),
-        );
-        root.add(
-            "dma_heap",
-            SimpleDir::new_maker(fs.clone(), Arc::new(dma_heap_dir)),
-        );
-    }
-
     #[cfg(feature = "rga")]
     root.add(
         "rga",
@@ -521,7 +646,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "rknpu")]
     {
-        // RockChip-specific NPU companion card (DRM card1).
+        // RockChip-specific NPU companion card (DRM card1). The contiguous
+        // `/dev/dma_heap` it allocates from is registered above under the shared
+        // accelerator gate.
         dri_dir.add(
             "card1",
             Device::new(
@@ -557,15 +684,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
     #[cfg(feature = "sg2002")]
     {
-        root.add(
-            "cvi-tpu0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(240, 0),
-                Arc::new(unsafe { tpu::TpuDevice::new() }),
-            ),
-        );
+        if let Some(tpu) = tpu::TpuDevice::probe() {
+            root.add(
+                "cvi-tpu0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(240, 0),
+                    Arc::new(tpu),
+                ),
+            );
+        }
         let ion_device = Arc::new(ion::IonDevice::new());
         ION_DEVICE.call_once(|| ion_device.clone());
         root.add(
@@ -577,30 +706,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 ion_device,
             ),
         );
-    }
-    #[cfg(feature = "sg2002")]
-    {
-        root.add(
-            "cvi-usb-camera0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(10, 202),
-                Arc::new(cvi_usb_camera::CviCamera::new()),
-            ),
-        );
-    }
-    #[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
-    {
-        root.add(
-            "cvi-camera0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(10, 201),
-                Arc::new(cvi_camera::CviCamera::new()),
-            ),
-        );
         root.add(
             "pinmux",
             Device::new(
@@ -610,7 +715,57 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 Arc::new(pinmux::PinmuxDev),
             ),
         );
+        #[cfg(feature = "sg2002-cvi-usb-camera")]
+        {
+            let jpu = Arc::new(cvi_jpu::CviJpu::new());
+            root.add(
+                "cvi-usb-camera0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(10, 202),
+                    Arc::new(cvi_usb_camera::CviCamera::new(jpu.clone())),
+                ),
+            );
+            root.add(
+                "cvi_vc_dec0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(10, 203),
+                    Arc::new(cvi_vdec::CviVdec::new(jpu)),
+                ),
+            );
+        }
     }
-
     SimpleDir::new_maker(fs, Arc::new(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceOps, Random};
+
+    #[test]
+    fn random_write_mixes_entropy_into_stream() {
+        let seed = *b"0123456789abcdef0123456789abcdef";
+        let baseline = Random::new_with_seed_for_test(seed);
+        let mixed = Random::new_with_seed_for_test(seed);
+        let mut discarded = [0; 32];
+        let mut baseline_next = [0; 32];
+        let mut mixed_next = [0; 32];
+
+        assert_eq!(
+            baseline.read_at(&mut discarded, 0).unwrap(),
+            discarded.len()
+        );
+        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
+        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
+        assert_eq!(
+            baseline.read_at(&mut baseline_next, 0).unwrap(),
+            baseline_next.len()
+        );
+        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
+
+        assert_ne!(baseline_next, mixed_next);
+    }
 }

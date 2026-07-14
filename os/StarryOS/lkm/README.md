@@ -60,14 +60,15 @@ from the same crate graph:
 [dependencies]
 kmod-tools.workspace = true
 starry-kernel = { workspace = true, features = [...] }
-ax-feat = { workspace = true, features = [...] }
+ax-runtime = { workspace = true, features = [...] }
 ax-std = { workspace = true, features = [...] }
 ```
 
 Add lower-level ArceOS crates such as `ax-hal`, `ax-driver`, or `axplat-dyn`
-only when the module directly uses their APIs or forwards their features.
+only when the module directly uses their APIs. Do not use module features to
+select a platform path; the kernel build always provides `axplat-dyn`.
 
-Do not depend on a different version of `starry-kernel`, `ax-std`, `ax-feat`,
+Do not depend on a different version of `starry-kernel`, `ax-std`, `ax-runtime`,
 or platform crates. A Rust kmod may contain undefined Rust `core`/`alloc` and
 kernel symbols that must match the kernel ELF exactly.
 
@@ -76,17 +77,17 @@ kernel symbols that must match the kernel ELF exactly.
 The Rust kmod feature set must be compatible with the kernel that will load it.
 In practice, the module's effective Starry/ArceOS feature requirements should
 be a subset of, or equal to, the kernel build's enabled capabilities; when in
-doubt, make the module package expose the same board/platform features as
+doubt, make the module package expose the same board and device features as
 `starryos` and forward them to the same crates.
 
-For example, if the kernel is built with a dynamic platform feature such as
-`plat-dyn`, the module package should also provide and forward `plat-dyn`:
+The dynamic platform path is mandatory and comes from the kernel build context.
+Modules should only forward optional capabilities they actually need, for
+example SMP:
 
 ```toml
 [features]
 default = []
-plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
+smp = ["ax-runtime/smp", "ax-hal/smp"]
 ```
 
 The same applies to board and device features. If a module needs a symbol or
@@ -95,7 +96,7 @@ similar feature gates, the kernel must be built with compatible support.
 
 `cargo xtask starry kmod build` starts from the normal Starry build selectors
 (`--arch`, `--target`, `--config`, `--smp`, `--debug`) and reuses the resolved
-Cargo target, generated axconfig, environment, and normalized feature set. The
+Cargo target, environment, and normalized feature set. The
 module's package features are then applied on top of that context.
 
 ## LTO Requirement

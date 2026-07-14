@@ -5,6 +5,8 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
+arch="${STARRY_ARCH:-}"
+qemu_runner=""
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/ffmpeg-apk-cache"
 
 require_env() {
@@ -19,7 +21,6 @@ require_env() {
 ensure_host_packages() {
     local missing=()
 
-    command -v apk >/dev/null 2>&1 || missing+=(apk-tools)
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
@@ -38,24 +39,79 @@ ensure_host_packages() {
     apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
+find_qemu_runner() {
+    local qemu_name
+
+    case "$arch" in
+        riscv64) qemu_name=qemu-riscv64 ;;
+        aarch64) qemu_name=qemu-aarch64 ;;
+        loongarch64) qemu_name=qemu-loongarch64 ;;
+        x86_64) qemu_name=qemu-x86_64 ;;
+        *)
+            echo "error: unsupported FFmpeg prebuild arch: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    if command -v "${qemu_name}-static" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "${qemu_name}-static")"
+    elif command -v "$qemu_name" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "$qemu_name")"
+    else
+        echo "error: ${qemu_name}-static or ${qemu_name} is required" >&2
+        exit 1
+    fi
+}
+
+run_guest_apk_with_retry() {
+    local attempt
+    local max_attempts=4
+
+    for attempt in $(seq 1 "$max_attempts"); do
+        if env -u LD_LIBRARY_PATH \
+            QEMU_LD_PREFIX="$staging_root" \
+            "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" "$@"; then
+            return 0
+        fi
+
+        if [[ "$attempt" -eq "$max_attempts" ]]; then
+            return 1
+        fi
+
+        echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
+        sleep $((attempt * 3))
+    done
+}
+
 extract_base_rootfs() {
     debugfs -R "rdump / $staging_root" "$base_rootfs"
 }
 
 install_ffmpeg_package() {
+    local guest_apk="$staging_root/sbin/apk"
+
     mkdir -p "$apk_cache"
-    # Override repositories if the ones baked into the rootfs are unreachable
+    if [[ ! -x "$guest_apk" ]]; then
+        echo "error: staging root is missing guest apk: $guest_apk" >&2
+        exit 1
+    fi
+
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
+    fi
+
+    # Override repositories if the ones baked into the rootfs are unreachable.
     local repo_file="$staging_root/etc/apk/repositories"
     if [[ -f "$repo_file" ]]; then
         local first_url
         first_url="$(head -1 "$repo_file")"
-        local check_url="${first_url}/x86_64/APKINDEX.tar.gz"
+        local check_url="${first_url}/$arch/APKINDEX.tar.gz"
         local http_code
-        http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$check_url" 2>/dev/null || true)"
+        http_code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$check_url" 2>/dev/null || true)"
         if [[ "$http_code" != "200" ]]; then
             echo "[ffmpeg prebuild] original mirror unreachable (HTTP $http_code), switching to dl-cdn.alpinelinux.org"
             local alpine_ver
-            alpine_ver="$(grep -oP 'v\d+\.\d+' "$repo_file" | head -1)"
+            alpine_ver="$(grep -Eo "v[0-9]+[.][0-9]+" "$repo_file" | head -1)"
             [[ -z "$alpine_ver" ]] && alpine_ver="v3.21"
             cat > "$repo_file" << REPOEOF
 https://dl-cdn.alpinelinux.org/alpine/${alpine_ver}/main
@@ -64,12 +120,17 @@ REPOEOF
         fi
     fi
 
-    echo "[ffmpeg prebuild] installing ffmpeg, ffmpeg-libs and python3 via host apk..."
-    apk --root "$staging_root" \
+    echo "[ffmpeg prebuild] installing ffmpeg, ffmpeg-libs and python3 via guest apk..."
+    run_guest_apk_with_retry \
+        --root "$staging_root" \
+        --repositories-file "$staging_root/etc/apk/repositories" \
+        --keys-dir "$staging_root/etc/apk/keys" \
         --cache-dir "$apk_cache" \
         --update-cache \
-        --no-progress \
-        --no-scripts \
+        --timeout 60 \
+        --no-interactive \
+        --force-no-chroot \
+        --scripts=no \
         add ffmpeg ffmpeg-libs python3
 }
 
@@ -182,8 +243,10 @@ populate_overlay() {
 require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
+require_env STARRY_ARCH "$arch"
 
 ensure_host_packages
+find_qemu_runner
 extract_base_rootfs
 install_ffmpeg_package
 populate_overlay

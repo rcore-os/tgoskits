@@ -48,7 +48,7 @@
 ### 使用场景
 - `CpuMask::new()` / `set()`：`ax-task/src/api.rs` 用来构造 `AxCpuMask`。
 - `get()` / `is_empty()`：`ax-task/src/run_queue.rs` 用于根据 affinity 选择运行队列。
-- `CpuMask`：`virtualization/axvm/src/vm.rs` 和 `os/axvisor/src/vmm/vcpus.rs` 直接使用，用来描述 vCPU 目标集合。
+- `CpuMask`：`virtualization/axvm/src/vm.rs` 和 `virtualization/axvm/src/runtime/vcpus.rs` 直接使用，用来描述 vCPU 目标集合。
 
 ### 边界说明
 - `ax-cpumask` 不负责验证 CPU 是否在线；它只存位。

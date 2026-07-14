@@ -1,13 +1,13 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
+use core::any::Any;
 
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 pub use rockchip_npu::{
     GemBufferInfo, GemCachePolicy, RknpuAction,
-    ioctrl::{RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit},
+    ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
-use rockchip_pm::{PowerDomain, RockchipPM};
 
 use crate::mmio::iomap;
 
@@ -52,28 +52,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         base_regs.push(unsafe { iomap(start, size)?.add(offset) });
     }
 
-    enable_pm();
-
-    info!("NPU power enabled");
-
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");
     Ok(())
-}
-
-fn enable_pm() {
-    let mut pm = rdrive::get_one::<RockchipPM>()
-        .expect("RockchipPM not found")
-        .lock()
-        .expect("RockchipPM lock failed");
-
-    // RK3588 NPU power domain IDs (from rockchip-pm rk3588 variant)
-    pm.power_domain_on(PowerDomain(9)).unwrap(); // NPUTOP
-    pm.power_domain_on(PowerDomain(8)).unwrap(); // NPU
-    pm.power_domain_on(PowerDomain(10)).unwrap(); // NPU1
-    pm.power_domain_on(PowerDomain(11)).unwrap(); // NPU2
 }
 
 pub fn is_available() -> bool {
@@ -88,6 +71,13 @@ pub fn buffer_info(handle: u32) -> Result<GemBufferInfo, Error> {
     with_npu(|npu| npu.get_buffer_info(handle).ok_or(Error::NotFound))
 }
 
+/// A lifetime retainer for the buffer backing `handle`. Holding the returned
+/// `Arc` keeps the backing allocation alive independent of the GEM pool, so a
+/// mapping can outlive a `MemDestroy` without dangling.
+pub fn buffer_retainer(handle: u32) -> Result<Arc<dyn Any + Send + Sync>, Error> {
+    with_npu(|npu| npu.buffer_retainer(handle).ok_or(Error::NotFound))
+}
+
 pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
     with_npu(|npu| npu.submit_ioctrl(args).map_err(|_| Error::InvalidData))
 }
@@ -96,8 +86,31 @@ pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {
     with_npu(|npu| npu.create(args).map_err(|_| Error::InvalidData))
 }
 
+/// Import an externally-owned, physically-contiguous buffer (resolved from a
+/// dma-buf fd) into the GEM pool, returning a handle the rest of the NPU ABI
+/// (`MemMap`/`mmap`/submit) resolves like any other. `retainer` keeps the
+/// exporter's allocation alive for the handle's lifetime.
+pub fn mem_import(
+    dma_addr: u64,
+    obj_addr: usize,
+    size: usize,
+    flags: u32,
+    retainer: Arc<dyn Any + Send + Sync>,
+) -> Result<u32, Error> {
+    with_npu(|npu| Ok(npu.import(dma_addr, obj_addr, size, flags, retainer)))
+}
+
 pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {
     with_npu(|npu| npu.mem_sync(args).map_err(|_| Error::InvalidData))
+}
+
+/// Release a GEM handle, freeing an owned allocation or dropping the retainer of
+/// an imported buffer. A missing handle is a no-op.
+pub fn mem_destroy(handle: u32) -> Result<(), Error> {
+    with_npu(|npu| {
+        npu.destroy(handle);
+        Ok(())
+    })
 }
 
 pub fn mem_map_offset(handle: u32) -> Result<u64, Error> {

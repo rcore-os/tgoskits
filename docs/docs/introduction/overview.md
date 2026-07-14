@@ -77,7 +77,7 @@ tgoskits/
 ├── components/                # 独立可复用组件 crate（Git Subtree 管理）
 │   ├── axsched/               # 调度算法（CFS、RR、多级反馈队列）
 │   ├── axallocator/           # 内存分配器（bitmap、buddy 等策略）
-│   ├── axvm / axvcpu / axdevice/  # 虚拟化抽象（VM / vCPU / 虚拟设备）
+│   ├── axvm / axvm-types / axdevice/  # 虚拟化抽象（VM / vCPU 协议 / 虚拟设备）
 │   ├── starry-process/        # StarryOS 进程管理
 │   ├── starry-signal/         # StarryOS 信号机制
 │   ├── arm_vcpu / riscv_vcpu / x86_vcpu/  # 架构相关 vCPU
@@ -86,7 +86,7 @@ tgoskits/
 ├── os/
 │   ├── arceos/                # ArceOS 模块化 unikernel
 │   │   ├── modules/           # 17 个内核模块（axhal, axtask, axmm...）
-│   │   ├── api/               # API 聚合层（arceos_api, posix_api, axfeat）
+│   │   ├── api/               # API 聚合层（arceos_api, posix_api, feature）
 │   │   ├── ulib/              # 用户态库（axstd, axlibc）
 │   │   └── examples/          # 内置示例（helloworld, shell, http*）
 │   ├── StarryOS/              # StarryOS Linux 兼容系统
@@ -99,7 +99,6 @@ tgoskits/
 │       └── xtask/             # Axvisor 专用构建任务
 ├── platforms/                  # 平台适配层
 │   ├── axplat-dyn/            # 动态平台支持
-│   ├── ax-plat-riscv64-sg2002/ # RISC-V SG2002 静态平台
 │   └── somehal/                # 动态平台底层运行时/固件桥接
 ├── drivers/                   # SoC 专用驱动（RK3588 时钟 / NPU / 电源管理）
 ├── test-suit/                 # 系统级测试套件
@@ -128,7 +127,7 @@ flowchart LR
     subgraph api["API 聚合层"]
         arceos_api["arceos_api"]
         posix_api["arceos_posix_api"]
-        axfeat["axfeat"]
+        feature["feature"]
     end
     subgraph mods["内核模块 (17)"]
         hal["axhal"]
@@ -147,7 +146,7 @@ flowchart LR
 | 层次 | 内容 | 职责 |
 |------|------|------|
 | 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axdriver`, `axfs`, `axnet`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、设备驱动、文件系统、网络栈 |
-| API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api`, `axfeat` | 向上提供统一 API 接口与 feature 开关 |
+| API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api`, `feature` | 向上提供统一 API 接口与 feature 开关 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 
 → 开发指南：[ArceOS 开发指南](/docs/development/arceos) | 架构说明：[ArceOS 架构](/docs/architecture/arceos)
@@ -208,7 +207,7 @@ flowchart TD
 
     subgraph virt_components["虚拟化组件"]
         axvm["axvm"]
-        axvcpu["axvcpu"]
+        axvm_types["axvm-types"]
         axdev["axdevice"]
     end
 
@@ -226,7 +225,7 @@ flowchart TD
 
 | 能力域 | 实现要点 |
 |--------|---------|
-| 虚拟化抽象 | `axvm`（VM 管理）、`axvcpu`（vCPU 抽象）、`axdevice`（虚拟设备） |
+| 虚拟化抽象 | `axvm`（VM 与 vCPU wrapper/run loop）、`axvm-types`（共享 vCPU/exit 协议）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
 | 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
@@ -279,4 +278,4 @@ flowchart LR
 | `cargo xtask axvisor <sub>` | Axvisor 构建/运行/QEMU/U-Boot/板级测试 | `cargo xtask axvisor test qemu --target aarch64` |
 | `cargo xtask board <sub>` | 远程开发板管理 | `cargo xtask board list` |
 
-→ 命令体系详解：[构建流程](/docs/build) | [命令总览](/docs/build/commands)
+→ 命令体系详解：[构建概述](/docs/build/overview) | [命令索引](/docs/build/commands)

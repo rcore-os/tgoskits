@@ -1,6 +1,6 @@
 [package]
 name = "arm-scmi-rs"
-version = "0.1.4"
+version = "0.1.7"
 edition = "2024"
 autotests = false
 description = "ARM SCMI (System Control and Management Interface) protocol implementation for no_std embedded environments"

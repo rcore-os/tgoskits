@@ -1,6 +1,6 @@
 [package]
 name = "axpoll"
-version = "0.4.2"
+version = "0.5.1"
 edition.workspace = true
 description = "A library for polling I/O events and waking up tasks."
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
@@ -9,8 +9,7 @@ documentation = "https://docs.rs/axpoll"
 license = "Apache-2.0"
 
 [features]
-alloc = []          # Deprecated
-default = ["alloc"]
+default = []
 
 [dependencies]
 ax-kspin = { workspace = true }
@@ -19,9 +18,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-spin = { version = "0.12", path = "../spin", default-features = false, features = [
-    "lazylock",
-] }
+spin = { workspace = true }
 
 [dev-dependencies]
 ax-kspin = { workspace = true, features = ["host-test", "smp"] }

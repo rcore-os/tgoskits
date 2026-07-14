@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.2`
 > 文档依据：`Cargo.toml`、`README.md`、`src/main.rs`、`src/hal/*`、`src/vmm/*`、`src/task.rs`、`build.rs`、`xtask/*`、`configs/board/*`、`configs/vms/*`
 
-`axvisor` 是本仓库中的 Type-I Hypervisor 主程序。它建立在 ArceOS 宿主运行时之上，通过 `axvm`、`axvcpu`、`axaddrspace`、`axdevice` 等组件实现客户机管理，并通过分层配置系统把“编译什么”和“运行哪个 guest”两件事统一到一套工作流中。
+`axvisor` 是本仓库中的 Type-I Hypervisor 主程序。它建立在 ArceOS 宿主运行时之上，通过 `axvm`、`axvm-types`、架构 vCPU 后端、`axaddrspace`、`axdevice` 等组件实现客户机管理，并通过分层配置系统把“编译什么”和“运行哪个 guest”两件事统一到一套工作流中。
 
 ## 架构设计
 ### 1.1 包结构与角色
@@ -109,7 +109,8 @@ Axvisor 的典型场景不是“被别的 crate 调用”，而是：
 graph LR
     ax-std["ax-std / ArceOS modules"] --> axvisor["axvisor"]
     axvm["axvm"] --> axvisor
-    axvcpu["axvcpu"] --> axvisor
+    axvm_types["axvm-types"] --> axvisor
+    arch_vcpu["arm_vcpu / x86_vcpu / riscv_vcpu / loongarch_vcpu"] --> axvm
     axaddrspace["axaddrspace"] --> axvisor
     axdevice["axdevice / axdevice_base"] --> axvisor
     axhvc["axhvc"] --> axvisor
@@ -120,7 +121,7 @@ graph LR
 ### 直接依赖
 - `ax-std`：为 Hypervisor 提供宿主侧运行时，包括任务、内存、时间、SMP 和虚拟化 feature。
 - `axvm`：VM 资源层。
-- `axvcpu`：vCPU 抽象与执行路径。
+- `axvm-types`：共享 vCPU/VM-exit 协议类型。
 - `axaddrspace`：客户机地址空间与映射。
 - `axdevice`、`axdevice_base`：设备模型与设备访问。
 - `axvisor_api`：底层虚拟化组件访问宿主能力的统一 API。
@@ -128,7 +129,7 @@ graph LR
 
 ### 间接依赖
 - `ax-hal`、`ax-task`、`ax-alloc`、`ax-mm` 等 ArceOS 模块会通过 `ax-std` 与 `hal` 注入路径间接参与 Hypervisor 运行。
-- `arm_vcpu`、`arm_vgic`、`x86_vcpu`、`riscv_vcpu` 等底层组件会通过 `axvm`/`axvcpu` 间接进入虚拟化主线。
+- `arm_vcpu`、`arm_vgic`、`x86_vcpu`、`riscv_vcpu`、`loongarch_vcpu` 等底层组件会通过 `axvm` 间接进入虚拟化主线。
 
 ### 3.3 被依赖情况
 `axvisor` 作为最终二进制包，当前仓库中没有其他 crate 再把它作为库依赖。它是虚拟化栈的终端产品，而不是中间层库。
@@ -155,7 +156,7 @@ cargo xtask qemu \
 ```
 
 ### 4.3 开发重点建议
-- 修改 `src/hal/*` 时，要同步检查 `axvisor_api` 注入接口和 `AxVMHalImpl` 是否仍满足 `axvm` / `axvcpu` 契约。
+- 修改 `src/hal/*` 时，要同步检查 `axvisor_api` 注入接口和 `AxVMHalImpl` 是否仍满足 `axvm` / `axvm-types` 契约。
 - 修改 `src/vmm/config.rs` 时，要同时检查配置解析、内存分配和镜像加载三条链。
 - 修改 `src/vmm/vcpus.rs` 时，要把它视为 Hypervisor 热路径，重点关注等待队列、状态切换和 VM exit 处理。
 - 修改 `build.rs` 或 `xtask` 时，要同步验证 `.build.toml`、`AXVISOR_VM_CONFIGS` 和静态嵌入配置的协同关系。

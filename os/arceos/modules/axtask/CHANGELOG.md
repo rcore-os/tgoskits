@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.3...ax-task-v0.6.4) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-alloc, ax-ipi, ax-mm
+
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.2...ax-task-v0.6.3) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal, ax-hal, ax-alloc, ax-ipi, ax-mm
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.1...ax-task-v0.6.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-alloc, ax-hal, ax-hal, ax-ipi, ax-mm
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.0...ax-task-v0.6.1) - 2026-07-08
+
+### Fixed
+
+- *(axtask)* defer cross-core wake instead of spinning on remote on_cpu ([#1495](https://github.com/rcore-os/tgoskits/pull/1495))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.24...ax-task-v0.6.0) - 2026-07-07
+
+### Fixed
+
+- *(ax-task)* avoid RR front insertion on wakeup ([#1532](https://github.com/rcore-os/tgoskits/pull/1532))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.23...ax-task-v0.5.24) - 2026-07-02
+
+### Added
+
+- *(irq-framework)* use domain-scoped irq ids
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(ci)* prevent Starry qemu hangs in IRQ paths ([#1431](https://github.com/rcore-os/tgoskits/pull/1431))
+- *(ax-task)* harden SMP wake and migration rescheduling ([#1426](https://github.com/rcore-os/tgoskits/pull/1426))
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(platforms)* remove LoongArch static platform ([#1428](https://github.com/rcore-os/tgoskits/pull/1428))
+- *(build)* generate build.rs Rust sources with quote ([#1422](https://github.com/rcore-os/tgoskits/pull/1422))
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.5.22...ax-task-v0.5.23) - 2026-06-27
 
 ### Fixed

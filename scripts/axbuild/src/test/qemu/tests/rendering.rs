@@ -20,11 +20,8 @@ fn qemu_failure_summary_is_aggregated() {
 #[test]
 fn render_case_tree_uses_group_root() {
     assert_eq!(
-        render_case_tree(
-            "normal",
-            ["qemu-smp1/apk-curl", "qemu-smp1/smoke", "qemu-smp4/system",],
-        ),
-        "normal\n├── qemu-smp1\n│   ├── apk-curl\n│   └── smoke\n└── qemu-smp4\n    └── system"
+        render_case_tree("normal", ["qemu/apk-curl", "qemu/smoke", "qemu/system",],),
+        "normal\n└── qemu\n    ├── apk-curl\n    ├── smoke\n    └── system"
     );
 }
 

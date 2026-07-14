@@ -40,9 +40,10 @@ struct NvmeBlockOwner {
     next_queue_id: AtomicUsize,
     created_queue_bits: AtomicU64,
     irq_enabled: AtomicBool,
-    irq_handler_taken: AtomicBool,
+    irq_handler_taken_bits: AtomicU64,
     irq_supported: bool,
-    interrupt_vector: u32,
+    msix_interrupts: bool,
+    interrupt_vectors: Vec<u16>,
 }
 
 impl NvmeBlockDriver {
@@ -82,7 +83,8 @@ impl NvmeBlockDriver {
         queue_depth: usize,
     ) -> Self {
         let irq_supported = nvme.io_queue_interrupts_enabled();
-        let interrupt_vector = nvme.interrupt_vector();
+        let msix_interrupts = nvme.msix_interrupts_enabled();
+        let interrupt_vectors = nvme.interrupt_vectors().to_vec();
         Self {
             name,
             inner: Arc::new(NvmeBlockOwner {
@@ -91,9 +93,10 @@ impl NvmeBlockDriver {
                 next_queue_id: AtomicUsize::new(0),
                 created_queue_bits: AtomicU64::new(0),
                 irq_enabled: AtomicBool::new(false),
-                irq_handler_taken: AtomicBool::new(false),
+                irq_handler_taken_bits: AtomicU64::new(0),
                 irq_supported,
-                interrupt_vector,
+                msix_interrupts,
+                interrupt_vectors,
             }),
             queue_depth: queue_depth.max(1),
         }
@@ -149,6 +152,85 @@ impl NvmeBlockOwner {
     fn queues(&self) -> &[Arc<NvmeQueueCore>] {
         unsafe { &*self.queues.get() }
     }
+
+    fn source_queue_bits(&self, source_id: usize, queue_bits: u64) -> u64 {
+        source_queue_bits(
+            self.msix_interrupts,
+            &self.interrupt_vectors,
+            source_id,
+            queue_bits,
+        )
+    }
+
+    fn irq_sources_from_queue_bits(&self, queue_bits: u64) -> IrqSourceList {
+        irq_sources_from_queue_bits(self.msix_interrupts, &self.interrupt_vectors, queue_bits)
+    }
+
+    fn unique_interrupt_vectors(&self) -> Vec<u16> {
+        unique_interrupt_vectors(&self.interrupt_vectors)
+    }
+}
+
+fn vector_for_queue(msix_interrupts: bool, vectors: &[u16], queue_id: usize) -> Option<u16> {
+    if msix_interrupts {
+        vectors.get(queue_id).copied()
+    } else {
+        Some(0)
+    }
+}
+
+fn source_queue_bits(
+    msix_interrupts: bool,
+    vectors: &[u16],
+    source_id: usize,
+    queue_bits: u64,
+) -> u64 {
+    if !msix_interrupts {
+        return if source_id == 0 { queue_bits } else { 0 };
+    }
+
+    let mut bits = 0;
+    for queue_id in 0..u64::BITS as usize {
+        if queue_bits & (1 << queue_id) == 0 {
+            continue;
+        }
+        if vector_for_queue(msix_interrupts, vectors, queue_id) == Some(source_id as u16) {
+            bits |= 1 << queue_id;
+        }
+    }
+    bits
+}
+
+fn irq_sources_from_queue_bits(
+    msix_interrupts: bool,
+    vectors: &[u16],
+    queue_bits: u64,
+) -> IrqSourceList {
+    if !msix_interrupts {
+        return vec![IrqSourceInfo::legacy(IdList::from_bits(queue_bits))];
+    }
+
+    let mut sources = Vec::new();
+    for vector in unique_interrupt_vectors(vectors) {
+        let queues = source_queue_bits(msix_interrupts, vectors, usize::from(vector), queue_bits);
+        if queues != 0 {
+            sources.push(IrqSourceInfo::new(
+                usize::from(vector),
+                IdList::from_bits(queues),
+            ));
+        }
+    }
+    sources
+}
+
+fn unique_interrupt_vectors(vectors: &[u16]) -> Vec<u16> {
+    let mut unique = Vec::new();
+    for vector in vectors {
+        if !unique.contains(vector) {
+            unique.push(*vector);
+        }
+    }
+    unique
 }
 
 impl DriverGeneric for NvmeBlockDriver {
@@ -208,9 +290,11 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq_supported {
             return;
         }
-        let vector = self.inner.interrupt_vector;
-        self.inner
-            .with_mut(|inner| inner.nvme.unmask_interrupt_vector(vector));
+        self.inner.with_mut(|inner| {
+            for vector in self.inner.unique_interrupt_vectors() {
+                inner.nvme.unmask_interrupt_vector(u32::from(vector));
+            }
+        });
         self.inner.irq_enabled.store(true, Ordering::Release);
     }
 
@@ -218,9 +302,11 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq_supported {
             return;
         }
-        let vector = self.inner.interrupt_vector;
-        self.inner
-            .with_mut(|inner| inner.nvme.mask_interrupt_vector(vector));
+        self.inner.with_mut(|inner| {
+            for vector in self.inner.unique_interrupt_vectors() {
+                inner.nvme.mask_interrupt_vector(u32::from(vector));
+            }
+        });
         self.inner.irq_enabled.store(false, Ordering::Release);
     }
 
@@ -233,27 +319,40 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq_supported || queue_bits == 0 {
             return Vec::new();
         }
-        vec![IrqSourceInfo::legacy(IdList::from_bits(queue_bits))]
+        self.inner.irq_sources_from_queue_bits(queue_bits)
     }
 
     fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        if source_id != 0 || !self.inner.irq_supported {
+        if !self.inner.irq_supported || source_id >= u64::BITS as usize {
             return None;
         }
-        if self.inner.created_queue_bits.load(Ordering::Acquire) == 0 {
+        let queue_bits = self.inner.source_queue_bits(
+            source_id,
+            self.inner.created_queue_bits.load(Ordering::Acquire),
+        );
+        if queue_bits == 0 {
             return None;
         }
-        if self.inner.irq_handler_taken.swap(true, Ordering::AcqRel) {
+        let bit = 1_u64 << source_id;
+        if self
+            .inner
+            .irq_handler_taken_bits
+            .fetch_or(bit, Ordering::AcqRel)
+            & bit
+            != 0
+        {
             return None;
         }
         Some(Box::new(NvmeBlockIrqHandler {
             owner: self.inner.clone(),
+            source_id,
         }))
     }
 }
 
 struct NvmeBlockIrqHandler {
     owner: Arc<NvmeBlockOwner>,
+    source_id: usize,
 }
 
 impl IrqHandler for NvmeBlockIrqHandler {
@@ -262,7 +361,14 @@ impl IrqHandler for NvmeBlockIrqHandler {
             return Event::none();
         }
         let mut event = Event::none();
+        let source_queue_bits = self.owner.source_queue_bits(
+            self.source_id,
+            self.owner.created_queue_bits.load(Ordering::Acquire),
+        );
         for queue in self.owner.queues() {
+            if source_queue_bits & (1 << queue.id()) == 0 {
+                continue;
+            }
             if queue.drain_irq_completions() {
                 event.push_queue(queue.id());
             }
@@ -440,22 +546,16 @@ impl NvmeQueueCore {
     }
 
     fn drain_irq_completions(&self) -> bool {
-        self.try_with_cq_claim(drain_hardware_completions_to_vec)
-            .map(|completions| self.cache_completions(completions))
-            .unwrap_or(true)
+        self.try_with_cq_claim(|queue| {
+            drain_hardware_completions_to_cache(queue, &self.completion_cache)
+        })
+        .unwrap_or(true)
     }
 
     fn drain_completions(&self) -> bool {
-        let completions = self.with_cq_claim(drain_hardware_completions_to_vec);
-        self.cache_completions(completions)
-    }
-
-    fn cache_completions(&self, completions: Vec<CachedCompletion>) -> bool {
-        if completions.is_empty() {
-            return false;
-        }
-        self.completion_cache.extend(completions);
-        true
+        self.with_cq_claim(|queue| {
+            drain_hardware_completions_to_cache(queue, &self.completion_cache)
+        })
     }
 }
 
@@ -568,12 +668,13 @@ impl NvmeQueueState {
     }
 }
 
-fn drain_hardware_completions_to_vec(queue: &HardwareQueue) -> Vec<CachedCompletion> {
-    let mut completions = Vec::new();
+fn drain_hardware_completions_to_cache(queue: &HardwareQueue, cache: &CompletionCache) -> bool {
+    let mut completed = false;
     while let Some(completion) = queue.poll_completion() {
-        completions.push(CachedCompletion::from(completion));
+        cache.record(CachedCompletion::from(completion));
+        completed = true;
     }
-    completions
+    completed
 }
 
 impl CompletionCache {
@@ -581,12 +682,6 @@ impl CompletionCache {
         let mut entries = Vec::with_capacity(capacity);
         entries.resize_with(capacity, CompletionCacheEntry::new);
         Self { entries }
-    }
-
-    fn extend(&self, completions: Vec<CachedCompletion>) {
-        for completion in completions {
-            self.record(completion);
-        }
     }
 
     fn record(&self, completion: CachedCompletion) {
@@ -888,7 +983,7 @@ fn limits(
 mod tests {
     use super::{
         CachedCompletion, CompletionCache, CompletionStatus, PrpPageAccumulator, RequestSlot,
-        SlotState, limits,
+        SlotState, irq_sources_from_queue_bits, limits, source_queue_bits,
     };
     use crate::Namespace;
 
@@ -940,6 +1035,30 @@ mod tests {
     }
 
     #[test]
+    fn legacy_irq_source_covers_all_created_queues() {
+        let sources = irq_sources_from_queue_bits(false, &[], 0b1011);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, 0);
+        assert_eq!(sources[0].queues.bits(), 0b1011);
+        assert_eq!(source_queue_bits(false, &[], 0, 0b1011), 0b1011);
+        assert_eq!(source_queue_bits(false, &[], 1, 0b1011), 0);
+    }
+
+    #[test]
+    fn msix_irq_sources_group_queues_by_vector() {
+        let vectors = [4, 5, 4];
+        let sources = irq_sources_from_queue_bits(true, &vectors, 0b111);
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].id, 4);
+        assert_eq!(sources[0].queues.bits(), 0b101);
+        assert_eq!(sources[1].id, 5);
+        assert_eq!(sources[1].queues.bits(), 0b010);
+        assert_eq!(source_queue_bits(true, &vectors, 4, 0b111), 0b101);
+    }
+
+    #[test]
     fn prp_pages_split_at_controller_page_boundaries() {
         let mut pages = PrpPageAccumulator::new();
 
@@ -974,7 +1093,7 @@ mod tests {
         let mut slots = test_slots(4);
         slots[2].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::success(2)]);
+        cache.record(CachedCompletion::success(2));
 
         assert_eq!(slots[2].state, SlotState::Pending);
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
@@ -987,7 +1106,7 @@ mod tests {
         let mut slots = test_slots(4);
         slots[3].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::failed(3, 0x4002)]);
+        cache.record(CachedCompletion::failed(3, 0x4002));
 
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(slots[3].state, SlotState::Failed);
@@ -999,7 +1118,7 @@ mod tests {
         let mut slots = test_slots(2);
         slots[1].state = SlotState::Pending;
 
-        cache.extend(alloc::vec![CachedCompletion::success(1)]);
+        cache.record(CachedCompletion::success(1));
 
         assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
         assert_eq!(cache.drain_into_slots(0, &mut slots), 0);

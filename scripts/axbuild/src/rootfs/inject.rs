@@ -95,21 +95,91 @@ pub(crate) fn replace_file(
 
 /// Extracts the contents of a rootfs image into a host staging directory.
 pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Result<()> {
-    Command::new("debugfs")
+    let extracted = Command::new("debugfs")
         .arg("-R")
         .arg(format!("rdump / {}", output_dir.display()))
         .arg(rootfs_img)
         .status()
         .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?
-        .success()
-        .then_some(())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "failed to extract {} into {}",
-                rootfs_img.display(),
-                output_dir.display()
-            )
-        })
+        .success();
+    ensure!(
+        extracted,
+        "failed to extract {} into {}",
+        rootfs_img.display(),
+        output_dir.display()
+    );
+    relativize_absolute_symlinks(output_dir)
+}
+
+/// Rewrites absolute symlinks in an extracted staging root as equivalent
+/// relative links.
+///
+/// `debugfs rdump` preserves the guest image's absolute symlink targets (for
+/// example `/usr/lib/libz.so.1 -> /usr/lib/libz.so.1.3.2`). The staging root is
+/// then used as a `qemu-user` sysroot with no chroot, where an absolute target
+/// resolves against the host root and dangles, so dynamic loads such as apk's
+/// `libz` fail. Relative targets resolve within the staging root and remain
+/// valid both here and, after re-injection, inside the guest.
+fn relativize_absolute_symlinks(root: &Path) -> anyhow::Result<()> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_symlink() {
+                continue;
+            }
+            let target = fs::read_link(&path)
+                .with_context(|| format!("failed to read symlink {}", path.display()))?;
+            let Ok(guest_target) = target.strip_prefix("/") else {
+                continue;
+            };
+            let in_root = root.join(guest_target);
+            let (Some(link_dir), true) = (path.parent(), in_root.exists()) else {
+                continue;
+            };
+            let relative = relative_symlink_target(link_dir, &in_root);
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to replace symlink {}", path.display()))?;
+            std::os::unix::fs::symlink(&relative, &path).with_context(|| {
+                format!(
+                    "failed to relink {} -> {}",
+                    path.display(),
+                    relative.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Computes a path to `to` relative to `from_dir`; both are absolute host paths
+/// sharing the staging-root prefix.
+fn relative_symlink_target(from_dir: &Path, to: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut relative = PathBuf::new();
+    for _ in shared..from.len() {
+        relative.push("..");
+    }
+    for component in &to[shared..] {
+        relative.push(component.as_os_str());
+    }
+    // A link to its own parent directory yields no components; `.` points there.
+    if relative.as_os_str().is_empty() {
+        relative.push(".");
+    }
+    relative
 }
 
 /// Injects an overlay directory tree into an existing rootfs image.

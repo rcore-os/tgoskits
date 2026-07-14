@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.1...crab-usb-v0.10.2) - 2026-07-10
+
+### Added
+
+- *(crab-usb)* add SG2002 DWC2 host axtest ([#1496](https://github.com/rcore-os/tgoskits/pull/1496))
+
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.0...crab-usb-v0.10.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.10...crab-usb-v0.10.0) - 2026-07-07
+
+### Added
+
+- *(crab-usb)* add RK3588 EHCI USB2 host ([#1481](https://github.com/rcore-os/tgoskits/pull/1481))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
+## [0.9.10](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.9...crab-usb-v0.9.10) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
 ## [0.9.9](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.8...crab-usb-v0.9.9) - 2026-06-27
 
 ### Fixed

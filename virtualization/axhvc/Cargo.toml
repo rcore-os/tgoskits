@@ -1,6 +1,6 @@
 [package]
 name = "axhvc"
-version = "0.4.9"
+version = "0.4.10"
 edition.workspace = true
 authors = ["AxVisor Team"]
 description = "AxVisor HyperCall definitions for guest-hypervisor communication"
@@ -12,8 +12,7 @@ categories = ["no-std", "embedded", "os"]
 license = "Apache-2.0"
 
 [dependencies]
-# Error types for ArceOS ecosystem
-ax-errno = { workspace = true }
+thiserror = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 default-target = "x86_64-unknown-linux-gnu"

@@ -2,29 +2,25 @@
 
 extern crate alloc;
 
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
-use alloc::boxed::Box;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
-use ax_errno::AxResult;
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_page_table_multiarch::PagingHandler;
 use ax_std::{
     os::arceos::{api, modules},
     thread,
 };
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
-#[cfg(target_arch = "x86_64")]
-use crate::host::HostConsole;
-use crate::host::{HostCpu, HostMemory, HostPlatform, HostTime};
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use crate::AxVmError;
+use crate::{
+    AxVmResult,
+    arch::{ArchOps, CurrentArch},
+    host::{HostCpu, HostMemory, HostPlatform, HostTime},
+};
 
 /// Private default host adapter used by [`crate::AxvmRuntime`].
 pub(crate) struct ArceOsHost;
@@ -39,11 +35,18 @@ pub(crate) fn arceos_host() -> &'static ArceOsHost {
 
 impl HostMemory for ArceOsHost {
     fn alloc_frame(&self) -> Option<HostPhysAddr> {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::alloc_frame()
+        modules::ax_alloc::global_allocator()
+            .alloc_pages(1, PAGE_SIZE_4K, modules::ax_alloc::UsageKind::PageTable)
+            .map(|vaddr| self.virt_to_phys(vaddr.into()))
+            .ok()
     }
 
     fn dealloc_frame(&self, paddr: HostPhysAddr) {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::dealloc_frame(paddr);
+        modules::ax_alloc::global_allocator().dealloc_pages(
+            self.phys_to_virt(paddr).as_usize(),
+            1,
+            modules::ax_alloc::UsageKind::PageTable,
+        );
     }
 
     fn alloc_contiguous_frames(
@@ -70,7 +73,7 @@ impl HostMemory for ArceOsHost {
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {
-        <modules::ax_hal::paging::PagingHandlerImpl as PagingHandler>::phys_to_virt(paddr)
+        modules::ax_hal::mem::phys_to_virt(paddr)
     }
 
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr {
@@ -79,80 +82,17 @@ impl HostMemory for ArceOsHost {
 }
 
 impl HostTime for ArceOsHost {
-    type CancelToken = usize;
-
-    #[cfg(target_arch = "x86_64")]
-    fn nanos_to_ticks(&self, nanos: u64) -> u64 {
-        modules::ax_hal::time::nanos_to_ticks(nanos)
-    }
-
     fn monotonic_time(&self) -> Duration {
         modules::ax_hal::time::monotonic_time()
     }
 
-    #[cfg(not(target_arch = "loongarch64"))]
     fn set_oneshot_timer(&self, deadline_ns: u64) {
-        modules::ax_hal::time::set_oneshot_timer(deadline_ns);
-    }
-
-    #[cfg(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        target_arch = "loongarch64"
-    ))]
-    fn register_timer(
-        &self,
-        deadline_ns: u64,
-        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> Self::CancelToken {
-        crate::timer::register_timer(deadline_ns, callback)
-    }
-
-    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
-    fn cancel_timer(&self, token: Self::CancelToken) {
-        crate::timer::cancel_timer(token);
+        crate::arch::set_oneshot_timer(deadline_ns);
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn monotonic_time_nanos() -> u64 {
-    modules::ax_hal::time::monotonic_time_nanos()
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn handle_host_irq(vector: usize) -> Option<usize> {
-    modules::ax_hal::irq::handle_irq(vector).then_some(vector)
-}
-
-#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
-}
-
-#[cfg(target_arch = "loongarch64")]
-pub(crate) fn set_irq_enabled(raw_irq: usize, enabled: bool) {
-    let gsi = match u32::try_from(raw_irq) {
-        Ok(gsi) => gsi,
-        Err(_) => {
-            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: out of GSI range");
-            return;
-        }
-    };
-    let irq = match modules::ax_hal::irq::resolve_irq_source(
-        modules::ax_hal::irq::IrqSource::AcpiGsi(gsi),
-    ) {
-        Ok(irq) => irq,
-        Err(err) => {
-            warn!("failed to resolve LoongArch passthrough IRQ {raw_irq}: {err:?}");
-            return;
-        }
-    };
-    if let Err(err) = modules::ax_hal::irq::set_enable(irq, enabled) {
-        warn!(
-            "failed to set LoongArch passthrough IRQ {raw_irq} ({irq:?}) enabled={enabled}: \
-             {err:?}"
-        );
-    }
 }
 
 impl HostCpu for ArceOsHost {
@@ -224,103 +164,23 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
     );
 }
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqContext = modules::ax_hal::irq::IrqContext;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqHandle = modules::ax_hal::irq::IrqHandle;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqId = modules::ax_hal::irq::IrqId;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqReturn = modules::ax_hal::irq::IrqReturn;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsIrqSource = modules::ax_hal::irq::IrqSource;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsRawIrqHandler = modules::ax_hal::irq::RawIrqHandler;
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn request_shared_irq(
-    irq: ArceOsIrqId,
-    handler: ArceOsRawIrqHandler,
-    data: core::ptr::NonNull<()>,
-) -> Result<ArceOsIrqHandle, ArceOsIrqError> {
-    modules::ax_hal::irq::request_shared_irq(irq, handler, data)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> ArceOsIrqId {
-    modules::ax_hal::irq::IrqId::new(
-        modules::ax_hal::irq::IrqDomainId(domain),
-        modules::ax_hal::irq::HwIrq(hwirq),
-    )
-}
-
-#[cfg(all(target_arch = "x86_64", not(test)))]
-pub(crate) fn set_irq_enable(irq: ArceOsIrqId, enabled: bool) -> Result<(), ArceOsIrqError> {
-    modules::ax_hal::irq::set_enable(irq, enabled)
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn resolve_irq_source(source: ArceOsIrqSource) -> Result<ArceOsIrqId, ArceOsIrqError> {
-    modules::ax_hal::irq::resolve_irq_source(source)
-}
-
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub(crate) fn host_fdt_bootarg() -> usize {
-    modules::ax_hal::dtb::get_bootarg()
-}
-
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub(crate) fn phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    modules::ax_hal::mem::phys_to_virt(paddr)
-}
-
-#[cfg(all(
-    any(feature = "fs", feature = "host-fs"),
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-pub(crate) fn shutdown_host_filesystems() -> AxResult {
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn shutdown_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
-}
-
-#[cfg(target_arch = "x86_64")]
-impl HostConsole for ArceOsHost {
-    fn write_bytes(&self, bytes: &[u8]) {
-        modules::ax_hal::console::write_bytes(bytes);
+        .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
+    let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
+    if released != 0 {
+        info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
     }
-
-    fn read_bytes(&self, bytes: &mut [u8]) -> usize {
-        modules::ax_hal::console::read_bytes(bytes)
-    }
+    Ok(())
 }
 
 impl HostPlatform for ArceOsHost {
     fn has_hardware_support(&self) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "x86_64")] {
-                x86_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "riscv64")] {
-                riscv_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "loongarch64")] {
-                loongarch_vcpu::has_hardware_support()
-            } else if #[cfg(target_arch = "aarch64")] {
-                arm_vcpu::has_hardware_support()
-            } else {
-                false
-            }
-        }
+        CurrentArch::has_hardware_support()
     }
 
-    fn enable_virtualization_on_current_cpu(&self) -> AxResult {
+    fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
         crate::timer::init_percpu();
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;
@@ -328,7 +188,7 @@ impl HostPlatform for ArceOsHost {
         Ok(())
     }
 
-    fn enable_virtualization_on_all_cpus(&self) -> AxResult {
+    fn enable_virtualization_on_all_cpus(&self) -> AxVmResult {
         static CORES: AtomicUsize = AtomicUsize::new(0);
 
         info!("Enabling hardware virtualization support on all cores...");
@@ -356,7 +216,7 @@ impl HostPlatform for ArceOsHost {
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_config::TASK_STACK_SIZE,
+                modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
             modules::ax_task::spawn_task(task);
@@ -378,7 +238,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        crate::arch::register_platform_irq_injector();
+        CurrentArch::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

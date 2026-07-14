@@ -1,0 +1,10 @@
+features = [
+  "starry-kernel/sg2002",
+  "starry-kernel/sg2002-cvi-usb-camera",
+  "axplat-dyn/thead-mae",
+  "ax-driver/cvsd",
+  "ax-driver/serial",
+  "ax-driver/sg2002-dwc2",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"

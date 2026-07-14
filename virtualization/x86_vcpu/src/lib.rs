@@ -25,7 +25,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use ax_errno::{AxResult, ax_err};
+use alloc::vec::Vec;
 
 #[cfg(all(feature = "vmx", feature = "svm"))]
 compile_error!("features `vmx` and `svm` are mutually exclusive");
@@ -33,8 +33,41 @@ compile_error!("features `vmx` and `svm` are mutually exclusive");
 #[cfg(test)]
 mod test_utils;
 
+mod types;
+
+pub use types::{
+    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostPhysAddr,
+    X86HostVirtAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
+    X86VcpuError, X86VcpuResult, X86VmExit,
+};
+
+macro_rules! x86_err {
+    ($kind:ident) => {
+        Err($crate::X86VcpuError::$kind)
+    };
+    ($kind:ident, $msg:expr) => {{
+        let _ = &$msg;
+        Err($crate::X86VcpuError::$kind)
+    }};
+}
+
+#[cfg(any(feature = "vmx", feature = "svm"))]
+macro_rules! x86_err_type {
+    ($kind:ident) => {
+        $crate::X86VcpuError::$kind
+    };
+    ($kind:ident, $msg:expr) => {{
+        let _ = &$msg;
+        $crate::X86VcpuError::$kind
+    }};
+}
+
 /// Maximum number of x86 host I/O port ranges configured for one vCPU.
 pub const X86_MAX_PASSTHROUGH_PORT_RANGES: usize = 16;
+
+/// x86 vCPU creation configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct X86VCpuCreateConfig;
 
 /// x86 host I/O port range that should trap and be handled by the VMM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,13 +78,26 @@ pub struct X86PassthroughPortRange {
     pub length: u16,
 }
 
-/// x86 vCPU setup configuration.
+/// Guest RAM region backing for x86 vCPU helpers.
 #[derive(Clone, Copy, Debug)]
+pub struct X86GuestMemoryRegion {
+    /// Guest physical start address.
+    pub gpa: X86GuestPhysAddr,
+    /// Host virtual start address backing the guest memory.
+    pub hva: X86HostVirtAddr,
+    /// Region size in bytes.
+    pub size: usize,
+}
+
+/// x86 vCPU setup configuration.
+#[derive(Clone, Debug)]
 pub struct X86VCpuSetupConfig {
     /// Intercept COM1 PIO ports and route them to an emulated serial device.
     pub emulate_com1: bool,
     /// Host I/O port ranges routed through AxVM passthrough port devices.
     pub passthrough_ports: [Option<X86PassthroughPortRange>; X86_MAX_PASSTHROUGH_PORT_RANGES],
+    /// Guest RAM regions used by the VMX instruction decoder to read guest bytes.
+    pub guest_memory_regions: Vec<X86GuestMemoryRegion>,
 }
 
 impl Default for X86VCpuSetupConfig {
@@ -59,18 +105,19 @@ impl Default for X86VCpuSetupConfig {
         Self {
             emulate_com1: false,
             passthrough_ports: [None; X86_MAX_PASSTHROUGH_PORT_RANGES],
+            guest_memory_regions: Vec::new(),
         }
     }
 }
 
 impl X86VCpuSetupConfig {
     /// Adds one host I/O port range to the vCPU I/O intercept list.
-    pub fn add_passthrough_port_range(&mut self, base: u16, length: u16) -> AxResult {
+    pub fn add_passthrough_port_range(&mut self, base: u16, length: u16) -> X86VcpuResult {
         if length == 0 {
-            return ax_err!(InvalidInput, "x86 passthrough port range is empty");
+            return Err(X86VcpuError::InvalidInput);
         }
         if base.checked_add(length - 1).is_none() {
-            return ax_err!(InvalidInput, "x86 passthrough port range overflows");
+            return Err(X86VcpuError::InvalidInput);
         }
 
         let range = X86PassthroughPortRange { base, length };
@@ -87,7 +134,7 @@ impl X86VCpuSetupConfig {
             return Ok(());
         }
 
-        ax_err!(NoMemory, "too many x86 passthrough port ranges")
+        Err(X86VcpuError::NoMemory)
     }
 
     /// Iterates over configured host I/O port ranges.
@@ -97,6 +144,7 @@ impl X86VCpuSetupConfig {
 }
 
 pub mod host;
+pub use host::X86HostOps;
 pub(crate) mod msr;
 #[cfg(feature = "vmx")]
 #[macro_use]
@@ -123,7 +171,7 @@ pub(crate) struct X86RealModeEntryState {
 }
 
 #[cfg(any(feature = "vmx", feature = "svm", test))]
-pub(crate) fn x86_real_mode_entry_state(entry: axvcpu::GuestPhysAddr) -> X86RealModeEntryState {
+pub(crate) fn x86_real_mode_entry_state(entry: X86GuestPhysAddr) -> X86RealModeEntryState {
     if entry.as_usize() == X86_RESET_VECTOR_GPA {
         return X86RealModeEntryState {
             cs_selector: X86_RESET_CS_SELECTOR,
@@ -187,22 +235,20 @@ pub(crate) fn restore_host_interrupt_flag(host_rflags: u64) {
 }
 
 #[cfg(any(feature = "vmx", feature = "svm"))]
-pub(crate) fn host_tsc_frequency_mhz() -> Option<u32> {
-    u32::try_from(host::nanos_to_ticks(1_000))
+pub(crate) fn host_tsc_frequency_mhz<H: X86HostOps>() -> Option<u32> {
+    u32::try_from(host::nanos_to_ticks::<H>(1_000))
         .ok()
         .filter(|&freq| freq > 0)
 }
 
 #[cfg(test)]
 mod tests {
-    use axvcpu::GuestPhysAddr;
-
     use super::*;
 
     #[test]
     fn real_mode_entry_keeps_normal_entry_flat() {
         assert_eq!(
-            x86_real_mode_entry_state(GuestPhysAddr::from(0x8000)),
+            x86_real_mode_entry_state(X86GuestPhysAddr::from(0x8000)),
             X86RealModeEntryState {
                 cs_selector: 0,
                 cs_base: 0,
@@ -214,7 +260,7 @@ mod tests {
     #[test]
     fn real_mode_entry_maps_reset_vector_to_reset_cs_state() {
         assert_eq!(
-            x86_real_mode_entry_state(GuestPhysAddr::from(0xffff_fff0)),
+            x86_real_mode_entry_state(X86GuestPhysAddr::from(0xffff_fff0)),
             X86RealModeEntryState {
                 cs_selector: 0xf000,
                 cs_base: 0xffff_0000,

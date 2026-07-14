@@ -1,38 +1,36 @@
 use std::collections::BTreeSet;
 
 const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
+const REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE: &str = concat!("ax-driver/", "plat", "-static");
 
 pub(super) fn dynamic_pie_for_c_app(features: &[String]) -> bool {
-    has_feature(features, "plat-dyn")
+    let _ = features;
+    true
 }
 
 pub(super) fn c_config_features(features: &[String]) -> BTreeSet<String> {
-    let mut config_features: BTreeSet<_> = features
+    let config_features: BTreeSet<_> = features
         .iter()
         .filter_map(|feature| {
             if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
                 return None;
             }
-            if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+            if feature.starts_with("ax-hal/")
+                || feature.starts_with("ax-driver/")
+                || feature.starts_with("ax-runtime/")
+            {
                 return None;
             }
             feature
                 .strip_prefix("ax-libc/")
-                .or_else(|| feature.strip_prefix("ax-feat/"))
                 .or_else(|| feature.strip_prefix("ax-std/"))
                 .or(Some(feature.as_str()))
         })
         .filter(|feature| {
-            !matches!(
-                *feature,
-                "ax-libc" | "ax-feat" | "ax-std" | "defplat" | "myplat" | "plat-dyn"
-            ) && !feature.contains('/')
+            !matches!(*feature, "ax-libc" | "ax-std" | "plat-dyn") && !feature.contains('/')
         })
         .map(str::to_string)
         .collect();
-    if has_feature(features, "plat-dyn") {
-        config_features.insert("smp".to_string());
-    }
     config_features
 }
 
@@ -62,7 +60,6 @@ pub(super) fn has_feature(features: &[String], name: &str) -> bool {
     features.iter().any(|feature| {
         feature == name
             || feature.strip_prefix("ax-libc/") == Some(name)
-            || feature.strip_prefix("ax-feat/") == Some(name)
             || feature.strip_prefix("ax-std/") == Some(name)
     })
 }
@@ -86,25 +83,31 @@ pub(super) fn map_c_app_features(
         "fd",
         "pipe",
         "select",
+        "poll",
         "epoll",
+        "ext4fs",
+        "fatfs",
     ];
 
     let mut features = BTreeSet::new();
     for feature in base_features {
+        if removed_cargo_feature(feature) {
+            continue;
+        }
         let normalized = feature
-            .strip_prefix("ax-feat/")
-            .or_else(|| feature.strip_prefix("ax-std/"))
+            .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+        if feature.starts_with("ax-hal/")
+            || feature.starts_with("ax-driver/")
+            || feature.starts_with("ax-runtime/")
+        {
             features.insert(feature.clone());
             continue;
         }
         match normalized {
-            "ax-std" | "ax-feat" | "ax-libc" => {}
-            "defplat" | "myplat" | "plat-dyn" => {
-                features.insert(normalized.to_string());
-            }
+            "ax-std" | "ax-libc" => {}
+            "plat-dyn" => {}
             "smp" => {
                 features.insert("smp".to_string());
             }
@@ -112,30 +115,29 @@ pub(super) fn map_c_app_features(
                 features.insert(feature.to_string());
             }
             feature => {
-                features.insert(format!("ax-feat/{feature}"));
+                features.insert(feature.to_string());
             }
         }
     }
     for feature in case_features {
-        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
+        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) || removed_cargo_feature(feature) {
             continue;
         }
         let normalized = feature
-            .strip_prefix("ax-feat/")
-            .or_else(|| feature.strip_prefix("ax-std/"))
+            .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
             .unwrap_or(feature);
-        if feature.starts_with("ax-hal/") || feature.starts_with("ax-driver/") {
+        if feature.starts_with("ax-hal/")
+            || feature.starts_with("ax-driver/")
+            || feature.starts_with("ax-runtime/")
+        {
             features.insert(feature.clone());
             continue;
         }
-        if LIB_FEATURES.contains(&normalized)
-            || matches!(normalized, "defplat" | "myplat" | "plat-dyn" | "smp")
-        {
-            features.insert(normalized.to_string());
-        } else {
-            features.insert(format!("ax-feat/{normalized}"));
+        if normalized == "plat-dyn" {
+            continue;
         }
+        features.insert(normalized.to_string());
     }
     if features
         .iter()
@@ -143,8 +145,9 @@ pub(super) fn map_c_app_features(
     {
         features.insert("fd".to_string());
     }
-    if features.contains("plat-dyn") {
-        features.insert("smp".to_string());
-    }
     features.into_iter().collect()
+}
+
+fn removed_cargo_feature(feature: &str) -> bool {
+    matches!(feature, REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE)
 }

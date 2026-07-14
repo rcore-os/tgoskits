@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.28](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.27...ax-libc-v0.5.28) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-driver, ax-hal, ax-runtime, ax-posix-api
+
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.26...ax-libc-v0.5.27) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-hal, ax-runtime, ax-driver, ax-posix-api
+
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.25...ax-libc-v0.5.26) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-driver, ax-hal, ax-runtime, ax-posix-api
+
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.24...ax-libc-v0.5.25) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-driver, ax-hal, ax-runtime, ax-posix-api
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.23...ax-libc-v0.5.24) - 2026-07-07
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(platforms)* move someboot and somehal-macros and add documents ([#1485](https://github.com/rcore-os/tgoskits/pull/1485))
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.22...ax-libc-v0.5.23) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-errno, ax-driver, ax-hal, ax-feat, ax-posix-api, ax-io
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.21...ax-libc-v0.5.22) - 2026-06-27
 
 ### Other

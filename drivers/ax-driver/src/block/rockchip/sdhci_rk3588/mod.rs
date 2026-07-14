@@ -12,35 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, vec::Vec};
 use core::{ptr::NonNull, time::Duration};
 
-use fdt_edit::Node;
 use log::{info, warn};
 use rdrive::{
-    probe::OnProbeError,
+    probe::{
+        OnProbeError,
+        fdt::{ClockLine, ResetLine},
+    },
     register::{FdtInfo, ProbeFdt},
 };
 use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error, OperationPoll,
     error::{ErrorContext, Phase},
-    sdio::{CardInfo, CardInitPreference, SdioHost2Adapter, SdioInitScratch, SdioSdmmc},
-};
-use spin::Once;
-
-use super::clock::{RockchipClockOps, apply_assigned_clocks, enable_node_clocks};
-use crate::{
-    block::ProbeFdtBlock,
-    mmio::iomap,
-    soc::{
-        RockchipPinCtrl, rk3588_enable_power_domain, rk3588_reset_assert, rk3588_reset_deassert,
+    sdio::{
+        card::{CardInfo, SdioSdmmc},
+        host2::SdioHost2Adapter,
+        init::{CardInitPreference, SdioInitScratch},
     },
 };
+
+use super::clock::enable_node_clocks;
+use crate::{block::ProbeFdtBlock, mmio::iomap};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
 // status is acknowledged in the hard IRQ and task context advances the RDIF
@@ -48,13 +43,6 @@ use crate::{
 const ROCKCHIP_SDHCI_IRQ_DRIVEN: bool = true;
 const SDMMC_INIT_POLL_DELAY: Duration = Duration::from_micros(1);
 const SDMMC_INIT_RETRY_DELAY: Duration = Duration::from_millis(10);
-const RK3588_EMMC_PINCTRL_SYMBOLS: [&str; 5] = [
-    "emmc_rstnout",
-    "emmc_bus8",
-    "emmc_clk",
-    "emmc_cmd",
-    "emmc_data_strobe",
-];
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
 const DWCMSHC_HOST_CTRL3: usize = 0x08;
@@ -100,20 +88,13 @@ const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
 const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
-static SDHCI_RESET_HOOK: RockchipSdhciResetHook = RockchipSdhciResetHook;
-static RESET_SPECS: Once<Vec<ResetSpec>> = Once::new();
-
 type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
 
 struct RockchipSdhciClock {
-    clock: RockchipClockOps,
+    clock: ClockLine,
 }
-struct RockchipSdhciResetHook;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ResetSpec {
-    name: Option<String>,
-    id: u64,
+struct RockchipSdhciResetHook {
+    resets: Vec<ResetLine>,
 }
 
 impl HostClock for RockchipSdhciClock {
@@ -145,12 +126,9 @@ impl HostClock for RockchipSdhciClock {
 
 impl HostResetHook for RockchipSdhciResetHook {
     fn before_reset_all(&self, _host: &mut Sdhci) -> Result<(), Error> {
-        let Some(resets) = RESET_SPECS.get() else {
-            return Ok(());
-        };
-        assert_resets(resets).map_err(|_| reset_error())?;
+        assert_resets(&self.resets).map_err(|_| reset_error())?;
         axklib::time::busy_wait(Duration::from_micros(1));
-        deassert_resets(resets).map_err(|_| reset_error())?;
+        deassert_resets(&self.resets).map_err(|_| reset_error())?;
         Ok(())
     }
 
@@ -173,7 +151,7 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
-    apply_rockchip_sdhci_resources(info)?;
+    let resets = apply_rockchip_sdhci_resources(info)?;
     let base_reg = info
         .node
         .regs()
@@ -200,7 +178,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     } else {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
-    host.set_reset_hook(&SDHCI_RESET_HOOK);
+    host.set_reset_hook(RockchipSdhciResetHook { resets });
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
@@ -231,132 +209,22 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
-    apply_assigned_clocks(info, "SDHCI")?;
-    if let Some(pinctrl) = rdrive::get_one::<RockchipPinCtrl>() {
-        let mut pinctrl = pinctrl
-            .lock()
-            .map_err(|err| OnProbeError::other(format!("failed to lock RockchipPinCtrl: {err}")))?;
-        let configured = pinctrl.apply_default_pinctrl(info.node)?;
-        if configured.is_empty() {
-            let fallback = rk3588_emmc_pinctrl_symbol_paths();
-            if !fallback.is_empty() {
-                let mut total = 0;
-                for path in &fallback {
-                    total += pinctrl.apply_pinctrl_path(path.as_str())?.len();
-                }
-                info!(
-                    "[{}] applied {} RK3588 eMMC symbol fallback pinctrl pins",
-                    info.node.name(),
-                    total
-                );
-            }
-        }
-    }
-    enable_power_domains(parse_power_domains(info.node.as_node())?)?;
-    let resets = parse_resets(info.node.as_node())?;
-    if !resets.is_empty() {
-        RESET_SPECS.call_once(|| resets);
-    }
-    enable_node_clocks(info, "SDHCI");
-    Ok(())
+fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
+    let resets = info.reset_lines()?;
+    enable_node_clocks(info, "SDHCI")?;
+    Ok(resets)
 }
 
-fn rk3588_emmc_pinctrl_symbol_paths() -> Vec<String> {
-    rdrive::with_fdt(|fdt| {
-        fdt.get_by_path("/__symbols__")
-            .map(|symbols| rk3588_emmc_pinctrl_paths_from_symbols(symbols.as_node()))
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
-}
-
-fn rk3588_emmc_pinctrl_paths_from_symbols(symbols: &Node) -> Vec<String> {
-    RK3588_EMMC_PINCTRL_SYMBOLS
-        .into_iter()
-        .filter_map(|symbol| {
-            symbols
-                .get_property(symbol)?
-                .as_str()
-                .map(ToString::to_string)
-        })
-        .collect()
-}
-
-fn parse_power_domains(node: &Node) -> Result<Vec<usize>, OnProbeError> {
-    let Some(prop) = node.get_property("power-domains") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed power-domains",
-            node.name()
-        )));
-    }
-    Ok(cells.chunks(2).map(|chunk| chunk[1] as usize).collect())
-}
-
-fn enable_power_domains(domains: Vec<usize>) -> Result<(), OnProbeError> {
-    for domain in domains {
-        rk3588_enable_power_domain(domain).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to enable RK3588 SDHCI power domain {domain}: {err}"
-            ))
-        })?;
-    }
-    Ok(())
-}
-
-fn parse_resets(node: &Node) -> Result<Vec<ResetSpec>, OnProbeError> {
-    let Some(prop) = node.get_property("resets") else {
-        return Ok(Vec::new());
-    };
-    let cells = prop.get_u32_iter().collect::<Vec<_>>();
-    if cells.len() % 2 != 0 {
-        return Err(OnProbeError::other(format!(
-            "[{}] has malformed resets",
-            node.name()
-        )));
-    }
-    let names = node
-        .get_property("reset-names")
-        .map(|prop| {
-            prop.as_str_iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(cells
-        .chunks(2)
-        .enumerate()
-        .map(|(index, chunk)| ResetSpec {
-            name: names.get(index).cloned(),
-            id: u64::from(chunk[1]),
-        })
-        .collect())
-}
-
-fn assert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+fn assert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_assert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to assert RK3588 SDHCI reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.assert()?;
     }
     Ok(())
 }
 
-fn deassert_resets(resets: &[ResetSpec]) -> Result<(), OnProbeError> {
+fn deassert_resets(resets: &[ResetLine]) -> Result<(), OnProbeError> {
     for reset in resets {
-        rk3588_reset_deassert(reset.id).map_err(|err| {
-            OnProbeError::other(format!(
-                "failed to deassert RK3588 SDHCI reset {:?} ({:#x}): {err}",
-                reset.name, reset.id
-            ))
-        })?;
+        reset.deassert()?;
     }
     Ok(())
 }
@@ -542,17 +410,8 @@ fn is_absent_card_init_error(err: Error) -> bool {
     }
 }
 
-fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<RockchipClockOps>, OnProbeError> {
-    for clk in info.node.clocks() {
-        info!(
-            "rockchip-sdhci clock: phandle <{}>, name: {:?}, cells: {}",
-            clk.phandle, clk.name, clk.cells
-        );
-        if clk.name == Some("core".to_string()) {
-            return RockchipClockOps::from_node_clock(info, &clk);
-        }
-    }
-    Ok(None)
+fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<ClockLine>, OnProbeError> {
+    info.find_clock_line_by_name("core")
 }
 
 fn clock_error() -> Error {
@@ -561,8 +420,6 @@ fn clock_error() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
     use super::*;
 
     #[test]
@@ -578,83 +435,11 @@ mod tests {
     #[test]
     fn rk3588_adma_queue_limits_expose_sdhci_window() {
         let config = rockchip_sdhci_rdif_config(8, test_dma());
-        let limits = sdmmc_protocol::rdif::queue_limits(&config, config.dma_mask);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
         assert_eq!(limits.max_segments, 1);
-    }
-
-    #[test]
-    fn parse_resets_reads_rk3588_sdhci_reset_cells_and_names() {
-        let mut node = Node::new("mmc@fe2e0000");
-        let mut resets = Vec::new();
-        for id in [10_u32, 11] {
-            resets.extend_from_slice(&0x1000_u32.to_be_bytes());
-            resets.extend_from_slice(&id.to_be_bytes());
-        }
-        node.add_property(fdt_edit::Property::new("resets", resets));
-        node.add_property(fdt_edit::Property::new(
-            "reset-names",
-            b"core\0bus\0".to_vec(),
-        ));
-
-        assert_eq!(
-            parse_resets(&node).unwrap(),
-            vec![
-                ResetSpec {
-                    name: Some(String::from("core")),
-                    id: 10
-                },
-                ResetSpec {
-                    name: Some(String::from("bus")),
-                    id: 11
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_power_domains_accepts_absent_sdhci_domain() {
-        let node = Node::new("mmc@fe2e0000");
-
-        assert_eq!(parse_power_domains(&node).unwrap(), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn emmc_symbol_fallback_reads_linux_pinctrl_paths_in_order() {
-        let mut symbols = Node::new("__symbols__");
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_cmd",
-            b"/pinctrl/emmc/emmc-cmd\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_rstnout",
-            b"/pinctrl/emmc/emmc-rstnout\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_clk",
-            b"/pinctrl/emmc/emmc-clk\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_bus8",
-            b"/pinctrl/emmc/emmc-bus8\0".to_vec(),
-        ));
-        symbols.add_property(fdt_edit::Property::new(
-            "emmc_data_strobe",
-            b"/pinctrl/emmc/emmc-data-strobe\0".to_vec(),
-        ));
-
-        assert_eq!(
-            rk3588_emmc_pinctrl_paths_from_symbols(&symbols),
-            vec![
-                String::from("/pinctrl/emmc/emmc-rstnout"),
-                String::from("/pinctrl/emmc/emmc-bus8"),
-                String::from("/pinctrl/emmc/emmc-clk"),
-                String::from("/pinctrl/emmc/emmc-cmd"),
-                String::from("/pinctrl/emmc/emmc-data-strobe"),
-            ]
-        );
     }
 
     #[test]
@@ -771,7 +556,7 @@ mod tests {
 
     impl dma_api::DmaOp for TestDma {
         fn page_size(&self) -> usize {
-            sdmmc_protocol::rdif::BLOCK_SIZE
+            sdmmc_protocol::rdif::config::BLOCK_SIZE
         }
 
         unsafe fn alloc_contiguous(

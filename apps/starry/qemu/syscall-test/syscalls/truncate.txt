@@ -1,0 +1,4 @@
+truncate02
+truncate02_64
+# truncate03 # TBROK: setrlimit(RLIMIT_FSIZE) fails with EPERM in the current environment
+# truncate03_64 # TBROK: setrlimit(RLIMIT_FSIZE) fails with EPERM in the current environment

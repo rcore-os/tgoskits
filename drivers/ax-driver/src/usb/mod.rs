@@ -2,7 +2,7 @@ extern crate alloc;
 
 use core::time::Duration;
 
-use crab_usb::{EventHandler, USBHost};
+use crab_usb::{EventHandler, USBHost, usb_if::Speed};
 use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
@@ -15,6 +15,10 @@ use crate::{PciIrqRequirement, binding_info_from_pci};
 
 #[cfg(feature = "rockchip-dwc-xhci")]
 mod dwc;
+#[cfg(feature = "rockchip-ehci")]
+mod ehci;
+#[cfg(feature = "sg2002-dwc2")]
+mod sg2002_dwc2;
 #[cfg(feature = "xhci-mmio")]
 mod xhci_mmio;
 #[cfg(feature = "xhci-pci")]
@@ -137,15 +141,26 @@ pub struct PlatformUsbHost {
     name: &'static str,
     info: BindingInfo,
     host: USBHost,
+    root_hub_speed: Speed,
     irq_handler_taken: bool,
 }
 
 impl PlatformUsbHost {
     fn new(name: &'static str, host: USBHost, info: BindingInfo) -> Self {
+        Self::new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
+    }
+
+    fn new_with_root_hub_speed(
+        name: &'static str,
+        host: USBHost,
+        info: BindingInfo,
+        root_hub_speed: Speed,
+    ) -> Self {
         Self {
             name,
             info,
             host,
+            root_hub_speed,
             irq_handler_taken: false,
         }
     }
@@ -174,6 +189,10 @@ impl PlatformUsbHost {
         &self.info
     }
 
+    pub fn root_hub_speed(&self) -> Speed {
+        self.root_hub_speed
+    }
+
     pub fn enable_irq(&mut self) -> crab_usb::err::Result {
         self.host.enable_irq()
     }
@@ -184,6 +203,12 @@ impl PlatformUsbHost {
 
     pub fn take_irq_handler(&mut self) -> Option<(usize, UsbHostIrqHandler)> {
         let irq = self.info.irq_num()?;
+        let handler = self.take_event_handler()?;
+        Some((irq, handler))
+    }
+
+    pub fn take_binding_irq_handler(&mut self) -> Option<(BindingIrq, UsbHostIrqHandler)> {
+        let irq = self.info.irq_cloned()?;
         let handler = self.take_event_handler()?;
         Some((irq, handler))
     }
@@ -257,6 +282,13 @@ pub trait ProbeFdtUsbHost {
         name: &'static str,
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError>;
+
+    fn register_usb_host_with_root_hub_speed(
+        self,
+        name: &'static str,
+        host: USBHost,
+        root_hub_speed: Speed,
+    ) -> Result<Option<usize>, OnProbeError>;
 }
 
 impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
@@ -271,6 +303,22 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
             name,
             host,
             info,
+        ))
+    }
+
+    fn register_usb_host_with_root_hub_speed(
+        self,
+        name: &'static str,
+        host: USBHost,
+        root_hub_speed: Speed,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_usb_host_with_info_and_root_hub_speed(
+            self.into_platform_device(),
+            name,
+            host,
+            info,
+            root_hub_speed,
         ))
     }
 }
@@ -336,6 +384,19 @@ fn register_usb_host_with_info(
     register_bound_device(plat_dev, PlatformUsbHost::new(name, host, info))
 }
 
+fn register_usb_host_with_info_and_root_hub_speed(
+    plat_dev: rdrive::PlatformDevice,
+    name: &'static str,
+    host: USBHost,
+    info: BindingInfo,
+    root_hub_speed: Speed,
+) -> Option<usize> {
+    register_bound_device(
+        plat_dev,
+        PlatformUsbHost::new_with_root_hub_speed(name, host, info, root_hub_speed),
+    )
+}
+
 #[cfg(feature = "xhci-pci")]
 pub(crate) fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
@@ -344,4 +405,92 @@ pub(crate) fn align_up_4k(size: usize) -> usize {
 
 pub fn usb_host_device() -> Option<UsbHostDevice> {
     rdrive::get_one()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, vec};
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+
+    use crab_usb::{Dwc2HostParams, Dwc2NewParams, USBHost, usb_if::Speed};
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+
+    use super::*;
+
+    struct TestUsbKernel;
+
+    impl DmaOp for TestUsbKernel {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    impl crab_usb::KernelOp for TestUsbKernel {
+        fn delay(&self, _duration: core::time::Duration) {}
+    }
+
+    static TEST_USB_KERNEL: TestUsbKernel = TestUsbKernel;
+
+    fn test_usb_host() -> USBHost {
+        let regs = Box::leak(vec![0u32; 1024].into_boxed_slice());
+        let mmio = NonNull::new(regs.as_mut_ptr().cast::<u8>()).unwrap();
+        USBHost::new_dwc2(Dwc2NewParams {
+            mmio,
+            kernel: &TEST_USB_KERNEL,
+            params: Dwc2HostParams::sg2002(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn binding_irq_handler_preserves_fdt_interrupt_binding() {
+        let binding =
+            BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 30, 4]);
+        let info = BindingInfo::with_binding_irq(Some(binding.clone()));
+        let mut host = PlatformUsbHost::new_with_root_hub_speed(
+            "test-usb",
+            test_usb_host(),
+            info,
+            Speed::High,
+        );
+
+        assert_eq!(host.irq_num(), None);
+        let (actual, _handler) = host
+            .take_binding_irq_handler()
+            .expect("binding IRQ handler should be available");
+        assert_eq!(actual, binding);
+        assert!(host.take_binding_irq_handler().is_none());
+    }
 }

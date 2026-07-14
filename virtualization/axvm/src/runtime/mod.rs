@@ -12,27 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod hvc;
+pub(crate) mod hvc;
 mod ivc;
-
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch_irq;
 pub(crate) mod vcpus;
-#[cfg(target_arch = "x86_64")]
-mod x86_irq;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
-#[cfg(target_arch = "x86_64")]
-use axvcpu::InterruptTriggerMode;
-
-use crate::{StopReason, VmStatus};
+use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 
 /// The instantiated VM ref type (by `Arc`).
 pub type VMRef = crate::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
-pub type VCpuRef = crate::AxVCpuRef;
+pub type VCpuRef = crate::vm::AxVCpuRef;
 
 static VMM: crate::HostWaitQueueHandle = crate::HostWaitQueueHandle::new();
 
@@ -85,8 +76,8 @@ fn reset_starts_counted_runtime(previous_status: VmStatus) -> bool {
     )
 }
 
-pub fn start_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+pub fn start_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
     let status = vm.status();
     if !matches!(status, VmStatus::Ready | VmStatus::Stopped) {
         return ax_err!(BadState, "VM cannot be started from its current state");
@@ -98,22 +89,22 @@ pub fn start_vm(vm_id: usize) -> AxResult {
     Ok(())
 }
 
-pub fn stop_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+pub fn stop_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
     vm.stop(StopReason::Forced)?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }
 
-pub fn resume_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+pub fn resume_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
     vm.resume()?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }
 
-pub fn reset_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+pub fn reset_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
     let previous_status = vm.status();
     vm.reset()?;
     if reset_starts_counted_runtime(previous_status) {
@@ -132,24 +123,12 @@ pub fn register_vm(vm: VMRef) -> bool {
     crate::manager::push_existing_vm(vm)
 }
 
-/// Register a native host IRQ as the source for one x86 guest IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_route(
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-) {
-    x86_irq::register_ioapic_irq_forwarding_route(guest_gsi, host_irq);
+fn vm_by_id(vm_id: usize) -> AxVmResult<VMRef> {
+    crate::get_vm_by_id(vm_id).ok_or_else(|| missing_vm_error(vm_id))
 }
 
-/// Register a native host IRQ and trigger mode as the source for one x86 guest
-/// IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_route_with_trigger(
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-    trigger: InterruptTriggerMode,
-) {
-    x86_irq::register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+const fn missing_vm_error(vm_id: usize) -> AxVmError {
+    AxVmError::VmNotFound { vm_id }
 }
 
 #[cfg(test)]
@@ -171,11 +150,10 @@ mod tests {
             );
         }
     }
-}
 
-/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
-/// programmed a usable virtual IOAPIC route for it.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
-    x86_irq::register_ioapic_irq_forwarding_activator(guest_gsi, activator);
+    #[test]
+    fn missing_vm_is_reported_with_its_id() {
+        let vm_id = usize::MAX;
+        assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
+    }
 }

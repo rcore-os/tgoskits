@@ -23,29 +23,13 @@ log = "Info"
     );
 }
 
-#[test]
-fn build_info_omits_true_plat_dyn_and_serializes_false() {
-    let default = toml::to_string_pretty(&BuildInfo::default()).unwrap();
-
-    assert!(!default.contains("plat_dyn"));
-
-    let non_dynamic = BuildInfo {
-        plat_dyn: false,
-        ..BuildInfo::default()
-    };
-    let serialized = toml::to_string_pretty(&non_dynamic).unwrap();
-
-    assert!(serialized.contains("plat_dyn = false"));
-}
-
-pub(super) fn declares_non_dynamic_platform(content: &str) -> bool {
+pub(super) fn declares_removed_plat_dyn_field(content: &str) -> bool {
     toml::from_str::<toml::Table>(content)
         .ok()
-        .and_then(|table| table.get("plat_dyn").and_then(|value| value.as_bool()))
-        == Some(false)
+        .is_some_and(|table| table.contains_key("plat_dyn"))
 }
 
-pub(super) fn declares_static_platform(content: &str) -> bool {
+pub(super) fn declares_removed_platform_feature(content: &str) -> bool {
     let Ok(table) = toml::from_str::<toml::Table>(content) else {
         return false;
     };
@@ -56,13 +40,19 @@ pub(super) fn declares_static_platform(content: &str) -> bool {
     features
         .iter()
         .filter_map(|feature| feature.as_str())
-        .any(is_static_platform_feature)
+        .any(is_removed_platform_feature)
 }
 
-fn is_static_platform_feature(feature: &str) -> bool {
-    feature == "ax-driver/plat-static"
-        || ax_hal_platform_feature_name(feature, None)
-            .is_some_and(|platform| platform != "plat-dyn")
+fn is_removed_platform_feature(feature: &str) -> bool {
+    ax_hal_platform_feature_name(feature, None).is_some_and(|platform| platform != "plat-dyn")
+}
+
+#[test]
+fn declares_removed_platform_feature_ignores_removed_ax_driver_feature() {
+    let feature = concat!("ax-driver/", "plat", "-static");
+    let content = format!("features = [\"{feature}\"]\n");
+
+    assert!(!declares_removed_platform_feature(&content));
 }
 
 pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {
@@ -72,13 +62,6 @@ pub(super) fn checked_in_build_config_roots(workspace: &Path) -> [PathBuf; 4] {
         workspace.join("os/axvisor/configs/board"),
         workspace.join("test-suit"),
     ]
-}
-
-pub(super) fn declares_default_dynamic_platform(content: &str) -> bool {
-    toml::from_str::<toml::Table>(content)
-        .ok()
-        .and_then(|table| table.get("plat_dyn").and_then(|value| value.as_bool()))
-        == Some(true)
 }
 
 pub(super) fn checked_in_toml_files(

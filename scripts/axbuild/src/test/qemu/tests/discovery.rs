@@ -199,11 +199,11 @@ fn selected_qemu_case_allows_same_name_in_later_wrapper() {
     .unwrap();
     fs::write(board_dir.join("board-orangepi-5-plus.toml"), "").unwrap();
 
-    let qemu_dir = root.path().join("suite/qemu-smp1/smoke");
+    let qemu_dir = root.path().join("suite/qemu/smoke");
     fs::create_dir_all(&qemu_dir).unwrap();
     fs::write(
         root.path()
-            .join("suite/qemu-smp1/build-x86_64-unknown-none.toml"),
+            .join("suite/qemu/build-x86_64-unknown-none.toml"),
         "",
     )
     .unwrap();
@@ -221,18 +221,18 @@ fn selected_qemu_case_allows_same_name_in_later_wrapper() {
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].build_group, "qemu-smp1");
+    assert_eq!(cases[0].build_group, "qemu");
     assert_eq!(cases[0].qemu_config_path, qemu_config);
 }
 
 #[test]
 fn selected_qemu_case_finds_wrapper_without_scanning_unrelated_broken_tree() {
     let root = tempfile::tempdir().unwrap();
-    let target_dir = root.path().join("suite/qemu-smp1/smoke");
+    let target_dir = root.path().join("suite/qemu/smoke");
     fs::create_dir_all(&target_dir).unwrap();
     fs::write(
         root.path()
-            .join("suite/qemu-smp1/build-x86_64-unknown-none.toml"),
+            .join("suite/qemu/build-x86_64-unknown-none.toml"),
         "",
     )
     .unwrap();
@@ -250,7 +250,7 @@ fn selected_qemu_case_finds_wrapper_without_scanning_unrelated_broken_tree() {
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].build_group, "qemu-smp1");
+    assert_eq!(cases[0].build_group, "qemu");
 }
 
 #[test]

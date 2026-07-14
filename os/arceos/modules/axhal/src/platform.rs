@@ -1,8 +1,9 @@
-#[cfg(all(not(test), not(feature = "host-test"), not(feature = "myplat")))]
+#[cfg(all(not(test), not(feature = "host-test")))]
 include!(concat!(env!("OUT_DIR"), "/selected_platform.rs"));
 
 #[cfg(any(test, feature = "host-test"))]
 #[path = "dummy.rs"]
 mod dummy;
 
+#[cfg(any(test, feature = "host-test"))]
 pub mod selected {}

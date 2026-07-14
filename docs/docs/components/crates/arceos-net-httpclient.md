@@ -43,9 +43,6 @@ graph LR
 - `ax-allocator`
 - `ax-api`
 - `ax-arm-pl031`
-- `ax-config`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-cpumask`
 - `ax-crate-interface`

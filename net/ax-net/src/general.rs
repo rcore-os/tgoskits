@@ -39,6 +39,8 @@ pub(crate) struct GeneralOptions {
     nonblock: AtomicBool,
     /// Whether the socket should reuse the address.
     reuse_address: AtomicBool,
+    /// Whether the socket should reuse the port (SO_REUSEPORT).
+    reuse_port: AtomicBool,
 
     /// Per-socket send timeout in nanoseconds; zero means no timeout.
     send_timeout_nanos: AtomicU64,
@@ -74,6 +76,7 @@ impl GeneralOptions {
         Self {
             nonblock: AtomicBool::new(false),
             reuse_address: AtomicBool::new(false),
+            reuse_port: AtomicBool::new(false),
 
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
@@ -99,6 +102,15 @@ impl GeneralOptions {
     /// Returns whether SO_REUSEADDR-style bind reuse is enabled.
     pub fn reuse_address(&self) -> bool {
         self.reuse_address.load(Ordering::Relaxed)
+    }
+
+    /// Returns whether SO_REUSEPORT is enabled.
+    ///
+    /// Under a single-core smoltcp stack there is one accept queue per
+    /// endpoint, so port reuse degrades to the same rebind allowance as
+    /// SO_REUSEADDR rather than fanning connections across a socket group.
+    pub fn reuse_port(&self) -> bool {
+        self.reuse_port.load(Ordering::Relaxed)
     }
 
     /// Returns the configured send timeout, or `None` for blocking forever.
@@ -250,6 +262,9 @@ impl Configurable for GeneralOptions {
             O::ReuseAddress(reuse) => {
                 **reuse = self.reuse_address();
             }
+            O::ReusePort(reuse) => {
+                **reuse = self.reuse_port();
+            }
             O::SendTimeout(timeout) => {
                 **timeout = Duration::from_nanos(self.send_timeout_nanos.load(Ordering::Relaxed));
             }
@@ -297,6 +312,9 @@ impl Configurable for GeneralOptions {
             }
             O::ReuseAddress(reuse) => {
                 self.reuse_address.store(*reuse, Ordering::Relaxed);
+            }
+            O::ReusePort(reuse) => {
+                self.reuse_port.store(*reuse, Ordering::Relaxed);
             }
             O::SendTimeout(timeout) => {
                 self.send_timeout_nanos
@@ -366,6 +384,31 @@ mod tests {
 
         options.set_device_binding(DeviceBinding { bound_if: None });
         assert_eq!(options.device_binding(), DeviceBinding { bound_if: None });
+    }
+
+    #[test]
+    fn reuse_address_and_reuse_port_are_independent_flags() {
+        let options = GeneralOptions::new(1, 2, 6);
+
+        assert!(!options.reuse_address());
+        assert!(!options.reuse_port());
+
+        options
+            .set_option(SetSocketOption::ReusePort(&true))
+            .unwrap();
+        assert!(options.reuse_port());
+        assert!(!options.reuse_address());
+
+        let mut reuse_port = false;
+        options
+            .get_option(GetSocketOption::ReusePort(&mut reuse_port))
+            .unwrap();
+        assert!(reuse_port);
+
+        options
+            .set_option(SetSocketOption::ReusePort(&false))
+            .unwrap();
+        assert!(!options.reuse_port());
     }
 
     #[test]

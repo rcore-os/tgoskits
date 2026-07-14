@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.11...axplat-dyn-v0.7.12) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.7.11](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.10...axplat-dyn-v0.7.11) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.7.10](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.9...axplat-dyn-v0.7.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu, ax-plat, someboot, axklib, ax-driver, somehal
+
+## [0.7.9](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.8...axplat-dyn-v0.7.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: rdrive, ax-plat, axklib, ax-driver, somehal
+
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.7...axplat-dyn-v0.7.8) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.6...axplat-dyn-v0.7.7) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+- *(irq)* avoid hard irq controller locks
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
 ## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.5...axplat-dyn-v0.7.6) - 2026-06-27
 
 ### Added

@@ -1,5 +1,8 @@
 use alloc::{collections::BTreeMap, format};
-use core::cell::UnsafeCell;
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use aarch64_cpu::registers::ID_AA64PFR0_EL1;
 use arm_gic_driver::{checked_intid, v3::*};
@@ -9,7 +12,9 @@ use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
 use crate::common::ioremap;
 
+static CPU_IF_INIT: StaticCell<CpuInterfaceInit> = StaticCell::uninit();
 static CPU_IF: StaticCell<BTreeMap<usize, CpuInterfaceSlot>> = StaticCell::uninit();
+static PRIMARY_GICR_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
 
 struct CpuInterfaceSlot {
     inner: UnsafeCell<Option<CpuInterface>>,
@@ -64,6 +69,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         info.node.name()
     )))?;
     let gicr_reg = reg.next().unwrap();
+    PRIMARY_GICR_PHYS_BASE.store(gicr_reg.address, Ordering::Release);
 
     let gicd = ioremap(
         gicd_reg.address,
@@ -80,10 +86,11 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     gic.init();
     super::set_backend(super::GicBackend::V3);
 
+    CPU_IF_INIT.init(gic.cpu_interface_init());
     init_cpu_interface_map();
     let cpu_idx =
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
-    init_cpu_interface(&gic, cpu_idx);
+    init_cpu(cpu_idx);
 
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
@@ -140,6 +147,9 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
         current_cpu_interface().set_irq_enable(intid, enable);
         return Ok(());
     }
+    if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
+        return super::its::set_lpi_enabled(irq, enable);
+    }
 
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
         let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
@@ -154,6 +164,12 @@ pub fn irq_set_affinity(
 ) -> Result<(), crate::irq::IrqError> {
     if irq.hwirq.0 < 32 {
         return Err(crate::irq::IrqError::Unsupported);
+    }
+    if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
+        return match affinity {
+            crate::irq::IrqAffinity::Any => Ok(()),
+            crate::irq::IrqAffinity::Fixed { .. } => Err(crate::irq::IrqError::Unsupported),
+        };
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
@@ -193,8 +209,20 @@ fn affinity_from_mpidr(mpidr: usize) -> Affinity {
     Affinity::from_mpidr(mpidr as u64)
 }
 
+pub(super) fn primary_gicr_phys_base() -> Option<u64> {
+    match PRIMARY_GICR_PHYS_BASE.load(Ordering::Acquire) {
+        0 => None,
+        phys => Some(phys),
+    }
+}
+
 pub fn init_cpu(cpu_idx: usize) {
-    if let Err(err) = super::with_primary_gic::<Gic, _>(|gic| init_cpu_interface(gic, cpu_idx)) {
+    if !CPU_IF_INIT.is_init() {
+        warn!("failed to initialize GICv3 CPU interface for CPU {cpu_idx}: missing GICv3 state");
+        return;
+    }
+
+    if let Err(err) = init_cpu_interface(cpu_idx) {
         warn!("failed to initialize GICv3 CPU interface for CPU {cpu_idx}: {err:?}");
     }
 
@@ -209,15 +237,16 @@ fn init_cpu_interface_map() {
     CPU_IF.init(cpu_if);
 }
 
-fn init_cpu_interface(gic: &Gic, cpu_idx: usize) {
-    let mut cpu = gic.cpu_interface();
-    cpu.init_current_cpu().unwrap();
+fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
+    let mut cpu = CPU_IF_INIT.cpu_interface();
+    cpu.init_current_cpu()?;
     #[cfg(feature = "hv")]
     cpu.set_eoi_mode(true);
 
     // SAFETY: CPU_IF was preallocated during BSP probe. Each CPU initializes
     // only its own logical CPU slot before it can send SGIs through that slot.
     unsafe { cpu_interface_slot(cpu_idx).set(cpu_idx, cpu) };
+    Ok(())
 }
 
 fn current_cpu_interface() -> &'static CpuInterface {

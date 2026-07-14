@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::{PageIter4K, PhysAddr};
-use ax_page_table_multiarch::{MappingFlags, PageSize, PagingHandler};
-use axvm_types::GuestPhysAddr;
+use ax_memory_addr::PageIter4K;
+use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use super::Backend;
-use crate::npt::NestedPageTable as PageTable;
+use crate::{NestedPageTableOps, PageSize};
 
-impl<H: PagingHandler> Backend<H> {
+impl<Npt: NestedPageTableOps> Backend<Npt> {
     /// Creates a new allocation mapping backend.
     pub const fn new_alloc(populate: bool) -> Self {
         Self::Alloc {
@@ -33,7 +32,7 @@ impl<H: PagingHandler> Backend<H> {
         start: GuestPhysAddr,
         size: usize,
         flags: MappingFlags,
-        pt: &mut PageTable<H>,
+        pt: &mut Npt,
         populate: bool,
     ) -> bool {
         debug!(
@@ -46,7 +45,8 @@ impl<H: PagingHandler> Backend<H> {
         if populate {
             // allocate all possible physical frames for populated mapping.
             for addr in PageIter4K::new(start, start + size).unwrap() {
-                if H::alloc_frame()
+                if pt
+                    .alloc_frame()
                     .and_then(|frame| pt.map(addr, frame, PageSize::Size4K, flags).ok())
                     .is_none()
                 {
@@ -55,15 +55,9 @@ impl<H: PagingHandler> Backend<H> {
             }
             true
         } else {
-            // Map to a empty entry for on-demand mapping.
-            pt.map_region(
-                start,
-                |_va| PhysAddr::from(0),
-                size,
-                MappingFlags::empty(),
-                false,
-            )
-            .is_ok()
+            // Leave the NPT range unmapped. The first guest access will cause
+            // a nested page fault and be populated by `handle_page_fault_alloc`.
+            true
         }
     }
 
@@ -71,7 +65,7 @@ impl<H: PagingHandler> Backend<H> {
         &self,
         start: GuestPhysAddr,
         size: usize,
-        pt: &mut PageTable<H>,
+        pt: &mut Npt,
         _populate: bool,
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
@@ -82,7 +76,7 @@ impl<H: PagingHandler> Backend<H> {
                 if page_size.is_huge() {
                     return false;
                 }
-                H::dealloc_frame(frame);
+                pt.dealloc_frame(frame);
             } else {
                 // It's fine if the page is not mapped.
             }
@@ -94,7 +88,7 @@ impl<H: PagingHandler> Backend<H> {
         &self,
         vaddr: GuestPhysAddr,
         orig_flags: MappingFlags,
-        pt: &mut PageTable<H>,
+        pt: &mut Npt,
         populate: bool,
     ) -> bool {
         if populate {
@@ -103,7 +97,7 @@ impl<H: PagingHandler> Backend<H> {
             // Allocate a physical frame lazily and map it to the fault address.
             // `vaddr` does not need to be aligned. It will be automatically
             // aligned during `pt.remap` regardless of the page size.
-            let Some(frame) = H::alloc_frame() else {
+            let Some(frame) = pt.alloc_frame() else {
                 return false;
             };
             pt.remap(vaddr, frame, orig_flags)

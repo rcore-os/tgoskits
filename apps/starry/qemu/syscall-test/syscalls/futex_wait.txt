@@ -1,0 +1,5 @@
+futex_wait01
+futex_wait02
+futex_wait03
+futex_wait04
+# futex_wait05 # TFAIL: futex_wait() slept for too long in current environment [arch=aarch64]
