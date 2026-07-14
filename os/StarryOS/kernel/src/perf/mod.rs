@@ -148,6 +148,20 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// concrete `BpfPerfEventWrapper` from a `dyn PerfEventOps`.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
+    /// The per-task counter behind this event, if it is a per-task hardware event
+    /// (`pid > 0`). Used to wire group-leader sampling at the per-task layer, so a
+    /// sampling leader can read its counting members from the overflow handler
+    /// (see [`task::link_group_member`]). `None` for system-wide, software, and
+    /// tracing events (the default) — only [`hw::HwPerfEvent`] overrides it.
+    ///
+    /// aarch64-only: the per-task counter (and the hardware-PMU sampling path it
+    /// drives) exists only on the ARM PMUv3 backend, so this method is absent on
+    /// other targets rather than referencing the gated [`task`] module.
+    #[cfg(target_arch = "aarch64")]
+    fn per_task_counter(&self) -> Option<Arc<task::PerTaskCounter>> {
+        None
+    }
+
     /// Attach a BPF program to this event (`PERF_EVENT_IOC_SET_BPF`).
     fn set_bpf_prog(&mut self, _bpf_prog: Arc<dyn FileLike>) -> AxResult<()> {
         Err(AxError::Unsupported)
@@ -657,6 +671,22 @@ pub fn perf_event_open(
             .into_any_arc()
             .downcast::<PerfEvent>()
             .map_err(|_| AxError::InvalidInput)?;
+        // Per-task group-leader sampling: when both the leader and this member are
+        // per-task hardware counters, link them at the ptc layer too, so a
+        // *sampling* leader can read this counting member's live value from the
+        // overflow handler (`PERF_SAMPLE_READ | PERF_FORMAT_GROUP`). A counting
+        // leader, or any non-per-task event, needs no ptc link — its group read is
+        // served in process context by [`Self::read_group`]. `link_group_member`
+        // itself is a no-op unless the leader samples. aarch64-only: the per-task
+        // hardware-PMU path (and the `task` module) exists only on ARM PMUv3.
+        #[cfg(target_arch = "aarch64")]
+        {
+            let leader_ptc = leader.event.lock().per_task_counter();
+            let member_ptc = perf_event.event.lock().per_task_counter();
+            if let (Some(leader_ptc), Some(member_ptc)) = (leader_ptc, member_ptc) {
+                task::link_group_member(&leader_ptc, &member_ptc);
+            }
+        }
         perf_event.event.lock().disable().ok();
         leader.members.lock().push(Arc::downgrade(&perf_event));
     }

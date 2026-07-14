@@ -41,7 +41,7 @@
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -116,14 +116,23 @@ const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
 const PERF_RECORD_MISC_USER: u16 = 2;
 
+/// Max u64 words in the `PERF_SAMPLE_READ` block: for a single event this is
+/// `value` (+ `id` if `PERF_FORMAT_ID`) ≤ 2; for a group-leader read
+/// (`PERF_FORMAT_GROUP`) it is `nr`, then per event (leader + up to
+/// [`MAX_GROUP_MEMBERS`] members) `value` (+ `id`) — the worst case, which bounds
+/// both the handler's on-stack scratch and the record buffer.
+const MAX_GROUP_READ_WORDS: usize = 1 + (1 + MAX_GROUP_MEMBERS) * 2;
+
 /// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header, at most
 /// nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD), then an optional callchain block — a `u64
-/// nr` count followed by up to two `PERF_CONTEXT_*` markers and `2 *
-/// MAX_STACK_DEPTH` instruction pointers (a kernel region + a user region).
-/// [`build_sample`] writes into a stack buffer of this size and returns the
-/// actual length.
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + 8 + 2 * 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
+/// STREAM_ID, CPU(cpu+res), PERIOD), then an optional `PERF_SAMPLE_READ` block
+/// ([`MAX_GROUP_READ_WORDS`] u64, worst case a group-leader read) and an optional
+/// callchain block — a `u64 nr` count followed by up to two `PERF_CONTEXT_*`
+/// markers and `2 * MAX_STACK_DEPTH` instruction pointers (a kernel + a user
+/// region). [`build_sample`] writes into a stack buffer of this size and returns
+/// the actual length.
+const SAMPLE_RECORD_MAX_LEN: usize =
+    8 + 9 * 8 + MAX_GROUP_READ_WORDS * 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). The scalar fields
 // below plus `PERF_SAMPLE_CALLCHAIN` are supported; every other bit (READ, RAW,
@@ -162,6 +171,13 @@ pub const PERF_SAMPLE_READ: u64 = 1 << 10;
 /// `read_format` bit `PERF_FORMAT_ID` (mirrors `super::PERF_FORMAT_ID`), needed
 /// here to lay out the `PERF_SAMPLE_READ` block.
 const READ_FORMAT_ID: u64 = 1 << 2;
+/// `read_format` bit `PERF_FORMAT_GROUP` (mirrors `super::PERF_FORMAT_GROUP`):
+/// a group-leader sample carries the WHOLE group's counters (`nr`, then the
+/// leader's value and each member's), not just the leader's. Supported for a
+/// **per-task** sampling leader — its counting members' live counts are read from
+/// the overflow handler — and rejected for the system-wide path (see
+/// `super::hw::perf_event_open_hw`). Exposed for that open-time gate.
+pub const READ_FORMAT_GROUP: u64 = 1 << 3;
 
 /// Callchain marker: the entries that follow are kernel (EL1) instruction
 /// pointers (Linux `PERF_CONTEXT_KERNEL`). Counts as one callchain entry.
@@ -193,12 +209,72 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_READ;
 
 /// Whether a sampling event's `PERF_SAMPLE_READ` request is supported. `true`
-/// unless `PERF_SAMPLE_READ` is combined with a `read_format` other than `0` or
-/// exactly `PERF_FORMAT_ID`: group-format (`PERF_FORMAT_GROUP`) and time-format
-/// (`TOTAL_TIME_*`) / `LOST` reads need per-event/per-group accounting reachable
-/// from the IRQ handler, which is a follow-up. Checked at open.
+/// unless `PERF_SAMPLE_READ` is combined with a `read_format` bit outside
+/// `{PERF_FORMAT_ID, PERF_FORMAT_GROUP}`: the leader value, per-member ids, and
+/// (group) member counts are all reachable from the IRQ handler, but the
+/// time-format (`TOTAL_TIME_*`) and `LOST` reads need per-event/per-group
+/// accounting that is not, so they stay rejected. Note `PERF_FORMAT_GROUP` here
+/// is gated further to the per-task path by [`super::hw::perf_event_open_hw`]
+/// (system-wide group-leader sampling has no member plumbing in v1). Checked at
+/// open.
 pub fn sample_read_supported(sample_type: u64, read_format: u64) -> bool {
-    sample_type & PERF_SAMPLE_READ == 0 || read_format & !READ_FORMAT_ID == 0
+    sample_type & PERF_SAMPLE_READ == 0 || read_format & !(READ_FORMAT_ID | READ_FORMAT_GROUP) == 0
+}
+
+/// Maximum number of counting members a group-leader sampling event carries in
+/// its `PERF_SAMPLE_READ | PERF_FORMAT_GROUP` block. Bounds the fixed member
+/// table in [`SampleSlot`] (kept `Copy`/alloc-free for the per-CPU registry) and
+/// the on-stack record buffer. A per-task PMU has ≤ `PMCR.N` (~6) programmable
+/// counters, so a leader plus this many members covers any realistically
+/// co-schedulable sampled group; extra members are dropped from the read (warned
+/// at link time — see [`super::task::link_group_member`]).
+pub const MAX_GROUP_MEMBERS: usize = 7;
+
+/// [`GroupMember::slot`] sentinel matching [`super::task`]'s `NO_SLOT`: the member
+/// holds no programmable counter this slice, so only its `accumulated` (not a
+/// live banked-counter read) contributes to the group value.
+const NO_SLOT: usize = usize::MAX;
+
+/// One counting group member, baked into the leader's [`SampleSlot`] at slice-arm
+/// time so the overflow handler can emit its live value in a `PERF_FORMAT_GROUP`
+/// read WITHOUT walking the process-context group list from hard-IRQ.
+///
+/// The pointers target atomics on the member's [`super::task::PerTaskCounter`],
+/// which stays alive (pinned by its `Thread`'s counter list) for as long as this
+/// slot is registered — the same raw-pointer soundness discipline as
+/// [`SampleSlot::notify`] / [`SampleSlot::lost`]. All four are read with plain
+/// atomic loads (IRQ-safe); the live banked-counter read is guarded by the
+/// member's `running` / `last_cpu` / `slot`, so a rotated-off or cross-core
+/// member contributes only its `accumulated` (Linux "last value" semantics that
+/// userspace scales via `time_running`).
+#[derive(Clone, Copy)]
+pub struct GroupMember {
+    /// Unique event id for the member's `PERF_FORMAT_ID` entry (the wrapper id,
+    /// mirrored onto the ptc, so it matches `PERF_EVENT_IOC_ID`).
+    pub id: u64,
+    /// `*const AtomicU64` — the member's accumulated completed-slice count.
+    pub accumulated: *const (),
+    /// `*const AtomicUsize` — the member's current programmable counter index, or
+    /// [`NO_SLOT`] when it holds none this slice.
+    pub slot: *const (),
+    /// `*const AtomicUsize` — the logical CPU the member was last scheduled onto;
+    /// the banked `PMEVCNTRn` is valid to read only when this is the sampling core.
+    pub last_cpu: *const (),
+    /// `*const AtomicBool` — whether the member holds a HW counter right now.
+    pub running: *const (),
+}
+
+impl GroupMember {
+    /// An empty descriptor for the fixed table's unused entries (null pointers,
+    /// never dereferenced — the handler only reads indices `< n_members`). Also
+    /// the initializer the per-task arm path fills the table from.
+    pub const EMPTY: GroupMember = GroupMember {
+        id: 0,
+        accumulated: core::ptr::null(),
+        slot: core::ptr::null(),
+        last_cpu: core::ptr::null(),
+        running: core::ptr::null(),
+    };
 }
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
@@ -269,15 +345,33 @@ pub struct SampleSlot {
     /// events counted). `0` for an event without `PERF_SAMPLE_READ`. Mutated in
     /// place by the handler.
     pub read_value: u64,
+    /// Raw pointer to a persistent `AtomicU64` the handler mirrors
+    /// [`read_value`](Self::read_value) into after each overflow, so a **per-task**
+    /// event's running count survives slice re-arming (the slot is rebuilt each
+    /// slice — [`super::task::arm_slice`] seeds `read_value` back from this sink).
+    /// Null for a **system-wide** slot, whose registration persists for the whole
+    /// run so its `read_value` already accumulates in place. Kept alive exactly
+    /// like [`lost`](Self::lost) (the owning ptc outlives the slot).
+    pub read_value_sink: *const (),
+    /// Group-leader sampling (`read_format & PERF_FORMAT_GROUP`): the counting
+    /// members whose live values this leader's `PERF_SAMPLE_READ` block emits,
+    /// baked in at slice-arm time ([`super::task::arm_slice`]). Only indices `<
+    /// n_members` are populated; the rest are [`GroupMember::EMPTY`].
+    pub members: [GroupMember; MAX_GROUP_MEMBERS],
+    /// Number of populated entries in [`members`](Self::members) (`<=
+    /// MAX_GROUP_MEMBERS`). `0` for a single-event read or a non-group leader.
+    pub n_members: u8,
 }
 
-// SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
+// SAFETY: `SampleSlot` is a plain bag of integers plus raw pointers (`notify`,
+// `lost`, `lost_reported`, and the per-member `GroupMember` atomics). Every
 // pointer is only ever dereferenced from the overflow handler on the same CPU
 // that registered the slot, and the registry is mutated only under a
 // local-IRQ-off critical section, so there is no cross-thread aliasing of the
-// pointee through this type. Marking it `Send` lets it live inside the per-CPU
-// static; it is never actually moved across CPUs (single-core in M2, and the
-// registry is per-CPU regardless).
+// pointees through this type. Marking it `Send` lets it live inside the per-CPU
+// static; it is never actually moved across CPUs (the registry is per-CPU
+// regardless, and the member atomics belong to the same task pinned on this
+// core for the slice).
 unsafe impl Send for SampleSlot {}
 
 /// Per-CPU map from programmable counter index to its registered sampling slot.
@@ -475,19 +569,37 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         } else {
             0
         };
-        // PERF_SAMPLE_READ block: the event's running count (+ id if requested).
-        // Each overflow means ~`period` more events were counted, so advance the
-        // running total by the period (validated at open to be a single event
-        // with read_format in {0, PERF_FORMAT_ID}).
-        let mut read_blk = [0u64; 2];
+        // PERF_SAMPLE_READ block. Each overflow means ~`period` more events were
+        // counted, so advance the leader's running total by the period. For a
+        // single event the block is `value` (+ `id` if `PERF_FORMAT_ID`); for a
+        // group-leader read (`PERF_FORMAT_GROUP`, per-task only) it is `nr`, then
+        // the leader's value (+ id), then each counting member's live value (+ id)
+        // — assembled alloc-free from the baked member table (`build_group_read`).
+        let mut read_blk = [0u64; MAX_GROUP_READ_WORDS];
         let nread = if sample_type & PERF_SAMPLE_READ != 0 {
             slot.read_value = slot.read_value.wrapping_add(cur_period as u64);
-            read_blk[0] = slot.read_value;
-            if read_format & READ_FORMAT_ID != 0 {
-                read_blk[1] = id;
-                2
+            // Persist the running count so a per-task event's leader value stays
+            // monotonic across slice re-arming (a system-wide slot persists in
+            // place and leaves this sink null).
+            if !slot.read_value_sink.is_null() {
+                // SAFETY: the sink targets the owning ptc's `AtomicU64`, kept alive
+                // while the slot is registered (teardown unregisters first), exactly
+                // like the `lost` pointer.
+                unsafe {
+                    (*(slot.read_value_sink as *const AtomicU64))
+                        .store(slot.read_value, Ordering::Relaxed)
+                };
+            }
+            if read_format & READ_FORMAT_GROUP != 0 {
+                build_group_read(slot, cpu as usize, &mut read_blk)
             } else {
-                1
+                read_blk[0] = slot.read_value;
+                if read_format & READ_FORMAT_ID != 0 {
+                    read_blk[1] = id;
+                    2
+                } else {
+                    1
+                }
             }
         } else {
             0
@@ -679,6 +791,62 @@ fn build_lost_record(buf: &mut [u8; PERF_RECORD_LOST_LEN], id: u64, lost: u64) {
     buf[6..8].copy_from_slice(&(PERF_RECORD_LOST_LEN as u16).to_ne_bytes());
     buf[8..16].copy_from_slice(&id.to_ne_bytes());
     buf[16..24].copy_from_slice(&lost.to_ne_bytes());
+}
+
+/// Assemble a group-leader `PERF_SAMPLE_READ` block into `out`, returning the
+/// number of `u64` words written. The layout mirrors Linux's `PERF_FORMAT_GROUP`
+/// read (v1 supports `GROUP`, optionally `| PERF_FORMAT_ID`; `TOTAL_TIME_*` /
+/// `LOST` are rejected at open): `nr`, then the leader's `value` (+ `id`), then
+/// per counting member its `value` (+ `id`).
+///
+/// The leader's value is its synthetic period-advanced running count — a sampling
+/// leader has no count-from-zero (its counter is preloaded to wrap after
+/// `period`). Each member's value is `accumulated + live-slice`: the live slice
+/// (one banked `PMEVCNTRn` read) is added only when the member holds a counter on
+/// THIS core (`running && last_cpu == this_cpu && slot != NO_SLOT`), exactly the
+/// guard [`super::task::read_values`] uses; a degraded / rotated-off / cross-core
+/// member contributes just its `accumulated` (Linux "last value" semantics).
+///
+/// `out` is the handler's fixed `[u64; MAX_GROUP_READ_WORDS]`, sized so the worst
+/// case (`nr` + (leader + [`MAX_GROUP_MEMBERS`]) * (value + id)) always fits.
+fn build_group_read(slot: &SampleSlot, this_cpu: usize, out: &mut [u64]) -> usize {
+    let want_id = slot.read_format & READ_FORMAT_ID != 0;
+    let n = slot.n_members as usize;
+    let mut w = 0usize;
+    out[w] = 1 + n as u64; // nr: leader + members
+    w += 1;
+    // Leader entry: the synthetic running count (advanced by the caller).
+    out[w] = slot.read_value;
+    w += 1;
+    if want_id {
+        out[w] = slot.id;
+        w += 1;
+    }
+    for m in &slot.members[..n] {
+        // SAFETY: for indices `< n_members` every pointer targets a live atomic on
+        // the member's `PerTaskCounter`, pinned by its `Thread`'s counter list for
+        // as long as this slot is registered (unregistered before the ptc drops).
+        let value = unsafe {
+            let acc = (*(m.accumulated as *const AtomicU64)).load(Ordering::Relaxed);
+            let running = (*(m.running as *const AtomicBool)).load(Ordering::Relaxed);
+            let last_cpu = (*(m.last_cpu as *const AtomicUsize)).load(Ordering::Relaxed);
+            let cslot = (*(m.slot as *const AtomicUsize)).load(Ordering::Relaxed);
+            if running && last_cpu == this_cpu && cslot != NO_SLOT {
+                // The banked `PMEVCNTRn` read is per-PE, valid only on the sampling
+                // core — guaranteed by the guard above.
+                acc.wrapping_add(ax_cpu::pmu::counter::read(cslot))
+            } else {
+                acc
+            }
+        };
+        out[w] = value;
+        w += 1;
+        if want_id {
+            out[w] = m.id;
+            w += 1;
+        }
+    }
+    w
 }
 
 fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData<'_>) -> usize {

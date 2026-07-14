@@ -61,7 +61,11 @@
 //! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
 //! follows the single attached task only.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -203,6 +207,13 @@ pub struct PerTaskCounter {
     /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
     /// wrapper, before any scheduler hook runs); `0` until then.
     sample_id: AtomicU64,
+    /// Persistent running count for `PERF_SAMPLE_READ`, advanced by the sampling
+    /// `period` on each overflow. The per-slice [`SampleSlot`] is rebuilt every
+    /// [`arm_slice`] (its `read_value` starts from here), and the overflow handler
+    /// mirrors the advanced value back here through the slot's `read_value_sink`,
+    /// so a per-task event's reported count stays monotonic across slices — the
+    /// leader row of a group-leader read included. `0` until the first sample.
+    sample_read_value: AtomicU64,
     /// `attr.comm`: this event wants `PERF_RECORD_COMM` side-band records.
     want_comm: bool,
     /// `attr.mmap2`: this event wants `PERF_RECORD_MMAP2` side-band records.
@@ -248,6 +259,18 @@ pub struct PerTaskCounter {
     /// `data_head`; the overflow handler guards the null notify). Set by
     /// [`set_redirect_ring`](Self::set_redirect_ring) instead of [`set_ring`](Self::set_ring).
     redirect_anchor: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
+
+    /// Group members this per-task counter LEADS, for group-leader sampling
+    /// (`PERF_SAMPLE_READ | PERF_FORMAT_GROUP`). Only a **sampling** leader
+    /// populates this: each counting member opened with `group_fd` = this event's
+    /// fd is recorded here (weakly, to avoid an `Arc` cycle and so a closed member
+    /// is skipped). At each slice-arm the leader snapshots the live members' atomic
+    /// pointers into its [`SampleSlot`] so the overflow handler can emit the whole
+    /// group without walking this list from hard-IRQ. Written once per member at
+    /// open (process context via [`link_group_member`]); read in [`arm_slice`]
+    /// (IRQ-off). Empty for a counting leader (whose group read is served in
+    /// process context by the file-layer group read) and for a non-leader.
+    group_members: SpinNoIrq<Vec<Weak<PerTaskCounter>>>,
 }
 
 /// Strong references that keep a per-task sampling event's ring + notify alive,
@@ -359,6 +382,7 @@ impl PerTaskCounter {
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
+            sample_read_value: AtomicU64::new(0),
             want_comm: cfg.want_comm,
             want_mmap2: cfg.want_mmap2,
             want_task: cfg.want_task,
@@ -370,6 +394,7 @@ impl PerTaskCounter {
             notify_ptr: AtomicUsize::new(0),
             anchors: SpinNoIrq::new(None),
             redirect_anchor: SpinNoIrq::new(None),
+            group_members: SpinNoIrq::new(Vec::new()),
         }
     }
 
@@ -400,14 +425,52 @@ impl PerTaskCounter {
     }
 
     /// Zero the accumulated value (`ioctl(RESET)`), leaving timing intact.
-    /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only.
+    /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only. Also
+    /// zeroes the `PERF_SAMPLE_READ` running count so a reset sampling event
+    /// restarts its reported value from zero.
     pub fn reset(&self) {
         self.accumulated.store(0, Ordering::Release);
+        self.sample_read_value.store(0, Ordering::Release);
     }
 
     /// Whether this is a sampling event (`sample_period > 0`).
     pub fn is_sampling(&self) -> bool {
         self.is_sampling
+    }
+
+    /// Snapshot this (sampling leader) counter's live group members into the fixed
+    /// [`SampleSlot`] member table, returning the populated count (`<=
+    /// MAX_GROUP_MEMBERS`). Upgrades each member `Weak` — a lock-free atomic op,
+    /// safe from the IRQ-off [`arm_slice`] — to capture stable raw pointers to the
+    /// member's `accumulated` / `slot` / `last_cpu` / `running` atomics plus its
+    /// `sample_id`. Those pointers outlive the temporary `Arc` dropped here: the
+    /// member ptc is pinned by its `Thread`'s counter list until task exit, which
+    /// outlives this slot's registration (mirrors the notify/lost pointer
+    /// discipline). Only entries `[0, n)` are written; the caller pre-fills the
+    /// table with [`GroupMember::EMPTY`](sampling::GroupMember::EMPTY).
+    fn snapshot_group_members(
+        &self,
+        out: &mut [sampling::GroupMember; sampling::MAX_GROUP_MEMBERS],
+    ) -> u8 {
+        let members = self.group_members.lock();
+        let mut n = 0usize;
+        for weak in members.iter() {
+            if n >= sampling::MAX_GROUP_MEMBERS {
+                break;
+            }
+            let Some(m) = weak.upgrade() else {
+                continue;
+            };
+            out[n] = sampling::GroupMember {
+                id: m.sample_id.load(Ordering::Relaxed),
+                accumulated: &m.accumulated as *const AtomicU64 as *const (),
+                slot: &m.slot as *const AtomicUsize as *const (),
+                last_cpu: &m.last_cpu as *const AtomicUsize as *const (),
+                running: &m.running as *const AtomicBool as *const (),
+            };
+            n += 1;
+        }
+        n as u8
     }
 
     /// Record the ring buffer + notify/poll machinery for a sampling event.
@@ -576,6 +639,34 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
     PERF_TASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Record `member` as a group member led by the **sampling** leader `leader`, for
+/// group-leader sampling (`PERF_SAMPLE_READ | PERF_FORMAT_GROUP`).
+///
+/// Called at open (process context) from the file-layer group wiring in
+/// [`super::perf_event_open`] when both the leader and the member are per-task
+/// hardware counters. A *counting* leader needs no link — its group read is
+/// served entirely in process context (the file-layer group read) — so this is a
+/// no-op unless `leader` samples. The link is stored weakly; the member ptc stays
+/// alive through its own `Thread`'s counter list. Members past
+/// [`sampling::MAX_GROUP_MEMBERS`] exceed the co-schedulable PMU width and are
+/// dropped from the sampled read (warned), keeping the on-IRQ member table
+/// bounded.
+pub fn link_group_member(leader: &Arc<PerTaskCounter>, member: &Arc<PerTaskCounter>) {
+    if !leader.is_sampling {
+        return;
+    }
+    let mut members = leader.group_members.lock();
+    if members.len() >= sampling::MAX_GROUP_MEMBERS {
+        warn!(
+            "perf group-leader sampling: dropping member beyond {} (PMU width); the sampled group \
+             read will omit it",
+            sampling::MAX_GROUP_MEMBERS
+        );
+        return;
+    }
+    members.push(Arc::downgrade(member));
+}
+
 /// Scheduler hook: the given thread is about to start running on this CPU.
 ///
 /// Programs every enabled, not-yet-running, live per-task counter onto HW and
@@ -608,6 +699,16 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64, owner_pid: u32, owner_tid
         sampling::ensure_pmu_irq_registered();
         ax_cpu::pmu::counter::configure(n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
         ax_cpu::pmu::counter::preload(n, ptc.sample_period);
+        // Group-leader sampling: snapshot this leader's live counting members'
+        // atomic pointers so the overflow handler can emit the whole group's
+        // values. A non-group event (`read_format` without `PERF_FORMAT_GROUP`)
+        // skips the lock and leaves `n_members == 0` (single-event read).
+        let mut members = [sampling::GroupMember::EMPTY; sampling::MAX_GROUP_MEMBERS];
+        let n_members = if ptc.read_format & sampling::READ_FORMAT_GROUP != 0 {
+            ptc.snapshot_group_members(&mut members)
+        } else {
+            0
+        };
         sampling::register(
             n,
             SampleSlot {
@@ -626,7 +727,13 @@ fn arm_slice(ptc: &PerTaskCounter, n: usize, now: u64, owner_pid: u32, owner_tid
                 // if the overflow IRQ lands after a switch away from it.
                 owner_ids: Some((owner_pid, owner_tid)),
                 read_format: ptc.read_format,
-                read_value: 0,
+                // Resume the running count from the persisted total (per-task slots
+                // are rebuilt each slice) and give the handler the sink to mirror
+                // it back into, so the reported value stays monotonic across slices.
+                read_value: ptc.sample_read_value.load(Ordering::Relaxed),
+                read_value_sink: &ptc.sample_read_value as *const AtomicU64 as *const (),
+                members,
+                n_members,
             },
         );
         ax_cpu::pmu::overflow::enable_irq(n);

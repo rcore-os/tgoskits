@@ -635,6 +635,14 @@ impl HwPerfEvent {
                     owner_ids: None,
                     read_format: self.read_format,
                     read_value: 0,
+                    // System-wide: the slot is registered once for the whole run,
+                    // so `read_value` accumulates in place — no cross-slice sink.
+                    read_value_sink: core::ptr::null(),
+                    // Group-leader sampling is per-task only (v1): the system-wide
+                    // path carries no members and rejects `PERF_FORMAT_GROUP` at
+                    // open, so its `PERF_SAMPLE_READ` block is single-event.
+                    members: [sampling::GroupMember::EMPTY; sampling::MAX_GROUP_MEMBERS],
+                    n_members: 0,
                 },
             );
             ax_cpu::pmu::overflow::enable_irq(n);
@@ -1124,6 +1132,10 @@ impl PerfEventOps for HwPerfEvent {
         self
     }
 
+    fn per_task_counter(&self) -> Option<Arc<super::task::PerTaskCounter>> {
+        self.per_task.clone()
+    }
+
     fn set_sample_id(&mut self, id: u64) {
         self.sample_id = id;
         // Per-task: mirror onto the shared counter the scheduler hook reads.
@@ -1393,8 +1405,19 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
         if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format) {
             warn!(
                 "perf_event_open: PERF_SAMPLE_READ read_format {:#x} unsupported (only 0 / \
-                 PERF_FORMAT_ID; no group/time-format sampling)",
+                 PERF_FORMAT_ID / PERF_FORMAT_GROUP; no time-format sampling)",
                 attr.read_format
+            );
+            return Err(AxError::Unsupported);
+        }
+        // Group-leader sampling is per-task only in v1: the system-wide path has no
+        // member plumbing (its `SampleSlot` carries no member table), so reading a
+        // group from the overflow handler here is unsupported — reject it rather
+        // than silently emit a malformed single-entry group.
+        if attr.read_format & super::sampling::READ_FORMAT_GROUP != 0 {
+            warn!(
+                "perf_event_open: system-wide group-leader sampling (PERF_FORMAT_GROUP) \
+                 unsupported; open the leader per-task (pid > 0)"
             );
             return Err(AxError::Unsupported);
         }
@@ -1569,7 +1592,7 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format) {
             warn!(
                 "perf_event_open: per-task PERF_SAMPLE_READ read_format {:#x} unsupported (only 0 \
-                 / PERF_FORMAT_ID; no group/time-format sampling)",
+                 / PERF_FORMAT_ID / PERF_FORMAT_GROUP; no time-format sampling)",
                 attr.read_format
             );
             return Err(AxError::Unsupported);
