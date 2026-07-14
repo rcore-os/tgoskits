@@ -17,49 +17,87 @@ fn main() {}
 mod publisher {
     use core::{cell::UnsafeCell, result::Result::Err};
 
-    use arceos_ivc_demo::{CHANNEL_KEY, CHANNEL_SIZE, IvcDemoPage, PUBLISHER_VM_ID};
     use ax_std::{
         os::arceos::modules::ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys},
         println,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
+    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcRegion};
 
-    const PUBLISH_COUNT: u64 = 16;
+    const PUBLISH_COUNT: u64 = 5;
+    mod demo_config {
+        pub const CHANNEL_KEY: usize = 0x4956_4301;
+        pub const CHANNEL_SIZE: usize = 4096;
+        pub const PUBLISHER_VM_ID: usize = 1;
+    }
 
     pub fn run() {
         let shm_base_gpa = HyperCallOutputSlot::new(0);
-        let shm_size = HyperCallOutputSlot::new(CHANNEL_SIZE);
+        let shm_size = HyperCallOutputSlot::new(demo_config::CHANNEL_SIZE);
         let shm_base_gpa_ptr = shm_base_gpa.guest_phys_addr();
         let shm_size_ptr = shm_size.guest_phys_addr();
 
-        if let Err(err) = ivc::publish_channel(CHANNEL_KEY, shm_base_gpa_ptr, shm_size_ptr) {
+        if let Err(err) =
+            ivc::publish_channel(demo_config::CHANNEL_KEY, shm_base_gpa_ptr, shm_size_ptr)
+        {
             println!("ivc publish failed: {err}");
             return;
         }
         let shm_base_gpa = shm_base_gpa.read();
         let shm_size = shm_size.read();
-        if shm_size < core::mem::size_of::<IvcDemoPage>() {
+        if shm_size < core::mem::size_of::<IvcRegion>() {
             println!(
                 "ivc publish failed: shared page too small size={} need={}",
                 shm_size,
-                core::mem::size_of::<IvcDemoPage>()
+                core::mem::size_of::<IvcRegion>()
             );
             return;
         }
 
         println!("ivc publish ok base={shm_base_gpa:#x} size={shm_size}");
-        let Some(page) = shared_page_mut(shm_base_gpa) else {
+        let Some(region) = shared_page_mut(shm_base_gpa) else {
             println!("ivc publish failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
-        page.initialize(PUBLISHER_VM_ID, CHANNEL_KEY);
-        publish_counter_messages(page);
+        region.initialize(demo_config::PUBLISHER_VM_ID, demo_config::CHANNEL_KEY);
+        run_request_ack_demo(region);
     }
 
-    fn publish_counter_messages(page: &mut IvcDemoPage) {
+    fn run_request_ack_demo(region: &'static IvcRegion) {
+        let mut ack_payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         for sequence in 1..=PUBLISH_COUNT {
-            page.publish_message(sequence, "hello from arceos publisher");
-            wait_for_subscriber_poll();
+            send_request_when_ready(region, sequence);
+            wait_for_ack(region, sequence, &mut ack_payload);
+        }
+    }
+
+    fn send_request_when_ready(region: &'static IvcRegion, sequence: u64) {
+        loop {
+            match region.send_request(sequence, b"hello from arceos publisher") {
+                Ok(()) => {
+                    println!("ivc send seq={sequence}");
+                    return;
+                }
+                Err(_) => wait_for_subscriber_poll(),
+            }
+        }
+    }
+
+    fn wait_for_ack(region: &'static IvcRegion, sequence: u64, payload: &mut [u8]) {
+        loop {
+            match region.try_recv_ack(payload) {
+                Ok(Some(message)) if message.sequence() == sequence => {
+                    let text =
+                        core::str::from_utf8(&payload[..message.len()]).unwrap_or("<non-utf8>");
+                    println!("ivc ack seq={} msg={text}", message.sequence());
+                    return;
+                }
+                Ok(Some(_)) | Ok(None) => wait_for_subscriber_poll(),
+                Err(err) => {
+                    println!("ivc publish failed: recv ack error {err:?}");
+                    return;
+                }
+            }
         }
     }
 
@@ -94,12 +132,16 @@ mod publisher {
         }
     }
 
-    fn shared_page_mut(shm_base_gpa: usize) -> Option<&'static mut IvcDemoPage> {
-        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), CHANNEL_SIZE).ok()?;
+    fn shared_page_mut(shm_base_gpa: usize) -> Option<&'static mut IvcRegion> {
+        let vaddr = ax_mm::iomap(
+            PhysAddr::from_usize(shm_base_gpa),
+            demo_config::CHANNEL_SIZE,
+        )
+        .ok()?;
         unsafe {
             // Axvisor maps the returned GPA to one exclusive publisher view of
-            // the shared page. The publisher is the only writer in phase 1.
-            Some(&mut *(vaddr.as_mut_ptr() as *mut IvcDemoPage))
+            // the shared region before subscribers can use the phase-2 rings.
+            Some(&mut *(vaddr.as_mut_ptr() as *mut IvcRegion))
         }
     }
 }

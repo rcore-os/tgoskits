@@ -345,27 +345,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-ivc-demo"
-version = "0.1.0"
-
-[[package]]
 name = "arceos-ivc-publisher"
 version = "0.1.0"
 dependencies = [
- "arceos-ivc-demo",
  "ax-mm",
  "ax-std",
  "axhvc",
+ "axivc",
 ]
 
 [[package]]
 name = "arceos-ivc-subscriber"
 version = "0.1.0"
 dependencies = [
- "arceos-ivc-demo",
  "ax-mm",
  "ax-std",
  "axhvc",
+ "axivc",
 ]
 
 [[package]]
@@ -1333,6 +1329,10 @@ dependencies = [
  "quote",
  "syn 2.0.118",
 ]
+
+[[package]]
+name = "axivc"
+version = "0.1.0"
 
 [[package]]
 name = "axklib"

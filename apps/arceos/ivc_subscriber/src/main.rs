@@ -21,17 +21,21 @@ mod subscriber {
         result::Result::{Err, Ok},
     };
 
-    use arceos_ivc_demo::{
-        CHANNEL_KEY, CHANNEL_SIZE, IvcDemoPage, MESSAGE_CAPACITY, PUBLISHER_VM_ID, SUBSCRIBER_VM_ID,
-    };
     use ax_std::{
         os::arceos::modules::ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys},
         println,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
+    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcRegion};
 
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
     const PASS_SEQUENCE: u64 = 5;
+    mod demo_config {
+        pub const CHANNEL_KEY: usize = 0x4956_4301;
+        pub const CHANNEL_SIZE: usize = 4096;
+        pub const PUBLISHER_VM_ID: usize = 1;
+        pub const SUBSCRIBER_VM_ID: usize = 2;
+    }
 
     pub fn run() {
         let Some((shm_base_gpa, shm_size)) = subscribe_with_retry() else {
@@ -41,19 +45,32 @@ mod subscriber {
 
         println!(
             "ivc subscribe ok subscriber={} base={shm_base_gpa:#x} size={shm_size}",
-            SUBSCRIBER_VM_ID
+            demo_config::SUBSCRIBER_VM_ID
         );
-        let Some(page) = shared_page(shm_base_gpa) else {
+        if shm_size < core::mem::size_of::<IvcRegion>() {
+            println!(
+                "ivc subscribe failed: shared page too small size={} need={}",
+                shm_size,
+                core::mem::size_of::<IvcRegion>()
+            );
+            return;
+        }
+
+        let Some(region) = shared_region(shm_base_gpa) else {
             println!("ivc subscribe failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
-        if !page.header_matches(PUBLISHER_VM_ID, CHANNEL_KEY) {
+        if !region.channel_header_matches(demo_config::PUBLISHER_VM_ID, demo_config::CHANNEL_KEY) {
             println!(
                 "ivc subscribe failed: unexpected header publisher/key for base={shm_base_gpa:#x}"
             );
             return;
         }
-        poll_messages(page);
+        if !region.protocol_header_matches() {
+            println!("ivc subscribe failed: unsupported phase-2 protocol header");
+            return;
+        }
+        run_request_ack_demo(region);
     }
 
     fn subscribe_with_retry() -> Option<(usize, usize)> {
@@ -64,8 +81,8 @@ mod subscriber {
             let shm_size_ptr = shm_size.guest_phys_addr();
 
             match ivc::subscribe_channel(
-                PUBLISHER_VM_ID,
-                CHANNEL_KEY,
+                demo_config::PUBLISHER_VM_ID,
+                demo_config::CHANNEL_KEY,
                 shm_base_gpa_ptr,
                 shm_size_ptr,
             ) {
@@ -81,22 +98,35 @@ mod subscriber {
         None
     }
 
-    fn poll_messages(page: &'static IvcDemoPage) {
-        let mut last_sequence = 0;
-        let mut buffer = [0u8; MESSAGE_CAPACITY];
+    fn run_request_ack_demo(region: &'static IvcRegion) {
+        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         loop {
-            let snapshot = page.read_message(&mut buffer);
-            if snapshot.sequence() > last_sequence {
-                last_sequence = snapshot.sequence();
-                let message =
-                    core::str::from_utf8(&buffer[..snapshot.len()]).unwrap_or("<non-utf8>");
-                println!("ivc recv seq={} msg={message}", snapshot.sequence());
-                if snapshot.sequence() >= PASS_SEQUENCE {
-                    println!("ivc demo pass");
+            match region.try_recv_request(&mut payload) {
+                Ok(Some(message)) => {
+                    let text =
+                        core::str::from_utf8(&payload[..message.len()]).unwrap_or("<non-utf8>");
+                    println!("ivc recv seq={} msg={text}", message.sequence());
+                    send_ack_when_ready(region, message.sequence());
+                    if message.sequence() >= PASS_SEQUENCE {
+                        println!("ivc demo pass");
+                        return;
+                    }
+                }
+                Ok(None) => wait_for_publisher(),
+                Err(err) => {
+                    println!("ivc subscribe failed: recv request error {err:?}");
                     return;
                 }
             }
-            wait_for_publisher();
+        }
+    }
+
+    fn send_ack_when_ready(region: &'static IvcRegion, sequence: u64) {
+        loop {
+            match region.send_ack(sequence, b"ack from arceos subscriber") {
+                Ok(()) => return,
+                Err(_) => wait_for_publisher(),
+            }
         }
     }
 
@@ -131,12 +161,16 @@ mod subscriber {
         }
     }
 
-    fn shared_page(shm_base_gpa: usize) -> Option<&'static IvcDemoPage> {
-        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), CHANNEL_SIZE).ok()?;
+    fn shared_region(shm_base_gpa: usize) -> Option<&'static IvcRegion> {
+        let vaddr = ax_mm::iomap(
+            PhysAddr::from_usize(shm_base_gpa),
+            demo_config::CHANNEL_SIZE,
+        )
+        .ok()?;
         unsafe {
-            // Axvisor maps the returned GPA to the publisher's shared frame.
-            // The subscriber only reads the page in phase 1.
-            Some(&*(vaddr.as_ptr() as *const IvcDemoPage))
+            // Axvisor maps the returned GPA to the publisher's shared region.
+            // Phase 2 uses atomic ring ownership for subscriber writes.
+            Some(&*(vaddr.as_ptr() as *const IvcRegion))
         }
     }
 }
