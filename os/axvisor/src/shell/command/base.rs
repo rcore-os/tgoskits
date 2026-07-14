@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "fs")]
+use ax_std::fs::{self, File, FileType, OpenOptions};
+#[cfg(feature = "fs")]
+use ax_std::fs::{FileTypeExt, PermissionsExt};
+#[cfg(feature = "fs")]
+use ax_std::io::{self, Read, Write};
 use std::collections::BTreeMap;
-#[cfg(feature = "fs")]
-use std::fs::{self, File, FileType};
-#[cfg(all(feature = "fs", target_os = "none"))]
-use std::fs::{FileTypeExt, PermissionsExt};
-#[cfg(feature = "fs")]
-use std::io::{self, Read, Write};
-#[cfg(all(feature = "fs", unix))]
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::println;
 use std::string::{String, ToString};
 
@@ -49,54 +47,97 @@ fn split_whitespace(s: &str) -> (&str, &str) {
 }
 
 #[cfg(feature = "fs")]
+fn path_is_dir(path: &str) -> io::Result<bool> {
+    match fs::read_dir(path) {
+        Ok(_) => Ok(true),
+        Err(directory_error) => match fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(metadata_error) if metadata_error == io::Error::IsADirectory => Ok(true),
+            Err(metadata_error) if metadata_error == io::Error::NotFound => Err(metadata_error),
+            Err(_) => Err(directory_error),
+        },
+    }
+}
+
+#[cfg(feature = "fs")]
+fn show_ls_entry(
+    path: &str,
+    entry: &str,
+    known_type: Option<FileType>,
+    show_long: bool,
+) -> io::Result<()> {
+    if show_long {
+        match fs::metadata(path) {
+            Ok(metadata) => {
+                let rwx = file_perm_to_rwx(metadata.permissions().mode());
+                let rwx = unsafe { core::str::from_utf8_unchecked(&rwx) };
+                println!(
+                    "{}{} {:>8} {}",
+                    file_type_to_char(metadata.file_type()),
+                    rwx,
+                    metadata.len(),
+                    entry
+                );
+            }
+            Err(_) if known_type.is_some_and(|file_type| file_type.is_dir()) => {
+                println!("d--------- {:>8} {}", 0, entry);
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        println!("{}", entry);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fs")]
+fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io::Result<()> {
+    use std::vec::Vec;
+
+    let entries = match fs::read_dir(name) {
+        Ok(entries) => entries,
+        Err(directory_error) => {
+            return match fs::metadata(name) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    show_ls_entry(name, name, Some(metadata.file_type()), show_long)
+                }
+                Ok(_) => Err(directory_error),
+                Err(error) => Err(error),
+            };
+        }
+    };
+
+    if print_name {
+        println!("{}:", name);
+    }
+
+    let mut entries = entries
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.file_name(), entry.file_type()))
+        })
+        .filter(|entry: &io::Result<_>| {
+            entry
+                .as_ref()
+                .map_or(true, |(name, _)| show_all || !name.starts_with('.'))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    for (entry, file_type) in entries {
+        let path = format!("{name}/{entry}");
+        if let Err(e) = show_ls_entry(&path, &entry, Some(file_type), show_long) {
+            print_err!("ls", path, e);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fs")]
 fn do_ls(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let show_long = cmd.flags.contains("long");
     let show_all = cmd.flags.contains("all");
-
-    fn show_entry_info(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
-        if show_long {
-            let metadata = fs::metadata(path)?;
-            let size = metadata.len();
-            let file_type = metadata.file_type();
-            let file_type_char = file_type_to_char(file_type);
-            let rwx = file_perm_to_rwx(metadata.permissions().mode());
-            let rwx = unsafe { core::str::from_utf8_unchecked(&rwx) };
-            println!("{}{} {:>8} {}", file_type_char, rwx, size, entry);
-        } else {
-            println!("{}", entry);
-        }
-        Ok(())
-    }
-
-    fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io::Result<()> {
-        use std::vec::Vec;
-
-        let is_dir = fs::metadata(name)?.is_dir();
-        if !is_dir {
-            return show_entry_info(name, name, show_long);
-        }
-
-        if print_name {
-            println!("{}:", name);
-        }
-
-        let mut entries = fs::read_dir(name)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name())
-            .filter(|name| show_all || !name.to_string_lossy().starts_with('.'))
-            .collect::<Vec<_>>();
-        entries.sort();
-
-        for entry in entries {
-            let entry = entry.to_string_lossy();
-            let path = format!("{name}/{entry}");
-            if let Err(e) = show_entry_info(&path, &entry, show_long) {
-                print_err!("ls", path, e);
-            }
-        }
-        Ok(())
-    }
 
     let targets = if args.is_empty() {
         vec![".".to_string()]
@@ -222,31 +263,24 @@ fn do_rm(cmd: &ParsedCommand) {
     }
 
     fn rm_one(path: &str, rm_dir: bool, recursive: bool, force: bool) -> io::Result<()> {
-        let metadata = fs::metadata(path);
-
-        if force && metadata.is_err() {
-            return Ok(()); // Ignore non-existent files when in force mode
-        }
-
-        let metadata = metadata?;
-
-        if metadata.is_dir() {
-            if recursive {
-                remove_dir_recursive(path, force)
-            } else if rm_dir {
-                fs::remove_dir(path)
-            } else {
-                Err(io::Error::from(io::ErrorKind::Unsupported))
+        match path_is_dir(path) {
+            Ok(true) => {
+                if recursive {
+                    remove_dir_recursive(path, force)
+                } else if rm_dir {
+                    fs::remove_dir(path)
+                } else {
+                    Err(io::Error::Unsupported)
+                }
             }
-        } else {
-            fs::remove_file(path)
+            Ok(false) => fs::remove_file(path),
+            Err(error) if force && error == io::Error::NotFound => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
     for path in args {
-        if let Err(e) = rm_one(path, rm_dir, recursive, force)
-            && !force
-        {
+        if let Err(e) = rm_one(path, rm_dir, recursive, force) {
             print_err!("rm", format_args!("cannot remove '{path}'"), e);
         }
     }
@@ -262,8 +296,8 @@ fn remove_dir_recursive(path: &str, _force: bool) -> io::Result<()> {
     for entry_result in entries {
         let entry = entry_result?;
         let entry_name = entry.file_name();
-        let entry_path = format!("{}/{}", path, entry_name.to_string_lossy());
-        let metadata = entry.file_type()?;
+        let entry_path = format!("{path}/{entry_name}");
+        let metadata = entry.file_type();
 
         if metadata.is_dir() {
             // Recursively delete subdirectory
@@ -396,9 +430,7 @@ fn do_mv(cmd: &ParsedCommand) {
         let dest = &args[1];
 
         // Check if destination exists and is a directory
-        if let Ok(dest_meta) = fs::metadata(dest)
-            && dest_meta.is_dir()
-        {
+        if path_is_dir(dest).unwrap_or(false) {
             // Move source into destination directory
             let source_name = path_basename(source);
             let dest_path = format!("{dest}/{source_name}");
@@ -422,8 +454,8 @@ fn do_mv(cmd: &ParsedCommand) {
         let sources = &args[..args.len() - 1];
 
         // Check if destination is a directory
-        match fs::metadata(dest) {
-            Ok(meta) if meta.is_dir() => {
+        match path_is_dir(dest) {
+            Ok(true) => {
                 // Move each source into destination directory
                 for source in sources {
                     let source_name = path_basename(source);
@@ -437,7 +469,7 @@ fn do_mv(cmd: &ParsedCommand) {
                     }
                 }
             }
-            Ok(_) => {
+            Ok(false) => {
                 print_err!("mv", format_args!("target '{dest}' is not a directory"));
             }
             Err(e) => {
@@ -462,11 +494,8 @@ fn move_file_or_dir(source: &str, dest: &str) -> io::Result<()> {
     // Try simple rename first (works within same filesystem)
     match fs::rename(source, dest) {
         Ok(()) => Ok(()),
-        Err(_) => {
-            // If rename fails, try copy + delete (for cross-filesystem moves)
-            let src_meta = fs::metadata(source)?;
-
-            if src_meta.is_dir() {
+        Err(error) if error == io::Error::CrossesDevices => {
+            if path_is_dir(source)? {
                 // For directories, use recursive copy then remove
                 copy_dir_recursive(source, dest)?;
                 remove_dir_recursive(source, false)?;
@@ -477,6 +506,7 @@ fn move_file_or_dir(source: &str, dest: &str) -> io::Result<()> {
             }
             Ok(())
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -490,7 +520,7 @@ fn do_touch(cmd: &ParsedCommand) {
     }
 
     for filename in args {
-        if let Err(e) = File::create(filename) {
+        if let Err(e) = OpenOptions::new().write(true).create(true).open(filename) {
             print_err!("touch", filename, e);
         }
     }
@@ -501,28 +531,27 @@ fn do_cp(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let recursive = cmd.flags.contains("recursive");
 
-    if args.len() < 2 {
-        print_err!("cp", "missing operand");
+    if args.len() != 2 {
+        print_err!("cp", "expected exactly one source and one destination");
         return;
     }
 
     let source = &args[0];
     let dest = &args[1];
 
-    // Check if source file/directory exists
-    let src_metadata = match fs::metadata(source) {
-        Ok(metadata) => metadata,
+    let source_is_dir = match path_is_dir(source) {
+        Ok(is_dir) => is_dir,
         Err(e) => {
             print_err!("cp", format_args!("cannot access '{source}'"), e);
             return;
         }
     };
 
-    let result = if src_metadata.is_dir() {
+    let result = if source_is_dir {
         if recursive {
             copy_dir_recursive(source, dest)
         } else {
-            Err(io::Error::from(io::ErrorKind::Unsupported))
+            Err(io::Error::Unsupported)
         }
     } else {
         copy_file(source, dest)
@@ -562,11 +591,10 @@ fn copy_dir_recursive(src: &str, dst: &str) -> io::Result<()> {
     for entry_result in entries {
         let entry = entry_result?;
         let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
         let src_path = format!("{src}/{file_name}");
         let dst_path = format!("{dst}/{file_name}");
 
-        let metadata = entry.file_type()?;
+        let metadata = entry.file_type();
         if metadata.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
