@@ -123,9 +123,12 @@ stage_rust_toolchain() {
     local rust_date="2026-05-28"
     local rust_dl="https://static.rust-lang.org/dist/${rust_date}"
     local toolchain_name="nightly-2026-05-28-x86_64-unknown-linux-musl"
+    local toolchain_version="2"
+    local version_file=".starry-selfhost-toolchain-version"
     local stage_dir="$output_dir/toolchain-stage"
     local toolchain_dir="$stage_dir/$toolchain_name"
-    local cache_dir="$stage_dir/dl-cache"
+    local component_stage="$stage_dir/component"
+    local cache_dir="$output_dir/toolchain-downloads"
     local output_tar="$output_dir/rust-toolchain.tar"
 
     # component → sha256 from channel-rust-nightly.toml
@@ -138,14 +141,16 @@ stage_rust_toolchain() {
         "rust-std-none:2e67b503d145f68ab474fc7070bac3a1d936d5dd78f96a8bc3a2c5d98baa190d"
     )
 
-    if [ -f "$output_tar" ] && [ "$(stat -c%s "$output_tar" 2>/dev/null)" -gt 500000000 ]; then
+    if [[ -f "$output_tar" ]] \
+        && [[ "$(tar -xOf "$output_tar" "$toolchain_name/$version_file" 2>/dev/null)" \
+            == "$toolchain_version" ]]; then
         echo "[prebuild] rust toolchain tar already built ($(du -h "$output_tar" | cut -f1)) — skipping"
         install -m 0644 "$output_tar" "$overlay_dir/opt/rust-toolchain.tar"
         return
     fi
 
     rm -rf "$stage_dir"
-    mkdir -p "$toolchain_dir/bin" "$toolchain_dir/lib" "$cache_dir"
+    mkdir -p "$toolchain_dir" "$cache_dir"
 
     for pair in "${pairs[@]}"; do
         component="${pair%%:*}"
@@ -159,27 +164,57 @@ stage_rust_toolchain() {
         url="${rust_dl}/${tarball}"
         dest="$cache_dir/$hash"
 
-        if [ -f "$dest" ] && [ "$(stat -c%s "$dest" 2>/dev/null)" -gt 1000000 ]; then
+        if [[ -f "$dest" ]] \
+            && printf '%s  %s\n' "$hash" "$dest" | sha256sum --check --status; then
             echo "[prebuild]   ${component} already downloaded ($(du -h "$dest" | cut -f1))"
         else
+            rm -f "$dest"
             echo "[prebuild]   downloading ${tarball}..."
             curl -fsSL --retry 3 --connect-timeout 30 --max-time 600 \
                 "$url" -o "${dest}.tmp" 2>/dev/null || {
                     rm -f "${dest}.tmp"
                     echo "[prebuild] ERROR: failed to download ${tarball}" >&2
                     exit 1
-                }
+            }
             mv "${dest}.tmp" "$dest"
         fi
 
-        echo "[prebuild]   extracting ${tarball}..."
-        tar xf "$dest" -C "$toolchain_dir" 2>/dev/null || {
+        if ! printf '%s  %s\n' "$hash" "$dest" | sha256sum --check --status; then
+            rm -f "$dest"
+            echo "[prebuild] ERROR: checksum mismatch for ${tarball}" >&2
+            exit 1
+        fi
+
+        echo "[prebuild]   installing ${tarball}..."
+        rm -rf "$component_stage"
+        mkdir -p "$component_stage"
+        tar xf "$dest" -C "$component_stage" 2>/dev/null || {
             echo "[prebuild] ERROR: failed to extract ${tarball}" >&2
+            exit 1
+        }
+        installer="$(find "$component_stage" -mindepth 2 -maxdepth 2 -type f -name install.sh -print -quit)"
+        if [[ -z "$installer" ]]; then
+            echo "[prebuild] ERROR: installer missing from ${tarball}" >&2
+            exit 1
+        fi
+        bash "$installer" --prefix="$toolchain_dir" --disable-ldconfig >/dev/null || {
+            echo "[prebuild] ERROR: failed to install ${tarball}" >&2
             exit 1
         }
     done
 
+    [[ -x "$toolchain_dir/bin/rustc" ]] \
+        || { echo "[prebuild] ERROR: rustc missing from assembled toolchain" >&2; exit 1; }
+    [[ -x "$toolchain_dir/bin/cargo" ]] \
+        || { echo "[prebuild] ERROR: cargo missing from assembled toolchain" >&2; exit 1; }
+    [[ -d "$toolchain_dir/lib/rustlib/src/rust/library" ]] \
+        || { echo "[prebuild] ERROR: rust-src missing from assembled toolchain" >&2; exit 1; }
+    [[ -d "$toolchain_dir/lib/rustlib/x86_64-unknown-none/lib" ]] \
+        || { echo "[prebuild] ERROR: x86_64-unknown-none missing from assembled toolchain" >&2; exit 1; }
+    printf '%s\n' "$toolchain_version" >"$toolchain_dir/$version_file"
+
     echo "[prebuild] creating uncompressed toolchain tar..."
+    rm -f "$output_tar"
     tar -C "$stage_dir" -cf "$output_tar" "$toolchain_name"
     echo "[prebuild] rust toolchain tar built ($(du -h "$output_tar" | cut -f1))"
 

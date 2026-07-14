@@ -4,7 +4,8 @@ set -eu
 
 TOOLCHAIN="nightly-2026-05-28"
 HOST_TRIPLE="x86_64-unknown-linux-musl"
-RUSTUP_TOOLCHAIN="${TOOLCHAIN}-${HOST_TRIPLE}"
+TOOLCHAIN_DIR_NAME="${TOOLCHAIN}-${HOST_TRIPLE}"
+RUSTUP_TOOLCHAIN="starry-selfhost-${TOOLCHAIN#nightly-}-${HOST_TRIPLE}"
 SOURCE_TAR="${SELFHOST_SOURCE_TAR:-/opt/tgoskits-src.tar}"
 SOURCE_META="${SELFHOST_SOURCE_META:-/opt/tgoskits-src.meta}"
 SOURCE_DIR="${SELFHOST_SOURCE_DIR:-/tmp/tgoskits-src}"
@@ -134,7 +135,8 @@ install_rust() {
     # through a pipe and does not deadlock the way `cp -a` from tmpfs does.
     # Once the toolchain is on ext4, reads (rustc, std libs) are fast.
     local toolchain_tar="/opt/rust-toolchain.tar"
-    local toolchain_name="nightly-2026-05-28-x86_64-unknown-linux-musl"
+    local toolchain_name="$TOOLCHAIN_DIR_NAME"
+    local toolchain_dir="/root/.rustup/toolchains/$toolchain_name"
 
     [ -f "$toolchain_tar" ] || fail "rust toolchain tar is missing: $toolchain_tar"
 
@@ -143,12 +145,17 @@ install_rust() {
     tar xf "$toolchain_tar" -C /root/.rustup/toolchains/ \
         || fail "failed to extract toolchain tar to ext4"
     rm -f "$toolchain_tar"
+    [ -x "$toolchain_dir/bin/rustc" ] \
+        || fail "pre-extracted rustc is missing: $toolchain_dir/bin/rustc"
+    [ -x "$toolchain_dir/bin/cargo" ] \
+        || fail "pre-extracted cargo is missing: $toolchain_dir/bin/cargo"
 
     # Install rustup to tmpfs (rsext4 is too slow for rustup's many small
-    # writes during installation of cargo-binutils / ksym).
+    # writes during cargo install of cargo-binutils / ksym).
     local tmp_rustup=/tmp/rustup-home
     local tmp_cargo=/tmp/cargo-home
     mkdir -p "$tmp_rustup" "$tmp_cargo"
+    rm -f "$tmp_rustup/settings.toml"
 
     export RUSTUP_HOME="$tmp_rustup"
     export CARGO_HOME="$tmp_cargo"
@@ -159,18 +166,28 @@ install_rust() {
     if [ ! -x "$tmp_cargo/bin/rustup" ]; then
         curl --fail --silent --show-error --location https://sh.rustup.rs \
             -o /tmp/rustup-init.sh
-        sh /tmp/rustup-init.sh -y --profile minimal --default-host "$HOST_TRIPLE" \
-            --no-modify-path
+        sh /tmp/rustup-init.sh -y --no-modify-path --default-host "$HOST_TRIPLE" \
+            --default-toolchain none \
+            || fail "rustup-init failed"
     fi
 
-    # Point rustup at the pre-staged toolchain on ext4.
-    rustup toolchain link "$toolchain_name" \
-        "/root/.rustup/toolchains/$toolchain_name" 2>/dev/null || true
-    rustup default "$RUSTUP_TOOLCHAIN" 2>/dev/null || true
+    # Official channel-like names are not valid custom toolchain aliases.
+    # Link the pre-extracted directory under a distinct name, then export the
+    # alias so the workspace rust-toolchain.toml cannot trigger a download.
+    rustup toolchain link "$RUSTUP_TOOLCHAIN" "$toolchain_dir" \
+        || fail "rustup toolchain link failed"
+    rustup default "$RUSTUP_TOOLCHAIN" \
+        || fail "rustup default failed"
+    export RUSTUP_TOOLCHAIN
+
+    command -v rustc >/dev/null 2>&1 || fail "rustc not found after install"
+    command -v cargo >/dev/null 2>&1 || fail "cargo not found after install"
+    rustc --version || fail "rustc --version failed"
+    cargo --version || fail "cargo --version failed"
 
     echo "[self-compile] Rust toolchain ready."
-    echo "[self-compile] $(rustc --version 2>/dev/null || echo 'rustc version unknown')"
-    echo "[self-compile] $(cargo --version 2>/dev/null || echo 'cargo version unknown')"
+    echo "[self-compile] $(rustc --version)"
+    echo "[self-compile] $(cargo --version)"
 }
 
 install_kallsyms_tools() {

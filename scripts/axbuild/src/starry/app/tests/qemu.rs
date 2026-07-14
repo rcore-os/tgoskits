@@ -256,9 +256,13 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
             && prebuild.contains("cargo xtask image resize")
             && prebuild.contains("SELFHOST_ROOTFS_SIZE_MIB:-32768")
             && prebuild.contains("stage_guest_resolver")
-            && prebuild.contains("/run/systemd/resolve/resolv.conf"),
+            && prebuild.contains("/run/systemd/resolve/resolv.conf")
+            && prebuild.contains("sha256sum --check --status")
+            && prebuild.contains("--prefix=\"$toolchain_dir\"")
+            && prebuild.contains(".starry-selfhost-toolchain-version"),
         "{} must stage source, the guest runner, the reboot guard, and a usable resolver into a \
-         32 GiB rootfs",
+         32 GiB rootfs, and must install verified Rust components into a versioned toolchain \
+         archive",
         prebuild_path.display()
     );
 
@@ -267,6 +271,9 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
     assert!(
         guest_runner.contains("x86_64-unknown-linux-musl")
             && guest_runner.contains("TOOLCHAIN=\"nightly-2026-05-28\"")
+            && guest_runner.contains("RUSTUP_TOOLCHAIN=\"starry-selfhost-")
+            && guest_runner.contains("--default-toolchain none")
+            && guest_runner.contains("export RUSTUP_TOOLCHAIN")
             && guest_runner.contains("rustc -vV")
             && guest_runner.contains("cargo-binutils --version 0.4.0 --locked")
             && guest_runner.contains("ksym --version 0.6.0 --locked")
