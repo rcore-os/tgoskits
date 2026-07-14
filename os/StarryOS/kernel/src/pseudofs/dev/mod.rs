@@ -19,10 +19,10 @@ mod log;
 mod r#loop;
 #[cfg(feature = "ext4")]
 mod loop_block;
-#[cfg(feature = "rga")]
-mod rga;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+#[cfg(feature = "rga")]
+mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
