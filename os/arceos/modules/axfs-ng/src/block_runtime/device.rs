@@ -1472,8 +1472,9 @@ fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
             Box::new(move || {
                 loop {
                     if !block_drain_has_pending() {
-                        let notified =
-                            wait_for_drain_notification_timeout(core::time::Duration::from_millis(10));
+                        let notified = wait_for_drain_notification_timeout(
+                            core::time::Duration::from_millis(10),
+                        );
                         if !notified {
                             BLOCK_DRAIN_FULL_SCAN.store(true, Ordering::Release);
                         }

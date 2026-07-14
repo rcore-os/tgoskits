@@ -13,9 +13,7 @@
 //! counters are deltas measured on a freshly mounted filesystem (cold FS-level
 //! caches) so the numbers reflect real cold-cache cost, not warm-cache hits.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 
 use rsext4::{
     bmalloc::AbsoluteBN,
@@ -140,10 +138,7 @@ impl Counters {
         let h: Vec<(String, u64)> = buckets
             .iter()
             .map(|(name, lo, hi)| {
-                let c = pb
-                    .range(*lo..*hi)
-                    .map(|(_, s)| s.writes + s.reads)
-                    .sum();
+                let c = pb.range(*lo..*hi).map(|(_, s)| s.writes + s.reads).sum();
                 ((*name).to_string(), c)
             })
             .collect();
@@ -267,7 +262,10 @@ fn cold_mount(device: ProfilingBlockDevice) -> (Jbd2Dev<ProfilingBlockDevice>, E
 fn profile_low_iops_baseline() {
     eprintln!();
     eprintln!("############################################################################");
-    eprintln!("# rsext4 low-IOPS profiling  (read={}us write={}us per 4K op)", READ_LATENCY_US, WRITE_LATENCY_US);
+    eprintln!(
+        "# rsext4 low-IOPS profiling  (read={}us write={}us per 4K op)",
+        READ_LATENCY_US, WRITE_LATENCY_US
+    );
     eprintln!("############################################################################");
     let ctr = Arc::new(Counters::new());
 
@@ -332,7 +330,8 @@ fn profile_low_iops_baseline() {
     let read_s = ctr.snapshot();
     eprintln!("[B read  {:>3} ] {}", N_FILES, read_s.fmt());
     eprintln!(
-        "    (cold mount cost {} + read cost). per-file read: reads={:.2} writes={:.2} modeled={:.2} ms",
+        "    (cold mount cost {} + read cost). per-file read: reads={:.2} writes={:.2} \
+         modeled={:.2} ms",
         fmt_us(mount_b.modeled_us),
         (read_s.read_ops - mount_b.read_ops) as f64 / N_FILES as f64,
         (read_s.write_ops - mount_b.write_ops) as f64 / N_FILES as f64,
@@ -416,7 +415,8 @@ fn profile_low_iops_baseline() {
         device = dev.into_inner();
         let total_us = w.modeled_us + c.modeled_us;
         eprintln!(
-            "  chunk {:>4} KiB: write {:>7} | commit {:>7} | total {:>6.3} s ({:.2} MiB/s effective)",
+            "  chunk {:>4} KiB: write {:>7} | commit {:>7} | total {:>6.3} s ({:.2} MiB/s \
+             effective)",
             chunk_kib,
             w.fmt(),
             c.fmt(),
@@ -447,7 +447,8 @@ fn profile_low_iops_baseline() {
         device = dev.into_inner();
         let total_us = w.modeled_us + c.modeled_us;
         eprintln!(
-            "[H 4MiB 4K-chunk] write {:>7} | commit {:>7} | total {:>6.3} s ({:.2} MiB/s effective)",
+            "[H 4MiB 4K-chunk] write {:>7} | commit {:>7} | total {:>6.3} s ({:.2} MiB/s \
+             effective)",
             w.fmt(),
             c.fmt(),
             total_us as f64 / 1_000_000.0,
@@ -517,8 +518,10 @@ fn fmt_us(us: u64) -> String {
 fn profile_file_creation() {
     eprintln!();
     eprintln!("############################################################################");
-    eprintln!("# rsext4 file-creation profiling  (read={}us write={}us; bw r={}B/s w={}B/s)",
-        READ_LATENCY_US, WRITE_LATENCY_US, READ_BW_BYTES_PER_S, WRITE_BW_BYTES_PER_S);
+    eprintln!(
+        "# rsext4 file-creation profiling  (read={}us write={}us; bw r={}B/s w={}B/s)",
+        READ_LATENCY_US, WRITE_LATENCY_US, READ_BW_BYTES_PER_S, WRITE_BW_BYTES_PER_S
+    );
     eprintln!("############################################################################");
     let ctr = Arc::new(Counters::new());
 
@@ -534,7 +537,11 @@ fn profile_file_creation() {
             let payload = vec![0xABu8; 512];
             for i in 0..n {
                 let path = format!("/files/f_{:04}", i);
-                let data = if with_data { Some(payload.as_slice()) } else { None };
+                let data = if with_data {
+                    Some(payload.as_slice())
+                } else {
+                    None
+                };
                 mkfile(&mut dev, &mut fs, &path, data, None).expect("mkfile");
             }
             let create_s = ctr.snapshot();
@@ -554,7 +561,8 @@ fn profile_file_creation() {
             ctr.reset();
             umount(fs, &mut dev).expect("umount");
             let commit_s = ctr.snapshot();
-            eprintln!("[  commit     ] {}  per-file: modeled={:.3} ms",
+            eprintln!(
+                "[  commit     ] {}  per-file: modeled={:.3} ms",
                 commit_s.fmt(),
                 commit_s.modeled_us as f64 / n as f64 / 1000.0,
             );
@@ -563,4 +571,3 @@ fn profile_file_creation() {
     }
     eprintln!("############################################################################");
 }
-

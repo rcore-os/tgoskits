@@ -1,16 +1,16 @@
 //! RDIF block-device adapter for [`crate::Cv181xSdhci`].
 
+use dma_api::DeviceDma;
 pub use rdif_block::{
     BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
     OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
     RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
 };
+use sdhci_host::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE};
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
 use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
 
 use crate::Cv181xSdhci;
-use dma_api::DeviceDma;
-use sdhci_host::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE};
 
 pub fn device(
     card: SdioSdmmc<SdioHost2Adapter<Cv181xSdhci>>,

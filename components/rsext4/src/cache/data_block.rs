@@ -247,7 +247,8 @@ impl DataBlockCache {
         // Two evictions may be needed: (a) the same block number from a
         // previous incarnation, and (b) an LRU batch to stay within max_entries.
         let evict_existing = inner.snapshot_block_for_evict(block_num);
-        let evict_lru_batch = if inner.cache.len() >= inner.max_entries && evict_existing.is_none() {
+        let evict_lru_batch = if inner.cache.len() >= inner.max_entries && evict_existing.is_none()
+        {
             // Only evict LRU if we did not already free a slot above.
             inner.snapshot_lru_batch(EVICT_BATCH)
         } else {
@@ -611,10 +612,7 @@ impl DataBlockCacheInner {
     /// written back as a single multi-block I/O instead of one IOP per block —
     /// the dominant win for write workloads larger than the cache on a
     /// low-IOPS device.
-    fn snapshot_lru_batch(
-        &self,
-        max_k: usize,
-    ) -> Vec<(AbsoluteBN, u64, Option<Vec<u8>>)> {
+    fn snapshot_lru_batch(&self, max_k: usize) -> Vec<(AbsoluteBN, u64, Option<Vec<u8>>)> {
         let mut entries: Vec<(AbsoluteBN, u64, u64, Option<Vec<u8>>)> = self
             .cache
             .iter()
