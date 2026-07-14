@@ -614,7 +614,11 @@ impl HwPerfEvent {
             let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
             let lost_ptr = Arc::as_ptr(&sampling.lost) as *const ();
             let lost_reported_ptr = Arc::as_ptr(&sampling.lost_reported) as *const ();
-            sampling::ensure_pmu_irq_registered();
+            // The process-global handler was installed at open (process context);
+            // here we only bring up + enable THIS core's overflow line, which is
+            // IRQ-safe and thus sound whether this runs on the opening core or on
+            // the `perf record -a` fan-out target core inside the IPI arm thunk.
+            sampling::enable_pmu_irq_line();
             ax_cpu::pmu::counter::preload(n, period);
             sampling::register(
                 n,
@@ -1329,10 +1333,126 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResul
     let is_freq = attr.freq() != 0;
     let is_sampling = raw > 0;
 
+    // Install the process-global PMU overflow handler once, here in process
+    // context (a syscall), for EVERY sampling event: the arm paths that follow can
+    // run in the IPI hard-IRQ arm thunk (the `perf record -a` fan-out) or IRQs-off
+    // scheduler context, where `request_percpu_irq` is unsafe. Arm then only
+    // enables each core's PPI line (IRQ-safe).
+    if is_sampling {
+        super::sampling::install_pmu_irq_handler()?;
+    }
+
+    // `perf record -a` per-CPU SAMPLING fan-out: a system-wide sampling event
+    // pinned to a specific cpu arms its programmable counter + overflow IRQ ON that
+    // target core (not the opener), so each core's overflow writes a
+    // `PERF_RECORD_SAMPLE` into this event's ring, stamped with that cpu. Built
+    // sampling-shaped (`sampling = Some`, `sys_cpu = None` so `device_mmap`
+    // allocates the ring) with `home_cpu = cpu`, so the UNCHANGED
+    // enable/disable/read/`Drop` lifecycle fans the arm + strict teardown out to the
+    // target via the existing `run_hw_on_home` IPI path. The counter is reserved on
+    // the TARGET core's per-CPU pool (via the counting fan-out's `SYS_OP_PROGRAM`),
+    // never the opener's, so it never collides with the target's per-task events.
+    if cpu >= 0 && is_sampling {
+        let target = cpu as usize;
+        if target >= ax_hal::cpu_num() {
+            return Err(AxError::NotFound);
+        }
+        // big.LITTLE: reject a cluster event pinned to a foreign-cluster cpu (gate
+        // on the TARGET cpu, exactly like the counting fan-out below).
+        let valid_clusters =
+            cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
+        if !valid_clusters.contains(super::percpu::cluster_of_cpu(target)) {
+            return Err(AxError::NotFound);
+        }
+        // Same sampling sample_type / read_format rules as the self path; group
+        // sampling stays per-task-only.
+        if attr.sample_type & PERF_SAMPLE_IP == 0
+            || attr.sample_type & !super::sampling::SUPPORTED_SAMPLE_TYPE != 0
+        {
+            warn!(
+                "perf_event_open: -a sampling sample_type {:#x} unsupported",
+                attr.sample_type
+            );
+            return Err(AxError::Unsupported);
+        }
+        if !super::sampling::sample_read_supported(attr.sample_type, attr.read_format)
+            || attr.read_format & super::sampling::READ_FORMAT_GROUP != 0
+        {
+            warn!(
+                "perf_event_open: -a sampling read_format {:#x} unsupported",
+                attr.read_format
+            );
+            return Err(AxError::Unsupported);
+        }
+        if !is_freq && raw > u32::MAX as u64 {
+            warn!("perf_event_open: -a sample_period {raw} exceeds 32-bit counter");
+            return Err(AxError::InvalidInput);
+        }
+        let Some(event) = decode_arm_event(attr.type_, attr.config) else {
+            warn!(
+                "perf_event_open: unsupported -a sampling type {:#x} config {:#x}",
+                attr.type_, attr.config
+            );
+            return Err(AxError::Unsupported);
+        };
+        // Validated on the opening core (architectural events like CPU_CYCLES are
+        // cluster-agnostic); target-PMCEID refinement is a follow-up.
+        if !ax_cpu::pmu::event_supported(event) {
+            warn!("perf_event_open: -a sampling ARM event {event:#x} not implemented");
+            return Err(AxError::Unsupported);
+        }
+        // Reserve + configure the programmable counter on the TARGET core's pool
+        // (leaves it disabled), via the same IPI op the counting fan-out uses. The
+        // reservation is held until `Drop` frees it on that same core.
+        let mut prog = SysCpuOp {
+            op: SYS_OP_PROGRAM,
+            event,
+            exclude_user,
+            exclude_kernel,
+            slot: 0,
+            value: 0,
+            ok: false,
+        };
+        run_sys_cpu_op(target, &mut prog);
+        if !prog.ok {
+            return Err(AxError::NoMemory);
+        }
+        let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
+        let poll_ready = Arc::new(PollSet::new());
+        let notify = Arc::new(IrqNotify::new());
+        let poll_alive = Arc::new(AtomicBool::new(true));
+        start_sampling_notify_worker(poll_ready.clone(), notify.clone(), poll_alive.clone());
+        return Ok(HwPerfEvent {
+            counter: Counter::Programmable(prog.slot),
+            sample_id: 0,
+            read_format: attr.read_format,
+            enabled_since: None,
+            time_enabled: 0,
+            time_running: 0,
+            sampling: Some(SamplingState {
+                period: sample_period,
+                freq: is_freq,
+                target_freq,
+                sample_type: attr.sample_type,
+                poll_ready,
+                notify,
+                poll_alive,
+                ring: None,
+                redirect: None,
+                lost: Arc::new(AtomicU64::new(0)),
+                lost_reported: Arc::new(AtomicU64::new(0)),
+            }),
+            per_task: None,
+            // Sampling-shaped, NOT sys_cpu-shaped: `device_mmap` must allocate the
+            // ring, and the HW lifecycle routes through `home_cpu = target`.
+            sys_cpu: None,
+            home_cpu: target,
+        });
+    }
+
     // `perf stat -a` per-CPU fan-out: a system-wide COUNTING event pinned to a
     // specific cpu (`cpu >= 0`) counts on THAT core via its per-CPU pool,
-    // programmed / read / freed over a synchronous IPI. Sampling `-a`
-    // (`perf record -a`) is not fanned out here — it stays on the current core.
+    // programmed / read / freed over a synchronous IPI.
     if cpu >= 0 && !is_sampling {
         // big.LITTLE: an event opened against a cluster's PMU but pinned to a CPU
         // of another cluster cannot run there — reject with ENOENT so `perf`
@@ -1601,6 +1721,10 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
             return Err(AxError::InvalidInput);
         }
+        // Install the process-global overflow handler here, in process context, so
+        // the IRQs-off scheduler arm (`arm_slice`) only needs the IRQ-safe per-core
+        // line enable — never `request_percpu_irq`.
+        super::sampling::install_pmu_irq_handler()?;
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 

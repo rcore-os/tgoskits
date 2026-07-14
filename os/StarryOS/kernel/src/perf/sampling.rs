@@ -43,6 +43,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use ax_errno::{AxError, AxResult};
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_task::IrqNotify;
@@ -428,20 +429,19 @@ pub fn unregister(n: usize) {
 /// enable runs at `cpu_online`/boot, before this handler is ever registered, so
 /// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
 /// never fire on cpu0.
-pub fn ensure_pmu_irq_registered() {
-    // Guarantee this core's PMU is brought up (PMCR.E set, clean slate) before
-    // we arm an overflow on it. On secondary cores nothing else does this, so
-    // without it the counter would never count / the overflow never fire.
-    super::percpu::ensure_core_inited();
-
-    let pmu_irq = match pmu_irq() {
-        Ok(irq) => irq,
-        Err(err) => {
-            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
-            return;
-        }
-    };
-
+/// Install the process-global PMU overflow IRQ handler (idempotent).
+///
+/// Does the one-time `request_percpu_irq`, which takes the IRQ registry lock and
+/// allocates, so it MUST run in **process context** — never from the hard-IRQ IPI
+/// arm thunk the `perf record -a` fan-out uses (nor an IRQs-off scheduler arm).
+/// Call it at event open (a syscall) for any sampling event. The per-core line
+/// enable + core bring-up is the separate IRQ-safe [`enable_pmu_irq_line`].
+/// Returns the resolve / registration error so `perf_event_open` can fail cleanly.
+pub fn install_pmu_irq_handler() -> AxResult<()> {
+    let pmu_irq = pmu_irq().map_err(|err| {
+        warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
+        AxError::NotFound
+    })?;
     if REGISTERED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -452,15 +452,50 @@ pub fn ensure_pmu_irq_registered() {
             // Roll back so a later open can retry registration.
             REGISTERED.store(false, Ordering::Release);
             warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
-            return;
+            return Err(AxError::Io);
         }
     }
-    // Enable the PMU PPI on the core this sampling event runs on. Required even
-    // when the action was registered by an earlier event: the per-core line is
-    // not auto-enabled for runtime-registered PPIs.
+    Ok(())
+}
+
+/// Bring up THIS core's PMU and enable its overflow PPI line.
+///
+/// IRQ-safe (`ensure_core_inited` + a GIC redistributor poke, both already
+/// exercised from IPI context by `sys_cpu_op_thunk`), so it runs on whichever core
+/// a sampling event arms on — directly on the opening core for a self/system-wide
+/// event, or on the **target** core (inside the IPI arm thunk) for a `perf record
+/// -a` fan-out event. The process-global handler must already be installed via
+/// [`install_pmu_irq_handler`].
+pub fn enable_pmu_irq_line() {
+    // Guarantee this core's PMU is brought up (PMCR.E set, clean slate) before we
+    // arm an overflow on it. On secondary cores nothing else does this, so without
+    // it the counter would never count / the overflow never fire.
+    super::percpu::ensure_core_inited();
+
+    let pmu_irq = match pmu_irq() {
+        Ok(irq) => irq,
+        Err(err) => {
+            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
+            return;
+        }
+    };
+    // Enable the PMU PPI on this core. Required even when the handler was
+    // registered by an earlier event: the per-core line is not auto-enabled for
+    // runtime-registered PPIs.
     if let Err(err) = ax_hal::irq::set_enable(pmu_irq, true) {
         warn!("perf sampling: failed to enable PMU overflow IRQ {pmu_irq:?}: {err:?}");
     }
+}
+
+/// Convenience for the per-task arm path ([`super::task::arm_slice`], which runs
+/// IRQs-off in the scheduler): install the handler then enable this core's line.
+/// Sampling events that can separate the two should prefer
+/// [`install_pmu_irq_handler`] at open (process context) + [`enable_pmu_irq_line`]
+/// at arm; a per-task event that was opened as a sampler already installs the
+/// handler at open, so the install here is then a cheap idempotent no-op.
+pub fn ensure_pmu_irq_registered() {
+    let _ = install_pmu_irq_handler();
+    enable_pmu_irq_line();
 }
 
 /// PMU overflow IRQ handler (hard-IRQ context).
