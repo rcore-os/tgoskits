@@ -9,6 +9,8 @@ pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::
 use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
 
 use crate::Cv181xSdhci;
+use dma_api::DeviceDma;
+use sdhci_host::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE};
 
 pub fn device(
     card: SdioSdmmc<SdioHost2Adapter<Cv181xSdhci>>,
@@ -23,6 +25,22 @@ pub const fn fifo_config(
     irq_driven: bool,
 ) -> BlockConfig {
     BlockConfig::fifo(name, capacity_blocks, irq_driven)
+}
+
+/// Build an ADMA2-capable [`BlockConfig`] for [`crate::Cv181xSdhci`].
+///
+/// Mirrors [`sdhci_host::rdif::dma_config`]: the descriptor-table geometry of
+/// `sdhci-host` caps a single transfer at `ADMA2_MAX_BLOCKS` blocks / one
+/// `ADMA2_MAX_TRANSFER_SIZE` segment, so advertise those as the queue limits.
+pub fn dma_config(
+    name: &'static str,
+    capacity_blocks: u64,
+    irq_driven: bool,
+    dma: DeviceDma,
+) -> BlockConfig {
+    BlockConfig::dma(name, capacity_blocks, irq_driven, dma)
+        .with_max_blocks_per_request(ADMA2_MAX_BLOCKS)
+        .with_max_segment_size(ADMA2_MAX_TRANSFER_SIZE)
 }
 
 #[cfg(test)]

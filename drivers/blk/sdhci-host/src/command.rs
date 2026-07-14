@@ -223,16 +223,16 @@ impl Sdhci {
     }
 
     fn take_command_irq_status(&mut self) -> (u16, u16) {
+        let want = NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR;
         if self.completion_irq_enabled() {
-            let normal = self
-                .irq
-                .state
-                .take_normal(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR);
+            let normal = self.irq.state.take_normal(want);
             let error = self.irq.state.take_error_all();
             if error != 0 {
                 self.irq.state.clear_normal(NORMAL_INT_ERROR);
             }
-            return (normal, error);
+            if normal & want != 0 || error != 0 {
+                return (normal, error);
+            }
         }
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
         let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
@@ -290,16 +290,16 @@ impl Sdhci {
     }
 
     pub(crate) fn take_data_irq_status(&mut self) -> (u16, u16) {
+        let want = NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR;
         if self.completion_irq_enabled() {
-            let normal = self
-                .irq
-                .state
-                .take_normal(NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR);
+            let normal = self.irq.state.take_normal(want);
             let error = self.irq.state.take_error_all();
             if error != 0 {
                 self.irq.state.clear_normal(NORMAL_INT_ERROR);
             }
-            return (normal, error);
+            if normal & want != 0 || error != 0 {
+                return (normal, error);
+            }
         }
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
         let error_hw = if normal_hw & NORMAL_INT_ERROR != 0 {
@@ -325,7 +325,9 @@ impl Sdhci {
             if mask & NORMAL_INT_ERROR != 0 && error != 0 && normal & NORMAL_INT_ERROR != 0 {
                 self.irq.state.clear_normal(NORMAL_INT_ERROR);
             }
-            return (normal, error);
+            if normal & mask != 0 || error != 0 {
+                return (normal, error);
+            }
         }
         let normal_hw = self.read_u16(REG_NORMAL_INT_STATUS);
         let consume_error = mask & NORMAL_INT_ERROR != 0;
@@ -486,6 +488,11 @@ fn transfer_mode(direction: DataDirection, block_count: u32, use_dma: bool) -> u
     let mut mode = XFER_MODE_BLOCK_COUNT_ENABLE;
     if block_count > 1 {
         mode |= XFER_MODE_MULTI_BLOCK;
+        // SG2002 SDHCI requires AUTO_CMD12 for multi-block transfers:
+        // without it the SD card keeps sending data and the controller
+        // never sets XFER_COMPLETE / BUFFER_READ_READY for subsequent blocks.
+        // See sg200x-bsp/src/sdmmc/command.rs CMD18/CMD25 setup.
+        mode |= XFER_MODE_AUTO_CMD12;
     }
     if matches!(direction, DataDirection::Read) {
         mode |= XFER_MODE_READ;
