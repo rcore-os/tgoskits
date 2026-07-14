@@ -20,12 +20,14 @@
 #   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
 #   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
 #
-# Today (smp1 boot): VERDICT PARTIAL = "single-core regression anchor passed;
-# big.LITTLE UNVALIDATED, blocked by the smp8 boot hang" — that is a SUCCESS.
-# When smp8 boots, VERDICT FULL. So success matches FULL|PARTIAL; FAIL/INVALID
-# (and panic / not-found) fail. ostool tears down on the FIRST success match, so
-# we gate on the explicit verdict line, and DONE is the unconditional last line —
-# a hang after partial output times out instead of matching an early line.
+# This is the single-core ANCHOR: max_cpu_num=1, so VERDICT PARTIAL = "single-core
+# regression passed; big.LITTLE checks SKIPped (need smp8)" is a SUCCESS here, and
+# success matches FULL|PARTIAL. The big.LITTLE behavior is enforced separately by
+# the sibling `../perf-validate-smp8` case (max_cpu_num=8, accepts ONLY FULL) so a
+# skipped SMP path can never pass unnoticed. FAIL/INVALID (and panic / not-found)
+# fail. ostool tears down on the FIRST success match, so we gate on the explicit
+# verdict line, and DONE is the unconditional last line — a hang after partial
+# output times out instead of matching an early line.
 board_type   = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "/usr/local/bin/perf-validate"

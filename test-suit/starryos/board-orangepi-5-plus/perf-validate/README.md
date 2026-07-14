@@ -26,13 +26,19 @@ silicon — the QEMU suite could only fake clusters via the parity test-override
   copy of this source) and the pre-board debug. `PERF_VALIDATE_BOARD=1` forces
   board mode.
 
-## Today's status (smp1 boot)
+## Two cases: smp1 anchor + smp8 big.LITTLE gate
 
-The board boots cleanly only at `max_cpu_num=1` (an smp8 late-boot hang — a
-NON-perf bug). So `needs-smp8` / `needs-both-clusters` checks SKIP and the
-verdict is **PARTIAL** = "single-core regression anchor passed; big.LITTLE
-UNVALIDATED, blocked by the smp8 hang". PARTIAL is a SUCCESSFUL board run today.
-When smp8 boots (see `smp8-staged-build-aarch64.toml`), the verdict is **FULL**.
+This directory (`perf-validate`) is the **single-core anchor**: `max_cpu_num=1`,
+full drivers, always-green. Its `needs-smp8` / `needs-both-clusters` checks SKIP
+and the verdict is **PARTIAL** = "single-core regression passed; big.LITTLE not
+exercised" — a SUCCESSFUL anchor run.
+
+The big.LITTLE behavior is enforced by the sibling **`../perf-validate-smp8`**
+case: a minimal `max_cpu_num=8` kernel (drops USB/NPU/PCIe/net, whose
+secondary-core IRQ storm causes the smp8 boot hang) that runs the SAME binary and
+accepts **ONLY FULL**. PROVEN on real 4×A55+4×A76 silicon (39 pass / 0 fail →
+FULL). Splitting the two keeps the anchor stable while ensuring a skipped SMP
+path can never pass unnoticed.
 
 ## Deploy + run (board)
 
