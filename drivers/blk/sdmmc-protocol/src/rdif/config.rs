@@ -8,6 +8,10 @@ use crate::{BlockTransferMode, Error};
 pub const BLOCK_SIZE: usize = 512;
 pub const DEFAULT_DMA_MASK: u64 = u32::MAX as u64;
 pub const DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST: u32 = u16::MAX as u32 + 1;
+/// Max blocks per FIFO (PIO) request. Allows multi-block CMD18/CMD25 in PIO
+/// mode so each SD command transfers up to this many blocks instead of one,
+/// cutting per-command overhead (each SD command costs ~3ms on SG2002).
+pub const FIFO_MAX_BLOCKS_PER_REQUEST: u32 = 64;
 
 #[derive(Clone)]
 pub struct BlockConfig {
@@ -42,8 +46,8 @@ impl BlockConfig {
             capacity_blocks,
             dma_mask: DEFAULT_DMA_MASK,
             dma_domain: dma_api::DmaDomainId::legacy_global(),
-            max_blocks_per_request: 1,
-            max_segment_size: BLOCK_SIZE,
+            max_blocks_per_request: FIFO_MAX_BLOCKS_PER_REQUEST,
+            max_segment_size: BLOCK_SIZE * FIFO_MAX_BLOCKS_PER_REQUEST as usize,
             irq_driven,
             dma: None,
         }
@@ -134,7 +138,8 @@ pub fn transfer_mode_for_dma(dma: Option<&DeviceDma>) -> BlockTransferMode {
 }
 
 pub(super) fn should_split_fifo_request(dma: Option<&DeviceDma>, block_count: u32) -> bool {
-    dma.is_none() && block_count > 1
+    let _ = (dma, block_count);
+    false
 }
 
 pub fn can_fallback_to_fifo(err: Error) -> bool {
