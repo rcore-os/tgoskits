@@ -1,0 +1,6 @@
+target/
+node_modules/
+*.spv
+*_full_api
+*.o
+*.rlib
