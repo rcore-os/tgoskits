@@ -1784,6 +1784,9 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             // Follow forked children into the same ring (`perf record` default).
             inherit: attr.inherit() != 0,
             valid_clusters,
+            // The monitored thread's tid: group-leader sampling links a member to
+            // a leader only when these match (same monitored thread).
+            owner_tid: thr.tid(),
         },
     ));
     super::task::attach(thr, ptc.clone());

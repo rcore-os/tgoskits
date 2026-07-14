@@ -131,9 +131,12 @@ const MAX_GROUP_READ_WORDS: usize = 1 + (1 + MAX_GROUP_MEMBERS) * 2;
 /// callchain block — a `u64 nr` count followed by up to two `PERF_CONTEXT_*`
 /// markers and `2 * MAX_STACK_DEPTH` instruction pointers (a kernel + a user
 /// region). [`build_sample`] writes into a stack buffer of this size and returns
-/// the actual length.
+/// the actual length. The callchain term reserves the leading `u64 nr` count
+/// (`1 +`) in addition to the two `PERF_CONTEXT_*` markers and `2 * MAX_STACK_DEPTH`
+/// instruction pointers the on-stack chain buffer holds, so a future two-region
+/// callchain cannot overrun the record buffer.
 const SAMPLE_RECORD_MAX_LEN: usize =
-    8 + 9 * 8 + MAX_GROUP_READ_WORDS * 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
+    8 + 9 * 8 + MAX_GROUP_READ_WORDS * 8 + (1 + 2 + 2 * MAX_STACK_DEPTH) * 8;
 
 // `perf_event_sample_format` bits (see `man perf_event_open`). The scalar fields
 // below plus `PERF_SAMPLE_CALLCHAIN` are supported; every other bit (READ, RAW,
@@ -437,25 +440,49 @@ pub fn unregister(n: usize) {
 /// Call it at event open (a syscall) for any sampling event. The per-core line
 /// enable + core bring-up is the separate IRQ-safe [`enable_pmu_irq_line`].
 /// Returns the resolve / registration error so `perf_event_open` can fail cleanly.
+/// Set once `request_percpu_irq` has ACTUALLY installed the handler — distinct
+/// from [`REGISTERED`], which is only the CAS token a single installer wins before
+/// it begins registration. A concurrent opener must not return `Ok` (and then arm
+/// an overflow-enabled counter) until the handler truly exists, so it waits on
+/// this flag rather than on `REGISTERED`.
+static INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn install_pmu_irq_handler() -> AxResult<()> {
-    let pmu_irq = pmu_irq().map_err(|err| {
-        warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
-        AxError::NotFound
-    })?;
-    if REGISTERED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
-        // Mirror the timer's unit-data pattern: the handler does not use `data`.
-        if let Err(err) = ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler) {
-            // Roll back so a later open can retry registration.
-            REGISTERED.store(false, Ordering::Release);
-            warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
-            return Err(AxError::Io);
+    loop {
+        if INSTALLED.load(Ordering::Acquire) {
+            return Ok(());
         }
+        let pmu_irq = pmu_irq().map_err(|err| {
+            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
+            AxError::NotFound
+        })?;
+        if REGISTERED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            // We won the install: do the one-time registration, then publish
+            // readiness. Mirror the timer's unit-data pattern (the handler does not
+            // use `data`). On failure, roll back `REGISTERED` so another opener
+            // retries rather than waiting forever on `INSTALLED`.
+            let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
+            return match ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler) {
+                Ok(_) => {
+                    INSTALLED.store(true, Ordering::Release);
+                    Ok(())
+                }
+                Err(err) => {
+                    REGISTERED.store(false, Ordering::Release);
+                    warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
+                    Err(AxError::Io)
+                }
+            };
+        }
+        // Another opener is mid-install (also process context): spin until it
+        // publishes `INSTALLED` (return `Ok` next iteration) or fails and clears
+        // `REGISTERED` (we retry the CAS). Bounded by one `request_percpu_irq`; no
+        // overflow can be armed before this returns.
+        core::hint::spin_loop();
     }
-    Ok(())
 }
 
 /// Bring up THIS core's PMU and enable its overflow PPI line.
@@ -612,19 +639,23 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         // — assembled alloc-free from the baked member table (`build_group_read`).
         let mut read_blk = [0u64; MAX_GROUP_READ_WORDS];
         let nread = if sample_type & PERF_SAMPLE_READ != 0 {
-            slot.read_value = slot.read_value.wrapping_add(cur_period as u64);
-            // Persist the running count so a per-task event's leader value stays
-            // monotonic across slice re-arming (a system-wide slot persists in
-            // place and leaves this sink null).
-            if !slot.read_value_sink.is_null() {
+            // Advance the running count by one period. When a per-task sink is
+            // present it is the single source of truth (read, add, write back), so
+            // the count stays monotonic across slice re-arming AND an
+            // `ioctl(RESET)` that zeroed the sink takes effect on the next sample.
+            // A system-wide slot has no sink and keeps its own `read_value` (its
+            // registration persists for the whole run).
+            slot.read_value = if !slot.read_value_sink.is_null() {
                 // SAFETY: the sink targets the owning ptc's `AtomicU64`, kept alive
                 // while the slot is registered (teardown unregisters first), exactly
                 // like the `lost` pointer.
-                unsafe {
-                    (*(slot.read_value_sink as *const AtomicU64))
-                        .store(slot.read_value, Ordering::Relaxed)
-                };
-            }
+                let sink = unsafe { &*(slot.read_value_sink as *const AtomicU64) };
+                let v = sink.load(Ordering::Relaxed).wrapping_add(cur_period as u64);
+                sink.store(v, Ordering::Relaxed);
+                v
+            } else {
+                slot.read_value.wrapping_add(cur_period as u64)
+            };
             if read_format & READ_FORMAT_GROUP != 0 {
                 build_group_read(slot, cpu as usize, &mut read_blk)
             } else {

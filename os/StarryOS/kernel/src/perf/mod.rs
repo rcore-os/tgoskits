@@ -684,7 +684,10 @@ pub fn perf_event_open(
             let leader_ptc = leader.event.lock().per_task_counter();
             let member_ptc = perf_event.event.lock().per_task_counter();
             if let (Some(leader_ptc), Some(member_ptc)) = (leader_ptc, member_ptc) {
-                task::link_group_member(&leader_ptc, &member_ptc);
+                // Rejects a cross-thread group link (EINVAL) — required for the
+                // memory safety of the leader's baked member pointers — and an
+                // over-wide sampled group.
+                task::link_group_member(&leader_ptc, &member_ptc)?;
             }
         }
         perf_event.event.lock().disable().ok();

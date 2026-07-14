@@ -72,6 +72,7 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
+use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
@@ -142,6 +143,11 @@ pub struct PerTaskCounter {
     exclude_kernel: bool,
     /// `attr.read_format`, controlling which fields `read(perf_fd)` emits.
     read_format: u64,
+    /// The monitored thread's userspace tid, captured at open. Group-leader
+    /// sampling links a member to a leader only when their `owner_tid`s match, so
+    /// the member ptc lives in the leader's own `Thread`'s counter list and its
+    /// atomics outlive the leader's per-CPU [`SampleSlot`] registration.
+    owner_tid: u32,
     /// `attr.enable_on_exec`: start counting only when the attached task
     /// `execve`s a new image (consumed by [`on_exec`]).
     enable_on_exec: bool,
@@ -346,6 +352,11 @@ pub struct PerTaskConfig {
     /// Which clusters this event may run on (from the PMU type it was opened
     /// against). [`super::percpu::ClusterMask::ALL`] for generic events.
     pub valid_clusters: super::percpu::ClusterMask,
+    /// The monitored thread's userspace tid. Group-leader sampling requires a
+    /// member and its leader to monitor the SAME thread (see
+    /// [`link_group_member`]), so the leader's baked member pointers reference a
+    /// ptc that lives in the same `Thread`'s counter list and outlives the slot.
+    pub owner_tid: u32,
 }
 
 impl PerTaskCounter {
@@ -362,6 +373,7 @@ impl PerTaskCounter {
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
             read_format: cfg.read_format,
+            owner_tid: cfg.owner_tid,
             enable_on_exec: cfg.enable_on_exec,
             enabled: AtomicBool::new(cfg.enabled),
             on_cpu: AtomicBool::new(false),
@@ -644,27 +656,52 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 ///
 /// Called at open (process context) from the file-layer group wiring in
 /// [`super::perf_event_open`] when both the leader and the member are per-task
-/// hardware counters. A *counting* leader needs no link — its group read is
-/// served entirely in process context (the file-layer group read) — so this is a
-/// no-op unless `leader` samples. The link is stored weakly; the member ptc stays
-/// alive through its own `Thread`'s counter list. Members past
-/// [`sampling::MAX_GROUP_MEMBERS`] exceed the co-schedulable PMU width and are
-/// dropped from the sampled read (warned), keeping the on-IRQ member table
-/// bounded.
-pub fn link_group_member(leader: &Arc<PerTaskCounter>, member: &Arc<PerTaskCounter>) {
+/// hardware counters.
+///
+/// **Same-thread invariant (memory safety).** A member and its leader MUST monitor
+/// the same thread — mirroring Linux's `group_leader->ctx == event->ctx` gate,
+/// which rejects a cross-context group with `EINVAL`. This is load-bearing, not
+/// mere parity: a sampling leader bakes raw pointers to each member's atomics
+/// ([`snapshot_group_members`]) into its per-CPU [`SampleSlot`], whose registration
+/// lifetime is bounded to the *leader's* slice. Only a same-thread member is
+/// guaranteed to outlive that registration — it lives in the same `Thread`'s
+/// `perf_counters` list, whose slot is unregistered at `perf_sched_out` before
+/// [`on_task_exit`] frees it. A cross-thread member could be freed (its thread
+/// exits + fd closes) while the leader's slot still holds its pointers, causing a
+/// use-after-free in the overflow handler. So a tid mismatch is rejected.
+///
+/// A *counting* leader needs no ptc link — its group read is served in process
+/// context (the file-layer group read) — so this only records members for a
+/// sampling leader. Dead/closed members are pruned first so repeated open/close
+/// cycles do not permanently exhaust the fixed table; a group that would exceed
+/// [`sampling::MAX_GROUP_MEMBERS`] live members (beyond the co-schedulable PMU
+/// width) is rejected, matching Linux's group-too-big failure and keeping `read()`
+/// and sampled group reads consistent.
+pub fn link_group_member(
+    leader: &Arc<PerTaskCounter>,
+    member: &Arc<PerTaskCounter>,
+) -> AxResult<()> {
+    // Same monitored thread required (see the memory-safety note above).
+    if leader.owner_tid != member.owner_tid {
+        return Err(AxError::InvalidInput);
+    }
+    // Only a sampling leader consumes members from the overflow handler.
     if !leader.is_sampling {
-        return;
+        return Ok(());
     }
     let mut members = leader.group_members.lock();
+    // Prune members whose ptc has been dropped so a closed member frees its table
+    // slot for a new one.
+    members.retain(|w| w.strong_count() > 0);
     if members.len() >= sampling::MAX_GROUP_MEMBERS {
         warn!(
-            "perf group-leader sampling: dropping member beyond {} (PMU width); the sampled group \
-             read will omit it",
+            "perf group-leader sampling: group exceeds {} members (PMU width); rejecting open",
             sampling::MAX_GROUP_MEMBERS
         );
-        return;
+        return Err(AxError::InvalidInput);
     }
     members.push(Arc::downgrade(member));
+    Ok(())
 }
 
 /// Scheduler hook: the given thread is about to start running on this CPU.
@@ -1259,6 +1296,8 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     sample_id_all: p.sample_id_all,
                     inherit: true,
                     valid_clusters: p.valid_clusters,
+                    // The inherited counter monitors the CHILD thread.
+                    owner_tid: child_thr.tid(),
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),
