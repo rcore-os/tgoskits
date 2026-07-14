@@ -1,10 +1,15 @@
 #!/bin/sh
 # Native aarch64 Alpine (musl) build WITH libelf (user-symbol names) + zlib. Run:
 #   PERF_BUILD_DIR=$HOME/perf-port-build docker run --rm --platform linux/arm64 \
-#     -v $PERF_BUILD_DIR:/build alpine:latest sh /build/build-perf-libelf.sh
+#     -v $PERF_BUILD_DIR:/build alpine:3.21 sh /build/build-perf-libelf.sh
 # (needs linux-6.1.tar.xz + musl-compat.h in /build; produces linux-6.1-src/tools/perf/perf)
-# Reproducible on-target perf build: native aarch64 Alpine (musl), static,
-# WITH libelf (user-symbol names) + zlib. This is the pinned recipe for #4.
+#
+# Reproducibility: the base image is PINNED to a concrete Alpine tag (alpine:3.21,
+# not the floating alpine:latest) so the toolchain/libelf versions are stable
+# across pulls. `set -e` plus explicit make-failure handling below mean a broken
+# build fails loudly (non-zero) instead of silently emitting a bad binary. The
+# recipe prints the artifact's SHA-256; that hash is committed as perf.sha256 and
+# enforced by CMakeLists.txt, so the checked-in binary's provenance is verifiable.
 set -e
 echo "-- apk deps --"
 apk add --no-cache build-base linux-headers flex bison \
@@ -27,13 +32,32 @@ cd linux-6.1-src/tools/perf
 # so the static link (LIBS wraps EXTLIBS in --start-group) resolves them.
 sed -i 's/EXTLIBS += -lelf$/EXTLIBS += -lelf -lz -lzstd -llzma -lbz2/' Makefile.config
 echo "-- build (static, +libelf +zlib) --"
-make -j"$(nproc)" ARCH=arm64 LDFLAGS="-static" WERROR=0 \
-  EXTRA_CFLAGS="-Wno-error -Wno-error=implicit-function-declaration -U_FORTIFY_SOURCE -include /build/musl-compat.h" \
-  NO_LIBUNWIND=1 NO_LIBDW=1 NO_DWARF=1 NO_LIBTRACEEVENT=1 NO_LIBBPF=1 \
-  NO_BPF_SKEL=1 NO_SLANG=1 NO_GTK2=1 NO_LIBPERL=1 NO_LIBPYTHON=1 \
-  NO_LIBNUMA=1 NO_LIBCRYPTO=1 NO_JVMTI=1 NO_LIBBABELTRACE=1 \
-  NO_LIBDEBUGINFOD=1 NO_LIBLLVM=1 NO_LIBZSTD=1 \
-  > /build/alpine-build.out 2>&1 && echo "MAKE_OK" || echo "MAKE_FAIL"
+# The make status must propagate: a `&& echo OK || echo FAIL` tail would make the
+# line always succeed and let `set -e` sail past a broken build. Capture the real
+# status, print diagnostics either way, and hard-fail (non-zero) on failure.
+if make -j"$(nproc)" ARCH=arm64 LDFLAGS="-static" WERROR=0 \
+    EXTRA_CFLAGS="-Wno-error -Wno-error=implicit-function-declaration -U_FORTIFY_SOURCE -include /build/musl-compat.h" \
+    NO_LIBUNWIND=1 NO_LIBDW=1 NO_DWARF=1 NO_LIBTRACEEVENT=1 NO_LIBBPF=1 \
+    NO_BPF_SKEL=1 NO_SLANG=1 NO_GTK2=1 NO_LIBPERL=1 NO_LIBPYTHON=1 \
+    NO_LIBNUMA=1 NO_LIBCRYPTO=1 NO_JVMTI=1 NO_LIBBABELTRACE=1 \
+    NO_LIBDEBUGINFOD=1 NO_LIBLLVM=1 NO_LIBZSTD=1 \
+    > /build/alpine-build.out 2>&1; then
+  echo "MAKE_OK"
+else
+  st=$?
+  echo "MAKE_FAIL (status=$st)"
+  echo "-- LIBELF feature line --"; grep -iE "libelf|gelf" /build/alpine-build.out | head -3
+  echo "-- last 40 lines of build log --"; tail -40 /build/alpine-build.out
+  exit "$st"
+fi
 echo "-- LIBELF feature line --"; grep -iE "libelf|gelf" /build/alpine-build.out | head -3
 tail -20 /build/alpine-build.out
-ls -la perf 2>/dev/null && file perf 2>/dev/null || echo "NO perf binary"
+if [ ! -f perf ]; then
+  echo "NO perf binary" >&2
+  exit 1
+fi
+ls -la perf && file perf 2>/dev/null || true
+# Record the artifact identity. Commit this value as perf.sha256 next to the
+# binary; CMakeLists.txt enforces the match so the checked-in asset is verifiable.
+echo "-- perf sha256 (commit as perf.sha256) --"
+sha256sum perf 2>/dev/null || shasum -a 256 perf
