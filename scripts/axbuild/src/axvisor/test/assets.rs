@@ -13,32 +13,75 @@ use crate::{
 
 const ARCEOS_QEMU_GUEST_PACKAGE: &str = "ax-helloworld";
 const ARCEOS_QEMU_GUEST_KERNEL_PATH: &str = "/guest/arceos/ax-helloworld-x86_64.bin";
+const ARCEOS_IVC_AARCH64_GUEST_PACKAGES: &[&str] =
+    &["arceos-ivc-publisher", "arceos-ivc-subscriber"];
+
+#[derive(Clone, Copy)]
+struct ArceosIvcGuestProfile {
+    arch: &'static str,
+    target: &'static str,
+    packages: &'static [&'static str],
+    vmconfig_marker: &'static str,
+}
+
+const ARCEOS_IVC_GUEST_PROFILES: &[ArceosIvcGuestProfile] = &[ArceosIvcGuestProfile {
+    arch: "aarch64",
+    target: "aarch64-unknown-none-softfloat",
+    packages: ARCEOS_IVC_AARCH64_GUEST_PACKAGES,
+    vmconfig_marker: "ivc",
+}];
 
 pub(super) fn arceos_x86_64_guest_request() -> anyhow::Result<ResolvedBuildRequest> {
-    let target = "x86_64-unknown-none".to_string();
+    arceos_guest_request(ARCEOS_QEMU_GUEST_PACKAGE, "x86_64", "x86_64-unknown-none")
+}
+
+pub(super) fn arceos_ivc_guest_requests(
+    request: &ResolvedAxvisorRequest,
+) -> anyhow::Result<Vec<ResolvedBuildRequest>> {
+    matching_arceos_ivc_guest_profiles(request)
+        .flat_map(|profile| {
+            profile
+                .packages
+                .iter()
+                .map(move |package| arceos_guest_request(package, profile.arch, profile.target))
+        })
+        .collect()
+}
+
+fn arceos_guest_request(
+    package: &str,
+    arch: &str,
+    target: &str,
+) -> anyhow::Result<ResolvedBuildRequest> {
+    let target = target.to_string();
     Ok(ResolvedBuildRequest {
-        package: ARCEOS_QEMU_GUEST_PACKAGE.to_string(),
-        arch: "x86_64".to_string(),
+        package: package.to_string(),
+        arch: arch.to_string(),
         target: target.clone(),
         smp: None,
         debug: false,
-        build_info_path: crate::arceos::build::resolve_build_info_path(
-            ARCEOS_QEMU_GUEST_PACKAGE,
-            &target,
-            None,
-        )?,
+        build_info_path: crate::arceos::build::resolve_build_info_path(package, &target, None)?,
         qemu_config: None,
         uboot_config: None,
     })
 }
 
 pub(super) fn arceos_x86_64_guest_elf_path(workspace_root: &Path, debug: bool) -> PathBuf {
-    crate::backtrace::arceos_rust_elf_path(
+    arceos_guest_elf_path(
         workspace_root,
         "x86_64-unknown-none",
         ARCEOS_QEMU_GUEST_PACKAGE,
         debug,
     )
+}
+
+pub(super) fn arceos_guest_elf_path(
+    workspace_root: &Path,
+    target: &str,
+    package: &str,
+    debug: bool,
+) -> PathBuf {
+    crate::backtrace::arceos_rust_elf_path(workspace_root, target, package, debug)
 }
 
 pub(super) fn arceos_x86_64_guest_bin_path(workspace_root: &Path) -> PathBuf {
@@ -120,11 +163,37 @@ pub(super) fn build_group_needs_arceos_x86_64_guest(request: &ResolvedAxvisorReq
         })
 }
 
+fn matching_arceos_ivc_guest_profiles(
+    request: &ResolvedAxvisorRequest,
+) -> impl Iterator<Item = &'static ArceosIvcGuestProfile> + '_ {
+    ARCEOS_IVC_GUEST_PROFILES
+        .iter()
+        .filter(|profile| profile.matches(request))
+}
+
+impl ArceosIvcGuestProfile {
+    fn matches(&self, request: &ResolvedAxvisorRequest) -> bool {
+        request.arch == self.arch
+            && request
+                .vmconfigs
+                .iter()
+                .any(|path| self.matches_vmconfig_path(path))
+    }
+
+    fn matches_vmconfig_path(&self, path: &Path) -> bool {
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(self.vmconfig_marker))
+    }
+}
+
 pub(super) fn case_needs_arceos_x86_64_guest(
     request: &ResolvedAxvisorRequest,
     case: &PreparedAxvisorQemuCase,
 ) -> bool {
-    build_group_needs_arceos_x86_64_guest(request) || case.case.case.name.contains("arceos")
+    request.arch == "x86_64"
+        && (build_group_needs_arceos_x86_64_guest(request)
+            || case.case.case.name.contains("arceos"))
 }
 
 pub(super) fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {

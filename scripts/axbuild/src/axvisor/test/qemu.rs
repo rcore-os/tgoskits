@@ -10,7 +10,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
     assets::{
-        arceos_x86_64_guest_elf_path, arceos_x86_64_guest_request, axvisor_case_asset_config,
+        arceos_ivc_guest_requests, arceos_x86_64_guest_request, axvisor_case_asset_config,
         build_group_needs_arceos_x86_64_guest, case_needs_arceos_x86_64_guest,
         inject_arceos_x86_64_guest_image,
     },
@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     axvisor::{ArgsTestQemu, Axvisor, build, rootfs},
-    context::{AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
+    context::{AxvisorCliArgs, ResolvedAxvisorRequest, ResolvedBuildRequest, SnapshotPersistence},
     test::{case as test_case, qemu as test_qemu},
 };
 
@@ -132,6 +132,18 @@ impl Axvisor {
                 None,
             )?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
+            for guest_request in arceos_ivc_guest_requests(&build_group.request)? {
+                let package = guest_request.package.clone();
+                self.build_arceos_direct_guest_image(guest_request)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to build ArceOS guest image `{package}` for Axvisor qemu \
+                             build group `{}`",
+                            build_group.group.build_group
+                        )
+                    })?;
+            }
             if build_group_needs_arceos_x86_64_guest(&build_group.request) {
                 self.build_arceos_x86_64_guest_image()
                     .await
@@ -331,12 +343,33 @@ impl Axvisor {
 
     async fn build_arceos_x86_64_guest_image(&mut self) -> anyhow::Result<PathBuf> {
         let request = arceos_x86_64_guest_request()?;
-        let cargo = crate::arceos::build::load_cargo_config(&request)?;
-        self.app
+        self.build_arceos_guest_image(request, crate::arceos::build::load_cargo_config)
+            .await
+    }
+
+    async fn build_arceos_direct_guest_image(
+        &mut self,
+        request: ResolvedBuildRequest,
+    ) -> anyhow::Result<PathBuf> {
+        self.build_arceos_guest_image(
+            request,
+            crate::arceos::build::load_direct_guest_cargo_config,
+        )
+        .await
+    }
+
+    async fn build_arceos_guest_image(
+        &mut self,
+        request: ResolvedBuildRequest,
+        load_cargo_config: fn(&ResolvedBuildRequest) -> anyhow::Result<Cargo>,
+    ) -> anyhow::Result<PathBuf> {
+        let cargo = load_cargo_config(&request)?;
+        let output = self
+            .app
             .build(cargo.clone(), request.build_info_path.clone())
             .await?;
 
-        let elf_path = arceos_x86_64_guest_elf_path(self.app.workspace_root(), request.debug);
+        let elf_path = output.elf_path().to_path_buf();
         self.app
             .prepare_elf_artifact(elf_path.clone(), true)
             .await?;
