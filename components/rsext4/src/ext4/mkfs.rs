@@ -569,6 +569,14 @@ fn initialize_group_0<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     layout: &FsLayoutInfo,
 ) -> Ext4Result<()> {
+    // Drop any cached copies of group-0 blocks read earlier (e.g. bitmaps read
+    // for descriptor checksumming in the preceding GDT-write pass). The
+    // `BlockDev` cache does not invalidate duplicate entries on `write_block`,
+    // so a stale cached bitmap could shadow the fresh data written below and
+    // cause checksum mismatches later. Everything here is rewritten from
+    // scratch, so a clean cache is both safe and correct.
+    block_dev.invalidate_block_cache()?;
+
     // Group 0 has a fixed layout derived during mkfs planning.
     let block_bitmap_blk = layout.group0_block_bitmap;
     let inode_bitmap_blk = layout.group0_inode_bitmap;
@@ -605,13 +613,9 @@ fn initialize_group_0<B: BlockDevice>(
     block_dev.write_block(inode_bitmap_blk.into(), true)?;
 
     // Zero the inode table before the filesystem is mounted for the first time.
-    {
-        let buffer = block_dev.buffer_mut();
-        buffer.fill(0);
-    }
-    for i in 0..layout.inode_table_blocks {
-        block_dev.write_block((inode_table_blk + i).into(), true)?;
-    }
+    // Batched into multi-block writes: on a low-IOPS device this turns
+    // `inode_table_blocks` (e.g. 512) single-block I/Os into a handful.
+    block_dev.zero_blocks(inode_table_blk.into(), layout.inode_table_blocks)?;
 
     // Persist the now-initialized descriptor for group 0.
     let mut desc = Ext4GroupDesc {
