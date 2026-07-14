@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)unhandled page fault",
+    "(?i)page fault",
+    "(?i)permission denied",
+    "ivc publish failed",
+    "ivc subscribe failed",
+]
+success_regex = [
+    "ivc publish ok",
+    "ivc recv seq=",
+    "(?m)^ivc demo pass\\s*$",
+]
+to_bin = true
+uefi = false

@@ -65,6 +65,8 @@ mod error;
 
 pub use error::{HyperCallError, HyperCallResult, InvalidHyperCallCode};
 
+pub mod ivc;
+
 /// Hypercall operation codes for AxVisor.
 ///
 /// Each variant represents a specific operation that a guest VM can request
