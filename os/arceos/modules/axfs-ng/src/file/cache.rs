@@ -770,8 +770,13 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
+        // Delayed allocation: do NOT call file.set_len() on every write().
+        // The writeback path (write_inode_data) already handles block
+        // allocation and inode size updates when dirty pages are flushed.
+        // Calling set_len here forces a synchronous journal commit per
+        // write() when extending the file, which devastates small-write
+        // performance (e.g. 1KB writes → 4096 set_len → 410 commits).
         if end > old_len {
-            file.set_len(end)?;
             self.shared.update_len_max(end);
         }
 
