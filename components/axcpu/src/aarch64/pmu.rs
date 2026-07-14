@@ -823,3 +823,116 @@ pub fn interrupted_sp() -> Option<usize> {
     let tf = p as *const TrapFrame;
     Some(unsafe { (*tf).sp as usize })
 }
+
+#[cfg(test)]
+mod hw_cache_tests {
+    use super::hw_cache_to_arm;
+
+    /// Pack a `PERF_TYPE_HW_CACHE` config: `cache_id | (op << 8) | (result << 16)`,
+    /// exactly as `perf` encodes it.
+    fn cfg(cache_id: u64, op: u64, result: u64) -> u64 {
+        cache_id | (op << 8) | (result << 16)
+    }
+
+    // Linux `perf_hw_cache_id` / `_op_id` / `_op_result_id` values.
+    const L1D: u64 = 0;
+    const L1I: u64 = 1;
+    const LL: u64 = 2;
+    const DTLB: u64 = 3;
+    const ITLB: u64 = 4;
+    const BPU: u64 = 5;
+    const NODE: u64 = 6;
+    const READ: u64 = 0;
+    const WRITE: u64 = 1;
+    const PREFETCH: u64 = 2;
+    const ACCESS: u64 = 0;
+    const MISS: u64 = 1;
+
+    /// Every supported (cache, op, result) triple maps to its exact ARM PMUv3
+    /// event number. This is the deterministic regression guard for the mapping:
+    /// unlike the QEMU `perf-hw-cache` case (QEMU-TCG implements no cache events,
+    /// so it can only check open-or-unsupported), this pins the config→event decode
+    /// itself, independent of any CPU's implemented event set.
+    #[test]
+    fn supported_combos_map_to_expected_arm_events() {
+        let cases: &[(u64, u64, u64, u16)] = &[
+            // L1D_CACHE (0x04) / L1D_CACHE_REFILL (0x03), read and write.
+            (L1D, READ, ACCESS, 0x04),
+            (L1D, WRITE, ACCESS, 0x04),
+            (L1D, READ, MISS, 0x03),
+            (L1D, WRITE, MISS, 0x03),
+            // L1I_CACHE (0x14) / L1I_CACHE_REFILL (0x01), read only.
+            (L1I, READ, ACCESS, 0x14),
+            (L1I, READ, MISS, 0x01),
+            // LL cache, read vs write, access vs miss.
+            (LL, READ, ACCESS, 0x36),
+            (LL, READ, MISS, 0x37),
+            (LL, WRITE, ACCESS, 0x32),
+            (LL, WRITE, MISS, 0x33),
+            // L1D_TLB (0x25) / L1D_TLB_REFILL (0x05), read and write.
+            (DTLB, READ, ACCESS, 0x25),
+            (DTLB, WRITE, ACCESS, 0x25),
+            (DTLB, READ, MISS, 0x05),
+            (DTLB, WRITE, MISS, 0x05),
+            // L1I_TLB (0x26) / L1I_TLB_REFILL (0x02), read only.
+            (ITLB, READ, ACCESS, 0x26),
+            (ITLB, READ, MISS, 0x02),
+            // BR_PRED (0x12) / BR_MIS_PRED (0x10), read and write.
+            (BPU, READ, ACCESS, 0x12),
+            (BPU, WRITE, ACCESS, 0x12),
+            (BPU, READ, MISS, 0x10),
+            (BPU, WRITE, MISS, 0x10),
+        ];
+        for &(c, o, r, ev) in cases {
+            assert_eq!(
+                hw_cache_to_arm(cfg(c, o, r)),
+                Some(ev),
+                "cache={c} op={o} result={r} should map to {ev:#04x}"
+            );
+        }
+    }
+
+    /// PREFETCH has no ARM PMUv3 counterpart for any cache: always unsupported
+    /// (Linux rejects it with `CACHE_OP_UNSUPPORTED` too).
+    #[test]
+    fn prefetch_ops_are_unsupported() {
+        for cache in [L1D, L1I, LL, DTLB, ITLB, BPU] {
+            for result in [ACCESS, MISS] {
+                assert_eq!(
+                    hw_cache_to_arm(cfg(cache, PREFETCH, result)),
+                    None,
+                    "prefetch (cache={cache}) must be unsupported"
+                );
+            }
+        }
+    }
+
+    /// The NODE cache class has no ARM PMUv3 mapping: unsupported for every op.
+    #[test]
+    fn node_cache_is_unsupported() {
+        for op in [READ, WRITE, PREFETCH] {
+            for result in [ACCESS, MISS] {
+                assert_eq!(hw_cache_to_arm(cfg(NODE, op, result)), None);
+            }
+        }
+    }
+
+    /// The instruction side (L1I / ITLB) has no write counters, so a write op is
+    /// unsupported — guards against accidentally widening those arms to `WRITE`.
+    #[test]
+    fn instruction_side_write_is_unsupported() {
+        assert_eq!(hw_cache_to_arm(cfg(L1I, WRITE, ACCESS)), None);
+        assert_eq!(hw_cache_to_arm(cfg(L1I, WRITE, MISS)), None);
+        assert_eq!(hw_cache_to_arm(cfg(ITLB, WRITE, ACCESS)), None);
+        assert_eq!(hw_cache_to_arm(cfg(ITLB, WRITE, MISS)), None);
+    }
+
+    /// Out-of-range cache/op/result ids decode to no event (not a panic, not a
+    /// wrong event).
+    #[test]
+    fn invalid_ids_are_unsupported() {
+        assert_eq!(hw_cache_to_arm(cfg(7, READ, ACCESS)), None); // no such cache id
+        assert_eq!(hw_cache_to_arm(cfg(L1D, READ, 2)), None); // no such result id
+        assert_eq!(hw_cache_to_arm(cfg(L1D, 3, ACCESS)), None); // no such op id
+    }
+}
