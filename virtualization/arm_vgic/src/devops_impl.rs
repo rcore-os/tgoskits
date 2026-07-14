@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType};
 use axvm_types::GuestPhysAddrRange;
 
 use crate::vgic::Vgic;
@@ -52,32 +51,33 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
     /// - `width`: The width of the data to be read, determining the size of the read operation.
     ///
     /// Returns:
-    /// - `AxResult<usize>`: The result of the read operation, including any errors and the size of the data read.
+    /// - `DeviceResult<usize>`: The result of the read operation, including any errors and the size of the data read.
     fn handle_read(
         &self,
         addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
         width: AccessWidth,
-    ) -> AxResult<usize> {
+    ) -> DeviceResult<usize> {
         // Perform bitwise operation to ensure the address is aligned to byte boundaries
         let addr = addr.as_usize() & 0xfff;
 
         // Match different read operations based on the width parameter
-        match width {
+        let value = match width {
             AccessWidth::Byte => {
                 // Handle 1-byte read
-                self.handle_read8(addr)
+                self.handle_read8(addr)?
             }
             AccessWidth::Word => {
                 // Handle 2-byte read
-                self.handle_read16(addr)
+                self.handle_read16(addr)?
             }
             AccessWidth::Dword => {
                 // Handle 4-byte read
-                self.handle_read32(addr)
+                self.handle_read32(addr)?
             }
             // Return success for unsupported widths without performing any operation
-            _ => Ok(0),
-        }
+            _ => 0,
+        };
+        Ok(value)
     }
     /// Handles write operations of different widths.
     ///
@@ -94,7 +94,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
         addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
         width: AccessWidth,
         val: usize,
-    ) -> AxResult {
+    ) -> DeviceResult {
         // Convert the physical address to a `usize` and apply a mask to ensure proper alignment
         let addr = addr.as_usize() & 0xfff;
 

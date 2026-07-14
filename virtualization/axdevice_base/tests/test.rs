@@ -16,10 +16,9 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec};
 
-use ax_errno::AxResult;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, EmuDeviceType,
-    MmioDeviceAdapter,
+    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceResult,
+    EmuDeviceType, MmioDeviceAdapter,
 };
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
@@ -36,11 +35,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for DeviceA {
         (0x1000..0x2000).try_into().unwrap()
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(addr.as_usize())
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
@@ -63,11 +62,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for DeviceB {
         (0x2000..0x3000).try_into().unwrap()
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(addr.as_usize())
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }

@@ -24,12 +24,15 @@ extern crate alloc;
 extern crate log;
 
 mod arch;
+mod architecture;
 pub mod boot;
+mod error;
 mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
 mod manager;
+mod npt;
 mod percpu;
 mod runtime;
 mod task;
@@ -41,6 +44,7 @@ use crate::arch::ArchOps;
 
 pub mod config;
 
+pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
 /// Compatibility export for legacy/common normalized VM events.
 ///
@@ -52,20 +56,17 @@ pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
 };
+pub use error::{AxVmError, AxVmResult};
+pub(crate) use error::{ax_err, ax_err_type};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use irq::InterruptFabric;
-pub use lifecycle::{StopReason, VmLifecycleError, VmStatus};
+pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
-};
-#[cfg(target_arch = "loongarch64")]
-pub use runtime::loongarch_irq::{
-    register_guest_irq_route as register_loongarch_guest_irq_route,
-    unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{
@@ -83,57 +84,4 @@ pub fn check_timer_events() {
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
     arch::CurrentArch::clean_dcache_range(addr, size);
-}
-
-/// Return the host FDT boot argument physical address.
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub fn host_fdt_bootarg() -> usize {
-    host::arceos::host_fdt_bootarg()
-}
-
-/// Convert a host physical address into a host virtual address.
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    host::arceos::phys_to_virt(paddr)
-}
-
-/// Shut down ArceOS filesystems so guest passthrough can take ownership.
-#[cfg(all(
-    any(feature = "fs", feature = "host-fs"),
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
-    host::arceos::shutdown_host_filesystems()
-}
-
-/// Register a native host IRQ as the source for one x86 guest IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub fn register_x86_ioapic_irq_forwarding_route(guest_gsi: usize, host_irq: irq_framework::IrqId) {
-    runtime::register_x86_ioapic_irq_forwarding_route(guest_gsi, host_irq);
-}
-
-/// Register a native host IRQ and trigger mode as the source for one x86 guest
-/// IOAPIC GSI.
-#[cfg(target_arch = "x86_64")]
-pub fn register_x86_ioapic_irq_forwarding_route_with_trigger(
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-    trigger: InterruptTriggerMode,
-) {
-    runtime::register_x86_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
-}
-
-/// Register a callback to activate one x86 guest IOAPIC GSI after the guest has
-/// programmed a usable virtual IOAPIC route for it.
-#[cfg(target_arch = "x86_64")]
-pub fn register_x86_ioapic_irq_forwarding_activator(guest_gsi: usize, activator: fn()) {
-    runtime::register_x86_ioapic_irq_forwarding_activator(guest_gsi, activator);
 }

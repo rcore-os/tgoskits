@@ -14,8 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use ax_errno::{AxError, AxResult};
-use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
+use axdevice_base::{InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IrqEvent {
@@ -25,11 +24,11 @@ enum IrqEvent {
 
 struct MockIrqSink {
     events: Mutex<Vec<IrqEvent>>,
-    error: Option<AxError>,
+    error: Option<IrqError>,
 }
 
 impl MockIrqSink {
-    fn new(error: Option<AxError>) -> Self {
+    fn new(error: Option<IrqError>) -> Self {
         Self {
             events: Mutex::new(Vec::new()),
             error,
@@ -42,8 +41,8 @@ impl MockIrqSink {
 }
 
 impl IrqSink for MockIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> AxResult {
-        if let Some(error) = self.error {
+    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
+        if let Some(error) = self.error.clone() {
             return Err(error);
         }
         self.events
@@ -53,8 +52,8 @@ impl IrqSink for MockIrqSink {
         Ok(())
     }
 
-    fn pulse(&self, line: IrqLineId) -> AxResult {
-        if let Some(error) = self.error {
+    fn pulse(&self, line: IrqLineId) -> IrqResult {
+        if let Some(error) = self.error.clone() {
             return Err(error);
         }
         self.events.lock().unwrap().push(IrqEvent::Pulse(line));
@@ -112,15 +111,38 @@ fn mismatched_line_operations_return_invalid_input() {
         sink.clone(),
     );
 
-    assert_eq!(edge_line.raise(), Err(AxError::InvalidInput));
-    assert_eq!(edge_line.lower(), Err(AxError::InvalidInput));
-    assert_eq!(level_line.pulse(), Err(AxError::InvalidInput));
+    assert!(matches!(
+        edge_line.raise(),
+        Err(IrqError::InvalidTriggerMode {
+            operation: "raise",
+            ..
+        })
+    ));
+    assert!(matches!(
+        edge_line.lower(),
+        Err(IrqError::InvalidTriggerMode {
+            operation: "lower",
+            ..
+        })
+    ));
+    assert!(matches!(
+        level_line.pulse(),
+        Err(IrqError::InvalidTriggerMode {
+            operation: "pulse",
+            ..
+        })
+    ));
     assert!(sink.events().is_empty());
 }
 
 #[test]
 fn sink_errors_are_propagated() {
-    let sink = Arc::new(MockIrqSink::new(Some(AxError::Io)));
+    let backend_error = IrqError::Backend {
+        line: IrqLineId(4),
+        operation: "signal",
+        detail: "controller unavailable".into(),
+    };
+    let sink = Arc::new(MockIrqSink::new(Some(backend_error.clone())));
     let edge_line = IrqLine::new(
         IrqLineId(4),
         InterruptTriggerMode::EdgeTriggered,
@@ -128,7 +150,7 @@ fn sink_errors_are_propagated() {
     );
     let level_line = IrqLine::new(IrqLineId(33), InterruptTriggerMode::LevelTriggered, sink);
 
-    assert_eq!(edge_line.pulse(), Err(AxError::Io));
-    assert_eq!(level_line.raise(), Err(AxError::Io));
-    assert_eq!(level_line.lower(), Err(AxError::Io));
+    assert_eq!(edge_line.pulse(), Err(backend_error.clone()));
+    assert_eq!(level_line.raise(), Err(backend_error.clone()));
+    assert_eq!(level_line.lower(), Err(backend_error));
 }
