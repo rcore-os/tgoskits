@@ -36,15 +36,23 @@ When smp8 boots (see `smp8-staged-build-aarch64.toml`), the verdict is **FULL**.
 
 ## Deploy + run (board)
 
-The xtask deploys the KERNEL only; the binary must be on the board's ext4 first.
+The xtask deploys the KERNEL only. Like every other orangepi board case (e.g.
+npu-yolov8's `/guest/npu_demo`), the userspace binary is provisioned **once,
+out-of-band** onto the board's persistent ext4 — NOT rebuilt/redeployed per CI
+run. The board case just execs the pre-staged `/usr/local/bin/perf-validate`; if
+it is absent, the `not found` fail_regex fails the run fast instead of hanging.
+
+Pre-stage it once (and again only when `src/perf_validate.c` changes):
 
 ```sh
-# 1. Cross-compile a static aarch64 binary (host, via the container):
+# 1. Cross-compile a static aarch64 binary (host). Uses the container toolchain
+#    if Docker is present, else falls back to a native aarch64-linux-*-gcc:
 ./deploy.sh build                 # -> ./perf-validate
 
 # 2. With the board in OrangePi Linux (cabled NIC up), deploy it:
-./deploy.sh deploy   # stages to /tmp, sudo-installs to /usr/local/bin/perf-validate
+./deploy.sh deploy   # stages to /tmp, sudo-installs to /usr/local/bin/perf-validate + sync
 #    (override BOARD_USER / BOARD_IP / BOARD_DEST / BOARD_PW as needed)
+#    — or scp it yourself, then `sync` on the board (see the commit=600 note below).
 
 # 3. Power-cycle into StarryOS and run the board test from the ostool-server host
 #    (board OFF at launch, powered ON at the "waiting for power on" cue):
@@ -54,6 +62,8 @@ cargo xtask starry test board -c perf-validate \
 
 Success matches `BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)`; the unique final
 line `BOARD_PERF_VALIDATE_DONE` lets a hang time out instead of matching early.
+The self-hosted CI board runner needs this binary pre-staged the same way (a
+one-time step for the runner owner) — the CI job does not build or deploy it.
 
 ### First-run caveats (see board-run-mechanics)
 
@@ -65,6 +75,11 @@ line `BOARD_PERF_VALIDATE_DONE` lets a hang time out instead of matching early.
   `enP3p49s0`); whichever is UP but only has a `169.254.x` link-local address is
   the live one — add the static IP to it: `sudo ip addr add 192.168.50.2/24 dev
   <live-nic>`. The host NIC `en5` needs `sudo ifconfig en5 192.168.50.1 …`.
+- The board's ext4 is mounted `commit=600` (dirty pages flush to the SD only
+  every 10 min). After any scp/install you MUST `sync` on the board before
+  power-cycling into StarryOS, or the fresh binary lives only in Linux's page
+  cache and StarryOS mounts the SD without it → `perf-validate: not found`.
+  `deploy.sh deploy` does this sync for you.
 - If Linux boot reports ext4 corruption, run a U-Boot fsck repair first (prior
   board tests have left the rootfs needing repair).
 - The binary writes `perf_test_force_clusters=0` on exit; in board mode it never

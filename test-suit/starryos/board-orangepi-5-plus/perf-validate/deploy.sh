@@ -37,18 +37,38 @@ BOARD_IP="${BOARD_IP:-192.168.50.2}"
 BOARD_DEST="${BOARD_DEST:-/usr/local/bin/perf-validate}"
 BOARD_PW="${BOARD_PW:-orangepi}"
 
+CFLAGS_COMMON="-static -O2 -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror"
+
+# Prefer the container toolchain (aarch64-linux-musl-gcc, matches the perf 6.6
+# build env). If Docker is unavailable (e.g. the self-hosted board runner), fall
+# back to any native aarch64 cross-gcc on PATH. The binary is pure syscalls +
+# libc, so a static glibc/musl aarch64 build is equally fine.
 build() {
-  echo "[perf-validate] cross-compiling static aarch64 musl binary..."
-  docker run --rm --platform linux/amd64 \
-    -v "$REPO_ROOT:$REPO_ROOT" -w "$HERE" \
-    "$IMAGE" bash -lc '
-      set -e
-      CC=aarch64-linux-musl-gcc
-      command -v "$CC" >/dev/null 2>&1 || CC=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-      "$CC" -static -O2 -std=c11 -D_GNU_SOURCE \
-        -Wall -Wextra -Werror \
-        -o '"$OUT"' '"$SRC"'
-    '
+  echo "[perf-validate] cross-compiling static aarch64 binary..."
+  if command -v docker >/dev/null 2>&1; then
+    docker run --rm --platform linux/amd64 \
+      -v "$REPO_ROOT:$REPO_ROOT" -w "$HERE" \
+      "$IMAGE" bash -lc '
+        set -e
+        CC=aarch64-linux-musl-gcc
+        command -v "$CC" >/dev/null 2>&1 || CC=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+        "$CC" '"$CFLAGS_COMMON"' -o '"$OUT"' '"$SRC"'
+      '
+  else
+    local CC=""
+    for cand in aarch64-linux-musl-gcc aarch64-linux-gnu-gcc aarch64-none-linux-gnu-gcc; do
+      if command -v "$cand" >/dev/null 2>&1; then CC="$cand"; break; fi
+    done
+    if [ -z "$CC" ]; then
+      echo "[perf-validate] no docker and no aarch64 cross-gcc on PATH." >&2
+      echo "  install one of: aarch64-linux-musl-gcc / aarch64-linux-gnu-gcc," >&2
+      echo "  or run this where docker is available." >&2
+      exit 1
+    fi
+    echo "[perf-validate] docker absent; using native $CC"
+    # shellcheck disable=SC2086
+    "$CC" $CFLAGS_COMMON -o "$OUT" "$SRC"
+  fi
   echo "[perf-validate] built: $OUT"
   file "$OUT" 2>/dev/null || true
 }

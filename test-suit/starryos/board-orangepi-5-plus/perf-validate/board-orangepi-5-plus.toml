@@ -1,14 +1,14 @@
 # Board run config for perf-validate on the Orange Pi 5 Plus.
 #
-# The `perf-validate` binary lives on the board's persistent ext4 rootfs (the
-# board runner deploys only the KERNEL; userspace assets are provisioned
-# out-of-band, the same convention as other board cases). `deploy.sh` cross-
-# compiles the static aarch64 binary and installs it to /usr/local/bin/perf-
-# validate (the shared ext4 that StarryOS mounts as /, alongside the perf 6.6
-# binary). The self-hosted board CI job runs `deploy.sh deploy` as a pre-step so
-# provisioning is automated (see .github/workflows/ci.yml). If the binary is
-# absent, the `not found` fail_regex below fails the case fast instead of hanging
-# to the 900s timeout. See README.md.
+# The `perf-validate` binary lives PRE-STAGED on the board's persistent ext4 at
+# /usr/local/bin/perf-validate. The board runner deploys only the KERNEL, so —
+# like every other orangepi board case (e.g. npu-yolov8's /guest/npu_demo) —
+# userspace assets are provisioned OUT-OF-BAND, once, not per CI run. Build the
+# binary from the committed source with `./deploy.sh build` (container toolchain,
+# or a native aarch64 cross-gcc) and place it on the board (`./deploy.sh deploy`,
+# or scp + `sync`); see README.md. The CI board job does NOT build or deploy it.
+# If the binary is absent, the `not found` fail_regex below fails the case fast
+# instead of hanging to the 900s timeout.
 #
 # NOTE: the SAME validator source (src/perf_validate.c) is byte-identical to
 # test-suit/starryos/qemu/system/perf-validate, which builds from source and runs
@@ -23,9 +23,9 @@
 # Today (smp1 boot): VERDICT PARTIAL = "single-core regression anchor passed;
 # big.LITTLE UNVALIDATED, blocked by the smp8 boot hang" — that is a SUCCESS.
 # When smp8 boots, VERDICT FULL. So success matches FULL|PARTIAL; FAIL/INVALID
-# (and panic) fail. ostool tears down on the FIRST success match, so we gate on
-# the explicit verdict line, and DONE is the unconditional last line — a hang
-# after partial output times out instead of matching an early line.
+# (and panic / not-found) fail. ostool tears down on the FIRST success match, so
+# we gate on the explicit verdict line, and DONE is the unconditional last line —
+# a hang after partial output times out instead of matching an early line.
 board_type   = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = "/usr/local/bin/perf-validate"
