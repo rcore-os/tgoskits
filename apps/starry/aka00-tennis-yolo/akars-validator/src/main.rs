@@ -2,6 +2,7 @@ mod camera;
 mod detector;
 mod image_bridge;
 mod tpu;
+mod yuv420;
 
 use std::{
     env, fmt, fs,
@@ -10,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    camera::CameraFrame,
+    camera::{CameraFrame, CviJpuDecoder, JpuScale},
     detector::Detection,
     tpu::{InferTiming, InferenceConfig, open_model},
 };
@@ -29,6 +30,8 @@ struct Cli {
     write_expected: bool,
     warmup: usize,
     repeat: usize,
+    jpu_device: Option<PathBuf>,
+    jpu_scale: Option<JpuScale>,
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +91,7 @@ impl BenchmarkSamples {
         self.total_us.push(total_us);
     }
 
-    fn format_result(&self, measured_runs: usize, images: usize) -> String {
+    fn format_result(&self, measured_runs: usize, images: usize, pipeline: &str) -> String {
         let decode = timing_stats(&self.decode_us).expect("benchmark has decode samples");
         let resize = timing_stats(&self.resize_us).expect("benchmark has resize samples");
         let preprocess =
@@ -98,12 +101,12 @@ impl BenchmarkSamples {
             timing_stats(&self.postprocess_us).expect("benchmark has postprocess samples");
         let total = timing_stats(&self.total_us).expect("benchmark has total samples");
         format!(
-            "AKARS_TENNIS_BENCH_RESULT measured_runs={measured_runs} images={images} samples={} \
-             decode_us_avg={} decode_us_p50={} decode_us_p95={} resize_us_avg={} resize_us_p50={} \
-             resize_us_p95={} preprocess_us_avg={} preprocess_us_p50={} preprocess_us_p95={} \
-             forward_us_avg={} forward_us_p50={} forward_us_p95={} postprocess_us_avg={} \
-             postprocess_us_p50={} postprocess_us_p95={} total_us_avg={} total_us_p50={} \
-             total_us_p95={}",
+            "AKARS_TENNIS_BENCH_RESULT pipeline={pipeline} measured_runs={measured_runs} \
+             images={images} samples={} decode_us_avg={} decode_us_p50={} decode_us_p95={} \
+             resize_us_avg={} resize_us_p50={} resize_us_p95={} preprocess_us_avg={} \
+             preprocess_us_p50={} preprocess_us_p95={} forward_us_avg={} forward_us_p50={} \
+             forward_us_p95={} postprocess_us_avg={} postprocess_us_p50={} postprocess_us_p95={} \
+             total_us_avg={} total_us_p50={} total_us_p95={}",
             self.total_us.len(),
             decode.average_us,
             decode.p50_us,
@@ -199,6 +202,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let mut jpu_decoder = match cli.jpu_device.as_deref() {
+        Some(device) => {
+            let scale = cli.jpu_scale.unwrap_or(JpuScale::Half);
+            let mut decoder = CviJpuDecoder::open(device, scale)?;
+            let mut max_frame_len = 0;
+            for input in &input_images {
+                max_frame_len = max_frame_len.max(decoder.prepare_jpeg(&input.frame.jpeg)?);
+            }
+            decoder.start()?;
+            println!(
+                "AKARS_TENNIS_PIPELINE mode=jpu scale={} device={} prepared_bytes={max_frame_len}",
+                scale,
+                shell_word(&device.display().to_string())
+            );
+            Some(decoder)
+        }
+        None => {
+            println!("AKARS_TENNIS_PIPELINE mode=software");
+            None
+        }
+    };
+    let pipeline = jpu_decoder
+        .as_ref()
+        .map(|decoder| format!("jpu-{}", decoder.scale()))
+        .unwrap_or_else(|| "software".to_owned());
+
     let mut model = open_model(&cli.model)?;
     let config = InferenceConfig {
         classes_num: cli.classes,
@@ -208,7 +237,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     for _ in 0..cli.warmup {
         for input in &input_images {
-            let _ = infer_frame(&mut model, &input.frame, config)?;
+            let _ = infer_frame(&mut model, &input.frame, config, jpu_decoder.as_mut())?;
         }
     }
     if cli.warmup > 0 {
@@ -220,7 +249,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cli.write_expected {
-        let actual_set = run_measured_pass(&mut model, &input_images, config, 1, None)?;
+        let actual_set = run_measured_pass(
+            &mut model,
+            &input_images,
+            config,
+            1,
+            None,
+            jpu_decoder.as_mut(),
+            &pipeline,
+        )?;
         fs::write(
             &cli.expected,
             format_expected(&actual_set, cli.classes, cli.conf, cli.iou),
@@ -242,11 +279,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             config,
             run_index,
             Some(&mut samples),
+            jpu_decoder.as_mut(),
+            &pipeline,
         )?;
         compare_expected(&expected, &actual_set)?;
     }
     println!("AKARS_TENNIS_VALIDATE_PASS images={}", input_images.len());
-    println!("{}", samples.format_result(cli.repeat, input_images.len()));
+    println!(
+        "{}",
+        samples.format_result(cli.repeat, input_images.len(), &pipeline)
+    );
     Ok(())
 }
 
@@ -256,10 +298,13 @@ fn run_measured_pass(
     config: InferenceConfig,
     run_index: usize,
     mut samples: Option<&mut BenchmarkSamples>,
+    mut jpu_decoder: Option<&mut CviJpuDecoder>,
+    pipeline: &str,
 ) -> Result<ExpectedSet, Box<dyn std::error::Error>> {
     let mut actual = Vec::with_capacity(input_images.len());
     for (index, input) in input_images.iter().enumerate() {
-        let (normalized, timing, total_us) = infer_frame(model, &input.frame, config)?;
+        let (normalized, timing, total_us) =
+            infer_frame(model, &input.frame, config, jpu_decoder.as_deref_mut())?;
 
         println!(
             "AKARS_TENNIS_RESULT image={index} path={} detections={} run={run_index}",
@@ -281,8 +326,8 @@ fn run_measured_pass(
             );
         }
         println!(
-            "AKARS_TENNIS_TIMING image={index} preprocess_us={} forward_us={} postprocess_us={} \
-             total_us={} run={run_index} decode_us={} resize_us={}",
+            "AKARS_TENNIS_TIMING image={index} pipeline={pipeline} preprocess_us={} forward_us={} \
+             postprocess_us={} total_us={} run={run_index} decode_us={} resize_us={}",
             timing.preprocess_us,
             timing.forward_us,
             timing.postprocess_us,
@@ -312,10 +357,22 @@ fn infer_frame(
     model: &mut tpu::YoloModel,
     frame: &CameraFrame,
     config: InferenceConfig,
-) -> Result<(Vec<ExpectedDetection>, InferTiming, i64), tpu::TpuError> {
+    jpu_decoder: Option<&mut CviJpuDecoder>,
+) -> Result<(Vec<ExpectedDetection>, InferTiming, i64), Box<dyn std::error::Error>> {
     let mut timing = InferTiming::default();
     let total_start = Instant::now();
-    let detections = model.infer_timed(frame, config, Some(&mut timing))?;
+    let detections = match jpu_decoder {
+        Some(decoder) => {
+            let decoded = decoder.decode_jpeg(&frame.jpeg)?;
+            model.infer_yuv420_timed(
+                decoded.planar,
+                decoded.decode_us,
+                config,
+                Some(&mut timing),
+            )?
+        }
+        None => model.infer_timed(frame, config, Some(&mut timing))?,
+    };
     let total_us = total_start.elapsed().as_micros() as i64;
     Ok((normalize_detections(&detections), timing, total_us))
 }
@@ -331,6 +388,8 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
         write_expected: false,
         warmup: 0,
         repeat: 1,
+        jpu_device: None,
+        jpu_scale: None,
     };
     let mut positional = 0;
     let mut args = args.peekable();
@@ -345,6 +404,10 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
             "--iou" => cli.iou = take_parse(&mut args, "--iou")?,
             "--warmup" => cli.warmup = take_parse(&mut args, "--warmup")?,
             "--repeat" => cli.repeat = take_parse(&mut args, "--repeat")?,
+            "--jpu-device" => {
+                cli.jpu_device = Some(PathBuf::from(take_value(&mut args, "--jpu-device")?));
+            }
+            "--jpu-scale" => cli.jpu_scale = Some(take_parse(&mut args, "--jpu-scale")?),
             "--write-expected" => cli.write_expected = true,
             value if value.starts_with('-') => {
                 return Err(ValidationError::new(format!("unknown option: {value}")));
@@ -380,12 +443,23 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli, ValidationError>
     if cli.repeat == 0 {
         return Err(ValidationError::new("--repeat must be positive"));
     }
+    if cli.jpu_scale.is_some() && cli.jpu_device.is_none() {
+        return Err(ValidationError::new("--jpu-scale requires --jpu-device"));
+    }
     if cli.write_expected && (cli.warmup != 0 || cli.repeat != 1) {
         return Err(ValidationError::new(
             "--write-expected requires --warmup 0 and --repeat 1",
         ));
     }
     Ok(cli)
+}
+
+fn take_value(
+    args: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+    option: &str,
+) -> Result<String, ValidationError> {
+    args.next()
+        .ok_or_else(|| ValidationError::new(format!("{option} expects a value")))
 }
 
 fn take_parse<T: std::str::FromStr>(
@@ -685,7 +759,8 @@ fn class_name(cls: i32) -> &'static str {
 fn print_usage() {
     eprintln!(
         "Usage: akars-tennis-validator <model.cvimodel> <images.txt> <expected.txt> \
-         [--write-expected] [--classes N] [--conf X] [--iou X] [--warmup N] [--repeat N]"
+         [--write-expected] [--classes N] [--conf X] [--iou X] [--warmup N] [--repeat N] \
+         [--jpu-device PATH --jpu-scale full|half|quarter|eighth]"
     );
 }
 
@@ -715,6 +790,27 @@ mod tests {
         let cli = parse_cli(cli_args(&["--warmup", "2", "--repeat", "5"]).into_iter()).unwrap();
         assert_eq!(cli.warmup, 2);
         assert_eq!(cli.repeat, 5);
+    }
+
+    #[test]
+    fn benchmark_cli_accepts_explicit_jpu_replay_pipeline() {
+        let cli = parse_cli(
+            cli_args(&["--jpu-device", "/dev/cvi_vc_dec0", "--jpu-scale", "quarter"]).into_iter(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            cli.jpu_device.as_deref(),
+            Some(Path::new("/dev/cvi_vc_dec0"))
+        );
+        assert_eq!(cli.jpu_scale, Some(JpuScale::Quarter));
+    }
+
+    #[test]
+    fn benchmark_cli_rejects_scale_without_jpu_device() {
+        let error = parse_cli(cli_args(&["--jpu-scale", "half"]).into_iter()).unwrap_err();
+
+        assert!(error.to_string().contains("requires --jpu-device"));
     }
 
     #[test]
@@ -774,12 +870,13 @@ mod tests {
         );
 
         assert_eq!(
-            samples.format_result(1, 2),
-            "AKARS_TENNIS_BENCH_RESULT measured_runs=1 images=2 samples=2 decode_us_avg=15 \
-             decode_us_p50=10 decode_us_p95=20 resize_us_avg=25 resize_us_p50=20 resize_us_p95=30 \
-             preprocess_us_avg=40 preprocess_us_p50=30 preprocess_us_p95=50 forward_us_avg=50 \
-             forward_us_p50=40 forward_us_p95=60 postprocess_us_avg=60 postprocess_us_p50=50 \
-             postprocess_us_p95=70 total_us_avg=150 total_us_p50=120 total_us_p95=180"
+            samples.format_result(1, 2, "software"),
+            "AKARS_TENNIS_BENCH_RESULT pipeline=software measured_runs=1 images=2 samples=2 \
+             decode_us_avg=15 decode_us_p50=10 decode_us_p95=20 resize_us_avg=25 resize_us_p50=20 \
+             resize_us_p95=30 preprocess_us_avg=40 preprocess_us_p50=30 preprocess_us_p95=50 \
+             forward_us_avg=50 forward_us_p50=40 forward_us_p95=60 postprocess_us_avg=60 \
+             postprocess_us_p50=50 postprocess_us_p95=70 total_us_avg=150 total_us_p50=120 \
+             total_us_p95=180"
         );
     }
 

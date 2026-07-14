@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::{any::Any, time::Duration};
 
 use ax_errno::AxError;
@@ -19,10 +20,10 @@ use sg200x_bsp::{
         host::{self, UvcEnumerated, dwc2, dwc2::ep0 as dwc2_ep0},
     },
 };
-use sg200x_jpu::{JpuDecoder, JpuMmio, JpuScale};
 use starry_vm::{VmMutPtr, vm_write_slice};
 use tock_registers::interfaces::Writeable;
 
+use super::cvi_jpu::CviJpu;
 use crate::pseudofs::DeviceOps;
 
 const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
@@ -37,8 +38,6 @@ const TOP_MMIO_SIZE: usize = 0x4000;
 /// GPIO, DWC2 controller, USB2 PHY). Each block's registers fit within one 4K
 /// page; FMUX/IOBLK share a page so their mappings coincide (idempotent).
 const REG_MMIO_SIZE: usize = 0x1000;
-const JPU_REG_BASE: usize = 0x0B00_0000;
-const VC_REG_BASE: usize = 0x0B03_0000;
 
 /// Map a physical MMIO region into the kernel address space and return its
 /// virtual base. Unlike `phys_to_virt`, this works on dynamic platforms where
@@ -53,6 +52,7 @@ fn iomap_usize(paddr: usize, size: usize) -> usize {
 const CAMERA_FORMAT_MJPEG: u8 = 1;
 const MIN_VALID_JPEG_BYTES: usize = 4096;
 const MAX_CAPTURE_TRIES: u32 = 8;
+const NO_UVC_CAMERA: &str = "no UVC camera detected";
 /// Default resolution cap (640×480 = 307200 pixels) guiding UVC frame selection.
 const DEFAULT_RESOLUTION: u32 = 640 * 480;
 
@@ -79,15 +79,22 @@ struct UsbCameraSession {
 #[derive(Default)]
 struct UsbCameraState {
     session: Option<UsbCameraSession>,
-    jpu: Option<JpuDecoder>,
 }
 
 pub struct CviCamera {
     state: Mutex<UsbCameraState>,
+    jpu: Arc<CviJpu>,
 }
 
 fn ep0_dma_virt_to_phys(p: *const u8) -> u32 {
     virt_to_phys(VirtAddr::from(p as usize)).as_usize() as u32
+}
+
+fn root_usb_device_connected() -> bool {
+    // SAFETY: camera initialization has installed the DWC2 MMIO base, and the
+    // camera state mutex serializes this read with all other host operations.
+    let hprt0 = unsafe { dwc2::dwc2_hprt0_read() };
+    dwc2::hprt_connsts(hprt0)
 }
 
 unsafe fn enable_usb_clocks_cv181x() {
@@ -199,10 +206,14 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
                 "cvi-camera: USB enumerate retries exhausted: {:?}",
                 last_err
             );
-            "USB topology enumeration failed"
+            if root_usb_device_connected() {
+                "USB topology enumeration failed"
+            } else {
+                NO_UVC_CAMERA
+            }
         })?;
 
-    let cam = extras.uvc.ok_or("no UVC camera detected")?;
+    let cam = extras.uvc.ok_or(NO_UVC_CAMERA)?;
     info!(
         "cvi-camera: UVC addr={} VID={:04x} PID={:04x} ep0_mps={}",
         cam.addr, cam.vid, cam.pid, cam.ep0_mps
@@ -285,7 +296,7 @@ fn capture_frame(session: &UsbCameraSession) -> Result<&'static [u8], &'static s
         last_n,
         last_msg.unwrap_or("?")
     );
-    dwc2_ep0::dma_rx_slice(uvc::UVC_ASSEMBLED_JPEG_DMA_OFF, last_n).ok_or("DMA slice out of bounds")
+    Err("no complete JPEG frame after capture retries")
 }
 
 impl UsbCameraState {
@@ -293,7 +304,11 @@ impl UsbCameraState {
         if self.session.is_none() {
             self.session = Some(init_usb_camera().map_err(|msg| {
                 warn!("cvi-camera: init failed: {msg}");
-                AxError::Io
+                if msg == NO_UVC_CAMERA {
+                    AxError::NoSuchDevice
+                } else {
+                    AxError::Io
+                }
             })?);
         }
         Ok(())
@@ -301,7 +316,7 @@ impl UsbCameraState {
 
     fn info(&mut self) -> VfsResult<CameraInfo> {
         self.ensure_initialized()?;
-        let session = self.session.as_ref().ok_or(AxError::BadState)?;
+        let session = self.session.as_ref().ok_or(AxError::NoSuchDevice)?;
         Ok(CameraInfo {
             width: session.sel.frame_w,
             height: session.sel.frame_h,
@@ -312,57 +327,27 @@ impl UsbCameraState {
 
     fn frame(&mut self) -> VfsResult<&'static [u8]> {
         self.ensure_initialized()?;
-        capture_frame(self.session.as_ref().ok_or(AxError::BadState)?).map_err(|msg| {
+        capture_frame(self.session.as_ref().ok_or(AxError::NoSuchDevice)?).map_err(|msg| {
             warn!("cvi-camera: capture failed: {msg}");
             AxError::Io
         })
     }
-
-    fn ensure_jpu(&mut self) -> VfsResult<&mut JpuDecoder> {
-        if self.jpu.is_none() {
-            let jpu_v = iomap_usize(JPU_REG_BASE, REG_MMIO_SIZE);
-            let top_v = iomap_usize(TOP_BASE, TOP_MMIO_SIZE);
-            let vc_v = iomap_usize(VC_REG_BASE, REG_MMIO_SIZE);
-            let dma = axklib::dma::device_with_mask(u32::MAX as u64);
-            let decoder = unsafe {
-                JpuDecoder::new(JpuMmio::new(jpu_v, top_v, vc_v), dma).map_err(|e| {
-                    warn!("cvi-camera: JPU init failed: {e}");
-                    AxError::Io
-                })?
-            };
-            self.jpu = Some(decoder);
-        }
-        Ok(self.jpu.as_mut().unwrap())
-    }
-
-    fn write_yuv_frame(&mut self, destination: *mut u8, scale: JpuScale) -> VfsResult<usize> {
-        let jpeg = self.frame()?;
-        let jpu = self.ensure_jpu()?;
-        let result = jpu.decode_scaled(jpeg, scale).map_err(|e| {
-            warn!("cvi-camera: JPU decode failed: {e}");
-            AxError::Io
-        })?;
-        info!(
-            "cvi-camera: JPU decode OK scale={:?} visible={}x{} storage={}x{} y_stride={} yuv={} \
-             bytes",
-            result.layout.scale,
-            result.width,
-            result.height,
-            result.layout.storage.width,
-            result.layout.storage.height,
-            result.layout.y.stride,
-            result.yuv_data.len()
-        );
-        vm_write_slice(destination, result.yuv_data)?;
-        Ok(result.yuv_data.len())
-    }
 }
 
 impl CviCamera {
-    pub fn new() -> Self {
+    pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
             state: Mutex::new(UsbCameraState::default()),
+            jpu,
         }
+    }
+
+    fn write_yuv_frame(&self, destination: *mut u8) -> VfsResult<usize> {
+        // Hold the camera lock until decode has consumed the static USB DMA
+        // slice; another capture must not overwrite it concurrently.
+        let mut state = self.state.lock();
+        let jpeg = state.frame()?;
+        self.jpu.decode_camera_to_user(jpeg, destination)
     }
 }
 
@@ -399,11 +384,8 @@ impl DeviceOps for CviCamera {
                 vm_write_slice(arg as *mut u8, frame)?;
                 Ok(frame.len())
             }
-            CVI_CAMERA_IOCTL_GET_YUV_FRAME => self
-                .state
-                .lock()
-                .write_yuv_frame(arg as *mut u8, JpuScale::Full),
-            _ => Err(AxError::InvalidInput),
+            CVI_CAMERA_IOCTL_GET_YUV_FRAME => self.write_yuv_frame(arg as *mut u8),
+            _ => Err(AxError::NotATty),
         }
     }
 }

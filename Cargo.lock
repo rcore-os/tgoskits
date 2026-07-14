@@ -2621,6 +2621,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cvi-vdec-uapi"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "darling"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7694,7 +7701,9 @@ dependencies = [
  "cfg-if",
  "chrono",
  "crab-usb",
+ "cvi-vdec-uapi",
  "ddebug",
+ "dma-api",
  "downcast-rs",
  "enum_dispatch",
  "event-listener",
