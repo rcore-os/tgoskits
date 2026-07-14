@@ -10,10 +10,6 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
   "starry-kernel/vsock",
-  # RGA + dma-heap (aarch64 only — RK-specific). The probe is inert in QEMU (no RGA FDT node),
-  # so /dev/rga + /dev/dma_heap exist and the rga-abi / dma-heap-dmabuf system tests exercise the
-  # real ioctl plumbing (graceful no-hardware path) instead of skipping.
-  "starry-kernel/rga",
 ]
 max_cpu_num = 4
 log = "Warn"
