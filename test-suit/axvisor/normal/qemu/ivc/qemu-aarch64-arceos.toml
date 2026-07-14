@@ -21,6 +21,7 @@ fail_regex = [
 success_regex = [
     "ivc publish ok",
     "ivc recv seq=",
+    "ivc ack seq=5",
     "(?m)^ivc demo pass\\s*$",
 ]
 to_bin = true
