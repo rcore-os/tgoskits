@@ -1,9 +1,19 @@
 # Board run config for perf-validate on the Orange Pi 5 Plus.
 #
-# The `perf-validate` binary must already be on the board's ext4 rootfs (the
-# xtask deploys the KERNEL only). Cross-compile + scp it first with `deploy.sh`,
-# which installs it to /usr/local/bin/perf-validate (the shared ext4 that
-# StarryOS mounts as /, alongside the perf 6.6 binary). See README.md.
+# The `perf-validate` binary lives on the board's persistent ext4 rootfs (the
+# board runner deploys only the KERNEL; userspace assets are provisioned
+# out-of-band, the same convention as other board cases). `deploy.sh` cross-
+# compiles the static aarch64 binary and installs it to /usr/local/bin/perf-
+# validate (the shared ext4 that StarryOS mounts as /, alongside the perf 6.6
+# binary). The self-hosted board CI job runs `deploy.sh deploy` as a pre-step so
+# provisioning is automated (see .github/workflows/ci.yml). If the binary is
+# absent, the `not found` fail_regex below fails the case fast instead of hanging
+# to the 900s timeout. See README.md.
+#
+# NOTE: the SAME validator source (src/perf_validate.c) is byte-identical to
+# test-suit/starryos/qemu/system/perf-validate, which builds from source and runs
+# in CI under QEMU — so the validator logic already has deterministic CI coverage;
+# this board case adds only the silicon-only checks.
 #
 # It auto-discovers topology and prints PASS/FAIL/SKIP/INFO per check, then:
 #   BOARD_PERF_SUMMARY ...
@@ -22,6 +32,9 @@ shell_init_cmd = "/usr/local/bin/perf-validate"
 success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)\s*$']
 fail_regex = [
   '(?m)^BOARD_PERF_VALIDATE_VERDICT (FAIL|INVALID)',
+  # Binary not provisioned on the board rootfs — fail fast instead of hanging to
+  # the 900s timeout (the shell prints "<path>: not found" / "No such file").
+  '(?mi)perf-validate:? +(not found|no such file)',
   '(?i)\bpanic(?:ked)?\b',
   '(?i)segmentation fault',
   '(?i)SIGSEGV',
