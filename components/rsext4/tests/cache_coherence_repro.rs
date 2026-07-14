@@ -164,8 +164,7 @@ fn truncate_rewrite_reread_is_coherent() {
     let path = "/libfoo.so.3";
 
     // Phase 1: write initial data
-    mkfile(&mut dev, &mut fs, path, Some(b"old data - v1.0"), None)
-        .expect("create libfoo");
+    mkfile(&mut dev, &mut fs, path, Some(b"old data - v1.0"), None).expect("create libfoo");
 
     // Phase 2: truncate to 0 (simulates apk upgrading the .so)
     let (ino, _) = get_inode_with_num(&mut fs, &mut dev, path)
@@ -174,16 +173,12 @@ fn truncate_rewrite_reread_is_coherent() {
     truncate_inode(&mut dev, &mut fs, ino, 0).expect("truncate to 0");
 
     // Phase 3: write new data (simulates apk installing new version)
-    let new_content: Vec<u8> = (0..8192u16)
-        .flat_map(|i| i.to_le_bytes())
-        .collect();
-    write_inode_data(&mut dev, &mut fs, ino, 0, &new_content)
-        .expect("write new data");
+    let new_content: Vec<u8> = (0..8192u16).flat_map(|i| i.to_le_bytes()).collect();
+    write_inode_data(&mut dev, &mut fs, ino, 0, &new_content).expect("write new data");
 
     // Phase 4: read back and verify — must see the new data, not old
     let mut buf = vec![0u8; new_content.len()];
-    let n = read_inode_data_into(&mut dev, &mut fs, ino, 0, &mut buf)
-        .expect("read back");
+    let n = read_inode_data_into(&mut dev, &mut fs, ino, 0, &mut buf).expect("read back");
     assert_eq!(n, new_content.len(), "read length");
     assert_eq!(
         buf, new_content,
