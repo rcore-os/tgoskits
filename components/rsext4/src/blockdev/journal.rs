@@ -252,6 +252,36 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         Ok(())
     }
 
+    /// Zeroes `count` consecutive device blocks starting at `start`.
+    ///
+    /// Unlike a per-block `write_block` loop, this coalesces the zero fill into
+    /// chunked multi-block writes (`CHUNK` blocks per device I/O). On a
+    /// low-IOPS device each device call costs a full IOP regardless of transfer
+    /// size, so batching `count` single-block writes into `ceil(count/CHUNK)`
+    /// multi-block writes cuts the IOP cost by up to `CHUNK`× — the dominant
+    /// mkfs win (journal + inode-table initialization).
+    ///
+    /// Writes go through the inner cached device's `write_blocks` so overlapping
+    /// cache entries stay coherent. The journal is bypassed (raw area init).
+    pub fn zero_blocks(&mut self, start: AbsoluteBN, count: u32) -> Ext4Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        /// Blocks zeroed per device I/O. 256 × 4 KiB = 1 MiB, bounded memory.
+        const CHUNK: u32 = 256;
+        let buf = alloc::vec![0u8; BLOCK_SIZE * CHUNK as usize];
+        let mut remaining = count;
+        let mut cur = start;
+        while remaining > 0 {
+            let n = remaining.min(CHUNK);
+            let bytes = BLOCK_SIZE * n as usize;
+            self.inner.write_blocks(&buf[..bytes], cur, n)?;
+            cur = cur.checked_add(n)?;
+            remaining -= n;
+        }
+        Ok(())
+    }
+
     /// Commits all buffered journal transactions during unmount.
     pub fn umount_commit(&mut self) {
         if !self.journal_use {
@@ -401,6 +431,19 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     /// Flushes the inner cached device.
     pub fn cantflush(&mut self) -> Ext4Result<()> {
         self.inner.flush()
+    }
+
+    /// Flushes dirty cached blocks then drops all cached entries.
+    ///
+    /// Used during mkfs before re-initializing a region from scratch, so that
+    /// stale cached copies of soon-to-be-rewritten blocks (e.g. group-0
+    /// bitmaps read earlier for descriptor checksumming) cannot shadow the
+    /// fresh on-disk data. The `BlockDev` cache does not invalidate duplicate
+    /// entries on `write_block`, so without this a batched zero-fill that does
+    /// not churn the cache can leave stale entries that cause later checksum
+    /// mismatches.
+    pub fn invalidate_block_cache(&mut self) -> Ext4Result<()> {
+        self.inner.invalidate_cache()
     }
 
     /// Returns the total number of device blocks.
