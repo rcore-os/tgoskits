@@ -93,9 +93,11 @@ impl DeviceContainer {
     /// releasing it.
     pub fn reclaim_all_held_by(&self, pid: u32) -> Vec<DeviceId> {
         let mut reclaimed = Vec::new();
-        for (id, dev) in self.devices.iter() {
-            if dev.reclaim_if_held_by(pid) {
-                reclaimed.push(*id);
+        for (id, devs) in self.devices.iter() {
+            for dev in devs {
+                if dev.reclaim_if_held_by(pid) {
+                    reclaimed.push(*id);
+                }
             }
         }
         reclaimed
