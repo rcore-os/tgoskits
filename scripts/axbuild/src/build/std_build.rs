@@ -288,8 +288,14 @@ pub(super) fn pass_std_build_nested_features(
         }
     }
 
-    if axstd_feature_is_available("std-compat", axstd_features) {
-        cargo_features.push("ax-std/std-compat".to_string());
+    // Runtime-discovered platforms must map MMIO regions and initialize their
+    // interrupt controller before an application-specific feature can do so.
+    // Keep this baseline in every std-aware build so minimal applications can
+    // boot on QEMU without supplying platform plumbing themselves.
+    for feature in ["irq", "paging", "std-compat"] {
+        if axstd_feature_is_available(feature, axstd_features) {
+            cargo_features.push(format!("ax-std/{feature}"));
+        }
     }
 
     cargo_features.sort();

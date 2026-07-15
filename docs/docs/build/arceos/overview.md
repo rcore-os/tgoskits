@@ -85,6 +85,11 @@ cargo xtask arceos config ls
 
 输出 `os/arceos/configs/board/` 目录下所有可用的板卡配置名称，供 `defconfig <board>` 使用。每行一个板卡名。
 
+ArceOS 的 checked-in 配置与 StarryOS、Axvisor 保持相同布局：`board/` 存放
+`defconfig` 构建模板，`qemu/` 存放默认使用、也可通过 `--qemu-config` 显式选择的
+`qemu-<arch>.toml` 运行模板。应用目录内的同名文件可用于显式指定应用专属的
+成功正则、主机服务和运行时磁盘设置。
+
 ## 用法示例
 
 ```bash

@@ -1,0 +1,5 @@
+package = "arceos-helloworld"
+target = "loongarch64-unknown-none-softfloat"
+features = []
+log = "Warn"
+max_cpu_num = 1

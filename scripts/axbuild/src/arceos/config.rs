@@ -37,16 +37,7 @@ fn write_board_to_default_build_config(
         &board.package,
         &board.target,
     );
-    if let Some(parent) = build_config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&board.path, &build_config_path).map_err(|e| {
-        anyhow!(
-            "failed to copy ArceOS board config {} to {}: {e}",
-            board.path.display(),
-            build_config_path.display()
-        )
-    })?;
+    write_board_to_default_build_config_at(&build_config_path, board)?;
     Ok(build_config_path)
 }
 
@@ -68,11 +59,46 @@ fn update_snapshot_for_board(
     Ok(())
 }
 
+pub(crate) fn ensure_default_build_config_for_target(
+    workspace_root: &Path,
+    package: &str,
+    target: &str,
+    build_config_path: &Path,
+) -> anyhow::Result<Option<Board>> {
+    if build_config_path.exists() {
+        return Ok(None);
+    }
+
+    let Some(board) = board::default_qemu_board_for_target(workspace_root, package, target)? else {
+        return Ok(None);
+    };
+    write_board_to_default_build_config_at(build_config_path, &board)?;
+    update_snapshot_for_board(workspace_root, &board, build_config_path)?;
+    Ok(Some(board))
+}
+
 pub(crate) fn write_defconfig(workspace_root: &Path, board_name: &str) -> anyhow::Result<PathBuf> {
     let board = resolve_board(workspace_root, board_name)?;
     let build_config_path = write_board_to_default_build_config(workspace_root, &board)?;
     update_snapshot_for_board(workspace_root, &board, &build_config_path)?;
     Ok(build_config_path)
+}
+
+fn write_board_to_default_build_config_at(
+    build_config_path: &Path,
+    board: &Board,
+) -> anyhow::Result<()> {
+    if let Some(parent) = build_config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&board.path, build_config_path).map_err(|e| {
+        anyhow!(
+            "failed to copy ArceOS board config {} to {}: {e}",
+            board.path.display(),
+            build_config_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -183,5 +209,47 @@ log = "Info"
             .to_string();
         assert!(err.contains("unknown ArceOS board `missing`"));
         assert!(err.contains("orangepi-5-plus"));
+    }
+
+    #[test]
+    fn ensure_default_build_config_uses_matching_qemu_board_and_resets_runtime_config() {
+        let root = tempdir().unwrap();
+        write_workspace(root.path());
+        let source = r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Warn"
+"#;
+        write_board(root.path(), "qemu-aarch64", source);
+        let existing_snapshot = ArceosCommandSnapshot {
+            package: Some("arceos-helloworld".to_string()),
+            arch: Some("riscv64".to_string()),
+            target: Some("riscv64gc-unknown-none-elf".to_string()),
+            smp: None,
+            config: None,
+            qemu: ArceosQemuSnapshot {
+                qemu_config: Some("configs/qemu.toml".into()),
+            },
+            uboot: ArceosUbootSnapshot {
+                uboot_config: Some("configs/uboot.toml".into()),
+            },
+        };
+        existing_snapshot.store(root.path()).unwrap();
+
+        let output = root.path().join("tmp/custom-arceos.toml");
+        let board = ensure_default_build_config_for_target(
+            root.path(),
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            &output,
+        )
+        .unwrap();
+
+        assert_eq!(board.unwrap().name, "qemu-aarch64");
+        assert_eq!(fs::read_to_string(&output).unwrap(), source);
+        let snapshot = ArceosCommandSnapshot::load(root.path()).unwrap();
+        assert_eq!(snapshot.qemu.qemu_config, None);
+        assert_eq!(snapshot.uboot.uboot_config, None);
     }
 }
