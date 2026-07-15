@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SPI/MSI ownership with cleanup on controller drop.
 - Keep passthrough SPIs masked until their guest enables them and the fixed
   target vCPU binding is loaded, then mask them again before the vCPU is saved.
+- Filter passthrough GICD/GICR accesses by per-VM ownership, context-switch the
+  selected SGI/PPI mask, and synchronize assigned SPI configuration without
+  modifying host-owned bits in mixed registers.
+- Defer physical SPI handoff until activation, then restore the saved host
+  group, priority, trigger, route, pending, active, and enable state on release.
+- Report physical `GICD_TYPER` capacity and make LPI registers RAZ/WI unless an
+  emulated guest ITS is present.
 
 ### Removed
 

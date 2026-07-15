@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the caller's DAIF state across guest execution so an AArch64
+  passthrough controller can keep host IRQs masked until private GIC state is
+  restored.
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.15...arm_vcpu-v0.5.16) - 2026-07-07
 
 ### Other

@@ -17,8 +17,8 @@ pub use binding::GicV3VcpuBinding;
 use crate::{
     DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config, GicV3Mode, GicVcpuId,
     GuestMemory, IntId, InterruptState, ItsDeviceId, ItsState, PhysicalInterruptBinding,
-    PhysicalMsiBinding, PpiId, RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError,
-    VgicResult, backend_result,
+    PhysicalMsiBinding, PpiId, PrivateInterruptState, RedistributorState, SgiId, SgiTarget, SpiId,
+    TriggerMode, VgicError, VgicResult, backend_result,
 };
 
 /// Runtime wake capability associated with one attached vCPU.
@@ -55,6 +55,7 @@ struct ControllerState {
     physical_interrupts: BTreeMap<SpiId, PhysicalInterruptBinding>,
     physical_msi: BTreeMap<(ItsDeviceId, EventId), PhysicalMsiBinding>,
     active_vcpus: BTreeSet<GicVcpuId>,
+    private_host_snapshots: BTreeMap<GicVcpuId, PrivateInterruptState>,
     its: ItsState,
 }
 
@@ -88,6 +89,7 @@ impl GicV3Controller {
                     physical_interrupts: BTreeMap::new(),
                     physical_msi: BTreeMap::new(),
                     active_vcpus: BTreeSet::new(),
+                    private_host_snapshots: BTreeMap::new(),
                     its: ItsState::new(),
                 }),
             }),
@@ -252,11 +254,33 @@ impl GicV3Controller {
             state.resolve_sgi_targets(source, &targets)?
         };
         if self.inner.config.mode() == GicV3Mode::Passthrough {
-            return backend_result(self.inner.backend.send_physical_sgi(
-                source,
-                sgi,
-                &target_affinities,
-            ));
+            let (active_affinities, wakes) = {
+                let mut state = self.inner.state.lock();
+                let mut active_affinities = Vec::new();
+                let mut wakes = Vec::new();
+                for (target, affinity) in target_ids.into_iter().zip(target_affinities) {
+                    let active = state.active_vcpus.contains(&target);
+                    let redistributor = state.redistributor_mut(target, "send SGI")?;
+                    redistributor.pend_sgi(sgi);
+                    if active {
+                        active_affinities.push(affinity);
+                    } else {
+                        wakes.push(redistributor.wake());
+                    }
+                }
+                (active_affinities, wakes)
+            };
+            if !active_affinities.is_empty() {
+                backend_result(self.inner.backend.send_physical_sgi(
+                    source,
+                    sgi,
+                    &active_affinities,
+                ))?;
+            }
+            for wake in wakes {
+                wake.wake()?;
+            }
+            return Ok(());
         }
         let wakes = {
             let mut state = self.inner.state.lock();

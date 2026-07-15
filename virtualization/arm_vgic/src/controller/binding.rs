@@ -84,7 +84,9 @@ impl GicV3VcpuBinding {
     /// Harvests completed LRs, refills software pending work, and reloads ICH state.
     pub fn synchronize(&self) -> VgicResult {
         if self.uses_direct_physical_delivery() {
-            return Ok(());
+            return self
+                .controller
+                .synchronize_physical_private_interrupts(self.vcpu);
         }
         let mut saved = self.cpu_interface_snapshot()?;
         backend_result(

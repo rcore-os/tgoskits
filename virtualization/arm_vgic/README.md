@@ -64,10 +64,19 @@ command queue and never assumes guest physical addresses equal host addresses.
 - `Passthrough` requires explicit guest SPI/ITS ownership through
   `bind_physical_spi` and `bind_physical_msi`. Delivery goes only through the
   supplied physical backend; it never falls back to virtual list registers.
-  Binding an SPI leaves the physical line masked. Guest Distributor enable
-  state is applied only while the fixed target vCPU binding is loaded, and the
-  line is masked again when that binding is saved. Guest accesses to a shared
-  host ITS frame are rejected.
+  Binding an SPI only reserves ownership and does not modify host hardware.
+  On the fixed target vCPU's first load, the backend snapshots the released
+  host line and applies only that guest-owned SPI's group, priority, trigger,
+  pending, active, route, and enable state. Saving the binding masks the line;
+  teardown restores the host snapshot. Guest GICD/GICR mixed-register accesses
+  are ownership-filtered, host-owned bits are RAZ/WI, and guest accesses to a
+  shared host ITS frame are rejected.
+
+Passthrough private interrupt ownership is also explicit. The VMM selects the
+SGI/PPI mask from platform and guest firmware roles; a binding load installs
+only that mask and disables host-owned private lines, while save restores the
+host snapshot without discarding a host timer pending while the guest ran. The
+VMM must keep host IRQs masked across this complete load/run/save window.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

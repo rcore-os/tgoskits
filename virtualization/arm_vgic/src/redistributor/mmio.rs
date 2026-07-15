@@ -27,7 +27,7 @@ impl RedistributorState {
         if offset < GICR_SGI_BASE {
             return self.read_rd_frame(offset, width, config);
         }
-        self.read_sgi_frame(offset - GICR_SGI_BASE, width)
+        self.read_sgi_frame(offset - GICR_SGI_BASE, width, config)
     }
 
     pub(crate) fn write(
@@ -39,9 +39,9 @@ impl RedistributorState {
     ) -> VgicResult<Vec<IntId>> {
         validate_access(offset, width, config, "write")?;
         if offset < GICR_SGI_BASE {
-            return self.write_rd_frame(offset, width, value);
+            return self.write_rd_frame(offset, width, value, config);
         }
-        self.write_sgi_frame(offset - GICR_SGI_BASE, width, value)
+        self.write_sgi_frame(offset - GICR_SGI_BASE, width, value, config)
     }
 
     fn read_rd_frame(
@@ -55,7 +55,11 @@ impl RedistributorState {
             return Ok(value);
         }
         match offset {
-            GICR_CTLR => read_dword(offset, width, u64::from(self.lpis_enabled)),
+            GICR_CTLR => read_dword(
+                offset,
+                width,
+                u64::from(config.exposes_guest_lpis() && self.lpis_enabled),
+            ),
             GICR_IIDR => read_dword(offset, width, 0x43b),
             GICR_TYPER => {
                 require_width(offset, width, AccessWidth::Qword, "read")?;
@@ -64,11 +68,19 @@ impl RedistributorState {
             GICR_WAKER | GICR_SYNCR => read_dword(offset, width, 0),
             GICR_PROPBASER => {
                 require_width(offset, width, AccessWidth::Qword, "read")?;
-                Ok(self.propbaser)
+                Ok(if config.exposes_guest_lpis() {
+                    self.propbaser
+                } else {
+                    0
+                })
             }
             GICR_PENDBASER => {
                 require_width(offset, width, AccessWidth::Qword, "read")?;
-                Ok(self.pendbaser)
+                Ok(if config.exposes_guest_lpis() {
+                    self.pendbaser
+                } else {
+                    0
+                })
             }
             _ => Ok(0),
         }
@@ -79,6 +91,7 @@ impl RedistributorState {
         offset: u64,
         width: AccessWidth,
         value: u64,
+        config: &GicV3Config,
     ) -> VgicResult<Vec<IntId>> {
         if component_id(offset, GicComponent::Redistributor).is_some() {
             require_width(offset, width, AccessWidth::Dword, "write")?;
@@ -88,6 +101,9 @@ impl RedistributorState {
         match offset {
             GICR_CTLR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
+                if !config.exposes_guest_lpis() {
+                    return Ok(candidates);
+                }
                 self.lpis_enabled = value & 1 != 0;
                 for interrupt in self.lpis.values_mut() {
                     interrupt.set_enabled(self.lpis_enabled);
@@ -101,38 +117,48 @@ impl RedistributorState {
             }
             GICR_PROPBASER => {
                 require_width(offset, width, AccessWidth::Qword, "write")?;
-                self.propbaser = value;
+                if config.exposes_guest_lpis() {
+                    self.propbaser = value;
+                }
             }
             GICR_PENDBASER => {
                 require_width(offset, width, AccessWidth::Qword, "write")?;
-                self.pendbaser = value;
+                if config.exposes_guest_lpis() {
+                    self.pendbaser = value;
+                }
             }
             _ => {}
         }
         Ok(candidates)
     }
 
-    fn read_sgi_frame(&self, offset: u64, width: AccessWidth) -> VgicResult<u64> {
+    fn read_sgi_frame(
+        &self,
+        offset: u64,
+        width: AccessWidth,
+        config: &GicV3Config,
+    ) -> VgicResult<u64> {
+        let owned = u64::from(config.guest_private_interrupts().raw());
         match offset {
-            GICD_IGROUPR => read_dword(offset, width, u32::MAX as u64),
+            GICD_IGROUPR => read_dword(offset, width, owned),
             GICD_ISENABLER | GICD_ICENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "read")?;
-                Ok(self.read_private_flags(InterruptRecord::enabled))
+                Ok(self.read_private_flags(InterruptRecord::enabled) & owned)
             }
             GICD_ISPENDR | GICD_ICPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "read")?;
-                Ok(self.read_private_flags(InterruptRecord::pending))
+                Ok(self.read_private_flags(InterruptRecord::pending) & owned)
             }
             GICD_ISACTIVER | GICD_ICACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "read")?;
-                Ok(self.read_private_flags(InterruptRecord::active))
+                Ok(self.read_private_flags(InterruptRecord::active) & owned)
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 32).contains(&offset) => {
-                self.read_priorities(offset, width)
+                self.read_priorities(offset, width, config)
             }
             _ if offset == GICD_ICFGR || offset == GICD_ICFGR + 4 => {
                 require_width(offset, width, AccessWidth::Dword, "read")?;
-                Ok(self.read_configuration(offset))
+                Ok(self.read_configuration(offset, config))
             }
             _ => Ok(0),
         }
@@ -143,40 +169,42 @@ impl RedistributorState {
         offset: u64,
         width: AccessWidth,
         value: u64,
+        config: &GicV3Config,
     ) -> VgicResult<Vec<IntId>> {
+        let owned = u64::from(config.guest_private_interrupts().raw());
         let mut candidates = Vec::new();
         match offset {
             GICD_IGROUPR => require_width(offset, width, AccessWidth::Dword, "write")?,
             GICD_ISENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value, PrivateFlag::Enable)?;
+                candidates = self.write_private_flags(value & owned, PrivateFlag::Enable)?;
             }
             GICD_ICENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value, PrivateFlag::Disable)?;
+                self.write_private_flags(value & owned, PrivateFlag::Disable)?;
             }
             GICD_ISPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value, PrivateFlag::SetPending)?;
+                candidates = self.write_private_flags(value & owned, PrivateFlag::SetPending)?;
             }
             GICD_ICPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value, PrivateFlag::ClearPending)?;
+                self.write_private_flags(value & owned, PrivateFlag::ClearPending)?;
             }
             GICD_ISACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value, PrivateFlag::SetActive)?;
+                self.write_private_flags(value & owned, PrivateFlag::SetActive)?;
             }
             GICD_ICACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value, PrivateFlag::Complete)?;
+                candidates = self.write_private_flags(value & owned, PrivateFlag::Complete)?;
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 32).contains(&offset) => {
-                self.write_priorities(offset, width, value)?;
+                self.write_priorities(offset, width, value, config)?;
             }
             _ if offset == GICD_ICFGR || offset == GICD_ICFGR + 4 => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_configuration(offset, value);
+                self.write_configuration(offset, value, config);
             }
             _ => {}
         }
@@ -191,7 +219,7 @@ impl RedistributorState {
             | affinity.aff0() as u64;
         let processor_number = (self.vcpu.raw() as u64) << 8;
         let last = u64::from(self.vcpu.raw() + 1 == config.vcpu_count()) << 4;
-        let physical_lpis = u64::from(config.its().is_some());
+        let physical_lpis = u64::from(config.exposes_guest_lpis());
         (packed_affinity << 32) | processor_number | last | physical_lpis
     }
 
@@ -227,43 +255,69 @@ impl RedistributorState {
         Ok(candidates)
     }
 
-    fn read_priorities(&self, offset: u64, width: AccessWidth) -> VgicResult<u64> {
+    fn read_priorities(
+        &self,
+        offset: u64,
+        width: AccessWidth,
+        config: &GicV3Config,
+    ) -> VgicResult<u64> {
         validate_priority_access(offset, width, "read")?;
         let first = (offset - GICD_IPRIORITYR) as usize;
         Ok((0..width.size()).fold(0, |value, byte| {
-            value | ((self.private_interrupts[first + byte].priority().raw() as u64) << (byte * 8))
+            let raw = first + byte;
+            let priority = if config.guest_private_interrupts().raw() & (1 << raw) != 0 {
+                self.private_interrupts[raw].priority().raw()
+            } else {
+                0
+            };
+            value | ((priority as u64) << (byte * 8))
         }))
     }
 
-    fn write_priorities(&mut self, offset: u64, width: AccessWidth, value: u64) -> VgicResult {
+    fn write_priorities(
+        &mut self,
+        offset: u64,
+        width: AccessWidth,
+        value: u64,
+        config: &GicV3Config,
+    ) -> VgicResult {
         validate_priority_access(offset, width, "write")?;
         let first = (offset - GICD_IPRIORITYR) as usize;
         for byte in 0..width.size() {
-            self.private_interrupts[first + byte]
-                .set_priority(Priority::new((value >> (byte * 8)) as u8));
+            let raw = first + byte;
+            if config.guest_private_interrupts().raw() & (1 << raw) != 0 {
+                self.private_interrupts[raw]
+                    .set_priority(Priority::new((value >> (byte * 8)) as u8));
+            }
         }
         Ok(())
     }
 
-    fn read_configuration(&self, offset: u64) -> u64 {
+    fn read_configuration(&self, offset: u64, config: &GicV3Config) -> u64 {
         let first = ((offset - GICD_ICFGR) / 4) as usize * 16;
         (0..16usize).fold(0, |value, entry| {
-            let edge = self.private_interrupts[first + entry].trigger() == TriggerMode::Edge;
+            let raw = first + entry;
+            let edge = config.guest_private_interrupts().raw() & (1 << raw) != 0
+                && self.private_interrupts[raw].trigger() == TriggerMode::Edge;
             value | (u64::from(edge) << (entry * 2 + 1))
         })
     }
 
-    fn write_configuration(&mut self, offset: u64, value: u64) {
+    fn write_configuration(&mut self, offset: u64, value: u64, config: &GicV3Config) {
         if offset == GICD_ICFGR {
             return;
         }
         for entry in 0..16usize {
+            let raw = 16 + entry;
+            if config.guest_private_interrupts().raw() & (1 << raw) == 0 {
+                continue;
+            }
             let trigger = if value & (0b10 << (entry * 2)) == 0 {
                 TriggerMode::Level
             } else {
                 TriggerMode::Edge
             };
-            self.private_interrupts[16 + entry].set_trigger(trigger);
+            self.private_interrupts[raw].set_trigger(trigger);
         }
     }
 }

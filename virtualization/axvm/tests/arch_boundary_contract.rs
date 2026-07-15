@@ -160,6 +160,39 @@ fn controller_synchronization_follows_vcpu_exit_side_effects() {
 }
 
 #[test]
+fn aarch64_passthrough_masks_host_irqs_across_private_irq_context_switch() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    let run_loop = ops
+        .split_once("fn run_vcpu(")
+        .expect("architecture operations must define the vCPU run loop")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the vCPU run loop must precede affinity helpers")
+        .0;
+    assert!(
+        run_loop.contains("Self::with_vcpu_interrupt_context(vm, ||"),
+        "the architecture must protect controller load, guest exits, and controller save as one \
+         interrupt context"
+    );
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    let run = arm_vcpu
+        .split_once("pub fn run(&mut self)")
+        .expect("arm_vcpu must define its guest run entry")
+        .1
+        .split_once("/// Binds this vCPU")
+        .expect("the guest run entry must precede vCPU binding")
+        .0;
+    assert!(run.contains("host_daif"));
+    assert!(run.contains("msr daif, {host_daif}"));
+    assert!(
+        !run.contains("msr daifclr"),
+        "arm_vcpu must restore the caller's DAIF state instead of enabling host IRQs \
+         unconditionally"
+    );
+}
+
+#[test]
 fn production_sources_keep_architecture_cfg_inside_arch_module() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let violations = find_target_arch_cfg_outside_arch(&source_root, &source_root);
@@ -417,12 +450,12 @@ fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
 
 #[test]
 fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
-    let source = include_str!("../src/arch/aarch64/gic/passthrough.rs");
+    let source = include_str!("../src/arch/aarch64/gic/physical_spi.rs");
     let bind = source
-        .split_once("pub(super) fn bind_interrupt(")
+        .split_once("pub(super) fn bind(")
         .expect("AArch64 passthrough must define physical IRQ binding")
         .1
-        .split_once("pub(super) fn set_interrupt_enabled(")
+        .split_once("pub(super) fn configure(")
         .expect("physical IRQ binding must precede activation")
         .0;
 
@@ -435,15 +468,31 @@ fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
     }
 
     let activation = source
-        .split_once("pub(super) fn set_interrupt_enabled(")
+        .split_once("pub(super) fn set_enabled(")
         .expect("AArch64 passthrough must define physical IRQ activation")
         .1
-        .split_once("pub(super) fn unbind_interrupt(")
+        .split_once("pub(super) fn unbind(")
         .expect("physical IRQ activation must precede unbinding")
         .0;
     assert!(activation.contains("claim_irq_for_guest("));
     assert!(activation.contains("host_irq::set_affinity"));
     assert!(activation.contains("host_irq::set_enable"));
+}
+
+#[test]
+fn aarch64_passthrough_routes_separate_mpidr_from_host_cpu_index() {
+    let source = include_str!("../src/arch/aarch64/gic/registration.rs");
+
+    assert!(
+        !source.contains("VcpuRoute::new(placement.id, placement.phys_cpu_id, affinity)"),
+        "the guest MPIDR affinity must not be reused as an AxVM logical CPU index"
+    );
+    assert!(
+        source.contains("fixed_host_cpu(placement)?"),
+        "passthrough routing must derive its logical pCPU from the fixed CPU mask"
+    );
+    assert!(source.contains("mask.count_ones() == 1"));
+    assert!(source.contains("mask.trailing_zeros() as usize"));
 }
 
 fn find_target_arch_cfg_outside_arch(

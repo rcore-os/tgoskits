@@ -4,7 +4,7 @@ use alloc::string::String;
 
 use crate::{
     CpuInterfaceState, EventId, GicAffinity, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalIrqId,
-    VgicError, VgicResult,
+    Priority, PrivateInterruptMask, PrivateInterruptState, TriggerMode, VgicError, VgicResult,
 };
 
 /// Backend-specific failure without leaking a platform error type.
@@ -90,6 +90,52 @@ impl PhysicalInterruptBinding {
     }
 }
 
+/// Guest-controlled state of one assigned physical SPI, excluding its fixed route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhysicalInterruptConfiguration {
+    pending: bool,
+    active: bool,
+    priority: Priority,
+    trigger: TriggerMode,
+}
+
+impl PhysicalInterruptConfiguration {
+    /// Creates a checked physical SPI configuration.
+    pub const fn new(
+        pending: bool,
+        active: bool,
+        priority: Priority,
+        trigger: TriggerMode,
+    ) -> Self {
+        Self {
+            pending,
+            active,
+            priority,
+            trigger,
+        }
+    }
+
+    /// Returns whether the SPI is pending.
+    pub const fn pending(self) -> bool {
+        self.pending
+    }
+
+    /// Returns whether the SPI is active.
+    pub const fn active(self) -> bool {
+        self.active
+    }
+
+    /// Returns its guest priority.
+    pub const fn priority(self) -> Priority {
+        self.priority
+    }
+
+    /// Returns its trigger mode.
+    pub const fn trigger(self) -> TriggerMode {
+        self.trigger
+    }
+}
+
 /// Explicit VM-owned physical ITS translation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PhysicalMsiBinding {
@@ -160,6 +206,62 @@ pub trait GicV3Backend: Send + Sync {
         state: &mut CpuInterfaceState,
     ) -> Result<(), GicV3BackendError>;
 
+    /// Saves host SGI/PPI state and installs one passthrough vCPU's private state.
+    ///
+    /// Implementations must disable non-owned private interrupts while the
+    /// guest is active and restore the host state before returning an error.
+    fn load_physical_private_interrupts(
+        &self,
+        _vcpu: GicVcpuId,
+        _owned: PrivateInterruptMask,
+        _guest: &PrivateInterruptState,
+    ) -> Result<PrivateInterruptState, GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "load physical private interrupts",
+            "the backend does not support private interrupt context switching",
+        ))
+    }
+
+    /// Captures guest SGI/PPI state and restores the saved host state.
+    fn save_physical_private_interrupts(
+        &self,
+        _vcpu: GicVcpuId,
+        _owned: PrivateInterruptMask,
+        _guest: &mut PrivateInterruptState,
+        _host: &PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "save physical private interrupts",
+            "the backend does not support private interrupt context switching",
+        ))
+    }
+
+    /// Refreshes a loaded guest snapshot without restoring the host context.
+    fn synchronize_physical_private_interrupts(
+        &self,
+        _vcpu: GicVcpuId,
+        _owned: PrivateInterruptMask,
+        _guest: &mut PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "synchronize physical private interrupts",
+            "the backend does not support private interrupt context switching",
+        ))
+    }
+
+    /// Applies a guest MMIO update while its physical Redistributor is loaded.
+    fn update_physical_private_interrupts(
+        &self,
+        _vcpu: GicVcpuId,
+        _owned: PrivateInterruptMask,
+        _guest: &PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "update physical private interrupts",
+            "the backend does not support private interrupt context switching",
+        ))
+    }
+
     /// Notifies the platform after a software LR no longer owns an interrupt.
     ///
     /// Emulated host-line adapters use this boundary to unmask a physical
@@ -192,6 +294,18 @@ pub trait GicV3Backend: Send + Sync {
         Err(GicV3BackendError::new(
             "set physical interrupt enable state",
             "the backend does not support passthrough interrupts",
+        ))
+    }
+
+    /// Applies guest-controlled state to one owned physical SPI.
+    fn configure_physical_interrupt(
+        &self,
+        _binding: PhysicalInterruptBinding,
+        _configuration: PhysicalInterruptConfiguration,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "configure physical interrupt",
+            "the backend does not support passthrough interrupt configuration",
         ))
     }
 
@@ -283,6 +397,6 @@ impl GicV3Backend for SoftwareGicV3Backend {
     }
 }
 
-pub(crate) fn backend_result(result: Result<(), GicV3BackendError>) -> VgicResult {
+pub(crate) fn backend_result<T>(result: Result<T, GicV3BackendError>) -> VgicResult<T> {
     result.map_err(Into::into)
 }

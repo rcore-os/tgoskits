@@ -11,7 +11,7 @@ use axdevice::{
     WiredIrqRequest,
 };
 
-use super::{AxvmGicV3Backend, passthrough::resolve_host_irq};
+use super::{AxvmGicV3Backend, physical_spi::resolve_host_irq};
 use crate::{AxVmError, AxVmResult};
 
 /// VM-owned registrations that forward physical SPIs through topology lines.

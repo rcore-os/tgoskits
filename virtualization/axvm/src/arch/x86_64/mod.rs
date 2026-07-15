@@ -55,6 +55,24 @@ const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
 
+#[derive(Debug, Default)]
+pub(crate) struct VmArchConfig;
+
+impl VmArchConfig {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    pub(crate) const fn reset_prepared_boot_state(&mut self) {}
+
+    pub(crate) const fn validate_prepared_boot_state(
+        &self,
+        _interrupt_mode: axvm_types::VMInterruptMode,
+    ) -> AxVmResult {
+        Ok(())
+    }
+}
+
 pub(crate) struct VmArchState;
 
 impl VmArchState {

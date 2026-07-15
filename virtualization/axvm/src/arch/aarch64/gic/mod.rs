@@ -7,17 +7,23 @@ use alloc::{
 
 use arm_vgic::{
     CpuInterfaceState, GicAffinity, GicV3Backend, GicV3BackendError, GicVcpuId, IntId,
-    PhysicalInterruptBinding, PhysicalIrqId, PhysicalMsiBinding, SgiId, SpiId,
+    PhysicalInterruptBinding, PhysicalIrqId, PhysicalMsiBinding, PrivateInterruptMask,
+    PrivateInterruptState, SgiId, SpiId,
 };
 use ax_kspin::SpinRaw;
 
 mod cpu_interface;
 mod forwarding;
 mod passthrough;
+mod physical_gic;
+mod physical_spi;
+mod private_interrupts;
 mod registration;
+mod roles;
 
 pub(crate) use forwarding::HostSpiForwarding;
 pub(crate) use registration::PreparedGicV3;
+pub(crate) use roles::Aarch64InterruptRoles;
 
 /// Fixed host placement of one VM-local vCPU.
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +109,43 @@ impl GicV3Backend for AxvmGicV3Backend {
         cpu_interface::save(vcpu, state)
     }
 
+    fn load_physical_private_interrupts(
+        &self,
+        vcpu: GicVcpuId,
+        owned: PrivateInterruptMask,
+        guest: &PrivateInterruptState,
+    ) -> Result<PrivateInterruptState, GicV3BackendError> {
+        private_interrupts::load(self, vcpu, owned, guest)
+    }
+
+    fn save_physical_private_interrupts(
+        &self,
+        vcpu: GicVcpuId,
+        owned: PrivateInterruptMask,
+        guest: &mut PrivateInterruptState,
+        host: &PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        private_interrupts::save(self, vcpu, owned, guest, host)
+    }
+
+    fn synchronize_physical_private_interrupts(
+        &self,
+        vcpu: GicVcpuId,
+        owned: PrivateInterruptMask,
+        guest: &mut PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        private_interrupts::synchronize(self, vcpu, owned, guest)
+    }
+
+    fn update_physical_private_interrupts(
+        &self,
+        vcpu: GicVcpuId,
+        owned: PrivateInterruptMask,
+        guest: &PrivateInterruptState,
+    ) -> Result<(), GicV3BackendError> {
+        private_interrupts::update(self, vcpu, owned, guest)
+    }
+
     fn retire_emulated_interrupt(
         &self,
         _vcpu: GicVcpuId,
@@ -130,7 +173,7 @@ impl GicV3Backend for AxvmGicV3Backend {
         &self,
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
-        passthrough::bind_interrupt(self, binding)
+        physical_spi::bind(self, binding)
     }
 
     fn set_physical_interrupt_enabled(
@@ -138,7 +181,15 @@ impl GicV3Backend for AxvmGicV3Backend {
         binding: PhysicalInterruptBinding,
         enabled: bool,
     ) -> Result<(), GicV3BackendError> {
-        passthrough::set_interrupt_enabled(self, binding, enabled)
+        physical_spi::set_enabled(self, binding, enabled)
+    }
+
+    fn configure_physical_interrupt(
+        &self,
+        binding: PhysicalInterruptBinding,
+        configuration: arm_vgic::PhysicalInterruptConfiguration,
+    ) -> Result<(), GicV3BackendError> {
+        physical_spi::configure(self, binding, configuration)
     }
 
     fn set_physical_interrupt_level(
@@ -146,14 +197,14 @@ impl GicV3Backend for AxvmGicV3Backend {
         binding: PhysicalInterruptBinding,
         asserted: bool,
     ) -> Result<(), GicV3BackendError> {
-        passthrough::set_interrupt_level(binding, asserted)
+        physical_spi::set_level(binding, asserted)
     }
 
     fn pulse_physical_interrupt(
         &self,
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
-        passthrough::pulse_interrupt(binding)
+        physical_spi::pulse(binding)
     }
 
     fn send_physical_sgi(
@@ -162,7 +213,7 @@ impl GicV3Backend for AxvmGicV3Backend {
         sgi: SgiId,
         targets: &[GicAffinity],
     ) -> Result<(), GicV3BackendError> {
-        passthrough::send_sgi(self, source, sgi, targets)
+        private_interrupts::send_sgi(self, source, sgi, targets)
     }
 
     fn bind_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
@@ -177,7 +228,7 @@ impl GicV3Backend for AxvmGicV3Backend {
         &self,
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
-        passthrough::unbind_interrupt(self, binding)
+        physical_spi::unbind(self, binding)
     }
 
     fn unbind_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
@@ -197,7 +248,11 @@ pub(crate) fn list_register_count() -> usize {
 }
 
 pub(crate) fn resolve_physical_irq(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {
-    passthrough::resolve_physical_irq(intid)
+    physical_spi::resolve(intid)
+}
+
+pub(crate) fn physical_spi_count() -> Result<usize, GicV3BackendError> {
+    physical_gic::physical_spi_count()
 }
 
 pub(crate) fn handle_current_irq() -> bool {

@@ -91,6 +91,8 @@ pub struct AxVMConfig {
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<u32>,
+    host_reserved_intids: Vec<u32>,
+    arch: crate::arch::VmArchConfig,
     interrupt_mode: VMInterruptMode,
 }
 
@@ -112,6 +114,7 @@ pub struct AxVMConfigParams {
     pub address_space_policy: AddressSpacePolicy,
     pub memory_regions: Vec<VmMemConfig>,
     pub boot_policy: GuestBootPolicy,
+    pub host_reserved_intids: Vec<u32>,
     pub interrupt_mode: VMInterruptMode,
 }
 
@@ -134,6 +137,8 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
+            host_reserved_intids: params.host_reserved_intids,
+            arch: crate::arch::VmArchConfig::new(),
             interrupt_mode: params.interrupt_mode,
         }
     }
@@ -290,6 +295,19 @@ impl AxVMConfig {
     /// Returns the physical interrupt sources forwarded to the guest.
     pub fn pass_through_irqs(&self) -> &Vec<u32> {
         &self.passthrough_irq_list
+    }
+
+    /// Returns optional board-specific host-owned INTIDs.
+    pub fn host_reserved_intids(&self) -> &[u32] {
+        &self.host_reserved_intids
+    }
+
+    pub(crate) const fn arch(&self) -> &crate::arch::VmArchConfig {
+        &self.arch
+    }
+
+    pub(crate) const fn arch_mut(&mut self) -> &mut crate::arch::VmArchConfig {
+        &mut self.arch
     }
 
     /// Returns the interrupt mode of the VM.

@@ -11,7 +11,10 @@ use axdevice::{
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, VMInterruptMode};
 
-use super::{HostSpiForwarding, VcpuRoute, backend, list_register_count, resolve_physical_irq};
+use super::{
+    HostSpiForwarding, VcpuRoute, backend, list_register_count, physical_spi_count,
+    resolve_physical_irq,
+};
 use crate::{AxVmError, AxVmResult, config::AxVMConfig, vm::prepare::vcpus::VcpuPlacement};
 
 const PRIMARY_GIC: InterruptControllerId = InterruptControllerId::new(0);
@@ -33,13 +36,49 @@ impl PreparedGicV3 {
         placements: &[VcpuPlacement],
     ) -> AxVmResult<Option<Self>> {
         let frames = LegacyGicFrames::parse(config.emu_devices())?;
-        let Some(parsed) = frames.into_config(config.interrupt_mode(), placements)? else {
+        let Some(mut parsed) = frames.into_config(config.interrupt_mode(), placements)? else {
             return Ok(None);
         };
-        let routes = placements.iter().map(|placement| {
-            let affinity = GicAffinity::from_mpidr(placement.phys_cpu_id as u64);
-            VcpuRoute::new(placement.id, placement.phys_cpu_id, affinity)
-        });
+        if parsed.config.mode() == GicV3Mode::Passthrough {
+            let roles = config.arch().interrupt_roles().ok_or_else(|| {
+                AxVmError::invalid_config(
+                    "AArch64 passthrough interrupt roles were not prepared before GIC creation",
+                )
+            })?;
+            let spi_count = physical_spi_count()
+                .map_err(|error| AxVmError::interrupt("inspect physical GICv3", error))?;
+            parsed.config = parsed
+                .config
+                .with_spi_count(spi_count)
+                .and_then(|config| {
+                    config.with_passthrough_private_interrupts(roles.guest_private_interrupts())
+                })
+                .map_err(|error| {
+                    AxVmError::interrupt("apply physical GICv3 capabilities", error)
+                })?;
+            debug!(
+                "VM[{vm_id}] GICv3 passthrough roles: host-reserved={:?}, guest-timers={:?}, \
+                 SPIs={spi_count}",
+                roles.host_reserved(),
+                roles.guest_timers()
+            );
+        }
+        let passthrough = parsed.config.mode() == GicV3Mode::Passthrough;
+        let routes = placements
+            .iter()
+            .map(|placement| {
+                let host_cpu = if passthrough {
+                    fixed_host_cpu(placement)?
+                } else {
+                    placement
+                        .phys_cpu_set
+                        .and_then(single_host_cpu)
+                        .unwrap_or(placement.phys_cpu_id)
+                };
+                let affinity = GicAffinity::from_mpidr(placement.phys_cpu_id as u64);
+                Ok(VcpuRoute::new(placement.id, host_cpu, affinity))
+            })
+            .collect::<AxVmResult<Vec<_>>>()?;
         let backend = backend(vm_id, routes);
         let controller = match parsed.config.mode() {
             GicV3Mode::Emulated => GicV3Controller::new_with_guest_memory(
@@ -205,6 +244,13 @@ impl LegacyGicFrames {
         .map_err(|error| AxVmError::interrupt("validate GICv3 configuration", error))?;
         if let Some(its) = &self.its {
             validate_legacy_its_arguments(its)?;
+            if mode == VMInterruptMode::Passthrough {
+                return Err(AxVmError::unsupported(
+                    "configure passthrough GICv3 ITS",
+                    "no isolated physical ITS command capability is registered; the guest must \
+                     not access the host GITS frame",
+                ));
+            }
             config = config
                 .with_its(mmio_region(its, "ITS")?)
                 .map_err(|error| AxVmError::interrupt("validate GICv3 ITS", error))?;
@@ -284,6 +330,26 @@ fn redistributor_region(
     let region = GicV3MmioRegion::new(config.base_gpa as u64, region_size as u64)
         .map_err(AxVmError::invalid_config)?;
     Ok((region, stride as u64))
+}
+
+fn fixed_host_cpu(placement: &VcpuPlacement) -> AxVmResult<usize> {
+    let mask = placement.phys_cpu_set.ok_or_else(|| {
+        AxVmError::invalid_config(alloc::format!(
+            "AArch64 passthrough vCPU {} has no fixed physical CPU mask",
+            placement.id
+        ))
+    })?;
+    single_host_cpu(mask).ok_or_else(|| {
+        AxVmError::invalid_config(alloc::format!(
+            "AArch64 passthrough vCPU {} requires one fixed physical CPU, but mask {mask:#x} does \
+             not select exactly one CPU",
+            placement.id
+        ))
+    })
+}
+
+fn single_host_cpu(mask: usize) -> Option<usize> {
+    (mask.count_ones() == 1).then(|| mask.trailing_zeros() as usize)
 }
 
 fn required_argument(

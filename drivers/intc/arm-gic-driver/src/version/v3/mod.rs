@@ -907,6 +907,25 @@ impl Gic {
         self.gicd().get_interrupt_route(id.to_u32())
     }
 
+    /// Configures one interrupt's architectural Group and modifier bits.
+    pub fn set_group(&self, id: IntId, group1: bool, modifier: bool) {
+        if id.is_private() {
+            self.cpu_interface().set_group(id, group1, modifier);
+        } else {
+            self.gicd()
+                .set_interrupt_group(id.to_u32(), u32::from(group1), modifier);
+        }
+    }
+
+    /// Returns one interrupt's Group 1 and modifier state.
+    pub fn group(&self, id: IntId) -> (bool, bool) {
+        if id.is_private() {
+            self.cpu_interface().group(id)
+        } else {
+            self.gicd().interrupt_group(id.to_u32())
+        }
+    }
+
     pub fn max_cpu_num(&self) -> usize {
         self.gicd().max_cpu_num() as _
     }
@@ -1129,6 +1148,28 @@ impl CpuInterface {
             "Cannot check pending state for non-private interrupt: {id:?}"
         );
         self.rd().sgi.is_pending(id)
+    }
+
+    /// Configures one private interrupt's architectural Group and modifier bits.
+    pub fn set_group(&self, id: IntId, group1: bool, modifier: bool) {
+        assert!(
+            id.is_private(),
+            "Cannot set group for non-private interrupt: {id:?}"
+        );
+        self.rd().sgi.set_group(id, group1);
+        self.rd().sgi.set_group_modifier(id, modifier);
+    }
+
+    /// Returns one private interrupt's Group 1 and modifier state.
+    pub fn group(&self, id: IntId) -> (bool, bool) {
+        assert!(
+            id.is_private(),
+            "Cannot read group for non-private interrupt: {id:?}"
+        );
+        (
+            self.rd().sgi.is_group1(id),
+            self.rd().sgi.is_group_modifier(id),
+        )
     }
 
     pub fn set_cfg(&self, id: IntId, cfg: Trigger) {

@@ -1,16 +1,10 @@
-//! Physical GIC resource ownership and direct-delivery operations.
+//! Physical ITS resource ownership for passthrough guests.
 
 use alloc::collections::BTreeMap;
 
-use arm_gic_driver::v3::{ICC_SGI1R_EL1, Writeable};
-use arm_vgic::{
-    GicAffinity, GicV3BackendError, GicVcpuId, PhysicalInterruptBinding, PhysicalIrqId,
-    PhysicalMsiBinding, SgiId,
-};
+use arm_vgic::{GicV3BackendError, PhysicalMsiBinding};
 use ax_kspin::SpinNoIrq;
-use ax_std::os::arceos::modules::ax_hal::irq::{
-    self as host_irq, CpuId, HwIrq, IrqAffinity, IrqDomainId, IrqId,
-};
+use ax_std::os::arceos::modules::ax_hal::irq::{self as host_irq, CpuId, HwIrq, IrqAffinity};
 use rdif_msi::{
     Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiReservationRequest, MsiVectorIndex,
 };
@@ -18,39 +12,8 @@ use rdrive::DeviceId;
 
 use super::AxvmGicV3Backend;
 
-static PHYSICAL_IRQ_OWNERS: SpinNoIrq<BTreeMap<IrqId, PhysicalIrqOwner>> =
-    SpinNoIrq::new(BTreeMap::new());
 static PHYSICAL_MSI_OWNERS: SpinNoIrq<BTreeMap<PhysicalMsiKey, PhysicalMsiOwner>> =
     SpinNoIrq::new(BTreeMap::new());
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PhysicalIrqOwner {
-    vm_id: usize,
-    state: PhysicalIrqOwnershipState,
-}
-
-impl PhysicalIrqOwner {
-    const fn reserved(vm_id: usize) -> Self {
-        Self {
-            vm_id,
-            state: PhysicalIrqOwnershipState::Reserved,
-        }
-    }
-
-    const fn guest_owns_hardware(self) -> bool {
-        matches!(self.state, PhysicalIrqOwnershipState::GuestOwned)
-    }
-
-    fn claim_for_guest(&mut self) {
-        self.state = PhysicalIrqOwnershipState::GuestOwned;
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PhysicalIrqOwnershipState {
-    Reserved,
-    GuestOwned,
-}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PhysicalMsiKey {
@@ -79,130 +42,6 @@ impl PhysicalMsiOwner {
     }
 }
 
-pub(super) fn bind_interrupt(
-    backend: &AxvmGicV3Backend,
-    binding: PhysicalInterruptBinding,
-) -> Result<(), GicV3BackendError> {
-    let irq = decode_irq(binding.host())?;
-    let route = backend.route(binding.target())?;
-    if route.affinity != binding.affinity() {
-        return Err(GicV3BackendError::new(
-            "bind physical interrupt",
-            alloc::format!(
-                "binding affinity {:?} does not match vCPU {} fixed affinity {:?}",
-                binding.affinity(),
-                binding.target().raw(),
-                route.affinity
-            ),
-        ));
-    }
-    reserve_irq(irq, backend.vm_id)?;
-    Ok(())
-}
-
-pub(super) fn set_interrupt_enabled(
-    backend: &AxvmGicV3Backend,
-    binding: PhysicalInterruptBinding,
-    enabled: bool,
-) -> Result<(), GicV3BackendError> {
-    let irq = decode_irq(binding.host())?;
-    let target_cpu = enabled
-        .then(|| backend.route(binding.target()).map(|route| route.host_cpu))
-        .transpose()?;
-    claim_irq_for_guest(irq, backend.vm_id, "set physical interrupt enable state")?;
-    if let Some(target_cpu) = target_cpu {
-        host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))
-            .map_err(|error| platform_error("route physical interrupt", irq, error))?;
-    }
-    host_irq::set_enable(irq, enabled)
-        .map_err(|error| platform_error("set physical interrupt enable state", irq, error))
-}
-
-pub(super) fn unbind_interrupt(
-    backend: &AxvmGicV3Backend,
-    binding: PhysicalInterruptBinding,
-) -> Result<(), GicV3BackendError> {
-    let irq = decode_irq(binding.host())?;
-    let owner = require_owner(irq, backend.vm_id, "unbind physical interrupt")?;
-    if owner.guest_owns_hardware() {
-        host_irq::set_enable(irq, false)
-            .map_err(|error| platform_error("unbind physical interrupt", irq, error))?;
-    }
-    release_irq(irq, backend.vm_id);
-    Ok(())
-}
-
-pub(super) fn set_interrupt_level(
-    binding: PhysicalInterruptBinding,
-    _asserted: bool,
-) -> Result<(), GicV3BackendError> {
-    Err(GicV3BackendError::new(
-        "set physical interrupt level",
-        alloc::format!(
-            "host IRQ {:?} is electrically driven by its assigned physical device",
-            binding.host()
-        ),
-    ))
-}
-
-pub(super) fn pulse_interrupt(binding: PhysicalInterruptBinding) -> Result<(), GicV3BackendError> {
-    Err(GicV3BackendError::new(
-        "pulse physical interrupt",
-        alloc::format!(
-            "host IRQ {:?} is electrically driven by its assigned physical device",
-            binding.host()
-        ),
-    ))
-}
-
-pub(super) fn send_sgi(
-    backend: &AxvmGicV3Backend,
-    source: GicVcpuId,
-    sgi: SgiId,
-    targets: &[GicAffinity],
-) -> Result<(), GicV3BackendError> {
-    backend.route(source)?;
-    if crate::current_vcpu_id() != Some(source.raw()) {
-        return Err(GicV3BackendError::new(
-            "send physical SGI",
-            alloc::format!("vCPU {} is not current on this host CPU", source.raw()),
-        ));
-    }
-    for affinity in targets {
-        if !backend
-            .routes
-            .values()
-            .any(|route| route.affinity == *affinity)
-        {
-            return Err(GicV3BackendError::new(
-                "send physical SGI",
-                alloc::format!("affinity {affinity:?} is not owned by this VM"),
-            ));
-        }
-    }
-
-    let mut groups: BTreeMap<(u8, u8, u8, u8), u16> = BTreeMap::new();
-    for affinity in targets {
-        let selector = affinity.aff0() / 16;
-        let bit = affinity.aff0() % 16;
-        *groups
-            .entry((affinity.aff3(), affinity.aff2(), affinity.aff1(), selector))
-            .or_default() |= 1 << bit;
-    }
-    for ((aff3, aff2, aff1, selector), target_list) in groups {
-        ICC_SGI1R_EL1.write(
-            ICC_SGI1R_EL1::TARGETLIST.val(target_list as u64)
-                + ICC_SGI1R_EL1::AFF1.val(aff1 as u64)
-                + ICC_SGI1R_EL1::INTID.val(sgi.raw() as u64)
-                + ICC_SGI1R_EL1::AFF2.val(aff2 as u64)
-                + ICC_SGI1R_EL1::RS.val(selector as u64)
-                + ICC_SGI1R_EL1::AFF3.val(aff3 as u64),
-        );
-    }
-    instruction_sync_barrier();
-    Ok(())
-}
-
 pub(super) fn bind_msi(
     backend: &AxvmGicV3Backend,
     binding: PhysicalMsiBinding,
@@ -222,8 +61,7 @@ pub(super) fn bind_msi(
 
     let key = physical_msi_key(binding);
     reserve_msi_key(key, backend.vm_id)?;
-    let result = reserve_msi_translation(binding, route.host_cpu);
-    match result {
+    match reserve_msi_translation(binding, route.host_cpu) {
         Ok((provider, allocation)) => {
             PHYSICAL_MSI_OWNERS.lock().insert(
                 key,
@@ -395,132 +233,10 @@ fn physical_msi_key(binding: PhysicalMsiBinding) -> PhysicalMsiKey {
     }
 }
 
-pub(super) fn resolve_physical_irq(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {
-    resolve_host_irq(intid).map(encode_irq)
-}
-
-pub(super) fn resolve_host_irq(intid: u32) -> Result<IrqId, GicV3BackendError> {
-    let irq = host_irq::resolve_percpu_irq(HwIrq(intid))
-        .map_err(|error| platform_error_for_intid("resolve physical interrupt", intid, error))?;
-    if irq.hwirq != HwIrq(intid) {
-        return Err(GicV3BackendError::new(
-            "resolve physical interrupt",
-            alloc::format!(
-                "platform resolved GIC INTID {intid} to a different hardware line {:?}",
-                irq.hwirq
-            ),
-        ));
-    }
-    Ok(irq)
-}
-
-fn reserve_irq(irq: IrqId, vm_id: usize) -> Result<(), GicV3BackendError> {
-    let mut owners = PHYSICAL_IRQ_OWNERS.lock();
-    match owners.get(&irq).copied() {
-        None => {
-            owners.insert(irq, PhysicalIrqOwner::reserved(vm_id));
-            Ok(())
-        }
-        Some(owner) if owner.vm_id == vm_id => Err(GicV3BackendError::new(
-            "bind physical interrupt",
-            alloc::format!("host IRQ {irq:?} is already bound by VM {vm_id}"),
-        )),
-        Some(owner) => Err(GicV3BackendError::new(
-            "bind physical interrupt",
-            alloc::format!("host IRQ {irq:?} is owned by VM {}", owner.vm_id),
-        )),
-    }
-}
-
-fn claim_irq_for_guest(
-    irq: IrqId,
-    vm_id: usize,
-    operation: &'static str,
-) -> Result<(), GicV3BackendError> {
-    let mut owners = PHYSICAL_IRQ_OWNERS.lock();
-    match owners.get_mut(&irq) {
-        Some(owner) if owner.vm_id == vm_id => {
-            owner.claim_for_guest();
-            Ok(())
-        }
-        Some(owner) => Err(GicV3BackendError::new(
-            operation,
-            alloc::format!(
-                "host IRQ {irq:?} is owned by VM {}, not VM {vm_id}",
-                owner.vm_id
-            ),
-        )),
-        None => Err(GicV3BackendError::new(
-            operation,
-            alloc::format!("host IRQ {irq:?} is not bound"),
-        )),
-    }
-}
-
-fn require_owner(
-    irq: IrqId,
-    vm_id: usize,
-    operation: &'static str,
-) -> Result<PhysicalIrqOwner, GicV3BackendError> {
-    match PHYSICAL_IRQ_OWNERS.lock().get(&irq).copied() {
-        Some(owner) if owner.vm_id == vm_id => Ok(owner),
-        Some(owner) => Err(GicV3BackendError::new(
-            operation,
-            alloc::format!(
-                "host IRQ {irq:?} is owned by VM {}, not VM {vm_id}",
-                owner.vm_id
-            ),
-        )),
-        None => Err(GicV3BackendError::new(
-            operation,
-            alloc::format!("host IRQ {irq:?} is not bound"),
-        )),
-    }
-}
-
-fn release_irq(irq: IrqId, vm_id: usize) {
-    let mut owners = PHYSICAL_IRQ_OWNERS.lock();
-    if owners.get(&irq).is_some_and(|owner| owner.vm_id == vm_id) {
-        owners.remove(&irq);
-    }
-}
-
-fn encode_irq(irq: IrqId) -> PhysicalIrqId {
-    PhysicalIrqId::new((u64::from(irq.domain.0) << 32) | u64::from(irq.hwirq.0))
-}
-
-fn decode_irq(encoded: PhysicalIrqId) -> Result<IrqId, GicV3BackendError> {
-    let raw = encoded.raw();
-    if raw >> 48 != 0 {
-        return Err(GicV3BackendError::new(
-            "decode physical interrupt",
-            alloc::format!("physical IRQ encoding {raw:#x} has reserved high bits"),
-        ));
-    }
-    Ok(IrqId::new(
-        IrqDomainId((raw >> 32) as u16),
-        HwIrq(raw as u32),
-    ))
-}
-
-fn platform_error(
-    operation: &'static str,
-    irq: IrqId,
-    error: host_irq::IrqError,
-) -> GicV3BackendError {
-    GicV3BackendError::new(operation, alloc::format!("host IRQ {irq:?}: {error:?}"))
-}
-
 fn platform_error_for_intid(
     operation: &'static str,
     intid: u32,
     error: host_irq::IrqError,
 ) -> GicV3BackendError {
     GicV3BackendError::new(operation, alloc::format!("GIC INTID {intid}: {error:?}"))
-}
-
-fn instruction_sync_barrier() {
-    // SAFETY: `isb` only synchronizes the SGI system-register write on the
-    // current CPU and neither dereferences memory nor changes Rust-visible state.
-    unsafe { core::arch::asm!("isb", options(nostack, preserves_flags)) };
 }

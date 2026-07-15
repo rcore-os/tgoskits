@@ -195,6 +195,7 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         address_space_policy: cfg.devices.address_space_policy,
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
+        host_reserved_intids: cfg.devices.host_reserved_intids.clone(),
         interrupt_mode: cfg.devices.interrupt_mode,
     })
 }

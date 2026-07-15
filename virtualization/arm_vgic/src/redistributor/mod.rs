@@ -10,7 +10,8 @@ use alloc::{
 
 use crate::{
     CpuInterfaceState, GicAffinity, GicV3VcpuWake, GicVcpuId, IntId, InterruptRecord,
-    InterruptState, LpiId, PpiId, Priority, SgiId, SpiId, TriggerMode, VgicError, VgicResult,
+    InterruptState, LpiId, PpiId, Priority, PrivateInterruptMask, PrivateInterruptState, SgiId,
+    SpiId, TriggerMode, VgicError, VgicResult,
 };
 
 pub(crate) struct RedistributorState {
@@ -272,5 +273,41 @@ impl RedistributorState {
 
     pub(crate) fn pend_sgi(&mut self, sgi: SgiId) {
         self.private_interrupts[sgi.raw() as usize].pulse();
+    }
+
+    pub(crate) fn private_interrupt_state(&self) -> VgicResult<PrivateInterruptState> {
+        let mut state = PrivateInterruptState::new();
+        for interrupt in &self.private_interrupts {
+            let intid = interrupt.intid();
+            state.set_enabled(intid, interrupt.enabled())?;
+            state.set_pending(intid, interrupt.pending())?;
+            state.set_active(intid, interrupt.active())?;
+            state.set_group1(intid, true)?;
+            state.set_trigger(intid, interrupt.trigger())?;
+            state.set_priority(intid, interrupt.priority())?;
+        }
+        Ok(state)
+    }
+
+    pub(crate) fn merge_private_interrupt_state(
+        &mut self,
+        state: &PrivateInterruptState,
+        owned: PrivateInterruptMask,
+    ) {
+        for (raw, interrupt) in self.private_interrupts.iter_mut().enumerate() {
+            let bit = 1u32 << raw;
+            if owned.raw() & bit == 0 {
+                continue;
+            }
+            interrupt.set_enabled(state.enabled_mask() & bit != 0);
+            interrupt.set_pending(state.pending_mask() & bit != 0);
+            interrupt.set_active(state.active_mask() & bit != 0);
+            interrupt.set_trigger(if state.edge_triggered_mask() & bit != 0 {
+                TriggerMode::Edge
+            } else {
+                TriggerMode::Level
+            });
+            interrupt.set_priority(Priority::new(state.priorities()[raw]));
+        }
     }
 }

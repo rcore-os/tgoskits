@@ -2,6 +2,9 @@
 
 use alloc::format;
 
+use ax_std::os::arceos::modules::ax_hal;
+use axvm_types::VMInterruptMode;
+
 use super::Aarch64Arch;
 use crate::{
     AxVmResult,
@@ -29,7 +32,21 @@ impl GuestBootPlatform for Aarch64Arch {
         vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-        super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
+        let guest_dtb = super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)?;
+        if vm_config.interrupt_mode() == VMInterruptMode::Passthrough {
+            let host_ipi = ax_hal::irq::ipi_irq().hwirq.0;
+            let host_timer = ax_hal::time::irq_num().hwirq.0;
+            let roles = super::gic::Aarch64InterruptRoles::discover(
+                host_ipi,
+                host_timer,
+                super::fdt::try_get_host_fdt(),
+                guest_dtb.as_ref().map(|dtb| dtb.as_bytes()),
+                vm_config.host_reserved_intids(),
+                vm_config.pass_through_spis(),
+            )?;
+            vm_config.arch_mut().set_interrupt_roles(roles);
+        }
+        Ok(guest_dtb)
     }
 }
 

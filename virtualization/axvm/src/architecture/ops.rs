@@ -52,6 +52,10 @@ pub(crate) trait ArchOps {
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
 
+    fn with_vcpu_interrupt_context<T>(_vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
+        run()
+    }
+
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -73,6 +77,7 @@ pub(crate) trait ArchOps {
     {
         let vm_id = vm.id();
         let vcpu_id = vcpu.id();
+        let interrupt_vcpu = axdevice::VcpuInterruptId::new(vcpu_id);
         let interrupt_topology = vm.prepared_interrupt_topology()?;
 
         match vcpu.state() {
@@ -86,41 +91,43 @@ pub(crate) trait ArchOps {
             }
         }
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            interrupt_topology.load_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
-            let result = (|| {
-                loop {
-                    Self::deliver_pending_controller_interrupts(vm, vcpu);
-                    interrupt_topology.synchronize_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
+        let run_result = vcpu.with_current_cpu_set(|| {
+            Self::with_vcpu_interrupt_context(vm, || -> AxVmResult<_> {
+                interrupt_topology.load_vcpu(interrupt_vcpu)?;
+                let result = (|| {
+                    loop {
+                        Self::deliver_pending_controller_interrupts(vm, vcpu);
+                        interrupt_topology.synchronize_vcpu(interrupt_vcpu)?;
 
-                    let exit = vcpu.run()?;
-                    trace!("{exit:#x?}");
-                    // Port/MMIO writes and EOIs can change controller state. Apply those exit
-                    // side effects before making queued controller inputs deliverable.
-                    let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
-                    interrupt_topology.synchronize_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
-                    match action {
-                        BoundVcpuExit::Continue => continue,
-                        action => break Ok(action),
+                        let exit = vcpu.run()?;
+                        trace!("{exit:#x?}");
+                        // Port/MMIO writes and EOIs can change controller state. Apply those exit
+                        // side effects before making queued controller inputs deliverable.
+                        let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
+                        interrupt_topology.synchronize_vcpu(interrupt_vcpu)?;
+                        match action {
+                            BoundVcpuExit::Continue => continue,
+                            action => break Ok(action),
+                        }
+                    }
+                })();
+                let save_result = interrupt_topology.save_vcpu(interrupt_vcpu);
+                match result {
+                    Ok(action) => {
+                        save_result?;
+                        Ok(action)
+                    }
+                    Err(error) => {
+                        if let Err(save_error) = save_result {
+                            warn!(
+                                "VM[{vm_id}] VCpu[{vcpu_id}] interrupt-controller save after run \
+                                 error failed: {save_error}"
+                            );
+                        }
+                        Err(error)
                     }
                 }
-            })();
-            let save_result = interrupt_topology.save_vcpu(axdevice::VcpuInterruptId::new(vcpu_id));
-            match result {
-                Ok(action) => {
-                    save_result?;
-                    Ok(action)
-                }
-                Err(error) => {
-                    if let Err(save_error) = save_result {
-                        warn!(
-                            "VM[{vm_id}] VCpu[{vcpu_id}] interrupt-controller save after run \
-                             error failed: {save_error}"
-                        );
-                    }
-                    Err(error)
-                }
-            }
+            })
         });
 
         let unbind_result = vcpu.unbind();

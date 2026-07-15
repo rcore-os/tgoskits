@@ -42,6 +42,46 @@ use sysreg::{SysRegReadExit, SysRegWriteExit};
 
 pub(crate) struct Aarch64Arch;
 
+#[derive(Debug, Default)]
+pub(crate) struct VmArchConfig {
+    interrupt_roles: Option<gic::Aarch64InterruptRoles>,
+}
+
+impl VmArchConfig {
+    pub(crate) const fn new() -> Self {
+        Self {
+            interrupt_roles: None,
+        }
+    }
+
+    pub(crate) fn reset_prepared_boot_state(&mut self) {
+        self.interrupt_roles = None;
+    }
+
+    pub(crate) fn validate_prepared_boot_state(
+        &self,
+        interrupt_mode: axvm_types::VMInterruptMode,
+    ) -> AxVmResult {
+        if interrupt_mode == axvm_types::VMInterruptMode::Passthrough
+            && self.interrupt_roles.is_none()
+        {
+            return ax_err!(
+                InvalidInput,
+                "AArch64 passthrough interrupt roles were not prepared"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_interrupt_roles(&mut self, roles: gic::Aarch64InterruptRoles) {
+        self.interrupt_roles = Some(roles);
+    }
+
+    pub(crate) const fn interrupt_roles(&self) -> Option<&gic::Aarch64InterruptRoles> {
+        self.interrupt_roles.as_ref()
+    }
+}
+
 pub(crate) struct VmArchState {
     gic_controller: Option<Arc<arm_vgic::GicV3Controller>>,
     host_spi_forwarding: Option<gic::HostSpiForwarding>,
@@ -102,6 +142,14 @@ impl ArchOps for Aarch64Arch {
             addr.as_usize(),
             size,
         );
+    }
+
+    fn with_vcpu_interrupt_context<T>(vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
+        if vm.interrupt_mode() != axvm_types::VMInterruptMode::Passthrough {
+            return run();
+        }
+        let _host_irq_guard = ax_kernel_guard::IrqSave::new();
+        run()
     }
 
     fn after_external_interrupt(

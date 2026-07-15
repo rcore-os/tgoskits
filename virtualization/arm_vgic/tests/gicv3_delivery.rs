@@ -16,6 +16,10 @@ const GICD_ISENABLER: u64 = 0x0100;
 const GICD_IPRIORITYR: u64 = 0x0400;
 const GICD_IROUTER: u64 = 0x6000;
 const GIC_PIDR2: u64 = 0xffe8;
+const GICR_CTLR: u64 = 0x0000;
+const GICR_TYPER: u64 = 0x0008;
+const GICR_PROPBASER: u64 = 0x0070;
+const GICR_PENDBASER: u64 = 0x0078;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const ICH_HCR_UIE: u64 = 1 << 1;
 
@@ -70,6 +74,49 @@ fn checked_mmio_rejects_bad_accesses_and_preserves_raz_wi() {
             .read_redistributor(GicVcpuId::new(0), GIC_PIDR2, AccessWidth::Dword)
             .unwrap(),
         0x3b
+    );
+}
+
+#[test]
+fn redistributor_lpi_registers_are_raz_wi_without_an_its() {
+    let (controller, _) = controller(1, 2);
+    let vcpu = GicVcpuId::new(0);
+    let _binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+
+    controller
+        .write_redistributor(vcpu, GICR_CTLR, AccessWidth::Dword, 1)
+        .unwrap();
+    controller
+        .write_redistributor(vcpu, GICR_PROPBASER, AccessWidth::Qword, 0x1234_5000)
+        .unwrap();
+    controller
+        .write_redistributor(vcpu, GICR_PENDBASER, AccessWidth::Qword, 0x5678_9000)
+        .unwrap();
+
+    assert_eq!(
+        controller
+            .read_redistributor(vcpu, GICR_CTLR, AccessWidth::Dword)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        controller
+            .read_redistributor(vcpu, GICR_PROPBASER, AccessWidth::Qword)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        controller
+            .read_redistributor(vcpu, GICR_PENDBASER, AccessWidth::Qword)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        controller
+            .read_redistributor(vcpu, GICR_TYPER, AccessWidth::Qword)
+            .unwrap()
+            & 1,
+        0
     );
 }
 

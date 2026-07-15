@@ -845,6 +845,12 @@ pub struct VMDevicesConfig {
     )]
     #[serde(with = "vm_interrupt_mode_serde")]
     pub interrupt_mode: VMInterruptMode,
+    /// Additional host-owned architectural INTIDs that platform discovery cannot infer.
+    ///
+    /// AArch64 timer, IPI, and GIC maintenance interrupts are discovered
+    /// internally and must not be repeated here.
+    #[serde(default)]
+    pub host_reserved_intids: Vec<u32>,
     /// we would not like to pass through devices
     #[serde(default)]
     pub excluded_devices: Vec<Vec<String>>,

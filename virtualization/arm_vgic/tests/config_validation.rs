@@ -1,4 +1,4 @@
-use arm_vgic::{GicV3Config, GicV3MmioRegion, GicV3Mode, VgicError};
+use arm_vgic::{GicV3Config, GicV3HardwareCapabilities, GicV3MmioRegion, GicV3Mode, VgicError};
 
 #[test]
 fn rejects_unaligned_gic_register_frames() {
@@ -41,6 +41,20 @@ fn rejects_more_list_registers_than_gicv3_can_expose() {
         base_config().with_list_register_count(17),
         Err(VgicError::InvalidConfig { .. })
     ));
+}
+
+#[test]
+fn physical_typer_with_512_intids_reports_480_spis() {
+    let capabilities = GicV3HardwareCapabilities::from_distributor_typer(0x0f).unwrap();
+
+    assert_eq!(capabilities.spi_count(), 480);
+    assert_eq!(
+        base_config()
+            .with_spi_count(capabilities.spi_count())
+            .unwrap()
+            .spi_limit(),
+        512
+    );
 }
 
 fn base_config() -> GicV3Config {

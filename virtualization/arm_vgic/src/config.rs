@@ -1,6 +1,6 @@
 //! Validated per-VM GICv3 configuration.
 
-use crate::{LPI_INTID_BASE, LPI_INTID_MAX, VgicError, VgicResult};
+use crate::{LPI_INTID_BASE, LPI_INTID_MAX, PrivateInterruptMask, VgicError, VgicResult};
 
 /// GICv3 implementation mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9,6 +9,32 @@ pub enum GicV3Mode {
     Emulated,
     /// Assigned resources are delivered directly through a checked physical backend.
     Passthrough,
+}
+
+/// Validated capabilities reported by a physical GICv3 Distributor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GicV3HardwareCapabilities {
+    spi_count: usize,
+}
+
+impl GicV3HardwareCapabilities {
+    /// Decodes the implemented SPI range from `GICD_TYPER.ITLinesNumber`.
+    pub fn from_distributor_typer(typer: u32) -> VgicResult<Self> {
+        let implemented_intids = ((typer & 0x1f) as usize + 1) * 32;
+        let spi_count = implemented_intids
+            .min(1020)
+            .checked_sub(32)
+            .filter(|count| *count != 0)
+            .ok_or_else(|| VgicError::InvalidConfig {
+                detail: alloc::format!("GICD_TYPER {typer:#x} exposes no SPIs"),
+            })?;
+        Ok(Self { spi_count })
+    }
+
+    /// Returns the number of implemented SPIs.
+    pub const fn spi_count(self) -> usize {
+        self.spi_count
+    }
 }
 
 /// One guest-visible MMIO register frame.
@@ -68,6 +94,7 @@ pub struct GicV3Config {
     lpi_limit: u32,
     list_register_count: usize,
     its_command_budget: usize,
+    passthrough_private_interrupts: PrivateInterruptMask,
 }
 
 impl GicV3Config {
@@ -90,6 +117,7 @@ impl GicV3Config {
             lpi_limit: LPI_INTID_MAX,
             list_register_count: 16,
             its_command_budget: 256,
+            passthrough_private_interrupts: PrivateInterruptMask::SGIS,
         };
         config.validate()?;
         Ok(config)
@@ -126,6 +154,24 @@ impl GicV3Config {
     /// Sets the maximum ITS commands processed by one CWRITER update.
     pub fn with_its_command_budget(mut self, budget: usize) -> VgicResult<Self> {
         self.its_command_budget = budget;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Selects private interrupts that are context-switched for a passthrough guest.
+    ///
+    /// SGIs are always included because guest SGI delivery is trapped and
+    /// multiplexed independently of the host's use of the same INTIDs.
+    pub fn with_passthrough_private_interrupts(
+        mut self,
+        interrupts: PrivateInterruptMask,
+    ) -> VgicResult<Self> {
+        if self.mode != GicV3Mode::Passthrough {
+            return Err(VgicError::InvalidConfig {
+                detail: "private physical interrupt ownership requires passthrough mode".into(),
+            });
+        }
+        self.passthrough_private_interrupts = interrupts.union(PrivateInterruptMask::SGIS);
         self.validate()?;
         Ok(self)
     }
@@ -183,6 +229,18 @@ impl GicV3Config {
     /// Returns the ITS submission budget.
     pub const fn its_command_budget(&self) -> usize {
         self.its_command_budget
+    }
+
+    /// Returns the guest-visible private interrupt set.
+    pub const fn guest_private_interrupts(&self) -> PrivateInterruptMask {
+        match self.mode {
+            GicV3Mode::Emulated => PrivateInterruptMask::ALL,
+            GicV3Mode::Passthrough => self.passthrough_private_interrupts,
+        }
+    }
+
+    pub(crate) const fn exposes_guest_lpis(&self) -> bool {
+        matches!(self.mode, GicV3Mode::Emulated) && self.its.is_some()
     }
 
     fn validate(&self) -> VgicResult {

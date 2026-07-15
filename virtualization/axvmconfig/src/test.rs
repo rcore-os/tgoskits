@@ -61,6 +61,7 @@ emu_devices = [
 ]
 
 interrupt_mode = "passthrough"
+host_reserved_intids = [45, 46]
     "#;
 
     let config: AxVMCrateConfig = toml::from_str(EXAMPLE_CONFIG).unwrap();
@@ -129,6 +130,7 @@ interrupt_mode = "passthrough"
         EmulatedDeviceType::GPPTITS
     );
     assert_eq!(config.devices.interrupt_mode, VMInterruptMode::Passthrough);
+    assert_eq!(config.devices.host_reserved_intids, vec![45, 46]);
     assert_eq!(
         config.devices.address_space_policy,
         AddressSpacePolicy::Passthrough
@@ -444,6 +446,7 @@ emu_devices = []
 
     let device_config: VMDevicesConfig = toml::from_str(EXAMPLE_DEVICE_CONFIG).unwrap();
     assert_eq!(device_config.interrupt_mode, VMInterruptMode::default());
+    assert!(device_config.host_reserved_intids.is_empty());
 
     fn test_deser(s: &str, expected: VMInterruptMode) {
         let config_str = format!(

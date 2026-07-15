@@ -19,6 +19,8 @@
 //! The crate owns only architecture state and validated backend capabilities.
 //! Guest buses, host GIC discovery, timers, and VM scheduling are supplied by
 //! the AxVM integration layer. Only Group 1 Non-secure delivery is modeled.
+//! Passthrough backends receive only ownership-checked SPI state and an explicit
+//! SGI/PPI context mask; host-owned bits in mixed GICD/GICR accesses are RAZ/WI.
 
 extern crate alloc;
 

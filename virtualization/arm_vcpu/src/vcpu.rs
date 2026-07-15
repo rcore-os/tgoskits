@@ -26,9 +26,9 @@ use crate::{
 
 /// Size of the guest trap frame used by the EL2 entry/exit assembly.
 pub const ARM_VCPU_TRAP_FRAME_SIZE: usize = core::mem::size_of::<TrapFrame>();
-/// Offset of [`HostRuntimeContext::stack_top`] within [`ArmVcpu`].
+/// Offset of `HostRuntimeContext::stack_top` within [`ArmVcpu`].
 pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = ARM_VCPU_TRAP_FRAME_SIZE;
-/// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
+/// Offset of `HostRuntimeContext::sp_el0` within [`ArmVcpu`].
 pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize =
     ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>();
 
@@ -130,8 +130,15 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Runs the vCPU until a VM exit.
     pub fn run(&mut self) -> ArmVcpuResult<ArmVmExit> {
+        let host_daif: u64;
+        // SAFETY: reading DAIF and masking the local IRQ bit changes only the
+        // current CPU's exception mask. The saved value is restored below.
         unsafe {
-            core::arch::asm!("msr daifset, #2");
+            core::arch::asm!(
+                "mrs {host_daif}, daif",
+                "msr daifset, #2",
+                host_daif = out(reg) host_daif,
+            );
         }
 
         let exit_reason = unsafe {
@@ -142,8 +149,10 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         let trap_kind = TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
         let result = self.vmexit_handler(trap_kind);
 
+        // SAFETY: `host_daif` was captured on this CPU immediately before the
+        // guest entry and restores the caller's complete exception mask.
         unsafe {
-            core::arch::asm!("msr daifclr, #2");
+            core::arch::asm!("msr daif, {host_daif}", host_daif = in(reg) host_daif);
         }
 
         result
