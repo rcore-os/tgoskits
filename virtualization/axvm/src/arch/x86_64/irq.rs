@@ -39,8 +39,19 @@ fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
     gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI
 }
 
+fn should_register_automatic_ioapic_gsi_hook(gsi: usize) -> bool {
+    should_register_ioapic_gsi_hook(gsi) && gsi != COM1_GSI
+}
+
+fn has_explicit_ioapic_forwarding_route(gsi: usize) -> bool {
+    gsi < IOAPIC_GSI_COUNT && IOAPIC_HOST_IRQ_EXPLICIT.load(Ordering::Acquire) & gsi_bit(gsi) != 0
+}
+
 fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
-    (0..IOAPIC_GSI_COUNT).filter(|gsi| should_register_ioapic_gsi_hook(*gsi))
+    (0..IOAPIC_GSI_COUNT).filter(|gsi| {
+        should_register_automatic_ioapic_gsi_hook(*gsi)
+            || has_explicit_ioapic_forwarding_route(*gsi)
+    })
 }
 
 pub fn register_ioapic_irq_forwarding_route(guest_gsi: usize, host_irq: irq_framework::IrqId) {
@@ -258,10 +269,11 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
     info!(
-        "Enabled x86 IOAPIC IRQ forwarding for host GSIs 0..{} excluding PIT GSI {} ({} newly \
-         registered)",
+        "Enabled x86 IOAPIC IRQ forwarding for host GSIs 0..{} excluding VM-local PIT GSI {} and \
+         automatic COM1 GSI {} fallback ({} newly registered)",
         IOAPIC_GSI_COUNT - 1,
         PIT_TIMER_GSI,
+        COM1_GSI,
         registered
     );
     activate_ready_ioapic_forwarding_routes(vm);
@@ -608,7 +620,8 @@ mod tests {
         is_level_triggered_forwarded_host_gsi, mark_forwarded_ioapic_gsi_state_for_test,
         raw_to_host_irq, register_ioapic_irq_forwarding_activator,
         register_ioapic_irq_forwarding_route, register_ioapic_irq_forwarding_route_with_trigger,
-        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
+        should_rearm_forwarded_host_gsi_after_eoi, should_register_automatic_ioapic_gsi_hook,
+        should_register_ioapic_gsi_hook,
     };
     use crate::InterruptTriggerMode;
 
@@ -643,6 +656,19 @@ mod tests {
     }
 
     #[test]
+    fn vm_local_com1_does_not_register_automatic_host_irq_hook() {
+        with_clean_forwarding_routes(|| {
+            assert!(!should_register_automatic_ioapic_gsi_hook(COM1_GSI));
+            assert!(!ioapic_irq_hook_gsis().any(|gsi| gsi == COM1_GSI));
+
+            let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, COM1_GSI as u32);
+            register_ioapic_irq_forwarding_route(COM1_GSI, host_irq);
+
+            assert!(ioapic_irq_hook_gsis().any(|gsi| gsi == COM1_GSI));
+        });
+    }
+
+    #[test]
     fn passthrough_gsis_still_register_host_irq_hooks() {
         assert!(should_register_ioapic_gsi_hook(COM1_GSI));
         assert!(should_register_ioapic_gsi_hook(18));
@@ -652,12 +678,14 @@ mod tests {
 
     #[test]
     fn hook_gsi_iterator_matches_registration_policy() {
-        for gsi in 0..=IOAPIC_GSI_COUNT {
-            assert_eq!(
-                ioapic_irq_hook_gsis().any(|hook| hook == gsi),
-                should_register_ioapic_gsi_hook(gsi)
-            );
-        }
+        with_clean_forwarding_routes(|| {
+            for gsi in 0..=IOAPIC_GSI_COUNT {
+                assert_eq!(
+                    ioapic_irq_hook_gsis().any(|hook| hook == gsi),
+                    should_register_automatic_ioapic_gsi_hook(gsi)
+                );
+            }
+        });
     }
 
     #[test]
