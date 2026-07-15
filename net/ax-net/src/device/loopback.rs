@@ -37,14 +37,17 @@ impl Device for LoopbackDevice {
         _buffer: &mut smoltcp::storage::PacketBuffer<InterfaceId>,
         _timestamp: Instant,
         _snoop: &mut dyn FnMut(&[u8]),
-    ) -> bool {
+    ) -> usize {
         // Loopback uses fast path: packets go directly to RouterQueues::rx
         // This recv() is never called by device workers
-        false
+        0
     }
 
-    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-        // Fast path: loopback packets are injected directly in Router::dispatch().
-        true
+    fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+        // Loopback packets are injected directly in Router::dispatch() —
+        // this method is never called. The router's loopback fast path
+        // calls count_tx()/count_rx() directly on the DeviceHandle.
+        warn!("loopback Device::send() unexpectedly called; router should use fast path");
+        0
     }
 }

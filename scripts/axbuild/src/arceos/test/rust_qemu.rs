@@ -15,7 +15,7 @@ use super::{
     types::{ArceosRustQemuCase, PreparedArceosRustQemuCase},
 };
 use crate::{
-    arceos::{ArceOS, build, ensure_qemu_runtime_assets},
+    arceos::{ArceOS, build, rootfs},
     context::SnapshotPersistence,
     test::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
@@ -96,7 +96,7 @@ pub(super) async fn prepare_rust_qemu_cases(
         );
         apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, case.feature.as_deref());
         qemu_test::apply_timeout_scale(&mut qemu);
-        ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
+        rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
             host_symbolize_success_regex: rust_qemu_host_symbolize_success_regex(
                 case.feature.as_deref(),

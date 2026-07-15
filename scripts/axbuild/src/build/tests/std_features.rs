@@ -99,6 +99,8 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
             "arceos".to_string(),
             "ax-std/dns".to_string(),
             "ax-std/fs".to_string(),
+            "ax-std/irq".to_string(),
+            "ax-std/paging".to_string(),
             "ax-std/smp".to_string(),
             "ax-std/std-compat".to_string(),
         ]
