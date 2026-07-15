@@ -1185,16 +1185,12 @@ impl TaskSystem {
         let previous_core = cpu.current_core().cloned();
         let mut migration_target = None;
         if let Some(core) = previous_core.as_ref() {
-            if core.sched().lock().migration_target.is_some() {
-                migration_target = Some(Self::migrate_owner_running(cpu.as_mut(), core)?);
-            } else {
-                self.requeue_owner_running(
-                    cpu.as_mut(),
-                    Arc::clone(core),
-                    now_ns,
-                    EnqueueReason::Preempted,
-                )?;
-            }
+            migration_target = self.schedule_out_owner_running(
+                cpu.as_mut(),
+                Arc::clone(core),
+                now_ns,
+                EnqueueReason::Preempted,
+            )?;
         }
         let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
         Self::stage_switch_handoff(
@@ -1269,16 +1265,12 @@ impl TaskSystem {
         }
         let mut migration_target = None;
         if let Some(core) = previous_core.as_ref() {
-            if core.sched().lock().migration_target.is_some() {
-                migration_target = Some(Self::migrate_owner_running(cpu.as_mut(), core)?);
-            } else {
-                self.requeue_owner_running(
-                    cpu.as_mut(),
-                    Arc::clone(core),
-                    now_ns,
-                    EnqueueReason::Preempted,
-                )?;
-            }
+            migration_target = self.schedule_out_owner_running(
+                cpu.as_mut(),
+                Arc::clone(core),
+                now_ns,
+                EnqueueReason::Preempted,
+            )?;
         }
         let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
         Self::stage_switch_handoff(
@@ -1340,10 +1332,8 @@ impl TaskSystem {
             if deadline_job_ended {
                 Self::mark_owner_deadline_non_contending(core, cpu.as_mut(), now_ns)?;
                 cpu.as_mut().clear_current();
-            } else if core.sched().lock().migration_target.is_some() {
-                migration_target = Some(Self::migrate_owner_running(cpu.as_mut(), core)?);
             } else {
-                self.requeue_owner_running(
+                migration_target = self.schedule_out_owner_running(
                     cpu.as_mut(),
                     Arc::clone(core),
                     now_ns,
@@ -1660,8 +1650,23 @@ impl TaskSystem {
         reason: EnqueueReason,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
-        let owner = cpu.owner();
         let mut sched = core.sched().lock();
+        let preempts_current =
+            self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, now_ns, reason)?;
+        drop(sched);
+        self.finish_owner_enqueue(cpu, reason, preempts_current);
+        Ok(())
+    }
+
+    fn enqueue_owner_thread_locked(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        now_ns: u64,
+        reason: EnqueueReason,
+    ) -> Result<bool, TaskError> {
+        let owner = cpu.owner();
         if sched.lifecycle.state() != ThreadState::Ready {
             return Err(TaskError::NotReady);
         }
@@ -1680,13 +1685,13 @@ impl TaskSystem {
                 sched.base_deadline = Some(deadline);
             }
         }
-        Self::activate_owner_deadline_bandwidth(&core, &mut sched, cpu.as_mut(), owner)?;
+        Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)?;
         let fields = cpu.as_mut().fields_mut();
         let queued_entity = fields.run_queue.enqueue(
             core.id(),
             policy,
             queued_entity,
-            Arc::clone(&core),
+            Arc::clone(core),
             now_ns,
             reason,
         )?;
@@ -1713,7 +1718,16 @@ impl TaskSystem {
         core.publish_effective_schedule(policy, queued_entity);
         sched.queued_cpu = Some(owner);
         core.set_target_cpu(owner);
-        drop(sched);
+        Ok(preempts_current)
+    }
+
+    fn finish_owner_enqueue(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        reason: EnqueueReason,
+        preempts_current: bool,
+    ) {
+        let fields = cpu.as_mut().fields_mut();
         if matches!(
             reason,
             EnqueueReason::Wake | EnqueueReason::Replenished | EnqueueReason::Migrated
@@ -1722,7 +1736,6 @@ impl TaskSystem {
             fields.request_reschedule();
         }
         self.publish_owner_cpu_load_summary(cpu.as_mut());
-        Ok(())
     }
 
     fn activate_owner_deadline_bandwidth(
@@ -3268,60 +3281,119 @@ impl TaskSystem {
         Ok(migrated)
     }
 
-    fn requeue_owner_running(
+    /// Commits one running owner either to its local queue, a migration
+    /// handoff, or Deadline throttle state.
+    ///
+    /// Remote affinity writers use the same stable thread cell. Keeping the
+    /// affinity decision, lifecycle transition, and local enqueue under this
+    /// one guard is the scheduler equivalent of Linux's task/rq locking rule:
+    /// an affinity update cannot invalidate a placement snapshot between
+    /// observing it and clearing `CpuLocal::current`.
+    fn schedule_out_owner_running(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         core: Arc<ThreadCore>,
         now_ns: u64,
         reason: EnqueueReason,
-    ) -> Result<(), TaskError> {
-        let throttled = {
-            let mut sched = core.sched().lock();
-            if sched.entity.is_deadline_throttled() && !sched.pi_critical_rescue {
-                if let SchedulingEntity::Deadline(deadline) = sched.entity {
-                    if !sched.is_pi_boosted() {
-                        sched.base_entity = sched.entity;
-                    }
-                    sched.base_deadline = Some(deadline);
-                    sched.deadline_replenish_pending = true;
-                    cpu.as_mut()
-                        .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
-                }
-                sched.transition(&core, ThreadState::Blocked)?;
-                sched.running_cpu = None;
-                true
-            } else {
-                sched.transition(&core, ThreadState::Ready)?;
-                sched.running_cpu = None;
-                false
-            }
-        };
-        cpu.as_mut().clear_current();
-        if throttled || cpu.idle() == Some(core.id()) {
-            return Ok(());
-        }
-        self.enqueue_owner_thread(cpu, core, now_ns, reason)
-    }
+    ) -> Result<Option<CpuId>, TaskError> {
+        self.ensure_owner_cpu_online(&cpu)?;
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
 
-    fn migrate_owner_running(
-        mut cpu: Pin<&mut CpuLocal>,
-        core: &Arc<ThreadCore>,
-    ) -> Result<CpuId, TaskError> {
-        let target = {
-            let mut sched = core.sched().lock();
+        let migration_requested =
+            sched.migration_target.is_some() || !sched.affinity.contains(owner);
+        if migration_requested {
             let target = sched
                 .migration_target
+                .filter(|target| {
+                    *target != owner
+                        && sched.affinity.contains(*target)
+                        && self
+                            .cpu_remotes
+                            .get(target.as_usize())
+                            .is_some_and(|remote| remote.is_online())
+                })
+                .or_else(|| self.select_allowed_online_cpu(&sched.affinity, Some(owner)))
                 .ok_or(TaskError::InvalidConfiguration)?;
-            if !sched.affinity.contains(target) {
-                return Err(TaskError::InvalidCpu(target.as_u32()));
-            }
-            sched.transition(core, ThreadState::Ready)?;
+            sched.migration_target = Some(target);
+            sched.transition(&core, ThreadState::Ready)?;
             sched.running_cpu = None;
             core.set_target_cpu(target);
-            target
+            cpu.as_mut().clear_current();
+            return Ok(Some(target));
+        }
+
+        if sched.entity.is_deadline_throttled() && !sched.pi_critical_rescue {
+            if let SchedulingEntity::Deadline(deadline) = sched.entity {
+                if !sched.is_pi_boosted() {
+                    sched.base_entity = sched.entity;
+                }
+                sched.base_deadline = Some(deadline);
+                sched.deadline_replenish_pending = true;
+                cpu.as_mut()
+                    .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
+            }
+            sched.transition(&core, ThreadState::Blocked)?;
+            sched.running_cpu = None;
+            cpu.as_mut().clear_current();
+            return Ok(None);
+        }
+
+        if cpu.idle() == Some(core.id()) {
+            sched.transition(&core, ThreadState::Ready)?;
+            sched.running_cpu = None;
+            cpu.as_mut().clear_current();
+            return Ok(None);
+        }
+
+        // Hide the outgoing dispatch while queue placement computes EEVDF
+        // virtual time, but retain it until enqueue commits. A typed enqueue
+        // failure can therefore restore the Running owner without publishing
+        // a transient `current = None` state.
+        let dispatch = cpu.as_mut().take_dispatch();
+        if let Err(error) = sched.transition(&core, ThreadState::Ready) {
+            if let Some(dispatch) = dispatch {
+                cpu.as_mut().install_dispatch(dispatch);
+            }
+            return Err(error);
+        }
+        sched.running_cpu = None;
+        let enqueue =
+            self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, now_ns, reason);
+        let preempts_current = match enqueue {
+            Ok(preempts_current) => preempts_current,
+            Err(error) => {
+                sched.running_cpu = Some(owner);
+                let rollback = sched.transition(&core, ThreadState::Running);
+                if let Some(dispatch) = dispatch {
+                    cpu.as_mut().install_dispatch(dispatch);
+                }
+                rollback?;
+                return Err(error);
+            }
         };
         cpu.as_mut().clear_current();
-        Ok(target)
+        drop(sched);
+        drop(dispatch);
+        self.finish_owner_enqueue(cpu, reason, preempts_current);
+        Ok(None)
+    }
+
+    fn select_allowed_online_cpu(
+        &self,
+        affinity: &CpuSet,
+        excluded: Option<CpuId>,
+    ) -> Option<CpuId> {
+        self.cpu_remotes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, remote)| {
+                let cpu = CpuId::new(index as u32);
+                (Some(cpu) != excluded && remote.is_online() && affinity.contains(cpu))
+                    .then(|| (remote.runnable_summary(), cpu))
+            })
+            .min_by_key(|(load, cpu)| (*load, cpu.as_u32()))
+            .map(|(_, cpu)| cpu)
     }
 
     fn validate_owner_next(
@@ -5109,6 +5181,53 @@ mod tests {
             "the owner can commit its migration directly at the next schedule-out"
         );
         assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Running));
+    }
+
+    #[test]
+    fn schedule_out_rechecks_affinity_under_the_thread_lock() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let idle0 = system
+            .register_idle_thread(
+                cpu0.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system
+            .register_idle_thread(
+                cpu1.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+
+        // Model the exact SMP interleaving that used to corrupt CpuLocal:
+        // the owner observed no migration, then a remote affinity writer made
+        // this CPU illegal before requeue acquired the thread lock. Affinity is
+        // authoritative even if a stale migration hint has not been installed.
+        let mut target_only = CpuSet::empty(2);
+        assert!(target_only.insert(CpuId::new(1)));
+        {
+            let mut sched = running.core.sched().lock();
+            sched.affinity = target_only;
+            sched.migration_target = None;
+        }
+        running.core.set_target_cpu(CpuId::new(1));
+
+        let decision = system.schedule(cpu0.as_mut(), 1).unwrap();
+        assert_eq!(decision.switch_reason(), SwitchReason::Migrated);
+        assert_eq!(decision.next(), idle0.id());
+        assert_eq!(cpu0.current(), Some(idle0.id()));
+        assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Ready));
+        assert_eq!(
+            running.core.sched().lock().migration_target,
+            Some(CpuId::new(1))
+        );
     }
 
     #[test]

@@ -81,11 +81,51 @@ fn enqueue_publishes_runqueue_location_in_one_thread_sched_transaction() {
         enqueue,
         &[
             "let mut sched = core.sched().lock()",
-            "fields.run_queue.enqueue(",
-            "sched.queued_cpu = Some(owner)",
+            "self.enqueue_owner_thread_locked(",
+            "&mut sched",
             "drop(sched)",
         ],
     );
+
+    let locked_enqueue = function_body(TASK_SYSTEM, "fn enqueue_owner_thread_locked(");
+    assert!(
+        !locked_enqueue.contains("core.sched().lock()"),
+        "the locked enqueue helper must reuse its caller's thread transaction"
+    );
+    assert_in_order(
+        locked_enqueue,
+        &[
+            "fields.run_queue.enqueue(",
+            "sched.queued_cpu = Some(owner)",
+        ],
+    );
+}
+
+#[test]
+fn schedule_out_decides_affinity_and_requeues_in_one_thread_transaction() {
+    let schedule_out = function_body(TASK_SYSTEM, "fn schedule_out_owner_running(");
+    assert_eq!(
+        schedule_out.matches("core.sched().lock()").count(),
+        1,
+        "schedule-out must own one uninterrupted thread scheduling transaction"
+    );
+    assert_in_order(
+        schedule_out,
+        &[
+            "let mut sched = core.sched().lock()",
+            "let migration_requested =",
+            "self.enqueue_owner_thread_locked(",
+            "&mut sched",
+        ],
+    );
+
+    for signature in ["pub fn schedule(", "pub fn schedule_if_requested("] {
+        let body = function_body(TASK_SYSTEM, signature);
+        assert!(
+            !body.contains("sched().lock().migration_target"),
+            "`{signature}` must not take a racy affinity snapshot before schedule-out"
+        );
+    }
 }
 
 #[test]
