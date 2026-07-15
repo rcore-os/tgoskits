@@ -5,7 +5,7 @@ sidebar_label: "环境准备"
 
 # 环境准备
 
-本文是 ArceOS、StarryOS、Axvisor 快速上手的公共前置文档，重点说明当前仓库推荐的开发环境、QEMU 支持范围和统一命令入口。
+ArceOS、StarryOS 和 Axvisor 共用同一套宿主工具链、QEMU 环境和 `cargo xtask` 命令入口。
 
 ```mermaid
 flowchart LR
@@ -18,11 +18,11 @@ flowchart LR
 
 ## 1. 环境
 
-本节给出快速上手所需的最小环境集合。目标不是覆盖所有开发场景，而是先确保常用 QEMU 路径和基础构建链路可以稳定运行。
+QEMU 构建和启动需要 Linux 宿主、仓库锁定的 Rust 工具链、基础构建工具及足够的产物存储空间。
 
 ### 1.1 最低要求
 
-如果只是跟随快速上手文档完成首次启动，下面这组要求已经足够。后续若涉及板测、Guest 镜像或更复杂的系统调试，再按具体系统补充依赖。
+下表列出三套系统 QEMU 路径共用的最低环境要求；板级烧录、Guest 制作和厂商工具链不在此范围内。
 
 | 项目 | 要求 |
 |------|------|
@@ -31,7 +31,7 @@ flowchart LR
 | QEMU | 推荐 10.2.1，与仓库容器镜像和 CI 环境一致 |
 | 磁盘空间 | 建议至少 20 GB（工具链、QEMU、构建产物、rootfs、Guest 镜像） |
 
-### 1.2 Docker 镜像（推荐）
+### 1.2 容器环境
 
 仓库提供预构建的容器镜像，已包含完整的开发环境（QEMU、Rust toolchain、交叉编译工具链等），与 CI 环境完全一致：
 
@@ -61,7 +61,7 @@ docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-env
 
 ### 1.4 手动安装
 
-手动安装适合已经有本地工具链管理习惯，或者不方便使用容器的环境。建议把它视为容器方案的替代路径，而不是默认首选路径。如果不使用容器，请至少准备 Rust、基础构建工具和常用 QEMU。推荐使用与容器和 CI 一致的 QEMU 10.2.1；发行版自带 QEMU 可用于快速体验，但如果遇到架构缺失或运行差异，请优先切换到容器环境：
+不使用容器时，需要在宿主机安装 Rust、基础构建工具和各架构的 QEMU。QEMU 版本应与容器和 CI 使用的 10.2.1 保持一致：
 
 ```bash
 # 1. 安装 Rust（会按仓库 toolchain 自动切换）
@@ -71,18 +71,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt update
 sudo apt install -y cmake make ninja-build pkg-config
 
-# 3. 安装常用 QEMU（推荐版本：10.2.1）
-sudo apt install -y qemu-system-arm qemu-system-riscv64 qemu-system-x86
+# 3. 安装发行版提供的 QEMU
+sudo apt install -y qemu-system-arm qemu-system-misc qemu-system-x86
 
 # 4. 安装常用 Rust 辅助工具
 cargo install cargo-binutils
 ```
 
-> 手动安装适合已有本地环境的开发者；首次上手更建议直接使用容器。
+这些命令不包含板级烧录、Guest 制作或厂商工具链。发行版提供的 QEMU 版本或架构集合不一致时，应使用仓库容器复现 CI 环境。
 
 ## 2. QEMU 支持
 
-三套系统的快速上手都依赖 QEMU，因此先明确当前主流支持的目标架构会更有帮助。这里列出的组合，都是仓库中已有现成命令和测试路径支撑的常用目标。当前仓库主流快速上手路径覆盖以下架构：
+QEMU 运行需要同时满足板卡配置支持目标架构、Rust target 可用以及宿主机存在对应的 `qemu-system-*` 程序。
+
+### 2.1 架构支持
+
+仓库中的板卡配置通过 target triple 选择架构实现，并由对应的 `qemu-system-*` 程序提供虚拟平台。下表中的组合均有现成配置或测试路径支撑，也是快速上手文档采用的标准名称。
 
 | 架构 | 常见 Target Triple | 常用 QEMU |
 |------|--------------------|-----------|
@@ -91,9 +95,9 @@ cargo install cargo-binutils
 | `x86_64` | `x86_64-unknown-none` | `qemu-system-x86_64` |
 | `loongarch64` | `loongarch64-unknown-none-softfloat` | `qemu-system-loongarch64` |
 
-### 2.1 验证 QEMU
+### 2.2 验证 QEMU
 
-如果这些命令都能正常输出版本信息，通常说明宿主机上的 QEMU 安装已经满足快速上手的基本要求。建议尽量与容器和 CI 使用的 QEMU 10.2.1 对齐；若某个架构缺失，或不同版本导致运行差异，优先切换到容器环境会更省事。
+以下命令验证四种架构的模拟器是否存在并输出版本。仓库容器和 CI 使用 QEMU 10.2.1。
 
 ```bash
 qemu-system-riscv64 --version
@@ -102,11 +106,11 @@ qemu-system-x86_64 --version
 qemu-system-loongarch64 --version
 ```
 
-> 若某个架构的 QEMU 未安装，优先使用容器环境而不是在宿主机单独补齐。
+版本命令只能确认模拟器可执行文件存在；实际启动仍会继续验证机器类型、固件和镜像依赖。若某个架构的 QEMU 未安装，优先使用容器环境，而不是在宿主机单独拼装不同来源的工具。
 
 ## 3. 命令入口
 
-TGOSKits 当前通过 `cargo xtask` 统一封装各系统的常用命令，同时在 `.cargo/config.toml` 中提供了 `cargo arceos`、`cargo starry`、`cargo axvisor` 等快捷别名。StarryOS 快速上手推荐直接使用 `cargo starry`：先用 `config ls` 查看支持的板卡，再用 `defconfig <board>` 选择配置，后续继续执行 `build`、`qemu`、`uboot`、`board` 或测试命令。
+TGOSKits 通过 `cargo xtask` 调度各系统命令，并在 `.cargo/config.toml` 中提供 `cargo arceos`、`cargo starry`、`cargo axvisor` 快捷别名。各系统使用 `config ls` 查询板卡配置，以 `defconfig BOARD_NAME` 选择默认配置，再执行 `build`、`qemu`、`uboot`、`board` 或测试命令。
 
 ```bash
 cargo xtask --help
@@ -117,10 +121,6 @@ cargo starry --help
 
 | 目标 | 文档 | 常用命令 |
 |------|------|----------|
-| ArceOS | [ArceOS 快速上手](./arceos) | `cargo xtask arceos qemu ...` |
-| StarryOS | [StarryOS 快速上手](./starryos) | `cargo starry config ls` / `cargo starry defconfig <board>` |
-| Axvisor | [Axvisor 快速上手](./axvisor) | `cargo xtask axvisor test qemu ...` |
-
-环境确认无误后，可以直接进入具体系统的快速上手页面。每一页都会给出当前项目中可用的最短命令路径，而不是抽象的概念说明。
-
-如果需要先了解仓库整体结构，也可以继续阅读：[项目概览](../introduction/overview)
+| ArceOS | [ArceOS 快速上手](./arceos) | `cargo arceos defconfig qemu-riscv64` |
+| StarryOS | [StarryOS 快速上手](./starryos) | `cargo starry defconfig qemu-riscv64` |
+| Axvisor | [Axvisor 快速上手](./axvisor) | `cargo axvisor defconfig qemu-aarch64` |

@@ -3,16 +3,16 @@
    ═══════════════════════════════════════════════════════════ */
 
 :root {
-  --home-base: #f4f7ff;
+  --home-base: #f3f6fc;
   --home-padding: clamp(4rem, 6vw, 6rem);
   --home-radius: 24px;
   --home-max-width: min(1440px, calc(100vw - 4rem));
   --home-max-width-wide: min(1600px, calc(100vw - 4rem));
-  --home-panel: rgba(255, 255, 255, 0.72);
-  --home-panel-strong: rgba(255, 255, 255, 0.88);
-  --home-panel-border: rgba(12, 18, 44, 0.08);
-  --home-text-soft: rgba(12, 18, 44, 0.62);
-  --home-shadow: 0 20px 60px rgba(26, 37, 70, 0.07);
+  --home-panel: #ffffff;
+  --home-panel-strong: #ffffff;
+  --home-panel-border: rgba(24, 33, 62, 0.14);
+  --home-text-soft: #505b70;
+  --home-shadow: 0 18px 48px rgba(35, 48, 85, 0.11);
 
   --hero-grad-start-1: #5f6bff;
   --hero-grad-end-1: #7fe0ff;
@@ -33,10 +33,11 @@
   --arch-chip-border: rgba(15, 118, 110, 0.16);
 
   --home-box-radius: 16px;
-  --home-line: rgba(95, 107, 255, 0.16);
-  --home-line-strong: rgba(95, 107, 255, 0.28);
-  --home-surface: rgba(255, 255, 255, 0.78);
-  --home-surface-soft: rgba(245, 248, 255, 0.68);
+  --home-line: rgba(52, 65, 112, 0.18);
+  --home-line-strong: rgba(79, 92, 197, 0.42);
+  --home-surface: #ffffff;
+  --home-surface-soft: #f7f9fe;
+  --home-section-tint: #eaf0fb;
 
   --home-type-section-title: 2.2rem;
   --home-type-section-copy: 1rem;
@@ -55,12 +56,12 @@
 }
 
 html[data-theme='dark'] {
-  --home-base: #090d1b;
-  --home-panel: rgba(10, 14, 32, 0.76);
-  --home-panel-strong: rgba(13, 18, 39, 0.9);
-  --home-panel-border: rgba(255, 255, 255, 0.09);
-  --home-text-soft: rgba(255, 255, 255, 0.68);
-  --home-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  --home-base: #080c17;
+  --home-panel: #151c2e;
+  --home-panel-strong: #192238;
+  --home-panel-border: rgba(181, 199, 235, 0.18);
+  --home-text-soft: #b0bbce;
+  --home-shadow: 0 20px 56px rgba(0, 0, 0, 0.34);
 
   --hero-grad-start-1: #7fe0ff;
   --hero-grad-end-1: #a78bfa;
@@ -79,10 +80,11 @@ html[data-theme='dark'] {
   --arch-accent-soft: #2dd4bf;
   --arch-accent-alt: #93c5fd;
   --arch-chip-border: rgba(94, 234, 212, 0.24);
-  --home-line: rgba(127, 224, 255, 0.16);
-  --home-line-strong: rgba(127, 224, 255, 0.3);
-  --home-surface: rgba(18, 25, 48, 0.82);
-  --home-surface-soft: rgba(13, 20, 42, 0.72);
+  --home-line: rgba(169, 190, 229, 0.2);
+  --home-line-strong: rgba(103, 222, 226, 0.46);
+  --home-surface: #151c2e;
+  --home-surface-soft: #101728;
+  --home-section-tint: #0d1424;
 }
 
 html { scroll-behavior: smooth; }
@@ -1495,3 +1497,161 @@ html[data-theme='dark'] .driver-device-card--blk .driver-tag { color: #93c5fd; b
 html[data-theme='dark'] .driver-device-card--npu .driver-tag { color: #f9a8d4; background: rgba(236, 72, 153, 0.12); border-color: rgba(236, 72, 153, 0.2); }
 html[data-theme='dark'] .driver-device-card--pci .driver-tag { color: #c4b5fd; background: rgba(139, 92, 246, 0.12); border-color: rgba(139, 92, 246, 0.2); }
 html[data-theme='dark'] .driver-device-card--soc .driver-tag { color: #5eead4; background: rgba(20, 184, 166, 0.12); border-color: rgba(20, 184, 166, 0.2); }
+
+/* Contrast pass: separate page bands, panels, and nested controls. */
+.section-shell {
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+
+.section-shell--architecture,
+.section-shell--systems,
+.section-shell--quality,
+.section-shell--drivers {
+  border-color: var(--home-line);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--home-section-tint) 88%, transparent), var(--home-section-tint));
+}
+
+.section-shell--capabilities,
+.section-shell--component-workspace,
+.section-shell--workflow,
+.section-shell--platforms,
+.section-shell--docs {
+  background: var(--home-base);
+}
+
+.section-header h2 {
+  background: none;
+  color: var(--ifm-font-color-base);
+  -webkit-text-fill-color: currentColor;
+  animation: none;
+}
+
+.section-header p:not(.eyebrow) {
+  color: var(--home-text-soft);
+}
+
+.capability-spotlight,
+.capability-lane,
+.workflow-card,
+.architecture-flow,
+.architecture-rail,
+.architecture-note,
+.workspace-diagram__repo,
+.workspace-diagram__hub,
+.workspace-diagram__command,
+.workspace-diagram__tools code,
+.systems-diagram__card,
+.systems-diagram__foundation,
+.quality-stage,
+.platform-lane,
+.driver-device-card,
+.driver-subsystem-chip,
+.driver-framework-note {
+  border-color: var(--home-panel-border);
+  background: var(--home-panel);
+  box-shadow: 0 8px 24px rgba(29, 42, 78, 0.07);
+}
+
+.capability-spotlight,
+.architecture-flow,
+.workspace-diagram__hub,
+.systems-diagram__foundation {
+  border-color: var(--home-line-strong);
+  background:
+    radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--ifm-color-primary) 13%, transparent), transparent 42%),
+    var(--home-panel-strong);
+}
+
+.architecture-layer,
+.architecture-rail li,
+.quality-step__body li,
+.platform-chip,
+.driver-tag,
+.workspace-diagram__repo-mark {
+  border-color: var(--home-line);
+  background: var(--home-surface-soft);
+}
+
+.capability-lane:hover,
+.workflow-card:hover,
+.architecture-layer:hover,
+.architecture-rail li:hover,
+.architecture-note:hover,
+.workspace-diagram__repo:hover,
+.systems-diagram__card:hover,
+.quality-stage:hover,
+.platform-lane:hover,
+.driver-device-card:hover,
+.driver-subsystem-chip:hover {
+  border-color: var(--home-line-strong);
+  box-shadow: var(--home-shadow);
+}
+
+.systems-diagram__card.accent-arceos { border-top: 4px solid var(--system-accent-arceos); }
+.systems-diagram__card.accent-starry { border-top: 4px solid var(--system-accent-starry); }
+.systems-diagram__card.accent-axvisor { border-top: 4px solid var(--system-accent-axvisor); }
+.systems-diagram__card.accent-arceos::before { background: var(--system-accent-arceos); }
+.systems-diagram__card.accent-starry::before { background: var(--system-accent-starry); }
+.systems-diagram__card.accent-axvisor::before { background: var(--system-accent-axvisor); }
+
+.workspace-diagram__title {
+  border: 1px solid color-mix(in srgb, var(--arch-accent-main) 28%, transparent);
+  background: color-mix(in srgb, var(--arch-accent-main) 11%, var(--home-panel));
+}
+
+.quality-stage {
+  border-top: 4px solid var(--quality-tone, var(--feature-accent-1));
+}
+
+.platform-lane {
+  border-left-color: var(--home-panel-border);
+}
+
+.driver-device-grid,
+.driver-subsystem-panel {
+  padding: 1.5rem;
+  border: 1px solid var(--home-panel-border);
+  border-radius: var(--home-box-radius);
+  background: color-mix(in srgb, var(--home-panel) 94%, var(--home-section-tint));
+}
+
+.docs-node {
+  padding: 1.35rem;
+  border: 1px solid var(--home-panel-border);
+  border-radius: var(--home-box-radius);
+  background: var(--home-panel);
+  box-shadow: 0 8px 24px rgba(29, 42, 78, 0.07);
+}
+
+.docs-links a {
+  background: var(--home-surface-soft);
+  border-color: var(--home-line);
+}
+
+html[data-theme='dark'] .capability-spotlight,
+html[data-theme='dark'] .architecture-flow,
+html[data-theme='dark'] .workspace-diagram__hub,
+html[data-theme='dark'] .systems-diagram__foundation {
+  background:
+    radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--ifm-color-primary) 16%, transparent), transparent 44%),
+    var(--home-panel-strong);
+}
+
+html[data-theme='dark'] .capability-lane,
+html[data-theme='dark'] .workflow-card,
+html[data-theme='dark'] .architecture-rail,
+html[data-theme='dark'] .architecture-note,
+html[data-theme='dark'] .workspace-diagram__repo,
+html[data-theme='dark'] .workspace-diagram__command,
+html[data-theme='dark'] .workspace-diagram__tools code,
+html[data-theme='dark'] .systems-diagram__card,
+html[data-theme='dark'] .quality-stage,
+html[data-theme='dark'] .platform-lane,
+html[data-theme='dark'] .driver-device-card,
+html[data-theme='dark'] .driver-subsystem-chip,
+html[data-theme='dark'] .docs-node {
+  background: var(--home-panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+}

@@ -425,7 +425,7 @@ function CapabilitySection() {
     { icon: 'orbit', title: '统一构建入口', desc: 'cargo xtask 子命令覆盖构建、运行、测试与发布，单条命令切换系统路径与目标架构。', to: '/docs/build/overview' },
     { icon: 'layers', title: '组件化架构', desc: '内存分配、调度器、文件系统、网络栈等以独立 crate 提取，系统通过组合 crate 而非 fork 衍生。', to: '/docs/development/components' },
     { icon: 'shield', title: 'Rust 内存安全', desc: '内核、驱动与虚拟化路径均基于 Rust 实现，在编译期消除缓冲区溢出与数据竞争等常见系统漏洞。', to: '/docs/architecture/overview' },
-    { icon: 'pulse', title: '四架构支持', desc: 'riscv64、aarch64、x86_64、loongarch64 均可通过 xtask 一键构建与 QEMU 运行，接口统一而适配独立。', to: '/docs/introduction/hardware' },
+    { icon: 'pulse', title: '四架构支持', desc: 'riscv64、aarch64、x86_64、loongarch64 均可通过 xtask 一键构建与 QEMU 运行，接口统一而适配独立。', to: '/docs/introduction/platform' },
     { icon: 'chip', title: '镜像与快照闭环', desc: '从配置生成、交叉编译、镜像打包到 QEMU 启动与快照管理，构建产物可追溯、可复现。', to: '/docs/build/overview' },
     { icon: 'server', title: '分层验证策略', desc: 'Host 侧 cargo test 与 clippy 先行，系统级 QEMU 运行验证跟进，板级回归兜底，验证粒度逐层放大。', to: '/docs/build/overview' },
   ];
@@ -598,7 +598,7 @@ function WorkflowSection() {
 /* ── Docs Section ────────────────────────────────────────── */
 function DocsSection() {
   const docs = [
-    { title: '项目介绍', desc: '仓库定位、系统关系、硬件支持矩阵和读者入口。', links: [{ label: '概览', to: '/docs/introduction/overview' }, { label: '环境与平台', to: '/docs/introduction/hardware' }] },
+    { title: '项目介绍', desc: '仓库定位、系统关系、硬件支持矩阵和读者入口。', links: [{ label: '概览', to: '/docs/introduction/overview' }, { label: '架构与平台', to: '/docs/introduction/platform' }] },
     { title: '参考资料', desc: '仓库目录结构、组件清单、构建系统和依赖图谱。', links: [{ label: '仓库结构', to: '/docs/contributing/repo' }, { label: '组件指南', to: '/docs/development/components' }, { label: '构建系统', to: '/docs/build/overview' }] },
     { title: '设计与实现', desc: '分层架构原理、构建链路细节和 Guest 配置方法。', links: [{ label: '架构设计', to: '/docs/architecture/overview' }, { label: '构建流程', to: '/docs/build/overview' }] },
     { title: '系统指南', desc: '按 ArceOS / StarryOS / Axvisor 分别说明目录、命令和验证方式。', links: [{ label: 'ArceOS', to: '/docs/development/arceos' }, { label: 'StarryOS', to: '/docs/development/starryos' }, { label: 'Axvisor', to: '/docs/development/axvisor' }] },
@@ -728,7 +728,7 @@ function PlatformSection() {
           </div>
         ))}
         <div className="platform-lanes__action">
-          <Link className="platform-lanes__link" to="/docs/introduction/hardware">查看完整硬件支持</Link>
+          <Link className="platform-lanes__link" to="/docs/introduction/platform">查看完整硬件支持</Link>
         </div>
       </div>
     </SectionShell>
