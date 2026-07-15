@@ -25,7 +25,13 @@ use irq_framework::IrqId;
 use rd_net::{Net, NetError, RxQueue, TxQueue};
 
 const RX_PREFETCH_TARGET: usize = 1;
-const ETH_ZLEN: usize = 60;
+/// Minimum Ethernet frame payload length (RFC 894).
+///
+/// Short frames are padded to this length on the wire by the driver's
+/// `transmit()` path. The L2 frame byte counts reported through
+/// `/proc/net/dev` should reflect the actual on-wire length, including
+/// padding.
+pub(crate) const ETH_ZLEN: usize = 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetDeviceError {
@@ -85,6 +91,11 @@ pub type NetDeviceResult<T = ()> = Result<T, NetDeviceError>;
 /// Receive buffer returned by a low-level driver.
 pub trait NetRxBuffer: Send {
     /// Returns the packet bytes received from the device.
+    ///
+    /// The returned slice MUST represent the Ethernet frame **excluding** the
+    /// trailing 4-byte FCS (Frame Check Sequence). The caller (e.g.,
+    /// [`EthernetDevice`]) uses this length directly as the L2 frame byte count
+    /// for `/proc/net/dev` statistics aligned with Linux semantics.
     fn packet(&self) -> &[u8];
     /// Returns the packet length.
     fn packet_len(&self) -> usize {
