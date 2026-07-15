@@ -555,6 +555,29 @@ fn load_cargo_config_keeps_original_bare_target_for_dynamic_platform_request() {
 }
 
 #[test]
+fn load_cargo_config_keeps_starry_smp_capability_for_single_or_unspecified_cpu_limits() {
+    for requested_smp in [None, Some(1)] {
+        let target = "riscv64gc-unknown-none-elf";
+        let mut request = request(PathBuf::from("/tmp/.build.toml"), "riscv64", target);
+        request.smp = requested_smp;
+        request.build_info_override = Some(default_starry_build_info_for_target(target));
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(
+            cargo.features.contains(&"smp".to_string()),
+            "Starry must remain SMP-capable when the requested CPU limit is {requested_smp:?}"
+        );
+        match requested_smp {
+            Some(cpu_count) => {
+                assert_eq!(cargo.env.get("SMP"), Some(&cpu_count.to_string()));
+            }
+            None => assert!(!cargo.env.contains_key("SMP")),
+        }
+    }
+}
+
+#[test]
 fn load_cargo_config_uses_bare_no_std_pie_contract() {
     let target = "aarch64-unknown-none-softfloat";
     let mut request = request(PathBuf::from("/tmp/.build.toml"), "aarch64", target);
