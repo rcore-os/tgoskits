@@ -6,6 +6,7 @@ const EBPF: &str = include_str!("../src/ebpf/mod.rs");
 const FUTURE: &str = include_str!("../src/task/future.rs");
 const KPROBE: &str = include_str!("../src/kprobe.rs");
 const MM_ACCESS: &str = include_str!("../src/mm/access.rs");
+const PIDFD: &str = include_str!("../src/syscall/fs/pidfd.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
 const SCHEDULER_IDENTITY: &str = include_str!("../src/task/scheduler_identity.rs");
@@ -123,10 +124,21 @@ fn scheduler_identity_is_a_lock_free_one_time_publication() {
 fn scheduler_switch_hooks_reuse_the_existing_cpu_pin() {
     let switch_in = function_body(TASK, "fn scheduler_switch_in(");
     let switch_out = function_body(TASK, "fn scheduler_switch_out(");
-    assert!(switch_in.contains("ActiveScope::set_pinned"));
-    assert!(switch_out.contains("ActiveScope::set_global_pinned"));
+    assert!(switch_in.contains("scope.activate_pinned"));
+    assert!(switch_out.contains("scope.deactivate_pinned"));
     assert!(!switch_in.contains("ActiveScope::set(&"));
     assert!(!switch_out.contains("ActiveScope::set_global()"));
+    assert!(!switch_in.contains("mem::forget"));
+    assert!(!switch_out.contains("force_read_decrement"));
+}
+
+#[test]
+fn active_scope_mutation_uses_a_bounded_writer_gate() {
+    let mutation = function_body(TASK, "pub(crate) fn with_current_scope_mut<");
+
+    assert!(mutation.contains("scope.with_active_mut_pinned"));
+    assert!(!mutation.contains("force_read_decrement"));
+    assert!(!mutation.contains("mem::forget"));
 }
 
 #[test]
@@ -260,6 +272,30 @@ fn procfs_preserves_weak_user_task_invariant_errors() {
     assert!(PROCFS.contains("VfsError::BadState"));
     assert!(!PROCFS.contains("self.task.upgrade().ok().flatten()"));
     assert!(!PROCFS.contains("Ok(None) | Err(_)"));
+}
+
+#[test]
+fn remote_scope_reads_release_the_scope_gate_before_fd_table_locks() {
+    let thread_fd_dir = &PROCFS[PROCFS
+        .find("impl SimpleDirOps for ThreadFdDir")
+        .expect("missing ThreadFdDir implementation")..];
+    for body in [
+        function_body(thread_fd_dir, "fn child_names"),
+        function_body(thread_fd_dir, "fn lookup_child"),
+        function_body(PIDFD, "pub fn sys_pidfd_getfd("),
+    ] {
+        let clone = body
+            .find("scope_cell(&scope).clone()")
+            .expect("remote lookup must clone the scoped fd-table owner");
+        let release = body
+            .find("drop(scope)")
+            .expect("remote lookup must release the scope gate explicitly");
+        let table_lock = body[release..]
+            .find(".read()")
+            .map(|offset| release + offset)
+            .expect("remote lookup must eventually read the fd table");
+        assert!(clone < release && release < table_lock);
+    }
 }
 
 fn function_body<'source>(source: &'source str, signature: &str) -> &'source str {

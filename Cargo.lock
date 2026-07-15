@@ -7093,6 +7093,7 @@ dependencies = [
  "ax-kspin",
  "ax-percpu",
  "ctor 0.6.3",
+ "lock_api",
  "spin",
 ]
 

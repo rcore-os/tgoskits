@@ -265,7 +265,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
 
     let mnt_fs_ns = if ns_type_str == "mnt" {
         let scope = proc_data.scope.read();
-        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        let fs_context = FS_CONTEXT.scope_cell(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())
     } else {
@@ -495,9 +495,11 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
         let curr = current_user_task();
         let proc_data = &curr.as_thread().proc_data;
         let new_files = Arc::new(ax_kspin::SpinRwLock::new(current_fd_table().read().clone()));
-        proc_data.with_current_scope_mut(|scope| {
-            *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
+        let old_files = proc_data.with_current_scope_mut(|scope| {
+            let mut slot = FD_TABLE.scope_cell_mut(scope);
+            core::mem::replace(slot.deref_mut(), new_files)
         });
+        drop(old_files);
     }
 
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);

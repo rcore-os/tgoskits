@@ -44,4 +44,9 @@ fn active_scope_access_cannot_export_an_unpinned_reference() {
             && !scope.contains("write_current_raw"),
         "scope-local must not hide unchecked current-CPU access"
     );
+    assert!(
+        !scope.contains("impl Deref for ScopeCellReadGuard")
+            && item.contains("pub fn scope_cell<'scope>("),
+        "a ScopeCell read capability must not permit recursive gate acquisition through Scope"
+    );
 }

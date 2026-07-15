@@ -8,13 +8,13 @@ use core::{
 use ax_kspin::PreemptGuard;
 use ax_percpu::CpuPin;
 
-use crate::scope::{ActiveScope, Scope};
+use crate::scope::{ActiveScope, Scope, ScopeCellReadGuard, ScopeCellWriteGuard, ScopeItemLease};
 
 #[doc(hidden)]
 pub struct Item {
-    pub layout: Layout,
-    pub init: fn(NonNull<()>),
-    pub drop: fn(NonNull<()>),
+    pub(crate) layout: Layout,
+    pub(crate) init: fn(NonNull<()>),
+    pub(crate) drop: fn(NonNull<()>),
 }
 
 pub(crate) struct Registry;
@@ -34,6 +34,25 @@ impl Deref for Registry {
 }
 
 impl Item {
+    /// Creates one type-erased registry descriptor.
+    ///
+    /// # Safety
+    ///
+    /// `init` must initialize exactly one valid `T` at the supplied aligned
+    /// address, and `drop` must drop exactly that value without deallocating
+    /// its storage. The descriptor must only be paired with `LocalItem<T>`.
+    #[doc(hidden)]
+    pub const unsafe fn new<T: Send + Sync + 'static>(
+        init: fn(NonNull<()>),
+        drop: fn(NonNull<()>),
+    ) -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            init,
+            drop,
+        }
+    }
+
     #[inline]
     pub(crate) fn index(&'static self) -> usize {
         unsafe { (self as *const Item).offset_from_unsigned(Registry.as_ptr()) }
@@ -46,10 +65,14 @@ pub struct LocalItem<T> {
     _p: PhantomData<T>,
 }
 
-impl<T> LocalItem<T> {
+impl<T: Send + Sync + 'static> LocalItem<T> {
     #[doc(hidden)]
     #[inline]
-    pub const fn new(item: &'static Item) -> Self {
+    /// # Safety
+    ///
+    /// `item` must have been created for exactly `T` and its initializer and
+    /// destructor must obey [`Item::new`]'s contract.
+    pub const unsafe fn new(item: &'static Item) -> Self {
         Self {
             item,
             _p: PhantomData,
@@ -127,8 +150,7 @@ impl<T> LocalItem<T> {
     /// Returns a reference to this item within the given scope.
     pub fn scope<'scope>(&self, scope: &'scope Scope) -> ScopeItem<'scope, T> {
         ScopeItem {
-            item: self.item,
-            scope,
+            lease: scope.read_item(self.item),
             _p: PhantomData,
         }
     }
@@ -136,8 +158,36 @@ impl<T> LocalItem<T> {
     /// Returns a mutable reference to this item within the given scope.
     pub fn scope_mut<'scope>(&self, scope: &'scope mut Scope) -> ScopeItemMut<'scope, T> {
         ScopeItemMut {
-            item: self.item,
-            scope,
+            item: scope.get_mut_unlocked(self.item),
+            _p: PhantomData,
+        }
+    }
+
+    /// Returns the value selected through an existing [`ScopeCell`] read
+    /// capability.
+    ///
+    /// This path reuses the guard's shared count. It never recursively acquires
+    /// the underlying gate, so a writer that has already published upgrade
+    /// intent cannot deadlock the current reader.
+    ///
+    /// [`ScopeCell`]: crate::ScopeCell
+    pub fn scope_cell<'scope>(&self, scope: &'scope ScopeCellReadGuard<'_>) -> &'scope T {
+        scope.get(self.item).as_ref()
+    }
+
+    /// Returns mutable access to this item under a [`ScopeCell`] writer guard.
+    ///
+    /// Unlike [`Self::scope_mut`], this path never creates `&mut Scope`; the
+    /// guard authorizes slot-level interior mutation while other CPUs may still
+    /// retain the stable active-scope identity.
+    ///
+    /// [`ScopeCell`]: crate::ScopeCell
+    pub fn scope_cell_mut<'scope>(
+        &self,
+        scope: &'scope mut ScopeCellWriteGuard<'_>,
+    ) -> ScopeItemMut<'scope, T> {
+        ScopeItemMut {
+            item: scope.get_mut(self.item),
             _p: PhantomData,
         }
     }
@@ -147,8 +197,7 @@ impl<T> LocalItem<T> {
 ///
 /// Created by [`LocalItem::scope`].
 pub struct ScopeItem<'scope, T> {
-    item: &'static Item,
-    scope: &'scope Scope,
+    lease: ScopeItemLease<'scope>,
     _p: PhantomData<T>,
 }
 
@@ -157,7 +206,7 @@ impl<'scope, T> Deref for ScopeItem<'scope, T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.scope.get(self.item).as_ref()
+        self.lease.item().as_ref()
     }
 }
 
@@ -165,8 +214,7 @@ impl<'scope, T> Deref for ScopeItem<'scope, T> {
 ///
 /// Created by [`LocalItem::scope_mut`].
 pub struct ScopeItemMut<'scope, T> {
-    item: &'static Item,
-    scope: &'scope mut Scope,
+    item: &'scope mut crate::boxed::ItemBox,
     _p: PhantomData<T>,
 }
 
@@ -175,14 +223,14 @@ impl<'scope, T> Deref for ScopeItemMut<'scope, T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.scope.get(self.item).as_ref()
+        self.item.as_ref()
     }
 }
 
 impl<'scope, T> DerefMut for ScopeItemMut<'scope, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.scope.get_mut(self.item).as_mut()
+        self.item.as_mut()
     }
 }
 
@@ -207,18 +255,16 @@ macro_rules! scope_local {
             $(#[$attr])*
             $vis static $name: $crate::LocalItem<$ty> = {
                 #[unsafe(link_section = "scope_local")]
-                static ITEM: $crate::Item = $crate::Item {
-                    layout: core::alloc::Layout::new::<$ty>(),
-                    init: |ptr| {
+                static ITEM: $crate::Item = unsafe {
+                    $crate::Item::new::<$ty>(|ptr| {
                         let val: $ty = $default;
                         unsafe { ptr.cast().write(val) }
-                    },
-                    drop: |ptr| unsafe {
+                    }, |ptr| unsafe {
                         ptr.cast::<$ty>().drop_in_place();
-                    },
+                    })
                 };
 
-                $crate::LocalItem::new(&ITEM)
+                unsafe { $crate::LocalItem::new(&ITEM) }
             };
         )+
     }

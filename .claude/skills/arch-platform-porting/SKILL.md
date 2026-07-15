@@ -275,6 +275,17 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   context must call the runtime's initial-switch completion hook as its first
   operation, after completing scheduler switch tail and before touching TLS,
   taking context-aware locks, polling futures, or enabling interrupts.
+- OS switch hooks may publish an address-stable scope/current identity, but
+  must not retain a `Mutex`/`RwLock`, IRQ, or preemption guard across the naked
+  context switch. Protect each scope-local access with its own bounded lease;
+  writers publish intent before waiting so new readers cannot starve them.
+  A read token that already owns the shared gate must expose a dedicated item
+  capability rather than dereference to the unlocked `Scope` API: recursively
+  acquiring a shared count can self-deadlock after a writer publishes upgrade
+  intent.
+  Move replaced `Arc` values out through the writer token and drop them only
+  after IRQ/preemption guards are gone, and clone remote scope-owned handles
+  before taking sleepable table or namespace locks.
 - Keep the previous thread's `on_cpu` publication set until the architecture has
   physically left its stack. Clear it from switch tail in the newly active
   context; only then publish deferred migration or exit work. Switch tail must

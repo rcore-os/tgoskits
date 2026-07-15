@@ -29,7 +29,7 @@ use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
 use kernel_elf_parser::AuxEntry;
-use scope_local::{ActiveScope, Scope};
+use scope_local::{ScopeCell, ScopeCellWriteGuard};
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
@@ -319,9 +319,12 @@ impl Thread {
             panic!("Starry thread was rebound to a different scheduler identity");
         }
         self.cpu_time.scheduler_switch_in(realtime_policy);
-        let scope = self.proc_data.scope.read();
-        unsafe { ActiveScope::set_pinned(&scope, cpu_pin) };
-        core::mem::forget(scope);
+        // SAFETY: the scheduler switch baton pins this CPU and retains the
+        // thread-owned ProcessData until the matching switch-out callback.
+        // ScopeCell publishes only the pinned scope identity here. Individual
+        // scope-local operations take bounded leases, so no lock or
+        // preemption depth crosses the final context switch.
+        unsafe { self.proc_data.scope.activate_pinned(cpu_pin) };
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
     }
@@ -333,8 +336,9 @@ impl Thread {
     ) {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
-        ActiveScope::set_global_pinned(cpu_pin);
-        unsafe { self.proc_data.scope.force_read_decrement() };
+        // SAFETY: switch-in established exactly one activation for this task,
+        // and the scheduler baton still pins the same CPU during switch-out.
+        unsafe { self.proc_data.scope.deactivate_pinned(cpu_pin) };
         self.cpu_time.scheduler_switch_out(reason);
     }
 
@@ -676,7 +680,7 @@ pub struct ProcessData {
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
     /// The resource scope
-    pub scope: RwLock<Scope>,
+    pub(crate) scope: ScopeCell,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// The user heap top
@@ -875,7 +879,7 @@ impl ProcessData {
             aspace: SpinNoIrq::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
-            scope: RwLock::new(Scope::new()),
+            scope: ScopeCell::new(),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
             rlim: RwLock::default(),
@@ -964,24 +968,20 @@ impl ProcessData {
 
     /// Mutate the process scope from the current task.
     ///
-    /// `TaskExt::on_enter` leaves the current task's active scope installed by
-    /// holding one read count on [`Self::scope`]. A syscall running in that task
-    /// must temporarily release that read count before taking the write side.
-    /// The closure runs with preemption and local IRQs disabled, so it should
-    /// only install already-prepared scope entries.
-    pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+    /// `TaskExt::on_enter` publishes the current task's active scope. A syscall
+    /// running in that task acquires the writer-preferred bounded gate before
+    /// mutating it. The closure runs with preemption and local IRQs disabled,
+    /// so it should only install already-prepared scope entries and must not
+    /// reenter scope-local access.
+    pub(crate) fn with_current_scope_mut<R>(
+        &self,
+        f: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R,
+    ) -> R {
         let guard = PreemptIrqGuard::new();
-        ActiveScope::set_global_pinned(guard.cpu_pin());
-        unsafe { self.scope.force_read_decrement() };
-        let mut scope = self.scope.write();
-        let ret = f(&mut scope);
-        drop(scope);
-        let scope = self.scope.read();
-        // SAFETY: the leaked read ownership below keeps this scope alive until
-        // the next scheduler switch or mutation of the same process data.
-        unsafe { ActiveScope::set_pinned(&scope, guard.cpu_pin()) };
-        core::mem::forget(scope);
-        ret
+        // SAFETY: this method is only called for the running Starry task's own
+        // ProcessData. Its switch-in hook published this ScopeCell on the same
+        // CPU, and the combined guard prevents migration or a nested switch.
+        unsafe { self.scope.with_active_mut_pinned(guard.cpu_pin(), f) }
     }
 
     /// Get the top address of the user heap.

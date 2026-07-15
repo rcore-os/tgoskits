@@ -11,6 +11,7 @@ license = "Apache-2.0"
 [dependencies]
 ax-kspin.workspace = true
 ax-percpu = { workspace = true, features = ["non-zero-vma"] }
+lock_api.workspace = true
 spin = { workspace = true }
 
 [dev-dependencies]

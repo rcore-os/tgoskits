@@ -103,11 +103,10 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
         // refreshed on clone/dup paths; syscalls like pipe() update ActiveScope only.
         current_fd_table().read().get(target_fd as usize).cloned()
     } else {
-        FD_TABLE
-            .scope(&proc_data.scope.read())
-            .read()
-            .get(target_fd as usize)
-            .cloned()
+        let scope = proc_data.scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        fd_table.read().get(target_fd as usize).cloned()
     };
     fd_entry.ok_or(AxError::BadFileDescriptor).and_then(|fd| {
         let fd = add_file_like(fd.inner.clone(), true)?;

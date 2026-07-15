@@ -86,7 +86,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     {
         let mut scope = proc.scope.write();
-        crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+        crate::file::add_stdio(&mut FD_TABLE.scope_cell_mut(&mut scope).write())
             .expect("Failed to add stdio");
     }
 

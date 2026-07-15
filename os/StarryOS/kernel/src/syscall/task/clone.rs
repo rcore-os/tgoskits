@@ -344,17 +344,19 @@ impl CloneArgs {
                     // ensures close_all_fds either observes our strong_count
                     // increment or blocks on write lock until we release.
                     let _guard = current_files.read();
-                    FD_TABLE.scope_mut(&mut scope).clone_from(&current_files);
+                    FD_TABLE
+                        .scope_cell_mut(&mut scope)
+                        .clone_from(&current_files);
                 } else {
                     FD_TABLE
-                        .scope_mut(&mut scope)
+                        .scope_cell_mut(&mut scope)
                         .write()
                         .clone_from(&current_files.read());
                 }
 
                 if flags.contains(CloneFlags::FS) {
                     FS_CONTEXT
-                        .scope_mut(&mut scope)
+                        .scope_cell_mut(&mut scope)
                         .clone_from(&current_fs_context());
                 } else {
                     let current_fs = current_fs_context();
@@ -362,7 +364,7 @@ impl CloneArgs {
                     if flags.contains(CloneFlags::NEWNS) {
                         fs_context.unshare_mount_namespace()?;
                     }
-                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
+                    *FS_CONTEXT.scope_cell_mut(&mut scope).lock() = fs_context;
                 }
             }
 

@@ -64,12 +64,13 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         let cloned_inner = current_fs_context().lock().clone();
         let new_fs = Arc::new(PiMutex::new(cloned_inner));
 
-        // scope.write() would self-deadlock because on_enter holds a
-        // leaked scope.read() guard for the task's lifetime.  Temporarily
-        // release it, do the rebind, then re-acquire.
-        proc_data.with_current_scope_mut(|scope| {
-            *FS_CONTEXT.scope_mut(scope) = new_fs;
+        // Publish writer intent before waiting for bounded scope readers. The
+        // active scheduler identity itself owns no lock across task execution.
+        let old_fs = proc_data.with_current_scope_mut(|scope| {
+            let mut slot = FS_CONTEXT.scope_cell_mut(scope);
+            core::mem::replace(&mut *slot, new_fs)
         });
+        drop(old_fs);
     }
     if want_ns {
         current_fs_context().lock().unshare_mount_namespace()?;
@@ -199,7 +200,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let target_proc = pidfd.process_data()?;
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
         let scope = target_proc.scope.read();
-        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        let fs_context = FS_CONTEXT.scope_cell(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())
     } else {

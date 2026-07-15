@@ -344,7 +344,8 @@ pub(crate) fn fd_table_file_refs(
         }
         let pid = task.as_thread().proc_data.proc.pid();
         let scope = task.as_thread().proc_data.scope.read();
-        let scoped_fd_table = FD_TABLE.scope(&scope);
+        let scoped_fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
         let table = scoped_fd_table.read();
         for id in table.ids() {
             if table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)) {

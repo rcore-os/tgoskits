@@ -908,8 +908,10 @@ impl SimpleDirOps for ThreadFdDir {
             Ok(None) => return Box::new(iter::empty()),
             Err(error) => panic!("procfs fd directory has an invalid user extension: {error}"),
         };
-        let ids = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+        let scope = task.as_thread().proc_data.scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        let ids = fd_table
             .read()
             .ids()
             .map(|id| Cow::Owned(id.to_string()))
@@ -921,8 +923,10 @@ impl SimpleDirOps for ThreadFdDir {
         let fs = self.fs.clone();
         let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let path = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+        let scope = task.as_thread().proc_data.scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        let path = fd_table
             .read()
             .get(fd as _)
             .ok_or(VfsError::NotFound)?
