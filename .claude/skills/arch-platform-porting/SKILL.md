@@ -31,6 +31,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - **Runtime platform identity**: dynamic platform names should be discovered in `someboot`/`somehal` from firmware data, then exposed through `axplat-dyn` and `ax_plat::platform::platform_name()`. Keep `ax-hal` as a forwarding layer for platform identity, and keep static platforms returning `config::PLATFORM`.
 - **Runtime IRQ ownership**: ArceOS runtime IRQ traps are owned by `ax-cpu` and dispatched through `ax_hal::irq::handle_irq(raw_vector)`, which immediately wraps the CPU trap entry as `TrapVector`. `somehal` must stay OS-free and expose controller transactions through `somehal::irq::begin_irq(raw_vector) -> ActiveIrq`; `ActiveIrq::id()` returns the resolved `IrqId`, and `ActiveIrq` is held while `axplat-dyn` dispatches the IRQ and its `Drop` performs the architecture-specific EOI/complete. Do not reintroduce `_someboot_handle_irq` or `#[somehal::irq_handler]` as runtime dispatch glue.
 - **Runtime IRQ initialization order**: dynamic platforms initialize boot IRQ state through `ax_hal::irq::init_boot_irqs(cpu_id)` before registering runtime IRQ handlers or probing normal devices. `rdrive::ProbeLevel` remains the coarse lifecycle boundary, and `ProbePriority` is the ordering source inside `PreKernel`: clocks first, then interrupt controllers, timer sources, MSI parent controllers, and only later normal early devices. For FDT, same level/priority matches must keep device-tree order; interrupt-controller nodes additionally follow parent-before-child ordering similar to Linux `of_irq_init()`, with sibling controllers preserving DT order. Do not add arch-specific ad hoc probe calls in `axruntime` when a priority barrier can express the same dependency.
+- **Scheduler-online initialization order**: once a CPU can schedule, do not use raw `spin::Once` or `spin::LazyLock` for state that competing tasks may initialize. A raw Once owner can publish `Running`, be preempted, and then be waited on by a same-CPU replacement holding an IRQ/preemption guard. Use `ax_kspin::PreemptOnce` / `PreemptLazy`, complete lazy state before publishing dependent services, and publish the service before making its worker threads runnable. Keep first allocation and worker spawning outside `SpinNoIrq` service guards.
 - **Runtime IPI identity**: dynamic platforms expose the runtime IPI IRQ as a typed `IrqId` through `somehal::irq::ipi_irq()`, `axplat-dyn`, and `ax_hal::irq::ipi_irq()`. Do not route dynamic runtime IPI registration through `ax-config`; on RISC-V the IRQ is the flagged supervisor software interrupt cause in the CPU-local domain, not bare PLIC source `1`.
 - **Runtime IPI transport**: publish an immutable dense logical-CPU to firmware/hardware-ID table before any CPU becomes online, then resolve every runtime target from that O(1) table without reparsing firmware, allocating, logging, or taking controller-discovery locks. Carry destinations as `CpuIpiTarget` and return `IpiSendStatus::{Success, Retry, Invalid}`. The lowest public hardware sender must borrow `IrqGuard` across current-CPU observation, validation, and commit so split xAPIC ICR writes cannot be nested. Order inbox/event publication before the hardware doorbell with the architecture's store/device barrier. A software broadcast must preflight every permanently invalid destination before its first commit; prefer independent per-target generations when partial transient failure needs independent retry.
 - **Runtime CPU limits**: treat generated `CPU_CAPACITY`/`SMP` as a build-time capacity for const generics, per-CPU arrays, and linker/percpu layout only. Actual online/usable CPU count must flow through `ax_hal::cpu_num()`, which caps the platform-discovered count by capacity.
@@ -112,6 +113,14 @@ its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic
   validates every relative descriptor, constructs every prefix and typed value
   exactly once, publishes the frozen layout with Release ordering, and only
   then exposes per-CPU metadata or enters `__someboot_main`.
+- Map CPU-local RAM with the same coherent normal-memory cacheability and
+  shareability attributes as every other alias of the same physical pages.
+  AArch64 must not mark the dedicated per-CPU alias non-shareable: scheduler
+  inboxes, allocator ownership, diagnostics, and remote access intentionally
+  cross CPU boundaries. After final-high typed construction publishes the
+  layout, late boot may clean the separate `PerCpuMeta` records needed by AP
+  trampolines, but it must never clean-invalidate the complete live CPU-data
+  and stack allocation again.
 - Treat the header's 64-byte alignment as a minimum, never as a maximum symbol
   alignment. Linker scripts must retain `.ax_percpu.align`, derive the template
   requirement with `MAX(64, ALIGNOF(.percpu))`, and apply it to both the runtime
@@ -198,6 +207,9 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   the runtime IRQ/preemption nesting state, allocator/MM/HAL services, the
   `TaskSystem`, and the primary `CpuLocal`. Register timer and scheduler-IPI
   delivery only after those objects are address-stable; enable interrupts last.
+  Once the primary scheduler is online, start the permanent ax-task task-work
+  service before device initialization, application entry, or any subsystem that
+  can publish deferred callbacks or spawn dependent workers.
 - On a secondary CPU, verify its platform-installed architecture per-CPU register and initialize runtime
   guard state before allocating or publishing `CpuLocal`. Do not add the CPU to
   the scheduler online mask until its bootstrap context, timer and IPI receive
@@ -264,8 +276,14 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   taking context-aware locks, polling futures, or enabling interrupts.
 - Keep the previous thread's `on_cpu` publication set until the architecture has
   physically left its stack. Clear it from switch tail in the newly active
-  context; only then publish a deferred migration, run the task-context exit
-  hook, or allow the reaper to destroy context/stack/extension resources.
+  context; only then publish deferred migration or exit work. Switch tail must
+  never run an OS exit hook or reap resources itself. A permanent ordinary-task
+  service is the single bounded consumer for Deadline callbacks, exit hooks,
+  thread reaping, and deferred resource reclamation. External handle/wake leases,
+  `on_cpu`, timers, callback claims, and migration/policy inbox-delivery leases
+  must all be clear before context/stack/extension destruction; a late delivery
+  for an Exited thread is an idempotent no-op that only releases its retained
+  payload.
 - Make the address-space handoff explicit even when the next scheduler record
   carries the `NONE` sentinel. Capture the per-CPU kernel page-table root before
   publishing the CPU on x86_64 and RISC-V, where kernel and user execution share

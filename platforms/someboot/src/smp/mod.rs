@@ -1,5 +1,6 @@
 use core::{
     alloc::Layout,
+    mem::size_of,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -174,18 +175,24 @@ pub(crate) fn initialize_percpu_layout() {
     publish_runtime_percpu(cpu_count);
 }
 
-pub(crate) fn init_percpu() {
+/// Publishes the page-table facts consumed by secondary boot trampolines.
+///
+/// Final-high initialization has already constructed and exposed every
+/// CPU-local Rust value. This late phase may update only the separate boot
+/// metadata records; touching the complete allocation would also invalidate
+/// live CPU data and primary/secondary stacks.
+pub(crate) fn finalize_secondary_boot_metadata() {
     let boot_table = crate::mem::mmu::boot_table_addr();
     let primary_table = kernel_page_table_paddr();
     for meta in cpu_meta_list_mut() {
         meta.boot_table_paddr = boot_table;
         meta.primary_table_paddr = primary_table;
+        dcache_range(
+            DCacheOp::Clean,
+            core::ptr::from_ref(meta).cast::<u8>(),
+            size_of::<PerCpuMeta>(),
+        );
     }
-
-    let start = __percpu(unsafe { PERCPU_START });
-    let size = unsafe { PERCPU_END.checked_sub(PERCPU_START) }
-        .expect("published per-CPU range must remain ordered");
-    dcache_range(DCacheOp::CleanInvalidate, start, size);
 }
 
 #[derive(Debug, Clone, Copy)]

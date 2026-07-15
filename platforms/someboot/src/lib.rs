@@ -169,7 +169,7 @@ pub enum DCacheOp {
 
 pub fn post_allocator() {
     fdt::init_with_alloc();
-    smp::init_percpu();
+    smp::finalize_secondary_boot_metadata();
     debug!("Setup after allocator");
     arch::Arch::post_allocator();
 }
