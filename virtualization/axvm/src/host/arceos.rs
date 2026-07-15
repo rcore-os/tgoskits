@@ -140,11 +140,14 @@ pub(crate) fn cpu_mask_one_shot(cpu_id: usize) -> api::task::AxCpuMask {
 pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
+pub(crate) type ArceOsTaskError = modules::ax_task::TaskError;
 
-pub(crate) fn try_current_task() -> Option<ArceOsCurrentTask> {
-    modules::ax_task::current_thread_handle()
-        .ok()
-        .map(|inner| ArceOsCurrentTask { inner })
+pub(crate) fn try_current_task() -> Result<Option<ArceOsCurrentTask>, ArceOsTaskError> {
+    match modules::ax_task::current_thread_handle() {
+        Ok(inner) => Ok(Some(ArceOsCurrentTask { inner })),
+        Err(ArceOsTaskError::NotInitialized | ArceOsTaskError::NoRunnableThread) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn in_hard_irq() -> bool {
@@ -251,10 +254,10 @@ impl ArceOsCurrentTask {
         self.inner.id() == task.inner.id()
     }
 
-    pub(crate) fn extension(&self) -> Option<modules::ax_task::ThreadOsExtensionBorrow<'_>> {
+    pub(crate) fn extension(
+        &self,
+    ) -> Result<Option<modules::ax_task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
         modules::ax_task::thread_os_extension(&self.inner)
-            .ok()
-            .flatten()
     }
 }
 

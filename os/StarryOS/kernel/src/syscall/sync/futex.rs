@@ -12,7 +12,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     mm::atomic_update_user_u32,
-    task::{FutexKey, FutexKeyMode, current, futex_table_for, get_task},
+    task::{FutexKey, FutexKeyMode, current_user_task, futex_table_for, get_task},
     time::TimeValueLike,
 };
 
@@ -324,7 +324,9 @@ pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> AxResu
     if size != size_of::<robust_list_head>() {
         return Err(AxError::InvalidInput);
     }
-    current().as_thread().set_robust_list_head(head.addr());
+    current_user_task()
+        .as_thread()
+        .set_robust_list_head(head.addr());
 
     Ok(0)
 }

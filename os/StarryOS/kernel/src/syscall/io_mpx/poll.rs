@@ -18,15 +18,15 @@ use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::{
-        current,
-        future::{self, block_on, interruptible},
+        current_user_task,
+        future::{self, block_on_user, interruptible_for},
         with_blocked_signals,
     },
     time::TimeValueLike,
 };
 
 fn check_nfds_limit(nfds: usize) -> AxResult<()> {
-    let nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     if nfds as u64 > nofile {
         Err(AxError::InvalidInput)
     } else {
@@ -145,7 +145,11 @@ fn do_poll(
             Poll::Pending
         });
 
-        match block_on(interruptible(future::timeout(timeout, wait))) {
+        let task = current_user_task();
+        match block_on_user(
+            &task,
+            interruptible_for(&task, future::timeout(timeout, wait)),
+        ) {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Ok(0),
             Err(err) => Err(err.into()),

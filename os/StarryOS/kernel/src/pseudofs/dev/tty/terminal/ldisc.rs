@@ -439,7 +439,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || loop {
                 Self::drive_input(&mut reader, input_ready.as_ref());
 

@@ -2,7 +2,7 @@
 
 use ax_task::{
     CpuId, DeadlineActivity, DeadlineFlags, DeadlinePolicy, FairMode, Nice, SchedulePolicy,
-    TaskSystem, TaskSystemConfig, ThreadSpec, ThreadState, WakeResult,
+    TaskError, TaskSystem, TaskSystemConfig, ThreadSpec, ThreadState, WakeResult,
 };
 
 mod support;
@@ -253,6 +253,58 @@ fn queued_policy_change_replaces_the_deadline_reservation_accounting() {
         system.deadline_activity(thread.id()).unwrap().activity(),
         DeadlineActivity::ActiveContending
     );
+}
+
+#[test]
+fn deadline_member_capacity_failure_rolls_back_bandwidth_accounting() {
+    support::clear_handles();
+    let system = TaskSystem::new(TaskSystemConfig::new(1).with_timer_capacity(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let first = ready_deadline(&system, 1, 10, 10, DeadlineFlags::NONE);
+    let second = ready_deadline(&system, 1, 10, 10, DeadlineFlags::NONE);
+
+    system.enqueue(cpu.as_mut(), first.id(), 0).unwrap();
+    assert_eq!(
+        system.enqueue(cpu.as_mut(), second.id(), 0),
+        Err(TaskError::TimerCapacity)
+    );
+
+    assert_eq!(cpu.deadline_bandwidth().this_bw_scaled(), 100_000_000);
+    assert_eq!(
+        system
+            .deadline_activity(second.id())
+            .unwrap()
+            .bandwidth_cpu(),
+        None
+    );
+}
+
+#[test]
+fn blocked_deadline_exit_waits_for_owner_member_cleanup() {
+    let (system, mut cpu) = online_system();
+    let thread = ready_deadline(&system, 1, 10, 10, DeadlineFlags::NONE);
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        thread.id()
+    );
+    system.block_current(cpu.as_mut()).unwrap();
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    assert_eq!(system.mark_exited(thread.id()), Err(TaskError::ThreadBusy));
+    assert_eq!(cpu.deadline_bandwidth().this_bw_scaled(), 100_000_000);
+    system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
+    system.mark_exited(thread.id()).unwrap();
+
+    assert_eq!(cpu.deadline_bandwidth().this_bw_scaled(), 0);
+    assert_eq!(thread.state(), ThreadState::Exited);
 }
 
 fn online_system() -> (TaskSystem, core::pin::Pin<Box<ax_task::CpuLocal>>) {

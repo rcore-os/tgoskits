@@ -6,11 +6,11 @@ use linux_raw_sys::general::RLIMIT_DATA;
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
     mm::Backend,
-    task::current,
+    task::current_user_task,
 };
 
 pub fn sys_brk(addr: usize) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let current_top = proc_data.get_heap_top();
 

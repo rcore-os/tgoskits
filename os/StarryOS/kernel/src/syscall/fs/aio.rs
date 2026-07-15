@@ -34,7 +34,8 @@ use crate::{
     mm::{AddrSpace, Backend, IoVec},
     syscall::signal::check_sigset_size,
     task::{
-        future::{block_on, interruptible, timeout_at_wall},
+        current_user_task,
+        future::{block_on, block_on_user, interruptible_for, timeout_at_wall},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -239,7 +240,11 @@ static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::n
 
 // Return the process id that owns newly created or looked-up contexts.
 fn current_pid() -> Pid {
-    crate::task::current().as_thread().proc_data.proc.pid()
+    crate::task::current_user_task()
+        .as_thread()
+        .proc_data
+        .proc
+        .pid()
 }
 
 // Use Linux EINVAL for all invalid AIO context handles.
@@ -737,9 +742,7 @@ fn prepare_request(
 
 // Signal an eventfd completion counter when IOCB_FLAG_RESFD is set.
 fn notify_resfd(resfd: &EventFd) -> AxResult<()> {
-    let data = 1u64.to_ne_bytes();
-    resfd.write(&mut data.as_slice())?;
-    Ok(())
+    resfd.signal_kernel(1)
 }
 
 // Execute a positioned read and copy the bytes into the original user buffer.
@@ -797,7 +800,7 @@ fn poll_result(
     file: &Arc<dyn FileLike>,
     interested: IoEvents,
 ) -> AxResult<isize> {
-    block_on(interruptible(poll_fn(|cx| {
+    block_on(poll_fn(|cx| {
         // Check before registration so already-ready fds complete immediately.
         if context.destroying.load(Ordering::Acquire) {
             return core::task::Poll::Ready(Err(AxError::Interrupted));
@@ -820,8 +823,7 @@ fn poll_result(
             return core::task::Poll::Ready(Ok(ready));
         }
         core::task::Poll::Pending
-    })))
-    .map_err(AxError::from)?
+    }))
 }
 
 // Dispatch one prepared request to the matching operation implementation.
@@ -1065,7 +1067,7 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> AxRes
 
     if spawn_worker {
         let worker_context = context.clone();
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || aio_worker(worker_context),
             String::from("aio-worker"),
         );
@@ -1102,7 +1104,11 @@ fn wait_for_completion(
         }
     });
 
-    match block_on(interruptible(timeout_at_wall(deadline, wait))) {
+    let task = current_user_task();
+    match block_on_user(
+        &task,
+        interruptible_for(&task, timeout_at_wall(deadline, wait)),
+    ) {
         Ok(Ok(())) => Ok(true),
         Ok(Err(_)) => Ok(false),
         Err(_) => Err(AxError::Interrupted),
@@ -1248,7 +1254,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> AxResult<isize> 
     }
     // Allocate the user ring before publishing the context globally.
     let (ring_size, ring_events) = aio_ring_layout(nr_events)?;
-    let curr = crate::task::current();
+    let curr = crate::task::current_user_task();
     let aspace = curr.as_thread().proc_data.aspace();
     let ring_vaddr = {
         let mut guard = aspace.lock();

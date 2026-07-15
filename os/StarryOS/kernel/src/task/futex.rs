@@ -23,8 +23,8 @@ use hashbrown::HashMap;
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
     task::{
-        ProcessData, current,
-        future::{self, block_on, interruptible},
+        ProcessData, current_user_task,
+        future::{self, block_on_user, interruptible_for},
     },
 };
 
@@ -184,16 +184,23 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
-        block_on(interruptible(future::timeout(
-            timeout,
-            WaitIfFuture {
-                queue: self,
-                bitset,
-                cleanup,
-                condition: Some(condition),
-                state: None,
-            },
-        )))??
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            interruptible_for(
+                &task,
+                future::timeout(
+                    timeout,
+                    WaitIfFuture {
+                        queue: self,
+                        bitset,
+                        cleanup,
+                        condition: Some(condition),
+                        state: None,
+                    },
+                ),
+            ),
+        )??
     }
 
     fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
@@ -471,7 +478,7 @@ impl FutexKey {
         if matches!(mode, FutexKeyMode::Private) {
             return Self::Private { address };
         }
-        let curr = current();
+        let curr = current_user_task();
         let aspace_arc = curr.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
         Self::new(&aspace, address, mode)
@@ -635,7 +642,7 @@ static SHARED_FUTEX_TABLES: PiMutex<FutexTables> = PiMutex::new(FutexTables::new
 
 /// Returns the futex table for the given key.
 pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {
-    let curr = current();
+    let curr = current_user_task();
     futex_table_for_process(curr.as_thread().proc_data.as_ref(), key)
 }
 

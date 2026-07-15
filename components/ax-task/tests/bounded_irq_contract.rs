@@ -113,3 +113,8 @@ unsafe fn count_wake(data: usize) {
     };
     wakes.fetch_add(1, Ordering::Relaxed);
 }
+
+#[unsafe(no_mangle)]
+extern "Rust" fn __ax_task_0_7_fatal_invariant(code: u32, argument: usize) -> ! {
+    panic!("bounded IRQ fixture hit ax-task invariant {code:#x} ({argument:#x})")
+}

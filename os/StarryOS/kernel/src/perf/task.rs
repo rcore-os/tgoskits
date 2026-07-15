@@ -784,7 +784,7 @@ pub fn on_exec_sideband(thr: &Thread) {
     }
 
     // COMM: the new process name (this hook runs in the exec'd task's context).
-    let curr = crate::task::current();
+    let curr = crate::task::current_user_task();
     let name = curr.name();
     for wt in &targets {
         if wt.comm {

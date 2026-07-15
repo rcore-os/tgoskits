@@ -21,26 +21,22 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns [`TaskError::NotInitialized`] before runtime object publication and
-/// [`TaskError::StaleThreadId`] if the current slot contains a stale identity.
+/// Returns [`TaskError::NotInitialized`] before runtime CPU publication,
+/// [`TaskError::CpuOwnerBorrowed`] for a reentrant owner query, or
+/// [`TaskError::NoRunnableThread`] before a current thread is installed.
 pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
-    let system = runtime_task_system()?;
-    let current = current_thread_id_from_cpu()?;
-    system.thread_handle(current)
+    runtime_current_cpu()?.current_thread_handle()
 }
 
 /// Returns the generation-bearing identity of the calling scheduler thread.
 pub fn current_thread_id() -> Result<ThreadId, TaskError> {
-    runtime_task_system()?;
     current_thread_id_from_cpu()
 }
 
 fn current_thread_id_from_cpu() -> Result<ThreadId, TaskError> {
-    // Reading the runtime handle and then dereferencing its owner state is a
-    // multi-instruction CPU-local access. Keep IRQ return from migrating this
-    // thread between those operations; the returned generation-bearing ID is
-    // task-owned and remains valid after the pin is released.
-    let _irq = RuntimeIrqGuard::enter();
+    // RuntimeCurrentCpu retains the IRQ pin across handle validation and the
+    // owner-state read. The copied generation-bearing ID remains valid after
+    // that pin is released.
     runtime_current_cpu()?
         .current()
         .ok_or(TaskError::NoRunnableThread)
@@ -71,9 +67,10 @@ pub(crate) fn acquire_blocking_permit() -> Result<BlockingPermit, TaskError> {
 /// Runtime entry trampolines use the callback-table address as a type identity
 /// before recovering an OS-owned closure or process object from `data`.
 pub fn current_thread_extension() -> Result<Option<ThreadExtensionLease>, TaskError> {
-    let system = runtime_task_system()?;
     let handle = current_thread_handle()?;
-    system.thread_extension_lease(handle)
+    Ok(handle
+        .extension_view()
+        .map(|view| ThreadExtensionLease::new(view, handle)))
 }
 
 /// Replaces the current thread's scheduler-visible address-space token.
@@ -706,6 +703,16 @@ fn execute_switch_plan(
     if previous.context().is_none() || next.context().is_none() {
         task_runtime::fatal_invariant(2, next.thread().as_u64() as usize);
     }
+    // Match Linux's sched_switch observation point: the trace runs while the
+    // previous extension is still the published current task, but after all
+    // scheduler locks have been released and the switch decision is final.
+    task_runtime::trace_sched_switch(SchedSwitchRecord {
+        cpu: RuntimeCpuId::new(task_runtime::current_cpu_id().as_u32()),
+        previous_thread: previous.thread().as_u64(),
+        next_thread: next.thread().as_u64(),
+        timestamp_ns: now_ns,
+        reason: decision.switch_reason() as u32,
+    });
     if let Some(extension) = previous.extension() {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // TaskSystem released every internal lock and the outer IRQ guard is held.
@@ -718,13 +725,6 @@ fn execute_switch_plan(
         };
     }
     prepare_next_context(next.address_space(), next.thread(), next.extension());
-    task_runtime::trace_sched_switch(SchedSwitchRecord {
-        cpu: RuntimeCpuId::new(task_runtime::current_cpu_id().as_u32()),
-        previous_thread: previous.thread().as_u64(),
-        next_thread: next.thread().as_u64(),
-        timestamp_ns: now_ns,
-        reason: decision.switch_reason() as u32,
-    });
     // SAFETY: the scheduler committed both endpoint states before releasing its
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(previous.context(), next.context()) };
@@ -1419,6 +1419,12 @@ mod tests {
         let mut irq = RuntimeIrqGuard::enter();
         let mut owner = runtime_current_cpu_mut(&mut irq).unwrap();
         let owner_pin = owner.as_mut();
+
+        assert_eq!(
+            current_thread_handle().unwrap_err(),
+            TaskError::CpuOwnerBorrowed,
+            "a reentrant current-handle query must fail instead of spinning"
+        );
 
         test_runtime::reenter_current_thread_from_next_hook();
         let _now = task_runtime::monotonic_ns();

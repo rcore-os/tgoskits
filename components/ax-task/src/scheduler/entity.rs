@@ -1,6 +1,6 @@
 //! Class-specific mutable state stored with each thread.
 
-use crate::{DeadlineEntity, FairEntity, SchedulePolicy, SchedulingKey};
+use crate::{DeadlineEntity, FairEntity, SchedulePolicy, SchedulingKey, SchedulingUrgency};
 
 /// Mutable scheduler accounting owned by one thread record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,6 +158,14 @@ impl SchedulingEntity {
         match self {
             Self::Deadline(deadline) => deadline.scheduling_key(sequence),
             _ => policy.scheduling_key(sequence),
+        }
+    }
+
+    /// Builds PI urgency without a thread or arrival tie-break.
+    pub const fn scheduling_urgency(self, policy: SchedulePolicy) -> SchedulingUrgency {
+        match self {
+            Self::Deadline(deadline) => deadline.scheduling_urgency(),
+            _ => policy.scheduling_urgency(),
         }
     }
 }

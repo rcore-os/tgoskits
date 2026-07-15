@@ -21,13 +21,17 @@ impl RtBandwidth {
     }
 
     /// Charges runtime after advancing the quota period as needed.
-    pub fn charge(&mut self, now_ns: u64, runtime_ns: u64) {
+    ///
+    /// Returns `true` exactly when this charge exhausts the current period's
+    /// quota. Later charges in the same exhausted period return `false`.
+    pub fn charge(&mut self, now_ns: u64, runtime_ns: u64) -> bool {
         let interval_start_ns = now_ns.saturating_sub(runtime_ns);
         self.advance_period(interval_start_ns);
+        let was_exhausted = self.consumed_ns >= self.runtime_ns;
         let period_end_ns = self.period_start_ns.saturating_add(self.period_ns);
         if now_ns < period_end_ns || self.period_ns == 0 {
             self.consumed_ns = self.consumed_ns.saturating_add(runtime_ns);
-            return;
+            return !was_exhausted && self.consumed_ns >= self.runtime_ns;
         }
 
         let periods = (now_ns - self.period_start_ns) / self.period_ns;
@@ -35,6 +39,7 @@ impl RtBandwidth {
             .period_start_ns
             .saturating_add(periods.saturating_mul(self.period_ns));
         self.consumed_ns = now_ns.saturating_sub(self.period_start_ns);
+        self.consumed_ns >= self.runtime_ns
     }
 
     /// Returns whether ordinary RT work may run.
@@ -89,7 +94,7 @@ mod tests {
     #[test]
     fn pi_owner_bypasses_an_exhausted_quota() {
         let mut bandwidth = RtBandwidth::new(100, 95);
-        bandwidth.charge(0, 95);
+        assert!(bandwidth.charge(0, 95));
         assert!(!bandwidth.may_run(0, false));
         assert!(bandwidth.may_run(0, true));
         assert!(bandwidth.may_run(100, false));
@@ -98,10 +103,19 @@ mod tests {
     #[test]
     fn charge_crossing_period_boundary_accounts_only_the_new_period_tail() {
         let mut bandwidth = RtBandwidth::new(100, 95);
-        bandwidth.charge(95, 95);
+        assert!(bandwidth.charge(95, 95));
 
-        bandwidth.charge(105, 10);
+        assert!(!bandwidth.charge(105, 10));
 
         assert_eq!(bandwidth.consumed_ns(), 5);
+    }
+
+    #[test]
+    fn quota_edge_is_reported_once_at_exact_exhaustion() {
+        let mut bandwidth = RtBandwidth::new(100, 95);
+
+        assert!(!bandwidth.charge(94, 94));
+        assert!(bandwidth.charge(95, 1));
+        assert!(!bandwidth.charge(96, 1));
     }
 }

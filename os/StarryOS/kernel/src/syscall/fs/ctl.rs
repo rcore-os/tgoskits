@@ -23,7 +23,7 @@ use starry_vm::{VmPtr, vm_write_slice};
 use crate::{
     file::{Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
-    task::current,
+    task::current_user_task,
     time::TimeValueLike,
 };
 
@@ -159,7 +159,7 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
@@ -192,7 +192,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
     debug!(
@@ -447,7 +447,7 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     with_fs(new_dirfd, |fs| {
@@ -517,7 +517,7 @@ pub fn sys_fchownat(
         .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
 
     // Permission checks following Linux semantics:
     // - Changing the file owner (uid) requires CAP_CHOWN.
@@ -616,7 +616,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         .ok_or(AxError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
@@ -739,7 +739,7 @@ pub fn sys_utimensat(
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {

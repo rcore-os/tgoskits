@@ -21,7 +21,7 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
-    task::current,
+    task::current_user_task,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every
@@ -66,7 +66,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
     let fs_context = current_fs_context();
     let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
         axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),

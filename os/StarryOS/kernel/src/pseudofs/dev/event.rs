@@ -308,7 +308,7 @@ impl EventDev {
         }
 
         let event_dev = Arc::clone(self);
-        match scheduler::spawn_raw(
+        match crate::task::try_spawn_kernel_thread_with_stack(
             move || event_dev.run_irq_service(),
             "evdev-irq-service".into(),
             crate::task::default_task_stack_size(),
@@ -366,7 +366,7 @@ impl EventDev {
     /// wakeup path for libinput when the platform IRQ path is broken.
     fn start_polling(self: &Arc<Self>) {
         let dev = self.clone();
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 let mut empty_count = 0u32;
                 loop {

@@ -19,7 +19,10 @@ use super::{FileLike, Kstat, get_file_like};
 use crate::{
     file::{IoDst, IoSrc},
     pseudofs::Device,
-    task::future::{block_on, poll_io},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 // FusionIO/directFS atomic-write toggle used by MySQL.
@@ -172,9 +175,13 @@ impl FileLike for File {
         if likely(self.is_blocking()) {
             inner.read(dst)
         } else {
-            block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                inner.read(&mut *dst)
-            }))
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                    inner.read(&mut *dst)
+                }),
+            )
         }
     }
 
@@ -186,9 +193,13 @@ impl FileLike for File {
         let result = if likely(self.is_blocking()) {
             inner.write(src)
         } else {
-            block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                inner.write(&mut *src)
-            }))
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+                    inner.write(&mut *src)
+                }),
+            )
         };
         if let Ok(bytes) = result
             && bytes > 0

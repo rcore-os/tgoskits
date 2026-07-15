@@ -5,9 +5,9 @@ use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use super::{
-    SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, current, poll_process_timer,
-    ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
-    unblock_next_signal, wait_existing_ptrace_stop_current,
+    SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, current_user_task,
+    poll_process_timer, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
+    set_timer_state, unblock_next_signal, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
@@ -17,7 +17,7 @@ pub fn new_user_task(
     set_child_tid: usize,
 ) -> impl FnOnce() + Send + 'static {
     move || {
-        let curr = current();
+        let curr = current_user_task();
 
         if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
             tid.vm_write(curr.as_thread().tid() as Pid).ok();
@@ -164,7 +164,7 @@ pub fn new_user_task(
                     // step) and we resume directly. If not, fall through.
                     match kind {
                         ExceptionKind::Breakpoint
-                            if crate::uprobe::break_uprobe_handler(&mut uctx).is_some() =>
+                            if crate::uprobe::break_uprobe_handler(&curr, &mut uctx).is_some() =>
                         {
                             break 'exc;
                         }
@@ -173,7 +173,7 @@ pub fn new_user_task(
                         // breakpoint path, so the debug hook is x86_64-only.
                         #[cfg(target_arch = "x86_64")]
                         ExceptionKind::Debug
-                            if crate::uprobe::debug_uprobe_handler(&mut uctx).is_some() =>
+                            if crate::uprobe::debug_uprobe_handler(&curr, &mut uctx).is_some() =>
                         {
                             break 'exc;
                         }

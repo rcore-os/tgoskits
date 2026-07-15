@@ -529,18 +529,21 @@ fn deferred_device_identity_uses_live_header_then_task_fallback_outside_irq() {
         selector,
         &[
             "if live_identity.is_some()",
-            "return live_identity",
+            "return Ok(live_identity)",
             "if in_hard_irq",
-            "return None",
+            "return Ok(None)",
             "task_identity()",
         ],
     );
     assert!(host_task.contains("pub(crate) fn in_hard_irq() -> bool"));
-    assert!(host_task.contains("pub(crate) fn try_current_task() -> Option<CurrentTask>"));
+    assert!(
+        host_task
+            .contains("pub(crate) fn try_current_task() -> Result<Option<CurrentTask>, TaskError>")
+    );
     assert!(host_task.contains("!in_hard_irq()"));
     assert!(host_arceos.contains("modules::ax_hal::irq::in_irq_context()"));
     assert!(host_arceos.contains("modules::ax_task::current_thread_handle()"));
-    assert!(host_arceos.contains(".ok()"));
+    assert!(!host_arceos.contains("current_thread_handle()\n        .ok()"));
     assert!(arch.contains("pub(crate) struct VcpuExecutionIdentity"));
     assert!(!vcpu.contains("pub(crate) struct VcpuExecutionIdentity"));
     assert!(!vcpu.contains("pub(crate) fn current_vcpu_identity_for_task"));

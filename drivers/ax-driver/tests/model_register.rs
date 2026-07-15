@@ -4,6 +4,7 @@ use ax_driver::{
     probe::OnProbeError,
     register::{ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
 };
+use ax_kspin_test_runtime as _;
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
     Klib, PhysAddr, VirtAddr, impl_trait,

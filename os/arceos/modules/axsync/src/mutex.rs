@@ -149,7 +149,7 @@ impl RawMutex {
         let sequence = self.next_waiter_sequence.fetch_add(1, Ordering::Relaxed);
         let waiter = pin!(WaiterNode::new(
             current,
-            current_handle.effective_scheduling_key(),
+            current_handle.effective_scheduling_urgency(),
             sequence,
             current_handle.clone(),
         ));
@@ -279,8 +279,6 @@ impl RawMutex {
 
     fn unlock_pi(&self) {
         let current = current_thread_identity("unlock PI mutex");
-        #[cfg(feature = "lockdep")]
-        crate::lockdep::release(self);
 
         let mut handoff = self.prepare_handoff(current);
         let wake = if handoff.next_owner.is_some() {
@@ -466,6 +464,8 @@ unsafe impl lock_api::RawMutex for RawMutex {
 
     #[inline(always)]
     unsafe fn unlock(&self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::release(self);
         self.unlock_pi();
     }
 
@@ -489,7 +489,7 @@ fn task_result<T>(result: Result<T, TaskError>, operation: &'static str) -> T {
 
 fn select_most_urgent_waiter(head: Option<WaiterPointer>) -> Option<WaiterPointer> {
     let mut current = head;
-    let mut selected: Option<(WaiterPointer, (ax_task::SchedulingKey, u64))> = None;
+    let mut selected: Option<(WaiterPointer, (ax_task::SchedulingUrgency, u64))> = None;
     while let Some(waiter) = current {
         // SAFETY: `freeze_waiter_list` prevents enqueue/removal and every
         // blocked waiter remains pinned until handoff publishes grant.
@@ -614,7 +614,7 @@ mod tests {
             .unwrap();
         let waiter = pin!(WaiterNode::new(
             waiter_thread.id(),
-            waiter_thread.effective_scheduling_key(),
+            waiter_thread.effective_scheduling_urgency(),
             0,
             waiter_thread.clone(),
         ));
@@ -778,7 +778,7 @@ mod tests {
         }
         let waiter = pin!(WaiterNode::new(
             waiter_thread.id(),
-            waiter_thread.effective_scheduling_key(),
+            waiter_thread.effective_scheduling_urgency(),
             0,
             waiter_thread.clone(),
         ));

@@ -4,6 +4,7 @@ use super::arceos;
 
 pub(crate) type AxTaskRef = arceos::ArceOsAxTaskRef;
 pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
+pub(crate) type TaskError = arceos::ArceOsTaskError;
 pub(crate) type TaskInner = arceos::ArceOsTaskInner;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
@@ -13,10 +14,14 @@ pub(crate) fn current_task() -> CurrentTask {
         !in_hard_irq(),
         "AxVM cannot acquire an owning task handle from hard IRQ context"
     );
-    try_current_task().unwrap_or_else(|| panic!("AxVM current task is unavailable"))
+    match try_current_task() {
+        Ok(Some(task)) => task,
+        Ok(None) => panic!("AxVM current task is unavailable"),
+        Err(error) => panic!("AxVM current task identity is invalid: {error}"),
+    }
 }
 
-pub(crate) fn try_current_task() -> Option<CurrentTask> {
+pub(crate) fn try_current_task() -> Result<Option<CurrentTask>, TaskError> {
     arceos::try_current_task()
 }
 

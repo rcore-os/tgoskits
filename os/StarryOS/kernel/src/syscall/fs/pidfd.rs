@@ -10,8 +10,8 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like, current_fd_table},
     syscall::signal::check_kill_permission,
     task::{
-        current, get_process_data, get_task, send_signal_to_process, send_signal_to_process_group,
-        send_signal_to_thread,
+        current_user_task, get_process_data, get_task, send_signal_to_process,
+        send_signal_to_process_group, send_signal_to_thread,
     },
 };
 
@@ -49,7 +49,7 @@ fn make_pidfd_siginfo(signo: Signo, scope: PidFdSignalScope) -> SignalInfo {
     } else {
         SI_USER as _
     };
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
 }
@@ -91,7 +91,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
-    let curr_proc_data = current().as_thread().proc_data.clone();
+    let curr_proc_data = current_user_task().as_thread().proc_data.clone();
     let is_current = Arc::ptr_eq(&proc_data, &curr_proc_data);
     if !is_current {
         // Linux __pidfd_fget() uses ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS).
@@ -151,7 +151,7 @@ pub fn sys_pidfd_send_signal(
         if info.signo() != signo_parsed {
             return Err(AxError::InvalidInput);
         }
-        if current().as_thread().proc_data.proc.pid() != target_pid
+        if current_user_task().as_thread().proc_data.proc.pid() != target_pid
             && (info.code() >= 0 || info.code() == SI_TKILL)
         {
             return Err(AxError::OperationNotPermitted);

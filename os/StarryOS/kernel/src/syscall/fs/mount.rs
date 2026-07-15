@@ -85,14 +85,12 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
             .is_some_and(|d| Arc::ptr_eq(d.inner().mountpoint(), mp))
 }
 
-fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
+fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> AxResult<bool> {
     if fs_is_mount_busy(mp) {
-        return true;
+        return Ok(true);
     }
-    for task in tasks() {
-        let Some(thread) = task.try_as_thread() else {
-            continue;
-        };
+    for task in tasks()? {
+        let thread = task.as_thread();
         let scope = thread.proc_data.scope.read();
         let fd_table = FD_TABLE.scope(&scope).clone();
         drop(scope);
@@ -102,10 +100,10 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
                 .get(id)
                 .is_some_and(|fd| fd_points_to_mount(&*fd.inner, mp))
         }) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 pub fn sys_mount(
@@ -335,7 +333,7 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
 
     // Linux umount2 returns EBUSY if any task has cwd/root or open fd
     // inside the mount.
-    if is_mount_busy(target.mountpoint()) {
+    if is_mount_busy(target.mountpoint())? {
         return Err(AxError::from(LinuxError::EBUSY));
     }
 

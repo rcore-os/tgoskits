@@ -21,7 +21,8 @@ use crate::{
     mm::{UserConstPtr, UserPtr, check_access, nullable},
     syscall::signal::check_sigset_size,
     task::{
-        future::{self, block_on, poll_io},
+        current_user_task,
+        future::{self, block_on_user, poll_io_for},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -202,21 +203,26 @@ fn do_epoll_wait(
     }
     check_epoll_events_access(events, maxevents)?;
 
-    let count = with_blocked_signals(
-        nullable!(sigmask.get_as_ref())?.copied(),
-        || match block_on(future::timeout(
-            timeout,
-            poll_io(epoll.as_ref(), IoEvents::IN, false, || {
-                epoll.poll_events_with(maxevents, |index, event| {
-                    write_epoll_event(events, index, &event)?;
-                    Ok(())
-                })
-            }),
-        )) {
-            Ok(r) => r.map(|n| n as _),
-            Err(_) => Ok(0),
-        },
-    )?;
+    let task = current_user_task();
+    let count =
+        with_blocked_signals(
+            nullable!(sigmask.get_as_ref())?.copied(),
+            || match block_on_user(
+                &task,
+                future::timeout(
+                    timeout,
+                    poll_io_for(&task, epoll.as_ref(), IoEvents::IN, false, || {
+                        epoll.poll_events_with(maxevents, |index, event| {
+                            write_epoll_event(events, index, &event)?;
+                            Ok(())
+                        })
+                    }),
+                ),
+            ) {
+                Ok(r) => r.map(|n| n as _),
+                Err(_) => Ok(0),
+            },
+        )?;
 
     Ok(count)
 }

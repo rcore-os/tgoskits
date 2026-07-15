@@ -92,7 +92,7 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             || crate::task::future::block_on(refresh_task()),
             "fb-refresh".into(),
         );

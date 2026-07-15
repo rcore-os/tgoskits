@@ -19,8 +19,8 @@ use super::schedule_abi::{
 };
 use crate::{
     task::{
-        Cred, ProcessData, StarryTaskRef, current,
-        future::{block_on, interruptible, sleep},
+        Cred, ProcessData, UserTaskRef, current_user_task,
+        future::{block_on_user, interruptible_for, sleep},
         get_process_group, get_task, is_zombie_pid, processes,
     },
     time::TimeValueLike,
@@ -69,7 +69,8 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (AxResult<()>, T
     let start = clock();
 
     // TODO: currently ignoring concrete clock type
-    let result = block_on(interruptible(sleep(dur))).map_err(AxError::from);
+    let task = current_user_task();
+    let result = block_on_user(&task, interruptible_for(&task, sleep(dur))).map_err(AxError::from);
 
     (result, clock() - start)
 }
@@ -165,9 +166,9 @@ pub fn sys_sched_getaffinity(pid: i32, cpusetsize: usize, user_mask: *mut u8) ->
 }
 
 pub fn check_sched_permission(pid: i32) -> AxResult<()> {
-    let caller = current().as_thread().cred();
+    let caller = current_user_task().as_thread().cred();
     let task = get_task(scheduler_tid(pid)?)?;
-    if task.id() == current().id() {
+    if task.id() == current_user_task().id() {
         return Ok(());
     }
     let target_cred = task.as_thread().cred();
@@ -201,7 +202,7 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
         return Err(AxError::InvalidInput);
     }
     let target_tid = scheduler_tid(pid)?;
-    if target_tid == current().as_thread().tid() {
+    if target_tid == current_user_task().as_thread().tid() {
         scheduler::set_current_thread_affinity(affinity).map_err(map_task_error)?;
     } else {
         scheduler::set_thread_affinity(scheduler_thread_id(pid)?, affinity)
@@ -328,7 +329,7 @@ fn apply_scheduler_update(
 ) -> AxResult<()> {
     check_sched_permission(pid)?;
     let task = get_task(scheduler_tid(pid)?)?;
-    let caller = current().as_thread().cred();
+    let caller = current_user_task().as_thread().cred();
     let (rlimit_rtprio, rlimit_nice) = {
         let limits = task.as_thread().proc_data.rlim.read();
         (limits[RLIMIT_RTPRIO].current, limits[RLIMIT_NICE].current)
@@ -400,7 +401,7 @@ fn scheduler_thread_id(pid: i32) -> AxResult<scheduler::ThreadId> {
     // The first switch-in normally binds the identity through the Starry
     // extension hook. This fallback covers the boot thread without ever
     // deriving an identity from its Linux TID.
-    if target.id() == current().id() {
+    if target.id() == current_user_task().id() {
         let id = scheduler::current_thread_id().map_err(map_task_error)?;
         target.as_thread().bind_scheduler_id(id)?;
         return Ok(id);
@@ -411,7 +412,7 @@ fn scheduler_thread_id(pid: i32) -> AxResult<scheduler::ThreadId> {
 
 fn scheduler_tid(pid: i32) -> AxResult<u32> {
     if pid == 0 {
-        Ok(current().as_thread().tid())
+        Ok(current_user_task().as_thread().tid())
     } else {
         u32::try_from(pid).map_err(|_| AxError::InvalidInput)
     }
@@ -507,7 +508,12 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
         },
         PRIO_PGRP => {
             let pgid = if who == 0 {
-                current().as_thread().proc_data.proc.group().pgid()
+                current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .pgid()
             } else {
                 get_process_group(who)?.pgid()
             };
@@ -519,7 +525,7 @@ pub fn sys_getpriority(which: u32, who: u32) -> AxResult<isize> {
         }
         PRIO_USER => {
             let uid = if who == 0 {
-                current().as_thread().cred().uid
+                current_user_task().as_thread().cred().uid
             } else {
                 who
             };
@@ -546,7 +552,12 @@ pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
         }
         PRIO_PGRP => {
             let pgid = if who == 0 {
-                current().as_thread().proc_data.proc.group().pgid()
+                current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .pgid()
             } else {
                 get_process_group(who)?.pgid()
             };
@@ -561,7 +572,7 @@ pub fn sys_setpriority(which: u32, who: u32, prio: i32) -> AxResult<isize> {
         }
         PRIO_USER => {
             let uid = if who == 0 {
-                current().as_thread().cred().uid
+                current_user_task().as_thread().cred().uid
             } else {
                 who
             };
@@ -580,7 +591,7 @@ fn raw_priority(nice: i32) -> isize {
     (20 - nice) as isize
 }
 
-fn min_priority_for_tasks(tasks: impl IntoIterator<Item = StarryTaskRef>) -> AxResult<isize> {
+fn min_priority_for_tasks(tasks: impl IntoIterator<Item = UserTaskRef>) -> AxResult<isize> {
     tasks
         .into_iter()
         .map(|task| task.as_thread().nice())
@@ -589,9 +600,7 @@ fn min_priority_for_tasks(tasks: impl IntoIterator<Item = StarryTaskRef>) -> AxR
         .ok_or(AxError::NoSuchProcess)
 }
 
-fn tasks_for_processes(
-    processes: impl IntoIterator<Item = Arc<ProcessData>>,
-) -> Vec<StarryTaskRef> {
+fn tasks_for_processes(processes: impl IntoIterator<Item = Arc<ProcessData>>) -> Vec<UserTaskRef> {
     processes
         .into_iter()
         .flat_map(|proc| proc.proc.threads())
@@ -603,8 +612,8 @@ fn setpriority_cred_matches(caller: &Cred, target: &Cred) -> bool {
     caller.euid == target.uid || caller.euid == target.euid
 }
 
-fn check_setpriority_permission(task: &StarryTaskRef, nice: i32) -> AxResult<()> {
-    let caller = current().as_thread().cred();
+fn check_setpriority_permission(task: &UserTaskRef, nice: i32) -> AxResult<()> {
+    let caller = current_user_task().as_thread().cred();
     if caller.has_cap_sys_nice() {
         return Ok(());
     }
@@ -626,7 +635,7 @@ fn check_setpriority_permission(task: &StarryTaskRef, nice: i32) -> AxResult<()>
 }
 
 fn set_priority_for_tasks(
-    tasks: impl IntoIterator<Item = StarryTaskRef>,
+    tasks: impl IntoIterator<Item = UserTaskRef>,
     nice: i32,
 ) -> AxResult<isize> {
     let tasks: Vec<_> = tasks.into_iter().collect();
@@ -642,7 +651,7 @@ fn set_priority_for_tasks(
     Ok(0)
 }
 
-fn set_thread_scheduler_nice(task: &StarryTaskRef, nice: i32) -> AxResult<()> {
+fn set_thread_scheduler_nice(task: &UserTaskRef, nice: i32) -> AxResult<()> {
     let nice = scheduler::Nice::new(nice as i8).map_err(map_task_error)?;
     let policy = task.policy();
     if let scheduler::SchedulePolicy::Fair { mode, .. } = policy {

@@ -5,6 +5,8 @@ use axvm_types::{VCpuId, VMId};
 
 pub(crate) use crate::architecture::*;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+use crate::host::task::TaskError;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::task::AsVCpuTask;
 use crate::{
     AxVmResult,
@@ -124,16 +126,20 @@ impl VcpuExecutionIdentity {
 /// identity without pinning the task. Hard IRQ code never consults that task
 /// extension and receives `None` when no live publication exists.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-pub(crate) fn current_vcpu_identity_for_task() -> Option<VcpuExecutionIdentity> {
+pub(crate) fn current_vcpu_identity_for_task() -> Result<Option<VcpuExecutionIdentity>, TaskError> {
     let live_identity = crate::vcpu::current_vcpu_identity()
         .map(|identity| VcpuExecutionIdentity::new(identity.vm_id(), identity.vcpu_id()));
     select_vcpu_execution_identity(live_identity, crate::host::task::in_hard_irq(), || {
-        let current = crate::host::task::try_current_task()?;
-        let task = current.try_as_vcpu_task()?;
-        Some(VcpuExecutionIdentity::new(
+        let Some(current) = crate::host::task::try_current_task()? else {
+            return Ok(None);
+        };
+        let Some(task) = current.try_as_vcpu_task()? else {
+            return Ok(None);
+        };
+        Ok(Some(VcpuExecutionIdentity::new(
             task.vcpu.vm_id(),
             task.vcpu.id(),
-        ))
+        )))
     })
 }
 
@@ -141,13 +147,13 @@ pub(crate) fn current_vcpu_identity_for_task() -> Option<VcpuExecutionIdentity> 
 fn select_vcpu_execution_identity(
     live_identity: Option<VcpuExecutionIdentity>,
     in_hard_irq: bool,
-    task_identity: impl FnOnce() -> Option<VcpuExecutionIdentity>,
-) -> Option<VcpuExecutionIdentity> {
+    task_identity: impl FnOnce() -> Result<Option<VcpuExecutionIdentity>, TaskError>,
+) -> Result<Option<VcpuExecutionIdentity>, TaskError> {
     if live_identity.is_some() {
-        return live_identity;
+        return Ok(live_identity);
     }
     if in_hard_irq {
-        return None;
+        return Ok(None);
     }
     task_identity()
 }
@@ -205,8 +211,9 @@ mod tests {
 
         let selected = select_vcpu_execution_identity(Some(live), false, || {
             fallback_calls.fetch_add(1, Ordering::Relaxed);
-            Some(fallback)
-        });
+            Ok(Some(fallback))
+        })
+        .unwrap();
 
         assert_eq!(selected, Some(live));
         assert_eq!(fallback_calls.load(Ordering::Relaxed), 0);
@@ -216,14 +223,14 @@ mod tests {
     fn task_identity_selection_falls_back_after_backend_unbind() {
         let fallback = VcpuExecutionIdentity::new(3, 2);
 
-        let selected = select_vcpu_execution_identity(None, false, || Some(fallback));
+        let selected = select_vcpu_execution_identity(None, false, || Ok(Some(fallback))).unwrap();
 
         assert_eq!(selected, Some(fallback));
     }
 
     #[test]
     fn task_identity_selection_returns_none_for_non_vcpu_thread() {
-        let selected = select_vcpu_execution_identity(None, false, || None);
+        let selected = select_vcpu_execution_identity(None, false, || Ok(None)).unwrap();
 
         assert_eq!(selected, None);
     }
@@ -234,8 +241,9 @@ mod tests {
 
         let selected = select_vcpu_execution_identity(None, true, || {
             fallback_calls.fetch_add(1, Ordering::Relaxed);
-            Some(VcpuExecutionIdentity::new(3, 2))
-        });
+            Ok(Some(VcpuExecutionIdentity::new(3, 2)))
+        })
+        .unwrap();
 
         assert_eq!(selected, None);
         assert_eq!(fallback_calls.load(Ordering::Relaxed), 0);

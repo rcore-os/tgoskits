@@ -17,7 +17,7 @@ fn current_thread_affinity_uses_the_synchronous_scheduler_commit() {
         "the current thread must not return until an excluding affinity mask has migrated it"
     );
     assert!(
-        body.contains("current().as_thread().tid()"),
+        body.contains("current_user_task().as_thread().tid()"),
         "pid 0 and an explicit current TID must select the synchronous path"
     );
 }

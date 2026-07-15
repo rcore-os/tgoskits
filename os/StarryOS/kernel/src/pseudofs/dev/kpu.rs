@@ -497,7 +497,7 @@ fn start_kpu_irq_service() -> bool {
         }
     }
 
-    match scheduler::spawn_raw(
+    match crate::task::try_spawn_kernel_thread_with_stack(
         kpu_irq_service,
         "kpu-irq-service".into(),
         crate::task::default_task_stack_size(),

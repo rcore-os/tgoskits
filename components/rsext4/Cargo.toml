@@ -17,6 +17,9 @@ bitflags = "2.10"
 log = "0.4"
 ax-kspin = { workspace = true }
 
+[dev-dependencies]
+ax-kspin-test-runtime = { path = "../kspin/test-runtime" }
+
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
 USE_MULTILEVEL_CACHE = [] #启用多级缓存

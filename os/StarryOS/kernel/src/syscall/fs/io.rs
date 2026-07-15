@@ -25,7 +25,7 @@ use crate::{
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
-    task::current,
+    task::current_user_task,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -107,7 +107,7 @@ impl Pollable for DummyFd {
 }
 
 pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
-    if current().name().starts_with("qemu-") {
+    if current_user_task().name().starts_with("qemu-") {
         // We need to be honest to qemu, since it can automatically fallback to
         // other strategies.
         return Err(AxError::Unsupported);
@@ -215,7 +215,7 @@ pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isi
     }
     // Check write permission against current credentials following the
     // same owner/group/other + root-bypass rules as faccessat2(2).
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if cred.fsuid != 0 {
         let metadata = file.location().metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);

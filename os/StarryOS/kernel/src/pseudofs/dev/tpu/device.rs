@@ -380,7 +380,10 @@ impl TpuDevice {
         {
             HW_PTR.store(Arc::as_ptr(&hw) as *mut Sg2002Tpu, Ordering::Release);
             let worker_hw = hw.clone();
-            crate::task::spawn_with_name(move || tpu_worker(worker_hw), String::from("tpu-worker"));
+            crate::task::spawn_kernel_thread(
+                move || tpu_worker(worker_hw),
+                String::from("tpu-worker"),
+            );
         }
 
         Self {
@@ -427,7 +430,7 @@ impl TpuDevice {
         );
 
         let task = TpuTask {
-            tid: crate::task::current().id().as_u64(),
+            tid: crate::task::current_user_task().id().as_u64(),
             seq_no: submit_arg.seq_no,
             vaddr: buffer.dma_info.cpu_addr.as_ptr() as usize,
             paddr: buffer.dma_info.bus_addr.as_u64(),
@@ -448,7 +451,7 @@ impl TpuDevice {
     fn wait_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
         let wait_arg = unsafe { &mut *(arg as *mut CviWaitDmaArg) };
         let seq_no = wait_arg.seq_no;
-        let tid = crate::task::current().id().as_u64();
+        let tid = crate::task::current_user_task().id().as_u64();
 
         // 睡在 DONE_WQ 上直到对应 (tid, seq_no) 出现在完成队列（或超时）。
         // wait_timeout_until 睡前复检谓词，等价 Linux wait_event。

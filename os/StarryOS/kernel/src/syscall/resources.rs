@@ -6,7 +6,7 @@ use starry_process::Pid;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{Thread, current, get_process_data, get_task},
+    task::{Thread, current_user_task, get_process_data, get_task},
     time::TimeValueLike,
 };
 
@@ -43,7 +43,7 @@ pub fn sys_prlimit64(
         // TODO: has_cap_sys_resource() is currently euid==0 until a
         // fine-grained capability bitmap is implemented (see cred.rs).
         if new_limit.rlim_max > limit.max {
-            let cred = current().as_thread().cred();
+            let cred = current_user_task().as_thread().cred();
             if !cred.has_cap_sys_resource() {
                 return Err(AxError::OperationNotPermitted);
             }
@@ -98,7 +98,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     let result = match who {

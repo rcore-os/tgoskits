@@ -258,7 +258,7 @@ fn start_sampling_notify_worker(
     notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             notify.wait();
             if !poll_alive.load(Ordering::Acquire) {
@@ -1013,9 +1013,9 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
 /// its own — for per-task events the ring/notify live on the `PerTaskCounter`.
 #[cfg(target_arch = "aarch64")]
 fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
-    // Resolve the target task and its `Thread` (kernel tasks have none).
+    // The Starry task table contains user tasks only.
     let task = crate::task::get_task(pid as u32)?;
-    let thr = task.try_as_thread().ok_or(AxError::NoSuchProcess)?;
+    let thr = task.as_thread();
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;

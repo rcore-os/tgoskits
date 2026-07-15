@@ -53,7 +53,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceMmap,
-    task::{AX_FILE_LIMIT, current, tasks},
+    task::{AX_FILE_LIMIT, current_user_task, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -307,7 +307,7 @@ pub fn fd_is_path(fd: c_int) -> bool {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
@@ -329,12 +329,16 @@ pub fn close_file_like(fd: c_int) -> AxResult {
 }
 
 pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
-    !fd_table_file_refs(file).is_empty()
+    !fd_table_file_refs(file)
+        .unwrap_or_else(|error| panic!("failed to inspect task fd tables: {error}"))
+        .is_empty()
 }
 
-pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
+pub(crate) fn fd_table_file_refs(
+    file: &Arc<dyn FileLike>,
+) -> AxResult<alloc::vec::Vec<(Pid, usize)>> {
     let mut refs = alloc::vec::Vec::new();
-    for task in tasks() {
+    for task in tasks()? {
         if task.state() == ThreadState::Exited {
             continue;
         }
@@ -348,7 +352,7 @@ pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(P
             }
         }
     }
-    refs
+    Ok(refs)
 }
 
 fn notify_close_write(fd: &FileDescriptor) {
@@ -378,7 +382,7 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
     notify_close_write(&fd);
     if let Some(k) = key {
-        let pid = current().as_thread().proc_data.proc.pid();
+        let pid = current_user_task().as_thread().proc_data.proc.pid();
         crate::syscall::release_inode_posix_locks(pid, k);
         if !fd_tables_contain_file(&fd.inner) {
             crate::syscall::release_flock_lock(k, &fd.inner);

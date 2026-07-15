@@ -25,7 +25,7 @@ use crate::{
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
-    task::{current, future::block_on, rebind_task_tid, yield_now, zap_thread},
+    task::{current_user_task, future::block_on, rebind_task_tid, yield_now, zap_thread},
 };
 
 pub fn sys_execve(
@@ -122,7 +122,7 @@ fn do_execve(
 
     debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc_data = &thr.proc_data;
     let my_tid = thr.tid();

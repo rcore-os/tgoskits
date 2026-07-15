@@ -1,11 +1,9 @@
 //! Intrusive multi-producer, single-consumer coroutine inboxes.
 
-use core::{
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use core::{ptr, sync::atomic::Ordering};
 
 use super::CoroutineHeader;
+use crate::epoch_mpsc::EpochMpscQueue;
 
 #[derive(Clone, Copy)]
 pub(super) enum InboxKind {
@@ -13,20 +11,20 @@ pub(super) enum InboxKind {
 }
 
 pub(super) struct IntrusiveInbox {
-    head: AtomicPtr<CoroutineHeader>,
+    publication: EpochMpscQueue<CoroutineHeader>,
     kind: InboxKind,
 }
 
 impl IntrusiveInbox {
     pub(super) const fn new(kind: InboxKind) -> Self {
         Self {
-            head: AtomicPtr::new(ptr::null_mut()),
+            publication: EpochMpscQueue::new(),
             kind,
         }
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire).is_null()
+        self.publication.is_empty()
     }
 
     /// Publishes one node into this multi-producer inbox.
@@ -40,18 +38,10 @@ impl IntrusiveInbox {
             // Caller guarantees exclusive membership for this node and inbox.
             (*header).next(self.kind)
         };
-        let mut observed = self.head.load(Ordering::Relaxed);
-        loop {
-            next.store(observed, Ordering::Relaxed);
-            match self.head.compare_exchange_weak(
-                observed,
-                header,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(updated) => observed = updated,
-            }
+        unsafe {
+            // RUN_QUEUED owns this pinned node and its ready link until the
+            // epoch-graced publication transfers that queue membership.
+            self.publication.publish(header, next);
         }
     }
 
@@ -61,10 +51,14 @@ impl IntrusiveInbox {
     ///
     /// This function must be called only by the inbox's single owner consumer.
     pub(super) unsafe fn take_fifo(&self) -> *mut CoroutineHeader {
-        let stack = self.head.swap(ptr::null_mut(), Ordering::Acquire);
+        let stack = unsafe {
+            // The executor owner is the only consumer. A null result can also
+            // mean that the retired head is waiting for an in-flight publisher.
+            self.publication.take_graced_stack()
+        };
         unsafe {
-            // The single consumer owns the entire detached stack and may reverse
-            // its links to recover FIFO order.
+            // Completed epoch grace transfers every retained pointer provenance
+            // with the detached stack to this single consumer.
             reverse(stack, self.kind)
         }
     }
@@ -84,6 +78,21 @@ impl IntrusiveInbox {
                 .next(kind)
                 .swap(ptr::null_mut(), Ordering::Relaxed)
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn arm_test_publisher_pause(&self) {
+        self.publication.arm_test_publisher_pause();
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_test_publisher_pause(&self) {
+        self.publication.wait_for_test_publisher_pause();
+    }
+
+    #[cfg(test)]
+    pub(super) fn resume_test_publisher(&self) {
+        self.publication.resume_test_publisher();
     }
 }
 

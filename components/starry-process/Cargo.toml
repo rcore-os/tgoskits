@@ -16,3 +16,4 @@ weak-map = "0.1"
 [dev-dependencies]
 ctor = "0.4.1"
 ax-kspin.workspace = true
+ax-kspin-test-runtime = { path = "../kspin/test-runtime" }

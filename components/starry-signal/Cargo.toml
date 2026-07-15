@@ -26,4 +26,5 @@ strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 ax-kspin.workspace = true
+ax-kspin-test-runtime = { path = "../kspin/test-runtime" }
 extern-trait = "0.4"

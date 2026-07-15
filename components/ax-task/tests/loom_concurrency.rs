@@ -352,6 +352,150 @@ fn inbox_empty_transition_owns_the_scheduler_ipi_epoch() {
 }
 
 #[test]
+fn generation_grace_never_releases_a_head_retained_by_a_publisher() {
+    loom::model(|| {
+        const NO_RETIRING_GENERATION: usize = usize::MAX;
+
+        struct EpochQueueModel {
+            heads: [AtomicUsize; 2],
+            active_generation: AtomicUsize,
+            slot_publishers: [AtomicUsize; 2],
+            retiring_generation: AtomicUsize,
+            released_generation: AtomicUsize,
+        }
+
+        fn try_detach(queue: &EpochQueueModel) {
+            let mut retiring = queue.retiring_generation.load(Ordering::SeqCst);
+            if retiring == NO_RETIRING_GENERATION {
+                let active = queue.active_generation.load(Ordering::SeqCst);
+                let active_slot = active & 1;
+                if queue.heads[active_slot].load(Ordering::Acquire) == 0 {
+                    return;
+                }
+                queue.active_generation.store(active + 1, Ordering::SeqCst);
+                queue.retiring_generation.store(active, Ordering::SeqCst);
+                loom::sync::atomic::fence(Ordering::SeqCst);
+                retiring = active;
+            }
+
+            let retiring_slot = retiring & 1;
+            if queue.slot_publishers[retiring_slot].load(Ordering::SeqCst) != 0 {
+                return;
+            }
+
+            let released = queue.heads[retiring_slot].swap(0, Ordering::AcqRel);
+            queue.released_generation.store(released, Ordering::SeqCst);
+            queue
+                .retiring_generation
+                .store(NO_RETIRING_GENERATION, Ordering::SeqCst);
+        }
+
+        let queue = Arc::new(EpochQueueModel {
+            heads: [AtomicUsize::new(1), AtomicUsize::new(0)],
+            active_generation: AtomicUsize::new(0),
+            slot_publishers: [AtomicUsize::new(0), AtomicUsize::new(0)],
+            retiring_generation: AtomicUsize::new(NO_RETIRING_GENERATION),
+            released_generation: AtomicUsize::new(0),
+        });
+
+        let publisher = {
+            let queue = Arc::clone(&queue);
+            thread::spawn(move || {
+                let generation = loop {
+                    let generation = queue.active_generation.load(Ordering::SeqCst);
+                    thread::yield_now();
+                    let slot = generation & 1;
+                    queue.slot_publishers[slot].fetch_add(1, Ordering::SeqCst);
+                    loom::sync::atomic::fence(Ordering::SeqCst);
+                    if queue.active_generation.load(Ordering::SeqCst) == generation {
+                        break generation;
+                    }
+                    queue.slot_publishers[slot].fetch_sub(1, Ordering::SeqCst);
+                };
+
+                let slot = generation & 1;
+                let observed_generation = queue.heads[slot].load(Ordering::Acquire);
+                thread::yield_now();
+                if observed_generation != 0 {
+                    let released = queue.released_generation.load(Ordering::SeqCst);
+                    assert_ne!(
+                        released,
+                        observed_generation,
+                        "consumer released the allocation while the producer retained its head: \
+                         generation={generation}, active={}, slot0={}, slot1={}, retiring={}, \
+                         head0={}, head1={}",
+                        queue.active_generation.load(Ordering::SeqCst),
+                        queue.slot_publishers[0].load(Ordering::SeqCst),
+                        queue.slot_publishers[1].load(Ordering::SeqCst),
+                        queue.retiring_generation.load(Ordering::SeqCst),
+                        queue.heads[0].load(Ordering::SeqCst),
+                        queue.heads[1].load(Ordering::SeqCst),
+                    );
+                }
+                queue.heads[slot].store(2, Ordering::Release);
+                queue.slot_publishers[slot].fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+        let consumer = {
+            let queue = Arc::clone(&queue);
+            thread::spawn(move || {
+                try_detach(&queue);
+                thread::yield_now();
+                try_detach(&queue);
+            })
+        };
+
+        publisher.join().unwrap();
+        consumer.join().unwrap();
+        try_detach(&queue);
+    });
+}
+
+#[test]
+fn new_generation_publishers_do_not_delay_retired_head_grace() {
+    loom::model(|| {
+        let retired_head = Arc::new(AtomicUsize::new(1));
+        let slot_publishers = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+        let new_publisher_bound = Arc::new(AtomicBool::new(false));
+        let retired_head_released = Arc::new(AtomicBool::new(false));
+
+        let publisher = {
+            let slot_publishers = Arc::clone(&slot_publishers);
+            let new_publisher_bound = Arc::clone(&new_publisher_bound);
+            let retired_head_released = Arc::clone(&retired_head_released);
+            thread::spawn(move || {
+                // Generation 1 maps to slot 1 while generation 0 retires in slot 0.
+                slot_publishers[1].fetch_add(1, Ordering::SeqCst);
+                new_publisher_bound.store(true, Ordering::Release);
+                while !retired_head_released.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                slot_publishers[1].fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+        let consumer = {
+            let retired_head = Arc::clone(&retired_head);
+            let slot_publishers = Arc::clone(&slot_publishers);
+            let new_publisher_bound = Arc::clone(&new_publisher_bound);
+            let retired_head_released = Arc::clone(&retired_head_released);
+            thread::spawn(move || {
+                while !new_publisher_bound.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                assert_eq!(slot_publishers[1].load(Ordering::SeqCst), 1);
+                assert_eq!(slot_publishers[0].load(Ordering::SeqCst), 0);
+                assert_eq!(retired_head.swap(0, Ordering::AcqRel), 1);
+                retired_head_released.store(true, Ordering::Release);
+            })
+        };
+
+        publisher.join().unwrap();
+        consumer.join().unwrap();
+        assert_eq!(slot_publishers[1].load(Ordering::SeqCst), 0);
+    });
+}
+
+#[test]
 fn stale_ipi_failure_cannot_clear_a_new_generation() {
     loom::model(|| {
         let epoch = Arc::new(AtomicUsize::new(1));

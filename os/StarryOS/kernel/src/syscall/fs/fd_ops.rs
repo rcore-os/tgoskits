@@ -19,7 +19,7 @@ use crate::{
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
-    task::current,
+    task::current_user_task,
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -144,7 +144,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
-                    let term = current()
+                    let term = current_user_task()
                         .as_thread()
                         .proc_data
                         .proc
@@ -253,7 +253,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
     }
 
     let pid: u32 = if pid_str == "self" {
-        current().as_thread().proc_data.proc.pid()
+        current_user_task().as_thread().proc_data.proc.pid()
     } else {
         pid_str.parse().ok()?
     };
@@ -337,7 +337,7 @@ pub fn sys_openat(
     // call tp:trace_sys_enter_openat
     trace_sys_enter_openat(dirfd, path as _, flags as _, mode);
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
     debug!("sys_openat <= {dirfd} {path:?} {flags:#o} {mode:#o}");
@@ -492,7 +492,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
-        let curr = current();
+        let curr = current_user_task();
         let proc_data = &curr.as_thread().proc_data;
         let new_files = Arc::new(ax_kspin::SpinRwLock::new(current_fd_table().read().clone()));
         proc_data.with_current_scope_mut(|scope| {
@@ -540,7 +540,8 @@ fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
     let f = get_file_like(old_fd)?;
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
+    let max_nofile =
+        current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
     let fd_table_owner = current_fd_table();
     let mut fd_table = fd_table_owner.write();
     for candidate in min_fd..max_nofile {

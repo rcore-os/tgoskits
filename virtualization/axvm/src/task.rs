@@ -3,8 +3,9 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, sync::Arc};
+use core::ptr::NonNull;
 
-use ax_std::os::arceos::task::{ThreadExtension, ThreadExtensionOps, ThreadId};
+use ax_std::os::arceos::task::{TaskError, ThreadExtension, ThreadExtensionOps, ThreadId};
 
 use crate::{
     host::task::CurrentTask,
@@ -41,7 +42,7 @@ impl VCpuTask {
 /// Accesses the vCPU extension of the current host thread.
 pub trait AsVCpuTask {
     /// Returns this thread's vCPU extension, if present.
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask>;
+    fn try_as_vcpu_task(&self) -> Result<Option<&VCpuTask>, TaskError>;
 
     /// Returns this thread's vCPU extension.
     ///
@@ -52,18 +53,30 @@ pub trait AsVCpuTask {
 }
 
 impl AsVCpuTask for CurrentTask {
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
-        let extension = self.extension()?;
+    fn try_as_vcpu_task(&self) -> Result<Option<&VCpuTask>, TaskError> {
+        let Some(extension) = self.extension()? else {
+            return Ok(None);
+        };
         if !core::ptr::eq(extension.ops(), &VCPU_TASK_EXTENSION_OPS) {
-            return None;
+            return Ok(None);
+        }
+        let data = NonNull::<VCpuTask>::new(extension.data() as *mut VCpuTask)
+            .ok_or(TaskError::InvalidRuntimeHandle)?;
+        if !data.is_aligned() {
+            return Err(TaskError::InvalidRuntimeHandle);
         }
         // SAFETY: the callback-table identity is private to `VCpuTask`, and the
-        // current task handle keeps the scheduler header live for this borrow.
-        Some(unsafe { &*(extension.data() as *const VCpuTask) })
+        // current task handle keeps the scheduler header and extension live for
+        // this borrow. The pointer was validated as non-null and aligned above.
+        Ok(Some(unsafe { data.as_ref() }))
     }
 
     fn as_vcpu_task(&self) -> &VCpuTask {
-        self.try_as_vcpu_task().expect("not a vCPU host thread")
+        match self.try_as_vcpu_task() {
+            Ok(Some(task)) => task,
+            Ok(None) => panic!("not a vCPU host thread"),
+            Err(error) => panic!("invalid vCPU host-thread extension: {error}"),
+        }
     }
 }
 

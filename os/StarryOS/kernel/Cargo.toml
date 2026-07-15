@@ -118,6 +118,7 @@ hashbrown = "0.16"
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = "0.3.4"
+ax-cpu-local.workspace = true
 ax-kspin.workspace = true
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",

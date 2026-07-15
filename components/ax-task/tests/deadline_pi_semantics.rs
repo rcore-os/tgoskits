@@ -155,11 +155,80 @@ fn uncontended_rt_lock_owner_does_not_bypass_exhausted_rt_bandwidth() {
     system
         .charge_current(cpu.as_mut(), 950_000_000, 950_000_000, 0)
         .unwrap();
+    assert!(
+        cpu.needs_reschedule(),
+        "exact RT quota exhaustion must publish need_resched immediately"
+    );
 
     assert_eq!(
         system.schedule(cpu.as_mut(), 950_000_000).unwrap().next(),
         fair.id()
     );
+}
+
+#[test]
+fn withdrawing_an_rt_boost_preserves_the_owners_base_rr_quantum() {
+    let (system, mut cpu) = online_system();
+    let base = SchedulePolicy::round_robin_with_quantum(RtPriority::new(20).unwrap(), 10).unwrap();
+    let owner = ready_thread(&system, base);
+    let donor = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(80).unwrap(),
+        )))
+        .unwrap();
+    system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
+    let wait = system
+        .pi_wait_start(PiLockId::new(0xA50C), donor.id(), owner.id())
+        .unwrap();
+    system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
+    assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
+
+    assert!(
+        !system
+            .charge_current(cpu.as_mut(), 3, 3, 0)
+            .unwrap()
+            .slice_expired()
+    );
+    system.schedule(cpu.as_mut(), 3).unwrap();
+    system.pi_wait_cancel(wait).unwrap();
+    system.drain_policy_updates(cpu.as_mut(), 3).unwrap();
+    system.schedule(cpu.as_mut(), 3).unwrap();
+
+    assert!(
+        system
+            .charge_current(cpu.as_mut(), 13, 10, 0)
+            .unwrap()
+            .slice_expired(),
+        "effective FIFO accounting must never replace the base RR entity"
+    );
+}
+
+#[test]
+fn owner_and_waiter_policy_updates_recompute_the_pi_chain() {
+    let (system, _cpu) = online_system();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fair(
+            Nice::new(19).unwrap(),
+            FairMode::Normal,
+        )))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(50).unwrap(),
+        )))
+        .unwrap();
+    let wait = system
+        .pi_wait_start(PiLockId::new(0xA50D), waiter.id(), owner.id())
+        .unwrap();
+
+    let owner_base = SchedulePolicy::default();
+    system.set_thread_policy(owner.id(), owner_base).unwrap();
+    assert_eq!(owner.effective_policy(), waiter.policy());
+
+    let waiter_base = SchedulePolicy::fair(Nice::new(19).unwrap(), FairMode::Normal);
+    system.set_thread_policy(waiter.id(), waiter_base).unwrap();
+    assert_eq!(owner.effective_policy(), owner_base);
+    system.pi_wait_cancel(wait).unwrap();
 }
 
 #[test]

@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 
+use ax_kspin_test_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     dir::{get_inode_with_num, insert_dir_entry},

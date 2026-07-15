@@ -293,6 +293,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
 
     fn current_vm_id() -> X86VmId {
         current_vcpu_identity_for_task()
+            .unwrap_or_else(|error| panic!("current x86 vCPU identity is invalid: {error}"))
             .expect("current x86 vCPU is not set")
             .into_ids()
             .0

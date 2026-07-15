@@ -8,12 +8,12 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_task::{SchedulingKey, ThreadHandle, ThreadId, ThreadWakeHandle};
+use ax_task::{SchedulingUrgency, ThreadHandle, ThreadId, ThreadWakeHandle};
 
 /// A pinned waiter embedded in the blocked `RawMutex::lock` call frame.
 pub(crate) struct WaiterNode {
     thread_id: ThreadId,
-    urgency: SchedulingKey,
+    urgency: SchedulingUrgency,
     sequence: u64,
     granted: AtomicBool,
     thread: Option<ThreadHandle>,
@@ -35,7 +35,7 @@ impl WaiterNode {
     /// Creates an unlinked waiter owned by the current lock call frame.
     pub(crate) const fn new(
         thread_id: ThreadId,
-        urgency: SchedulingKey,
+        urgency: SchedulingUrgency,
         sequence: u64,
         thread: ThreadHandle,
     ) -> Self {
@@ -58,7 +58,7 @@ impl WaiterNode {
     #[cfg(test)]
     fn new_for_test(
         thread_id: ThreadId,
-        urgency: SchedulingKey,
+        urgency: SchedulingUrgency,
         sequence: u64,
     ) -> Pin<alloc::boxed::Box<Self>> {
         alloc::boxed::Box::pin(Self {
@@ -73,7 +73,7 @@ impl WaiterNode {
     }
 
     #[inline(always)]
-    fn ordering_key(&self) -> (SchedulingKey, u64) {
+    fn ordering_key(&self) -> (SchedulingUrgency, u64) {
         (self.urgency, self.sequence)
     }
 
@@ -240,13 +240,13 @@ impl WaiterPointer {
     ///
     /// The waiter must remain pinned, and enqueue/removal must be frozen while
     /// the key is sampled outside the metadata lock.
-    pub(crate) unsafe fn effective_ordering_key(&self) -> (SchedulingKey, u64) {
+    pub(crate) unsafe fn effective_ordering_key(&self) -> (SchedulingUrgency, u64) {
         // SAFETY: forwarded caller contract keeps the waiter alive.
         let node = unsafe { self.node() };
         let urgency = node
             .thread
             .as_ref()
-            .map(ThreadHandle::effective_scheduling_key)
+            .map(ThreadHandle::effective_scheduling_urgency)
             .unwrap_or(node.urgency);
         (urgency, node.sequence)
     }
@@ -278,7 +278,7 @@ unsafe impl Sync for WaiterNode {}
 #[cfg(test)]
 mod tests {
     use ax_task::{
-        CpuId, FairMode, Nice, PiLockId, RtPriority, SchedulePolicy, SchedulingKey, TaskSystem,
+        CpuId, FairMode, Nice, PiLockId, RtPriority, SchedulePolicy, SchedulingUrgency, TaskSystem,
         TaskSystemConfig, ThreadHandle, ThreadId, ThreadSpec,
     };
 
@@ -307,8 +307,11 @@ mod tests {
     #[test]
     fn preserves_fifo_order_for_equal_urgency() {
         let mut queue = WaiterQueue::new();
-        let first = WaiterNode::new_for_test(thread(1), key(1, 50), 1);
-        let second = WaiterNode::new_for_test(thread(2), key(1, 50), 2);
+        // Scheduler keys currently carry a thread-identity tie break. PI mutex
+        // FIFO ordering must use the local arrival sequence instead: a later
+        // waiter with a numerically smaller ThreadId is not allowed to pass.
+        let first = WaiterNode::new_for_test(thread(9), SchedulingUrgency::new(1, 50), 1);
+        let second = WaiterNode::new_for_test(thread(1), SchedulingUrgency::new(1, 50), 2);
 
         unsafe {
             queue.insert(first.as_ref());
@@ -316,8 +319,8 @@ mod tests {
         }
 
         unsafe {
+            assert_eq!(queue.pop_front().unwrap().thread_id(), thread(9));
             assert_eq!(queue.pop_front().unwrap().thread_id(), thread(1));
-            assert_eq!(queue.pop_front().unwrap().thread_id(), thread(2));
         }
     }
 
@@ -430,8 +433,8 @@ mod tests {
         ThreadId::from_parts(slot, 1)
     }
 
-    fn key(class_rank: u8, primary: u64) -> SchedulingKey {
-        SchedulingKey::new(class_rank, primary, 0)
+    fn key(class_rank: u8, primary: u64) -> SchedulingUrgency {
+        SchedulingUrgency::new(class_rank, primary)
     }
 
     fn task_system(cpu_count: usize) -> TaskSystem {

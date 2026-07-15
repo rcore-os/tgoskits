@@ -42,7 +42,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceOps,
-    task::{current, get_process_group, send_signal_to_process_group},
+    task::{current_user_task, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
@@ -253,11 +253,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.this
                     .upgrade()
                     .unwrap()
-                    .bind_to(&current().as_thread().proc_data.proc)?;
+                    .bind_to(&current_user_task().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
-                let session = current().as_thread().proc_data.proc.group().session();
-                if current()
+                let session = current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .session();
+                if current_user_task()
                     .as_thread()
                     .proc_data
                     .proc

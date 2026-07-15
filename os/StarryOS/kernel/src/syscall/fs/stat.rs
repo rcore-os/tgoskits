@@ -15,7 +15,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{File, FileLike, resolve_at},
     mm::{UserPtr, vm_load_path_string},
-    task::current,
+    task::current_user_task,
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
@@ -162,7 +162,7 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
         return Ok(0);
     }
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
 
     // Root (fsuid == 0) bypasses R_OK and W_OK checks.
     // For X_OK, at least one execute bit must be set (owner, group, or other).

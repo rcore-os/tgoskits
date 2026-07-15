@@ -26,7 +26,10 @@ use self::{
     inbox::{InboxKind, IntrusiveInbox},
     waker::coroutine_waker,
 };
-use crate::{TaskError, ThreadId, ThreadWakeHandle};
+use crate::{
+    TaskError, ThreadId, ThreadWakeHandle,
+    runtime::{IrqGuardToken, task_runtime},
+};
 
 /// Maximum number of futures polled by one executor turn.
 pub const DEFAULT_POLL_BATCH: usize = 64;
@@ -597,17 +600,32 @@ impl SharedExecutor {
     }
 
     pub(super) fn publish_ready(&self, header: *mut CoroutineHeader) -> bool {
-        if !self.begin_ready_publish() {
+        let Some(_publisher) = self.begin_ready_publish_guard() else {
             return false;
-        }
+        };
         unsafe {
             // RUN_QUEUED gives this node exclusive ready-list membership and its
             // queue reference keeps the allocation alive until consumption.
             self.ready.push(header);
         }
         self.notify_owner();
-        self.finish_ready_publish();
         true
+    }
+
+    fn begin_ready_publish_guard(&self) -> Option<ReadyPublishGuard<'_>> {
+        let irq_token = task_runtime::irq_guard_enter();
+        if self.begin_ready_publish() {
+            Some(ReadyPublishGuard {
+                executor: self,
+                irq_token,
+                _not_send: PhantomData,
+            })
+        } else {
+            // SAFETY: this consumes the token created above on the same CPU;
+            // no publication guard escaped the failed closed-state check.
+            unsafe { task_runtime::irq_guard_exit(irq_token) };
+            None
+        }
     }
 
     fn begin_ready_publish(&self) -> bool {
@@ -652,6 +670,21 @@ impl SharedExecutor {
         while self.ready_publication.load(Ordering::Acquire) != READY_PUBLICATION_CLOSED {
             core::hint::spin_loop();
         }
+    }
+}
+
+struct ReadyPublishGuard<'executor> {
+    executor: &'executor SharedExecutor,
+    irq_token: IrqGuardToken,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl Drop for ReadyPublishGuard<'_> {
+    fn drop(&mut self) {
+        self.executor.finish_ready_publish();
+        // SAFETY: construction received this token on the current CPU, the
+        // !Send marker prevents migration, and Drop consumes it exactly once.
+        unsafe { task_runtime::irq_guard_exit(self.irq_token) };
     }
 }
 

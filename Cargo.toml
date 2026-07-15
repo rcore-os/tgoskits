@@ -38,6 +38,7 @@ members = [
     "components/kasm-aarch64",
     "components/kernutil",
     "components/kspin",
+    "components/kspin/test-runtime",
     "components/linked_list_r4l",
     "components/lockdep",
     "components/rsext4",

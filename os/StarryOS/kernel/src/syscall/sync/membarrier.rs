@@ -3,7 +3,7 @@ use core::sync::atomic::{Ordering, fence};
 use ax_errno::{AxError, AxResult};
 use linux_raw_sys::general::membarrier_cmd;
 
-use crate::task::current;
+use crate::task::current_user_task;
 
 /// Memory barrier commands
 const MEMBARRIER_CMD_QUERY: i32 = membarrier_cmd::MEMBARRIER_CMD_QUERY as i32;
@@ -42,14 +42,14 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
             Ok(0)
         }
         MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED => {
-            current()
+            current_user_task()
                 .as_thread()
                 .proc_data
                 .register_membarrier_state(MEMBARRIER_STATE_GLOBAL_EXPEDITED);
             Ok(0)
         }
         MEMBARRIER_CMD_GLOBAL_EXPEDITED => {
-            let proc_data = current().as_thread().proc_data.clone();
+            let proc_data = current_user_task().as_thread().proc_data.clone();
             if proc_data.membarrier_state() & MEMBARRIER_STATE_GLOBAL_EXPEDITED == 0 {
                 return Err(AxError::OperationNotPermitted);
             }
@@ -57,14 +57,14 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
             Ok(0)
         }
         MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED => {
-            current()
+            current_user_task()
                 .as_thread()
                 .proc_data
                 .register_membarrier_state(MEMBARRIER_STATE_PRIVATE_EXPEDITED);
             Ok(0)
         }
         MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
-            let proc_data = current().as_thread().proc_data.clone();
+            let proc_data = current_user_task().as_thread().proc_data.clone();
             if proc_data.membarrier_state() & MEMBARRIER_STATE_PRIVATE_EXPEDITED == 0 {
                 return Err(AxError::OperationNotPermitted);
             }

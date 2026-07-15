@@ -384,7 +384,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 let mut buf = [0u8; USB_SERIAL_RX_CHUNK];
                 loop {
@@ -445,7 +445,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || loop {
                 let result = {
                     let _guard = backend.output_lock.lock();

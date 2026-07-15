@@ -25,7 +25,10 @@ use super::{
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
-    task::future::{block_on, poll_io},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 const PACKET_HOST: u8 = 0;
@@ -174,14 +177,18 @@ impl PacketSocket {
     }
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let (data, from) = {
-                let mut state = self.state.lock();
-                state.pending.take().ok_or(AxError::WouldBlock)?
-            };
-            let written = dst.write(&data)?;
-            Ok((written, from))
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let (data, from) = {
+                    let mut state = self.state.lock();
+                    state.pending.take().ok_or(AxError::WouldBlock)?
+                };
+                let written = dst.write(&data)?;
+                Ok((written, from))
+            }),
+        )
     }
 
     pub fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {

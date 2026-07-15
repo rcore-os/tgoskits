@@ -14,6 +14,8 @@ use core::{
 pub use message::{InboxKind, InboxMessage};
 pub use node::InboxNode;
 
+use crate::epoch_mpsc::EpochMpscQueue;
+
 /// Result of publishing one embedded scheduler node.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishResult {
@@ -48,7 +50,7 @@ impl DrainBatch {
 #[derive(Debug)]
 pub struct SchedulerInbox {
     kind: InboxKind,
-    head: AtomicPtr<InboxNode>,
+    publication: EpochMpscQueue<InboxNode>,
     pending: AtomicPtr<InboxNode>,
     draining: AtomicBool,
 }
@@ -58,7 +60,7 @@ impl SchedulerInbox {
     pub const fn new(kind: InboxKind) -> Self {
         Self {
             kind,
-            head: AtomicPtr::new(ptr::null_mut()),
+            publication: EpochMpscQueue::new(),
             pending: AtomicPtr::new(ptr::null_mut()),
             draining: AtomicBool::new(false),
         }
@@ -90,23 +92,12 @@ impl SchedulerInbox {
         }
 
         let node = node.get_ref() as *const InboxNode as *mut InboxNode;
-        let mut observed = self.head.load(Ordering::Relaxed);
-        loop {
-            unsafe {
-                // Reservation gives this producer exclusive write access to the
-                // selected node link until Release publication succeeds.
-                (*node).next().store(observed, Ordering::Relaxed);
-            }
-            match self.head.compare_exchange_weak(
-                observed,
-                node,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return (PublishResult::Published, observed.is_null()),
-                Err(updated) => observed = updated,
-            }
-        }
+        let transitioned = unsafe {
+            // Reservation owns this pinned node and its scheduler-inbox link
+            // until the epoch-graced publication transfers that membership.
+            self.publication.publish(node, (*node).next())
+        };
+        (PublishResult::Published, transitioned)
     }
 
     /// Drains at most `limit` messages into preallocated caller storage.
@@ -144,15 +135,14 @@ impl SchedulerInbox {
         }
 
         self.pending.store(cursor, Ordering::Release);
-        let pending = !cursor.is_null() || !self.head.load(Ordering::Acquire).is_null();
+        let pending = !cursor.is_null() || !self.publication.is_empty();
         self.draining.store(false, Ordering::Release);
         DrainBatch { drained, pending }
     }
 
     /// Reports whether producer or partially drained work remains.
     pub fn has_pending(&self) -> bool {
-        !self.pending.load(Ordering::Acquire).is_null()
-            || !self.head.load(Ordering::Acquire).is_null()
+        !self.pending.load(Ordering::Acquire).is_null() || !self.publication.is_empty()
     }
 
     fn take_snapshot(&self) -> *mut InboxNode {
@@ -160,11 +150,46 @@ impl SchedulerInbox {
         if !pending.is_null() {
             return pending;
         }
-        let stack = self.head.swap(ptr::null_mut(), Ordering::Acquire);
+        let stack = unsafe {
+            // `draining` makes this the only consumer. A null result may mean
+            // the old publication epoch is still crossing its grace period.
+            self.publication.take_graced_stack()
+        };
         unsafe {
-            // The drain guard makes this the sole consumer of the detached stack.
+            // The drain guard and completed epoch grace make this consumer the
+            // sole owner of the detached stack and every observed provenance.
             reverse(stack)
         }
+    }
+
+    #[cfg(test)]
+    fn arm_test_publisher_pause(&self) {
+        self.publication.arm_test_publisher_pause();
+    }
+
+    #[cfg(test)]
+    fn wait_for_test_publisher_pause(&self) {
+        self.publication.wait_for_test_publisher_pause();
+    }
+
+    #[cfg(test)]
+    fn resume_test_publisher(&self) {
+        self.publication.resume_test_publisher();
+    }
+
+    #[cfg(test)]
+    fn arm_test_generation_pause(&self) {
+        self.publication.arm_test_generation_pause();
+    }
+
+    #[cfg(test)]
+    fn wait_for_test_generation_pause(&self) {
+        self.publication.wait_for_test_generation_pause();
+    }
+
+    #[cfg(test)]
+    fn resume_test_generation_publisher(&self) {
+        self.publication.resume_test_generation_publisher();
     }
 }
 

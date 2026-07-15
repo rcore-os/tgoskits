@@ -28,7 +28,7 @@ use super::addr::{
 use crate::{
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::current,
+    task::current_user_task,
 };
 
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
@@ -40,7 +40,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             warn!("Unsupported packet socket type: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
-        if !current().as_thread().cred().has_cap_net_raw() {
+        if !current_user_task().as_thread().cred().has_cap_net_raw() {
             return Err(AxError::from(LinuxError::EPERM));
         }
         let socket = PacketSocket::new(proto as u16)?;
@@ -51,7 +51,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let pid = current_user_task().as_thread().proc_data.proc.pid();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -94,7 +94,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != IPPROTO_ICMP as u32 {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            if !current().as_thread().cred().has_cap_net_raw() {
+            if !current_user_task().as_thread().cred().has_cap_net_raw() {
                 return Err(AxError::from(LinuxError::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
@@ -121,7 +121,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+            addr.nl_pid = current_user_task().as_thread().proc_data.proc.pid();
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
@@ -146,7 +146,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
         SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
         _ => None,
     };
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
 
     socket.bind(addr)?;
 
@@ -262,7 +262,7 @@ pub fn sys_socketpair(
         return Err(AxError::from(LinuxError::EAFNOSUPPORT));
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let pid = current_user_task().as_thread().proc_data.proc.pid();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
             let (sock1, sock2) = StreamTransport::new_pair(pid);

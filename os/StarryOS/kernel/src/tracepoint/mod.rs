@@ -23,7 +23,7 @@ use ktracepoint::*;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    task::{current, future::IrqNotify},
+    task::{future::IrqNotify, try_current_user_irq_view},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
@@ -67,6 +67,7 @@ struct TraceState {
     raw_pipe: SpinMutex<TracePipeRaw>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
+    sched_notify: IrqNotify,
     cmdline_cache: LazyInit<SpinMutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
@@ -78,6 +79,7 @@ impl TraceState {
             raw_pipe: SpinMutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
+            sched_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }
@@ -91,9 +93,10 @@ pub struct KernelTraceAux;
 
 impl KernelTraceOps for KernelTraceAux {
     fn current_pid() -> u32 {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        proc_data.proc.pid()
+        if let Some(pid) = sched::replay_current_pid() {
+            return pid;
+        }
+        try_current_user_irq_view().map_or(0, |task| task.tid())
     }
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
@@ -107,16 +110,19 @@ impl KernelTraceOps for KernelTraceAux {
     }
 
     fn trace_cmdline_push(pid: u32) {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        let exe_path = proc_data.exe_path.read();
-        let pname = exe_path
-            .split(' ')
-            .next()
-            .unwrap_or("unknown")
-            .split('/')
-            .next_back()
-            .unwrap_or("unknown");
+        if let Some((comm, len)) = sched::replay_comm(pid) {
+            let pname = core::str::from_utf8(&comm[..len]).unwrap_or("unknown");
+            TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
+            return;
+        }
+        let Some(curr) = try_current_user_irq_view() else {
+            return;
+        };
+        let mut comm = [0; 16];
+        let Some(len) = curr.copy_comm(&mut comm) else {
+            return;
+        };
+        let pname = core::str::from_utf8(&comm[..len]).unwrap_or("unknown");
         TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
     }
 
@@ -149,7 +155,7 @@ fn start_trace_pipe_notify_worker() {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
         return;
     }
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         || loop {
             TRACE_STATE.pipe_notify.wait();
             // Trace records are queued before the deferred poll wake.
@@ -284,6 +290,7 @@ pub fn tracepoint_init() -> AxResult<()> {
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
     sched::install();
+    sched::start_worker();
     start_trace_pipe_notify_worker();
     Ok(())
 }

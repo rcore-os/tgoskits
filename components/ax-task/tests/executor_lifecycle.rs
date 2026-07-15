@@ -10,6 +10,25 @@ use ax_task::{
 mod support;
 
 static TEST_RUNTIME_LOCK: Mutex<()> = Mutex::new(());
+const EXECUTOR_SOURCE: &str = include_str!("../src/executor/mod.rs");
+
+#[test]
+fn ready_publication_is_cpu_pinned_until_the_publisher_count_is_released() {
+    let publish = function_body(EXECUTOR_SOURCE, "pub(super) fn publish_ready(");
+    assert!(publish.contains("begin_ready_publish_guard"));
+
+    let release = function_body(EXECUTOR_SOURCE, "impl Drop for ReadyPublishGuard");
+    let finish = release
+        .find("finish_ready_publish")
+        .expect("publisher count must be released");
+    let irq_exit = release
+        .find("irq_guard_exit")
+        .expect("CPU pin must be released");
+    assert!(
+        finish < irq_exit,
+        "publisher release must precede IRQ restore"
+    );
+}
 
 #[test]
 fn executor_identity_comes_from_the_direct_thread_wake_handle() {
@@ -77,4 +96,28 @@ fn executor_rejects_a_wake_header_owned_by_another_thread() {
         }
     );
     support::clear_handles();
+}
+
+fn function_body<'source>(source: &'source str, signature: &str) -> &'source str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("missing function `{signature}`"));
+    let source = &source[start..];
+    let open = source
+        .find('{')
+        .unwrap_or_else(|| panic!("missing body for `{signature}`"));
+    let mut depth = 0_usize;
+    for (offset, character) in source[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated function `{signature}`")
 }

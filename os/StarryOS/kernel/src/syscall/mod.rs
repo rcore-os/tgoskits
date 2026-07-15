@@ -49,7 +49,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-    match crate::task::current()
+    match crate::task::current_user_task()
         .as_thread()
         .seccomp_state()
         .evaluate(uctx)
@@ -982,7 +982,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = crate::task::current().as_thread().tid();
+            let tid = crate::task::current_user_task().as_thread().tid();
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
             Err(AxError::Unsupported)
         }

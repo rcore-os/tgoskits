@@ -133,7 +133,7 @@ fn start_bpf_perf_notify_worker(
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             poll_notify.wait();
             if !poll_alive.load(Ordering::Acquire) {

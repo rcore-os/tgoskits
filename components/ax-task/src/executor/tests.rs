@@ -38,6 +38,45 @@ fn coalesces_repeated_wakes_into_one_poll() {
 }
 
 #[test]
+fn ready_consumer_defers_detach_while_a_waker_retains_the_observed_head() {
+    let fixture = executor();
+    let executor = fixture.local();
+    let saved_waker = Rc::new(RefCell::new(None::<Waker>));
+
+    executor.spawn({
+        let saved_waker = Rc::clone(&saved_waker);
+        poll_fn(move |context| {
+            *saved_waker.borrow_mut() = Some(context.waker().clone());
+            Poll::Pending
+        })
+    });
+    assert_eq!(executor.run_ready_batch().polled(), 1);
+
+    executor.spawn(core::future::pending());
+    executor.shared.ready.arm_test_publisher_pause();
+    let remote_waker = saved_waker.borrow().as_ref().unwrap().clone();
+    let publisher = std::thread::spawn(move || remote_waker.wake_by_ref());
+    executor.shared.ready.wait_for_test_publisher_pause();
+
+    let while_observed = executor.run_ready_batch();
+    executor.shared.ready.resume_test_publisher();
+    publisher.join().unwrap();
+
+    let after_publish = executor.run_ready_batch();
+    assert_eq!(
+        while_observed.polled(),
+        0,
+        "the owner must not detach a ready head whose address and provenance are still retained \
+         by a waker"
+    );
+    assert!(
+        while_observed.has_more(),
+        "deferred grace must keep the owner runnable for another bounded batch"
+    );
+    assert_eq!(after_publish.polled(), 2);
+}
+
+#[test]
 fn defers_self_wake_until_the_next_batch() {
     let fixture = executor();
     let executor = fixture.local();

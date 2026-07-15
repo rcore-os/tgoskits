@@ -13,8 +13,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{PidFd, get_file_like},
     task::{
-        JobStatus, ProcessData, current, decode_wait_status,
-        future::{block_on, interruptible},
+        JobStatus, ProcessData, current_user_task, decode_wait_status,
+        future::{block_on_user, interruptible_for},
         get_process_data, get_task, get_zombie_cred, is_zombie_clone_child, processes,
         remove_process, traced_zombies_for, unregister_zombie, wait_on_pollset,
         zombie_wait_parent_tid,
@@ -233,7 +233,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -336,10 +336,14 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
 }
 
 pub fn sys_waitid(
@@ -348,7 +352,7 @@ pub fn sys_waitid(
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -469,8 +473,12 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
 }

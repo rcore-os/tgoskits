@@ -256,6 +256,12 @@ impl SchedulePolicy {
 
     /// Creates an urgency key suitable for PI waiter ordering.
     pub const fn scheduling_key(self, sequence: u64) -> SchedulingKey {
+        let urgency = self.scheduling_urgency();
+        SchedulingKey::new(urgency.class_rank(), urgency.primary(), sequence)
+    }
+
+    /// Returns scheduler urgency without an identity or arrival tie-break.
+    pub const fn scheduling_urgency(self) -> SchedulingUrgency {
         let primary = match self {
             Self::Deadline(policy) => policy.deadline_ns(),
             Self::Fifo { priority } | Self::RoundRobin { priority, .. } => {
@@ -263,7 +269,7 @@ impl SchedulePolicy {
             }
             Self::Fair { nice, .. } => (nice.get() as i16 + 20) as u64,
         };
-        SchedulingKey::new(self.class_rank(), primary, sequence)
+        SchedulingUrgency::new(self.class_rank(), primary)
     }
 }
 
@@ -468,16 +474,18 @@ impl DeadlineEntity {
 
     /// Builds an urgency key from the active absolute scheduling deadline.
     pub const fn scheduling_key(self, sequence: u64) -> SchedulingKey {
+        let urgency = self.scheduling_urgency();
+        SchedulingKey::new(urgency.class_rank(), urgency.primary(), sequence)
+    }
+
+    /// Builds urgency without a thread-identity or queue-order tie-break.
+    pub const fn scheduling_urgency(self) -> SchedulingUrgency {
         let deadline = if self.absolute_deadline_ns == 0 {
             self.policy.deadline_ns()
         } else {
             self.absolute_deadline_ns
         };
-        SchedulingKey::new(
-            SchedulePolicy::Deadline(self.policy).class_rank(),
-            deadline,
-            sequence,
-        )
+        SchedulingUrgency::new(SchedulePolicy::Deadline(self.policy).class_rank(), deadline)
     }
 
     fn start_fresh_job(&mut self, now_ns: u64) {
@@ -522,7 +530,48 @@ fn density_exceeds_reservation(
         > (policy.runtime_ns() as u128).saturating_mul(time_to_deadline_ns as u128)
 }
 
-/// Total ordering key used to compare effective scheduler urgency.
+/// Scheduler-class urgency without an identity or queue-order tie-break.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulingUrgency {
+    class_rank: u8,
+    primary: u64,
+}
+
+impl SchedulingUrgency {
+    /// Creates class-local urgency; lower values are more urgent.
+    pub const fn new(class_rank: u8, primary: u64) -> Self {
+        Self {
+            class_rank,
+            primary,
+        }
+    }
+
+    /// Returns the scheduler-class rank.
+    pub const fn class_rank(self) -> u8 {
+        self.class_rank
+    }
+
+    /// Returns the class-local urgency value.
+    pub const fn primary(self) -> u64 {
+        self.primary
+    }
+}
+
+impl Ord for SchedulingUrgency {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.class_rank
+            .cmp(&other.class_rank)
+            .then_with(|| self.primary.cmp(&other.primary))
+    }
+}
+
+impl PartialOrd for SchedulingUrgency {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Total ordering key used for runqueue and deterministic snapshot ordering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchedulingKey {
     class_rank: u8,

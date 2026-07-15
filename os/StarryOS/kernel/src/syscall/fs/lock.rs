@@ -43,7 +43,7 @@ use starry_process::Pid;
 use crate::{
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
-    task::{current, futex::WaitQueue},
+    task::{current_user_task, futex::WaitQueue},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
@@ -206,7 +206,7 @@ fn ofd_addr(arc: &Arc<dyn FileLike>) -> OfdAddr {
 }
 
 fn current_pid() -> Pid {
-    current().as_thread().proc_data.proc.pid()
+    current_user_task().as_thread().proc_data.proc.pid()
 }
 
 /// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds

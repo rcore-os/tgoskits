@@ -22,6 +22,7 @@ use core::{
     task::Poll,
 };
 
+use ax_cpu_local::CpuPin;
 use ax_errno::AxResult;
 use ax_kspin::{PreemptIrqGuard, SpinRwLock as RwLock};
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
@@ -39,6 +40,8 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, scheduler_task::*,
     seccomp::*, signal::*, stat::*, tid::*, timer::*, user::*,
 };
+
+pub(crate) const KRETPROBE_STACK_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -193,7 +196,7 @@ pub struct Thread {
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
 
-    pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
+    kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 
     /// Whether uid_map has been written for this thread's user namespace.
     uid_map_written: AtomicBool,
@@ -255,7 +258,9 @@ impl Thread {
 
             signalfd_waker: PollSet::new(),
             fault_dump_signo: AtomicU8::new(0),
-            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
+            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::with_capacity(
+                KRETPROBE_STACK_CAPACITY,
+            )),
 
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
@@ -304,22 +309,31 @@ impl Thread {
         self.scheduler_id.bind(id)
     }
 
-    fn scheduler_switch_in(&self, id: ax_std::os::arceos::task::ThreadId, realtime_policy: bool) {
+    fn scheduler_switch_in(
+        &self,
+        id: ax_std::os::arceos::task::ThreadId,
+        realtime_policy: bool,
+        cpu_pin: &CpuPin,
+    ) {
         if self.bind_scheduler_id(id).is_err() {
             panic!("Starry thread was rebound to a different scheduler identity");
         }
         self.cpu_time.scheduler_switch_in(realtime_policy);
         let scope = self.proc_data.scope.read();
-        unsafe { ActiveScope::set(&scope) };
+        unsafe { ActiveScope::set_pinned(&scope, cpu_pin) };
         core::mem::forget(scope);
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
     }
 
-    fn scheduler_switch_out(&self, reason: ax_std::os::arceos::task::SwitchReason) {
+    fn scheduler_switch_out(
+        &self,
+        reason: ax_std::os::arceos::task::SwitchReason,
+        cpu_pin: &CpuPin,
+    ) {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
-        ActiveScope::set_global();
+        ActiveScope::set_global_pinned(cpu_pin);
         unsafe { self.proc_data.scope.force_read_decrement() };
         self.cpu_time.scheduler_switch_out(reason);
     }
@@ -473,10 +487,8 @@ impl Thread {
         tids.sort_unstable();
 
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid)
-                && let Some(thr) = task.try_as_thread()
-            {
-                thr.set_cred_single(new_arc.clone());
+            if let Ok(task) = ops::get_task(*tid) {
+                task.as_thread().set_cred_single(new_arc.clone());
             }
         }
     }
@@ -551,7 +563,7 @@ impl Thread {
 /// wait, the parent will see `done == true` and skip waiting.
 ///
 /// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
-/// `block_on(interruptible(...))`: a sibling thread that does `execve` will
+/// `block_on_user(interruptible_for(...))`: a sibling thread that does `execve` will
 /// zap us via `task.interrupt()`, which only wakes futures-based polls, not
 /// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
 /// in its sibling-teardown loop waiting for us to exit.
@@ -1763,26 +1775,32 @@ impl ProcessData {
                 None => return, // No vfork, shouldn't happen but be safe.
             }
         };
-        let curr_task = current();
+        let curr_task = current_user_task();
         let curr_thr = curr_task.as_thread();
         loop {
-            let result = future::block_on(future::interruptible(core::future::poll_fn(|cx| {
-                // Register before re-checking so a notify that fires
-                // between our last check and this register isn't lost.
-                // Registration happens from the vfork parent task context.
-                unsafe { poll.register(cx.waker(), IoEvents::IN) };
-                let done = self
-                    .vfork_done
-                    .lock()
-                    .as_ref()
-                    .map(|v| v.done)
-                    .unwrap_or(true);
-                if done {
-                    core::task::Poll::Ready(())
-                } else {
-                    core::task::Poll::Pending
-                }
-            })));
+            let result = future::block_on_user(
+                &curr_task,
+                future::interruptible_for(
+                    &curr_task,
+                    core::future::poll_fn(|cx| {
+                        // Register before re-checking so a notify that fires
+                        // between our last check and this register isn't lost.
+                        // Registration happens from the vfork parent task context.
+                        unsafe { poll.register(cx.waker(), IoEvents::IN) };
+                        let done = self
+                            .vfork_done
+                            .lock()
+                            .as_ref()
+                            .map(|v| v.done)
+                            .unwrap_or(true);
+                        if done {
+                            core::task::Poll::Ready(())
+                        } else {
+                            core::task::Poll::Pending
+                        }
+                    }),
+                ),
+            );
             match result {
                 Ok(()) => return,
                 Err(_) => {

@@ -12,6 +12,7 @@ use std::{
     rc::Rc,
 };
 
+use ax_kspin_test_runtime as _;
 use rsext4::{
     blockgroup_description::Ext4GroupDesc,
     bmalloc::AbsoluteBN,

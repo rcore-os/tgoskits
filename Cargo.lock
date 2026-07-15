@@ -678,6 +678,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "axklib",
  "bcm2835-sdhci",
  "crab-usb",
@@ -841,6 +842,13 @@ dependencies = [
  "lock_api",
  "spin",
  "trait-ffi",
+]
+
+[[package]]
+name = "ax-kspin-test-runtime"
+version = "0.0.0"
+dependencies = [
+ "ax-kspin",
 ]
 
 [[package]]
@@ -6810,6 +6818,7 @@ name = "rsext4"
 version = "0.7.5"
 dependencies = [
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "bitflags 2.13.0",
  "log",
 ]
@@ -7693,6 +7702,7 @@ version = "0.7.4"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
+ "ax-cpu-local",
  "ax-display",
  "ax-dma",
  "ax-driver",
@@ -7786,6 +7796,7 @@ name = "starry-process"
 version = "0.4.14"
 dependencies = [
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "ax-lazyinit",
  "ctor 0.4.3",
  "weak-map",
@@ -7798,6 +7809,7 @@ dependencies = [
  "ax-cpu",
  "ax-errno 0.6.1",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "bitflags 2.13.0",
  "cfg-if",
  "derive_more",

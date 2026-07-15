@@ -8,7 +8,7 @@ use core::{
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulingKey, ThreadId, ThreadState,
+    SchedulingKey, SchedulingUrgency, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     timer::TimerNode,
 };
@@ -26,6 +26,10 @@ pub struct ThreadHandle {
 }
 
 impl ThreadHandle {
+    pub(crate) fn from_core(core: Arc<ThreadCore>) -> Self {
+        Self { core }
+    }
+
     /// Returns the generation-checked registry identity.
     pub fn id(&self) -> ThreadId {
         self.core.id
@@ -65,6 +69,11 @@ impl ThreadHandle {
         self.core.effective_scheduling_key()
     }
 
+    /// Returns effective urgency without a thread-identity tie-break.
+    pub fn effective_scheduling_urgency(&self) -> SchedulingUrgency {
+        self.core.effective_scheduling_urgency()
+    }
+
     /// Returns cumulative charged CPU runtime, including a running residual.
     pub fn runtime_snapshot(&self, now_ns: u64) -> ThreadRuntimeSnapshot {
         self.core.runtime_snapshot(now_ns)
@@ -73,6 +82,10 @@ impl ThreadHandle {
     pub(crate) fn sleep_timer(&self) -> Pin<&TimerNode> {
         // SAFETY: `ThreadCore` is held in an Arc and therefore never moves.
         unsafe { Pin::new_unchecked(&self.core.sleep_timer) }
+    }
+
+    pub(crate) fn extension_view(&self) -> Option<crate::ThreadExtensionView> {
+        self.core.extension_view()
     }
 }
 
@@ -211,6 +224,10 @@ impl ThreadRuntimeSnapshot {
 #[derive(Debug)]
 pub(crate) struct ThreadCore {
     id: ThreadId,
+    sched: Arc<ThreadSchedCell>,
+    // Immutable after publication. Every handle retaining this copy also pins
+    // the registry-owned extension destructor through the reaper Arc contract.
+    extension: Option<ThreadExtensionView>,
     base_policy: AtomicPolicy,
     effective_policy: AtomicPolicy,
     effective_key_sequence: AtomicUsize,
@@ -234,9 +251,17 @@ pub(crate) struct ThreadCore {
 }
 
 impl ThreadCore {
-    pub(crate) fn new(id: ThreadId, policy: SchedulePolicy) -> Self {
+    pub(crate) fn new(
+        id: ThreadId,
+        policy: SchedulePolicy,
+        sched: Arc<ThreadSchedCell>,
+        extension: Option<ThreadExtensionView>,
+    ) -> Self {
+        debug_assert_eq!(id, sched.id());
         Self {
             id,
+            sched,
+            extension,
             base_policy: AtomicPolicy::new(policy),
             effective_policy: AtomicPolicy::new(policy),
             effective_key_sequence: AtomicUsize::new(0),
@@ -404,6 +429,11 @@ impl ThreadCore {
         }
     }
 
+    fn effective_scheduling_urgency(&self) -> SchedulingUrgency {
+        let key = self.effective_scheduling_key();
+        SchedulingUrgency::new(key.class_rank(), key.primary())
+    }
+
     pub(crate) fn set_target_cpu(&self, cpu: CpuId) {
         self.target_cpu.store(cpu.as_u32(), Ordering::Release);
     }
@@ -415,6 +445,14 @@ impl ThreadCore {
 
     pub(crate) const fn id(&self) -> ThreadId {
         self.id
+    }
+
+    pub(crate) const fn extension_view(&self) -> Option<ThreadExtensionView> {
+        self.extension
+    }
+
+    pub(crate) fn sched(&self) -> &Arc<ThreadSchedCell> {
+        &self.sched
     }
 
     pub(crate) const fn pi_wait_state(&self) -> &PiWaitState {
@@ -630,13 +668,15 @@ mod tests {
 
     use super::*;
 
+    fn test_core(id: ThreadId, policy: SchedulePolicy) -> Arc<ThreadCore> {
+        let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
+        Arc::new(ThreadCore::new(id, policy, sched, None))
+    }
+
     #[test]
     fn unavailable_wake_without_placement_can_be_retried() {
         let wake = ThreadWakeHandle {
-            core: Arc::new(ThreadCore::new(
-                ThreadId::from_parts(0, 1),
-                SchedulePolicy::default(),
-            )),
+            core: test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default()),
         };
 
         assert_eq!(wake.wake(), WakeResult::Unavailable);
@@ -646,10 +686,7 @@ mod tests {
     #[test]
     fn reaper_claim_closes_and_reopens_weak_upgrade_on_retry() {
         let handle = ThreadHandle {
-            core: Arc::new(ThreadCore::new(
-                ThreadId::from_parts(0, 1),
-                SchedulePolicy::default(),
-            )),
+            core: test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default()),
         };
         let weak = handle.downgrade();
 

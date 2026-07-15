@@ -26,7 +26,10 @@ use starry_vm::VmMutPtr;
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
-    task::future::{block_on, poll_io},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 const INOTIFY_EVENT_SIZE: usize = 16;
@@ -195,22 +198,26 @@ impl FileLike for Inotify {
             return Err(AxError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let mut state = self.state.lock();
-            let mut written = 0;
-            while let Some(event) = state.queue.front() {
-                if dst.remaining_mut() < event.len() {
-                    break;
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let mut state = self.state.lock();
+                let mut written = 0;
+                while let Some(event) = state.queue.front() {
+                    if dst.remaining_mut() < event.len() {
+                        break;
+                    }
+                    written += dst.write(event)?;
+                    state.queue.pop_front();
                 }
-                written += dst.write(event)?;
-                state.queue.pop_front();
-            }
-            if written == 0 {
-                Err(AxError::WouldBlock)
-            } else {
-                Ok(written)
-            }
-        }))
+                if written == 0 {
+                    Err(AxError::WouldBlock)
+                } else {
+                    Ok(written)
+                }
+            }),
+        )
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

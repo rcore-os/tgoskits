@@ -12,14 +12,14 @@ use starry_vm::VmMutPtr;
 
 use super::schedule_abi::fork_schedule_policy;
 #[cfg(target_arch = "riscv64")]
-use crate::task::spawn_starry_user_thread_with_fp_state_and_policy;
+use crate::task::spawn_user_thread_with_fp_state_and_policy;
 #[cfg(not(target_arch = "riscv64"))]
-use crate::task::spawn_starry_user_thread_with_policy;
+use crate::task::spawn_user_thread_with_policy;
 use crate::{
     file::{FD_TABLE, FileLike, PidFd, close_file_like, current_fd_table},
     mm::copy_from_kernel,
     task::{
-        ProcessData, ProcessImage, Thread, add_task_to_table, allocate_user_tid, current,
+        ProcessData, ProcessImage, Thread, add_task_to_table, allocate_user_tid, current_user_task,
         new_user_task,
     },
 };
@@ -216,7 +216,7 @@ impl CloneArgs {
             0
         };
 
-        let curr = current();
+        let curr = current_user_task();
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
         let (child_policy, child_reset_on_fork) =
@@ -434,7 +434,7 @@ impl CloneArgs {
         }
 
         #[cfg(target_arch = "riscv64")]
-        let task = spawn_starry_user_thread_with_fp_state_and_policy(
+        let task = spawn_user_thread_with_fp_state_and_policy(
             new_user_task(new_uctx, set_child_tid),
             curr.name(),
             crate::config::KERNEL_STACK_SIZE,
@@ -446,7 +446,7 @@ impl CloneArgs {
         )
         .map_err(map_task_creation_error)?;
         #[cfg(not(target_arch = "riscv64"))]
-        let task = spawn_starry_user_thread_with_policy(
+        let task = spawn_user_thread_with_policy(
             new_user_task(new_uctx, set_child_tid),
             curr.name(),
             crate::config::KERNEL_STACK_SIZE,

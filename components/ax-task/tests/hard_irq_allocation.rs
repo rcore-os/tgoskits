@@ -205,7 +205,6 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     // have been detached from their owner queues before their storage drops.
     drop(timer_queue);
     drop(timer);
-    drop(inbox);
     drop(inbox_node);
     drop(wake);
     drop(thread);

@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
-    task::current,
+    task::current_user_task,
 };
 
 bitflags::bitflags! {
@@ -517,7 +517,7 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<PiMutex<AddrSpace>>) {
 }
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
     let cred = thread.cred();
@@ -566,7 +566,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
 pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let shm_flg = ShmAtFlags::from_bits_truncate(shmflg);
 
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
@@ -655,7 +655,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
 pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
     let cmd = cmd as i32;
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let cred = thread.cred();
     let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
@@ -795,7 +795,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
 pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
 
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 

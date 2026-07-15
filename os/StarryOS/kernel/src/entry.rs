@@ -15,7 +15,7 @@ use crate::{
     pseudofs::{self, dev::tty},
     task::{
         ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task,
-        spawn_starry_user_thread,
+        spawn_user_thread,
     },
     tracepoint::tracepoint_init,
 };
@@ -94,7 +94,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let task = {
         let _guard = PreemptIrqGuard::new();
-        let task = spawn_starry_user_thread(
+        let task = spawn_user_thread(
             new_user_task(uctx, 0),
             name,
             crate::config::KERNEL_STACK_SIZE,

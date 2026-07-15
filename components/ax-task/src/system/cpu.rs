@@ -11,7 +11,7 @@ use core::{
 
 use crate::{
     CpuId, DeadlineAdmission, FairMode, RtBandwidth, RunQueue, SchedulePolicy, SchedulingEntity,
-    SchedulingKey, TaskError, TaskSystemConfig, ThreadId, ThreadState,
+    SchedulingKey, TaskError, TaskSystemConfig, ThreadHandle, ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
     runtime::{RuntimeCpuId, RuntimeStatus, task_runtime},
     thread::ThreadCore,
@@ -770,9 +770,15 @@ pub struct CpuLocal {
     owner: CpuId,
     remote: Arc<CpuRemote>,
     pub(crate) current: Option<ThreadId>,
+    pub(crate) current_core: Option<Arc<ThreadCore>>,
     pub(crate) current_dispatch: Option<CurrentDispatch>,
     pub(crate) idle: Option<ThreadId>,
+    pub(crate) idle_core: Option<Arc<ThreadCore>>,
     pub(crate) run_queue: RunQueue,
+    /// Stable references to Deadline reservations whose GRUB/CBS state is
+    /// owned by this CPU, including blocked non-contending reservations that
+    /// are absent from both `current` and the runqueue.
+    pub(crate) deadline_members: Vec<Arc<ThreadCore>>,
     pub(crate) rt_bandwidth: RtBandwidth,
     deadline_this_bw_scaled: u64,
     deadline_running_bw_scaled: u64,
@@ -799,9 +805,12 @@ impl CpuLocal {
             owner,
             remote,
             current: None,
+            current_core: None,
             current_dispatch: None,
             idle: None,
+            idle_core: None,
             run_queue: RunQueue::new(),
+            deadline_members: Vec::with_capacity(config.timer_capacity()),
             rt_bandwidth: RtBandwidth::new(config.rt_period_ns(), config.rt_runtime_ns()),
             deadline_this_bw_scaled: 0,
             deadline_running_bw_scaled: 0,
@@ -835,6 +844,22 @@ impl CpuLocal {
     /// Returns the currently executing non-idle thread, if any.
     pub const fn current(&self) -> Option<ThreadId> {
         self.current
+    }
+
+    pub(crate) fn current_core(&self) -> Option<&Arc<ThreadCore>> {
+        self.current_core.as_ref()
+    }
+
+    /// Clones a strong handle for the currently executing thread.
+    ///
+    /// This owner-side lookup never consults the generation registry. The
+    /// stable core retained by `CpuLocal` pins the registry record and any OS
+    /// extension until the returned handle is dropped.
+    pub fn current_thread_handle(&self) -> Result<ThreadHandle, TaskError> {
+        self.current_core
+            .as_ref()
+            .map(|core| ThreadHandle::from_core(Arc::clone(core)))
+            .ok_or(TaskError::NoRunnableThread)
     }
 
     /// Returns the configured CPU idle thread, if any.
@@ -871,17 +896,21 @@ impl CpuLocal {
         self.batch_limit
     }
 
-    pub(crate) fn set_current(self: Pin<&mut Self>, current: Option<ThreadId>) {
-        // SAFETY: changing fields does not move this pinned object.
-        let fields = unsafe { self.get_unchecked_mut() };
-        fields.current = current;
-        fields.remote.publish_current_thread(current);
-        if current.is_some() {
-            fields.remote.mark_scheduler_ready();
-        }
-        if current.is_none() {
-            fields.current_dispatch = None;
-        }
+    pub(crate) fn clear_current(self: Pin<&mut Self>) {
+        let fields = self.fields_mut();
+        fields.current = None;
+        fields.current_core = None;
+        fields.current_dispatch = None;
+        fields.remote.publish_current_thread(None);
+    }
+
+    pub(crate) fn set_current_core(self: Pin<&mut Self>, core: Arc<ThreadCore>) {
+        let id = core.id();
+        let fields = self.fields_mut();
+        fields.current = Some(id);
+        fields.current_core = Some(core);
+        fields.remote.publish_current_thread(Some(id));
+        fields.remote.mark_scheduler_ready();
     }
 
     pub(crate) fn install_dispatch(self: Pin<&mut Self>, dispatch: CurrentDispatch) {
@@ -928,14 +957,20 @@ impl CpuLocal {
         );
         let current_policy = dispatch.policy;
         let current_fair = dispatch.entity.fair();
+        let rt_quota_exempt = dispatch.rt_quota_exempt;
         fields.run_queue.update_fair_virtual_time(current_fair);
-        if matches!(
+        let rt_quota_exhausted = if matches!(
             current_policy,
             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
         ) {
-            fields.rt_bandwidth.charge(now_ns, runtime_ns);
-        }
-        if charge.slice_expired || charge.deadline_overrun {
+            fields.rt_bandwidth.charge(now_ns, runtime_ns)
+        } else {
+            false
+        };
+        if charge.slice_expired
+            || charge.deadline_overrun
+            || (rt_quota_exhausted && !rt_quota_exempt)
+        {
             fields.request_reschedule();
         }
         fields.recompute_scheduler_deadline(now_ns);
@@ -958,17 +993,19 @@ impl CpuLocal {
             .charge_current_dispatch(now_ns, runtime_ns, reclaimed_ns)
     }
 
-    pub(crate) fn set_idle(self: Pin<&mut Self>, idle: ThreadId) {
+    pub(crate) fn set_idle(self: Pin<&mut Self>, idle: ThreadId, core: Arc<ThreadCore>) {
+        debug_assert_eq!(idle, core.id());
         // SAFETY: changing fields does not move this pinned object.
         let fields = unsafe { self.get_unchecked_mut() };
         fields.idle = Some(idle);
+        fields.idle_core = Some(core);
         fields.remote.publish_idle_thread(idle);
         fields.remote.mark_scheduler_ready();
     }
 
     pub(crate) fn stage_switch_handoff(
         self: Pin<&mut Self>,
-        previous: ThreadId,
+        previous: Arc<ThreadCore>,
         migration_target: Option<CpuId>,
     ) -> Result<(), TaskError> {
         let handoff = &mut self.fields_mut().switch_handoff;
@@ -986,8 +1023,41 @@ impl CpuLocal {
         self.fields_mut().switch_handoff.take()
     }
 
-    pub(crate) fn switch_handoff(&self) -> Option<SwitchHandoff> {
-        self.switch_handoff
+    pub(crate) fn switch_handoff(&self) -> Option<&SwitchHandoff> {
+        self.switch_handoff.as_ref()
+    }
+
+    pub(crate) fn register_deadline_member(
+        &mut self,
+        core: &Arc<ThreadCore>,
+    ) -> Result<bool, TaskError> {
+        if self
+            .deadline_members
+            .iter()
+            .all(|member| !Arc::ptr_eq(member, core))
+        {
+            if self.deadline_members.len() == self.deadline_members.capacity() {
+                return Err(TaskError::TimerCapacity);
+            }
+            self.deadline_members.push(Arc::clone(core));
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn unregister_deadline_member(&mut self, core: &Arc<ThreadCore>) {
+        if let Some(index) = self
+            .deadline_members
+            .iter()
+            .position(|member| Arc::ptr_eq(member, core))
+        {
+            self.deadline_members.swap_remove(index);
+            if self.deadline_members.is_empty() {
+                self.deadline_scan_cursor = 0;
+            } else {
+                self.deadline_scan_cursor %= self.deadline_members.len();
+            }
+        }
     }
 
     pub(crate) fn scheduler_enter(self: Pin<&mut Self>) -> bool {
@@ -1037,16 +1107,19 @@ impl CpuLocal {
         utilization_scaled: u64,
         active: bool,
     ) -> Result<(), TaskError> {
-        self.deadline_this_bw_scaled = self
+        let next_this_bw_scaled = self
             .deadline_this_bw_scaled
             .checked_add(utilization_scaled)
             .ok_or(TaskError::InvalidConfiguration)?;
-        if active {
-            self.deadline_running_bw_scaled = self
-                .deadline_running_bw_scaled
+        let next_running_bw_scaled = if active {
+            self.deadline_running_bw_scaled
                 .checked_add(utilization_scaled)
-                .ok_or(TaskError::InvalidConfiguration)?;
-        }
+                .ok_or(TaskError::InvalidConfiguration)?
+        } else {
+            self.deadline_running_bw_scaled
+        };
+        self.deadline_this_bw_scaled = next_this_bw_scaled;
+        self.deadline_running_bw_scaled = next_running_bw_scaled;
         Ok(())
     }
 
@@ -1055,16 +1128,19 @@ impl CpuLocal {
         utilization_scaled: u64,
         active: bool,
     ) -> Result<(), TaskError> {
-        self.deadline_this_bw_scaled = self
+        let next_this_bw_scaled = self
             .deadline_this_bw_scaled
             .checked_sub(utilization_scaled)
             .ok_or(TaskError::InvalidConfiguration)?;
-        if active {
-            self.deadline_running_bw_scaled = self
-                .deadline_running_bw_scaled
+        let next_running_bw_scaled = if active {
+            self.deadline_running_bw_scaled
                 .checked_sub(utilization_scaled)
-                .ok_or(TaskError::InvalidConfiguration)?;
-        }
+                .ok_or(TaskError::InvalidConfiguration)?
+        } else {
+            self.deadline_running_bw_scaled
+        };
+        self.deadline_this_bw_scaled = next_this_bw_scaled;
+        self.deadline_running_bw_scaled = next_running_bw_scaled;
         Ok(())
     }
 
@@ -1072,13 +1148,14 @@ impl CpuLocal {
         &mut self,
         utilization_scaled: u64,
     ) -> Result<(), TaskError> {
-        self.deadline_running_bw_scaled = self
+        let next_running_bw_scaled = self
             .deadline_running_bw_scaled
             .checked_add(utilization_scaled)
             .ok_or(TaskError::InvalidConfiguration)?;
-        if self.deadline_running_bw_scaled > self.deadline_this_bw_scaled {
+        if next_running_bw_scaled > self.deadline_this_bw_scaled {
             return Err(TaskError::InvalidConfiguration);
         }
+        self.deadline_running_bw_scaled = next_running_bw_scaled;
         Ok(())
     }
 
@@ -1341,9 +1418,9 @@ impl CpuLocal {
 }
 
 /// State committed before an architecture switch and consumed by switch tail.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct SwitchHandoff {
-    pub(crate) previous: ThreadId,
+    pub(crate) previous: Arc<ThreadCore>,
     pub(crate) migration_target: Option<CpuId>,
 }
 
@@ -1385,6 +1462,8 @@ pub(crate) struct CurrentDispatch {
     pub(crate) policy_generation: u64,
     pub(crate) deadline_overrun: bool,
     runtime_core: Arc<ThreadCore>,
+    deadline_donor_core: Option<Arc<ThreadCore>>,
+    deadline_cbs_generation: Option<u64>,
     accounted_until_ns: u64,
     charged_runtime_ns: u64,
 }
@@ -1420,9 +1499,31 @@ impl CurrentDispatch {
             policy_generation: state.policy_generation,
             deadline_overrun: false,
             runtime_core: Arc::clone(runtime_core),
+            deadline_donor_core: None,
+            deadline_cbs_generation: None,
             accounted_until_ns: now_ns,
             charged_runtime_ns: 0,
         }
+    }
+
+    pub(crate) fn with_deadline_donor_core(
+        mut self,
+        donor: Option<Arc<ThreadCore>>,
+        cbs_generation: Option<u64>,
+    ) -> Self {
+        debug_assert_eq!(self.deadline_donor.is_some(), donor.is_some());
+        debug_assert!(cbs_generation.is_none() || donor.is_some());
+        self.deadline_donor_core = donor;
+        self.deadline_cbs_generation = cbs_generation;
+        self
+    }
+
+    pub(crate) fn deadline_donor_core(&self) -> Option<&Arc<ThreadCore>> {
+        self.deadline_donor_core.as_ref()
+    }
+
+    pub(crate) const fn deadline_cbs_generation(&self) -> Option<u64> {
+        self.deadline_cbs_generation
     }
 
     fn charge(&mut self, runtime_ns: u64, now_ns: u64, reclaimed_ns: u64) -> DispatchCharge {
@@ -1465,12 +1566,23 @@ impl CurrentDispatch {
         &self.runtime_core
     }
 
+    pub(crate) fn runtime_core_arc(&self) -> &Arc<ThreadCore> {
+        &self.runtime_core
+    }
+
     fn grub_reclaimed_ns(
         &self,
         runtime_ns: u64,
         inactive_bw_scaled: u64,
         max_bw_scaled: u64,
     ) -> u64 {
+        // A PI owner may execute on a different CPU from the Deadline donor.
+        // Its local GRUB snapshot therefore does not describe the donor's root
+        // domain. Conservatively debit wall time until a coherent root-domain
+        // bandwidth snapshot can be passed with the CBS baton.
+        if self.deadline_donor.is_some() {
+            return 0;
+        }
         let SchedulePolicy::Deadline(policy) = self.policy else {
             return 0;
         };

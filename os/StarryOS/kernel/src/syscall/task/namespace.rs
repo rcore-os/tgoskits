@@ -9,7 +9,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{NsFd, PidFd, get_file_like},
-    task::current,
+    task::current_user_task,
 };
 
 const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
@@ -27,7 +27,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let want_ns = flags & CLONE_NEWNS != 0;
     let want_fs = flags & CLONE_FS != 0;
@@ -127,7 +127,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
 
@@ -207,7 +207,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     };
     let target_nsproxy = target_proc.nsproxy.lock().clone_all();
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
 

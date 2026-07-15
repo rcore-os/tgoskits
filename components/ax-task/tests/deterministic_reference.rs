@@ -328,10 +328,10 @@ impl ReferenceScheduler {
             sum = sum.saturating_add(u128::from(vruntime));
             count += 1;
         }
-        if count != 0 {
+        if let Some(average) = sum.checked_div(count) {
             self.virtual_time = self
                 .virtual_time
-                .max(u64::try_from(sum / count).unwrap_or(u64::MAX));
+                .max(u64::try_from(average).unwrap_or(u64::MAX));
         }
     }
 }

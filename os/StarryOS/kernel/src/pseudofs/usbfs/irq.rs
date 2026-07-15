@@ -131,7 +131,7 @@ pub(super) fn start_event_pump() {
         return;
     }
 
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || {
             loop {
                 usbfs_poll_events();

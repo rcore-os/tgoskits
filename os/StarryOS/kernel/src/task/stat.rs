@@ -6,7 +6,7 @@ use starry_signal::Signo;
 
 use crate::{
     mm::ProcessMemStats,
-    task::{StarryTaskRef, task_cpu_time},
+    task::{UserTaskRef, task_cpu_time},
 };
 
 /// Represents the `/proc/[pid]/stat` file.
@@ -71,7 +71,7 @@ pub struct TaskStat {
 
 impl TaskStat {
     /// Creates a task-stat snapshot from a Starry scheduler handle.
-    pub fn from_thread(task: &StarryTaskRef) -> AxResult<Self> {
+    pub fn from_thread(task: &UserTaskRef) -> AxResult<Self> {
         let thread = task.as_thread();
         let proc_data = &thread.proc_data;
         let proc = &proc_data.proc;

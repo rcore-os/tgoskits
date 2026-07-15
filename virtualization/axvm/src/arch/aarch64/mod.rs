@@ -441,6 +441,7 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn current_vm_id() -> usize {
         super::current_vcpu_identity_for_task()
+            .unwrap_or_else(|error| panic!("current AArch64 vCPU identity is invalid: {error}"))
             .expect("current AArch64 VM is not set")
             .into_ids()
             .0
@@ -448,6 +449,7 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn current_vcpu_id() -> usize {
         super::current_vcpu_identity_for_task()
+            .unwrap_or_else(|error| panic!("current AArch64 vCPU identity is invalid: {error}"))
             .expect("current AArch64 vCPU is not set")
             .into_ids()
             .1

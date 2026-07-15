@@ -36,7 +36,10 @@ use event_listener::{Event, listener};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
-    task::future::{block_on, poll_io, timeout_at_wall},
+    task::{
+        current_user_task,
+        future::{block_on, block_on_user, poll_io_for, timeout_at_wall},
+    },
 };
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
@@ -102,7 +105,7 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        crate::task::spawn_raw(
+        crate::task::spawn_kernel_thread_with_stack(
             move || block_on(run_timer(weak)),
             "timerfd".to_owned(),
             crate::task::default_task_stack_size(),
@@ -308,41 +311,45 @@ impl FileLike for Timerfd {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            // Race-free read: atomically claim the entire `expire_count`
-            // snapshot via CAS so concurrent readers can't both observe
-            // and copy the same ticks. Linux's `timerfd_read(2)` holds
-            // the timerfd spinlock across the load + clear; we get the
-            // same single-consumer guarantee from the CAS loop. A
-            // simultaneous `fetch_add` from the timer task raises the
-            // count past `n`, the CAS fails, and we re-snapshot before
-            // copying — so newly-arrived ticks aren't dropped either.
-            let n = loop {
-                let observed = self.expire_count.load(Ordering::Acquire);
-                if observed == 0 {
-                    return Err(AxError::WouldBlock);
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                // Race-free read: atomically claim the entire `expire_count`
+                // snapshot via CAS so concurrent readers can't both observe
+                // and copy the same ticks. Linux's `timerfd_read(2)` holds
+                // the timerfd spinlock across the load + clear; we get the
+                // same single-consumer guarantee from the CAS loop. A
+                // simultaneous `fetch_add` from the timer task raises the
+                // count past `n`, the CAS fails, and we re-snapshot before
+                // copying — so newly-arrived ticks aren't dropped either.
+                let n = loop {
+                    let observed = self.expire_count.load(Ordering::Acquire);
+                    if observed == 0 {
+                        return Err(AxError::WouldBlock);
+                    }
+                    if self
+                        .expire_count
+                        .compare_exchange(observed, 0, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        break observed;
+                    }
+                };
+                // Linux's timerfd_read(2): a failed read does not discard
+                // expirations. Restore the claimed count on copyout failure,
+                // and re-wake `poll_rx` so any reader or poller that
+                // entered its wait between our CAS-to-zero and this restore
+                // notices the fd is readable again.
+                if let Err(e) = dst.write(&n.to_ne_bytes()) {
+                    self.expire_count.fetch_add(n, Ordering::AcqRel);
+                    // Restored expire_count is visible before re-waking readers.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    return Err(e);
                 }
-                if self
-                    .expire_count
-                    .compare_exchange(observed, 0, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    break observed;
-                }
-            };
-            // Linux's timerfd_read(2): a failed read does not discard
-            // expirations. Restore the claimed count on copyout failure,
-            // and re-wake `poll_rx` so any reader or poller that
-            // entered its wait between our CAS-to-zero and this restore
-            // notices the fd is readable again.
-            if let Err(e) = dst.write(&n.to_ne_bytes()) {
-                self.expire_count.fetch_add(n, Ordering::AcqRel);
-                // Restored expire_count is visible before re-waking readers.
-                unsafe { self.poll_rx.wake(IoEvents::IN) };
-                return Err(e);
-            }
-            Ok(core::mem::size_of::<u64>())
-        }))
+                Ok(core::mem::size_of::<u64>())
+            }),
+        )
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

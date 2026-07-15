@@ -12,7 +12,7 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
     MSG_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::task::{WaitQueue as MsgWaitQueue, current};
+use crate::task::{WaitQueue as MsgWaitQueue, current_user_task};
 
 /// Data structure describing a message queue.
 #[repr(C)]
@@ -387,7 +387,7 @@ pub struct UserMsgbuf {
 }
 
 pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -481,7 +481,7 @@ pub fn sys_msgsnd(
     if msgsz > MSGMAX {
         return Err(AxError::from(LinuxError::EINVAL)); // EINVAL
     }
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -579,7 +579,7 @@ pub fn sys_msgrcv(
     } else {
         flags.remove(MsgRcvFlags::MSG_EXCEPT);
     }
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -722,7 +722,7 @@ pub fn sys_msgrcv(
 
 pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     //  Get current process information
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let cred = thread.cred();
     let current_uid = cred.euid;

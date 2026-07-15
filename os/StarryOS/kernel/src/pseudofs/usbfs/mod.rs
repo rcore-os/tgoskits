@@ -69,7 +69,7 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
@@ -784,7 +784,7 @@ impl UsbDeviceFile {
         let poll_urbs = self.poll_urbs.clone();
         let worker = self.urb_worker.clone();
         let manager = self.manager.clone();
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 crate::task::future::block_on(async {
                     loop {
@@ -1246,7 +1246,7 @@ impl UsbDeviceFile {
 
         if !submitted.is_deferred() {
             let lease = self.lease.lock().clone();
-            crate::task::spawn_with_name(
+            crate::task::spawn_kernel_thread(
                 move || {
                     let _lease = lease;
                     cleanup_submitted_urbs(alloc::vec![submitted], None);
@@ -1405,7 +1405,7 @@ impl Drop for UsbDeviceFile {
             return;
         }
 
-        crate::task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 let _lease = lease;
                 cleanup_submitted_urbs(submitted, None);

@@ -1,8 +1,9 @@
 //! Binding between a Linux thread identity and its scheduler registry record.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use ax_errno::{AxError, AxResult};
 use ax_std::os::arceos::task::ThreadId;
-use ax_sync::spin::SpinNoIrq;
 
 /// A scheduler identity that may be published exactly once.
 ///
@@ -10,20 +11,20 @@ use ax_sync::spin::SpinNoIrq;
 /// an opaque value prevents Linux TIDs from being used to reconstruct scheduler
 /// identities after a registry slot has been reused.
 pub(super) struct SchedulerIdentity {
-    id: SpinNoIrq<Option<ThreadId>>,
+    id: AtomicU64,
 }
 
 impl SchedulerIdentity {
     /// Creates an identity slot for a not-yet-published scheduler thread.
     pub(super) const fn unbound() -> Self {
         Self {
-            id: SpinNoIrq::new(None),
+            id: AtomicU64::new(0),
         }
     }
 
     /// Returns the bound generation-bearing identity.
     pub(super) fn get(&self) -> Option<ThreadId> {
-        *self.id.lock()
+        decode(self.id.load(Ordering::Acquire))
     }
 
     /// Publishes the identity returned by scheduler thread creation.
@@ -31,15 +32,24 @@ impl SchedulerIdentity {
     /// Repeating the same publication is harmless. A different identity means
     /// one Starry thread object was attached to two scheduler records.
     pub(super) fn bind(&self, id: ThreadId) -> AxResult<()> {
-        let mut bound = self.id.lock();
-        match *bound {
-            Some(current) if current != id => Err(AxError::BadState),
-            Some(_) => Ok(()),
-            None => {
-                *bound = Some(id);
-                Ok(())
-            }
+        let raw = id.as_u64();
+        debug_assert_ne!(raw, 0, "a published scheduler identity cannot be zero");
+        match self
+            .id
+            .compare_exchange(0, raw, Ordering::Release, Ordering::Acquire)
+        {
+            Ok(_) => Ok(()),
+            Err(current) if current == raw => Ok(()),
+            Err(_) => Err(AxError::BadState),
         }
+    }
+}
+
+const fn decode(raw: u64) -> Option<ThreadId> {
+    if raw == 0 {
+        None
+    } else {
+        Some(ThreadId::from_parts(raw as u32, (raw >> 32) as u32))
     }
 }
 

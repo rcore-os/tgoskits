@@ -1,3 +1,4 @@
+use ax_kspin_test_runtime as _;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_signal::{SignalAction, SignalActionFlags, SignalDisposition, SignalSet, Signo};
 

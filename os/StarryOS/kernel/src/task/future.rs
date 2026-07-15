@@ -22,7 +22,7 @@ use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_std::os::arceos::task::{self as scheduler, LocalExecutor, ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, Pollable};
 
-use super::{current, current_starry_task};
+use super::UserTaskRef;
 
 static TIMER_WAIT: WaitQueue = WaitQueue::new();
 static TIMER_RUNTIME: SpinNoIrq<TimerRuntime> = SpinNoIrq::new(TimerRuntime::new());
@@ -30,21 +30,51 @@ static TIMER_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static TIMER_EPOCH: AtomicU64 = AtomicU64::new(0);
 static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
 
-/// Polls one future on the calling Starry thread until completion.
+/// Polls one future on the calling scheduler thread until completion.
+///
+/// This generic executor has no Starry user-task semantics and is therefore
+/// safe for kernel service threads. User waits that must abort their park when
+/// a signal arrives use [`block_on_user`] and [`interruptible_for`].
 #[track_caller]
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
+    block_on_with_abort(future, None, || false)
+}
+
+/// Polls a future for a proven Starry user task until completion.
+///
+/// The explicit borrow prevents a kernel worker from accidentally inheriting
+/// signal semantics through its current scheduler identity.
+#[track_caller]
+pub fn block_on_user<F: IntoFuture>(task: &UserTaskRef, future: F) -> F::Output {
+    block_on_with_abort(future, Some(task.id()), || task.interrupted())
+}
+
+fn block_on_with_abort<F, A>(
+    future: F,
+    expected_owner: Option<scheduler::ThreadId>,
+    should_abort: A,
+) -> F::Output
+where
+    F: IntoFuture,
+    A: Fn() -> bool,
+{
     let scheduler_thread = scheduler::current_thread_handle()
         .unwrap_or_else(|error| panic!("future polling requires a scheduler thread: {error}"));
-    let starry_task = current_starry_task().ok();
+    if let Some(expected_owner) = expected_owner {
+        assert_eq!(
+            scheduler_thread.id(),
+            expected_owner,
+            "a user future must be polled by its owning scheduler thread"
+        );
+    }
     let wait = WaitQueue::new();
     let executor = LocalExecutor::new(scheduler_thread.wake_handle())
         .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
     let output = executor.run(future.into_future(), |condition| {
-        let interrupted = || starry_task.as_ref().is_some_and(|task| task.interrupted());
-        if interrupted() {
+        if should_abort() {
             let _decision = scheduler::yield_current_cpu();
         } else {
-            wait.wait_until(|| condition.should_abort() || interrupted());
+            wait.wait_until(|| condition.should_abort() || should_abort());
         }
     });
     drop(executor);
@@ -149,9 +179,11 @@ impl Drop for IrqNotify {
 }
 
 /// Makes a future return [`Interrupted`] after a deliverable Starry signal.
-pub async fn interruptible<F: IntoFuture>(future: F) -> Result<F::Output, Interrupted> {
+pub async fn interruptible_for<F: IntoFuture>(
+    task: &UserTaskRef,
+    future: F,
+) -> Result<F::Output, Interrupted> {
     let mut future = pin!(future.into_future());
-    let task = current();
     poll_fn(|context| {
         if task.poll_interrupt(context).is_ready() {
             return Poll::Ready(Err(Interrupted));
@@ -161,8 +193,9 @@ pub async fn interruptible<F: IntoFuture>(future: F) -> Result<F::Output, Interr
     .await
 }
 
-/// Wraps a non-blocking operation in task-context readiness polling.
-pub async fn poll_io<P, F, T>(
+/// Wraps a non-blocking operation in user-task readiness polling.
+pub async fn poll_io_for<P, F, T>(
+    task: &UserTaskRef,
     pollable: &P,
     events: IoEvents,
     non_blocking: bool,
@@ -172,7 +205,6 @@ where
     P: Pollable,
     F: FnMut() -> AxResult<T>,
 {
-    let task = current();
     poll_fn(move |context| {
         match operation() {
             Ok(value) => return Poll::Ready(Ok(value)),
@@ -244,7 +276,7 @@ pub async fn timeout_at_wall<F: IntoFuture>(
     timeout_at(deadline.map(wall_deadline_to_monotonic), future).await
 }
 
-/// Error returned by [`interruptible`].
+/// Error returned by [`interruptible_for`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Interrupted;
 
@@ -379,7 +411,7 @@ fn ensure_timer_worker() {
     {
         return;
     }
-    if let Err(error) = scheduler::spawn_raw(
+    if let Err(error) = super::try_spawn_kernel_thread_with_stack(
         timer_worker,
         String::from("starry-timer"),
         crate::config::KERNEL_STACK_SIZE,

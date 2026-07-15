@@ -1028,11 +1028,17 @@ pub fn thread_os_extension(
 ) -> Result<Option<ThreadOsExtensionBorrow<'_>>, TaskError> {
     let runtime = task_system()
         .ok_or(TaskError::NotInitialized)?
-        .thread_extension(thread)?
-        .ok_or(TaskError::InvalidConfiguration)?;
-    if !core::ptr::eq(runtime.ops(), &RUNTIME_THREAD_EXTENSION_OPS) {
-        return Err(TaskError::InvalidConfiguration);
-    }
+        .thread_extension(thread)?;
+    let RuntimeExtensionKind::Runtime = classify_runtime_extension(
+        runtime.as_ref().map(|extension| extension.ops()),
+        runtime.as_ref().map_or(0, |extension| extension.data()),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(runtime) = runtime else {
+        unreachable!("classified runtime extension must be present")
+    };
     // SAFETY: the checked ops identity belongs exclusively to RuntimeThreadData,
     // and `runtime` borrows the strong caller handle for the whole result.
     let data = unsafe { runtime_thread_data_from_raw(runtime.data()) };
@@ -1048,10 +1054,17 @@ pub fn thread_os_extension(
 
 /// Leases the current thread's composed OS extension.
 pub fn current_os_extension() -> Result<Option<ThreadOsExtensionLease>, TaskError> {
-    let runtime = current_thread_extension()?.ok_or(TaskError::InvalidConfiguration)?;
-    if !core::ptr::eq(runtime.ops(), &RUNTIME_THREAD_EXTENSION_OPS) {
-        return Err(TaskError::InvalidConfiguration);
-    }
+    let runtime = current_thread_extension()?;
+    let RuntimeExtensionKind::Runtime = classify_runtime_extension(
+        runtime.as_ref().map(|extension| extension.ops()),
+        runtime.as_ref().map_or(0, |extension| extension.data()),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(runtime) = runtime else {
+        unreachable!("classified runtime extension must be present")
+    };
     // SAFETY: the checked ops identity belongs exclusively to RuntimeThreadData,
     // and the returned lease retains the outer scheduler extension lease.
     let data = unsafe { runtime_thread_data_from_raw(runtime.data()) };
@@ -1063,6 +1076,28 @@ pub fn current_os_extension() -> Result<Option<ThreadOsExtensionLease>, TaskErro
             ops: extension.ops(),
             _runtime: runtime,
         }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeExtensionKind {
+    Missing,
+    Runtime,
+}
+
+fn classify_runtime_extension(
+    ops: Option<&ThreadExtensionOps>,
+    data: usize,
+) -> Result<RuntimeExtensionKind, TaskError> {
+    let Some(ops) = ops else {
+        return Ok(RuntimeExtensionKind::Missing);
+    };
+    if !core::ptr::eq(ops, &RUNTIME_THREAD_EXTENSION_OPS) {
+        return Err(TaskError::InvalidConfiguration);
+    }
+    if data == 0 || !data.is_multiple_of(core::mem::align_of::<RuntimeThreadData>()) {
+        return Err(TaskError::InvalidRuntimeHandle);
+    }
+    Ok(RuntimeExtensionKind::Runtime)
 }
 
 /// Waits for a thread to finish executing without consuming its owning handle.
@@ -2271,6 +2306,50 @@ mod tests {
         on_deadline_overrun: ignore_extension_thread_event,
         drop: count_extension_drop,
     };
+
+    #[test]
+    fn missing_outer_runtime_extension_is_not_an_error() {
+        assert_eq!(
+            classify_runtime_extension(None, 0),
+            Ok(RuntimeExtensionKind::Missing)
+        );
+    }
+
+    #[test]
+    fn foreign_outer_runtime_extension_remains_an_error() {
+        assert_eq!(
+            classify_runtime_extension(Some(&TEST_EXTENSION_OPS), usize::MAX),
+            Err(TaskError::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn matching_runtime_ops_reject_malformed_extension_data() {
+        assert_eq!(
+            classify_runtime_extension(Some(&RUNTIME_THREAD_EXTENSION_OPS), 0),
+            Err(TaskError::InvalidRuntimeHandle)
+        );
+        assert_eq!(
+            classify_runtime_extension(Some(&RUNTIME_THREAD_EXTENSION_OPS), 1),
+            Err(TaskError::InvalidRuntimeHandle)
+        );
+
+        let data = RuntimeThreadData {
+            entry: SpinNoIrq::new(None),
+            exit_code: AtomicI32::new(0),
+            exit_completed: AtomicBool::new(false),
+            join_wait: WaitQueue::new(),
+            os_extension: None,
+            _name: String::new(),
+        };
+        assert_eq!(
+            classify_runtime_extension(
+                Some(&RUNTIME_THREAD_EXTENSION_OPS),
+                core::ptr::from_ref(&data).expose_provenance(),
+            ),
+            Ok(RuntimeExtensionKind::Runtime)
+        );
+    }
 
     #[test]
     fn invalid_spawn_releases_transferred_extension() {

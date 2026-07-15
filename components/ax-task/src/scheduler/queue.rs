@@ -1,8 +1,10 @@
 //! Run queue mutated exclusively by its owner CPU.
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
-use crate::{FairEntity, FairMode, SchedulePolicy, SchedulingEntity, TaskError, ThreadId};
+use crate::{
+    FairEntity, FairMode, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore, ThreadId,
+};
 
 /// Why a runnable thread is being inserted into its owner run queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,11 +23,12 @@ pub enum EnqueueReason {
     PolicyChanged,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct QueuedThread {
     pub(crate) id: ThreadId,
     pub(crate) policy: SchedulePolicy,
     pub(crate) entity: SchedulingEntity,
+    pub(crate) core: Arc<ThreadCore>,
     sequence: u64,
 }
 
@@ -132,12 +135,11 @@ impl RunQueue {
 
     pub(crate) fn balance_candidate(
         &self,
-        mut may_migrate: impl FnMut(QueuedThread) -> bool,
+        mut may_migrate: impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThread> {
         self.deadline
             .iter()
-            .copied()
-            .filter(|thread| may_migrate(*thread))
+            .filter(|thread| may_migrate(thread))
             .min_by_key(|thread| {
                 let absolute = thread
                     .entity
@@ -145,23 +147,24 @@ impl RunQueue {
                     .map_or(u64::MAX, |deadline| deadline.absolute_deadline_ns());
                 (absolute, thread.sequence)
             })
+            .cloned()
             .or_else(|| {
                 self.rt
                     .iter()
                     .rev()
-                    .find_map(|queue| queue.iter().copied().find(|thread| may_migrate(*thread)))
+                    .find_map(|queue| queue.iter().find(|thread| may_migrate(thread)).cloned())
             })
             .or_else(|| {
                 self.fair
                     .iter()
-                    .copied()
-                    .filter(|thread| may_migrate(*thread))
+                    .filter(|thread| may_migrate(thread))
                     .min_by_key(|thread| {
                         thread
                             .entity
                             .fair()
                             .map_or(u64::MAX, |fair| fair.virtual_deadline())
                     })
+                    .cloned()
             })
     }
 
@@ -170,6 +173,7 @@ impl RunQueue {
         id: ThreadId,
         policy: SchedulePolicy,
         entity: SchedulingEntity,
+        core: Arc<ThreadCore>,
         now_ns: u64,
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
@@ -181,6 +185,7 @@ impl RunQueue {
             id,
             policy,
             entity,
+            core,
             sequence,
         };
         if let SchedulingEntity::Fair(fair) = &mut entry.entity {
@@ -233,6 +238,20 @@ impl RunQueue {
         Ok(queued_entity)
     }
 
+    #[cfg(test)]
+    fn enqueue_test(
+        &mut self,
+        id: ThreadId,
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+        now_ns: u64,
+        reason: EnqueueReason,
+    ) -> Result<SchedulingEntity, TaskError> {
+        let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
+        let core = Arc::new(ThreadCore::new(id, policy, sched, None));
+        self.enqueue(id, policy, entity, core, now_ns, reason)
+    }
+
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
         let removed = remove_from_vec(&mut self.deadline, id)
             .or_else(|| remove_from_rt(&mut self.rt, id))
@@ -248,7 +267,7 @@ impl RunQueue {
     pub(crate) fn pick_next_with_rt(
         &mut self,
         ordinary_rt_may_run: bool,
-        mut is_pi_boosted_owner: impl FnMut(ThreadId) -> bool,
+        mut is_pi_boosted_owner: impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThread> {
         let picked = self
             .pick_deadline()
@@ -282,17 +301,14 @@ impl RunQueue {
     fn pick_rt(
         &mut self,
         ordinary_rt_may_run: bool,
-        is_pi_boosted_owner: &mut impl FnMut(ThreadId) -> bool,
+        is_pi_boosted_owner: &mut impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThread> {
         for queue in self.rt.iter_mut().rev() {
             if ordinary_rt_may_run {
                 if let Some(thread) = queue.pop_front() {
                     return Some(thread);
                 }
-            } else if let Some(index) = queue
-                .iter()
-                .position(|thread| is_pi_boosted_owner(thread.id))
-            {
+            } else if let Some(index) = queue.iter().position(&mut *is_pi_boosted_owner) {
                 return queue.remove(index);
             }
         }
@@ -405,7 +421,7 @@ mod tests {
         let deadline =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
         queue
-            .enqueue(
+            .enqueue_test(
                 ThreadId::from_parts(0, 1),
                 fair,
                 SchedulingEntity::new(fair, 1, 0),
@@ -414,7 +430,7 @@ mod tests {
             )
             .unwrap();
         queue
-            .enqueue(
+            .enqueue_test(
                 ThreadId::from_parts(1, 1),
                 rt,
                 SchedulingEntity::new(rt, 1, 0),
@@ -423,7 +439,7 @@ mod tests {
             )
             .unwrap();
         queue
-            .enqueue(
+            .enqueue_test(
                 ThreadId::from_parts(2, 1),
                 deadline,
                 SchedulingEntity::new(deadline, 1, 0),
@@ -443,7 +459,7 @@ mod tests {
         let policy = SchedulePolicy::fifo(RtPriority::new(10).unwrap());
         for slot in [1, 2] {
             queue
-                .enqueue(
+                .enqueue_test(
                     ThreadId::from_parts(slot, 1),
                     policy,
                     SchedulingEntity::new(policy, 1, 0),
@@ -453,7 +469,7 @@ mod tests {
                 .unwrap();
         }
         queue
-            .enqueue(
+            .enqueue_test(
                 ThreadId::from_parts(0, 1),
                 policy,
                 SchedulingEntity::new(policy, 1, 0),
@@ -475,7 +491,7 @@ mod tests {
         let thread = ThreadId::from_parts(0, 1);
 
         queue
-            .enqueue(
+            .enqueue_test(
                 thread,
                 policy,
                 SchedulingEntity::new(policy, 1_000, 0),
@@ -497,7 +513,7 @@ mod tests {
         let waiting = ThreadId::from_parts(1, 1);
 
         queue
-            .enqueue(
+            .enqueue_test(
                 waiting,
                 policy,
                 SchedulingEntity::new(policy, 100, 100),
@@ -506,7 +522,7 @@ mod tests {
             )
             .unwrap();
         queue
-            .enqueue(
+            .enqueue_test(
                 yielding,
                 policy,
                 SchedulingEntity::new(policy, 100, 0),
@@ -536,7 +552,7 @@ mod tests {
                 unreachable!();
             };
             queue
-                .enqueue(
+                .enqueue_test(
                     ThreadId::from_parts(slot, 1),
                     policy,
                     SchedulingEntity::Fair(FairEntity::test_state(nice, mode, vruntime, deadline)),
@@ -564,7 +580,7 @@ mod tests {
         assert!(!entity.charge(1, 0, 0));
 
         queue
-            .enqueue(thread, policy, entity, 4, EnqueueReason::Preempted)
+            .enqueue_test(thread, policy, entity, 4, EnqueueReason::Preempted)
             .unwrap();
 
         let deadline = queue.dequeue(thread).unwrap().entity.deadline().unwrap();

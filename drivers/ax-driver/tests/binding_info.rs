@@ -9,6 +9,7 @@ use ax_driver::{
     BindingIrq, BindingIrqSource, binding_info_from_acpi_route, binding_info_from_fdt,
     binding_irq_from_named_fdt_interrupt,
 };
+use ax_kspin_test_runtime as _;
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
     Klib, PhysAddr, VirtAddr, impl_trait,

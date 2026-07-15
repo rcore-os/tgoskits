@@ -10,7 +10,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    task::{ITimerType, current, posix_timer::TimerSpec},
+    task::{ITimerType, current_user_task, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
 
@@ -21,7 +21,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             monotonic_time()
         }
         CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
-            let (utime, stime) = current().as_thread().cpu_time.output();
+            let (utime, stime) = current_user_task().as_thread().cpu_time.output();
             utime + stime
         }
         _ => {
@@ -76,8 +76,11 @@ pub struct Tms {
 }
 
 pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
-    let (utime, stime) = current().as_thread().cpu_time.output();
-    let (cutime, cstime) = current().as_thread().proc_data.children_cpu_time();
+    let (utime, stime) = current_user_task().as_thread().cpu_time.output();
+    let (cutime, cstime) = current_user_task()
+        .as_thread()
+        .proc_data
+        .children_cpu_time();
     tms.vm_write(Tms {
         tms_utime: utime.as_micros() as usize,
         tms_stime: stime.as_micros() as usize,
@@ -89,7 +92,7 @@ pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
 
 pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
-    let (it_interval, it_value) = current().as_thread().time.lock().get_itimer(ty);
+    let (it_interval, it_value) = current_user_task().as_thread().time.lock().get_itimer(ty);
 
     value.vm_write(itimerval {
         it_interval: timeval::from_time_value(it_interval),
@@ -104,7 +107,7 @@ pub fn sys_setitimer(
     old_value: *mut itimerval,
 ) -> AxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
-    let curr = current();
+    let curr = current_user_task();
 
     let (interval, remained) = match new_value.nullable() {
         Some(new_value) => {
@@ -146,7 +149,7 @@ pub fn sys_timer_create(
     sevp: *const sigevent,
     timerid: *mut __kernel_timer_t,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     // Parse sigevent
@@ -179,7 +182,7 @@ pub fn sys_timer_settime(
     new_value: *const __kernel_itimerspec,
     old_value: *mut __kernel_itimerspec,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     let new = unsafe { new_value.vm_read_uninit()?.assume_init() };
@@ -224,7 +227,7 @@ pub fn sys_timer_gettime(
     timerid: __kernel_timer_t,
     curr_value: *mut __kernel_itimerspec,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     let (interval, remaining) = thr
@@ -253,7 +256,7 @@ pub fn sys_timer_gettime(
 }
 
 pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     if thr.proc_data.posix_timers.delete(timerid) {

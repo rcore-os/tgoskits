@@ -14,6 +14,25 @@ mod support;
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn switch_trace_observes_the_previous_extension_before_switch_out() {
+    let source = include_str!("../src/facade.rs");
+    let switch = source
+        .split_once("fn execute_switch_plan(")
+        .expect("switch executor must exist")
+        .1
+        .split_once("fn install_next_address_space(")
+        .expect("switch executor must remain focused")
+        .0;
+    let trace = switch
+        .find("task_runtime::trace_sched_switch")
+        .expect("switch trace must be emitted");
+    let switch_out = switch
+        .find("extension.ops().on_switch_out")
+        .expect("previous extension must receive switch-out");
+    assert!(trace < switch_out);
+}
+
+#[test]
 fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
     let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
     support::clear_handles();

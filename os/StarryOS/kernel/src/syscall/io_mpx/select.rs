@@ -16,7 +16,8 @@ use crate::{
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::{
-        future::{self, block_on, poll_io},
+        current_user_task,
+        future::{self, block_on_user, poll_io_for},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -110,48 +111,52 @@ fn do_select(
     drop(fd_table);
     let fds = FdPollSet(fds);
 
+    let task = current_user_task();
     with_blocked_signals(sigmask.copied(), || {
-        let result = block_on(future::timeout(
-            timeout,
-            poll_io(&fds, IoEvents::empty(), false, || {
-                let mut res = 0usize;
-                let mut selected_readfds = FdSet(Bitmap::new());
-                let mut selected_writefds = FdSet(Bitmap::new());
-                let mut selected_exceptfds = FdSet(Bitmap::new());
-                for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
-                    let events = fd.poll();
-                    let always_report = events & IoEvents::ALWAYS_POLL;
-                    let selected = events & *interested;
-                    let selected_read = selected.contains(IoEvents::IN)
-                        || (read_set.0.get(index) && !always_report.is_empty());
-                    let selected_write = selected.contains(IoEvents::OUT)
-                        || (write_set.0.get(index) && !always_report.is_empty());
-                    let selected_except =
-                        selected.contains(IoEvents::ERR) && except_set.0.get(index);
+        let result = block_on_user(
+            &task,
+            future::timeout(
+                timeout,
+                poll_io_for(&task, &fds, IoEvents::empty(), false, || {
+                    let mut res = 0usize;
+                    let mut selected_readfds = FdSet(Bitmap::new());
+                    let mut selected_writefds = FdSet(Bitmap::new());
+                    let mut selected_exceptfds = FdSet(Bitmap::new());
+                    for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
+                        let events = fd.poll();
+                        let always_report = events & IoEvents::ALWAYS_POLL;
+                        let selected = events & *interested;
+                        let selected_read = selected.contains(IoEvents::IN)
+                            || (read_set.0.get(index) && !always_report.is_empty());
+                        let selected_write = selected.contains(IoEvents::OUT)
+                            || (write_set.0.get(index) && !always_report.is_empty());
+                        let selected_except =
+                            selected.contains(IoEvents::ERR) && except_set.0.get(index);
 
-                    if selected_read {
-                        res += 1;
-                        selected_readfds.0.set(index, true);
+                        if selected_read {
+                            res += 1;
+                            selected_readfds.0.set(index, true);
+                        }
+                        if selected_write {
+                            res += 1;
+                            selected_writefds.0.set(index, true);
+                        }
+                        if selected_except {
+                            res += 1;
+                            selected_exceptfds.0.set(index, true);
+                        }
                     }
-                    if selected_write {
-                        res += 1;
-                        selected_writefds.0.set(index, true);
+                    if res > 0 {
+                        write_fd_set(readfds.as_deref_mut(), &selected_readfds, nfds as _);
+                        write_fd_set(writefds.as_deref_mut(), &selected_writefds, nfds as _);
+                        write_fd_set(exceptfds.as_deref_mut(), &selected_exceptfds, nfds as _);
+                        return Ok(res as _);
                     }
-                    if selected_except {
-                        res += 1;
-                        selected_exceptfds.0.set(index, true);
-                    }
-                }
-                if res > 0 {
-                    write_fd_set(readfds.as_deref_mut(), &selected_readfds, nfds as _);
-                    write_fd_set(writefds.as_deref_mut(), &selected_writefds, nfds as _);
-                    write_fd_set(exceptfds.as_deref_mut(), &selected_exceptfds, nfds as _);
-                    return Ok(res as _);
-                }
 
-                Err(AxError::WouldBlock)
-            }),
-        ));
+                    Err(AxError::WouldBlock)
+                }),
+            ),
+        );
         match result {
             Ok(r) => r,
             Err(_) => {

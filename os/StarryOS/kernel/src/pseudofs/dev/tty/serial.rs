@@ -531,7 +531,7 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
 
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-event", backend.tty_name);
-    crate::task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             backend.events.wait();
             loop {

@@ -1,4 +1,5 @@
 use ax_cpu::uspace::UserContext;
+use ax_kspin_test_runtime as _;
 use linux_raw_sys::general::{SS_DISABLE, SS_ONSTACK};
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo,

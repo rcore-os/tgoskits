@@ -33,12 +33,27 @@ use crate::{
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        Cred, ProcessData, StarryTaskRef, TaskStat, Thread, WeakStarryTaskRef, current,
+        Cred, ProcessData, TaskStat, Thread, UserTaskRef, WeakUserTaskRef, current_user_task,
         get_process_data, get_task, processes, tasks,
     },
 };
 
 const PROCFS_INIT_PID: Pid = 1;
+
+fn upgrade_proc_task(task: &WeakUserTaskRef) -> VfsResult<Option<UserTaskRef>> {
+    (*task).upgrade().map_err(|_| VfsError::BadState)
+}
+
+fn require_proc_task(task: &WeakUserTaskRef) -> VfsResult<UserTaskRef> {
+    upgrade_proc_task(task)?.ok_or(VfsError::NotFound)
+}
+
+fn procfs_get_task(tid: Pid) -> VfsResult<UserTaskRef> {
+    get_task(tid).map_err(|error| match error {
+        VfsError::NoSuchProcess => VfsError::NotFound,
+        error => error,
+    })
+}
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
 
@@ -271,7 +286,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf);
 }
 
-fn render_stat() -> String {
+fn render_stat() -> VfsResult<String> {
     let up = monotonic_time();
     let cpu_count = ax_runtime::hal::cpu_num() as u64;
     // Total CPU-time budget in jiffies across all CPUs (USER_HZ = 100).
@@ -280,7 +295,7 @@ fn render_stat() -> String {
 
     // Single snapshot: aggregate CPU time and count task states together
     // to avoid holding the task-table lock twice and getting inconsistent data.
-    let all_tasks = tasks();
+    let all_tasks = tasks()?;
     let mut user_ms: u128 = 0;
     let mut sys_ms: u128 = 0;
     let mut procs_running: u64 = 0;
@@ -330,7 +345,7 @@ fn render_stat() -> String {
     let _ = writeln!(buf, "procs_running {procs_running}");
     let _ = writeln!(buf, "procs_blocked {procs_blocked}");
     let _ = writeln!(buf, "softirq 0 0 0 0 0 0 0 0 0 0 0");
-    buf
+    Ok(buf)
 }
 
 fn render_proc_net_arp() -> String {
@@ -654,7 +669,7 @@ impl SimpleDirOps for ProcessTaskDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let process = self.process.upgrade().ok_or(VfsError::NotFound)?;
         let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
+        let task = procfs_get_task(tid)?;
         if task.as_thread().proc_data.proc.pid() != process.pid() {
             return Err(VfsError::NotFound);
         }
@@ -684,12 +699,12 @@ impl SimpleDirOps for ProcessTaskDir {
 /// memory counters so cross-process reads do not depend on a possibly stale task
 /// weak reference after pid reuse.
 fn render_thread_status(
-    task: &WeakStarryTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     path_pid: Pid,
     procfs_pid: Option<Pid>,
 ) -> VfsResult<String> {
-    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+    let task = require_proc_task(task)?;
     let thread = task.as_thread();
     let aspace_arc = proc_data.aspace();
     let mem = ProcessMemStats::collect(&aspace_arc.lock());
@@ -720,7 +735,7 @@ fn render_thread_status(
     ))
 }
 
-fn task_status_state(task: &StarryTaskRef) -> &'static str {
+fn task_status_state(task: &UserTaskRef) -> &'static str {
     match task.state() {
         ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
             "R (running)"
@@ -883,13 +898,15 @@ fn collect_cpu_presence(cpus: &CpuSet, cpu_num: usize) -> Vec<bool> {
 /// The /proc/[pid]/fd directory
 struct ThreadFdDir {
     fs: Arc<SimpleFs>,
-    task: WeakStarryTaskRef,
+    task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for ThreadFdDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let Some(task) = self.task.upgrade() else {
-            return Box::new(iter::empty());
+        let task = match upgrade_proc_task(&self.task) {
+            Ok(Some(task)) => task,
+            Ok(None) => return Box::new(iter::empty()),
+            Err(error) => panic!("procfs fd directory has an invalid user extension: {error}"),
         };
         let ids = FD_TABLE
             .scope(&task.as_thread().proc_data.scope.read())
@@ -902,7 +919,7 @@ impl SimpleDirOps for ThreadFdDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let path = FD_TABLE
             .scope(&task.as_thread().proc_data.scope.read())
@@ -927,7 +944,7 @@ impl SimpleDirOps for ThreadFdDir {
 /// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
 struct NsDir {
     fs: Arc<SimpleFs>,
-    task: WeakStarryTaskRef,
+    task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for NsDir {
@@ -942,7 +959,7 @@ impl SimpleDirOps for NsDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
         let task_ref = self.task;
-        let Some(task) = task_ref.upgrade() else {
+        let Some(task) = upgrade_proc_task(&task_ref)? else {
             return Err(VfsError::NotFound);
         };
         let proc_data = &task.as_thread().proc_data;
@@ -993,7 +1010,7 @@ impl SimpleDirOps for NsDir {
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
-    task: WeakStarryTaskRef,
+    task: WeakUserTaskRef,
     /// Authoritative process state for memory counters (`path_pid` lookup).
     proc_data: Arc<ProcessData>,
     /// Numeric `/proc/<pid>` component used for live [`ProcessData`] lookup.
@@ -1001,12 +1018,13 @@ struct ThreadDir {
     procfs_pid: Option<Pid>,
 }
 
-fn render_thread_maps(task: &WeakStarryTaskRef) -> VfsResult<String> {
+fn render_thread_maps(task: &WeakUserTaskRef) -> VfsResult<String> {
     let mut output = String::new();
 
-    let task = match task.upgrade() {
-        Some(t) => t,
-        None => return Ok(output),
+    let task = match upgrade_proc_task(task) {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(output),
+        Err(error) => return Err(error),
     };
 
     let aspace_arc = task.as_thread().proc_data.aspace();
@@ -1095,13 +1113,14 @@ fn render_thread_maps(task: &WeakStarryTaskRef) -> VfsResult<String> {
 /// `dirty` are 0 (Linux also reports 0 for `lib`/`dirty` since 2.6); `text` and
 /// `data` are derived from the areas' executable / writable flags.
 fn render_thread_statm(
-    task: &WeakStarryTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     _path_pid: Pid,
 ) -> VfsResult<String> {
-    let _task = match task.upgrade() {
-        Some(t) => t,
-        None => return Ok("0 0 0 0 0 0 0\n".into()),
+    let _task = match upgrade_proc_task(task) {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok("0 0 0 0 0 0 0\n".into()),
+        Err(error) => return Err(error),
     };
     let aspace_arc = proc_data.aspace();
     let mm = aspace_arc.lock();
@@ -1109,12 +1128,12 @@ fn render_thread_statm(
 }
 
 fn render_thread_stat(
-    task: &WeakStarryTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     _path_pid: Pid,
     procfs_pid: Option<Pid>,
 ) -> VfsResult<Vec<u8>> {
-    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+    let task = require_proc_task(task)?;
     let mut stat = TaskStat::from_thread(&task)?;
     let aspace_arc = proc_data.aspace();
     let mem = ProcessMemStats::collect(&aspace_arc.lock());
@@ -1130,7 +1149,7 @@ fn render_thread_stat(
     Ok(format!("{stat}").into_bytes())
 }
 
-fn render_thread_auxv(task: &StarryTaskRef) -> Vec<u8> {
+fn render_thread_auxv(task: &UserTaskRef) -> Vec<u8> {
     let mut entries = task.as_thread().proc_data.auxv.read().clone();
     entries.push(AuxEntry::new(AuxType::NULL, 0));
     let mut bytes = Vec::with_capacity(entries.len() * size_of::<AuxEntry>());
@@ -1146,7 +1165,7 @@ struct ProcMemFile {
 
 impl ProcMemFile {
     fn check_access(&self) -> VfsResult<()> {
-        let current_task = current();
+        let current_task = current_user_task();
         let current_proc = &current_task.as_thread().proc_data;
         if current_proc.proc.pid() == self.proc_data.proc.pid() {
             return Ok(());
@@ -1239,7 +1258,7 @@ impl SimpleDirOps for ThreadDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let task = require_proc_task(&self.task)?;
         Ok(match name {
             "stat" => {
                 let task = self.task;
@@ -1537,7 +1556,7 @@ impl SimpleDirOps for ProcFsHandler {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
-            let task = current().clone();
+            let task = current_user_task().clone();
             let path_pid = task.as_thread().proc_data.proc.pid();
             let proc_data = procfs_lookup_process(path_pid).map_err(|_| VfsError::NotFound)?;
             (task, path_pid, None, proc_data)
@@ -1553,7 +1572,7 @@ impl SimpleDirOps for ProcFsHandler {
                     .into_iter()
                     .next()
                     .ok_or(VfsError::NotFound)?;
-                get_task(tid).map_err(|_| VfsError::NotFound)?
+                procfs_get_task(tid)?
             };
             let procfs_pid =
                 (procfs_visible_pid(&proc_data.proc) != proc_data.proc.pid()).then_some(pid);
@@ -1592,10 +1611,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
         }),
     );
-    root.add(
-        "stat",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
-    );
+    root.add("stat", SimpleFile::new_regular(fs.clone(), render_stat));
     root.add(
         "diskstats",
         SimpleFile::new_regular(fs.clone(), || Ok(render_diskstats())),
@@ -1626,7 +1642,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "loadavg",
         SimpleFile::new_regular(fs.clone(), || {
-            let all_tasks = tasks();
+            let all_tasks = tasks()?;
             let running = all_tasks
                 .iter()
                 .filter(|task| {

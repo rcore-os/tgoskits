@@ -24,8 +24,8 @@ use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc},
     task::{
-        current,
-        future::{block_on, poll_io},
+        current_user_task,
+        future::{block_on_user, poll_io_for},
         send_signal_to_process,
     },
 };
@@ -187,7 +187,7 @@ pub(crate) fn resize_rejects_oversized_pipe_for_test() -> bool {
 }
 
 fn raise_pipe() {
-    let curr = current();
+    let curr = current_user_task();
     send_signal_to_process(
         curr.as_thread().proc_data.proc.pid(),
         Some(SignalInfo::new_kernel(Signo::SIGPIPE)),
@@ -204,27 +204,31 @@ impl FileLike for Pipe {
             return Ok(0);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let (read, writers) = {
-                let state = self.shared.state.lock();
-                let (left, right) = state.buffer.as_slices();
-                let mut count = dst.write(left)?;
-                if count >= left.len() {
-                    count += dst.write(right)?;
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let (read, writers) = {
+                    let state = self.shared.state.lock();
+                    let (left, right) = state.buffer.as_slices();
+                    let mut count = dst.write(left)?;
+                    if count >= left.len() {
+                        count += dst.write(right)?;
+                    }
+                    unsafe { state.buffer.advance_read_index(count) };
+                    (count, state.writers)
+                };
+                if read > 0 {
+                    // Pipe capacity was freed before waking writers.
+                    unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                    Ok(read)
+                } else if writers == 0 {
+                    Ok(0)
+                } else {
+                    Err(AxError::WouldBlock)
                 }
-                unsafe { state.buffer.advance_read_index(count) };
-                (count, state.writers)
-            };
-            if read > 0 {
-                // Pipe capacity was freed before waking writers.
-                unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
-                Ok(read)
-            } else if writers == 0 {
-                Ok(0)
-            } else {
-                Err(AxError::WouldBlock)
-            }
-        }))
+            }),
+        )
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
@@ -238,45 +242,49 @@ impl FileLike for Pipe {
 
         let mut total_written = 0;
 
-        block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-            enum WriteStep {
-                Closed,
-                Wrote(usize),
-            }
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+                enum WriteStep {
+                    Closed,
+                    Wrote(usize),
+                }
 
-            let step = {
-                let mut state = self.shared.state.lock();
-                if state.readers == 0 {
-                    WriteStep::Closed
-                } else {
-                    let (left, right) = state.buffer.vacant_slices_mut();
-                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
-                    if count >= left.len() {
-                        count += src.read(unsafe { right.assume_init_mut() })?;
+                let step = {
+                    let mut state = self.shared.state.lock();
+                    if state.readers == 0 {
+                        WriteStep::Closed
+                    } else {
+                        let (left, right) = state.buffer.vacant_slices_mut();
+                        let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                        if count >= left.len() {
+                            count += src.read(unsafe { right.assume_init_mut() })?;
+                        }
+                        unsafe { state.buffer.advance_write_index(count) };
+                        WriteStep::Wrote(count)
                     }
-                    unsafe { state.buffer.advance_write_index(count) };
-                    WriteStep::Wrote(count)
-                }
-            };
+                };
 
-            let WriteStep::Wrote(written) = step else {
-                if total_written > 0 {
-                    return Ok(total_written);
-                }
-                raise_pipe();
-                return Err(AxError::BrokenPipe);
-            };
+                let WriteStep::Wrote(written) = step else {
+                    if total_written > 0 {
+                        return Ok(total_written);
+                    }
+                    raise_pipe();
+                    return Err(AxError::BrokenPipe);
+                };
 
-            if written > 0 {
-                // Pipe bytes were committed before waking readers.
-                unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
-                total_written += written;
-                if total_written == size || self.nonblocking() {
-                    return Ok(total_written);
+                if written > 0 {
+                    // Pipe bytes were committed before waking readers.
+                    unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
+                    total_written += written;
+                    if total_written == size || self.nonblocking() {
+                        return Ok(total_written);
+                    }
                 }
-            }
-            Err(AxError::WouldBlock)
-        }))
+                Err(AxError::WouldBlock)
+            }),
+        )
     }
 
     fn stat(&self) -> AxResult<Kstat> {

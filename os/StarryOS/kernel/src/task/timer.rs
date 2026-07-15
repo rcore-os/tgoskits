@@ -17,7 +17,7 @@ use starry_signal::Signo;
 use strum::FromRepr;
 
 use crate::task::{
-    WeakStarryTaskRef, current,
+    WeakUserTaskRef, current_user_task,
     future::{block_on, timeout_at_wall},
     poll_process_timer, poll_timer,
 };
@@ -30,7 +30,7 @@ fn time_value_from_nanos(nanos: u64) -> TimeValue {
 
 #[derive(Debug, Clone)]
 pub enum AlarmTarget {
-    Thread(WeakStarryTaskRef),
+    Thread(WeakUserTaskRef),
     Process(Pid),
 }
 
@@ -125,12 +125,15 @@ impl ITimer {
 /// Register an alarm at the given wall-clock deadline for the current task.
 /// Used by both ITimer and POSIX timers.
 pub fn register_alarm(deadline: Duration) {
-    register_alarm_for(deadline, AlarmTarget::Thread(current().downgrade()));
+    register_alarm_for(
+        deadline,
+        AlarmTarget::Thread(current_user_task().downgrade()),
+    );
 }
 
 /// Register an alarm at the given wall-clock deadline for a specific target.
-/// Used when re-arming periodic POSIX timers from the alarm_task context,
-/// where `current()` is the alarm_task, not the user task.
+/// Used when re-arming periodic POSIX timers from the kernel alarm worker,
+/// which deliberately carries no Starry user-task extension.
 pub fn register_alarm_for(deadline: Duration, target: AlarmTarget) {
     let mut guard = ALARM_LIST.lock();
     let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
@@ -576,11 +579,13 @@ async fn alarm_task() {
                 }
             }
             AlarmAction::Fire(target) => match target {
-                AlarmTarget::Thread(weak_task) => {
-                    if let Some(task) = weak_task.upgrade() {
-                        poll_timer(&task);
+                AlarmTarget::Thread(weak_task) => match weak_task.upgrade() {
+                    Ok(Some(task)) => poll_timer(&task),
+                    Ok(None) => {}
+                    Err(error) => {
+                        panic!("timer target has an invalid Starry user extension: {error}")
                     }
-                }
+                },
                 AlarmTarget::Process(pid) => {
                     poll_process_timer(pid);
                 }
@@ -622,7 +627,7 @@ fn next_alarm_action(now: Duration) -> AlarmAction {
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
-    scheduler::spawn_raw(
+    crate::task::try_spawn_kernel_thread_with_stack(
         || block_on(alarm_task()),
         "alarm_task".to_owned(),
         crate::config::KERNEL_STACK_SIZE,

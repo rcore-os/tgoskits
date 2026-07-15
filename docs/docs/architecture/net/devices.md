@@ -459,7 +459,10 @@ fn start_device_tx_worker(&self, dev: usize) {
     if device.interface_id == InterfaceId::LOOPBACK {
         return;
     }
-    ax_task::spawn_with_name(move || device_tx_worker(device), name);
+    ax_task::ThreadBuilder::new(name)
+        .spawn(move || device_tx_worker(device))
+        .expect("failed to spawn device TX worker")
+        .detach_permanent();
 }
 ```
 

@@ -20,7 +20,7 @@ use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_wr
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    task::{current, might_sleep},
+    task::{UserTaskRef, current_user_task, might_sleep, try_current_user_task},
 };
 
 /// Enables scoped access into user memory, allowing page faults to occur inside
@@ -33,10 +33,8 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     );
     might_sleep();
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
-        panic!("access_user_memory called outside of thread context");
-    };
+    let curr = current_user_task();
+    let thr = curr.as_thread();
 
     thr.set_accessing_user_memory(true);
     let result = f();
@@ -50,16 +48,10 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
         return Err(AxError::BadAddress);
     }
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
-        warn!(
-            "reject user region check outside thread context: task={}, start={:#x}, len={}",
-            curr.id_name(),
-            start.as_usize(),
-            layout.size()
-        );
-        return Err(AxError::BadAddress);
-    };
+    let curr = try_current_user_task()
+        .map_err(|_| AxError::BadAddress)?
+        .ok_or(AxError::BadAddress)?;
+    let thr = curr.as_thread();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(AxError::BadAddress);
@@ -243,6 +235,12 @@ pub(crate) use nullable;
 /// `node_vmstat_pgfault`.
 pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Fixed, allocation-free diagnostic for malformed or reentrant task identity lookups.
+static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Fixed, allocation-free diagnostic for malformed task identity during user-copy setup.
+static USER_MEMORY_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
 #[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
@@ -252,10 +250,23 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         return false;
     }
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
+    // This callback handles only faults caused by a user mapping or by the
+    // kernel explicitly touching one. Reject unrelated kernel addresses before
+    // consulting Starry task identity or entering any sleepable MM path.
+    let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
+    if !user_range.contains(&vaddr.as_usize()) {
         return false;
+    }
+
+    let curr = match resolve_page_fault_user_task(try_current_user_task()) {
+        Ok(Some(task)) => task,
+        Ok(None) => return false,
+        Err(_error) => {
+            PAGE_FAULT_IDENTITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
     };
+    let thr = curr.as_thread();
 
     if unlikely(!thr.is_accessing_user_memory()) {
         // Still try to handle kernel-mode faults on user-space addresses.
@@ -267,10 +278,6 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         // hits a COW #PF with no fixup-table entry and panics.  Handling the
         // fault here lets the standard COW path copy the page just as it
         // would for a user-mode write.
-        let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
-        if !user_range.contains(&vaddr.as_usize()) {
-            return false;
-        }
         // Avoid recursion / deadlock: if this thread already holds the
         // aspace lock (e.g. fault inside aspace.lock().handle_page_fault())
         // we have to bail out instead of trying to lock it again.
@@ -291,6 +298,20 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
     }
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
+}
+
+fn resolve_page_fault_user_task(
+    lookup: Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError>,
+) -> Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError> {
+    match lookup {
+        Ok(task) => Ok(task),
+        Err(
+            ax_std::os::arceos::task::TaskError::NotInitialized
+            | ax_std::os::arceos::task::TaskError::NoRunnableThread
+            | ax_std::os::arceos::task::TaskError::CpuOwnerBorrowed,
+        ) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub const PATH_MAX: usize = 4096;
@@ -322,16 +343,17 @@ pub fn check_access(start: usize, len: usize) -> VmResult {
     }
 }
 
-fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
-    let curr = current();
-    if curr.try_as_thread().is_some() {
-        Ok(())
-    } else {
-        warn!(
-            "reject user memory {op} outside thread context: task={}, start={start:#x}, len={len}",
-            curr.id_name()
-        );
-        Err(VmError::AccessDenied)
+fn user_task_for_memory_access(op: &str, start: usize, len: usize) -> VmResult<UserTaskRef> {
+    match try_current_user_task() {
+        Ok(Some(task)) => Ok(task),
+        Ok(None) => {
+            warn!("reject user memory {op} outside user-task context: start={start:#x}, len={len}");
+            Err(VmError::AccessDenied)
+        }
+        Err(_error) => {
+            USER_MEMORY_IDENTITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            Err(VmError::AccessDenied)
+        }
     }
 }
 
@@ -340,15 +362,14 @@ fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: Mapping
     if len == 0 {
         return Ok(());
     }
-    ensure_thread_context(op, start, len)?;
+    let curr = user_task_for_memory_access(op, start, len)?;
 
     let start = VirtAddr::from(start);
     let end = start + len;
     let page_start = start.align_down_4k();
     let page_end = end.align_up_4k();
 
-    let curr = current();
-    let thr = curr.try_as_thread().ok_or(VmError::AccessDenied)?;
+    let thr = curr.as_thread();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(VmError::AccessDenied);
@@ -559,4 +580,32 @@ pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_std::os::arceos::task::TaskError;
+
+    use super::*;
+
+    #[test]
+    fn bootstrap_page_fault_has_no_starry_memory_owner() {
+        assert!(matches!(resolve_page_fault_user_task(Ok(None)), Ok(None)));
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::NotInitialized)),
+            Ok(None)
+        ));
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::CpuOwnerBorrowed)),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn malformed_user_extension_is_reported_to_the_fatal_trap_path() {
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::InvalidRuntimeHandle)),
+            Err(TaskError::InvalidRuntimeHandle)
+        ));
+    }
 }
