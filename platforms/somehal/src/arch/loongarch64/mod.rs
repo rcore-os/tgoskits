@@ -72,12 +72,19 @@ fn checked_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> Option<
 }
 
 #[inline]
-fn publish_before_ipi() {
-    // The inbox publication is normal memory while IOCSR_IPI_SEND is an
-    // ordering-sensitive device write. `dbar 0` completes the publication
-    // before the remote CPU can observe the interrupt.
+fn device_write_barrier() {
+    // `dbar 0` orders normal-memory publication and MMIO/IOCSR device writes
+    // before a subsequent device operation can become visible.
     // SAFETY: `dbar` changes ordering only and has no register operands.
     unsafe { core::arch::asm!("dbar 0", options(nostack, preserves_flags)) }
+}
+
+#[inline]
+fn publish_before_ipi() {
+    // The inbox publication is normal memory while IOCSR_IPI_SEND is an
+    // ordering-sensitive device write. Complete the publication before the
+    // remote CPU can observe the interrupt.
+    device_write_barrier();
 }
 
 fn send_ipi_to_cpu(cpu: irq_framework::CpuId) -> IpiSendStatus {
@@ -258,9 +265,14 @@ impl PlatOp for Plat {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = pch_pic::irq_for_external_vector(external)
-                    .unwrap_or_else(|| eiointc_irq(external));
-                Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
+                if let Some(irq) = pch_pic::acknowledge_external_vector(external) {
+                    Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
+                } else {
+                    Some(ActiveIrq::new(
+                        eiointc_irq(external),
+                        Completion::EioIntc { irq: external },
+                    ))
+                }
             }
             RawIrq::Unknown => {
                 warn!("unrouted LoongArch CPU interrupt line {raw}");

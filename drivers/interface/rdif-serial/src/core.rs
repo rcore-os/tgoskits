@@ -602,7 +602,9 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         if work.contains(SerialSoftWork::RESERVICE) {
             let rx = self.service_rx(core, RX_IRQ_BUDGET);
             out.rx_pushed += rx.published;
-            self.service_tx(core, TX_IRQ_BUDGET, &mut out);
+            let tx_sent = self.service_tx(core, TX_IRQ_BUDGET, &mut out);
+            out.budget_exhausted = rx.consumed == RX_IRQ_BUDGET
+                || (tx_sent == TX_IRQ_BUDGET && !self.tx.ring.is_empty());
         }
         out
     }
@@ -1086,6 +1088,45 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn soft_reservice_reports_work_remaining_after_its_budget() {
+        let mut uart = MockUart::new();
+        for _ in 0..=RX_IRQ_BUDGET {
+            uart = uart.rx_byte(b'x');
+        }
+        let parts = SerialPort::<8, 512>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        let first = parts.port.service(lease(), SerialSoftWork::RESERVICE);
+        let second = parts.port.service(lease(), SerialSoftWork::RESERVICE);
+
+        assert_eq!(first.rx_pushed, RX_IRQ_BUDGET);
+        assert!(first.budget_exhausted);
+        assert_eq!(second.rx_pushed, 1);
+        assert!(!second.budget_exhausted);
+    }
+
+    #[test]
+    fn soft_reservice_reports_tx_work_remaining_after_its_budget() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = TX_IRQ_BUDGET + 1;
+        let parts = SerialPort::<128, 8>::split(uart, OwnerId(0));
+        let mut tx = parts.tx;
+        let data = [b'x'; TX_IRQ_BUDGET + 1];
+        assert_eq!(tx.submit(&data).accepted, data.len());
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        let first = parts.port.service(lease(), SerialSoftWork::RESERVICE);
+        assert_eq!(first.tx_sent, TX_IRQ_BUDGET);
+        assert!(first.budget_exhausted);
+        assert_eq!(tx.chars_in_buffer(), 1);
+
+        let second = parts.port.service(lease(), SerialSoftWork::RESERVICE);
+        assert_eq!(second.tx_sent, 1);
+        assert!(!second.budget_exhausted);
+        assert_eq!(tx.chars_in_buffer(), 0);
     }
 
     #[test]

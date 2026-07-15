@@ -101,6 +101,8 @@ Use this order when auditing an early boot port:
 - Flush or barrier boot arguments before `cpu_on`; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
 - Treat live `r21 == KS3` as an invariant after the platform binder runs. KS0 is the trap stack, KS1/KS2 are trap temporaries, and vCPU code must use KS4/KS5 rather than borrowing KS3. Save user `r21` before loading KS3, and never restore a kernel trap frame's `r21` on return.
+- Treat EIOINTC and PCH-PIC as a hierarchical irqchip. Resolve the PCH input when claiming the EIO vector, clear an edge child and execute a device-write `dbar` before entering its action, then complete the parent after the action; leave a level child asserted until its device deasserts it. Publish route lookup plus the immutable child MMIO endpoint as one frozen object while all inputs are masked; hard IRQ must not enter rdrive or take the controller's task/control-plane lock.
+- A UART IRQ budget is a latency bound, not permission to lose work. When `SerialIrqOutcome::budget_exhausted` is set, publish a coalesced service-thread event and invoke `SerialSoftWork::RESERVICE` in bounded task-context batches. Bound one worker activation and yield before another batch under continuous traffic. Use an `exec`-launched guest writer for output stress so shell forks, pipes, and child waits are not misdiagnosed as scheduler or UART failures.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
 ## Finding Local Linux Source
@@ -158,6 +160,7 @@ Important details:
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
 | Secondary CPU silent or primary CPU reports a pointer-like CPU ID during an IRQ storm | `cpu_on` argument, cache flush, stack, platform `CpuRegisterBinding` before secondary HAL/GIC/lock use, trap setup, logical CPU ID mapping; an unbound secondary can recurse through synchronous exceptions and overflow into an adjacent CPU area |
 | Remote wake published but target sleeps | IPI generation/retry bit, publish barrier, immutable CPU-ID mapping, target interface readiness, final WFI gate |
+| Serial burst stops after a bounded amount of data | dropped `budget_exhausted` continuation, task-context `RESERVICE` publication, PCH edge-child acknowledgement before EIO parent completion, or a test that mixes UART traffic with shell subprocess/pipe waits |
 | xAPIC callback corruption or wrong target | unguarded lowest sender, nested split ICR high/low writes, APIC-ID truncation, Retry reported after commit |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |

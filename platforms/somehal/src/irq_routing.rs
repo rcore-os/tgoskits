@@ -75,6 +75,83 @@ const IRQ_ROUTE_VALID: u64 = 1 << 63;
 #[cfg(any(test, target_arch = "loongarch64"))]
 const PCH_PIC_CPU_ROUTE_SLOTS: usize = 256;
 
+#[cfg(any(test, target_arch = "loongarch64"))]
+const PCH_PIC_EDGE: usize = 0x60;
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+const PCH_PIC_CLEAR: usize = 0x80;
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+const PCH_PIC_INPUT_COUNT: usize = 64;
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PchPicAckRegisters {
+    pub(super) edge: usize,
+    pub(super) clear: usize,
+    pub(super) bit: u32,
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) const fn pch_pic_ack_registers(
+    input: usize,
+    vector_count: usize,
+) -> Option<PchPicAckRegisters> {
+    if input >= vector_count {
+        return None;
+    }
+    let register_offset = input / u32::BITS as usize * core::mem::size_of::<u32>();
+    Some(PchPicAckRegisters {
+        edge: PCH_PIC_EDGE + register_offset,
+        clear: PCH_PIC_CLEAR + register_offset,
+        bit: 1u32 << (input % u32::BITS as usize),
+    })
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) const fn pch_pic_edge_ack(
+    registers: PchPicAckRegisters,
+    edge_state: u32,
+) -> Option<(usize, u32)> {
+    if edge_state & registers.bit == 0 {
+        return None;
+    }
+    Some((registers.clear, registers.bit))
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PchPicChildAck {
+    Level,
+    Edge,
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) fn acknowledge_pch_pic_child(
+    registers: PchPicAckRegisters,
+    edge_state: u32,
+    write_clear: impl FnOnce(usize, u32),
+    write_barrier: impl FnOnce(),
+) -> PchPicChildAck {
+    let Some((clear, bit)) = pch_pic_edge_ack(registers, edge_state) else {
+        return PchPicChildAck::Level;
+    };
+    write_clear(clear, bit);
+    write_barrier();
+    PchPicChildAck::Edge
+}
+
+#[cfg(any(test, target_arch = "loongarch64"))]
+pub(super) const fn valid_pch_pic_vector_window(base_vector: usize, vector_count: usize) -> bool {
+    if vector_count == 0 || vector_count > PCH_PIC_INPUT_COUNT {
+        return false;
+    }
+    match base_vector.checked_add(vector_count) {
+        Some(end) => end <= PCH_PIC_CPU_ROUTE_SLOTS,
+        None => false,
+    }
+}
+
 #[cfg(any(test, target_arch = "riscv64"))]
 pub(crate) const RISCV_INTERRUPT_BIT: usize = 1usize << (usize::BITS as usize - 1);
 #[cfg(any(test, target_arch = "riscv64"))]
@@ -234,10 +311,16 @@ impl PchPicCpuInterface {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn irq_for_external_vector(&self, vector: usize) -> Option<IrqId> {
+        self.resolve_external_vector(vector).map(|(_, irq)| irq)
+    }
+
+    pub(super) fn resolve_external_vector(&self, vector: usize) -> Option<(usize, IrqId)> {
         let input = self.input_for_vector(vector)?;
-        decode_irq_id(self.routes[input].load(Ordering::Acquire))
-            .or_else(|| Some(IrqId::new(self.domain, HwIrq(input as u32))))
+        let irq = decode_irq_id(self.routes[input].load(Ordering::Acquire))
+            .unwrap_or_else(|| IrqId::new(self.domain, HwIrq(input as u32)));
+        Some((input, irq))
     }
 
     fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
@@ -451,6 +534,88 @@ mod tests {
             Some(IrqId::new(domain, HwIrq((route.vector - 16) as u32)))
         );
         assert_ne!(cpu_if.irq_for_external_vector(route.vector), Some(irq));
+    }
+
+    #[test]
+    fn pch_pic_completion_uses_child_w1c_register_before_parent_eoi() {
+        let low = pch_pic_ack_registers(0, 64);
+        assert_eq!(
+            low,
+            Some(PchPicAckRegisters {
+                edge: 0x60,
+                clear: 0x80,
+                bit: 1,
+            })
+        );
+        let low = low.unwrap();
+        assert_eq!(pch_pic_edge_ack(low, 0), None);
+        assert_eq!(pch_pic_edge_ack(low, 1), Some((0x80, 1)));
+        assert_eq!(
+            pch_pic_ack_registers(31, 64),
+            Some(PchPicAckRegisters {
+                edge: 0x60,
+                clear: 0x80,
+                bit: 1u32 << 31,
+            })
+        );
+        assert_eq!(
+            pch_pic_ack_registers(32, 64),
+            Some(PchPicAckRegisters {
+                edge: 0x64,
+                clear: 0x84,
+                bit: 1,
+            })
+        );
+        assert_eq!(
+            pch_pic_ack_registers(63, 64),
+            Some(PchPicAckRegisters {
+                edge: 0x64,
+                clear: 0x84,
+                bit: 1u32 << 31,
+            })
+        );
+        assert_eq!(pch_pic_ack_registers(64, 64), None);
+
+        let order = core::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            acknowledge_pch_pic_child(
+                low,
+                1,
+                |_, _| order.borrow_mut().push("child-clear"),
+                || order.borrow_mut().push("write-barrier"),
+            ),
+            PchPicChildAck::Edge
+        );
+        order.borrow_mut().push("action");
+        order.borrow_mut().push("parent-complete");
+        assert_eq!(
+            *order.borrow(),
+            ["child-clear", "write-barrier", "action", "parent-complete"]
+        );
+
+        order.borrow_mut().clear();
+        assert_eq!(
+            acknowledge_pch_pic_child(
+                low,
+                0,
+                |_, _| order.borrow_mut().push("child-clear"),
+                || order.borrow_mut().push("write-barrier"),
+            ),
+            PchPicChildAck::Level
+        );
+        order.borrow_mut().push("action");
+        order.borrow_mut().push("parent-complete");
+        assert_eq!(*order.borrow(), ["action", "parent-complete"]);
+    }
+
+    #[test]
+    fn pch_pic_vector_window_fits_hardware_inputs_and_byte_vectors() {
+        assert!(valid_pch_pic_vector_window(0, 64));
+        assert!(valid_pch_pic_vector_window(192, 64));
+        assert!(!valid_pch_pic_vector_window(0, 0));
+        assert!(!valid_pch_pic_vector_window(0, 65));
+        assert!(!valid_pch_pic_vector_window(193, 64));
+        assert!(!valid_pch_pic_vector_window(usize::MAX, 1));
     }
 
     #[test]

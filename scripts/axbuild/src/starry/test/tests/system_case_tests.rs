@@ -167,24 +167,56 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
 }
 
 #[test]
-fn tty_console_input_burst_uses_injected_guest_script() {
+fn tty_console_output_burst_uses_single_process_guest_program() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let case_dir = workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst");
-    let script_path = case_dir.join("sh/tty-input-burst.sh");
+    let old_case_dir = workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst");
+    let case_dir = workspace_root.join("test-suit/starryos/qemu/tty-console-output-burst");
+    let cmake_path = case_dir.join("c/CMakeLists.txt");
+    let source_path = case_dir.join("c/src/main.c");
     assert!(
-        script_path.is_file(),
-        "{} must inject the burst script through the rootfs instead of pasting it over the console",
-        script_path.display()
+        !old_case_dir.exists(),
+        "{} misleadingly claims to test console input without reading stdin",
+        old_case_dir.display()
+    );
+    assert!(
+        cmake_path.is_file() && source_path.is_file(),
+        "{} must build a single-process guest writer",
+        case_dir.display()
     );
 
-    let script = fs::read_to_string(&script_path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", script_path.display()));
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+    let cmake = fs::read_to_string(&cmake_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
     assert!(
-        script.contains("while [ \"$i\" -lt 120 ]")
-            && script.contains("STARRY_TTY_INPUT_BURST_PASSED"),
-        "{} must preserve the burst payload checks and success marker",
-        script_path.display()
+        source.contains("OUTPUT_FRAME_COUNT 120")
+            && source.contains("write_all(STDOUT_FILENO")
+            && source.contains("STARRY_TTY_OUTPUT_BURST_PASSED"),
+        "{} must send bounded, sequenced frames directly without shell subprocesses",
+        source_path.display()
     );
+    for process_api in ["fork(", "system(", "popen(", "pthread_create("] {
+        assert!(
+            !source.contains(process_api),
+            "{} must not call process/thread API {process_api}",
+            source_path.display()
+        );
+    }
+    assert!(
+        cmake.contains("add_executable(tty-output-burst src/main.c)")
+            && cmake.contains("install(TARGETS tty-output-burst RUNTIME DESTINATION usr/bin)"),
+        "{} must install exactly the configured writer binary",
+        cmake_path.display()
+    );
+
+    let expected_success = r"(?m)^STARRY_TTY_OUTPUT_BURST_FRAME:120:[^\r\n]{192}\r?\nSTARRY_TTY_OUTPUT_BURST_PASSED\s*$";
+    let expected_fail = [
+        "(?i)panic",
+        r"(?m)^lockdep fatal violation\s*$",
+        "/dev/console has no serial TTY binding",
+        "Failed to bind console tty",
+        "(?m)^STARRY_TTY_OUTPUT_BURST_FAILED",
+    ];
 
     for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
         let path = case_dir.join(format!("qemu-{arch}.toml"));
@@ -197,13 +229,46 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 
         assert_eq!(
             command,
-            "/usr/bin/tty-input-burst.sh",
-            "{} must only send a short command through the console",
+            "exec /usr/bin/tty-output-burst",
+            "{} must replace the interactive shell with the single writer process",
             path.display()
         );
-        assert!(
-            !content.contains("cat > /tmp/tty-input-burst.sh"),
-            "{} must not paste a long heredoc through the console",
+        assert_eq!(
+            config.get("shell_prefix").and_then(toml::Value::as_str),
+            Some("root@starry:"),
+            "{} must wait for the Starry root shell before exec",
+            path.display()
+        );
+        assert_eq!(
+            config.get("timeout").and_then(toml::Value::as_integer),
+            Some(300),
+            "{} must keep the bounded forward-progress deadline",
+            path.display()
+        );
+        let success = config
+            .get("success_regex")
+            .and_then(toml::Value::as_array)
+            .unwrap();
+        assert_eq!(
+            success
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            [expected_success],
+            "{} must observe the complete final frame before the pass marker",
+            path.display()
+        );
+        let failure = config
+            .get("fail_regex")
+            .and_then(toml::Value::as_array)
+            .unwrap();
+        assert_eq!(
+            failure
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            expected_fail,
+            "{} must keep identical terminal failure semantics on every architecture",
             path.display()
         );
     }
@@ -213,7 +278,7 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 fn aarch64_gicv2_cases_cover_implicit_up_and_explicit_smp() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let tty_config =
-        workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst/qemu-aarch64.toml");
+        workspace_root.join("test-suit/starryos/qemu/tty-console-output-burst/qemu-aarch64.toml");
     let smp_dir = workspace_root.join("test-suit/starryos/qemu/gicv2-smp");
     let smp_config = smp_dir.join("qemu-aarch64.toml");
     let smp_cmake = smp_dir.join("c/CMakeLists.txt");

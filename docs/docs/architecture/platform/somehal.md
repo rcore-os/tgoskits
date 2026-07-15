@@ -213,8 +213,9 @@ pub trait PlatOp {
 - 子模块：`eiointc`、`pch_pic`、`irq_common`。
 - **IOCSR IPI**：`IOCSR_IPI_SEND = 0x1040`，写入值 `(cpu_id << 16) | vector`，可选阻塞位 `1 << 31`。
 - 中断号：`EIOINTC_IRQ = 3`、`IPI_IRQ = 12`。
-- `begin_irq` 流程：先 ACK timer/IPI，外部 IRQ 走 `eiointc::claim_irq`，再解析 PCH-PIC route，`Drop` 时 `eiointc::complete_irq`。
-- `ActiveIrq` 用 `enum Completion { None, EioIntc { irq } }` 表达完成动作。
+- `begin_irq` 流程：先 ACK timer/IPI，外部 IRQ 走 `eiointc::claim_irq`，再通过预先发布的 CPU fast-path route 解析 PCH-PIC input；edge child 在返回 `ActiveIrq`、进入 action 前写 PCH `CLEAR` 并执行设备写 `dbar`，level child 不写 `CLEAR`。hard IRQ 不查询 `rdrive`，也不获取 controller 控制面锁。
+- `ActiveIrq` 用 `Completion::{None, EioIntc, LioIntc}` 携带 action 后的 parent 完成令牌；PCH edge child 已在 action 前完成 ack，`Drop` 只完成 EIOINTC parent。这样 action 执行期间到达的新 edge 能重新锁存，而 level 的撤销仍由设备负责。
+- PCH-PIC probe 在所有 input 仍 masked 时，把 CPU route 与只读 MMIO completion endpoint 合并成一个 write-before-release 的冻结对象，并校验 MMIO 长度、`1..=64` input 数量及 8 位向量窗口。该对象持续到关机；当前 fast path 只支持一个 PCH，第二实例在 reset/注册前明确失败。
 - ACPI GSI 路由：先 `rdrive::probe::acpi::with_acpi(|s| s.routing().resolve_gsi(gsi))`，再按 `AcpiGsiController::PchPic` 分发。
 
 ### x86_64 (`arch/x86_64/mod.rs`)

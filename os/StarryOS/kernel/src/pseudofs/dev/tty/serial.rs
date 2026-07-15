@@ -37,13 +37,15 @@ pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
 const SERIAL_RX_DRAIN_CHUNK: usize = 256;
 const SERIAL_SYNC_ECHO_LIMIT: usize = 256;
+const SERIAL_EVENT_BATCH_LIMIT: usize = 64;
 
 bitflags! {
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     struct SerialEventBits: u32 {
         const RX_READY = 1 << 0;
         const TX_SPACE = 1 << 1;
         const HANGUP   = 1 << 2;
+        const RESERVICE = 1 << 3;
     }
 }
 
@@ -147,6 +149,44 @@ struct SerialBackend {
 struct SerialEvents {
     pending: AtomicU32,
     notify: IrqNotify,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SerialEventBatch {
+    Drained,
+    Deferred,
+}
+
+fn serial_soft_work_for_events(pending: SerialEventBits) -> SerialSoftWork {
+    let mut work = SerialSoftWork::empty();
+    if pending.contains(SerialEventBits::TX_SPACE) {
+        work |= SerialSoftWork::TX_KICK;
+    }
+    if pending.contains(SerialEventBits::RESERVICE) {
+        work |= SerialSoftWork::RESERVICE;
+    }
+    work
+}
+
+fn process_serial_event_batch(
+    mut take_pending: impl FnMut() -> SerialEventBits,
+    mut publish_pending: impl FnMut(SerialEventBits),
+    mut observe_ready: impl FnMut(SerialEventBits),
+    mut service: impl FnMut(SerialSoftWork) -> SerialIrqOutcome,
+) -> SerialEventBatch {
+    for _ in 0..SERIAL_EVENT_BATCH_LIMIT {
+        let pending = take_pending();
+        if pending.is_empty() {
+            return SerialEventBatch::Drained;
+        }
+        observe_ready(pending);
+
+        let work = serial_soft_work_for_events(pending);
+        if !work.is_empty() {
+            publish_pending(serial_event_bits_for_outcome(service(work)));
+        }
+    }
+    SerialEventBatch::Deferred
 }
 
 impl SerialEvents {
@@ -696,20 +736,22 @@ fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     crate::task::spawn_kernel_thread(
         move || loop {
             backend.events.wait();
-            loop {
-                let pending = backend.events.take();
-                if pending.is_empty() {
-                    break;
-                }
-                if pending.contains(SerialEventBits::RX_READY) {
-                    unsafe { backend.input_source.wake(IoEvents::IN) };
-                }
-                if pending.contains(SerialEventBits::TX_SPACE) {
-                    backend.tx_notify.notify();
-                    unsafe { backend.output_source.wake(IoEvents::OUT) };
-                    let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
-                    publish_serial_outcome(&backend, outcome, false);
-                }
+            let disposition = process_serial_event_batch(
+                || backend.events.take(),
+                |events| backend.events.publish(events),
+                |pending| {
+                    if pending.contains(SerialEventBits::RX_READY) {
+                        unsafe { backend.input_source.wake(IoEvents::IN) };
+                    }
+                    if pending.contains(SerialEventBits::TX_SPACE) {
+                        backend.tx_notify.notify();
+                        unsafe { backend.output_source.wake(IoEvents::OUT) };
+                    }
+                },
+                |work| backend.service_on_owner(work),
+            );
+            if disposition == SerialEventBatch::Deferred {
+                crate::task::yield_now();
             }
         },
         task_name,
@@ -721,6 +763,17 @@ fn publish_serial_outcome(
     outcome: SerialIrqOutcome,
     from_irq: bool,
 ) -> SerialEventBits {
+    let events = serial_event_bits_for_outcome(outcome);
+
+    if from_irq {
+        backend.events.publish_irq(events);
+    } else {
+        backend.events.publish(events);
+    }
+    events
+}
+
+fn serial_event_bits_for_outcome(outcome: SerialIrqOutcome) -> SerialEventBits {
     let mut events = SerialEventBits::empty();
     if outcome.rx_pushed > 0 {
         events |= SerialEventBits::RX_READY;
@@ -728,11 +781,8 @@ fn publish_serial_outcome(
     if outcome.tx_wakeup {
         events |= SerialEventBits::TX_SPACE;
     }
-
-    if from_irq {
-        backend.events.publish_irq(events);
-    } else {
-        backend.events.publish(events);
+    if outcome.budget_exhausted {
+        events |= SerialEventBits::RESERVICE;
     }
     events
 }
@@ -919,9 +969,81 @@ mod tests {
     use rdrive::DeviceId as RDriveDeviceId;
 
     use super::{
-        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, assign_tty_numbers,
-        select_console_candidate,
+        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, SERIAL_EVENT_BATCH_LIMIT,
+        SerialEventBatch, SerialEventBits, SerialIrqOutcome, SerialSoftWork, assign_tty_numbers,
+        process_serial_event_batch, select_console_candidate, serial_event_bits_for_outcome,
+        serial_soft_work_for_events,
     };
+
+    #[test]
+    fn event_worker_defers_and_republishes_multi_budget_reservice() {
+        use core::cell::Cell;
+
+        let pending_bits = Cell::new(SerialEventBits::RESERVICE.bits());
+        let service_calls = Cell::new(0usize);
+        let take_pending = || SerialEventBits::from_bits_retain(pending_bits.replace(0));
+        let publish_pending = |events: SerialEventBits| {
+            pending_bits.set(pending_bits.get() | events.bits());
+        };
+        let service = |work: SerialSoftWork| {
+            assert!(work.contains(SerialSoftWork::RESERVICE));
+            let call = service_calls.get() + 1;
+            service_calls.set(call);
+            SerialIrqOutcome {
+                claimed: true,
+                rx_pushed: 0,
+                tx_sent: 64,
+                tx_wakeup: false,
+                budget_exhausted: call < SERIAL_EVENT_BATCH_LIMIT + 2,
+            }
+        };
+
+        assert_eq!(
+            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
+            SerialEventBatch::Deferred
+        );
+        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT);
+        assert_ne!(pending_bits.get() & SerialEventBits::RESERVICE.bits(), 0);
+
+        assert_eq!(
+            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
+            SerialEventBatch::Drained
+        );
+        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT + 2);
+        assert_eq!(pending_bits.get(), 0);
+    }
+
+    #[test]
+    fn event_worker_maps_tx_and_reservice_work_independently() {
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::TX_SPACE),
+            SerialSoftWork::TX_KICK
+        );
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::RESERVICE),
+            SerialSoftWork::RESERVICE
+        );
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE),
+            SerialSoftWork::TX_KICK | SerialSoftWork::RESERVICE
+        );
+    }
+
+    #[test]
+    fn exhausted_irq_budget_requests_task_context_reservice() {
+        let outcome = SerialIrqOutcome {
+            claimed: true,
+            rx_pushed: 3,
+            tx_sent: 5,
+            tx_wakeup: true,
+            budget_exhausted: true,
+        };
+
+        assert_eq!(
+            serial_event_bits_for_outcome(outcome),
+            SerialEventBits::RX_READY | SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE
+        );
+    }
 
     #[test]
     fn aliases_keep_linux_ttys_numbering() {
