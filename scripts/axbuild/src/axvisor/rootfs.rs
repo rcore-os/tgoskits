@@ -16,7 +16,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
 use super::{Axvisor, build};
-use crate::{context::ResolvedAxvisorRequest, rootfs, test::qemu as qemu_test};
+use crate::{context::ResolvedAxvisorRequest, rootfs};
 
 #[derive(Deserialize)]
 struct VmRootfsProbe {
@@ -80,7 +80,6 @@ pub(super) async fn load_patched_qemu_config(
         axvisor.app.workspace_root(),
         explicit_rootfs,
     )?;
-    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
     Ok(qemu)
 }
 

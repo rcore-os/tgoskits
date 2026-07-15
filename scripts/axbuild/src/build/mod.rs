@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package};
-use log::{info, warn};
+use log::info;
 use ostool::build::config::Cargo;
 pub use ostool::build::config::LogLevel;
 use schemars::JsonSchema;

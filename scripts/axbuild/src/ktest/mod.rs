@@ -191,7 +191,6 @@ async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
             crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
         );
     }
-    crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
     apply_axtest_qemu_markers(&mut qemu);
     app.run_qemu_with_axtest_coverage(&cargo, qemu, None).await
 }

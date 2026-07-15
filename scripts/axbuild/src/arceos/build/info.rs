@@ -2,7 +2,6 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Context;
 use cargo_metadata::Metadata;
-use log::warn;
 
 use super::ArceosBuildConfig;
 #[cfg(test)]
@@ -74,20 +73,7 @@ pub(super) fn load_build_config_with_makefile_features_and_metadata(
             request.build_info_path.display()
         )
     })?;
-    if config.build_info.normalize_legacy_feature_aliases() {
-        warn!(
-            "normalizing legacy feature aliases in build config {}",
-            request.build_info_path.display()
-        );
-        fs::write(&request.build_info_path, toml::to_string_pretty(&config)?).with_context(
-            || {
-                format!(
-                    "failed to rewrite normalized build info {}",
-                    request.build_info_path.display()
-                )
-            },
-        )?;
-    }
+    config.build_info.validate_features()?;
 
     match metadata {
         Some(metadata) => build::apply_makefile_features_with_metadata(
@@ -95,17 +81,18 @@ pub(super) fn load_build_config_with_makefile_features_and_metadata(
             &request.package,
             makefile_features,
             metadata,
-        ),
+        )?,
         None => build::apply_makefile_features(
             &mut config.build_info,
             &request.package,
             makefile_features,
-        ),
+        )?,
     }
 
     if let Some(smp) = request.smp {
         config.build_info.max_cpu_num = Some(smp);
     }
+    config.build_info.validate_features()?;
 
     Ok(config)
 }

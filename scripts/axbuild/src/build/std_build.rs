@@ -264,9 +264,6 @@ pub(super) fn pass_std_build_nested_features(
 
     for feature in features.drain(..) {
         let feature = normalize_std_feature(&feature);
-        if is_removed_dynamic_platform_feature(&feature) {
-            continue;
-        }
         if matches!(feature.as_str(), "ax-std") {
             continue;
         }

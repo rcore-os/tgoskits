@@ -4,8 +4,6 @@ use super::*;
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
     let mut envs = HashMap::new();
     let mut features = vec![
-        "plat-dyn".to_string(),
-        "ax-driver/plat-dyn".to_string(),
         "ax-driver/virtio-blk".to_string(),
         "ax-driver/virtio-net".to_string(),
         "dns".to_string(),
@@ -39,7 +37,7 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
 #[test]
 fn std_build_runtime_features_are_passed_through_after_normalization() {
     let mut info = BuildInfo {
-        features: vec!["plat-dyn".to_string(), "dns".to_string()],
+        features: vec!["dns".to_string()],
         ..BuildInfo::default()
     };
 

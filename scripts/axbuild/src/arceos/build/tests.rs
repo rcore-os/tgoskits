@@ -41,13 +41,7 @@ fn request(package: &str, target: &str, build_info_path: PathBuf) -> ResolvedBui
 }
 
 #[test]
-fn resolves_dynamic_platform_features_and_args() {
-    let mut build_info = ArceosBuildInfo::default();
-    build_info.resolve_features("arceos-helloworld", "aarch64-unknown-none-softfloat");
-
-    assert!(!build_info.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!build_info.features.contains(&"ax-hal/plat-dyn".to_string()));
-
+fn build_cargo_args_use_builtin_target_and_build_std() {
     let args = ArceosBuildInfo::build_cargo_args("aarch64-unknown-none-softfloat", &[]);
     assert!(
         args.windows(2)
@@ -58,18 +52,13 @@ fn resolves_dynamic_platform_features_and_args() {
 
 #[test]
 fn max_cpu_num_adds_smp_feature_for_std_build() {
-    let metadata = repo_metadata();
     let mut build_info = ArceosBuildInfo {
         features: vec!["ax-api/net".to_string()],
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     };
 
-    build_info.resolve_features_with_metadata(
-        "starryos",
-        "aarch64-unknown-none-softfloat",
-        &metadata,
-    );
+    build_info.resolve_c_app_features().unwrap();
 
     assert!(build_info.features.contains(&"ax-std/smp".to_string()));
 }
@@ -126,11 +115,7 @@ fn load_build_info_creates_missing_default_file() {
 
     assert_eq!(build_info, ArceosBuildInfo::default());
     assert!(path.exists());
-    assert!(
-        fs::read_to_string(path)
-            .unwrap()
-            .contains("features = [\"ax-std\"]")
-    );
+    assert!(fs::read_to_string(path).unwrap().contains("features = []"));
 }
 
 #[test]
@@ -225,7 +210,7 @@ fn app_c_build_config_rejects_source_dir_without_c_files() {
 }
 
 #[test]
-fn load_build_info_normalizes_legacy_feature_aliases() {
+fn load_build_info_rejects_legacy_feature_aliases() {
     let root = tempdir().unwrap();
     let path = root.path().join(".build-target.toml");
     fs::write(
@@ -239,16 +224,9 @@ log = "Warn"
     .unwrap();
     let request = request("arceos-helloworld", "target", path.clone());
 
-    let build_info = load_build_info(&request).unwrap();
+    let err = load_build_info(&request).unwrap_err();
 
-    assert!(build_info.features.contains(&"ax-std".to_string()));
-    assert!(build_info.features.contains(&"ax-std/smp".to_string()));
-    assert!(build_info.features.contains(&"ax-runtime/net".to_string()));
-    assert!(!build_info.features.contains(&"axstd".to_string()));
-
-    let rewritten = fs::read_to_string(path).unwrap();
-    assert!(rewritten.contains("ax-std"));
-    assert!(!rewritten.contains("axstd"));
+    assert!(err.to_string().contains("removed `axstd` alias"));
 }
 
 #[test]
@@ -388,7 +366,8 @@ fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
         "starryos",
         &[String::from("lockdep")],
         &metadata,
-    );
+    )
+    .unwrap();
 
     assert!(build_info.features.contains(&"lockdep".to_string()));
     assert!(!build_info.features.contains(&"ax-api/lockdep".to_string()));

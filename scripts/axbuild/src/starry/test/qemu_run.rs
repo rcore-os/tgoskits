@@ -226,7 +226,6 @@ impl Starry {
                     ("phase", "prepare-qemu-config".to_string()),
                 ],
             );
-            qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
             Self::rewrite_qemu_case_managed_rootfs_paths(self.app.workspace_root(), &mut qemu)?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path)?;
@@ -506,7 +505,6 @@ impl Starry {
                 ("phase", "apply-dynamic-boot".to_string()),
             ],
         );
-        qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
         timing_stage.finish();
         let timing_stage = timing::TimingStage::new(
             "qemu-case",

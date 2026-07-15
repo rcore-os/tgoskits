@@ -54,6 +54,19 @@ fn std_build_does_not_auto_enable_app_arceos_feature() {
 }
 
 #[test]
+fn arceos_test_suite_declares_its_arceos_baseline() {
+    let metadata = repo_metadata();
+    let package = workspace_package(&metadata, "arceos-test-suit").unwrap();
+    let ax_std = package.features.get("ax-std").unwrap();
+
+    assert!(
+        ax_std.iter().any(|feature| feature == "ax-std/arceos"),
+        "arceos-test-suit must enable the ax-std/arceos baseline itself instead of relying on \
+         axbuild"
+    );
+}
+
+#[test]
 fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {

@@ -39,7 +39,7 @@ pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow:
     )?
     .build_info;
     build_info.validated_max_cpu_num()?;
-    build_info.resolve_features_with_metadata(&request.package, &request.target, metadata);
+    build_info.resolve_c_app_features()?;
     let rustflags = build::toolchain_rustflags_for_features(&build_info.env, &build_info.features);
     let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
 

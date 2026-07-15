@@ -1,14 +1,18 @@
 use super::*;
-use crate::build::info::StdFeaturePrefixFamily;
 
 #[test]
-fn rejects_packages_without_ax_std_dependency() {
-    let workspace = temp_workspace("plain-app", "ax-api = \"0.1.0\"\n").unwrap();
+fn rejects_legacy_and_removed_platform_features() {
+    for feature in ["axstd", "axstd/net", "plat-dyn", "ax-std/plat-dyn"] {
+        let info = BuildInfo {
+            features: vec![feature.to_string()],
+            ..BuildInfo::default()
+        };
 
-    let metadata = metadata_for_manifest(&workspace.join("Cargo.toml"));
-    let err = detect_std_feature_prefix_family("plain-app", &metadata).unwrap_err();
-
-    assert!(err.to_string().contains("must directly depend on `ax-std`"));
+        assert!(
+            info.validate_features().is_err(),
+            "{feature} must be rejected"
+        );
+    }
 }
 
 #[test]
@@ -51,12 +55,7 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
         ..BuildInfo::default()
     };
 
-    apply_makefile_features_with_prefix_family(
-        &mut info,
-        "arceos-app",
-        &[String::from("lockdep")],
-        Err(anyhow::anyhow!("std test packages do not depend on ax-std")),
-    );
+    apply_makefile_features(&mut info, "arceos-app", &[String::from("lockdep")]).unwrap();
 
     info.resolve_std_features();
     let mut envs = HashMap::new();
@@ -78,18 +77,4 @@ fn unknown_ax_hal_features_are_not_platforms() {
     for feature in ["ax-hal/not-a-platform", "ax-hal/qemu-board"] {
         assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
     }
-}
-
-#[test]
-fn default_platform_feature_uses_dynamic_platform() {
-    let mut info = BuildInfo::default();
-
-    info.resolve_features_with_prefix_family(
-        "arceos-helloworld",
-        "loongarch64-unknown-none-softfloat",
-        Ok(StdFeaturePrefixFamily::AxStd),
-        None,
-    );
-
-    assert!(!info.features.contains(&"ax-std/plat-dyn".to_string()));
 }

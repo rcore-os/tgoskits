@@ -306,7 +306,7 @@ impl ArceOS {
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
     ) -> anyhow::Result<Option<ostool::run::qemu::QemuConfig>> {
-        let mut qemu = match request.qemu_config.as_deref() {
+        let qemu = match request.qemu_config.as_deref() {
             Some(path) => self
                 .app
                 .read_qemu_config_from_path_for_cargo(cargo, path)
@@ -321,9 +321,6 @@ impl ArceOS {
                     .map(Some)?
             }
         };
-        if let Some(qemu) = qemu.as_mut() {
-            crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
-        }
         Ok(qemu)
     }
 
@@ -535,7 +532,6 @@ impl ArceOS {
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
-        crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         // See `run_qemu_request_with_cargo`: default ArceOS QEMU keeps a FAT32 rootfs.
         crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;

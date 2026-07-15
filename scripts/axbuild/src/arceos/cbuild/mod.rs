@@ -41,7 +41,7 @@ pub(crate) fn build_c_app(
     cargo.package = AX_LIBC_PACKAGE.to_string();
     cargo.target = request.target.clone();
     cargo.to_bin = false;
-    cargo.features = map_c_app_features(&input.features, &cargo.features);
+    cargo.features = map_c_app_features(&input.features, &cargo.features)?;
     let c_features = c_compiler_features(&cargo.features, &input.features);
     let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
 

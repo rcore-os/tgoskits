@@ -1,18 +1,13 @@
 use super::*;
 
 #[test]
-fn std_build_platform_feature_stays_on_arceos_rust_dependency() {
-    let mut info = BuildInfo {
+fn std_build_rejects_removed_platform_feature() {
+    let info = BuildInfo {
         features: vec!["ax-std/plat-dyn".to_string(), "alloc".to_string()],
         ..BuildInfo::default()
     };
 
-    info.resolve_std_features();
-    let mut envs = HashMap::new();
-    pass_std_build_nested_features(&mut envs, &mut info.features, &[], &["alloc".to_string()]);
-
-    assert_eq!(info.features, vec!["ax-std/alloc".to_string()]);
-    assert!(envs.is_empty());
+    assert!(info.validate_features().is_err());
 }
 
 #[test]
