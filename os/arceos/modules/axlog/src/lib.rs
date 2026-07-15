@@ -215,31 +215,6 @@ impl<const N: usize> Write for LogBuffer<N> {
     }
 }
 
-/// Map a log [`Level`] to a Linux syslog priority (kernel facility 0, so the
-/// priority byte equals the severity): `ERR`=3, `WARNING`=4, `INFO`=6,
-/// `DEBUG`/`TRACE`=7.
-#[cfg(all(feature = "kmsg", not(feature = "std")))]
-fn level_to_priority(level: Level) -> u8 {
-    match level {
-        Level::Error => 3,
-        Level::Warn => 4,
-        Level::Info => 6,
-        Level::Debug | Level::Trace => 7,
-    }
-}
-
-/// Store a record into the kernel log ring with the caller-supplied `priority`
-/// byte and echo it to the console, mirroring Linux's `devkmsg_emit` (store +
-/// console). Used by the userspace `/dev/kmsg` write path, which needs the exact
-/// priority preserved rather than collapsed through the 5-level log macros.
-#[cfg(all(feature = "kmsg", not(feature = "std")))]
-pub fn kmsg_emit(priority: u8, msg: &str) {
-    let ts_nsec = call_interface!(LogIf::current_time).as_nanos() as u64;
-    ring::push(priority, ts_nsec, msg);
-    call_interface!(LogIf::console_write_str, msg);
-    call_interface!(LogIf::console_write_str, "\n");
-}
-
 impl Log for Logger {
     #[inline]
     fn enabled(&self, _metadata: &Metadata) -> bool {
@@ -276,12 +251,6 @@ impl Log for Logger {
                 let cpu_id = call_interface!(LogIf::current_cpu_id);
                 let tid = call_interface!(LogIf::current_task_id);
                 let now = call_interface!(LogIf::current_time);
-                #[cfg(feature = "kmsg")]
-                ring::push_fmt(
-                    level_to_priority(level),
-                    now.as_nanos() as u64,
-                    *record.args(),
-                );
                 if let Some(cpu_id) = cpu_id {
                     if let Some(tid) = tid {
                         // show CPU ID and task ID
