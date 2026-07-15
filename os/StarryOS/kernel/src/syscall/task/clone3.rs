@@ -39,13 +39,7 @@ impl TryFrom<Clone3Args> for CloneArgs {
 
         let flags = CloneFlags::from_bits_truncate(args.flags);
 
-        if args.exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
-        }
-        if flags.contains(CloneFlags::THREAD | CloneFlags::PARENT)
-            && flags.contains(CloneFlags::THREAD)
-            && flags.contains(CloneFlags::PARENT)
-        {
+        if args.exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
             return Err(AxError::InvalidInput);
         }
         if flags.contains(CloneFlags::DETACHED) {
@@ -98,4 +92,35 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> AxResult<
 
     let clone_args = CloneArgs::try_from(clone3_args)?;
     clone_args.do_clone(uctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use linux_raw_sys::general::{CLONE_PARENT, CLONE_SIGHAND, CLONE_THREAD, CLONE_VM, SIGCHLD};
+
+    use super::*;
+
+    #[test]
+    fn accepts_thread_and_parent_with_zero_exit_signal() {
+        let args = Clone3Args {
+            flags: (CLONE_VM | CLONE_SIGHAND | CLONE_THREAD | CLONE_PARENT) as u64,
+            ..Default::default()
+        };
+
+        assert!(CloneArgs::try_from(args).is_ok());
+    }
+
+    #[test]
+    fn rejects_parent_with_nonzero_exit_signal() {
+        let args = Clone3Args {
+            flags: CLONE_PARENT as u64,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            CloneArgs::try_from(args),
+            Err(AxError::InvalidInput)
+        ));
+    }
 }

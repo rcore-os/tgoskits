@@ -22,6 +22,9 @@ found=0
 failed=0
 fail_marker=NIX_SANDBOX_DEBUG_TEST_FAILED
 for bin in /usr/bin/starry-test-suit/test-mountinfo \
+           /usr/bin/starry-test-suit/test-nix-builder-init \
+           /usr/bin/starry-test-suit/test-nix-builder-exec \
+           /usr/bin/starry-test-suit/test-nix-clone-parent \
            /usr/bin/starry-test-suit/test-per-ns-mounts \
            /usr/bin/starry-test-suit/test-remount-flags \
            /usr/bin/starry-test-suit/test-mount-bind \
@@ -30,6 +33,8 @@ for bin in /usr/bin/starry-test-suit/test-mountinfo \
            /usr/bin/starry-test-suit/test-max-ns-entries \
            /usr/bin/starry-test-suit/test-proc-environ \
            /usr/bin/starry-test-suit/test-proc-root-cwd \
+           /usr/bin/starry-test-suit/test-nix-namespace-exec \
+           /usr/bin/starry-test-suit/test-nixpkgs-first-divergence \
            /usr/bin/starry-test-suit/test-pivot-root-namespace \
            /usr/bin/starry-test-suit/test-pivot-root; do
     [ -f "$bin" ] && [ -x "$bin" ] || continue
@@ -56,4 +61,4 @@ echo "NIX_SANDBOX_DEBUG_TESTS_PASSED"
 ]
 success_regex = ["(?m)^NIX_SANDBOX_DEBUG_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^NIX_SANDBOX_DEBUG_TEST_FAILED:']
-timeout = 300
+timeout = 60

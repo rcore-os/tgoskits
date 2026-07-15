@@ -1,17 +1,33 @@
 #!/bin/sh
 set -eu
 
-# Create symlinks that can't be stored in the overlay.
-for cmd in build channel collect-garbage copy-closure env hash \
-           instantiate prefetch-url shell store; do
-    ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true
-done
+echo "=== nix-install ==="
+if ! apk add --no-cache nix; then
+    echo "NIX_INSTALL_TEST_FAILED"
+    exit 1
+fi
+
+if [ ! -x /usr/bin/nix ]; then
+    echo "NIX_INSTALL_TEST_FAILED"
+    exit 1
+fi
+
+nix --version
+echo "NIX_INSTALL_TEST_PASSED"
 
 echo "=== nix-nosandbox ==="
 if /usr/bin/nix-nosandbox; then
     echo "NIX_NOSANDBOX_TEST_PASSED"
 else
     echo "NIX_NOSANDBOX_TEST_FAILED"
+    exit 1
+fi
+
+echo "=== nix-sandbox ==="
+if /usr/bin/nix-sandbox; then
+    echo "NIX_SANDBOX_TEST_PASSED"
+else
+    echo "NIX_SANDBOX_TEST_FAILED"
     exit 1
 fi
 
@@ -23,4 +39,4 @@ else
     exit 1
 fi
 
-echo "NIX_NOSANDBOX_COMPLETE"
+echo "NIX_APP_TESTS_PASSED"

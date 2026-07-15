@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(starry-nix-sandbox-debug C)
 
+add_link_options(-static)
+
 file(GLOB STARRY_NIX_SANDBOX_DEBUG_SUBCASES
     RELATIVE "${CMAKE_CURRENT_LIST_DIR}"
     CONFIGURE_DEPENDS "*"

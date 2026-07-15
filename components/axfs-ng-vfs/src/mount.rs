@@ -232,7 +232,7 @@ impl Mountpoint {
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
         if recursive {
-            Self::clone_children_from(&source.mountpoint, &result, true);
+            Self::clone_children_under(source, &result, true);
         }
         result
     }
@@ -271,6 +271,36 @@ impl Mountpoint {
                 .lock()
                 .as_ref()
                 .map(|loc| Location::new(target.clone(), loc.entry.clone()));
+            let cloned = Self::clone_shallow(&child, location);
+            Self::clone_children_from(&child, &cloned, skip_unbindable);
+            target_children.insert(key, cloned);
+        }
+    }
+
+    fn clone_children_under(source: &Location, target: &Arc<Self>, skip_unbindable: bool) {
+        let children: Vec<_> = source
+            .mountpoint
+            .children
+            .lock()
+            .iter()
+            .filter_map(|(key, child)| {
+                if skip_unbindable && child.is_unbindable() {
+                    return None;
+                }
+                let location = child.location.lock().clone()?;
+                if !location.is_descendant_of(source) {
+                    return None;
+                }
+                Some((key.clone(), child.clone(), location))
+            })
+            .collect();
+
+        let mut target_children = target.children.lock();
+        for (key, child, source_child_location) in children {
+            let location = Some(Location::new(
+                target.clone(),
+                source_child_location.entry.clone(),
+            ));
             let cloned = Self::clone_shallow(&child, location);
             Self::clone_children_from(&child, &cloned, skip_unbindable);
             target_children.insert(key, cloned);
@@ -1052,15 +1082,22 @@ impl Location {
             return Err(VfsError::NotADirectory);
         }
 
-        let mut children = self.mountpoint.children.lock();
-        if children.contains_key(&self.entry.key()) {
-            return Err(VfsError::ResourceBusy);
+        {
+            let children = self.mountpoint.children.lock();
+            if children.contains_key(&self.entry.key()) {
+                return Err(VfsError::ResourceBusy);
+            }
         }
         let result = Mountpoint::bind(source, self.clone(), recursive);
         if source.mountpoint().is_shared() {
             result.join_shared_group(source.mountpoint());
         } else if source.mountpoint().is_slave() {
             result.set_slave();
+        }
+
+        let mut children = self.mountpoint.children.lock();
+        if children.contains_key(&self.entry.key()) {
+            return Err(VfsError::ResourceBusy);
         }
         children.insert(self.entry.key(), result.clone());
         Ok(result)
@@ -1248,6 +1285,52 @@ mod tests {
         assert!(nested.is_descendant_of(&mounted.root_location()));
         assert!(nested.is_descendant_of(&root_loc));
         assert!(!root_loc.is_descendant_of(&nested));
+    }
+
+    #[test]
+    fn recursive_bind_clones_only_descendant_child_mounts() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_loc = root.root_location();
+
+        let source_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "source");
+        let source = Location::new(root.clone(), source_entry.clone());
+        let nested_entry = make_child_dir_entry(Some(source_entry.clone()), "nested");
+        let nested = Mountpoint::new_with_root(
+            make_dir_entry("nested-root"),
+            Some(Location::new(root.clone(), nested_entry.clone())),
+            root.device() + 1,
+        );
+        let sibling_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "sibling");
+        let sibling = Mountpoint::new_with_root(
+            make_dir_entry("sibling-root"),
+            Some(Location::new(root.clone(), sibling_entry.clone())),
+            root.device() + 2,
+        );
+        let target_parent_entry =
+            make_child_dir_entry(Some(root_loc.entry().clone()), "target-parent");
+        let target_parent_root = make_dir_entry("target-parent-root");
+        let target_parent = Mountpoint::new_with_root(
+            target_parent_root.clone(),
+            Some(Location::new(root.clone(), target_parent_entry.clone())),
+            root.device() + 3,
+        );
+        root.children.lock().insert(nested_entry.key(), nested);
+        root.children.lock().insert(sibling_entry.key(), sibling);
+        root.children
+            .lock()
+            .insert(target_parent_entry.key(), target_parent.clone());
+
+        let target_entry = make_child_dir_entry(Some(target_parent_root), "source");
+        let target = Location::new(target_parent, target_entry);
+        let bound = target
+            .bind_mount(&source, true)
+            .expect("recursive bind in same mount tree succeeds");
+        let bound_children = bound.children.lock();
+
+        assert!(bound_children.contains_key(&nested_entry.key()));
+        assert!(!bound_children.contains_key(&sibling_entry.key()));
+        assert!(!bound_children.contains_key(&target_parent_entry.key()));
     }
 
     #[test]

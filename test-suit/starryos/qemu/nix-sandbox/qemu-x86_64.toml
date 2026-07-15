@@ -8,7 +8,6 @@
 #   cargo xtask starry test qemu --arch x86_64 -c qemu/nix-sandbox
 #
 # Memory: 2G minimum for nix + sandbox builder overhead.
-# Timeout: 600s to allow apk download and nix build.
 
 args = [
     "-nographic",
@@ -32,19 +31,24 @@ test_commands = [
     '''
 fail() { echo "NIX_SANDBOX_ERROR: $1"; echo "NIX_SANDBOX_TEST_FAILED"; exit 1; }
 
+test_started=$(date +%s)
+test_timeout=90
+
+remaining_test_budget() {
+    now=$(date +%s)
+    elapsed=$((now - test_started))
+    remaining=$((test_timeout - elapsed))
+    if [ "$remaining" -le 0 ]; then
+        echo 0
+    else
+        echo "$remaining"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Phase 1: install nix via apk
 # ---------------------------------------------------------------------------
 echo 'NIX_SANDBOX_PHASE_APK_BEGIN'
-for mirror in \
-    https://mirrors.tuna.tsinghua.edu.cn/alpine \
-    https://dl-cdn.alpinelinux.org/alpine; do
-    cat > /etc/apk/repositories <<EOF
-$mirror/v3.22/main
-$mirror/v3.22/community
-EOF
-    break
-done
 apk update || fail 'apk update failed'
 apk add --no-cache nix || fail 'apk add nix failed'
 command -v nix >/dev/null 2>&1 || fail 'nix binary missing after apk add'
@@ -94,87 +98,63 @@ echo 'NIX_SANDBOX_PHASE_DIAG_DONE'
 # Phase 3: build with sandbox=true
 # ---------------------------------------------------------------------------
 echo 'NIX_SANDBOX_PHASE_BUILD_BEGIN'
-rm -f ./result-sandbox ./result-nosandbox
-cat > /tmp/nix-sandbox/default.nix <<'NIXEOF'
+rm -f ./result-sandbox /tmp/nix-sandbox/build.log
+build_token="$(date +%s)-$$"
+echo "NIX_SANDBOX_BUILD_TOKEN=$build_token"
+cat > /tmp/nix-sandbox/default.nix <<NIXEOF
 derivation {
-  name = "nix-sandbox";
+  name = "nix-sandbox-$build_token";
   system = builtins.currentSystem;
   builder = "/bin/sh";
   args = [
     "-c"
-    "echo BUILDER_STARTED > /tmp/nix-sandbox/builder.log; echo OUT=\$out >> /tmp/nix-sandbox/builder.log; echo NIX_SANDBOX_BUILD_OK > \$out"
+    "echo NIX_SANDBOX_BUILDER_STARTED:$build_token >&2; echo NIX_SANDBOX_BUILD_OK:$build_token > \$out; echo NIX_SANDBOX_BUILDER_DONE:$build_token >&2"
   ];
 }
 NIXEOF
 
-# First: verify nix works at all without sandbox
-echo '=== nosandbox test ==='
-nix-build --no-substitute --option sandbox false \
-    /tmp/nix-sandbox/default.nix -o ./result-nosandbox \
-    > /tmp/nix-sandbox/nosandbox.log 2>&1 &
-nos_build_pid=$!
-i=0
-while kill -0 "$nos_build_pid" 2>/dev/null && [ "$i" -lt 120 ]; do
-    sleep 1; i=$((i + 1))
-done
-if kill -0 "$nos_build_pid" 2>/dev/null; then
-    kill "$nos_build_pid" 2>/dev/null || true
-    wait "$nos_build_pid" 2>/dev/null || true
-    echo 'NIX_NOSANDBOX_RESULT=timeout'
-else
-    wait "$nos_build_pid" 2>/dev/null
-    nos_rc=$?
-    echo "NIX_NOSANDBOX_RESULT=exit_$nos_rc"
+remaining_budget=$(remaining_test_budget)
+diagnostic_reserve=20
+if [ "$remaining_budget" -le "$diagnostic_reserve" ]; then
+    fail 'test exhausted its two-minute budget before nix-build'
 fi
-cat /tmp/nix-sandbox/nosandbox.log 2>/dev/null | head -10
-[ -f ./result-nosandbox ] && echo 'NIX_NOSANDBOX_RESULT_SYMLINK=yes' || echo 'NIX_NOSANDBOX_RESULT_SYMLINK=no'
-cat ./result-nosandbox 2>/dev/null | head -3
-echo '=== nosandbox done ==='
-
-# Now: try sandbox
-echo '=== sandbox test ==='
-echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 30s'
-
-trap 'echo "NIX_SANDBOX_TRAP: caught signal"' TERM HUP INT QUIT USR1 USR2
-trap 'echo "NIX_SANDBOX_SCRIPT_EXIT: rc=$?"' EXIT
-
-dump_procs() {
-    echo "NIX_SANDBOX_PROC_SAMPLE_BEGIN t=$(date +%s 2>/dev/null || echo -n) sample=$1"
-    free 2>/dev/null | awk '/^Mem:/{printf "  MEM: total=%s used=%s free=%s\n", $2, $3, $4}' || true
-    for pid_dir in /proc/[0-9]*; do
-        pid=${pid_dir#/proc/}
-        comm=$(cat "$pid_dir/comm" 2>/dev/null || echo "?")
-        state=$(awk '/^State:/{print $2}' "$pid_dir/status" 2>/dev/null || echo "?")
-        wchan=$(cat "$pid_dir/wchan" 2>/dev/null || echo "?")
-        vmrss=$(awk '/^VmRSS:/{print $2}' "$pid_dir/status" 2>/dev/null || echo "?")
-        echo "  pid=$pid comm=$comm state=$state wchan=$wchan vmrss=${vmrss}kB"
-    done
-    echo "NIX_SANDBOX_PROC_SAMPLE_END"
-}
+build_timeout=$((remaining_budget - diagnostic_reserve))
+echo "NIX_SANDBOX_INFO: sandboxed nix-build remaining budget is ${build_timeout}s"
 
 set +e
-nix-build -v --no-substitute --option sandbox true \
+nix-build -vvvvv --no-substitute --option sandbox true \
     /tmp/nix-sandbox/default.nix -o ./result-sandbox \
     > /tmp/nix-sandbox/build.log 2>&1 &
 build_pid=$!
-echo "NIX_SANDBOX_INFO: nix-build started pid=$build_pid"
+echo "NIX_SANDBOX_INFO: nix-build started pid=$build_pid timeout=${build_timeout}s"
 
-i=0
-while kill -0 "$build_pid" 2>/dev/null && [ "$i" -lt 120 ]; do
-    if [ $((i % 15)) -eq 0 ]; then
-        dump_procs "$((i / 15))"
+build_deadline=$(($(date +%s) + build_timeout))
+while kill -0 "$build_pid" 2>/dev/null; do
+    now=$(date +%s)
+    if [ "$now" -ge "$build_deadline" ]; then
+        break
     fi
     sleep 1
-    i=$((i + 1))
 done
 
 if kill -0 "$build_pid" 2>/dev/null; then
-    echo "NIX_SANDBOX_INFO: 30s timeout, killing nix-build pid=$build_pid"
+    echo "NIX_SANDBOX_BUILD_TIMEOUT=${build_timeout}"
     kill "$build_pid" 2>/dev/null || true
+    terminate_deadline=$(($(date +%s) + 3))
+    while kill -0 "$build_pid" 2>/dev/null; do
+        now=$(date +%s)
+        if [ "$now" -ge "$terminate_deadline" ]; then
+            break
+        fi
+        sleep 1
+    done
+    if kill -0 "$build_pid" 2>/dev/null; then
+        kill -9 "$build_pid" 2>/dev/null || true
+    fi
     wait "$build_pid" 2>/dev/null || true
     build_rc=124
 else
-    wait "$build_pid" 2>/dev/null
+    wait "$build_pid"
     build_rc=$?
 fi
 set -e
@@ -186,7 +166,7 @@ if [ "$build_rc" -gt 128 ] 2>/dev/null; then
 fi
 
 echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
-cat /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
+tail -200 /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
 echo 'NIX_SANDBOX_BUILD_LOG_END'
 
 if [ "$build_rc" -ne 0 ]; then
@@ -211,17 +191,15 @@ if grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' /tmp/
     echo 'NIX_SANDBOX_INFO: sandbox was disabled by Nix (namespace isolation missing)'
     fail 'nix-build sandbox was disabled unexpectedly — mount namespace isolation missing'
 fi
+grep -Fq "building '" /tmp/nix-sandbox/build.log || fail 'sandbox derivation was not freshly built'
+grep -Fq "NIX_SANDBOX_BUILDER_STARTED:$build_token" /tmp/nix-sandbox/build.log \
+    || fail 'current sandbox builder start marker missing'
+grep -Fq "NIX_SANDBOX_BUILDER_DONE:$build_token" /tmp/nix-sandbox/build.log \
+    || fail 'current sandbox builder completion marker missing'
 [ -f ./result-sandbox ] || fail 'result-sandbox symlink not found'
 cat ./result-sandbox || fail 'could not read result-sandbox'
-grep -q 'NIX_SANDBOX_BUILD_OK' ./result-sandbox || fail 'nix-sandbox build output marker missing'
+grep -Fqx "NIX_SANDBOX_BUILD_OK:$build_token" ./result-sandbox || fail 'fresh sandbox build output marker missing'
 echo 'NIX_SANDBOX_PHASE_VERIFY_DONE'
-
-# ---------------------------------------------------------------------------
-# Builder log for diagnostics
-# ---------------------------------------------------------------------------
-echo 'NIX_SANDBOX_BUILDER_LOG_BEGIN'
-cat /tmp/nix-sandbox/builder.log 2>/dev/null || echo '(no builder log)'
-echo 'NIX_SANDBOX_BUILDER_LOG_END'
 
 echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
 echo 'NIX_SANDBOX_TEST_PASSED'
@@ -234,4 +212,4 @@ fail_regex = [
     "(?m)^NIX_SANDBOX_TEST_FAILED\\s*$",
     "(?m)^NIX_SANDBOX_ERROR:",
 ]
-timeout = 600
+timeout = 120

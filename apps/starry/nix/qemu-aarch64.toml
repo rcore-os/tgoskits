@@ -17,14 +17,14 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/test_nix.sh"
-success_regex = [
-    "(?m)^NIX_NOSANDBOX_COMPLETE\\s*$",
-    "(?m)^NIX_NIXPKGS_TEST_PASSED\\s*$",
-]
+success_regex = ["(?m)^NIX_APP_TESTS_PASSED\\s*$"]
 fail_regex = [
     '(?i)\\bpanic(?:ked)?\\b',
     '(?i)\\bfatal\\b',
+    "(?m)^NIX_INSTALL_TEST_FAILED\\s*$",
     "(?m)^NIX_NOSANDBOX_TEST_FAILED\\s*$",
     "(?m)^NIX_NIXPKGS_TEST_FAILED\\s*$",
+    "(?m)^NIX_SANDBOX_TEST_FAILED\\s*$",
+    "(?m)^NIX_SANDBOX_ERROR:",
 ]
 timeout = 1200

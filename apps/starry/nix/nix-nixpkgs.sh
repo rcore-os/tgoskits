@@ -6,10 +6,6 @@ for cmd in build channel collect-garbage copy-closure env hash \
     ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true
 done
 
-if [ ! -e /nix/var/nix/db/db.sqlite ]; then
-    nix-store --load-db < /nix/.reginfo
-fi
-
 fail() {
     echo "NIX_NIXPKGS_ERROR: $1"
     echo 'NIX_NIXPKGS_TEST_FAILED'

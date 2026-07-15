@@ -1,7 +1,7 @@
 # AGENTS.md
 
 <!-- SPECKIT START -->
-**Active Plan**: `specs/003-starryos-nixpkgs/plan.md` — Complete Linux-Semantics Fixes for Nix Sandbox Blockers (mount.rs, namespace.rs, proc.rs)
+**Active Plan**: `specs/003-starryos-nixpkgs/plan.md` — Resume Nixpkgs diagnosis with Linux-semantic kernel regressions
 <!-- SPECKIT END -->
 
 ## Project Skills

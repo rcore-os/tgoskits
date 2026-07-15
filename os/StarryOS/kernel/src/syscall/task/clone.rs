@@ -122,19 +122,8 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     fn validate(&self) -> AxResult<()> {
-        let Self {
-            flags, exit_signal, ..
-        } = self;
+        let Self { flags, .. } = self;
 
-        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
-        }
-        if flags.contains(CloneFlags::THREAD | CloneFlags::PARENT)
-            && flags.contains(CloneFlags::THREAD)
-            && flags.contains(CloneFlags::PARENT)
-        {
-            return Err(AxError::InvalidInput);
-        }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
@@ -536,4 +525,30 @@ pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
 pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(uctx, flags, 0, 0, 0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_thread_and_parent_when_thread_dependencies_are_present() {
+        let args = CloneArgs {
+            flags: CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::THREAD | CloneFlags::PARENT,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_legacy_parent_with_exit_signal() {
+        let args = CloneArgs {
+            flags: CloneFlags::PARENT,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
+    }
 }

@@ -5,8 +5,7 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-nix_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/nix-binary-cache"
-nix_version="2.34.0"
+nix_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/nixpkgs-cache"
 
 require_env() {
     local name="$1"
@@ -55,57 +54,15 @@ ensure_host_packages() {
     apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
-install_nix_package() {
-    local system sha256 nix_store_path cacert_store_path
-    case "${STARRY_ARCH:-}" in
-        x86_64)
-            system="x86_64-linux"
-            sha256="5676b0887f1274e62edd175b6611af49aa8170c69c16877aa9bc6cebceb19855"
-            nix_store_path="1kxmbqsah0bszi95w1ii633vzciqnanx-nix-${nix_version}"
-            cacert_store_path="cv910ahrajv1p2lvy6phasy2b1d9nxcd-nss-cacert-3.117"
-            ;;
-        aarch64)
-            system="aarch64-linux"
-            sha256="cfddd4008b57a71464a16d5232cba79b1c76ae9dc81bbf71b4972b0118bc29c5"
-            nix_store_path="xs9inr2d17npz3y05y4kqvk5qikq5yp6-nix-${nix_version}"
-            cacert_store_path="2g4zfwsrkydpisqk3lz42cf9ak2lfvnc-nss-cacert-3.117"
-            ;;
-        *)
-            echo "error: unsupported STARRY_ARCH='${STARRY_ARCH:-}'" >&2
-            exit 1
-            ;;
-    esac
-
-    local archive="$nix_cache/nix-${nix_version}-${system}.tar.xz"
-    local extracted="$nix_cache/nix-${nix_version}-${system}"
-    local url="https://releases.nixos.org/nix/nix-${nix_version}/nix-${nix_version}-${system}.tar.xz"
-
-    mkdir -p "$nix_cache"
-    if [[ ! -f "$archive" ]] || ! echo "$sha256  $archive" | sha256sum -c - >/dev/null 2>&1; then
-        curl --fail --location --retry 3 --output "$archive.tmp" "$url"
-        echo "$sha256  $archive.tmp" | sha256sum -c -
-        mv "$archive.tmp" "$archive"
-    fi
-
-    rm -rf "$extracted"
-    mkdir -p "$extracted"
-    tar -xJf "$archive" --strip-components=1 -C "$extracted"
-
-    mkdir -p "$overlay_dir/nix/store" "$overlay_dir/nix/var/nix" "$overlay_dir/usr/bin"
-    cp -a "$extracted/store/." "$overlay_dir/nix/store/"
-    install -Dm0644 "$extracted/.reginfo" "$overlay_dir/nix/.reginfo"
-    ln -sfn "/nix/store/$nix_store_path/bin/nix" "$overlay_dir/usr/bin/nix"
-
+prepare_nix_conf() {
     mkdir -p "$overlay_dir/etc/nix"
     cat > "$overlay_dir/etc/nix/nix.conf" <<NIXCONF
 sandbox = false
 build-users-group =
-substituters = https://mirrors.cernet.edu.cn/nix-channels/store https://cache.nixos.org
+substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://cache.nixos.org
 trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-ssl-cert-file = /nix/store/$cacert_store_path/etc/ssl/certs/ca-bundle.crt
 NIXCONF
-
-    echo "Nix ${nix_version} official closure prepared for ${STARRY_ARCH}"
+    echo "nix.conf prepared"
 }
 
 prepare_nixpkgs_tarball() {
@@ -129,23 +86,10 @@ prepare_nixpkgs_tarball() {
 
 populate_overlay() {
     # Install test scripts.
-    # NOTE: nix.sh (sandbox test) is intentionally NOT injected — sandbox
-    # requires mount namespace isolation not yet available in StarryOS.
-    # The nix binary must be kept as /usr/bin/nix (already copied above).
     install -Dm0755 "$app_dir/nix-nosandbox.sh" "$overlay_dir/usr/bin/nix-nosandbox"
     install -Dm0755 "$app_dir/nix-nixpkgs.sh" "$overlay_dir/usr/bin/nix-nixpkgs"
+    install -Dm0755 "$app_dir/nix.sh" "$overlay_dir/usr/bin/nix-sandbox"
     install -Dm0755 "$app_dir/test_nix.sh" "$overlay_dir/usr/bin/test_nix.sh"
-
-    # NIXPKGS diagnostic: inject builder-init regression test binary
-    echo "NIXPKGS_DIAG: app_dir=$app_dir test_bin=$app_dir/test-nix-builder-init exists=$([[ -f "$app_dir/test-nix-builder-init" ]] && echo yes || echo no) exec=$([[ -x "$app_dir/test-nix-builder-init" ]] && echo yes || echo no)"
-    if [[ -x "$app_dir/test-nix-builder-init" ]]; then
-        mkdir -p "$overlay_dir/usr/bin/starry-test-suit"
-        install -Dm0755 "$app_dir/test-nix-builder-init" \
-            "$overlay_dir/usr/bin/starry-test-suit/test-nix-builder-init"
-        echo "NIXPKGS_DIAG: test binary injected"
-    else
-        echo "NIXPKGS_DIAG: test binary not found or not executable, skipping"
-    fi
 
     # The pinned source tree is injected by prepare_nixpkgs_tarball. Keeping
     # extraction host-side avoids Nix's metadata-heavy Git-cache import on the
@@ -180,9 +124,13 @@ require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 
 ensure_host_packages
-resize_rootfs
-install_nix_package
-prepare_nixpkgs_tarball
+prepare_nix_conf
+if [[ "${STARRY_NIX_SKIP_NIXPKGS:-0}" == "1" ]]; then
+    echo "skipping nixpkgs source injection for sandbox diagnostics"
+else
+    resize_rootfs
+    prepare_nixpkgs_tarball
+fi
 populate_overlay
 
 echo "nix prebuild complete"

@@ -182,58 +182,40 @@
               aliasPrefix = "aarch64-linux-musl";
             };
 
+          # Keep cross compilers out of `packages`: their setup hooks would otherwise
+          # override host compiler variables used by native Rust builds.
           crossCompilerPath = lib.makeBinPath (crossCompilerAliases ++ crossCompilers);
-
-          mkTgoskitsShell =
-            {
-              name,
-              withCrossCompilers ? false,
-            }:
-            pkgs.mkShell {
-              inherit name;
-
-              packages = commonPackages;
-
-              LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
-
-              shellHook = ''
-                export project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-
-                # export RUSTUP_HOME="$project_root/.rustup"
-                export CARGO_HOME="$project_root/.cargo"
-                export PATH="$CARGO_HOME/bin:$PATH"
-
-                ${lib.optionalString withCrossCompilers ''
-                  export PATH="${crossCompilerPath}:$PATH"
-                ''}
-
-                unset CC CXX AR RANLIB
-                unset CC_x86_64_unknown_linux_gnu
-                unset CXX_x86_64_unknown_linux_gnu
-                unset AR_x86_64_unknown_linux_gnu
-                unset RANLIB_x86_64_unknown_linux_gnu
-
-                # mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
-                mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
-
-                echo "TGOSKits dev shell"
-                # echo "  RUSTUP_HOME=$RUSTUP_HOME"
-                echo "  CARGO_HOME=$CARGO_HOME"
-                echo "  Rust toolchain: rust-overlay from rust-toolchain.toml"
-                ${lib.optionalString withCrossCompilers ''
-                  echo "  Cross compilers: available by target-prefixed command name"
-                ''}
-              '';
-            };
         in
         {
-          devShells.default = mkTgoskitsShell {
+          devShells.default = pkgs.mkShell {
             name = "tgoskits-dev";
-          };
 
-          devShells.full = mkTgoskitsShell {
-            name = "tgoskits-dev-full";
-            withCrossCompilers = true;
+            packages = commonPackages;
+
+            LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
+
+            shellHook = ''
+              export project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+              # export RUSTUP_HOME="$project_root/.rustup"
+              export CARGO_HOME="$project_root/.cargo"
+              export PATH="$CARGO_HOME/bin:${crossCompilerPath}:$PATH"
+
+              unset CC CXX AR RANLIB
+              unset CC_x86_64_unknown_linux_gnu
+              unset CXX_x86_64_unknown_linux_gnu
+              unset AR_x86_64_unknown_linux_gnu
+              unset RANLIB_x86_64_unknown_linux_gnu
+
+              # mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
+              mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
+
+              echo "TGOSKits dev shell"
+              # echo "  RUSTUP_HOME=$RUSTUP_HOME"
+              echo "  CARGO_HOME=$CARGO_HOME"
+              echo "  Rust toolchain: rust-overlay from rust-toolchain.toml"
+              echo "  Cross compilers: available by target-prefixed command name"
+            '';
           };
 
           formatter = pkgs.nixfmt;

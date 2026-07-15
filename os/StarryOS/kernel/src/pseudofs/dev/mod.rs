@@ -104,6 +104,14 @@ pub(crate) fn new_devfs() -> Filesystem {
     SimpleFs::new_with("devfs".into(), 0x01021994, builder)
 }
 
+pub(crate) fn new_devptsfs() -> Filesystem {
+    SimpleFs::new_with("devpts".into(), 0x00001cd1, devpts_builder)
+}
+
+fn devpts_builder(fs: Arc<SimpleFs>) -> DirMaker {
+    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs)))
+}
+
 struct Null;
 
 impl DeviceOps for Null {
@@ -476,7 +484,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     );
     root.add(
         "pts",
-        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir)),
+        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs.clone()))),
     );
     #[cfg(feature = "dev-log")]
     root.add(
