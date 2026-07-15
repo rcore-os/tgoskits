@@ -67,8 +67,8 @@ pub(super) fn bind_interrupt(
         ));
     }
     reserve_irq(irq, backend.vm_id)?;
-    let result = host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(route.host_cpu)))
-        .and_then(|()| host_irq::set_enable(irq, true));
+    let result = host_irq::set_enable(irq, false)
+        .and_then(|()| host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(route.host_cpu))));
     if let Err(error) = result {
         release_irq(irq, backend.vm_id);
         return Err(platform_error("bind physical interrupt", irq, error));
@@ -76,12 +76,23 @@ pub(super) fn bind_interrupt(
     Ok(())
 }
 
+pub(super) fn set_interrupt_enabled(
+    backend: &AxvmGicV3Backend,
+    binding: PhysicalInterruptBinding,
+    enabled: bool,
+) -> Result<(), GicV3BackendError> {
+    let irq = decode_irq(binding.host())?;
+    require_owner(irq, backend.vm_id, "set physical interrupt enable state")?;
+    host_irq::set_enable(irq, enabled)
+        .map_err(|error| platform_error("set physical interrupt enable state", irq, error))
+}
+
 pub(super) fn unbind_interrupt(
     backend: &AxvmGicV3Backend,
     binding: PhysicalInterruptBinding,
 ) -> Result<(), GicV3BackendError> {
     let irq = decode_irq(binding.host())?;
-    require_owner(irq, backend.vm_id)?;
+    require_owner(irq, backend.vm_id, "unbind physical interrupt")?;
     host_irq::set_enable(irq, false)
         .map_err(|error| platform_error("unbind physical interrupt", irq, error))?;
     release_irq(irq, backend.vm_id);
@@ -388,15 +399,19 @@ fn reserve_irq(irq: IrqId, vm_id: usize) -> Result<(), GicV3BackendError> {
     }
 }
 
-fn require_owner(irq: IrqId, vm_id: usize) -> Result<(), GicV3BackendError> {
+fn require_owner(
+    irq: IrqId,
+    vm_id: usize,
+    operation: &'static str,
+) -> Result<(), GicV3BackendError> {
     match PHYSICAL_IRQ_OWNERS.lock().get(&irq).copied() {
         Some(owner) if owner == vm_id => Ok(()),
         Some(owner) => Err(GicV3BackendError::new(
-            "unbind physical interrupt",
+            operation,
             alloc::format!("host IRQ {irq:?} is owned by VM {owner}, not VM {vm_id}"),
         )),
         None => Err(GicV3BackendError::new(
-            "unbind physical interrupt",
+            operation,
             alloc::format!("host IRQ {irq:?} is not bound"),
         )),
     }

@@ -25,19 +25,30 @@ impl GicV3Controller {
 
     /// Writes a Distributor register and schedules newly deliverable SPIs.
     pub fn write_distributor(&self, offset: u64, width: AccessWidth, value: u64) -> VgicResult {
-        let wakes = {
+        let passthrough = self.inner.config.mode() == GicV3Mode::Passthrough;
+        let (wakes, physical_enable_changes) = {
             let mut state = self.inner.state.lock();
+            let physical_enable_snapshot = passthrough
+                .then(|| state.physical_interrupt_enable_snapshot())
+                .transpose()?;
             let candidates = state
                 .distributor
                 .write(offset, width, value, &self.inner.config)?;
             let mut wakes = Vec::new();
-            for spi in candidates {
-                if let Some(wake) = state.queue_spi_if_deliverable(spi)? {
-                    wakes.push(wake);
+            if !passthrough {
+                for spi in candidates {
+                    if let Some(wake) = state.queue_spi_if_deliverable(spi)? {
+                        wakes.push(wake);
+                    }
                 }
             }
-            wakes
+            let physical_enable_changes = match physical_enable_snapshot {
+                Some(snapshot) => state.active_physical_interrupt_enable_changes(&snapshot)?,
+                None => Vec::new(),
+            };
+            (wakes, physical_enable_changes)
         };
+        self.apply_physical_interrupt_enable_changes(physical_enable_changes)?;
         for wake in wakes {
             wake.wake()?;
         }

@@ -183,6 +183,18 @@ pub trait GicV3Backend: Send + Sync {
         ))
     }
 
+    /// Enables or disables one owned interrupt for direct guest delivery.
+    fn set_physical_interrupt_enabled(
+        &self,
+        _binding: PhysicalInterruptBinding,
+        _enabled: bool,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "set physical interrupt enable state",
+            "the backend does not support passthrough interrupts",
+        ))
+    }
+
     /// Updates a directly delivered physical level input.
     fn set_physical_interrupt_level(
         &self,

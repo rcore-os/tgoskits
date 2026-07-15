@@ -133,6 +133,14 @@ impl GicV3Backend for AxvmGicV3Backend {
         passthrough::bind_interrupt(self, binding)
     }
 
+    fn set_physical_interrupt_enabled(
+        &self,
+        binding: PhysicalInterruptBinding,
+        enabled: bool,
+    ) -> Result<(), GicV3BackendError> {
+        passthrough::set_interrupt_enabled(self, binding, enabled)
+    }
+
     fn set_physical_interrupt_level(
         &self,
         binding: PhysicalInterruptBinding,

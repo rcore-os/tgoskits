@@ -5,7 +5,11 @@ mod mmio;
 mod passthrough;
 mod state;
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec::Vec,
+};
 
 use ax_kspin::SpinRaw;
 pub use binding::GicV3VcpuBinding;
@@ -50,6 +54,7 @@ struct ControllerState {
     redistributors: BTreeMap<GicVcpuId, RedistributorState>,
     physical_interrupts: BTreeMap<SpiId, PhysicalInterruptBinding>,
     physical_msi: BTreeMap<(ItsDeviceId, EventId), PhysicalMsiBinding>,
+    active_vcpus: BTreeSet<GicVcpuId>,
     its: ItsState,
 }
 
@@ -82,6 +87,7 @@ impl GicV3Controller {
                     redistributors: BTreeMap::new(),
                     physical_interrupts: BTreeMap::new(),
                     physical_msi: BTreeMap::new(),
+                    active_vcpus: BTreeSet::new(),
                     its: ItsState::new(),
                 }),
             }),

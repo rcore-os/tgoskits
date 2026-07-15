@@ -22,6 +22,14 @@ impl core::fmt::Debug for GicV3VcpuBinding {
 
 impl Drop for GicV3VcpuBinding {
     fn drop(&mut self) {
+        if self.uses_direct_physical_delivery()
+            && let Err(error) = self.controller.deactivate_physical_interrupts(self.vcpu)
+        {
+            log::warn!(
+                "failed to deactivate physical interrupts while detaching vCPU {}: {error}",
+                self.vcpu.raw()
+            );
+        }
         self.controller
             .inner
             .state
@@ -44,7 +52,7 @@ impl GicV3VcpuBinding {
     /// Restores ICH state and refills empty LRs.
     pub fn load(&self) -> VgicResult {
         if self.uses_direct_physical_delivery() {
-            return Ok(());
+            return self.controller.activate_physical_interrupts(self.vcpu);
         }
         let state = {
             let mut controller = self.controller.inner.state.lock();
@@ -61,7 +69,7 @@ impl GicV3VcpuBinding {
     /// Saves ICH state after guest execution.
     pub fn save(&self) -> VgicResult {
         if self.uses_direct_physical_delivery() {
-            return Ok(());
+            return self.controller.deactivate_physical_interrupts(self.vcpu);
         }
         let mut saved = self.cpu_interface_snapshot()?;
         backend_result(

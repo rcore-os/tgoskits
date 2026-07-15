@@ -64,7 +64,10 @@ command queue and never assumes guest physical addresses equal host addresses.
 - `Passthrough` requires explicit guest SPI/ITS ownership through
   `bind_physical_spi` and `bind_physical_msi`. Delivery goes only through the
   supplied physical backend; it never falls back to virtual list registers.
-  Guest accesses to a shared host ITS frame are rejected.
+  Binding an SPI leaves the physical line masked. Guest Distributor enable
+  state is applied only while the fixed target vCPU binding is loaded, and the
+  line is masked again when that binding is saved. Guest accesses to a shared
+  host ITS frame are rejected.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

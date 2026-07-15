@@ -136,6 +136,52 @@ fn passthrough_vcpu_binding_never_uses_virtual_list_registers() {
     assert_eq!(records.cpu_interface_saves, 0);
 }
 
+#[test]
+fn passthrough_spi_is_enabled_only_while_target_vcpu_is_loaded() {
+    const GICD_ISENABLER1: u64 = 0x104;
+    const GICD_ICENABLER1: u64 = 0x184;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    controller
+        .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
+        .unwrap();
+    let physical_binding = backend.records.lock().unwrap().bound_interrupts[0];
+
+    controller
+        .write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
+        .unwrap();
+    assert!(
+        backend
+            .records
+            .lock()
+            .unwrap()
+            .enabled_interrupts
+            .is_empty()
+    );
+
+    binding.load().unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    controller
+        .write_distributor(GICD_ICENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
+        .unwrap();
+    binding.save().unwrap();
+
+    let enabled_interrupts = backend.records.lock().unwrap().enabled_interrupts.clone();
+    assert_eq!(
+        enabled_interrupts,
+        vec![
+            (physical_binding, true),
+            (physical_binding, false),
+            (physical_binding, true),
+            (physical_binding, false),
+        ]
+    );
+}
+
 fn config() -> GicV3Config {
     GicV3Config::new(
         GicV3Mode::Passthrough,
@@ -179,6 +225,7 @@ struct PhysicalRecords {
     cpu_interface_loads: usize,
     cpu_interface_saves: usize,
     bound_interrupts: Vec<PhysicalInterruptBinding>,
+    enabled_interrupts: Vec<(PhysicalInterruptBinding, bool)>,
     levels: Vec<(PhysicalInterruptBinding, bool)>,
     pulses: Vec<PhysicalInterruptBinding>,
     bound_msi: Vec<PhysicalMsiBinding>,
@@ -212,6 +259,19 @@ impl GicV3Backend for PhysicalBackend {
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         self.records.lock().unwrap().bound_interrupts.push(binding);
+        Ok(())
+    }
+
+    fn set_physical_interrupt_enabled(
+        &self,
+        binding: PhysicalInterruptBinding,
+        enabled: bool,
+    ) -> Result<(), GicV3BackendError> {
+        self.records
+            .lock()
+            .unwrap()
+            .enabled_interrupts
+            .push((binding, enabled));
         Ok(())
     }
 

@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panicking.
 - Implement a bounded software ITS command queue and explicit passthrough
   SPI/MSI ownership with cleanup on controller drop.
+- Keep passthrough SPIs masked until their guest enables them and the fixed
+  target vCPU binding is loaded, then mask them again before the vCPU is saved.
 
 ### Removed
 
