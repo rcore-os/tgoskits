@@ -89,12 +89,14 @@ impl DeferredTaskWorkBatch {
         self.processed() != 0
     }
 
-    /// Returns whether one category consumed the complete caller budget.
+    /// Returns whether this pass consumed the complete shared caller budget.
     pub const fn saturated(self, limit: usize) -> bool {
-        self.deadline_events == limit
-            || self.exit_callbacks == limit
-            || self.reaped_threads == limit
-            || self.reclaimed_resources == limit
+        let capped_limit = if limit < crate::DEFAULT_BATCH_LIMIT {
+            limit
+        } else {
+            crate::DEFAULT_BATCH_LIMIT
+        };
+        capped_limit != 0 && self.processed() == capped_limit
     }
 }
 
@@ -124,7 +126,10 @@ struct TaskSystemState {
     cpus: Vec<CpuRegistration>,
     slots: Vec<ThreadSlot>,
     free_slots: Vec<u32>,
+    task_work_class_cursor: DeferredTaskWorkClass,
     deadline_callback_cursor: usize,
+    exit_callback_cursor: usize,
+    reap_cursor: usize,
     deadline_admission: DeadlineAdmission,
 }
 
@@ -145,6 +150,27 @@ enum BalanceReason {
 enum DetachedPayloadKind {
     RemoteWake,
     SchedulerDelivery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeferredTaskWorkClass {
+    Deadline,
+    Exit,
+    Reap,
+    Reclaim,
+}
+
+impl DeferredTaskWorkClass {
+    const COUNT: usize = 4;
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Deadline => Self::Exit,
+            Self::Exit => Self::Reap,
+            Self::Reap => Self::Reclaim,
+            Self::Reclaim => Self::Deadline,
+        }
+    }
 }
 
 /// Owns the unprocessed suffix of one already-detached owner inbox batch.
@@ -258,7 +284,10 @@ impl TaskSystem {
                 cpus: cpu_registrations,
                 slots: Vec::new(),
                 free_slots: Vec::new(),
+                task_work_class_cursor: DeferredTaskWorkClass::Deadline,
                 deadline_callback_cursor: 0,
+                exit_callback_cursor: 0,
+                reap_cursor: 0,
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
             root_domain: IrqTicketLock::new(RootDomainState {
@@ -356,34 +385,65 @@ impl TaskSystem {
 
     /// Runs one bounded task-context pass as the single task-work consumer.
     ///
-    /// Deadline callbacks are serialized before exit callbacks and resource
-    /// destruction. A concurrent or reentrant consumer receives
-    /// [`TaskError::ThreadBusy`] without consuming work.
+    /// Unrelated work classes are interleaved through a persistent round-robin
+    /// cursor. Per-thread claim predicates still enforce Deadline callback,
+    /// exit callback, and record-reaping order. A concurrent or reentrant
+    /// consumer receives [`TaskError::ThreadBusy`] without consuming work.
     pub fn service_deferred_task_work(
         &self,
         limit: usize,
     ) -> Result<DeferredTaskWorkBatch, TaskError> {
-        const MAX_SERVICE_BATCH: usize = 64;
-
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
-        let limit = limit.min(MAX_SERVICE_BATCH);
+        let limit = limit.min(crate::DEFAULT_BATCH_LIMIT);
         if limit == 0 {
             return Ok(DeferredTaskWorkBatch::default());
         }
         let _consumer: TaskWorkConsumerGuard<'_> = self.task_work.try_claim_consumer()?;
-        let (deadline_events, deadline_callbacks) = self.dispatch_deadline_overruns_inner(limit)?;
-        let exit_callbacks = self.dispatch_exit_callbacks_inner(limit)?;
-        let reaped_threads = self.reap_unreferenced_exited_inner(limit)?;
-        let reclaimed_resources = self.drain_deferred_reclaims_inner(limit)?;
-        Ok(DeferredTaskWorkBatch {
-            deadline_events,
-            deadline_callbacks,
-            exit_callbacks,
-            reaped_threads,
-            reclaimed_resources,
-        })
+        let mut next_class = self.state.lock().task_work_class_cursor;
+        let outcome = (|| {
+            let mut batch = DeferredTaskWorkBatch::default();
+            let mut classes_without_progress = 0;
+            while batch.processed() < limit
+                && classes_without_progress < DeferredTaskWorkClass::COUNT
+            {
+                let class = next_class;
+                next_class = class.next();
+                let processed = match class {
+                    DeferredTaskWorkClass::Deadline => {
+                        let (events, callbacks) = self.dispatch_deadline_overruns_inner(1)?;
+                        batch.deadline_events += events;
+                        batch.deadline_callbacks += callbacks;
+                        events
+                    }
+                    DeferredTaskWorkClass::Exit => {
+                        let callbacks = self.dispatch_exit_callbacks_inner(1)?;
+                        batch.exit_callbacks += callbacks;
+                        callbacks
+                    }
+                    DeferredTaskWorkClass::Reap => {
+                        let reaped = self.reap_unreferenced_exited_inner(1)?;
+                        batch.reaped_threads += reaped;
+                        reaped
+                    }
+                    DeferredTaskWorkClass::Reclaim => {
+                        let reclaimed = self.drain_deferred_reclaims_inner(1)?;
+                        batch.reclaimed_resources += reclaimed;
+                        reclaimed
+                    }
+                };
+                if processed == 0 {
+                    classes_without_progress += 1;
+                } else {
+                    classes_without_progress = 0;
+                }
+            }
+            debug_assert!(batch.processed() <= limit);
+            Ok(batch)
+        })();
+        self.state.lock().task_work_class_cursor = next_class;
+        outcome
     }
 
     /// Reclaims at most `limit` resources in ordinary task context.
@@ -3905,6 +3965,10 @@ impl TaskSystemState {
             if sched.lifecycle.state() != ThreadState::Exited {
                 return Err(TaskError::NotExited);
             }
+            // Exit closes the scheduler activity gate before publishing
+            // `Exited`, so no producer can increment the delivery count after
+            // the Acquire observation of zero. A non-zero count owns both one
+            // raw inbox Arc and access to scheduler-owned thread state.
             if sched.on_cpu.is_some()
                 || sched.migration_target.is_some()
                 || sched.deadline_bandwidth_cpu.is_some()
@@ -3957,7 +4021,13 @@ impl TaskSystemState {
     }
 
     fn take_unreferenced_exited(&mut self) -> Result<Option<ThreadRecord>, TaskError> {
-        for index in 0..self.slots.len() {
+        let slot_count = self.slots.len();
+        if slot_count == 0 {
+            return Ok(None);
+        }
+        let start = self.reap_cursor % slot_count;
+        for offset in 0..slot_count {
+            let index = (start + offset) % slot_count;
             let thread = {
                 let slot = &self.slots[index];
                 let Some(record) = slot.record.as_ref() else {
@@ -3984,18 +4054,29 @@ impl TaskSystemState {
                 ThreadId::from_parts(slot_index, slot.generation)
             };
             match self.remove_exited_thread_with_lease_count(thread, 0, None) {
-                Ok(record) => return Ok(Some(record)),
+                Ok(record) => {
+                    self.reap_cursor = (index + 1) % slot_count;
+                    return Ok(Some(record));
+                }
                 Err(TaskError::ThreadBusy) => continue,
                 Err(error) => return Err(error),
             }
         }
+        self.reap_cursor = (start + 1) % slot_count;
         Ok(None)
     }
 
     fn claim_pending_exit_callback(
         &mut self,
     ) -> Result<Option<(ThreadExtensionView, ThreadId)>, TaskError> {
-        for (index, slot) in self.slots.iter_mut().enumerate() {
+        let slot_count = self.slots.len();
+        if slot_count == 0 {
+            return Ok(None);
+        }
+        let start = self.exit_callback_cursor % slot_count;
+        for offset in 0..slot_count {
+            let index = (start + offset) % slot_count;
+            let slot = &mut self.slots[index];
             let Some(record) = slot.record.as_mut() else {
                 continue;
             };
@@ -4016,11 +4097,13 @@ impl TaskSystemState {
                 .as_view();
             record.exit_callback_claimed = true;
             let slot_index = u32::try_from(index).map_err(|_| TaskError::InvalidConfiguration)?;
+            self.exit_callback_cursor = (index + 1) % slot_count;
             return Ok(Some((
                 extension,
                 ThreadId::from_parts(slot_index, slot.generation),
             )));
         }
+        self.exit_callback_cursor = (start + 1) % slot_count;
         Ok(None)
     }
 
@@ -5016,12 +5099,7 @@ mod tests {
         system.mark_exited(high_slot_id).unwrap();
         drop(high_slot);
 
-        assert!(
-            system
-                .service_deferred_task_work(1)
-                .unwrap()
-                .made_progress()
-        );
+        assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
         assert_eq!(system.thread_state(high_slot_id), Ok(ThreadState::Exited));
         {
             let state = system.state.lock();
@@ -5033,13 +5111,13 @@ mod tests {
                 .deadline_overrun_events += 1;
         }
 
-        assert!(
-            system
-                .service_deferred_task_work(1)
-                .unwrap()
-                .made_progress()
-        );
+        assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
         assert_eq!(ROTATING_DEADLINE_CALLBACKS.load(Ordering::Acquire), 1);
+        assert_eq!(system.thread_state(high_slot_id), Ok(ThreadState::Exited));
+
+        assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+        assert_eq!(system.thread_state(high_slot_id), Ok(ThreadState::Exited));
+        assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
         assert_eq!(
             system.thread_state(high_slot_id),
             Err(TaskError::StaleThreadId),
@@ -5244,6 +5322,7 @@ mod tests {
             .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         let exiting_id = exiting.id();
+        let exiting_core = Arc::downgrade(&exiting.core);
         for cpu in [&mut cpu0, &mut cpu1] {
             system
                 .register_idle_thread(
@@ -5273,6 +5352,12 @@ mod tests {
 
         system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
         assert_eq!(cpu1.runnable_summary(), 0);
+        let core = exiting_core
+            .upgrade()
+            .expect("the registry still retains the exited core before reaping");
+        assert_eq!(core.scheduler_inbox_delivery_count(), 0);
+        assert_eq!(core.sched().lock().migration_target, None);
+        drop(core);
         assert!(
             system
                 .service_deferred_task_work(1)
@@ -5282,6 +5367,10 @@ mod tests {
         assert_eq!(
             system.thread_state(exiting_id),
             Err(TaskError::StaleThreadId)
+        );
+        assert!(
+            exiting_core.upgrade().is_none(),
+            "late migration payload Arc must be released after owner drain"
         );
     }
 
@@ -5294,6 +5383,7 @@ mod tests {
             .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         let exiting_id = exiting.id();
+        let exiting_core = Arc::downgrade(&exiting.core);
         for cpu in [&mut cpu0, &mut cpu1] {
             system
                 .register_idle_thread(
@@ -5318,6 +5408,15 @@ mod tests {
         assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 0);
 
         system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
+        assert!(
+            cpu0.deadline_members.is_empty(),
+            "late policy delivery must not register an exited Deadline member"
+        );
+        let core = exiting_core
+            .upgrade()
+            .expect("the registry still retains the exited core before reaping");
+        assert_eq!(core.scheduler_inbox_delivery_count(), 0);
+        drop(core);
         assert_eq!(
             system.deadline_activity(exiting_id),
             Err(TaskError::InvalidConfiguration),
@@ -5333,6 +5432,10 @@ mod tests {
             system.thread_state(exiting_id),
             Err(TaskError::StaleThreadId)
         );
+        assert!(
+            exiting_core.upgrade().is_none(),
+            "late policy payload Arc must be released after owner drain"
+        );
     }
 
     #[test]
@@ -5346,13 +5449,32 @@ mod tests {
             .create_thread(ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         let thread_id = thread.id();
+        let thread_core = Arc::downgrade(&thread.core);
         system.make_ready(thread_id).unwrap();
         system.enqueue(cpu1.as_mut(), thread_id, 0).unwrap();
 
-        let malformed_owner = InboxMessage::balance_request(CpuId::new(0), CpuId::new(1), 1);
+        thread.core.sched().lock().migration_target = Some(CpuId::new(1));
+        assert!(thread.core.reserve_scheduler_inbox_delivery());
+        let pointer = Arc::as_ptr(&thread.core);
+        unsafe {
+            // SAFETY: this test follows the production publication contract and
+            // transfers the retained count into the migration inbox below.
+            Arc::increment_strong_count(pointer);
+        }
+        let node = unsafe {
+            // SAFETY: the retained Arc pins the embedded migration node until
+            // the owner detaches and reconstructs this payload.
+            Pin::new_unchecked((*pointer).migration_node())
+        };
+        let malformed_owner = InboxMessage::migration_with_payload(
+            thread_id,
+            CpuId::new(0),
+            CpuId::new(1),
+            thread_id.generation() as u64,
+            pointer.expose_provenance(),
+        );
         assert_eq!(
-            cpu1.remote()
-                .publish_migration(cpu0.balance_request_node(), malformed_owner),
+            cpu1.remote().publish_migration(node, malformed_owner),
             PublishResult::Published
         );
         system
@@ -5363,11 +5485,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             system.drain_policy_updates(cpu1.as_mut(), 1),
-            Err(TaskError::CpuOwnerMismatch {
-                expected: 0,
-                actual: 1,
-            })
+            Err(TaskError::InvalidConfiguration)
         );
+        assert_eq!(thread.core.scheduler_inbox_delivery_count(), 0);
 
         system.dequeue(cpu1.as_mut(), thread_id).unwrap();
         system.mark_exited(thread_id).unwrap();
@@ -5382,6 +5502,10 @@ mod tests {
             system.thread_state(thread_id),
             Err(TaskError::StaleThreadId),
             "an error in one detached message must release later retained payloads"
+        );
+        assert!(
+            thread_core.upgrade().is_none(),
+            "the detached batch guard must release every suffix payload Arc"
         );
     }
 

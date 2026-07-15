@@ -187,6 +187,8 @@ fn mark_exited_pins_extension_until_exit_callback_returns() {
         "the callback's borrowed extension view must pin its registry record"
     );
     assert_eq!(drops_during_callback, 0);
+    assert_eq!(MARK_EXIT_DROPS.load(Ordering::Acquire), 0);
+    assert_eq!(system.reap_unreferenced_exited(1), Ok(1));
     assert_eq!(MARK_EXIT_DROPS.load(Ordering::Acquire), 1);
 }
 

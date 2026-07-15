@@ -556,6 +556,10 @@ impl ThreadCore {
         if self.state() == ThreadState::Exited {
             return false;
         }
+        // The AcqRel increment publishes the resource-lifetime reservation
+        // before the producer's Release inbox publication. Once exit closes
+        // `scheduler_activity_gate`, no new delivery count can appear; the
+        // reaper's Acquire load may therefore treat an observed zero as stable.
         self.scheduler_inbox_deliveries
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |deliveries| {
                 deliveries.checked_add(1)
@@ -639,6 +643,10 @@ impl ThreadCore {
     }
 
     fn finish_scheduler_inbox_delivery(&self) {
+        // AcqRel pairs with the reaper's Acquire count check and also observes
+        // an exit state published before the scheduler activity gate reopened.
+        // The last delivery republishes task work so a reaper pass that saw a
+        // non-zero count cannot become the final, lost retry.
         let previous = self
             .scheduler_inbox_deliveries
             .fetch_sub(1, Ordering::AcqRel);
