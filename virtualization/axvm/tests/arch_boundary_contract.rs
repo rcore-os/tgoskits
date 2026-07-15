@@ -1147,13 +1147,13 @@ fn riscv_capability_probe_and_vm_layout_are_cpu_owned() {
         .split_once("fn with_detect_trap")
         .expect("RISC-V extension probe must exist")
         .1
-        .split_once("fn read_cpu_anchor")
-        .expect("probe setup must end before the anchor helper")
+        .split_once("fn read_sscratch")
+        .expect("probe setup must end before the scratch-register helper")
         .0;
     assert!(
         probe.find("init_detect_trap").is_some_and(|disable| {
             probe
-                .find("read_cpu_anchor")
+                .find("read_sscratch")
                 .is_some_and(|read| disable < read)
         }),
         "the probe must disable local IRQs before reading sscratch"
