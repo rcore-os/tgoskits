@@ -16,9 +16,11 @@ use crate::{
     task::AsThread,
 };
 
-/// Per-task process key — the unique task ID from the scheduler.
+/// Owner key for imported handles/requests: the process id (tgid), not the scheduler
+/// thread id. A `/dev/rga` fd is a process resource, so keying by the process lets sibling
+/// threads sharing the fd resolve the same handles and makes cleanup process-scoped.
 fn current_id() -> u64 {
-    ax_task::current().id().as_u64()
+    ax_task::current().as_thread().proc_data.proc.pid() as u64
 }
 
 /// A buffer imported via `RGA_IOC_IMPORT_BUFFER`. Stores the physical address and, when
@@ -31,8 +33,9 @@ struct ImportedBuf {
 }
 
 /// `/dev/rga` character device with a handle table for the MultiRGA import API.
-/// Handles and staged requests are keyed by (task_id, id) so Process A cannot touch
-/// Process B's buffers/requests.
+/// Handles and staged requests are keyed by (pid, id) — the process id (tgid) — so
+/// Process A cannot touch Process B's buffers/requests, while sibling threads of the
+/// same process share the same fd's handles.
 pub struct RgaDevice {
     handle_table: Mutex<BTreeMap<(u64, u32), ImportedBuf>>,
     next_handle: Mutex<u32>,
@@ -51,19 +54,19 @@ impl RgaDevice {
         }
     }
 
-    /// Allocate a unique non-zero handle keyed by the current task, and insert the entry
+    /// Allocate a unique non-zero handle keyed by the current process, and insert the entry
     /// in one critical section.
     fn alloc_handle(&self, entry: ImportedBuf) -> VfsResult<u32> {
-        let tid = current_id();
+        let pid = current_id();
         let mut table = self.handle_table.lock();
         let mut next = self.next_handle.lock();
         for _ in 0..=u32::MAX {
             let h = *next;
             *next = h.wrapping_add(1);
-            if h == 0 || table.contains_key(&(tid, h)) {
+            if h == 0 || table.contains_key(&(pid, h)) {
                 continue;
             }
-            table.insert((tid, h), entry);
+            table.insert((pid, h), entry);
             return Ok(h);
         }
         Err(VfsError::NoMemory)
@@ -82,10 +85,10 @@ impl RgaDevice {
         }
         if handle_flag {
             let handle = raw as u32;
-            let tid = current_id();
+            let pid = current_id();
             let table = self.handle_table.lock();
             let entry = table
-                .get(&(tid, handle))
+                .get(&(pid, handle))
                 .ok_or(VfsError::BadFileDescriptor)?;
             // Clone the Arc so the dma-buf stays alive across submit+poll even if a concurrent
             // RELEASE_BUFFER removes the table entry mid-op. RGA_PHYSICAL_ADDRESS entries carry
@@ -308,7 +311,7 @@ impl RgaDevice {
 
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>();
         let base = pool.buffers_ptr as usize;
-        let tid = current_id();
+        let pid = current_id();
         let mut table = self.handle_table.lock();
 
         for i in 0..pool.size as usize {
@@ -318,7 +321,7 @@ impl RgaDevice {
                     .vm_read_uninit()?
                     .assume_init()
             };
-            if table.remove(&(tid, ext.handle)).is_none() {
+            if table.remove(&(pid, ext.handle)).is_none() {
                 return Err(VfsError::BadFileDescriptor);
             }
         }
@@ -363,25 +366,25 @@ impl RgaDevice {
 
     /// `RGA_IOC_REQUEST_CREATE` — allocate a request id (written back to userspace).
     fn handle_request_create(&self, arg: usize) -> VfsResult<usize> {
-        let tid = current_id();
+        let pid = current_id();
         let mut next = self.next_request_id.lock();
         let mut requests = self.requests.lock();
-        // Pick a non-zero id not already live for this task.
+        // Pick a non-zero id not already live for this process.
         let id = loop {
             let id = *next;
             *next = id.wrapping_add(1);
-            if id != 0 && !requests.contains_key(&(tid, id)) {
+            if id != 0 && !requests.contains_key(&(pid, id)) {
                 break id;
             }
         };
-        requests.insert((tid, id), Vec::new());
+        requests.insert((pid, id), Vec::new());
         drop(requests);
         drop(next);
         // Roll the inserted id back if the write-back faults: a bad user pointer returns EFAULT
         // (the process keeps running) and must not strand a request the user never learns the id of.
         let res = (arg as *mut u32).vm_write(id);
         if res.is_err() {
-            self.requests.lock().remove(&(tid, id));
+            self.requests.lock().remove(&(pid, id));
         }
         res?;
         Ok(0)
@@ -415,8 +418,8 @@ impl RgaDevice {
                 .assume_init()
         };
         let tasks = Self::read_request_tasks(&ureq)?;
-        let tid = current_id();
-        self.requests.lock().insert((tid, ureq.id), tasks);
+        let pid = current_id();
+        self.requests.lock().insert((pid, ureq.id), tasks);
         Ok(0)
     }
 
@@ -428,19 +431,19 @@ impl RgaDevice {
                 .vm_read_uninit()?
                 .assume_init()
         };
-        let tid = current_id();
+        let pid = current_id();
         // Tasks may be carried inline (common im2d single-blit) or staged by a prior CONFIG.
         let tasks = if ureq.task_num > 0 {
             Self::read_request_tasks(&ureq)?
         } else {
             self.requests
                 .lock()
-                .get(&(tid, ureq.id))
+                .get(&(pid, ureq.id))
                 .cloned()
                 .ok_or(VfsError::InvalidInput)?
         };
         // Drop any staged copy now that we own the tasks.
-        self.requests.lock().remove(&(tid, ureq.id));
+        self.requests.lock().remove(&(pid, ureq.id));
 
         for task in &tasks {
             self.execute_blit(task)?;
@@ -451,8 +454,8 @@ impl RgaDevice {
     /// `RGA_IOC_REQUEST_CANCEL` — drop a staged request.
     fn handle_request_cancel(&self, arg: usize) -> VfsResult<usize> {
         let id: u32 = unsafe { (arg as *const u32).vm_read_uninit()?.assume_init() };
-        let tid = current_id();
-        self.requests.lock().remove(&(tid, id));
+        let pid = current_id();
+        self.requests.lock().remove(&(pid, id));
         Ok(0)
     }
 }
@@ -504,15 +507,18 @@ impl DeviceOps for RgaDevice {
         NodeFlags::NON_CACHEABLE
     }
 
-    /// Release this task's imported-buffer handles and staged requests when it
+    /// Release this process's imported-buffer handles and staged requests when it
     /// closes `/dev/rga`. This is invoked per-open from `Drop for File`, in the
     /// owning task's context on both explicit `close(2)` and process exit, so
-    /// `current_id()` is the owner. Without it the `(task_id, _)`-keyed entries
-    /// would persist for the kernel's lifetime — a slow leak, and a future task
-    /// that reuses the id could observe the dead task's handles.
+    /// `current_id()` is the owning process. Without it the `(pid, _)`-keyed entries
+    /// would persist for the kernel's lifetime — a slow leak, and a future process
+    /// reusing the pid could observe the dead process's handles. Because a shared
+    /// `/dev/rga` node has no per-fd state, closing one of several fds in the same
+    /// process reclaims the whole process's handles; librga opens one fd per process,
+    /// so this is not hit in practice.
     fn close(&self, _exclusive: bool) {
-        let tid = current_id();
-        self.handle_table.lock().retain(|&(t, _), _| t != tid);
-        self.requests.lock().retain(|&(t, _), _| t != tid);
+        let pid = current_id();
+        self.handle_table.lock().retain(|&(t, _), _| t != pid);
+        self.requests.lock().retain(|&(t, _), _| t != pid);
     }
 }
