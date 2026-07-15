@@ -123,6 +123,34 @@ fn discover_qemu_cases_matches_target_variant_configs() {
 }
 
 #[test]
+fn discover_qemu_cases_does_not_duplicate_matching_variant_name() {
+    let root = tempfile::tempdir().unwrap();
+    let wrapper_dir = root.path().join("suite/qemu");
+    let case_dir = wrapper_dir.join("ivc");
+    fs::create_dir_all(&case_dir).unwrap();
+    let build_config = wrapper_dir.join("build-aarch64-unknown-none-softfloat-ivc.toml");
+    let qemu_config = case_dir.join("qemu-aarch64-ivc.toml");
+    fs::write(&build_config, "").unwrap();
+    fs::write(&qemu_config, "").unwrap();
+
+    let cases = discover_qemu_cases(
+        &root.path().join("suite"),
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("ivc"),
+        "test",
+        "qemu",
+    )
+    .unwrap();
+
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].name, "ivc");
+    assert_eq!(cases[0].display_name, "qemu-ivc/ivc");
+    assert_eq!(cases[0].qemu_config_path, qemu_config);
+    assert_eq!(cases[0].build_config_path, build_config);
+}
+
+#[test]
 fn resolve_build_config_accepts_target_specific_name_only() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("build-x86_64-unknown-none.toml");

@@ -72,6 +72,7 @@ pub(super) fn patch_runtime_fdt(
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
+    let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
     let (serial_profile, serial_identity, additional_serials, gic_profile, timer_profile) = vm
         .with_architecture_plan(|plan| {
             Ok((
@@ -89,6 +90,7 @@ pub(super) fn patch_runtime_fdt(
     super::fdt::core::create::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
+        &emulated_devices,
         crate_config,
         serial_profile,
         serial_identity.as_ref(),

@@ -54,7 +54,12 @@ pub fn setup_guest_fdt_from_vmm(
 
     reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
-    super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)
+    super::create::create_guest_fdt(
+        &fdt,
+        &passthrough_device_names,
+        vm_cfg.emu_devices(),
+        crate_config,
+    )
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {

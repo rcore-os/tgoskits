@@ -15,11 +15,11 @@
 use std::{ptr::NonNull, string::String, vec::Vec};
 
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::GuestConfig;
+use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType, GuestConfig};
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::RegInfo;
 
-use super::tree::{FdtTree, GuestMemorySpec};
+use super::tree::{FdtTree, GuestMemorySpec, prop_string, prop_u32_list};
 use crate::{
     AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
     boot::images::load_vm_image_from_memory,
@@ -28,6 +28,7 @@ use crate::{
 pub fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
+    emulated_devices: &[EmulatedDeviceConfig],
     crate_config: &GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
@@ -55,6 +56,7 @@ pub fn create_guest_fdt(
         )
     })?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
+    guest_tree.add_ivc_channel_nodes(emulated_devices)?;
     Ok(guest_tree.finish())
 }
 
@@ -333,6 +335,7 @@ fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
 pub(crate) fn patch_guest_fdt_for_runtime(
     fdt_bytes: &[u8],
     memory_regions: &[VMMemoryRegion],
+    emulated_devices: &[EmulatedDeviceConfig],
     crate_config: &GuestConfig,
     serial_profile: crate::machine::GuestSerialProfile,
     serial_identity: Option<&crate::machine::GuestSerialFdtIdentity>,
@@ -346,6 +349,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
+    tree.add_ivc_channel_nodes(emulated_devices)?;
     if create_chosen
         || initrd_start_size.is_some()
         || crate_config.kernel.cmdline.is_some()
@@ -503,6 +507,46 @@ fn u32_list_property(name: &str, values: &[u32]) -> Property {
     let mut property = Property::new(name, std::vec![]);
     property.set_u32_ls(values);
     property
+}
+
+impl FdtTree {
+    fn add_ivc_channel_nodes(&mut self, devices: &[EmulatedDeviceConfig]) -> AxVmResult {
+        for device in devices
+            .iter()
+            .filter(|device| device.emu_type == EmulatedDeviceType::IVCChannel)
+        {
+            self.add_ivc_channel_node(device)?;
+        }
+        Ok(())
+    }
+
+    fn add_ivc_channel_node(&mut self, device: &EmulatedDeviceConfig) -> AxVmResult {
+        let node_id = self.ensure_path(&format!("/ivc-channel@{:x}", device.base_gpa))?;
+        info!(
+            "Adding guest IVC channel FDT node /ivc-channel@{:x}",
+            device.base_gpa
+        );
+        self.set_property(node_id, prop_string("compatible", "axvisor,ivc-channel"))?;
+        self.set_property(node_id, prop_string("status", "okay"))?;
+        self.set_property(node_id, prop_u32_list("axvisor,ivc-version", &[1]))?;
+
+        if let Some(notify_irq) = device
+            .cfg_list
+            .first()
+            .and_then(|irq| u32::try_from(*irq).ok())
+        {
+            self.set_property(node_id, prop_u32_list("axvisor,notify-irq", &[notify_irq]))?;
+        }
+
+        self.inner_mut()
+            .view_typed_mut(node_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "new IVC channel node is missing"))?
+            .set_regs(&[RegInfo::new(
+                device.base_gpa as u64,
+                Some(device.length as u64),
+            )]);
+        Ok(())
+    }
 }
 
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
@@ -815,6 +859,7 @@ mod tests {
         let patched = super::patch_guest_fdt_for_runtime(
             &dtb,
             &[],
+            &[],
             &cfg,
             serial,
             None,
@@ -834,6 +879,7 @@ mod tests {
         let patched = super::patch_guest_fdt_for_runtime(
             &dtb,
             &[],
+            &[],
             &cfg,
             serial,
             None,
@@ -851,6 +897,52 @@ mod tests {
     }
 
     #[test]
+    fn runtime_patch_adds_ivc_channel_node() {
+        let fdt = Fdt::new();
+        let dtb = fdt.encode().as_ref().to_vec();
+        let cfg = GuestConfig::default();
+        let emulated_devices = std::vec![axvmconfig::EmulatedDeviceConfig {
+            name: "ivc-channel".into(),
+            base_gpa: 0xbff0_0000,
+            length: 0x1_0000,
+            irq_id: 0,
+            emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
+            cfg_list: std::vec![60],
+        }];
+        let serial = crate::machine::current_machine_profile(1).serial;
+
+        let patched = super::patch_guest_fdt_for_runtime(
+            &dtb,
+            &[],
+            &emulated_devices,
+            &cfg,
+            serial,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let reparsed = Fdt::from_bytes(&patched).unwrap();
+        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
+        let node = reparsed.node(node_id).unwrap();
+        let typed_node = reparsed.view_typed(node_id).unwrap();
+
+        assert_eq!(
+            node.get_property("compatible").unwrap().as_str(),
+            Some("axvisor,ivc-channel")
+        );
+        assert_eq!(typed_node.regs()[0].address, 0xbff0_0000);
+        assert_eq!(typed_node.regs()[0].size, Some(0x1_0000));
+        assert_eq!(
+            node.get_property("axvisor,notify-irq").unwrap().get_u32(),
+            Some(60)
+        );
+    }
+
+    #[test]
     fn generated_fdt_filters_cpu_nodes_by_unit_address() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
         let cfg = GuestConfig {
@@ -860,7 +952,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &[], &cfg).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
@@ -935,7 +1027,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &[], &cfg).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
         let plic = reparsed.get_by_path("/soc/plic@c000000").unwrap();
         assert!(reparsed.get_by_path_id("/its@8080000").is_some());

@@ -39,12 +39,8 @@ pub(super) fn arceos_ivc_guest_requests(
     request: &ResolvedAxvisorRequest,
 ) -> anyhow::Result<Vec<ResolvedBuildRequest>> {
     matching_arceos_ivc_guest_profiles(request)
-        .flat_map(|profile| {
-            profile
-                .packages
-                .iter()
-                .map(move |package| arceos_guest_request(package, profile.arch, profile.target))
-        })
+        .flat_map(|profile| profile.matching_packages(request))
+        .map(|(profile, package)| arceos_guest_request(package, profile.arch, profile.target))
         .collect()
 }
 
@@ -168,22 +164,39 @@ fn matching_arceos_ivc_guest_profiles(
 ) -> impl Iterator<Item = &'static ArceosIvcGuestProfile> + '_ {
     ARCEOS_IVC_GUEST_PROFILES
         .iter()
-        .filter(|profile| profile.matches(request))
+        .filter(|profile| profile.has_matching_package(request))
 }
 
 impl ArceosIvcGuestProfile {
-    fn matches(&self, request: &ResolvedAxvisorRequest) -> bool {
+    fn has_matching_package(&self, request: &ResolvedAxvisorRequest) -> bool {
+        self.packages
+            .iter()
+            .any(|package| self.matches_package(request, package))
+    }
+
+    fn matching_packages<'a>(
+        &'a self,
+        request: &'a ResolvedAxvisorRequest,
+    ) -> impl Iterator<Item = (&'a Self, &'static str)> + 'a {
+        self.packages
+            .iter()
+            .copied()
+            .filter(move |package| self.matches_package(request, package))
+            .map(move |package| (self, package))
+    }
+
+    fn matches_package(&self, request: &ResolvedAxvisorRequest, package: &str) -> bool {
         request.arch == self.arch
             && request
                 .vmconfigs
                 .iter()
-                .any(|path| self.matches_vmconfig_path(path))
+                .any(|path| self.matches_vmconfig_path(path, package))
     }
 
-    fn matches_vmconfig_path(&self, path: &Path) -> bool {
+    fn matches_vmconfig_path(&self, path: &Path, package: &str) -> bool {
         path.file_stem()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains(self.vmconfig_marker))
+            .is_some_and(|name| name.contains(self.vmconfig_marker) && name.starts_with(package))
     }
 }
 
