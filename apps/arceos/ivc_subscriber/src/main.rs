@@ -124,9 +124,22 @@ mod subscriber {
     fn send_ack_when_ready(region: &'static IvcRegion, sequence: u64) {
         loop {
             match region.send_ack(sequence, b"ack from arceos subscriber") {
-                Ok(()) => return,
+                Ok(()) => {
+                    notify_publisher();
+                    return;
+                }
                 Err(_) => wait_for_publisher(),
             }
+        }
+    }
+
+    fn notify_publisher() {
+        if let Err(err) = ivc::notify_channel(
+            demo_config::PUBLISHER_VM_ID,
+            demo_config::CHANNEL_KEY,
+            demo_config::PUBLISHER_VM_ID,
+        ) {
+            println!("ivc notify warning: {err}");
         }
     }
 
