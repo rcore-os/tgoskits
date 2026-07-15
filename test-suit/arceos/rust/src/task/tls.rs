@@ -104,8 +104,10 @@ fn exercise_bootstrap_fp_off_switch() {
     static RELEASE_CHILD: AtomicBool = AtomicBool::new(false);
     static CHILD_FINISHED: AtomicBool = AtomicBool::new(false);
 
-    RELEASE_CHILD.store(false, Ordering::Relaxed);
-    CHILD_FINISHED.store(false, Ordering::Relaxed);
+    // Keep every publication on these synchronization flags Release-paired
+    // with the corresponding Acquire observation, including rerun resets.
+    RELEASE_CHILD.store(false, Ordering::Release);
+    CHILD_FINISHED.store(false, Ordering::Release);
     let child = thread::spawn(|| {
         while !RELEASE_CHILD.load(Ordering::Acquire) {
             thread::yield_now();
