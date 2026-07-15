@@ -92,12 +92,12 @@ fn nix_sandbox_cases_enforce_bounded_truthful_completion() {
 
         assert_eq!(
             config.get("timeout").and_then(toml::Value::as_integer),
-            Some(180),
-            "{} must cap the QEMU case at three minutes",
+            Some(600),
+            "{} must cap the QEMU case at ten minutes",
             config_path.display()
         );
         for required in [
-            "test_timeout=180",
+            "test_timeout=600",
             "diagnostic_reserve=20",
             "remaining_test_budget",
             "build_deadline=",

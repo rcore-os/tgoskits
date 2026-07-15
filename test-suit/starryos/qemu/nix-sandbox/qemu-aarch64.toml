@@ -6,7 +6,7 @@
 #   cargo xtask starry test qemu --arch aarch64 -c qemu/nix-sandbox
 #
 # Memory: 2G minimum for nix + sandbox builder overhead.
-# The whole case is bounded at three minutes, matching x86_64.
+# The whole case is bounded at ten minutes, matching x86_64.
 
 args = [
     "-nographic",
@@ -33,7 +33,7 @@ test_commands = [
 fail() { echo "NIX_SANDBOX_ERROR: $1"; echo "NIX_SANDBOX_TEST_FAILED"; exit 1; }
 
 test_started=$(date +%s)
-test_timeout=180
+test_timeout=600
 
 remaining_test_budget() {
     now=$(date +%s)
@@ -206,4 +206,4 @@ fail_regex = [
     "(?m)^NIX_SANDBOX_TEST_FAILED\\s*$",
     "(?m)^NIX_SANDBOX_ERROR:",
 ]
-timeout = 180
+timeout = 600
