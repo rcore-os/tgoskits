@@ -7,8 +7,9 @@ args = [
     "-drive",
     "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
 ]
-uefi = false
-to_bin = false
+# This std/PIC test image requires the x86_64 UEFI handoff before the tty test starts.
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/tty-input-burst.sh"
 success_regex = ["(?m)^STARRY_TTY_INPUT_BURST_PASSED\\s*$"]
