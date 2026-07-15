@@ -7,7 +7,12 @@ publish = false
 
 [features]
 default = []
-arceos = ["dep:ax-mm", "dep:ax-std", "ax-std/paging"]
+arceos = [
+  "dep:ax-mm",
+  "dep:ax-std",
+  "ax-std/irq",
+  "ax-std/paging",
+]
 
 [dependencies]
 ax-mm = { workspace = true, optional = true }

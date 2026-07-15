@@ -347,6 +347,14 @@ impl DeviceRuntime {
             .allocate(size)
     }
 
+    /// Returns the optional VM-local IRQ line used by IVC notify.
+    pub fn ivc_notify_irq(&self) -> Option<usize> {
+        self.services
+            .require::<IvcNotifyIrqKey>()
+            .ok()
+            .map(|irq| *irq)
+    }
+
     /// Releases a previously allocated IVC channel.
     pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
         self.services

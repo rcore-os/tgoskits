@@ -28,6 +28,16 @@ impl ServiceKey for GuestRangeAllocatorKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
+/// Type key for the optional VM-local IRQ used by IVC peer notification.
+pub struct IvcNotifyIrqKey;
+
+impl ServiceKey for IvcNotifyIrqKey {
+    type Service = usize;
+
+    const NAME: &'static str = "ivc-notify-irq";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
 /// Default allocator for a range already claimed by a [`DeviceModel`](crate::DeviceModel).
 ///
 /// This type does not reserve guest address space. A model must first declare
