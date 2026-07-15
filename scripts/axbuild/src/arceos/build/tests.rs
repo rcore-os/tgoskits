@@ -11,7 +11,10 @@ use super::{
     load_arceos_build_mode, load_c_app_cargo_config, resolve_app_c_dir, resolve_app_c_mode,
     resolve_build_info_path,
 };
-use crate::{build, context::ResolvedBuildRequest};
+use crate::{
+    build,
+    context::{ResolvedBuildRequest, find_workspace_root},
+};
 
 fn repo_metadata() -> cargo_metadata::Metadata {
     build::workspace_metadata().unwrap()
@@ -61,6 +64,14 @@ fn max_cpu_num_adds_smp_feature_for_std_build() {
     build_info.resolve_c_app_features().unwrap();
 
     assert!(build_info.features.contains(&"ax-std/smp".to_string()));
+}
+
+#[test]
+fn arceos_shell_declares_the_filesystem_backend_used_by_its_qemu_disk() {
+    let manifest =
+        fs::read_to_string(find_workspace_root().join("apps/arceos/shell/Cargo.toml")).unwrap();
+
+    assert!(manifest.contains("ax-std/fatfs"));
 }
 
 #[test]
