@@ -92,7 +92,7 @@ const config = {
       appId: 'HETXPBD08D',
       apiKey: '12cfa7e19141075aac2d0644cfda70c4',
       // Set this after the first crawler run creates the index.
-      indexName: '',
+      indexName: 'tgoskits',
       contextualSearch: true,
       searchPagePath: 'search',
     },
