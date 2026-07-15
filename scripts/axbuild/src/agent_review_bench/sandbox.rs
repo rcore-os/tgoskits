@@ -13,6 +13,7 @@ use super::cases::BenchCase;
 
 const REVIEW_CONTRACT: &str = include_str!("../../../agent-review-bench/reviewer.md");
 const REVIEW_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/review.schema.json");
+const REVIEW_SKILL_PATH: &str = ".claude/skills/review-single-pr/SKILL.md";
 
 pub(super) struct ReviewSandbox {
     _root: TempDir,
@@ -90,6 +91,8 @@ fn extract_snapshot(
 fn overlay_current_review_context(workspace_root: &Path, repo: &Path) -> anyhow::Result<()> {
     fs::copy(workspace_root.join("AGENTS.md"), repo.join("AGENTS.md"))
         .context("failed to copy current AGENTS.md into review sandbox")?;
+    fs::copy(workspace_root.join("CLAUDE.md"), repo.join("CLAUDE.md"))
+        .context("failed to copy current CLAUDE.md into review sandbox")?;
 
     let guideline_destination = repo.join("book/guideline");
     if guideline_destination.exists() {
@@ -100,10 +103,42 @@ fn overlay_current_review_context(workspace_root: &Path, repo: &Path) -> anyhow:
         &guideline_destination,
     )?;
 
+    let current_skill = workspace_root.join(REVIEW_SKILL_PATH);
+    replace_review_skill(
+        &current_skill,
+        &repo.join(".claude/skills/review-single-pr"),
+    )?;
+    replace_review_skill(
+        &current_skill,
+        &repo.join(".agents/skills/review-single-pr"),
+    )?;
+
     let context_dir = repo.join(".agent-review-context");
     fs::create_dir_all(&context_dir)?;
     fs::write(context_dir.join("reviewer.md"), REVIEW_CONTRACT)?;
     fs::write(context_dir.join("review.schema.json"), REVIEW_SCHEMA)?;
+    Ok(())
+}
+
+fn replace_review_skill(source: &Path, destination_dir: &Path) -> anyhow::Result<()> {
+    if destination_dir.exists() {
+        fs::remove_dir_all(destination_dir)?;
+    }
+    copy_file(source, &destination_dir.join("SKILL.md"))
+}
+
+fn copy_file(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let parent = destination
+        .parent()
+        .context("review-context destination has no parent directory")?;
+    fs::create_dir_all(parent)?;
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to copy review context {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -215,10 +250,19 @@ mod tests {
     fn creates_standalone_two_commit_repository_without_ground_truth() {
         let workspace = tempdir().unwrap();
         fs::write(workspace.path().join("AGENTS.md"), "current rules\n").unwrap();
+        fs::write(workspace.path().join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
         fs::create_dir_all(workspace.path().join("book/guideline")).unwrap();
         fs::write(
             workspace.path().join("book/guideline/code-quality.md"),
             "current guideline\n",
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.path().join(".claude/skills/review-single-pr")).unwrap();
+        fs::write(
+            workspace
+                .path()
+                .join(".claude/skills/review-single-pr/SKILL.md"),
+            "current review skill\n",
         )
         .unwrap();
         git(workspace.path(), ["init", "--quiet"]).unwrap();
@@ -266,6 +310,19 @@ mod tests {
             fs::read_to_string(sandbox.repo().join("AGENTS.md")).unwrap(),
             "current rules\n"
         );
+        assert_eq!(
+            fs::read_to_string(sandbox.repo().join("CLAUDE.md")).unwrap(),
+            "see AGENTS.md\n"
+        );
+        for skill_path in [
+            ".claude/skills/review-single-pr/SKILL.md",
+            ".agents/skills/review-single-pr/SKILL.md",
+        ] {
+            assert_eq!(
+                fs::read_to_string(sandbox.repo().join(skill_path)).unwrap(),
+                "current review skill\n"
+            );
+        }
         let diff = Command::new("git")
             .current_dir(sandbox.repo())
             .args(["diff", "bench-base", "HEAD", "--", "src/lib.rs"])
@@ -273,6 +330,15 @@ mod tests {
             .unwrap();
         let diff = String::from_utf8(diff.stdout).unwrap();
         assert!(diff.contains("value() -> u8 { 2 }"));
+        let changed_paths = Command::new("git")
+            .current_dir(sandbox.repo())
+            .args(["diff", "--name-only", "bench-base", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(changed_paths.stdout).unwrap(),
+            "src/lib.rs\n"
+        );
         assert!(!WalkDir::new(sandbox.repo()).into_iter().any(|entry| {
             entry
                 .ok()

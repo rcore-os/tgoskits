@@ -12,13 +12,8 @@ use tokio::{process::Command, time::timeout};
 
 use super::{cases::BenchCase, sandbox::ReviewSandbox};
 
-const REVIEW_PROMPT: &str =
-    "You are performing an offline code review benchmark. Review only the committed changes from \
-     `bench-base` to `HEAD` in the current repository. First read `AGENTS.md`, every file under \
-     `book/guideline/`, and `.agent-review-context/reviewer.md`, then follow those rules. Inspect \
-     the diff and relevant in-repository context for actionable defects. Do not use the network, \
-     GitHub, paths outside this repository, or write operations. Return only the JSON object \
-     required by the output schema.";
+const CODEX_REVIEW_PROMPT: &str = "$review-single-pr offline-benchmark";
+const CLAUDE_REVIEW_PROMPT: &str = "/review-single-pr offline-benchmark";
 const GRADE_PROMPT: &str = "You are grading an offline code review. Read `expected.json` and \
                             `review.json` in the current directory. For every expected item, \
                             decide whether one review finding satisfies its `match_if` criterion \
@@ -30,7 +25,6 @@ const GRADE_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/gra
 
 const CLAUDE_COMMON_ARGS: &[&str] = &[
     "-p",
-    "--safe-mode",
     "--no-session-persistence",
     "--strict-mcp-config",
     "--mcp-config",
@@ -39,6 +33,20 @@ const CLAUDE_COMMON_ARGS: &[&str] = &[
     "--permission-mode",
     "dontAsk",
 ];
+const CLAUDE_REVIEW_SETTING_SOURCES: &str = "user,project";
+const CLAUDE_REVIEW_SETTINGS: &str = r#"{
+    "disableAllHooks": true,
+    "disableAgentView": true,
+    "disableSkillShellExecution": true,
+    "env": {
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"
+    }
+}"#;
+const CLAUDE_GRADE_ARGS: &[&str] = &["--safe-mode"];
 const CLAUDE_REVIEW_TOOLS: &str = "Bash,Read,Glob,Grep";
 const CLAUDE_REVIEW_ALLOWED_TOOLS: &[&str] = &[
     "Read",
@@ -186,7 +194,7 @@ impl AgentRunner {
             .arg(&temporary_output)
             .stdout(Stdio::inherit());
         apply_codex_options(&mut command, options);
-        command.arg(REVIEW_PROMPT);
+        command.arg(CODEX_REVIEW_PROMPT);
 
         run_process(&mut command, options.timeout_secs, "Codex reviewer").await?;
         copy_nonempty_output(&temporary_output, artifact_path, "reviewer")
@@ -206,13 +214,15 @@ impl AgentRunner {
         command
             .current_dir(sandbox.repo())
             .args(CLAUDE_COMMON_ARGS)
+            .args(["--setting-sources", CLAUDE_REVIEW_SETTING_SOURCES])
+            .args(["--settings", CLAUDE_REVIEW_SETTINGS])
             .args(["--tools", CLAUDE_REVIEW_TOOLS])
             .arg("--allowedTools")
             .args(CLAUDE_REVIEW_ALLOWED_TOOLS)
             .args(["--json-schema", &schema])
             .stdout(Stdio::from(output));
         apply_claude_options(&mut command, options);
-        command.arg(REVIEW_PROMPT);
+        command.arg(CLAUDE_REVIEW_PROMPT);
 
         run_process(&mut command, options.timeout_secs, "Claude reviewer").await?;
         copy_nonempty_output(&temporary_output, artifact_path, "reviewer")
@@ -256,6 +266,7 @@ impl AgentRunner {
         command
             .current_dir(grader_dir)
             .args(CLAUDE_COMMON_ARGS)
+            .args(CLAUDE_GRADE_ARGS)
             .args(["--tools", CLAUDE_GRADE_TOOLS])
             .args(["--allowedTools", "Read"])
             .args(["--json-schema", &schema])
@@ -439,10 +450,28 @@ mod tests {
                 && !tool.contains("WebFetch")
                 && !tool.contains("WebSearch")
         }));
-        assert!(CLAUDE_COMMON_ARGS.contains(&"--safe-mode"));
+        assert!(!CLAUDE_COMMON_ARGS.contains(&"--safe-mode"));
+        assert!(CLAUDE_GRADE_ARGS.contains(&"--safe-mode"));
+        assert_eq!(CLAUDE_REVIEW_SETTING_SOURCES, "user,project");
+        let settings = serde_json::from_str::<serde_json::Value>(CLAUDE_REVIEW_SETTINGS).unwrap();
+        assert_eq!(settings["disableAllHooks"], true);
+        assert_eq!(settings["disableAgentView"], true);
+        assert_eq!(settings["disableSkillShellExecution"], true);
+        assert_eq!(settings["env"]["CLAUDE_CODE_DISABLE_CLAUDE_MDS"], "1");
         assert!(CLAUDE_COMMON_ARGS.contains(&"--strict-mcp-config"));
         assert!(CLAUDE_COMMON_ARGS.contains(&r#"{"mcpServers":{}}"#));
         assert!(CLAUDE_COMMON_ARGS.contains(&"--no-chrome"));
+    }
+
+    #[test]
+    fn reviewer_prompts_only_invoke_the_project_skill() {
+        assert_eq!(CODEX_REVIEW_PROMPT, "$review-single-pr offline-benchmark");
+        assert_eq!(CLAUDE_REVIEW_PROMPT, "/review-single-pr offline-benchmark");
+        for prompt in [CODEX_REVIEW_PROMPT, CLAUDE_REVIEW_PROMPT] {
+            assert!(!prompt.contains("correctness"));
+            assert!(!prompt.contains("GitHub"));
+            assert!(!prompt.contains("bench-base"));
+        }
     }
 
     #[test]

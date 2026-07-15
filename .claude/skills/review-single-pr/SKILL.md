@@ -17,6 +17,32 @@ After reading the full skill and all files under `book/guideline/`, create a rev
 
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
+## Offline Benchmark Mode
+
+Use this mode only when the skill is invoked with the exact `offline-benchmark` argument and the
+repository contains `.agent-review-context/reviewer.md`. The context file is the authoritative
+environment and output contract for this mode. If either condition is absent, follow the normal
+online workflow in the rest of this skill.
+
+In offline benchmark mode, treat the committed change from `bench-base` to `HEAD` as the one change
+under review. Read the complete skill, `AGENTS.md`, every file under `book/guideline/`, the offline
+contract, and the supplied output schema before judging the change. Apply the review-focus,
+test-quality, blocking-finding, hardware/ABI, security/soundness, maintainability, and documentation
+requirements from this skill to the local diff and relevant in-repository context.
+
+The benchmark repository intentionally has no live PR identity. Mark PR metadata and intake, review
+threads, remote CI, related-open-PR searches, worktree creation, merge-conflict repair, network
+semantic-source research, command execution for validation, GitHub review submission, reviewer
+assignment, and remote cleanup as not applicable. Do not infer a PR number, inspect paths outside
+the repository, access the network or GitHub, modify files, create commits or branches, or run
+builds and tests. Use only read-only repository inspection and the Git history/diff commands allowed
+by the harness.
+
+Return only the JSON object required by `.agent-review-context/review.schema.json`. Report findings
+introduced by `bench-base..HEAD`, anchor each finding to a changed line on the `HEAD` side, and use
+an empty `findings` array when no actionable issue exists. Do not submit or draft GitHub-facing
+review text in this mode.
+
 ## Goal
 
 Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from `.github/MAINTAINERS.md` when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.

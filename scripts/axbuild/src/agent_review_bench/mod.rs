@@ -511,6 +511,9 @@ mod tests {
         assert_eq!(summary["grader"]["agent"], "codex");
         assert_eq!(summary["grader"]["model"], "grader model");
         assert_eq!(summary["grader"]["reasoning_effort"], "grader effort");
+        let captured_args = fs::read_to_string(format!("{}.args", program.display())).unwrap();
+        assert!(captured_args.contains("/review-single-pr offline-benchmark"));
+        assert!(!captured_args.contains("You are performing an offline code review benchmark"));
 
         let reverse_output = workspace.path().join("reverse-artifacts");
         let mut reverse_args = test_run_args(reverse_output.clone());
@@ -530,6 +533,8 @@ mod tests {
         assert_eq!(reverse_summary["reviewer"]["agent"], "codex");
         assert_eq!(reverse_summary["grader"]["agent"], "claude");
         assert_eq!(reverse_summary["caught"], 1);
+        let captured_args = fs::read_to_string(format!("{}.args", program.display())).unwrap();
+        assert!(captured_args.contains("$review-single-pr offline-benchmark"));
 
         write_mock_agent(
             &program,
@@ -553,10 +558,17 @@ mod tests {
     #[cfg(unix)]
     fn create_test_case(workspace: &Path) -> BenchCase {
         fs::write(workspace.join("AGENTS.md"), "current rules\n").unwrap();
+        fs::write(workspace.join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
         fs::create_dir_all(workspace.join("book/guideline")).unwrap();
         fs::write(
             workspace.join("book/guideline/code-quality.md"),
             "current guideline\n",
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.join(".claude/skills/review-single-pr")).unwrap();
+        fs::write(
+            workspace.join(".claude/skills/review-single-pr/SKILL.md"),
+            "current review skill\n",
         )
         .unwrap();
         git(workspace, &["init", "--quiet"]);
@@ -619,12 +631,12 @@ mod tests {
     fn write_mock_agent(program: &Path, review: &str, grade: &str) {
         let script = format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli mock'; exit 0; \
-             fi\nmode=review\nif [ -f expected.json ]; then mode=grade; fi\noutput=\nwhile [ \
-             \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--cd) shift; mode=grade \
-             ;;\n--output-last-message|-o) shift; output=$1 ;;\nesac\nshift\ndone\nif [ \"$mode\" \
-             = review ]; then payload='{review}'; else payload='{grade}'; fi\nif [ -n \"$output\" \
-             ]; then printf '%s\\n' \"$payload\" > \"$output\"; else printf '%s\\n' \"$payload\"; \
-             fi\n"
+             fi\nprintf '%s\\n' \"$@\" >> \"$0.args\"\nmode=review\nif [ -f expected.json ]; then \
+             mode=grade; fi\noutput=\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--cd) shift; \
+             mode=grade ;;\n--output-last-message|-o) shift; output=$1 ;;\nesac\nshift\ndone\nif \
+             [ \"$mode\" = review ]; then payload='{review}'; else payload='{grade}'; fi\nif [ -n \
+             \"$output\" ]; then printf '%s\\n' \"$payload\" > \"$output\"; else printf '%s\\n' \
+             \"$payload\"; fi\n"
         );
         fs::write(program, script).unwrap();
         fs::set_permissions(program, fs::Permissions::from_mode(0o755)).unwrap();
