@@ -498,6 +498,12 @@ impl Starry {
         );
         timing_stage.finish();
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        // UEFI uses a writable ESP for the kernel image. A global `-snapshot`
+        // makes QEMU treat the VVFAT drive as read-only, so keep snapshot
+        // isolation on each ordinary disk instead.
+        if qemu.uefi {
+            qemu_test::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+        }
         let timing_stage = timing::TimingStage::new(
             "qemu-case",
             [
