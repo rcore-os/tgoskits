@@ -1,6 +1,7 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
 mod sched;
+mod sched_filter;
 mod trace;
 mod trace_pipe;
 
@@ -8,7 +9,7 @@ use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{
     num::NonZero,
     ops::Deref,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -88,6 +89,8 @@ impl TraceState {
 
 static TRACE_STATE: TraceState = TraceState::new();
 static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
+static SCHED_TRACE_WORKER_ID: AtomicU64 = AtomicU64::new(0);
+static TRACE_PIPE_NOTIFY_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KernelTraceAux;
 
@@ -151,18 +154,27 @@ impl KernelTraceOps for KernelTraceAux {
     }
 }
 
-fn start_trace_pipe_notify_worker() {
+fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
-        return;
+        panic!("trace pipe notify worker started twice");
     }
     crate::task::spawn_kernel_thread(
-        || loop {
-            TRACE_STATE.pipe_notify.wait();
-            // Trace records are queued before the deferred poll wake.
-            unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+        || {
+            loop {
+                TRACE_STATE.pipe_notify.wait();
+                // Trace records are queued before the deferred poll wake.
+                unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+            }
         },
         "trace-pipe-notify".into(),
-    );
+    )
+}
+
+fn publish_trace_worker_id(slot: &AtomicU64, worker: &ax_runtime::task::ThreadHandle, name: &str) {
+    let worker_id = worker.id().as_u64();
+    assert_ne!(worker_id, 0, "{name} has an invalid scheduler identity");
+    slot.compare_exchange(0, worker_id, Ordering::Release, Ordering::Relaxed)
+        .unwrap_or_else(|_| panic!("{name} started twice"));
 }
 
 /// Carries the unread suffix of a formatted text record across `read_at` calls.
@@ -289,9 +301,21 @@ pub fn tracepoint_init() -> AxResult<()> {
         .init_once(SpinMutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
+    let sched_worker = sched::start_worker();
+    let pipe_worker = start_trace_pipe_notify_worker();
+    publish_trace_worker_id(
+        &SCHED_TRACE_WORKER_ID,
+        &sched_worker,
+        "scheduler trace worker",
+    );
+    publish_trace_worker_id(
+        &TRACE_PIPE_NOTIFY_WORKER_ID,
+        &pipe_worker,
+        "trace pipe notify worker",
+    );
+    // The hook becomes visible only after both infrastructure identities are
+    // published, so their first schedule-in cannot enter the deferred ring.
     sched::install();
-    sched::start_worker();
-    start_trace_pipe_notify_worker();
     Ok(())
 }
 

@@ -196,6 +196,18 @@ fn ftrace_common_pid_uses_the_current_linux_tid() {
 #[test]
 fn sched_switch_hook_only_publishes_to_a_preallocated_deferred_ring() {
     let hook = function_body(TRACE_SCHED, "fn on_sched_switch(");
+    let enabled = hook
+        .find("__sched_switch.key_is_enabled()")
+        .expect("the IRQ-off hook must reject disabled tracepoints before capture");
+    let worker_load = hook
+        .find("SCHED_TRACE_WORKER_ID.load")
+        .expect("enabled events must filter trace workers");
+    let capture = hook
+        .find("DeferredSchedSwitch::capture")
+        .expect("enabled scheduler events must be captured");
+    assert!(enabled < worker_load && worker_load < capture);
+    assert!(hook.contains("should_defer_sched_switch"));
+    assert!(hook.contains("SCHED_TRACE_WORKER_ID"));
     assert!(hook.contains("publish_deferred"));
     assert!(hook.contains("notify_irq"));
     assert!(!hook.contains("trace_sched_switch("));
@@ -205,6 +217,19 @@ fn sched_switch_hook_only_publishes_to_a_preallocated_deferred_ring() {
     let worker = function_body(TRACE_SCHED, "fn start_worker(");
     assert!(worker.contains("drain_deferred"));
     assert!(worker.contains("replay_sched_switch"));
+    assert!(!worker.contains("sched_notify.notify_irq"));
+
+    let pipe_worker = function_body(TRACEPOINT, "fn start_trace_pipe_notify_worker(");
+    assert!(pipe_worker.contains("pipe_notify.wait"));
+
+    let init = function_body(TRACEPOINT, "pub fn tracepoint_init(");
+    let publish_identity = init
+        .find("publish_trace_worker_id")
+        .expect("worker identities must be published from returned handles");
+    let install = init
+        .find("sched::install()")
+        .expect("the scheduler hook must eventually be installed");
+    assert!(publish_identity < install);
 }
 
 #[test]

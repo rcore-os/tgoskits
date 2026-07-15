@@ -18,6 +18,7 @@ use core::{
 use ax_lazyinit::LazyInit;
 use ax_runtime::task::SchedSwitchRecord;
 
+use super::sched_filter::should_defer_sched_switch;
 use crate::task::try_current_user_irq_view;
 
 const DEFERRED_RING_CAPACITY: usize = 256;
@@ -216,20 +217,33 @@ pub(super) fn install() {
     ax_runtime::task::install_sched_switch_trace_hook(on_sched_switch);
 }
 
-pub(super) fn start_worker() {
+pub(super) fn start_worker() -> ax_runtime::task::ThreadHandle {
     crate::task::spawn_kernel_thread(
-        || loop {
-            super::TRACE_STATE.sched_notify.wait();
-            let pending = drain_deferred(DEFERRED_DRAIN_BATCH, replay_sched_switch);
-            if pending {
-                super::TRACE_STATE.sched_notify.notify_irq();
+        || {
+            loop {
+                super::TRACE_STATE.sched_notify.wait();
+                while drain_deferred(DEFERRED_DRAIN_BATCH, replay_sched_switch) {
+                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
+                        panic!("scheduler trace worker failed to yield: {error}")
+                    });
+                }
             }
         },
         "sched-switch-trace".into(),
-    );
+    )
 }
 
 fn on_sched_switch(record: SchedSwitchRecord) {
+    if !__sched_switch.key_is_enabled() {
+        return;
+    }
+    let worker_ids = [
+        super::SCHED_TRACE_WORKER_ID.load(Ordering::Acquire),
+        super::TRACE_PIPE_NOTIFY_WORKER_ID.load(Ordering::Acquire),
+    ];
+    if !should_defer_sched_switch(true, worker_ids, record.previous_thread, record.next_thread) {
+        return;
+    }
     if publish_deferred(DeferredSchedSwitch::capture(record)) {
         super::TRACE_STATE.sched_notify.notify_irq();
     }
