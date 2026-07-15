@@ -16,7 +16,7 @@ args = [
 uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gicv2-smp.sh"
+shell_init_cmd = "/usr/bin/gicv2-smp"
 success_regex = ["(?m)^STARRY_GICV2_SMP_PASSED\\s*$"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',

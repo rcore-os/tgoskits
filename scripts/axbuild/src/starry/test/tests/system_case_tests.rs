@@ -216,7 +216,8 @@ fn aarch64_gicv2_cases_cover_implicit_up_and_explicit_smp() {
         workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst/qemu-aarch64.toml");
     let smp_dir = workspace_root.join("test-suit/starryos/qemu/gicv2-smp");
     let smp_config = smp_dir.join("qemu-aarch64.toml");
-    let smp_script = smp_dir.join("sh/gicv2-smp.sh");
+    let smp_cmake = smp_dir.join("c/CMakeLists.txt");
+    let smp_program = smp_dir.join("c/src/main.c");
 
     for path in [&tty_config, &smp_config] {
         let content = fs::read_to_string(path)
@@ -237,12 +238,24 @@ fn aarch64_gicv2_cases_cover_implicit_up_and_explicit_smp() {
     }
 
     let smp_config = fs::read_to_string(&smp_config).unwrap();
+    let config: toml::Value = toml::from_str(&smp_config).unwrap();
     assert!(smp_config.contains("\"-smp\"") && smp_config.contains("\"4\""));
+    assert_eq!(
+        config.get("shell_init_cmd").and_then(toml::Value::as_str),
+        Some("/usr/bin/gicv2-smp")
+    );
     assert!(smp_config.contains("STARRY_GICV2_SMP_PASSED"));
 
-    let script = fs::read_to_string(&smp_script).unwrap();
-    assert!(script.contains("taskset -c \"$cpu\"") && script.contains("wait \"$pid\""));
-    assert!(script.contains("STARRY_GICV2_SMP_FAILED"));
+    let cmake = fs::read_to_string(&smp_cmake).unwrap();
+    let program = fs::read_to_string(&smp_program).unwrap();
+    assert!(cmake.contains("install(TARGETS gicv2-smp RUNTIME DESTINATION usr/bin)"));
+    assert!(program.contains("sched_setaffinity"));
+    assert!(program.contains("SYS_getcpu"));
+    assert!(program.contains("waitpid"));
+    assert!(program.contains("STARRY_GICV2_SMP_FAILED"));
+    assert!(program.contains("STARRY_GICV2_SMP_PASSED"));
+    assert!(!program.contains("taskset"));
+    assert!(!smp_dir.join("sh/gicv2-smp.sh").exists());
 }
 
 #[test]
