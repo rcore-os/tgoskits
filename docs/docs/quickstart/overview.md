@@ -93,7 +93,7 @@ QEMU 运行需要同时满足板卡配置支持目标架构、Rust target 可用
 | `riscv64` | `riscv64gc-unknown-none-elf` | `qemu-system-riscv64` |
 | `aarch64` | `aarch64-unknown-none-softfloat` | `qemu-system-aarch64` |
 | `x86_64` | `x86_64-unknown-none` | `qemu-system-x86_64` |
-| `loongarch64` | `loongarch64-unknown-none-softfloat` | `qemu-system-loongarch64` |
+| `loongarch64` | `loongarch64-unknown-none-softfloat` | `qemu-system-loongarch64`；Axvisor 需要 LVZ 版本 |
 
 ### 2.2 验证 QEMU
 
@@ -107,6 +107,20 @@ qemu-system-loongarch64 --version
 ```
 
 版本命令只能确认模拟器可执行文件存在；实际启动仍会继续验证机器类型、固件和镜像依赖。若某个架构的 QEMU 未安装，优先使用容器环境，而不是在宿主机单独拼装不同来源的工具。
+
+### 2.3 Axvisor LoongArch64 LVZ
+
+Axvisor 的 LoongArch64 路径依赖 LVZ 虚拟化扩展，标准 QEMU 无法运行该配置。项目使用专用的 [QEMU-LVZ](https://github.com/Hengyu-Yu/QEMU-LVZ)，并提供已经包含该二进制、LoongArch OVMF 和交叉工具链的容器镜像。
+
+```bash
+docker pull ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest
+docker run --rm -it \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest
+```
+
+进入容器后再执行 Axvisor 的 `config ls`、`defconfig qemu-loongarch64` 和 `qemu` 命令。其他系统的 LoongArch64 QEMU 路径不要求 LVZ 扩展，仍可使用标准 `qemu-system-loongarch64`。
 
 ## 3. 命令入口
 

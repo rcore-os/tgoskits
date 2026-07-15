@@ -54,7 +54,7 @@ cargo axvisor qemu
 
 ### 1.4 LoongArch64
 
-`qemu-loongarch64` 使用 `loongarch64-unknown-none-softfloat` target，运行环境需要提供 `qemu-system-loongarch64`。
+LoongArch64 路径依赖 LVZ 虚拟化扩展，必须使用专用的 [QEMU-LVZ](https://github.com/Hengyu-Yu/QEMU-LVZ)，不能使用标准 `qemu-system-loongarch64`。
 
 ```bash
 cargo axvisor config ls
