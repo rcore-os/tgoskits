@@ -1,0 +1,16 @@
+id = "1505-ipv6-pktinfo-family-validation"
+pr = 1505
+title = "fix(starry): accept read-only mmap fdatasync and IP_PKTINFO/IPV6 pktinfo sockopts"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "882e07fd2d1581a8a9882d397946db25a974bd15"
+head = "dfde82ef6b58b6944613d1421bec297327e5f7da"
+source = "https://github.com/rcore-os/tgoskits/pull/1505#discussion_r3526033263"
+fixed_by = "0ec97c6b71dd63783db596f599b97b4142f31851"
+
+[[expected]]
+id = "ipv6-pktinfo-bypasses-socket-family-check"
+path = "os/StarryOS/kernel/src/syscall/net/opt.rs"
+line = 521
+severity = "major"
+description = "The new IPV6_RECVPKTINFO/IPV6_PKTINFO fast paths return success before ensure_ipv6_socket is called. An AF_INET socket can consequently use an IPPROTO_IPV6 option successfully, unlike Linux and the existing IPv6 option paths, which reject the family mismatch with ENOPROTOOPT. The getsockopt path has the same issue."
+match_if = "A finding must flag that the newly accepted IPv6 pktinfo options bypass IPv6 socket-family validation for AF_INET sockets in set and/or get handling, and require ensure_ipv6_socket or equivalent validation before success."
