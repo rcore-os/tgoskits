@@ -1,0 +1,5 @@
+package = "arceos-helloworld"
+target = "riscv64gc-unknown-none-elf"
+features = []
+log = "Warn"
+max_cpu_num = 1

@@ -17,6 +17,7 @@ pub(crate) fn load_arceos_build_file(path: &Path) -> anyhow::Result<ArceosBuildF
 }
 
 pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosBuildConfig> {
+    build::ensure_build_info(path, ArceosBuildConfig::default_config)?;
     Ok(load_arceos_build_file(path)?.config)
 }
 
