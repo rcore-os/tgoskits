@@ -84,9 +84,8 @@ impl Gic {
         })
     }
 
-    /// Initialize the GIC according to GICv2 specification
-    /// This includes both Distributor and CPU Interface initialization
-    pub fn init(&mut self) {
+    /// Initializes the distributor according to the GICv2 specification.
+    pub fn init(&mut self, boot_target: CpuInterfaceTarget) {
         trace!(
             "Initializing GICv2 Distributor@{:#p}...",
             self.gicd.as_ptr::<u8>()
@@ -113,9 +112,15 @@ impl Gic {
         // 7. Set default priority for spi interrupts
         self.gicd().set_default_spi_priorities(max_spi);
 
-        // 8. Configure interrupt targets (for SPIs)
-        self.gicd().configure_interrupt_targets(max_spi);
-        trace!("[GICv2] Configure all SPIs to target cpu 0");
+        // 8. Configure interrupt targets (for SPIs). A uniprocessor GIC may
+        // make ITARGETSR RAZ/WI, in which case no explicit target exists.
+        if let CpuInterfaceTarget::Explicit(target) = boot_target {
+            self.gicd().configure_interrupt_targets(max_spi, target);
+            trace!(
+                "[GICv2] Configure all SPIs to boot CPU target {:#04x}",
+                target.as_u8()
+            );
+        }
         // 9. Configure interrupt configuration (edge/level trigger)
         self.gicd().configure_interrupt_config(max_spi);
 
@@ -248,7 +253,7 @@ pub enum SGITarget {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct TargetList(u8);
 
 impl TargetList {
@@ -279,6 +284,24 @@ impl TargetList {
     pub fn cpu_id_list(&self) -> impl Iterator<Item = usize> {
         (0..8).filter(move |i| (self.0 & (1 << i)) != 0)
     }
+}
+
+/// The target-list capability exposed by one GICv2 CPU interface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuInterfaceTarget {
+    /// A uniprocessor controller makes ITARGETSR read-as-zero/write-ignored.
+    ImplicitUniprocessor,
+    /// The controller reports one implementation-defined target-list bit.
+    Explicit(TargetList),
+}
+
+/// Failure to discover one usable GICv2 CPU-interface target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuTargetDiscoveryError {
+    /// GICv2 supports one to eight CPU interfaces.
+    InvalidCpuCount,
+    /// The banked target registers exposed no unique interface bit.
+    MissingOrAmbiguous,
 }
 
 /// Failure to encode one bounded GICv2 SGI transaction.
@@ -380,9 +403,34 @@ impl CpuInterface {
         self.gicd().set_default_sgi_ppi_priorities();
     }
 
-    /// Reads the implementation-defined SGI target bit for this CPU interface.
-    pub fn current_cpu_target(&self) -> Option<TargetList> {
-        TargetList::from_one_hot(self.gicd().ITARGETSR[0].get())
+    /// Reads the implementation-defined target mask for this CPU interface.
+    ///
+    /// Like Linux's GICv2 discovery, this scans all banked SGI/PPI target
+    /// bytes instead of assuming that the first byte is implemented. The
+    /// caller must validate that the resulting mask identifies one interface.
+    pub fn current_cpu_target_mask(&self) -> u8 {
+        self.gicd().ITARGETSR[..32]
+            .iter()
+            .fold(0, |mask, target| mask | target.get())
+    }
+
+    /// Discovers the current CPU-interface target without inventing a target
+    /// bit for RAZ/WI uniprocessor implementations.
+    pub fn discover_target(
+        &self,
+        cpu_count: usize,
+    ) -> Result<CpuInterfaceTarget, CpuTargetDiscoveryError> {
+        if !(1..=8).contains(&cpu_count) {
+            return Err(CpuTargetDiscoveryError::InvalidCpuCount);
+        }
+        let observed = self.current_cpu_target_mask();
+        if let Some(target) = TargetList::from_one_hot(observed) {
+            Ok(CpuInterfaceTarget::Explicit(target))
+        } else if observed == 0 && cpu_count == 1 {
+            Ok(CpuInterfaceTarget::ImplicitUniprocessor)
+        } else {
+            Err(CpuTargetDiscoveryError::MissingOrAmbiguous)
+        }
     }
     /// Set the EOI mode for non-secure interrupts
     ///
@@ -999,7 +1047,9 @@ mod tests {
 
         let max_interrupts = 64;
         gic.gicd().set_default_spi_priorities(max_interrupts);
-        gic.gicd().configure_interrupt_targets(max_interrupts);
+        let target = TargetList::from_one_hot(0x04).unwrap();
+        gic.gicd()
+            .configure_interrupt_targets(max_interrupts, target);
 
         let regs = gic.gicd();
         assert_eq!(regs.IPRIORITYR[31].get(), 0);
@@ -1008,8 +1058,96 @@ mod tests {
         assert_eq!(regs.IPRIORITYR[64].get(), 0);
 
         assert_eq!(regs.ITARGETSR[31].get(), 0);
-        assert_eq!(regs.ITARGETSR[32].get(), 0x01);
-        assert_eq!(regs.ITARGETSR[63].get(), 0x01);
+        assert_eq!(regs.ITARGETSR[32].get(), 0x04);
+        assert_eq!(regs.ITARGETSR[63].get(), 0x04);
         assert_eq!(regs.ITARGETSR[64].get(), 0);
+    }
+
+    #[test]
+    fn cpu_interface_scans_every_banked_target_byte() {
+        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
+        let gic = unsafe { Gic::new(VirtAddr::from(regs.as_mut_ptr()), VirtAddr::new(0), None) };
+
+        gic.gicd().ITARGETSR[0].set(0);
+        gic.gicd().ITARGETSR[31].set(0x08);
+        assert_eq!(gic.cpu_interface().current_cpu_target_mask(), 0x08);
+
+        gic.gicd().ITARGETSR[7].set(0x02);
+        assert_eq!(gic.cpu_interface().current_cpu_target_mask(), 0x0a);
+    }
+
+    #[test]
+    fn cpu_target_discovery_distinguishes_implicit_up_from_explicit_smp() {
+        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
+        let gic = unsafe { Gic::new(VirtAddr::from(regs.as_mut_ptr()), VirtAddr::new(0), None) };
+        let cpu = gic.cpu_interface();
+
+        assert_eq!(
+            cpu.discover_target(1),
+            Ok(CpuInterfaceTarget::ImplicitUniprocessor)
+        );
+        assert_eq!(
+            cpu.discover_target(2),
+            Err(CpuTargetDiscoveryError::MissingOrAmbiguous)
+        );
+        assert_eq!(
+            cpu.discover_target(0),
+            Err(CpuTargetDiscoveryError::InvalidCpuCount)
+        );
+        assert_eq!(
+            cpu.discover_target(9),
+            Err(CpuTargetDiscoveryError::InvalidCpuCount)
+        );
+
+        gic.gicd().ITARGETSR[29].set(0x04);
+        assert_eq!(
+            cpu.discover_target(4),
+            Ok(CpuInterfaceTarget::Explicit(
+                TargetList::from_one_hot(0x04).unwrap()
+            ))
+        );
+        gic.gicd().ITARGETSR[31].set(0x02);
+        assert_eq!(
+            cpu.discover_target(4),
+            Err(CpuTargetDiscoveryError::MissingOrAmbiguous)
+        );
+    }
+
+    #[test]
+    fn distributor_initialization_uses_only_an_explicit_boot_target() {
+        fn register_page() -> std::boxed::Box<[u64; 0x200]> {
+            let mut regs = std::boxed::Box::new([0u64; 0x200]);
+            let base = regs.as_mut_ptr().cast::<u8>();
+            // SAFETY: the u64-backed page is aligned, offset 0x4 is the
+            // GICD_TYPER word, and ITLinesNumber=1 describes 64 INTIDs.
+            unsafe { base.add(0x4).cast::<u32>().write(1) };
+            regs
+        }
+
+        let mut implicit_regs = register_page();
+        let mut implicit = unsafe {
+            Gic::new(
+                VirtAddr::from(implicit_regs.as_mut_ptr().cast::<u8>()),
+                VirtAddr::new(0),
+                None,
+            )
+        };
+        implicit.gicd().ITARGETSR[32].set(0x55);
+        implicit.init(CpuInterfaceTarget::ImplicitUniprocessor);
+        assert_eq!(implicit.gicd().ITARGETSR[32].get(), 0x55);
+
+        let mut explicit_regs = register_page();
+        let mut explicit = unsafe {
+            Gic::new(
+                VirtAddr::from(explicit_regs.as_mut_ptr().cast::<u8>()),
+                VirtAddr::new(0),
+                None,
+            )
+        };
+        explicit.init(CpuInterfaceTarget::Explicit(
+            TargetList::from_one_hot(0x04).unwrap(),
+        ));
+        assert_eq!(explicit.gicd().ITARGETSR[32].get(), 0x04);
+        assert_eq!(explicit.gicd().ITARGETSR[63].get(), 0x04);
     }
 }

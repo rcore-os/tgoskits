@@ -210,6 +210,42 @@ fn tty_console_input_burst_uses_injected_guest_script() {
 }
 
 #[test]
+fn aarch64_gicv2_cases_cover_implicit_up_and_explicit_smp() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tty_config =
+        workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst/qemu-aarch64.toml");
+    let smp_dir = workspace_root.join("test-suit/starryos/qemu/gicv2-smp");
+    let smp_config = smp_dir.join("qemu-aarch64.toml");
+    let smp_script = smp_dir.join("sh/gicv2-smp.sh");
+
+    for path in [&tty_config, &smp_config] {
+        let content = fs::read_to_string(path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let args = config
+            .get("args")
+            .and_then(toml::Value::as_array)
+            .expect("AArch64 GICv2 case must define QEMU arguments");
+        assert!(
+            args.windows(2).any(|pair| {
+                pair[0].as_str() == Some("-machine")
+                    && pair[1].as_str() == Some("virt,gic-version=2")
+            }),
+            "{} must select GICv2 explicitly",
+            path.display()
+        );
+    }
+
+    let smp_config = fs::read_to_string(&smp_config).unwrap();
+    assert!(smp_config.contains("\"-smp\"") && smp_config.contains("\"4\""));
+    assert!(smp_config.contains("STARRY_GICV2_SMP_PASSED"));
+
+    let script = fs::read_to_string(&smp_script).unwrap();
+    assert!(script.contains("taskset -c \"$cpu\"") && script.contains("wait \"$pid\""));
+    assert!(script.contains("STARRY_GICV2_SMP_FAILED"));
+}
+
+#[test]
 fn qemu_system_case_has_riscv64_runtime_config() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let config = workspace_root.join("test-suit/starryos/qemu/system/qemu-riscv64.toml");

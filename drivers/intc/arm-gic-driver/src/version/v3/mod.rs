@@ -12,7 +12,7 @@ mod gicr;
 mod its;
 
 use gicd::*;
-use gicr::*;
+pub(crate) use gicr::*;
 pub use its::*;
 
 use crate::version::{IrqVecReadable, IrqVecWriteable};
