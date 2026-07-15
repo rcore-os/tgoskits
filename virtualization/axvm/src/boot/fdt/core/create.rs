@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::ptr::NonNull;
 
 use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::{AxVMCrateConfig, EmulatedDeviceConfig, EmulatedDeviceType};
 use fdt_edit::{Fdt, Node, NodeId};
+use fdt_raw::RegInfo;
 
-use super::tree::{FdtTree, GuestMemorySpec};
+use super::tree::{FdtTree, GuestMemorySpec, prop_string, prop_u32_list};
 use crate::{AxVMRef, GuestPhysAddr, VMMemoryRegion, boot::images::load_vm_image_from_memory};
 
 pub fn create_guest_fdt(
@@ -34,7 +35,7 @@ pub fn create_guest_fdt(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
-    let guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
+    let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         should_keep_generated_node(
             fdt,
             node_id,
@@ -44,6 +45,7 @@ pub fn create_guest_fdt(
             phys_cpu_ids,
         )
     })?;
+    guest_tree.add_ivc_channel_nodes(&crate_config.devices.emu_devices)?;
     Ok(guest_tree.finish())
 }
 
@@ -208,6 +210,7 @@ pub fn patch_guest_fdt_for_runtime(
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
+    tree.add_ivc_channel_nodes(&crate_config.devices.emu_devices)?;
     if create_chosen
         || initrd_start_size.is_some()
         || tree.inner().get_by_path_id("/chosen").is_some()
@@ -215,6 +218,46 @@ pub fn patch_guest_fdt_for_runtime(
         tree.patch_chosen(initrd_start_size)?;
     }
     Ok(tree.finish())
+}
+
+impl FdtTree {
+    fn add_ivc_channel_nodes(&mut self, devices: &[EmulatedDeviceConfig]) -> AxResult {
+        for device in devices
+            .iter()
+            .filter(|device| device.emu_type == EmulatedDeviceType::IVCChannel)
+        {
+            self.add_ivc_channel_node(device)?;
+        }
+        Ok(())
+    }
+
+    fn add_ivc_channel_node(&mut self, device: &EmulatedDeviceConfig) -> AxResult {
+        let node_id = self.ensure_path(&format!("/ivc-channel@{:x}", device.base_gpa))?;
+        info!(
+            "Adding guest IVC channel FDT node /ivc-channel@{:x}",
+            device.base_gpa
+        );
+        self.set_property(node_id, prop_string("compatible", "axvisor,ivc-channel"))?;
+        self.set_property(node_id, prop_string("status", "okay"))?;
+        self.set_property(node_id, prop_u32_list("axvisor,ivc-version", &[1]))?;
+
+        if let Some(notify_irq) = device
+            .cfg_list
+            .first()
+            .and_then(|irq| u32::try_from(*irq).ok())
+        {
+            self.set_property(node_id, prop_u32_list("axvisor,notify-irq", &[notify_irq]))?;
+        }
+
+        self.inner_mut()
+            .view_typed_mut(node_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "new IVC channel node is missing"))?
+            .set_regs(&[RegInfo::new(
+                device.base_gpa as u64,
+                Some(device.length as u64),
+            )]);
+        Ok(())
+    }
 }
 
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxResult<GuestPhysAddr> {
@@ -365,6 +408,43 @@ mod tests {
     }
 
     #[test]
+    fn runtime_patch_adds_ivc_channel_node() {
+        let fdt = Fdt::new();
+        let dtb = fdt.encode().as_ref().to_vec();
+        let cfg = AxVMCrateConfig {
+            devices: axvmconfig::VMDevicesConfig {
+                emu_devices: alloc::vec![axvmconfig::EmulatedDeviceConfig {
+                    name: "ivc-channel".into(),
+                    base_gpa: 0xbff0_0000,
+                    length: 0x1_0000,
+                    irq_id: 0,
+                    emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
+                    cfg_list: alloc::vec![60],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let patched = super::patch_guest_fdt_for_runtime(&dtb, &[], &cfg, None, false).unwrap();
+        let reparsed = Fdt::from_bytes(&patched).unwrap();
+        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
+        let node = reparsed.node(node_id).unwrap();
+        let typed_node = reparsed.view_typed(node_id).unwrap();
+
+        assert_eq!(
+            node.get_property("compatible").unwrap().as_str(),
+            Some("axvisor,ivc-channel")
+        );
+        assert_eq!(typed_node.regs()[0].address, 0xbff0_0000);
+        assert_eq!(typed_node.regs()[0].size, Some(0x1_0000));
+        assert_eq!(
+            node.get_property("axvisor,notify-irq").unwrap().get_u32(),
+            Some(60)
+        );
+    }
+
+    #[test]
     fn generated_fdt_filters_cpu_nodes_by_unit_address() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
         let cfg = AxVMCrateConfig {
@@ -380,5 +460,37 @@ mod tests {
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
         assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_adds_ivc_channel_node() {
+        let fdt = test_fdt("cpu@0=0");
+        let cfg = AxVMCrateConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(alloc::vec![0]),
+                ..Default::default()
+            },
+            devices: axvmconfig::VMDevicesConfig {
+                emu_devices: alloc::vec![axvmconfig::EmulatedDeviceConfig {
+                    name: "ivc-channel".into(),
+                    base_gpa: 0xbff0_0000,
+                    length: 0x1_0000,
+                    irq_id: 0,
+                    emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
+                    cfg_list: alloc::vec![60],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+        let node_id = reparsed.get_by_path_id("/ivc-channel@bff00000").unwrap();
+        let node = reparsed.node(node_id).unwrap();
+
+        assert_eq!(
+            node.get_property("compatible").unwrap().as_str(),
+            Some("axvisor,ivc-channel")
+        );
     }
 }

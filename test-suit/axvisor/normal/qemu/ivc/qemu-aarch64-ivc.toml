@@ -1,0 +1,45 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "virtio-blk-device,drive=disk0",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/vda rw init=/bin/sh",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)unhandled page fault",
+    "(?i)page fault",
+    "ivc publish failed",
+    "(?m)^linux ivc demo failed\\s*$",
+]
+success_regex = [
+    "(?m)^linux ivc demo pass\\s*$",
+    "(?m)^ivc ack seq=5 msg=ack from linux subscriber\\s*$",
+]
+shell_prefix = "~ #"
+shell_init_cmd = '''
+echo "linux ivc kernel $(uname -r)"
+chmod +x /root/ivc-subscribe || true
+if ! insmod /root/axvisor.ko; then
+    echo 'linux ivc demo failed'
+elif ! test -e /dev/axivc; then
+    echo 'linux ivc demo failed'
+elif ! /root/ivc-subscribe 1 0x49564301 5; then
+    echo 'linux ivc demo failed'
+else
+    echo 'linux ivc subscriber finished'
+fi
+'''
+to_bin = true
+uefi = false
