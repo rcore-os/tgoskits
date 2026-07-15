@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
+mod agent_review_bench;
 pub mod arceos;
 pub mod axloader;
 pub mod axvisor;
@@ -50,6 +51,11 @@ pub(crate) struct SyncLintArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run offline Codex review benchmarks from historical PR snapshots
+    AgentReviewBench {
+        #[command(subcommand)]
+        command: agent_review_bench::Command,
+    },
     /// Run std tests for the configured workspace package whitelist
     Test,
     /// Run kernel axtest targets through QEMU or a remote board
@@ -101,6 +107,7 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
         Commands::Test => test::std::run_std_test_command(),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
