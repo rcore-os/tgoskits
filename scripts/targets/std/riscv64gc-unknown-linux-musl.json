@@ -26,6 +26,7 @@
     "gnu-lld": [
       "-static",
       "-no-pie",
+      "--no-relax",
       "--gc-sections",
       "-znorelro",
       "-znostart-stop-gc",
