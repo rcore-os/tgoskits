@@ -66,9 +66,9 @@ cargo axvisor qemu
 
 ## 2. U-Boot 测试
 
-当需要贴近板级启动链路时，可以进入 `test uboot`。这一入口不是通用目录扫描，而是围绕仓库中已经维护好的板型与 Guest 组合展开。
+当需要贴近板级启动链路时，可以进入 `test uboot`。这一入口通过 `test-suit/axvisor/normal/board-<platform>/` 目录发现 `(board, guest)` 组合，而非硬编码白名单。
 
-当前 `test uboot` 使用硬编码白名单中的 `(board, guest)` 组合。主流示例：
+当前 `test uboot` 已维护的板型组合示例：
 
 ```bash
 cargo xtask axvisor test uboot --board orangepi-5-plus --guest linux
