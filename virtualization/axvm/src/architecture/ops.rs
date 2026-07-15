@@ -94,9 +94,12 @@ pub(crate) trait ArchOps {
                     interrupt_topology.synchronize_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
 
                     let exit = vcpu.run()?;
-                    interrupt_topology.synchronize_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
                     trace!("{exit:#x?}");
-                    match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
+                    // Port/MMIO writes and EOIs can change controller state. Apply those exit
+                    // side effects before making queued controller inputs deliverable.
+                    let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
+                    interrupt_topology.synchronize_vcpu(axdevice::VcpuInterruptId::new(vcpu_id))?;
+                    match action {
                         BoundVcpuExit::Continue => continue,
                         action => break Ok(action),
                     }

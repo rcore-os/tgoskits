@@ -132,6 +132,34 @@ fn runtime_vcpu_loop_only_consumes_scheduler_actions() {
 }
 
 #[test]
+fn controller_synchronization_follows_vcpu_exit_side_effects() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    let run_loop = ops
+        .split_once("fn run_vcpu(")
+        .expect("architecture operations must define the vCPU run loop")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the vCPU run loop must precede affinity helpers")
+        .0;
+    let after_run = run_loop
+        .split_once("let exit = vcpu.run()?;")
+        .expect("the vCPU run loop must enter the architecture backend")
+        .1;
+    let handle_exit = after_run
+        .find("Self::handle_vcpu_exit_bound")
+        .expect("the vCPU run loop must apply architecture exit side effects");
+    let synchronize_controller = after_run
+        .find("interrupt_topology.synchronize_vcpu")
+        .expect("the vCPU run loop must synchronize interrupt controllers after exit");
+
+    assert!(
+        handle_exit < synchronize_controller,
+        "VM-exit side effects must update device/controller state before pending interrupts are \
+         made deliverable"
+    );
+}
+
+#[test]
 fn production_sources_keep_architecture_cfg_inside_arch_module() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let violations = find_target_arch_cfg_outside_arch(&source_root, &source_root);
