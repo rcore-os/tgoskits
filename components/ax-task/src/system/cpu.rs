@@ -249,7 +249,6 @@ pub struct CpuRemote {
 impl CpuRemote {
     pub(crate) fn create(
         owner: CpuId,
-        config: TaskSystemConfig,
         scheduler_ipi_retries: Arc<SchedulerIpiRetrySet>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -273,7 +272,10 @@ impl CpuRemote {
             load_summary_current_sequence: AtomicU64::new(0),
             load_summary_pushable_primary: AtomicU64::new(0),
             load_summary_pushable_sequence: AtomicU64::new(0),
-            fair_balance_deadline_ns: AtomicU64::new(config.balance_interval_ns()),
+            // An offline CPU has no monotonic time origin yet. Publishing a
+            // duration here as an absolute deadline makes every CPU brought
+            // online after that duration immediately overdue.
+            fair_balance_deadline_ns: AtomicU64::new(u64::MAX),
             scheduler_deadline_ns: AtomicU64::new(0),
             deferred_scheduler_deadline_ns: AtomicU64::new(0),
             remote_wake_inbox: SchedulerInbox::new(InboxKind::RemoteWake),
@@ -1431,7 +1433,7 @@ mod scheduler_ipi_tests {
     #[test]
     fn stale_failure_cannot_clear_a_newer_doorbell_epoch() {
         let retries = Arc::new(SchedulerIpiRetrySet::new(1));
-        let remote = CpuRemote::create(CpuId::new(0), TaskSystemConfig::new(1), retries);
+        let remote = CpuRemote::create(CpuId::new(0), retries);
         let old = remote.claim_scheduler_ipi().unwrap();
 
         // A safe point may consume the old reason before its transport call

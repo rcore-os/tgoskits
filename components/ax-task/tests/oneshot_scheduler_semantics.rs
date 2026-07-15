@@ -96,6 +96,64 @@ fn fifo_dispatch_programs_the_rt_quota_exhaustion_boundary() {
 }
 
 #[test]
+fn blocking_fifo_reprograms_the_fair_successor_deadline() {
+    let (system, mut cpu) = online_system();
+    let fifo = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(40).unwrap()));
+    let fair = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu.as_mut(), fifo.id(), 100).unwrap();
+    system.enqueue(cpu.as_mut(), fair.id(), 100).unwrap();
+
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 100).unwrap().next(),
+        fifo.id()
+    );
+    assert_eq!(support::last_oneshot_ns(), 10_000_000);
+
+    support::set_monotonic_ns(200);
+    assert_eq!(
+        system.block_current(cpu.as_mut()).unwrap().next(),
+        fair.id()
+    );
+    assert_eq!(
+        support::last_oneshot_ns(),
+        1_000_200,
+        "a forced block must replace the outgoing RT deadline with the selected Fair request",
+    );
+}
+
+#[test]
+fn exiting_fifo_reprograms_the_fair_successor_deadline() {
+    support::clear_handles();
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let fifo = system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fifo(RtPriority::new(40).unwrap())),
+        )
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let fair = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu.as_mut(), fair.id(), 100).unwrap();
+
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 100).unwrap().next(),
+        fifo.id()
+    );
+    assert_eq!(support::last_oneshot_ns(), 10_000_000);
+
+    support::set_monotonic_ns(200);
+    assert_eq!(system.exit_current(cpu.as_mut()).unwrap().next(), fair.id());
+    assert_eq!(support::last_oneshot_ns(), 1_000_200);
+}
+
+#[test]
 fn deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
     let (system, mut cpu) = online_system();
     let deadline = ready_thread(

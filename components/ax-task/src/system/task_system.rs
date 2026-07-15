@@ -261,11 +261,7 @@ impl TaskSystem {
         let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())
             .map(|index| {
-                CpuRemote::create(
-                    CpuId::new(index as u32),
-                    config,
-                    Arc::clone(&scheduler_ipi_retries),
-                )
+                CpuRemote::create(CpuId::new(index as u32), Arc::clone(&scheduler_ipi_retries))
             })
             .collect::<Vec<_>>();
         let cpu_registrations = cpu_remotes
@@ -515,6 +511,20 @@ impl TaskSystem {
 
     /// Completes CPU registration and publishes it in the online root domain.
     pub fn bring_cpu_online(&self, cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+        self.bring_cpu_online_at(cpu, task_runtime::monotonic_ns())
+    }
+
+    /// Completes CPU registration at `now_ns` and publishes it online.
+    ///
+    /// The explicit clock sample keeps deterministic scheduler models and OS
+    /// runtimes on the same absolute monotonic time base. In particular, the
+    /// first fair-balance deadline is one interval after online publication,
+    /// rather than one interval after an unrelated zero epoch.
+    pub fn bring_cpu_online_at(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
         let id = cpu.owner();
         let mut state = self.state.lock();
         let mut root_domain = self.root_domain.lock();
@@ -540,6 +550,8 @@ impl TaskSystem {
         }
         self.topology_sequence.write_begin();
         state.cpu_registration_mut(id)?.online = true;
+        cpu.remote()
+            .defer_fair_balance(now_ns, self.config.balance_interval_ns());
         cpu.as_ref().get_ref().remote().mark_online();
         root_domain.online.insert(id);
         let online_count = state.online_cpu_count();
@@ -1447,9 +1459,7 @@ impl TaskSystem {
             SwitchReason::Preempted
         };
         let decision = Self::owner_switch_plan(previous_core.as_ref(), &next_core, reason);
-        Self::program_local_timer(cpu.as_mut(), now_ns)?;
-        self.balance_after_schedule(cpu.as_mut(), decision.next(), now_ns)?;
-        Ok(decision)
+        Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
     /// Services sticky scheduler work and switches only for a real preemption.
@@ -1527,9 +1537,9 @@ impl TaskSystem {
             SwitchReason::Preempted
         };
         let decision = Self::owner_switch_plan(previous_core.as_ref(), &next_core, reason);
-        Self::program_local_timer(cpu.as_mut(), now_ns)?;
-        self.balance_after_schedule(cpu.as_mut(), decision.next(), now_ns)?;
-        Ok(SchedulerOutcome::Decision(decision))
+        Ok(SchedulerOutcome::Decision(
+            self.finish_owner_selection(cpu, decision, now_ns),
+        ))
     }
 
     /// Moves the current thread to its class tail and selects another thread.
@@ -1592,9 +1602,7 @@ impl TaskSystem {
         )?;
         let decision =
             Self::owner_switch_plan(previous_core.as_ref(), &next_core, SwitchReason::Yield);
-        Self::program_local_timer(cpu.as_mut(), now_ns)?;
-        self.balance_after_schedule(cpu.as_mut(), decision.next(), now_ns)?;
-        Ok(decision)
+        Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
     /// Publishes `PARKING` after consuming a wake-before-park notification.
@@ -1657,11 +1665,11 @@ impl TaskSystem {
             next_core.id(),
             None,
         )?;
-        Ok(ParkCommit::Blocked(Self::owner_switch_plan(
-            Some(&previous_core),
-            &next_core,
-            SwitchReason::Blocked,
-        )))
+        let decision =
+            Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Blocked);
+        Ok(ParkCommit::Blocked(
+            self.finish_owner_selection(cpu, decision, now_ns),
+        ))
     }
 
     /// Cancels a prepared park because an independent grant won the race.
@@ -1798,7 +1806,7 @@ impl TaskSystem {
             )?;
             Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Exited)
         };
-        Ok(decision)
+        Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
     /// Completes the physical switch-out handoff in the newly active context.
@@ -3519,6 +3527,35 @@ impl TaskSystem {
             return Ok(());
         };
         ensure_runtime_success(task_runtime::program_oneshot_timer(deadline_ns))
+    }
+
+    /// Completes every owner-side selection through the same balance and
+    /// one-shot programming sequence.
+    ///
+    /// Forced block and exit paths select a successor just like preemption and
+    /// yield. Keeping their tail common prevents a tickless CPU from retaining
+    /// the outgoing thread's budget or service deadline after the switch plan
+    /// has already committed a different scheduling class.
+    fn finish_owner_selection(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        decision: ScheduleDecision,
+        now_ns: u64,
+    ) -> ScheduleDecision {
+        // Selection, lifecycle, and switch-handoff state are already committed
+        // before this tail. Reporting a recoverable error would let block or
+        // yield callers attempt to resume an outgoing thread that is no longer
+        // current, so runtime failures beyond this boundary are fatal.
+        if self
+            .balance_after_schedule(cpu.as_mut(), decision.next(), now_ns)
+            .is_err()
+        {
+            task_runtime::fatal_invariant(0x5343_0001, decision.next().as_u64() as usize);
+        }
+        if Self::program_local_timer(cpu.as_mut(), now_ns).is_err() {
+            task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
+        }
+        decision
     }
 
     fn balance_after_schedule(
