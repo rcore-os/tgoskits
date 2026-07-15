@@ -24,7 +24,7 @@ use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
     sync::IrqMutex as SpinNoIrq, task_can_block, task_wait_timeout, task_yield,
-    wait_for_drain_notification, wait_for_drain_notification_timeout, wake_task,
+    wait_for_drain_notification_timeout, wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
