@@ -576,6 +576,7 @@ pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &st
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use ostool::run::qemu::QemuConfig;
     use tempfile::tempdir;
 
     use super::*;
