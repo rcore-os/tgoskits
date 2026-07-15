@@ -94,15 +94,15 @@ pub(crate) fn finish(
             return super::handle_x86_nested_page_fault(vm, exit);
         }
         DeferredRunWork::ExternalInterrupt { vector } => {
-            X86_64Arch::after_external_interrupt(vm, vcpu, vector);
+            X86_64Arch::after_external_interrupt(vm, vcpu, vector)?;
         }
         DeferredRunWork::PreemptionTimer => {
-            super::irq::inject_due_pit_irq0(vm, vcpu);
-            super::irq::inject_pending_serial_irq(vm, vcpu);
+            super::irq::queue_due_pit_irq0(vm, vcpu)?;
+            super::irq::queue_pending_serial_irq(vm, vcpu)?;
         }
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
-                super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
+                super::irq::queue_pending_ioapic_irq_after_eoi(vm, vcpu, vector)?;
             }
         }
     }

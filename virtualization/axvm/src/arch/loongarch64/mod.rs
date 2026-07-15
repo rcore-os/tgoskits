@@ -70,9 +70,9 @@ impl ArchOps for LoongArch64Arch {
 
     fn inject_pending_interrupt(
         vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>,
         interrupt: crate::vm::PendingInterrupt,
-    ) {
+    ) -> AxVmResult {
         match interrupt {
             crate::vm::PendingInterrupt::Normal(vector) => {
                 trace!(
@@ -80,14 +80,16 @@ impl ArchOps for LoongArch64Arch {
                     vcpu.vm_id(),
                     vcpu.id()
                 );
-                if let Err(err) = vcpu.inject_bound_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
+                vcpu.inject_interrupt(vector)
+            }
+            crate::vm::PendingInterrupt::Triggered { vector, trigger } => {
+                trace!(
+                    "Injecting queued {trigger:?} interrupt {vector:#x} into LoongArch VM[{}] \
+                     VCpu[{}] without trigger-specific backend state",
+                    vcpu.vm_id(),
+                    vcpu.id()
+                );
+                vcpu.inject_interrupt(vector)
             }
             crate::vm::PendingInterrupt::External {
                 vector,
@@ -99,7 +101,7 @@ impl ArchOps for LoongArch64Arch {
                          masked in VM[{}]",
                         vm.id()
                     );
-                    return;
+                    return Ok(());
                 };
                 trace!(
                     "Injecting queued LoongArch external interrupt vector={vector:#x}, \
@@ -107,19 +109,10 @@ impl ArchOps for LoongArch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                let inject_result = vcpu
-                    .with_arch_vcpu("inject LoongArch external interrupt", |arch_vcpu| {
-                        arch_vcpu.inject_external_interrupt(vector, physical_irq)
-                    })
-                    .and_then(core::convert::identity);
-                if let Err(err) = inject_result {
-                    warn!(
-                        "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
-                         physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]: {err:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                }
+                vcpu.with_arch_vcpu("inject LoongArch external interrupt", |arch_vcpu| {
+                    arch_vcpu.inject_external_interrupt(vector, physical_irq)
+                })
+                .and_then(core::convert::identity)
             }
         }
     }

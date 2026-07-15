@@ -8,7 +8,10 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps};
 
 use super::{BoundVcpuExit, CommonDeferredRunWork, VcpuRunAction};
-use crate::{AxVmResult, vcpu::PinnedCpuContext};
+use crate::{
+    AxVmResult,
+    vcpu::{BoundVcpu, PinnedCpuContext},
+};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -41,13 +44,13 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
-    fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+    fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &BoundVcpu<'_, '_, Self::VCpu>) {}
 
     fn inject_pending_interrupt(
         _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &BoundVcpu<'_, '_, Self::VCpu>,
         interrupt: crate::vm::PendingInterrupt,
-    ) {
+    ) -> AxVmResult {
         match interrupt {
             crate::vm::PendingInterrupt::Normal(vector) => {
                 trace!(
@@ -55,14 +58,15 @@ pub(crate) trait ArchOps {
                     vcpu.vm_id(),
                     vcpu.id()
                 );
-                if let Err(err) = vcpu.inject_bound_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
+                vcpu.inject_interrupt(vector)
+            }
+            crate::vm::PendingInterrupt::Triggered { vector, trigger } => {
+                trace!(
+                    "Injecting queued {trigger:?} interrupt {vector:#x} into VM[{}] VCpu[{}]",
+                    vcpu.vm_id(),
+                    vcpu.id()
+                );
+                vcpu.inject_interrupt_with_trigger(vector, trigger)
             }
             crate::vm::PendingInterrupt::External {
                 vector,
@@ -74,6 +78,7 @@ pub(crate) trait ArchOps {
                     vcpu.vm_id(),
                     vcpu.id()
                 );
+                Ok(())
             }
         }
     }
@@ -144,24 +149,31 @@ fn run_vcpu_pinned<A: ArchOps>(
     // Every run acquires a fresh CPU binding. A previous `Ready` state can no
     // longer be resumed on an unverified CPU.
     vcpu.bind(&pinned_cpu)?;
-    A::before_vcpu_run(vm, vcpu);
+    let run_result = {
+        let bound_vcpu = BoundVcpu::new(vcpu, &pinned_cpu);
+        A::before_vcpu_run(vm, &bound_vcpu);
 
-    let run_result = loop {
-        crate::runtime::vcpus::inject_pending_interrupts::<A>(vm.id(), vcpu.id(), vcpu);
-        if let Err(error) = vcpu.drain_published_interrupts() {
-            break Err(error);
-        }
+        loop {
+            if let Err(error) =
+                crate::runtime::vcpus::inject_pending_interrupts::<A>(vm, &bound_vcpu)
+            {
+                break Err(error);
+            }
+            if let Err(error) = bound_vcpu.drain_published_interrupts() {
+                break Err(error);
+            }
 
-        let exit = match vcpu.run(&pinned_cpu) {
-            Ok(exit) => exit,
-            Err(error) => break Err(error),
-        };
-        let exit_result = A::handle_vcpu_exit_bound(vm, vcpu, exit);
-        trace!("VM[{}] VCpu[{}] completed a bound exit", vm.id(), vcpu.id());
-        match exit_result {
-            Ok(BoundVcpuExit::Continue) => {}
-            Ok(action) => break Ok(action),
-            Err(error) => break Err(error),
+            let exit = match vcpu.run(&pinned_cpu) {
+                Ok(exit) => exit,
+                Err(error) => break Err(error),
+            };
+            let exit_result = A::handle_vcpu_exit_bound(vm, vcpu, exit);
+            trace!("VM[{}] VCpu[{}] completed a bound exit", vm.id(), vcpu.id());
+            match exit_result {
+                Ok(BoundVcpuExit::Continue) => {}
+                Ok(action) => break Ok(action),
+                Err(error) => break Err(error),
+            }
         }
     };
 

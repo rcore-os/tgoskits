@@ -58,9 +58,9 @@ impl X86_64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
         vector: usize,
-    ) {
+    ) -> AxVmResult {
         ax_std::os::arceos::modules::ax_hal::irq::handle_irq(vector);
-        irq::inject_pending_serial_irq(vm, vcpu);
+        irq::queue_pending_serial_irq(vm, vcpu)
     }
 }
 
@@ -82,8 +82,8 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
-    fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        irq::drain_pending_ioapic_irqs(vm, vcpu);
+    fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>) {
+        irq::drain_bound_pending_ioapic_irqs(vm, vcpu);
         irq::activate_ready_ioapic_forwarding_routes(vm);
     }
 
@@ -374,23 +374,6 @@ impl X86HostOps for AxvmX86HostOps {
 }
 
 pub(crate) struct AxvmX86Vcpu(x86_vcpu::X86ArchVCpu<AxvmX86HostOps>);
-
-impl crate::vcpu::AxVCpu<AxvmX86Vcpu> {
-    pub(crate) fn inject_interrupt_with_trigger(
-        &self,
-        vector: usize,
-        trigger: InterruptTriggerMode,
-    ) -> AxVmResult {
-        self.with_arch_vcpu_access(
-            crate::vcpu::BackendAccess::BoundOwnerOnly,
-            "inject triggered x86 vCPU interrupt",
-            |arch_vcpu| arch_vcpu.inject_interrupt_with_trigger(vector, trigger),
-        )?
-        .map_err(|error| {
-            crate::vcpu::map_interrupt_backend_error("inject triggered x86 vCPU interrupt", error)
-        })
-    }
-}
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
     type CreateConfig = X86VCpuCreateConfig;

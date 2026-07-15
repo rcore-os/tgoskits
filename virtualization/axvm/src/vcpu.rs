@@ -14,7 +14,7 @@
 
 //! AxVM-owned architecture-independent vCPU wrapper.
 
-use alloc::format;
+use alloc::{format, sync::Arc};
 use core::{
     cell::UnsafeCell,
     marker::PhantomData,
@@ -31,8 +31,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_kspin::{RawContext, RawSpinLock, SpinMutex};
 use ax_percpu::BoundCpuPin;
 use axvm_types::{
-    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
-    VmBackendError, VmVcpuState,
+    GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError, VmVcpuState,
 };
 
 use crate::{
@@ -172,6 +172,76 @@ pub struct AxVCpu<A: VmArchVcpuOps> {
     inner_mut: Mutex<AxVCpuInnerMut>,
     current_header: CurrentVcpuHeader,
     arch_vcpu: UnsafeCell<A>,
+}
+
+/// Proof that one vCPU backend is bound to the current pinned CPU owner.
+///
+/// Only the pinned runner constructs this capability. Deferred task-context
+/// work receives no `BoundVcpu`, so it cannot call live interrupt injection
+/// after backend unbind.
+pub(crate) struct BoundVcpu<'scope, 'cpu, A: VmArchVcpuOps> {
+    vcpu: &'scope Arc<AxVCpu<A>>,
+    pinned_cpu: &'scope PinnedCpuContext<'cpu>,
+}
+
+impl<'scope, 'cpu, A: VmArchVcpuOps> BoundVcpu<'scope, 'cpu, A> {
+    pub(crate) fn new(
+        vcpu: &'scope Arc<AxVCpu<A>>,
+        pinned_cpu: &'scope PinnedCpuContext<'cpu>,
+    ) -> Self {
+        vcpu.assert_current_on_pinned_cpu(pinned_cpu);
+        assert_eq!(
+            vcpu.inner_mut.lock().state,
+            VcpuLifecycleState::Bound(pinned_cpu.identity()),
+            "bound vCPU capability requires the current owner lifecycle"
+        );
+        Self { vcpu, pinned_cpu }
+    }
+
+    pub(crate) fn id(&self) -> VCpuId {
+        self.vcpu.id()
+    }
+
+    pub(crate) fn vm_id(&self) -> VMId {
+        self.vcpu.vm_id()
+    }
+
+    pub(crate) fn with_arch_vcpu<T>(
+        &self,
+        operation: &'static str,
+        use_arch_vcpu: impl for<'backend> FnOnce(&'backend mut A) -> T,
+    ) -> AxVmResult<T> {
+        self.vcpu.assert_current_on_pinned_cpu(self.pinned_cpu);
+        self.vcpu
+            .with_arch_vcpu_access(BackendAccess::BoundOwnerOnly, operation, use_arch_vcpu)
+    }
+
+    pub(crate) fn inject_interrupt(&self, vector: usize) -> AxVmResult {
+        self.with_arch_vcpu("inject bound vCPU interrupt", |arch_vcpu| {
+            arch_vcpu.inject_interrupt(vector)
+        })?
+        .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+    }
+
+    pub(crate) fn inject_interrupt_with_trigger(
+        &self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxVmResult {
+        self.with_arch_vcpu("inject triggered bound vCPU interrupt", |arch_vcpu| {
+            arch_vcpu.inject_interrupt_with_trigger(vector, trigger)
+        })?
+        .map_err(|error| map_interrupt_backend_error("inject triggered vCPU interrupt", error))
+    }
+
+    pub(crate) fn drain_published_interrupts(&self) -> AxVmResult {
+        self.with_arch_vcpu("drain current vCPU interrupt publications", |arch_vcpu| {
+            self.vcpu
+                .current_header
+                .drain_pending(|vector| arch_vcpu.inject_interrupt(vector))
+        })?
+        .map_err(|error| map_interrupt_backend_error("inject current vCPU interrupt", error))
+    }
 }
 
 impl<A: VmArchVcpuOps> AxVCpu<A> {
@@ -377,29 +447,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             arch_vcpu.set_gpr(reg, val);
         })
         .expect("vCPU register update requires a free or owner-bound backend");
-    }
-
-    /// Injects an already-queued interrupt through the bound CPU owner.
-    pub(crate) fn inject_bound_interrupt(&self, vector: usize) -> AxVmResult {
-        self.with_arch_vcpu_access(
-            BackendAccess::BoundOwnerOnly,
-            "inject bound vCPU interrupt",
-            |arch_vcpu| arch_vcpu.inject_interrupt(vector),
-        )?
-        .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
-    }
-
-    /// Delivers hard-IRQ publications through the exclusive owner backend.
-    pub(crate) fn drain_published_interrupts(&self) -> AxVmResult {
-        self.with_arch_vcpu_access(
-            BackendAccess::BoundOwnerOnly,
-            "drain current vCPU interrupt publications",
-            |arch_vcpu| {
-                self.current_header
-                    .drain_pending(|vector| arch_vcpu.inject_interrupt(vector))
-            },
-        )?
-        .map_err(|error| map_interrupt_backend_error("inject current vCPU interrupt", error))
     }
 
     /// Sets the guest return value.

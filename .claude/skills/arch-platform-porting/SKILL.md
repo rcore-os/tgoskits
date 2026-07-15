@@ -258,6 +258,15 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   context, but it must never republish a CPU-local current-vCPU header or use
   that task fallback from hard IRQ. Every post-bind error joins the same
   mandatory unbind path.
+- Require a borrowed `BoundVcpu` capability for every live backend interrupt
+  injection and pending-publication drain; ordinary `AxVCpu` references must
+  not expose those operations. Device work performed after unbind publishes a
+  typed pending interrupt, including edge/level metadata, through the existing
+  `VMRef` runtime inbox. The next bound owner drains that inbox before guest
+  entry. Publication succeeds before the scheduler kick, so a transient IPI
+  failure may delay delivery but must not make callers retry an already
+  committed edge. Backend injection failures return through the common unbind
+  path instead of being logged and discarded.
 - On RISC-V, represent a guest exit as `VmArchVcpuOps::Exit<'cpu>` and keep the
   host IRQ-save token private in that RAII value. The bound architecture
   handler must capture physical exit state before dropping the exit; its drop

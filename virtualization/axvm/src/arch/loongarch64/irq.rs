@@ -58,7 +58,9 @@ fn inject_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq
         vector,
         physical_irq,
     };
-    if let Err(err) = crate::runtime::vcpus::queue_pending_interrupt(vm_id, vcpu_id, interrupt) {
+    if let Err(err) =
+        crate::runtime::vcpus::publish_pending_interrupt_by_id(vm_id, vcpu_id, interrupt)
+    {
         warn!(
             "failed to queue LoongArch platform IRQ {vector:#x}/physical {physical_irq:#x} for \
              VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"

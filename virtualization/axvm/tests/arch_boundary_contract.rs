@@ -337,6 +337,108 @@ fn device_and_hypercall_exit_work_runs_only_after_vcpu_unbind() {
 }
 
 #[test]
+fn x86_deferred_interrupts_cross_the_runtime_inbox_before_backend_injection() {
+    let x86_irq = include_str!("../src/arch/x86_64/irq.rs");
+    let deferred_publishers = x86_irq
+        .split_once("pub fn queue_due_pit_irq0")
+        .expect("x86 PIT publication must exist")
+        .1
+        .split_once("pub fn drain_bound_pending_ioapic_irqs")
+        .expect("deferred publishers must end before the bound IOAPIC drain")
+        .0;
+
+    assert!(
+        deferred_publishers.contains("publish_pending_interrupt("),
+        "deferred x86 device work must publish through the runtime vCPU inbox"
+    );
+    assert!(
+        deferred_publishers.contains("PendingInterrupt::Triggered"),
+        "the inbox entry must retain x86 edge/level trigger metadata"
+    );
+    assert!(
+        !deferred_publishers.contains("vcpu.inject_interrupt_with_trigger(")
+            && !deferred_publishers.contains(".expect("),
+        "work running after unbind must not access or assume an owner-bound backend"
+    );
+
+    let architecture_ops = include_str!("../src/architecture/ops.rs");
+    let pinned_runner = architecture_ops
+        .split_once("fn run_vcpu_pinned")
+        .expect("AxVM must isolate its pinned backend runner")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the pinned backend runner must remain focused")
+        .0;
+    let drain = pinned_runner
+        .find("inject_pending_interrupts")
+        .expect("the bound owner must drain the runtime interrupt inbox");
+    let enter = pinned_runner
+        .find("vcpu.run(&pinned_cpu)")
+        .expect("the pinned runner must enter the guest");
+    assert!(
+        drain < enter,
+        "queued interrupts must be injected before guest entry"
+    );
+}
+
+#[test]
+fn pending_interrupt_publication_is_vm_instance_bound_and_kick_is_best_effort() {
+    let runtime_vcpus = include_str!("../src/runtime/vcpus.rs");
+    let publisher = runtime_vcpus
+        .split_once("pub(crate) fn publish_pending_interrupt(")
+        .expect("AxVM must expose one durable pending-interrupt publisher")
+        .1
+        .split_once("pub(crate) fn inject_pending_interrupts")
+        .expect("publication must remain separate from bound-owner consumption")
+        .0;
+
+    assert!(
+        publisher.contains("vm: &VMRef") && publisher.contains("vm.with_interrupt_runtime("),
+        "deferred publishers must target the existing VM instance and atomically verify its \
+         accepting runtime"
+    );
+    assert!(
+        !publisher.contains("get_vm_by_id("),
+        "a late callback must not resolve an old VM id to a replacement VM instance"
+    );
+    assert!(
+        publisher.contains("if let Err(error) = crate::host::task::send_ipi(cpu_id)")
+            && publisher.contains("interrupt remains published"),
+        "a scheduler kick failure must not turn an already durable publication into an error"
+    );
+}
+
+#[test]
+fn bound_pending_interrupt_injection_propagates_failure_to_common_unbind() {
+    let architecture_ops = include_str!("../src/architecture/ops.rs");
+    let inject = architecture_ops
+        .split_once("fn inject_pending_interrupt(")
+        .expect("architecture pending-interrupt injection must exist")
+        .1
+        .split_once("fn on_last_vcpu_exit")
+        .expect("pending-interrupt injection must remain focused")
+        .0;
+    assert!(
+        inject.contains("-> AxVmResult") && !inject.contains("Failed to inject queued"),
+        "backend injection errors must be returned instead of logged and discarded"
+    );
+
+    let pinned_runner = architecture_ops
+        .split_once("fn run_vcpu_pinned")
+        .expect("AxVM must isolate its pinned backend runner")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the pinned backend runner must remain focused")
+        .0;
+    assert!(
+        pinned_runner.contains("if let Err(error) =")
+            && pinned_runner.contains("inject_pending_interrupts")
+            && pinned_runner.contains("break Err(error)"),
+        "pending-injection errors must join the same mandatory backend-unbind path as run errors"
+    );
+}
+
+#[test]
 fn bound_run_errors_cannot_bypass_backend_unbind() {
     let architecture_ops = include_str!("../src/architecture/ops.rs");
     let pinned_runner = architecture_ops
@@ -347,7 +449,7 @@ fn bound_run_errors_cannot_bypass_backend_unbind() {
         .expect("the pinned runner must remain focused")
         .0;
     let bound_loop = pinned_runner
-        .split_once("let run_result = loop {")
+        .split_once("let run_result = {")
         .expect("the bound run loop must capture its result")
         .1
         .split_once("// Backend unbind")
@@ -355,12 +457,12 @@ fn bound_run_errors_cannot_bypass_backend_unbind() {
         .0;
 
     assert!(
-        bound_loop.contains("if let Err(error) = vcpu.drain_published_interrupts()")
+        bound_loop.contains("if let Err(error) = bound_vcpu.drain_published_interrupts()")
             && bound_loop.contains("break Err(error)"),
         "an interrupt-publication failure after bind must join the common unbind path"
     );
     assert!(
-        !bound_loop.contains("vcpu.drain_published_interrupts()?"),
+        !bound_loop.contains("bound_vcpu.drain_published_interrupts()?"),
         "`?` inside the bound loop would return before backend unbind restores host state"
     );
 }
@@ -1071,8 +1173,23 @@ fn live_vcpu_interrupt_injection_requires_the_bound_cpu_owner() {
     let loongarch = include_str!("../../loongarch_vcpu/src/vcpu.rs");
 
     assert!(
-        vcpu.contains("BoundOwnerOnly") && vcpu.contains("fn inject_bound_interrupt"),
-        "AxVM must distinguish queued interrupts from bound live-backend injection"
+        vcpu.contains("pub(crate) struct BoundVcpu")
+            && vcpu.contains("impl<'scope, 'cpu, A: VmArchVcpuOps> BoundVcpu")
+            && vcpu.contains("BoundOwnerOnly"),
+        "AxVM must require an unforgeable bound-owner capability for live-backend injection"
+    );
+    let bound_capability = vcpu
+        .split_once("impl<'scope, 'cpu, A: VmArchVcpuOps> BoundVcpu")
+        .expect("bound vCPU capability implementation must exist")
+        .1
+        .split_once("impl<A: VmArchVcpuOps> AxVCpu")
+        .expect("bound-only operations must remain separate from the general vCPU API")
+        .0;
+    assert!(
+        bound_capability.contains("fn inject_interrupt(")
+            && bound_capability.contains("fn inject_interrupt_with_trigger(")
+            && bound_capability.contains("fn drain_published_interrupts("),
+        "all live interrupt delivery must require the bound-owner capability"
     );
     let riscv_inject = riscv
         .split_once("pub fn inject_interrupt")

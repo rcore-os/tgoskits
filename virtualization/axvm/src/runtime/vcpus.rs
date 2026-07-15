@@ -15,7 +15,7 @@
 use alloc::format;
 
 use crate::{
-    AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
+    AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
@@ -84,50 +84,55 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    queue_pending_interrupt(vm_id, vcpu_id, crate::vm::PendingInterrupt::Normal(vector))
+    publish_pending_interrupt_by_id(vm_id, vcpu_id, crate::vm::PendingInterrupt::Normal(vector))
 }
 
-pub(crate) fn queue_pending_interrupt(
+pub(crate) fn publish_pending_interrupt_by_id(
     vm_id: usize,
     vcpu_id: usize,
     interrupt: crate::vm::PendingInterrupt,
 ) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return Err(ax_err_type!(
-            BadState,
-            format!("VM[{vm_id}] is not accepting interrupts")
-        ));
-    }
+    publish_pending_interrupt(&vm, vcpu_id, interrupt)
+}
 
-    let cpu_id = vm.with_runtime(|runtime| runtime.queue_pending_interrupt(vcpu_id, interrupt))?;
-    vm.with_runtime(|runtime| {
+/// Durably publishes an interrupt to one existing VM instance.
+///
+/// A successful return means the runtime inbox owns the interrupt. Waking the
+/// vCPU task and sending a scheduler IPI are latency hints after publication;
+/// an IPI transport failure must not make callers retry an already committed
+/// edge-triggered event.
+pub(crate) fn publish_pending_interrupt(
+    vm: &VMRef,
+    vcpu_id: usize,
+    interrupt: crate::vm::PendingInterrupt,
+) -> AxVmResult {
+    let cpu_id = vm.with_interrupt_runtime(|runtime| {
+        let cpu_id = runtime.queue_pending_interrupt(vcpu_id, interrupt)?;
         runtime.notify_all();
-        Ok(())
+        Ok(cpu_id)
     })?;
-    crate::host::task::send_ipi(cpu_id)?;
+    if let Err(error) = crate::host::task::send_ipi(cpu_id) {
+        warn!(
+            "VM[{}] VCpu[{vcpu_id}] interrupt remains published after scheduler IPI failure: \
+             {error:?}",
+            vm.id()
+        );
+    }
     Ok(())
 }
 
 pub(crate) fn inject_pending_interrupts<A: ArchOps>(
-    vm_id: usize,
-    vcpu_id: usize,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
-) {
-    let Some(vm) = crate::get_vm_by_id(vm_id) else {
-        warn!("VM[{vm_id}] not found, cannot drain VCpu[{vcpu_id}] interrupts");
-        return;
-    };
-    let Ok(interrupts) = vm.with_runtime(|runtime| Ok(runtime.drain_pending_interrupts(vcpu_id)))
-    else {
-        warn!("VM[{vm_id}] vCPU runtime not found, cannot drain VCpu[{vcpu_id}] interrupts");
-        return;
-    };
+    vm: &VMRef,
+    vcpu: &crate::vcpu::BoundVcpu<'_, '_, A::VCpu>,
+) -> AxVmResult {
+    let interrupts = vm.with_runtime(|runtime| Ok(runtime.drain_pending_interrupts(vcpu.id())))?;
 
     for interrupt in interrupts {
-        A::inject_pending_interrupt(&vm, vcpu, interrupt);
+        A::inject_pending_interrupt(vm, vcpu, interrupt)?;
     }
+    Ok(())
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.

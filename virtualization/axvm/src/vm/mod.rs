@@ -27,7 +27,8 @@ use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr, InterruptTriggerMode, MappingFlags,
+    NestedPagingConfig, VmVcpuState,
 };
 
 use crate::{
@@ -130,10 +131,17 @@ unsafe impl Send for AxVMResources {}
 unsafe impl Sync for AxVMResources {}
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PendingInterrupt {
     Normal(usize),
-    External { vector: usize, physical_irq: usize },
+    Triggered {
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    },
+    External {
+        vector: usize,
+        physical_irq: usize,
+    },
 }
 
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
@@ -501,6 +509,30 @@ impl AxVM {
         let runtime = machine
             .runtime()
             .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
+        f(runtime)
+    }
+
+    pub(crate) fn with_interrupt_runtime<F, R>(&self, f: F) -> AxVmResult<R>
+    where
+        F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
+    {
+        // Keep lifecycle acceptance and inbox publication atomic. The closure
+        // may acquire only runtime-owned locks; the order is VM lifecycle then
+        // runtime queue/wait state, and it must not re-enter an AxVM method.
+        let machine = self.machine.lock();
+        let status = machine.status();
+        if !matches!(status, VmStatus::Running | VmStatus::Paused) {
+            return ax_err!(
+                BadState,
+                format!(
+                    "VM[{}] is not accepting interrupts in state {status:?}",
+                    self.id
+                )
+            );
+        }
+        let runtime = machine
+            .runtime()
+            .ok_or_else(|| ax_err_type!(BadState, "VM interrupt runtime is not available"))?;
         f(runtime)
     }
 

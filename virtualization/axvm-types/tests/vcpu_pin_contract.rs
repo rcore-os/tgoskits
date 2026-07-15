@@ -41,3 +41,26 @@ fn backend_live_cpu_operations_require_a_borrowed_cpu_pin() {
     );
     assert!(!protocol.contains("finish_bound_exit"));
 }
+
+#[test]
+fn default_triggered_injection_rejects_unsupported_level_semantics() {
+    let protocol = AXVM_TYPES
+        .split_once("pub trait VmArchVcpuOps")
+        .expect("VmArchVcpuOps must remain public")
+        .1
+        .split_once("pub trait VmArchPerCpuOps")
+        .expect("vCPU protocol must remain separate from per-CPU operations")
+        .0;
+    let default = protocol
+        .split_once("fn inject_interrupt_with_trigger(")
+        .expect("trigger-aware injection must remain part of the backend protocol")
+        .1
+        .split_once("fn handle_eoi")
+        .expect("trigger-aware injection must remain focused")
+        .0;
+
+    assert!(
+        default.contains("VmBackendError::Unsupported") && !default.contains("debug_assert!"),
+        "release builds must not silently downgrade unsupported level interrupts to edge"
+    );
+}
