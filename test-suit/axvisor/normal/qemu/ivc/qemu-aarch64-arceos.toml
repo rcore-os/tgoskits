@@ -21,6 +21,7 @@ fail_regex = [
 success_regex = [
     "ivc publish ok",
     "ivc recv seq=",
+    "IVC notify source VM\\[1\\] target VM\\[2\\]",
     "ivc ack seq=5",
     "(?m)^ivc demo pass\\s*$",
 ]

@@ -127,6 +127,29 @@ pub fn unsubscribe_channel(publisher_vm_id: usize, key: usize) -> IvcHyperCallRe
     ))
 }
 
+/// Notifies one peer VM that a shared-memory IVC channel has new work.
+///
+/// `publisher_vm_id` and `key` identify the channel, while `target_vm_id`
+/// selects the peer VM to notify. Axvisor validates that the caller and target
+/// are both participants of the channel.
+///
+/// # Errors
+///
+/// Returns [`IvcHyperCallError::UnsupportedArchitecture`] when the target cannot
+/// issue Axvisor hypercalls, or [`IvcHyperCallError::Failed`] when Axvisor
+/// rejects the request.
+pub fn notify_channel(
+    publisher_vm_id: usize,
+    key: usize,
+    target_vm_id: usize,
+) -> IvcHyperCallResult<()> {
+    execute_checked(notify_channel_invocation(
+        publisher_vm_id,
+        key,
+        target_vm_id,
+    ))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct HyperCallInvocation {
     code: HyperCallCode,
@@ -173,6 +196,17 @@ fn subscribe_channel_invocation(
             0,
             0,
         ],
+    )
+}
+
+fn notify_channel_invocation(
+    publisher_vm_id: usize,
+    key: usize,
+    target_vm_id: usize,
+) -> HyperCallInvocation {
+    HyperCallInvocation::new(
+        HyperCallCode::HIVCNotify,
+        [publisher_vm_id, key, target_vm_id, 0, 0, 0],
     )
 }
 
@@ -239,5 +273,13 @@ mod tests {
 
         assert_eq!(invocation.code, HyperCallCode::HIVCSubscribChannel);
         assert_eq!(invocation.args, [1, 0x33, 0x8000, 0x9000, 0, 0]);
+    }
+
+    #[test]
+    fn notify_invocation_matches_axvisor_abi() {
+        let invocation = notify_channel_invocation(1, 0x33, 2);
+
+        assert_eq!(invocation.code, HyperCallCode::HIVCNotify);
+        assert_eq!(invocation.args, [1, 0x33, 2, 0, 0, 0]);
     }
 }

@@ -29,6 +29,7 @@ mod publisher {
         pub const CHANNEL_KEY: usize = 0x4956_4301;
         pub const CHANNEL_SIZE: usize = 4096;
         pub const PUBLISHER_VM_ID: usize = 1;
+        pub const SUBSCRIBER_VM_ID: usize = 2;
     }
 
     pub fn run() {
@@ -65,16 +66,21 @@ mod publisher {
 
     fn run_request_ack_demo(region: &'static IvcRegion) {
         let mut ack_payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+        let mut subscriber_ready = false;
         for sequence in 1..=PUBLISH_COUNT {
-            send_request_when_ready(region, sequence);
+            send_request_when_ready(region, sequence, subscriber_ready);
             wait_for_ack(region, sequence, &mut ack_payload);
+            subscriber_ready = true;
         }
     }
 
-    fn send_request_when_ready(region: &'static IvcRegion, sequence: u64) {
+    fn send_request_when_ready(region: &'static IvcRegion, sequence: u64, subscriber_ready: bool) {
         loop {
             match region.send_request(sequence, b"hello from arceos publisher") {
                 Ok(()) => {
+                    if subscriber_ready {
+                        notify_subscriber();
+                    }
                     println!("ivc send seq={sequence}");
                     return;
                 }
@@ -98,6 +104,16 @@ mod publisher {
                     return;
                 }
             }
+        }
+    }
+
+    fn notify_subscriber() {
+        if let Err(err) = ivc::notify_channel(
+            demo_config::PUBLISHER_VM_ID,
+            demo_config::CHANNEL_KEY,
+            demo_config::SUBSCRIBER_VM_ID,
+        ) {
+            println!("ivc notify warning: {err}");
         }
     }
 

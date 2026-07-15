@@ -32,6 +32,14 @@ static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::ne
 
 pub const MAX_IVC_CHANNEL_SIZE: usize = 4096;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IvcNotifyRoute {
+    pub source_vm_id: usize,
+    pub target_vm_id: usize,
+    pub publisher_vm_id: usize,
+    pub key: usize,
+}
+
 pub fn insert_channel(publisher_vm_id: usize, channel: HostIVCChannel) -> AxResult<()> {
     let mut channels = IVC_CHANNELS.lock();
     let channel_key = (publisher_vm_id, channel.key);
@@ -217,6 +225,56 @@ pub fn unsubscribe_from_channel_of_publisher(
     }
 
     Ok((base_gpa, size))
+}
+
+pub fn prepare_notify_channel(
+    publisher_vm_id: usize,
+    key: usize,
+    source_vm_id: usize,
+    target_vm_id: usize,
+) -> AxResult<IvcNotifyRoute> {
+    let channels = IVC_CHANNELS.lock();
+    let channel = channels.get(&(publisher_vm_id, key)).ok_or_else(|| {
+        ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM [{}] key {:#x} not found",
+                publisher_vm_id, key
+            )
+        )
+    })?;
+
+    if channel.is_unpublished() {
+        return Err(ax_errno::ax_err_type!(
+            NotFound,
+            format!(
+                "IVC channel for publisher VM [{}] key {:#x} has been unpublished",
+                publisher_vm_id, key
+            )
+        ));
+    }
+
+    let source_can_notify_target = if source_vm_id == publisher_vm_id {
+        channel.has_subscriber(target_vm_id)
+    } else {
+        channel.has_subscriber(source_vm_id) && target_vm_id == publisher_vm_id
+    };
+    if !source_can_notify_target {
+        return Err(ax_errno::ax_err_type!(
+            PermissionDenied,
+            format!(
+                "VM[{}] cannot notify VM[{}] on IVC channel publisher VM[{}] key {:#x}",
+                source_vm_id, target_vm_id, publisher_vm_id, key
+            )
+        ));
+    }
+
+    Ok(IvcNotifyRoute {
+        source_vm_id,
+        target_vm_id,
+        publisher_vm_id,
+        key,
+    })
 }
 
 pub struct IVCChannel<H: PagingHandler> {

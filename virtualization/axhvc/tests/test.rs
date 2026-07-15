@@ -44,11 +44,15 @@ fn test_hypercall_code_from_u32_valid() {
         HyperCallCode::try_from(6u32).unwrap(),
         HyperCallCode::HIVCUnSubscribChannel
     );
+    assert_eq!(
+        HyperCallCode::try_from(7u32).unwrap(),
+        HyperCallCode::HIVCNotify
+    );
 }
 
 #[test]
 fn test_hypercall_code_from_u32_invalid() {
-    assert!(HyperCallCode::try_from(7u32).is_err());
+    assert!(HyperCallCode::try_from(8u32).is_err());
     assert!(HyperCallCode::try_from(100u32).is_err());
     assert!(HyperCallCode::try_from(u32::MAX).is_err());
 }
@@ -62,6 +66,7 @@ fn test_hypercall_code_to_u32() {
     assert_eq!(HyperCallCode::HIVCSubscribChannel as u32, 4);
     assert_eq!(HyperCallCode::HIVCUnPublishChannel as u32, 5);
     assert_eq!(HyperCallCode::HIVCUnSubscribChannel as u32, 6);
+    assert_eq!(HyperCallCode::HIVCNotify as u32, 7);
 }
 
 #[test]
@@ -81,8 +86,8 @@ fn test_invalid_hypercall_code_display() {
     let err = InvalidHyperCallCode(0xFF);
     assert_eq!(format!("{}", err), "invalid hypercall code: 0xff");
 
-    let err = InvalidHyperCallCode(7);
-    assert_eq!(format!("{}", err), "invalid hypercall code: 0x7");
+    let err = InvalidHyperCallCode(8);
+    assert_eq!(format!("{}", err), "invalid hypercall code: 0x8");
 }
 
 #[test]

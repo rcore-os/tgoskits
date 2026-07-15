@@ -290,6 +290,26 @@ impl HyperCall {
 
                 Ok(0)
             }
+            HyperCallCode::HIVCNotify => {
+                let publisher_vm_id = self.args[0] as usize;
+                let key = self.args[1] as usize;
+                let target_vm_id = self.args[2] as usize;
+
+                let route =
+                    ivc::prepare_notify_channel(publisher_vm_id, key, self.vm.id(), target_vm_id)?;
+                let target_vm = crate::get_vm_by_id(route.target_vm_id)
+                    .ok_or_else(|| ax_err_type!(NotFound, "IVC notify target VM does not exist"))?;
+                target_vm.with_runtime(|runtime| {
+                    runtime.notify_all();
+                    Ok(())
+                })?;
+                info!(
+                    "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x}",
+                    route.source_vm_id, route.target_vm_id, route.publisher_vm_id, route.key
+                );
+
+                Ok(0)
+            }
             _ => {
                 warn!("Unsupported hypercall code: {:?}", self.code);
                 ax_err!(Unsupported)?

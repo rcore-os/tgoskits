@@ -69,7 +69,7 @@ pub mod ivc;
 /// # Categories
 ///
 /// - **Hypervisor Control** (0-2): Operations to control the hypervisor lifecycle
-/// - **IVC Operations** (3-6): Inter-VM communication channel management
+/// - **IVC Operations** (3-7): Inter-VM communication channel management
 ///
 /// # Example
 ///
@@ -185,6 +185,24 @@ pub enum HyperCallCode {
     /// - `Ok(0)` on success
     /// - `Err(_)` if unsubscription fails
     HIVCUnSubscribChannel = 6,
+
+    /// Notify one peer VM that an IVC channel has new work.
+    ///
+    /// This hypercall is a lightweight event path for channels whose data
+    /// plane lives in shared memory. The sender and target must both be
+    /// participants of the `(publisher_vm_id, key)` channel.
+    ///
+    /// # Arguments
+    ///
+    /// - `publisher_vm_id`: The ID of the VM that published the channel
+    /// - `key`: The key of the IVC channel
+    /// - `target_vm_id`: The peer VM to notify
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(0)` on success
+    /// - `Err(_)` if the channel or peer relationship is invalid
+    HIVCNotify           = 7,
 }
 
 /// Error type for invalid hypercall code conversion.
@@ -212,6 +230,7 @@ impl TryFrom<u32> for HyperCallCode {
             4 => Ok(HyperCallCode::HIVCSubscribChannel),
             5 => Ok(HyperCallCode::HIVCUnPublishChannel),
             6 => Ok(HyperCallCode::HIVCUnSubscribChannel),
+            7 => Ok(HyperCallCode::HIVCNotify),
             _ => Err(InvalidHyperCallCode(value)),
         }
     }
@@ -238,6 +257,7 @@ impl core::fmt::Debug for HyperCallCode {
             HyperCallCode::HIVCUnSubscribChannel => {
                 write!(f, "HIVCUnSubscribChannel {:#x}", *self as u32)
             }
+            HyperCallCode::HIVCNotify => write!(f, "HIVCNotify {:#x}", *self as u32),
         }?;
         write!(f, ")")
     }
