@@ -93,12 +93,27 @@ pub(crate) fn wake_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
     }
 
     let cpu_id = vm.with_runtime(|runtime| runtime.vcpu_task_cpu(vcpu_id))?;
+    let current_vcpu = crate::host::task::current_task()
+        .try_as_vcpu_task()
+        .map(|task| (task.vcpu.vm_id(), task.vcpu.id()));
     vm.with_runtime(|runtime| {
         runtime.notify_all();
         Ok(())
     })?;
-    crate::host::task::send_ipi(cpu_id);
+    if should_send_interrupt_wake_ipi(current_vcpu, vm_id, vcpu_id) {
+        crate::host::task::send_ipi(cpu_id);
+    }
     Ok(())
+}
+
+fn should_send_interrupt_wake_ipi(
+    current_vcpu: Option<(usize, usize)>,
+    target_vm_id: usize,
+    target_vcpu_id: usize,
+) -> bool {
+    // A vCPU task already executing host-side will synchronize its controller before the next
+    // guest entry. Kicking that same task only creates a redundant host interrupt.
+    current_vcpu != Some((target_vm_id, target_vcpu_id))
 }
 
 /// Cleans up VCpu resources for a VM that is being deleted.
@@ -275,4 +290,17 @@ fn vcpu_run() {
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_send_interrupt_wake_ipi;
+
+    #[test]
+    fn interrupt_wake_does_not_kick_the_current_vcpu() {
+        assert!(!should_send_interrupt_wake_ipi(Some((3, 1)), 3, 1));
+        assert!(should_send_interrupt_wake_ipi(Some((3, 1)), 3, 0));
+        assert!(should_send_interrupt_wake_ipi(Some((2, 1)), 3, 1));
+        assert!(should_send_interrupt_wake_ipi(None, 3, 1));
+    }
 }
