@@ -161,8 +161,54 @@ fn is_excluded_node_path(node_path: &str, excluded_paths: &[String]) -> bool {
     })
 }
 
+fn subtract_emulated_console_ranges(
+    crate_cfg: &AxVMCrateConfig,
+    base_gpa: usize,
+    length: usize,
+) -> Vec<ReservedAddressConfig> {
+    let mut remaining = vec![ReservedAddressConfig { base_gpa, length }];
+    let mut console_ranges = crate_cfg
+        .devices
+        .emu_devices
+        .iter()
+        .filter(|device| device.emu_type == axvmconfig::EmulatedDeviceType::Console)
+        .filter_map(|device| align_reserved_region_4k(device.base_gpa, device.length))
+        .collect::<Vec<_>>();
+    console_ranges.sort_by_key(|(base, _)| *base);
+
+    for (console_base, console_length) in console_ranges {
+        let console_end = console_base.saturating_add(console_length);
+        let mut next = Vec::new();
+        for range in remaining {
+            let range_end = range.base_gpa.saturating_add(range.length);
+            if console_end <= range.base_gpa || console_base >= range_end {
+                next.push(range);
+                continue;
+            }
+            if range.base_gpa < console_base {
+                next.push(ReservedAddressConfig {
+                    base_gpa: range.base_gpa,
+                    length: console_base.saturating_sub(range.base_gpa),
+                });
+            }
+            if console_end < range_end {
+                next.push(ReservedAddressConfig {
+                    base_gpa: console_end,
+                    length: range_end.saturating_sub(console_end),
+                });
+            }
+        }
+        remaining = next;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    remaining
+}
+
 fn push_reserved_address_range(
     ranges: &mut Vec<ReservedAddressConfig>,
+    crate_cfg: &AxVMCrateConfig,
     node_path: &str,
     base: usize,
     size: usize,
@@ -170,8 +216,16 @@ fn push_reserved_address_range(
     let Some((base_gpa, length)) = align_reserved_region_4k(base, size) else {
         return;
     };
+    for remaining in subtract_emulated_console_ranges(crate_cfg, base_gpa, length) {
+        push_merged_reserved_address_range(ranges, node_path, remaining);
+    }
+}
 
-    let mut merged = ReservedAddressConfig { base_gpa, length };
+fn push_merged_reserved_address_range(
+    ranges: &mut Vec<ReservedAddressConfig>,
+    node_path: &str,
+    mut merged: ReservedAddressConfig,
+) {
     let mut index = 0;
     while index < ranges.len() {
         let existing = &ranges[index];
@@ -239,6 +293,7 @@ pub fn reserve_excluded_device_ranges(
         for reg in node_regs(&fdt, node_id) {
             push_reserved_address_range(
                 &mut reserved_ranges,
+                crate_cfg,
                 &node_path,
                 reg.address as usize,
                 reg.size.unwrap_or(0) as usize,
@@ -248,6 +303,7 @@ pub fn reserve_excluded_device_ranges(
         for range in node_pci_ranges(&fdt, node_id) {
             push_reserved_address_range(
                 &mut reserved_ranges,
+                crate_cfg,
                 &node_path,
                 range.cpu_address as usize,
                 range.size as usize,
@@ -630,7 +686,7 @@ mod tests {
     use alloc::{string::ToString, vec, vec::Vec};
 
     use axvm_types::{AddressSpacePolicy, VmMemConfig, VmMemMappingType};
-    use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
+    use axvmconfig::{AxVMCrateConfig, EmulatedDeviceConfig, EmulatedDeviceType, VMDevicesConfig};
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
 
@@ -727,6 +783,76 @@ mod tests {
         }];
 
         assert!(super::subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
+    }
+
+    fn excluded_uart_ranges(
+        uart_base: usize,
+        uart_size: usize,
+        console_base: usize,
+        console_size: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        let uart = fdt.add_node(root, Node::new("excluded-uart"));
+        fdt.view_typed_mut(uart)
+            .unwrap()
+            .set_regs(&[RegInfo::new(uart_base as u64, Some(uart_size as u64))]);
+        let dtb = fdt.encode().as_ref().to_vec();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            ..Default::default()
+        });
+        let crate_cfg = AxVMCrateConfig {
+            devices: VMDevicesConfig {
+                excluded_devices: vec![vec!["/excluded-uart".to_string()]],
+                emu_devices: vec![EmulatedDeviceConfig {
+                    name: "console".to_string(),
+                    base_gpa: console_base,
+                    length: console_size,
+                    irq_id: 33,
+                    emu_type: EmulatedDeviceType::Console,
+                    cfg_list: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        vm_cfg
+            .reserved_address_ranges()
+            .iter()
+            .map(|range| (range.base_gpa, range.length))
+            .collect()
+    }
+
+    #[test]
+    fn excluded_uart_overlap_does_not_reserve_emulated_console_range() {
+        assert!(excluded_uart_ranges(0x0900_0000, 0x1000, 0x0900_0000, 0x1000,).is_empty());
+    }
+
+    #[test]
+    fn excluded_uart_partial_overlap_retains_prefix_and_suffix() {
+        assert_eq!(
+            excluded_uart_ranges(0x08ff_f000, 0x3000, 0x0900_0000, 0x1000),
+            [(0x08ff_f000, 0x1000), (0x0900_1000, 0x1000)]
+        );
+    }
+
+    #[test]
+    fn excluded_uart_unrelated_range_remains_reserved() {
+        assert_eq!(
+            excluded_uart_ranges(0xa000_0000, 0x1000, 0x0900_0000, 0x1000),
+            [(0xa000_0000, 0x1000)]
+        );
     }
 
     #[test]

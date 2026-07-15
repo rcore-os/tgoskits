@@ -21,6 +21,7 @@ pub use core::{
 
 pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
+        describe_aarch64_consoles: true,
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_gic_spi,

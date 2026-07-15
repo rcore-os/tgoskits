@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::ptr::NonNull;
 
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::AxVMCrateConfig;
-use fdt_edit::{Fdt, Node, NodeId};
+use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
+use fdt_edit::{Fdt, Node, NodeId, Property};
+use fdt_raw::RegInfo;
 
 use super::tree::{FdtTree, GuestMemorySpec};
 use crate::{
@@ -36,7 +37,7 @@ pub fn create_guest_fdt(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
-    let guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
+    let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         should_keep_generated_node(
             fdt,
             node_id,
@@ -46,7 +47,306 @@ pub fn create_guest_fdt(
             phys_cpu_ids,
         )
     })?;
+    if super::selected_guest_fdt_policy().describe_aarch64_consoles {
+        append_aarch64_emulated_console_nodes(&mut guest_tree, crate_config, Some(fdt))?;
+    }
     Ok(guest_tree.finish())
+}
+
+#[derive(Clone, Copy)]
+enum ConsoleModel {
+    Pl011,
+    Uart16550,
+}
+
+struct ConsoleFdtSpec<'a> {
+    device: &'a axvmconfig::EmulatedDeviceConfig,
+    model: ConsoleModel,
+    spi: u32,
+}
+
+fn append_aarch64_emulated_console_nodes(
+    tree: &mut FdtTree,
+    crate_config: &AxVMCrateConfig,
+    existing_fdt: Option<&Fdt>,
+) -> AxVmResult {
+    let consoles = validate_console_specs(crate_config)?;
+    let Some(primary) = consoles.first() else {
+        return Ok(());
+    };
+    let clock_phandle = consoles
+        .iter()
+        .any(|console| matches!(console.model, ConsoleModel::Pl011))
+        .then(|| ensure_pl011_clock(tree, existing_fdt))
+        .transpose()?;
+    let root = tree.inner().root_id();
+    for console in &consoles {
+        match console.model {
+            ConsoleModel::Pl011 => {
+                let phandle = clock_phandle.ok_or_else(|| {
+                    ax_err_type!(InvalidData, "PL011 console clock was not prepared")
+                })?;
+                append_pl011_node(tree, root, console, phandle)?;
+            }
+            ConsoleModel::Uart16550 => append_16550_node(tree, root, console)?,
+        }
+    }
+    let (stdout_path, earlycon, console) = console_boot_config(primary);
+    patch_chosen_console(
+        tree,
+        existing_fdt,
+        crate_config.kernel.cmdline.as_deref(),
+        &stdout_path,
+        &earlycon,
+        console,
+    )
+}
+
+fn validate_console_specs(crate_config: &AxVMCrateConfig) -> AxVmResult<Vec<ConsoleFdtSpec<'_>>> {
+    crate_config
+        .devices
+        .emu_devices
+        .iter()
+        .filter(|device| device.emu_type == EmulatedDeviceType::Console)
+        .map(|device| {
+            let model = match device.cfg_list.as_slice() {
+                [] => ConsoleModel::Pl011,
+                [1] => ConsoleModel::Uart16550,
+                _ => {
+                    return Err(ax_err_type!(
+                        InvalidInput,
+                        format!(
+                            "unsupported console subtype configuration: {:?}",
+                            device.cfg_list
+                        )
+                    ));
+                }
+            };
+            if !(32..1020).contains(&device.irq_id) {
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!("console IRQ {} is not a valid GIC SPI INTID", device.irq_id)
+                ));
+            }
+            Ok(ConsoleFdtSpec {
+                device,
+                model,
+                spi: (device.irq_id - 32) as u32,
+            })
+        })
+        .collect()
+}
+
+fn append_pl011_node(
+    tree: &mut FdtTree,
+    root: NodeId,
+    console: &ConsoleFdtSpec<'_>,
+    clock_phandle: u32,
+) -> AxVmResult {
+    let device = console.device;
+    let node_id = tree.add_node(root, Node::new(&format!("pl011@{:x}", device.base_gpa)));
+    tree.set_property(
+        node_id,
+        prop_string_list("compatible", &["arm,pl011", "arm,primecell"]),
+    )?;
+    set_console_regs(tree, node_id, device)?;
+    tree.set_property(node_id, prop_u32_array("interrupts", &[0, console.spi, 4]))?;
+    tree.set_property(
+        node_id,
+        prop_u32_array("clocks", &[clock_phandle, clock_phandle]),
+    )?;
+    tree.set_property(
+        node_id,
+        prop_string_list("clock-names", &["uartclk", "apb_pclk"]),
+    )?;
+    tree.set_property(node_id, prop_u32("clock-frequency", 24_000_000))?;
+    tree.set_property(node_id, super::tree::prop_string("status", "okay"))
+}
+
+fn append_16550_node(tree: &mut FdtTree, root: NodeId, console: &ConsoleFdtSpec<'_>) -> AxVmResult {
+    let device = console.device;
+    let node_id = tree.add_node(root, Node::new(&format!("serial@{:x}", device.base_gpa)));
+    tree.set_property(node_id, super::tree::prop_string("compatible", "ns16550a"))?;
+    set_console_regs(tree, node_id, device)?;
+    tree.set_property(node_id, prop_u32_array("interrupts", &[0, console.spi, 4]))?;
+    tree.set_property(node_id, prop_u32("clock-frequency", 1_843_200))?;
+    tree.set_property(node_id, prop_u32("current-speed", 115_200))?;
+    tree.set_property(node_id, prop_u32("reg-shift", 0))?;
+    tree.set_property(node_id, prop_u32("reg-io-width", 1))?;
+    tree.set_property(node_id, super::tree::prop_string("status", "okay"))
+}
+
+fn set_console_regs(
+    tree: &mut FdtTree,
+    node_id: NodeId,
+    device: &axvmconfig::EmulatedDeviceConfig,
+) -> AxVmResult {
+    tree.inner_mut()
+        .view_typed_mut(node_id)
+        .ok_or_else(|| ax_err_type!(InvalidData, "new console node is missing"))?
+        .set_regs(&[RegInfo::new(
+            device.base_gpa as u64,
+            Some(device.length as u64),
+        )]);
+    Ok(())
+}
+
+fn ensure_pl011_clock(tree: &mut FdtTree, existing_fdt: Option<&Fdt>) -> AxVmResult<u32> {
+    if let Some(phandle) = existing_pl011_clock_phandle(tree) {
+        return Ok(phandle);
+    }
+    let phandle = unused_phandle(tree.inner(), existing_fdt)?;
+    let root = tree.inner().root_id();
+    let node_name = if tree.inner().get_by_path_id("/pl011-clock").is_none() {
+        String::from("pl011-clock")
+    } else {
+        format!("pl011-clock-{phandle:x}")
+    };
+    let clock_id = tree.add_node(root, Node::new(&node_name));
+    tree.set_property(
+        clock_id,
+        super::tree::prop_string("compatible", "fixed-clock"),
+    )?;
+    tree.set_property(clock_id, prop_u32("#clock-cells", 0))?;
+    tree.set_property(clock_id, prop_u32("clock-frequency", 24_000_000))?;
+    tree.set_property(
+        clock_id,
+        super::tree::prop_string("clock-output-names", "clk24mhz"),
+    )?;
+    tree.set_property(clock_id, prop_u32("phandle", phandle))?;
+    Ok(phandle)
+}
+
+fn existing_pl011_clock_phandle(tree: &FdtTree) -> Option<u32> {
+    let node = tree.inner().get_by_path("/apb-pclk")?.as_node();
+    node.get_property("phandle")
+        .or_else(|| node.get_property("linux,phandle"))
+        .and_then(Property::get_u32)
+}
+
+fn unused_phandle(tree: &Fdt, existing_fdt: Option<&Fdt>) -> AxVmResult<u32> {
+    (1..=u32::MAX)
+        .find(|candidate| {
+            !fdt_uses_phandle(tree, *candidate)
+                && existing_fdt.is_none_or(|fdt| !fdt_uses_phandle(fdt, *candidate))
+        })
+        .ok_or_else(|| ax_err_type!(InvalidData, "FDT has no free phandle for the PL011 clock"))
+}
+
+fn fdt_uses_phandle(fdt: &Fdt, candidate: u32) -> bool {
+    fdt.iter_node_ids().any(|node_id| {
+        fdt.node(node_id).is_some_and(|node| {
+            node.get_property("phandle")
+                .or_else(|| node.get_property("linux,phandle"))
+                .and_then(Property::get_u32)
+                == Some(candidate)
+        })
+    })
+}
+
+fn console_boot_config(primary: &ConsoleFdtSpec<'_>) -> (String, String, &'static str) {
+    let base = primary.device.base_gpa;
+    match primary.model {
+        ConsoleModel::Pl011 => (
+            format!("/pl011@{base:x}"),
+            format!("pl011,mmio32,0x{base:x}"),
+            "ttyAMA0,115200",
+        ),
+        ConsoleModel::Uart16550 => (
+            format!("/serial@{base:x}"),
+            format!("uart8250,mmio,0x{base:x},115200"),
+            "ttyS0,115200",
+        ),
+    }
+}
+
+fn patch_chosen_console(
+    tree: &mut FdtTree,
+    fallback_fdt: Option<&Fdt>,
+    configured_bootargs: Option<&str>,
+    stdout_path: &str,
+    earlycon: &str,
+    console: &'static str,
+) -> AxVmResult {
+    let chosen_id = tree.ensure_path("/chosen")?;
+    let bootargs = configured_bootargs
+        .or_else(|| {
+            tree.inner()
+                .node(chosen_id)
+                .and_then(|node| node.get_property("bootargs"))
+                .and_then(Property::as_str)
+        })
+        .or_else(|| chosen_bootargs(fallback_fdt))
+        .map(|args| rewrite_console_bootargs(args, earlycon, console))
+        .unwrap_or_else(|| format!("earlycon={earlycon} console={console}"));
+    tree.set_property(
+        chosen_id,
+        super::tree::prop_string("stdout-path", stdout_path),
+    )?;
+    tree.set_property(chosen_id, super::tree::prop_string("bootargs", &bootargs))?;
+    let aliases_id = tree.ensure_path("/aliases")?;
+    tree.set_property(aliases_id, super::tree::prop_string("serial0", stdout_path))
+}
+
+fn chosen_bootargs(fdt: Option<&Fdt>) -> Option<&str> {
+    fdt.and_then(|fdt| fdt.get_by_path("/chosen"))
+        .and_then(|node| node.as_node().get_property("bootargs"))
+        .and_then(Property::as_str)
+}
+
+fn rewrite_console_bootargs(bootargs: &str, earlycon: &str, console: &'static str) -> String {
+    let (kernel_args, init_suffix) = split_init_arguments(bootargs);
+    let mut rewritten = kernel_args
+        .split_whitespace()
+        .filter(|arg| !arg.starts_with("console=") && !arg.starts_with("earlycon="))
+        .collect::<Vec<_>>()
+        .join(" ");
+    push_bootarg(&mut rewritten, &format!("earlycon={earlycon}"));
+    push_bootarg(&mut rewritten, &format!("console={console}"));
+    if let Some(suffix) = init_suffix {
+        push_bootarg(&mut rewritten, "--");
+        rewritten.push_str(suffix);
+    }
+    rewritten
+}
+
+fn split_init_arguments(bootargs: &str) -> (&str, Option<&str>) {
+    let mut offset = 0;
+    for token in bootargs.split_whitespace() {
+        let Some(relative) = bootargs[offset..].find(token) else {
+            return (bootargs, None);
+        };
+        let start = offset + relative;
+        let end = start + token.len();
+        if token == "--" {
+            return (bootargs[..start].trim_end(), Some(&bootargs[end..]));
+        }
+        offset = end;
+    }
+    (bootargs, None)
+}
+
+fn push_bootarg(bootargs: &mut String, arg: &str) {
+    if !bootargs.is_empty() {
+        bootargs.push(' ');
+    }
+    bootargs.push_str(arg);
+}
+
+fn prop_u32(name: &str, value: u32) -> Property {
+    prop_u32_array(name, &[value])
+}
+
+fn prop_u32_array(name: &str, values: &[u32]) -> Property {
+    let mut property = Property::new(name, Vec::new());
+    property.set_u32_ls(values);
+    property
+}
+
+fn prop_string_list(name: &str, values: &[&str]) -> Property {
+    let mut property = Property::new(name, Vec::new());
+    property.set_string_ls(values);
+    property
 }
 
 fn should_keep_generated_node(
@@ -254,12 +554,15 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
 
 #[cfg(test)]
 mod tests {
-    use axvmconfig::AxVMCrateConfig;
+    use axvmconfig::{
+        AxVMCrateConfig, EmulatedDeviceConfig, EmulatedDeviceType, VMBaseConfig, VMDevicesConfig,
+    };
     use fdt_edit::{Fdt, Node, Property};
     use fdt_raw::RegInfo;
 
     use super::{
         super::tree::sanitize_bootargs, cpu_node_id, initrd_range_from_image_config, need_cpu_node,
+        rewrite_console_bootargs,
     };
     use crate::{GuestPhysAddr, config::RamdiskInfo};
 
@@ -347,6 +650,236 @@ mod tests {
             sanitize_bootargs(bootargs),
             "root=/dev/mmcblk0p2 rw rootwait rootfstype=ext4 fsckfix"
         );
+    }
+
+    fn console_config(
+        base: usize,
+        irq_id: usize,
+        cfg_list: alloc::vec::Vec<usize>,
+    ) -> AxVMCrateConfig {
+        AxVMCrateConfig {
+            base: VMBaseConfig {
+                phys_cpu_ids: Some(alloc::vec![]),
+                ..Default::default()
+            },
+            kernel: axvmconfig::VMKernelConfig {
+                cmdline: Some("root=/dev/vda console=ttyS9 earlycon=old -- -n -l /bin/sh".into()),
+                ..Default::default()
+            },
+            devices: VMDevicesConfig {
+                emu_devices: alloc::vec![EmulatedDeviceConfig {
+                    name: "console".into(),
+                    base_gpa: base,
+                    length: 0x1000,
+                    irq_id,
+                    emu_type: EmulatedDeviceType::Console,
+                    cfg_list,
+                }],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn console_source_fdt() -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        fdt
+    }
+
+    #[test]
+    fn rewrite_console_bootargs_preserves_init_arguments() {
+        assert_eq!(
+            rewrite_console_bootargs(
+                "root=/dev/vda console=ttyAMA0 -- -n -l /bin/sh",
+                "pl011,mmio32,0x9000000",
+                "ttyAMA0,115200",
+            ),
+            "root=/dev/vda earlycon=pl011,mmio32,0x9000000 console=ttyAMA0,115200 -- -n -l /bin/sh"
+        );
+    }
+
+    #[test]
+    fn generated_pl011_console_has_linux_bindings_and_boot_paths() {
+        let fdt = console_source_fdt();
+        let cfg = console_config(0x0900_0000, 33, alloc::vec![]);
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+        let node = reparsed.get_by_path("/pl011@9000000").unwrap().as_node();
+
+        assert_eq!(
+            node.get_property("compatible")
+                .unwrap()
+                .as_str_iter()
+                .collect::<alloc::vec::Vec<_>>(),
+            ["arm,pl011", "arm,primecell"]
+        );
+        let regs = reparsed
+            .view_typed(reparsed.get_by_path_id("/pl011@9000000").unwrap())
+            .unwrap()
+            .regs();
+        assert_eq!((regs[0].address, regs[0].size), (0x0900_0000, Some(0x1000)));
+        assert_eq!(
+            node.get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<alloc::vec::Vec<_>>(),
+            [0, 1, 4]
+        );
+        assert_eq!(
+            node.get_property("clock-names")
+                .unwrap()
+                .as_str_iter()
+                .collect::<alloc::vec::Vec<_>>(),
+            ["uartclk", "apb_pclk"]
+        );
+        assert_eq!(node.get_property("status").unwrap().as_str(), Some("okay"));
+        assert_eq!(
+            reparsed
+                .get_by_path("/aliases")
+                .unwrap()
+                .as_node()
+                .get_property("serial0")
+                .unwrap()
+                .as_str(),
+            Some("/pl011@9000000")
+        );
+        let chosen = reparsed.get_by_path("/chosen").unwrap().as_node();
+        assert_eq!(
+            chosen.get_property("stdout-path").unwrap().as_str(),
+            Some("/pl011@9000000")
+        );
+        assert_eq!(
+            chosen.get_property("bootargs").unwrap().as_str(),
+            Some(
+                "root=/dev/vda earlycon=pl011,mmio32,0x9000000 console=ttyAMA0,115200 -- -n -l \
+                 /bin/sh"
+            )
+        );
+    }
+
+    #[test]
+    fn generated_16550_console_has_linux_bindings() {
+        let fdt = console_source_fdt();
+        let cfg = console_config(0x0901_0000, 48, alloc::vec![1]);
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+        let node = reparsed.get_by_path("/serial@9010000").unwrap().as_node();
+
+        assert_eq!(
+            node.get_property("compatible").unwrap().as_str(),
+            Some("ns16550a")
+        );
+        assert_eq!(
+            node.get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<alloc::vec::Vec<_>>(),
+            [0, 16, 4]
+        );
+        assert_eq!(
+            node.get_property("clock-frequency").unwrap().get_u32(),
+            Some(1_843_200)
+        );
+        assert_eq!(
+            node.get_property("current-speed").unwrap().get_u32(),
+            Some(115_200)
+        );
+        assert_eq!(node.get_property("reg-shift").unwrap().get_u32(), Some(0));
+        assert_eq!(
+            node.get_property("reg-io-width").unwrap().get_u32(),
+            Some(1)
+        );
+        assert_eq!(
+            reparsed
+                .get_by_path("/chosen")
+                .unwrap()
+                .as_node()
+                .get_property("bootargs")
+                .unwrap()
+                .as_str(),
+            Some(
+                "root=/dev/vda earlycon=uart8250,mmio,0x9010000,115200 console=ttyS0,115200 -- -n \
+                 -l /bin/sh"
+            )
+        );
+    }
+
+    #[test]
+    fn generated_pl011_reuses_retained_apb_clock() {
+        let mut fdt = console_source_fdt();
+        let root = fdt.root_id();
+        let clock = fdt.add_node(root, Node::new("apb-pclk"));
+        fdt.node_mut(clock)
+            .unwrap()
+            .set_property(prop_u32("phandle", 7));
+        let cfg = console_config(0x0900_0000, 33, alloc::vec![]);
+        let dtb = super::create_guest_fdt(&fdt, &["/apb-pclk".into()], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+        let clocks = reparsed
+            .get_by_path("/pl011@9000000")
+            .unwrap()
+            .as_node()
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<alloc::vec::Vec<_>>();
+
+        assert_eq!(clocks, [7, 7]);
+        assert!(reparsed.get_by_path_id("/pl011-clock").is_none());
+    }
+
+    #[test]
+    fn generated_pl011_clock_uses_collision_free_phandle() {
+        let mut fdt = console_source_fdt();
+        let root = fdt.root_id();
+        let used = fdt.add_node(root, Node::new("used-phandle"));
+        fdt.node_mut(used)
+            .unwrap()
+            .set_property(prop_u32("linux,phandle", 1));
+        let cfg = console_config(0x0900_0000, 33, alloc::vec![]);
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+        let clock = reparsed.get_by_path("/pl011-clock").unwrap().as_node();
+
+        assert_eq!(
+            clock.get_property("compatible").unwrap().as_str(),
+            Some("fixed-clock")
+        );
+        assert_eq!(
+            clock.get_property("clock-frequency").unwrap().get_u32(),
+            Some(24_000_000)
+        );
+        assert_eq!(clock.get_property("phandle").unwrap().get_u32(), Some(2));
+        assert_eq!(
+            reparsed
+                .get_by_path("/pl011@9000000")
+                .unwrap()
+                .as_node()
+                .get_property("clocks")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<alloc::vec::Vec<_>>(),
+            [2, 2]
+        );
+    }
+
+    #[test]
+    fn generated_console_rejects_invalid_intids_and_subtypes() {
+        let fdt = console_source_fdt();
+        for cfg in [
+            console_config(0x0900_0000, 31, alloc::vec![]),
+            console_config(0x0900_0000, 1020, alloc::vec![]),
+            console_config(0x0900_0000, 33, alloc::vec![2]),
+        ] {
+            let error = super::create_guest_fdt(&fdt, &[], &cfg).unwrap_err();
+            assert!(matches!(error, crate::AxVmError::InvalidInput { .. }));
+        }
     }
 
     #[test]

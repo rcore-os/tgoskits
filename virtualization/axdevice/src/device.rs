@@ -40,6 +40,38 @@ use crate::{
 use crate::{LoongArchPchPic, PchPicOutputEvent};
 #[cfg(target_arch = "x86_64")]
 use crate::{X86IoApicDeviceOps, X86PitDeviceOps, X86SerialDeviceOps};
+#[cfg(any(test, target_arch = "aarch64"))]
+use crate::{pl011::EmulatedPl011, uart_16550::EmulatedUart16550};
+
+#[cfg(any(test, target_arch = "aarch64"))]
+enum Aarch64Console {
+    Pl011(Arc<EmulatedPl011>),
+    Uart16550(Arc<EmulatedUart16550>),
+}
+
+#[cfg(any(test, target_arch = "aarch64"))]
+impl Aarch64Console {
+    fn push_input(&self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Pl011(console) => console.push_input(bytes),
+            Self::Uart16550(console) => console.push_input(bytes),
+        }
+    }
+
+    fn drain_output(&self, output: &mut [u8]) -> usize {
+        match self {
+            Self::Pl011(console) => console.drain_output(output),
+            Self::Uart16550(console) => console.drain_output(output),
+        }
+    }
+
+    fn irq_id(&self) -> usize {
+        match self {
+            Self::Pl011(console) => console.irq_id(),
+            Self::Uart16550(console) => console.irq_id(),
+        }
+    }
+}
 
 #[inline]
 #[allow(dead_code)]
@@ -72,6 +104,8 @@ pub struct AxVmDevices {
     sysreg_index: BTreeMap<u32, RangeEntry>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
+    #[cfg(any(test, target_arch = "aarch64"))]
+    aarch64_console: Option<Aarch64Console>,
     /// x86 IOAPIC — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
     x86_ioapic: Option<Arc<dyn X86IoApicDeviceOps>>,
@@ -99,6 +133,8 @@ impl AxVmDevices {
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
+            #[cfg(any(test, target_arch = "aarch64"))]
+            aarch64_console: None,
             #[cfg(target_arch = "x86_64")]
             x86_ioapic: None,
             #[cfg(target_arch = "x86_64")]
@@ -338,11 +374,54 @@ impl AxVmDevices {
                     }
                 }
                 EmulatedDeviceType::Console => {
+                    #[cfg(any(test, target_arch = "aarch64"))]
+                    {
+                        if this.aarch64_console.is_some() {
+                            return Err(DeviceManagerError::ResourceConflict {
+                                operation: "register AArch64 console",
+                                detail: "a VM may have only one connectable console".into(),
+                            });
+                        }
+
+                        let console =
+                            match config.cfg_list.as_slice() {
+                                [] => {
+                                    let device = Arc::new(EmulatedPl011::try_new(
+                                        config.base_gpa.into(),
+                                        config.length,
+                                        config.irq_id,
+                                    )?);
+                                    this.register(MmioDeviceAdapter::from_arc(device.clone())
+                                        as Arc<dyn Device>)?;
+                                    Aarch64Console::Pl011(device)
+                                }
+                                [1] => {
+                                    let device = Arc::new(EmulatedUart16550::try_new(
+                                        config.base_gpa.into(),
+                                        config.length,
+                                        config.irq_id,
+                                    )?);
+                                    this.register(MmioDeviceAdapter::from_arc(device.clone())
+                                        as Arc<dyn Device>)?;
+                                    Aarch64Console::Uart16550(device)
+                                }
+                                _ => {
+                                    return Err(DeviceManagerError::InvalidConfig {
+                                        operation: "register AArch64 console",
+                                        detail: format!(
+                                            "device {} has unsupported console subtype {:?}",
+                                            config.name, config.cfg_list
+                                        ),
+                                    });
+                                }
+                            };
+                        this.aarch64_console = Some(console);
+                    }
                     #[cfg(target_arch = "x86_64")]
                     {
                         debug!("x86 console device registration is owned by AxVM arch adapter");
                     }
-                    #[cfg(not(target_arch = "x86_64"))]
+                    #[cfg(not(any(test, target_arch = "aarch64", target_arch = "x86_64")))]
                     {
                         warn!(
                             "emu type: {} is not supported on this platform",
@@ -912,6 +991,34 @@ impl AxVmDevices {
             .and_then(|ioapic| ioapic.assert_gsi(gsi))
     }
 
+    /// Pushes host input into the attached AArch64 console.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub fn aarch64_console_push_input(&self, bytes: &[u8]) -> Option<Option<usize>> {
+        self.aarch64_console
+            .as_ref()
+            .map(|console| console.push_input(bytes).then_some(console.irq_id()))
+    }
+
+    /// Drains guest output from the attached AArch64 console.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub fn aarch64_console_drain_output(&self, output: &mut [u8]) -> Option<usize> {
+        self.aarch64_console
+            .as_ref()
+            .map(|console| console.drain_output(output))
+    }
+
+    /// Returns the interrupt line of the attached AArch64 console.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub fn aarch64_console_irq(&self) -> Option<usize> {
+        self.aarch64_console.as_ref().map(Aarch64Console::irq_id)
+    }
+
+    /// Returns whether this VM has an attached AArch64 console.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub fn has_aarch64_console(&self) -> bool {
+        self.aarch64_console.is_some()
+    }
+
     /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
@@ -1276,9 +1383,93 @@ mod tests {
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError,
         DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
     };
-    use axvm_types::GuestPhysAddr;
+    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
     use super::AxVmDevices;
+    use crate::{AxVmDeviceConfig, DeviceManagerError};
+
+    fn console_config(base_gpa: usize, irq_id: usize, cfg_list: &[usize]) -> EmulatedDeviceConfig {
+        EmulatedDeviceConfig {
+            name: "console".into(),
+            base_gpa,
+            length: 0x1000,
+            irq_id,
+            emu_type: EmulatedDeviceType::Console,
+            cfg_list: cfg_list.into(),
+        }
+    }
+
+    #[test]
+    fn rejects_a_second_connectable_console() {
+        let result = AxVmDevices::new(AxVmDeviceConfig::new(alloc::vec![
+            console_config(0x0900_0000, 33, &[]),
+            console_config(0x0901_0000, 34, &[1]),
+        ]));
+
+        assert!(matches!(
+            result,
+            Err(DeviceManagerError::ResourceConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn console_subtype_and_irq_are_exposed() {
+        let pl011 = AxVmDevices::new(AxVmDeviceConfig::new(alloc::vec![console_config(
+            0x0900_0000,
+            33,
+            &[],
+        )]))
+        .unwrap();
+        assert!(pl011.has_aarch64_console());
+        assert_eq!(pl011.aarch64_console_irq(), Some(33));
+
+        let uart = AxVmDevices::new(AxVmDeviceConfig::new(alloc::vec![console_config(
+            0x0901_0000,
+            34,
+            &[1],
+        )]))
+        .unwrap();
+        assert!(uart.has_aarch64_console());
+        assert_eq!(uart.aarch64_console_irq(), Some(34));
+    }
+
+    #[test]
+    fn connectable_console_pushes_input_and_drains_output() {
+        let devices = AxVmDevices::new(AxVmDeviceConfig::new(alloc::vec![console_config(
+            0x0900_0000,
+            33,
+            &[],
+        )]))
+        .unwrap();
+
+        assert_eq!(devices.aarch64_console_push_input(b"A"), Some(None));
+        devices
+            .dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: false,
+                addr: 0x0900_0000,
+                width: AccessWidth::Byte,
+                data: b"Z"[0] as u64,
+            })
+            .unwrap();
+        let mut output = [0; 1];
+        assert_eq!(devices.aarch64_console_drain_output(&mut output), Some(1));
+        assert_eq!(output, *b"Z");
+    }
+
+    #[test]
+    fn rejects_unknown_aarch64_console_subtype() {
+        let result = AxVmDevices::new(AxVmDeviceConfig::new(alloc::vec![console_config(
+            0x0900_0000,
+            33,
+            &[2],
+        )]));
+
+        assert!(matches!(
+            result,
+            Err(DeviceManagerError::InvalidConfig { .. })
+        ));
+    }
 
     struct D {
         resources: alloc::vec::Vec<Resource>,

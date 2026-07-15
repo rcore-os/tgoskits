@@ -106,12 +106,47 @@ fn format_memory_size(bytes: usize) -> String {
 // Command Handlers
 // ============================================================================
 
+fn vm_connect(cmd: &ParsedCommand) {
+    let [vm_arg] = cmd.positional_args.as_slice() else {
+        println!("Error: expected exactly one VM ID");
+        println!("Usage: vm connect <VM_ID>");
+        return;
+    };
+    let Ok(vm_id) = vm_arg.parse::<usize>() else {
+        println!("Error: VM ID must be a number");
+        return;
+    };
+    let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) else {
+        println!("Error: VM[{vm_id}] not found");
+        return;
+    };
+    if vm.status() != VmStatus::Running {
+        println!("Error: VM[{vm_id}] is {:?}, expected Running", vm.status());
+        return;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if !vm.has_connect_console() {
+            println!("Error: VM[{vm_id}] has no connectable serial console");
+            return;
+        }
+        if crate::shell::command::request_connect(vm_id).is_err() {
+            println!("Error: another VM console connection request is pending");
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    println!("Error: vm connect is currently implemented for aarch64 only");
+}
+
 fn vm_help(_cmd: &ParsedCommand) {
     println!("VM - virtual machine management");
     println!();
     println!("Most commonly used vm commands:");
     println!("  create    Create a new virtual machine");
     println!("  start     Start a virtual machine");
+    println!("  connect   Connect to a VM console");
     println!("  stop      Stop a virtual machine");
     println!("  suspend   Suspend (pause) a running virtual machine");
     println!("  resume    Resume a suspended virtual machine");
@@ -1223,6 +1258,10 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
             CommandNode::new("Show VM help").with_handler(vm_help),
         );
 
+    let connect_cmd = CommandNode::new("Connect to a VM console")
+        .with_handler(vm_connect)
+        .with_usage("vm connect <VM_ID>");
+
     #[cfg(feature = "fs")]
     {
         vm_node = vm_node
@@ -1237,6 +1276,7 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         .add_subcommand("reset", reset_cmd)
         .add_subcommand("restart", restart_cmd)
         .add_subcommand("delete", delete_cmd)
+        .add_subcommand("connect", connect_cmd)
         .add_subcommand("list", list_cmd)
         .add_subcommand("show", show_cmd);
 

@@ -42,8 +42,8 @@ mod shell;
 ///
 /// 1. Print the startup banner.
 /// 2. Check and enable hardware virtualization on every CPU.
-/// 3. Build and start configured guest VMs.
-/// 4. Enter the management shell after the default guests have exited.
+/// 3. Build configured guest VMs.
+/// 4. Enter the management shell for VM control.
 fn main() {
     banner::print_logo();
 
@@ -52,9 +52,8 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
-    manager.start_default_vms();
 
-    info!("[OK] Default guest initialized");
+    info!("[OK] Default guests initialized; enter shell for VM control");
 
     shell::console_init();
 }

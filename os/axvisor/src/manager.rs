@@ -36,11 +36,6 @@ impl AxvmManager {
         self.release_host_filesystem_for_guest_passthrough();
     }
 
-    /// Start the default VM set and wait until it exits.
-    pub fn start_default_vms(&self) {
-        self.runtime.start_default_vms();
-    }
-
     /// Create one VM from a TOML config string.
     pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
         crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")

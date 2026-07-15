@@ -3,15 +3,16 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
+use ax_cpumask::CpuMask;
 use axdevice_base::DeviceRegistry as _;
 use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
 use super::{Aarch64Arch, npt};
 use crate::{
     AxVmError, AxVmResult, ax_err,
-    config::AxVMConfig,
+    config::{AxVMConfig, hybrid_guest_intids},
     vm::{
-        AxVM, AxVMResources,
+        AxVM, AxVMResources, ConsoleIoPolicy, TEMP_MAX_VCPU_NUM,
         prepare::{
             PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
@@ -45,6 +46,42 @@ impl Aarch64Arch {
                 interrupt_fabric,
             } => init_vm_with(vm, factories, interrupt_fabric),
         }
+    }
+}
+
+impl AxVM {
+    /// Returns whether this VM has a connectable emulated AArch64 console.
+    pub fn has_connect_console(&self) -> bool {
+        self.get_devices()
+            .map(|devices| devices.has_aarch64_console())
+            .unwrap_or(false)
+    }
+
+    /// Pushes host input into this running VM's emulated AArch64 console.
+    pub fn push_console_input(&self, bytes: &[u8]) -> AxVmResult {
+        ConsoleIoPolicy::ensure_running(self.status())?;
+        let devices = self.get_devices()?;
+        let pending_irq =
+            ConsoleIoPolicy::require_console(devices.aarch64_console_push_input(bytes))?;
+        let fabric_has_backend =
+            self.with_resources(|resources| Ok(resources.interrupt_fabric()?.has_backend()))?;
+        ConsoleIoPolicy::deliver_pending_irq(
+            pending_irq,
+            fabric_has_backend,
+            |irq| self.pulse_interrupt(irq),
+            |irq| {
+                let mut targets = CpuMask::<TEMP_MAX_VCPU_NUM>::new();
+                targets.set(0, true);
+                self.inject_interrupt_to_vcpu(targets, irq)
+            },
+        )
+    }
+
+    /// Drains guest output from this running VM's emulated AArch64 console.
+    pub fn drain_console_output(&self, output: &mut [u8]) -> AxVmResult<usize> {
+        ConsoleIoPolicy::ensure_running(self.status())?;
+        let devices = self.get_devices()?;
+        ConsoleIoPolicy::require_console(devices.aarch64_console_drain_output(output))
     }
 }
 
@@ -95,10 +132,34 @@ fn register_arch_devices(
     config: &AxVMConfig,
     devices: &mut axdevice::AxVmDevices,
 ) -> AxVmResult {
-    if config.interrupt_mode() == VMInterruptMode::Passthrough {
+    let interrupt_mode = config.interrupt_mode();
+    if interrupt_mode == VMInterruptMode::Passthrough {
         assign_passthrough_spis(vm, config, devices)?;
     } else {
+        if interrupt_mode == VMInterruptMode::Hybrid {
+            allow_hybrid_guest_spis(config, devices)?;
+        }
         register_virtual_timers(devices)?;
+    }
+    Ok(())
+}
+
+fn allow_hybrid_guest_spis(config: &AxVMConfig, devices: &axdevice::AxVmDevices) -> AxVmResult {
+    let Some(gicd) = devices
+        .devices()
+        .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
+    else {
+        return Ok(());
+    };
+
+    let routes = config.aarch64_hybrid_forwarded_irqs();
+    let console_intid = devices.aarch64_console_irq().map(|irq| irq as u32);
+    if console_intid.is_some_and(|intid| !(32..1020).contains(&intid)) {
+        return ax_err!(InvalidInput, "AArch64 console IRQ is not a GIC SPI");
+    }
+    for intid in hybrid_guest_intids(routes, console_intid) {
+        gicd.allow_guest_irq(intid)
+            .map_err(|error| AxVmError::interrupt("allow Hybrid guest SPI", error))?;
     }
     Ok(())
 }
