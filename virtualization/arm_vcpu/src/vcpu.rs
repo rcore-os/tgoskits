@@ -31,6 +31,12 @@ pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = ARM_VCPU_TRAP_FRAME_SIZE;
 /// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
 pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize =
     ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>();
+/// Offset of [`HostRuntimeContext::tpidr_el0`] within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_TPIDR_EL0_OFFSET: usize =
+    ARM_VCPU_HOST_SP_EL0_OFFSET + core::mem::size_of::<u64>();
+/// Offset of [`HostRuntimeContext::guest_tpidr_el0`] within [`ArmVcpu`].
+pub const ARM_VCPU_GUEST_TPIDR_EL0_OFFSET: usize =
+    ARM_VCPU_HOST_TPIDR_EL0_OFFSET + core::mem::size_of::<u64>();
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
@@ -44,12 +50,14 @@ pub struct VmCpuRegisters {
     pub vm_system_regs: GuestSystemRegisters,
 }
 
-/// Host-only state used by one guest entry/exit round.
+/// Host state and exit scratch used by one guest entry/exit round.
 #[repr(C)]
 #[derive(Debug, Default)]
 struct HostRuntimeContext {
     stack_top: u64,
     sp_el0: u64,
+    tpidr_el0: u64,
+    guest_tpidr_el0: u64,
 }
 
 /// A virtual CPU within a guest.
@@ -265,7 +273,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         core::arch::naked_asm!(
             // Save host context.
             save_regs_to_stack!(),
-            // Save the host stack top and SP_EL0 to `self.host`.
+            // Save the host stack top, SP_EL0, and TLS pointer to `self.host`.
             //
             // 'extern "C"' here specifies the aapcs64 calling convention, according to which
             // the first and only parameter, the pointer of self, should be in x0.
@@ -274,6 +282,8 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             "str x9, [x10]",
             "mrs x9, sp_el0",
             "str x9, [x10, #8]",
+            "mrs x9, tpidr_el0",
+            "str x9, [x10, #16]",
             // Go to `context_vm_entry` with x0 pointing to `self.host.stack_top`.
             "mov x0, x10",
             "b context_vm_entry",
@@ -333,7 +343,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         unsafe {
             // Store guest system regs. Guest SP_EL0 was already saved into `self.ctx`
             // by the EL2 assembly before host SP_EL0 was restored.
-            self.guest_system_regs.store();
+            self.guest_system_regs.store(self.host.guest_tpidr_el0);
         }
 
         let result = match exit_reason {

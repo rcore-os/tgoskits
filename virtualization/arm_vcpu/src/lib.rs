@@ -37,7 +37,8 @@ pub use self::{
         ArmVcpuResult, ArmVmExit,
     },
     vcpu::{
-        ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
+        ARM_VCPU_GUEST_TPIDR_EL0_OFFSET, ARM_VCPU_HOST_SP_EL0_OFFSET,
+        ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_HOST_TPIDR_EL0_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
         ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig,
     },
 };

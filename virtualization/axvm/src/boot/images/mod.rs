@@ -268,13 +268,25 @@ pub fn load_vm_image_from_memory(
     }
 
     if buffer_pos == image_size {
-        Ok(())
+        vm.record_boot_memory_bytes(load_addr, image_buffer)
     } else {
         ax_err!(
             InvalidData,
             format!("VM image was only partially loaded: {buffer_pos}/{image_size} bytes")
         )
     }
+}
+
+/// Fills a guest boot-memory range and records the completed operation for
+/// stopped-VM restart restoration.
+pub fn fill_vm_boot_memory(
+    load_addr: GuestPhysAddr,
+    size: usize,
+    byte: u8,
+    vm: AxVMRef,
+) -> AxVmResult {
+    vm.fill_guest_memory(load_addr, size, byte)?;
+    vm.record_boot_memory_fill(load_addr, size, byte)
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]

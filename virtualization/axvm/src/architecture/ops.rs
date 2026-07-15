@@ -40,6 +40,16 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    fn prepare_runtime_start(
+        _vm: &crate::AxVMRef,
+        _primary_vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        _generation: usize,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
+    fn cancel_runtime_start(_vm: &crate::AxVMRef, _generation: usize) {}
+
     fn setup_forwarding_once(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,

@@ -24,8 +24,11 @@ pub(crate) fn register_platform_irq_injector() {
 /// Resolves every Hybrid route before claiming it, then applies host affinity.
 ///
 /// Affinity is not restored on rollback because the platform API has no affinity getter.
-pub(crate) fn setup_hybrid_forwarding(vm: &crate::AxVMRef, cpu_id: usize) -> AxVmResult {
-    let generation = vm.with_runtime(|runtime| Ok(runtime.forwarding_generation_id()))?;
+pub(crate) fn setup_hybrid_forwarding(
+    vm: &crate::AxVMRef,
+    cpu_id: usize,
+    generation: usize,
+) -> AxVmResult {
     let owner = vm
         .id()
         .checked_add(1)
@@ -53,7 +56,7 @@ pub(crate) fn setup_hybrid_forwarding(vm: &crate::AxVMRef, cpu_id: usize) -> AxV
         .iter()
         .map(|spi| spi_index(spi.intid() as usize))
         .collect::<Vec<_>>();
-    let newly_claimed = SPI_OWNERS
+    let claims = SPI_OWNERS
         .claim_all(owner, generation, &indices)
         .map_err(|index| {
             AxVmError::resource_conflict(
@@ -63,14 +66,11 @@ pub(crate) fn setup_hybrid_forwarding(vm: &crate::AxVMRef, cpu_id: usize) -> AxV
         })?;
 
     for irq in resolved {
-        if let Err(error) = ax_hal::irq::set_affinity(irq, affinity) {
-            SPI_OWNERS.release_generation(owner, generation, &newly_claimed);
-            return Err(AxVmError::interrupt(
-                "route AArch64 Hybrid SPI",
-                format_args!("{error:?}"),
-            ));
-        }
+        ax_hal::irq::set_affinity(irq, affinity).map_err(|error| {
+            AxVmError::interrupt("route AArch64 Hybrid SPI", format_args!("{error:?}"))
+        })?;
     }
+    claims.commit();
     Ok(())
 }
 

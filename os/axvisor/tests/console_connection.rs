@@ -89,10 +89,16 @@ fn console_input_is_read_one_byte_per_uart_interrupt() {
 }
 
 #[test]
-fn management_shell_starts_without_waiting_for_default_guests() {
+fn default_guests_start_before_management_shell_without_blocking() {
     let main_source = include_str!("../src/main.rs");
+    let manager_source = include_str!("../src/manager.rs");
 
-    assert!(main_source.contains("manager.init_default_vms();"));
-    assert!(!main_source.contains("manager.start_default_vms();"));
-    assert!(main_source.contains("shell::console_init();"));
+    let init = main_source.find("manager.init_default_vms();").unwrap();
+    let start = main_source.find("manager.start_default_vms();").unwrap();
+    let shell = main_source.find("shell::console_init();").unwrap();
+
+    assert!(init < start);
+    assert!(start < shell);
+    assert!(manager_source.contains("AxvmRuntime::start_vm(vm_id)"));
+    assert!(!manager_source.contains("self.runtime.start_default_vms();"));
 }

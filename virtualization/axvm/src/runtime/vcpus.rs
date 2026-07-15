@@ -77,9 +77,25 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
 pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm) = crate::get_vm_by_id(vm_id) {
         let _ = vm.with_runtime(|runtime| {
-            runtime.notify_all();
+            let cpu_ids = runtime.vcpu_cpu_ids();
+            notify_and_kick_vcpu_cpus(
+                &cpu_ids,
+                || runtime.notify_all(),
+                crate::host::task::send_ipi,
+            );
             Ok(())
         });
+    }
+}
+
+fn notify_and_kick_vcpu_cpus(
+    cpu_ids: &[usize],
+    notify: impl FnOnce(),
+    mut kick: impl FnMut(usize),
+) {
+    notify();
+    for &cpu_id in cpu_ids {
+        kick(cpu_id);
     }
 }
 
@@ -264,7 +280,7 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
     vcpu_task
 }
 
-fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {
+pub(crate) fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {
     let enabled_mask = crate::percpu::enabled_cpu_mask();
     if enabled_mask == 0 {
         warn!(
@@ -384,4 +400,24 @@ fn vcpu_run() {
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::RefCell;
+
+    use super::notify_and_kick_vcpu_cpus;
+
+    #[test]
+    fn notify_all_wakes_waiters_before_kicking_every_vcpu_cpu() {
+        let events = RefCell::new(alloc::vec::Vec::new());
+
+        notify_and_kick_vcpu_cpus(
+            &[2, 4],
+            || events.borrow_mut().push("notify".into()),
+            |cpu_id| events.borrow_mut().push(alloc::format!("kick:{cpu_id}")),
+        );
+
+        assert_eq!(&*events.borrow(), &["notify", "kick:2", "kick:4"]);
+    }
 }

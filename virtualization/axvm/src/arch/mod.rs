@@ -89,6 +89,18 @@ pub(crate) fn init_guest_boot_resources() {
     CurrentArch::init_guest_boot_resources();
 }
 
+pub(crate) fn prepare_runtime_start(
+    vm: &crate::AxVMRef,
+    primary_vcpu: &crate::vm::AxVCpuRef,
+    generation: usize,
+) -> AxVmResult {
+    CurrentArch::prepare_runtime_start(vm, primary_vcpu, generation)
+}
+
+pub(crate) fn cancel_runtime_start(vm: &crate::AxVMRef, generation: usize) {
+    CurrentArch::cancel_runtime_start(vm, generation);
+}
+
 pub(crate) fn prepare_guest_boot(
     vm_config: &mut crate::config::AxVMConfig,
     vm_create_config: &mut axvmconfig::AxVMCrateConfig,

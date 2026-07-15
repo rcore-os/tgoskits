@@ -350,6 +350,10 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         // Currently `sp` points to the base address of `ArmVcpu.ctx`, which stores guest's `TrapFrame`.
         "add x9, sp, {host_stack_top_offset}", // Skip the exception frame.
         // Currently `x9` points to `&ArmVcpu.host.stack_top`, see `run_guest()` in vcpu.rs.
+        "mrs x11, tpidr_el0", // Capture guest TLS before restoring the host value.
+        "str x11, [x9, {guest_tpidr_el0_delta}]",
+        "ldr x11, [x9, {host_tpidr_el0_delta}]", // Restore host TLS before host Rust resumes.
+        "msr tpidr_el0, x11",
         "ldr x11, [x9, {host_sp_el0_delta}]", // Restore host SP_EL0 before host Rust resumes.
         "msr sp_el0, x11",
         "ldr x10, [x9]", // Get `host_stack_top` value from `&ArmVcpu.host.stack_top`.
@@ -358,6 +362,8 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         "ret", /* Control flow is handed back to ArmVcpu::run(), simulating the normal return of the `run_guest` function. */
         host_stack_top_offset = const crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
         host_sp_el0_delta = const crate::ARM_VCPU_HOST_SP_EL0_OFFSET - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
+        host_tpidr_el0_delta = const crate::ARM_VCPU_HOST_TPIDR_EL0_OFFSET - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
+        guest_tpidr_el0_delta = const crate::ARM_VCPU_GUEST_TPIDR_EL0_OFFSET - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
     )
 }
 
