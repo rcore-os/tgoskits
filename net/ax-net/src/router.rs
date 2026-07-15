@@ -284,6 +284,50 @@ struct DeviceHandle {
     tx_packets: AtomicU64,
 }
 
+/// Device references captured before their worker threads become runnable.
+///
+/// Network initialization can finish PollSet registration and publish the
+/// owning Service before consuming this object. The worker entry points need
+/// only these device-local references and never borrow a partially published
+/// Router.
+pub(crate) struct PreparedDeviceWorkers {
+    devices: Vec<Arc<DeviceHandle>>,
+}
+
+impl PreparedDeviceWorkers {
+    /// Initializes device-local and global readiness registrations.
+    pub(crate) fn register_device_waker(&self, waker: &core::task::Waker) {
+        for device in &self.devices {
+            register_device_poll(device, &device.rx_waker);
+            register_device_poll(device, waker);
+        }
+    }
+
+    /// Starts RX workers first, then TX workers, after Service publication.
+    pub(crate) fn start(self) {
+        for device in &self.devices {
+            spawn_device_rx_worker(device.clone());
+        }
+        for device in self.devices {
+            spawn_device_tx_worker(device);
+        }
+    }
+}
+
+fn spawn_device_tx_worker(device: Arc<DeviceHandle>) {
+    let name = format!("{}-tx", device.name);
+    if let Err(error) = crate::spawn_permanent_worker(name, move || device_tx_worker(device)) {
+        error!("failed to start network TX worker: {error}");
+    }
+}
+
+fn spawn_device_rx_worker(device: Arc<DeviceHandle>) {
+    let name = format!("{}-rx", device.name);
+    if let Err(error) = crate::spawn_permanent_worker(name, move || device_rx_worker(device)) {
+        error!("failed to start network RX worker: {error}");
+    }
+}
+
 impl DeviceHandle {
     fn new(
         interface_id: InterfaceId,
@@ -628,54 +672,28 @@ impl Router {
             .collect()
     }
 
-    /// Starts TX workers for all non-loopback devices.
-    pub fn start_tx_workers(&self) {
-        for dev in 0..self.devices.len() {
-            self.start_device_tx_worker(dev);
+    /// Captures all non-loopback devices without making a worker runnable yet.
+    pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {
+        PreparedDeviceWorkers {
+            devices: self
+                .devices
+                .iter()
+                .filter(|device| device.interface_id != InterfaceId::LOOPBACK)
+                .cloned()
+                .collect(),
         }
     }
 
-    /// Starts RX workers for all non-loopback devices.
-    pub fn start_rx_workers(&self) {
-        for dev in 0..self.devices.len() {
-            self.start_device_rx_worker(dev);
-        }
-    }
-
-    /// Starts RX/TX workers for one dynamically registered device.
-    pub fn start_device_workers(&self, dev: usize) {
-        self.start_device_rx_worker(dev);
-        self.start_device_tx_worker(dev);
-    }
-
-    fn start_device_tx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
-            return;
-        };
-        // Skip loopback: it uses fast path (no worker needed)
-        if device.interface_id == InterfaceId::LOOPBACK {
-            return;
-        }
-        let device = device.clone();
-        let name = format!("{}-tx", device.name);
-        if let Err(error) = crate::spawn_permanent_worker(name, move || device_tx_worker(device)) {
-            error!("failed to start network TX worker: {error}");
-        }
-    }
-
-    fn start_device_rx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
-            return;
-        };
-        // Skip loopback: packets injected directly in dispatch
-        if device.interface_id == InterfaceId::LOOPBACK {
-            return;
-        }
-        let device = device.clone();
-        let name = format!("{}-rx", device.name);
-        if let Err(error) = crate::spawn_permanent_worker(name, move || device_rx_worker(device)) {
-            error!("failed to start network RX worker: {error}");
-        }
+    /// Captures one dynamically registered device for deferred worker startup.
+    pub(crate) fn prepare_device_workers_for(&self, dev: usize) -> PreparedDeviceWorkers {
+        let devices = self
+            .devices
+            .get(dev)
+            .filter(|device| device.interface_id != InterfaceId::LOOPBACK)
+            .cloned()
+            .into_iter()
+            .collect();
+        PreparedDeviceWorkers { devices }
     }
 
     /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
@@ -796,14 +814,6 @@ impl Router {
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
         self.devices.iter().map(|device| device.stats()).collect()
-    }
-
-    /// Registers a global device-readiness waker for all devices.
-    pub fn register_device_waker(&self, waker: &core::task::Waker) {
-        for device in &self.devices {
-            register_device_poll(device, &device.rx_waker);
-            register_device_poll(device, waker);
-        }
     }
 
     /// Forces all device RX workers to re-check their devices.

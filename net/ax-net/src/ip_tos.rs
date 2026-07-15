@@ -6,13 +6,13 @@
 //! boundary, after the IP header has been generated and before the packet is
 //! handed to loopback or a concrete device.
 
+use ax_kspin::PreemptLazy as LazyLock;
 use ax_sync::SpinMutex;
 use hashbrown::HashMap;
 use smoltcp::wire::{
     IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet,
     TcpPacket, UdpPacket,
 };
-use spin::LazyLock;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct EgressIpTosKey {

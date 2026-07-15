@@ -97,8 +97,11 @@
   mutex 相关 feature 和依赖该实现的 `spin::Barrier` 暴露面；新增
   `spin::Mutex` 使用会直接编译失败。
 - `components/kspin/src/base.rs` 只保留 `spin::Mutex` 的历史来源说明文档引用。
-- 剩余 `spin::RwLock`、`spin::Once`、`spin::LazyLock` 使用属于后续阶段，
-  不包含在本阶段和本 PR 的实现范围内。
+- `ax-kspin` 已提供 `PreemptOnce` / `PreemptLazy`，`axpoll` 与 `ax-net` 的
+  scheduler-online task-context lazy state 已迁移，避免 raw Once owner 在同 CPU
+  抢占后被 IRQ-off waiter 永久反转。剩余 `spin::Once` / `spin::LazyLock` 必须按
+  early-boot/offline、硬件一次性发布或 task-context 竞争三类审计；前两类保留需要
+  具体不变量，后一类迁移到 context-aware primitive。
 
 替换原则：
 
@@ -187,8 +190,8 @@
   `ax-fs-ng`、`ax-task`、`ax-posix-api`、`rdrive` 和 `crab-usb`。
 - `axfs-ng` 的 task/IRQ ops 注册器已改为复制 `&'static dyn ...` 后释放读锁，再调用回调，
   避免读锁跨 `task_wait` / IRQ 注册回调等潜在阻塞路径。
-- `crab-usb` 已移除不再需要的 `spin` 依赖；其它仍使用 `spin::Once` / `spin::LazyLock`
-  的 crate 依赖保留到后续阶段清理。
+- `crab-usb`、`axpoll` 和 `ax-net` 已移除不再需要的 `spin` 依赖；其它仍使用
+  `spin::Once` / `spin::LazyLock` 的 crate 依赖按初始化上下文逐项清理。
 
 初步建议：
 

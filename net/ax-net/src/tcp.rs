@@ -34,6 +34,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
+use ax_kspin::PreemptLazy as LazyLock;
 use ax_sync::SpinMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use hashbrown::HashMap;
@@ -43,7 +44,6 @@ use smoltcp::{
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint, IpProtocol},
 };
-use spin::LazyLock;
 
 use crate::{
     DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,

@@ -272,6 +272,20 @@ fn pollset_has_no_hard_irq_wake_surface() {
 }
 
 #[test]
+fn pollset_lazy_initialization_uses_a_preemption_aware_once() {
+    let source = include_str!("../src/lib.rs");
+    assert!(
+        source.contains("PreemptOnce<SpinNoIrq<Inner>>"),
+        "a PollSet initializer may be preempted by another same-CPU registrar; its Once owner \
+         must stay runnable until publication completes"
+    );
+    assert!(
+        !source.contains("use spin::Once"),
+        "PollSet must not bypass ax-kspin's context-aware initialization primitive"
+    );
+}
+
+#[test]
 fn full_capacity() {
     let ps = PollSet::new();
     let counter = Counter::new();

@@ -946,7 +946,6 @@ dependencies = [
  "rdif-vsock",
  "ringbuf",
  "smoltcp",
- "spin",
 ]
 
 [[package]]
@@ -1368,7 +1367,6 @@ dependencies = [
  "bitflags 2.13.0",
  "futures",
  "linux-raw-sys 0.12.1",
- "spin",
  "tokio",
 ]
 

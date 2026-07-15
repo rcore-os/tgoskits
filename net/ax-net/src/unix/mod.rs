@@ -27,11 +27,11 @@ use core::task::Context;
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
+use ax_kspin::PreemptLazy as LazyLock;
 use ax_sync::SpinMutex;
 use axpoll::{IoEvents, Pollable};
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
-use spin::LazyLock;
 
 pub use self::{
     dgram::DgramTransport,

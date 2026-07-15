@@ -15,6 +15,8 @@
 - `SpinMutex` / `SpinRwLockCore`：基于 `lock_api` 的安全数据包装。
 - `LockRuntime`：显式 Rust ABI trait-ffi，由 OS runtime 提供 IRQ、抢占、调度安全点和无分配 lockdep hook。
 - `IrqGuard`、`PreemptGuard`、`PreemptIrqGuard`：独立上下文 guard。
+- `PreemptOnce<T>` / `PreemptLazy<T>`：task-context 单次初始化；initializer 从竞争
+  `Once` ownership 前到发布完成始终持有 `PreemptGuard`，但不关闭本地 IRQ。
 
 常用锁类型包括：
 
@@ -55,8 +57,14 @@ impl_trait! {
 3. `MutexGuard::unlocked` 会临时完整恢复 IRQ/抢占状态，再重新进入并加锁。
 4. `force_unlock` 仅能释放当前 CPU 拥有且被明确 forget 的 guard。
 5. hard IRQ lockdep hook 必须写入预分配的 per-CPU 缓冲，不得分配、阻塞或调用任意 observer。
+6. scheduler online 后，可能被多个 task 竞争的 lazy initializer 不得直接使用
+   `spin::Once` / `spin::LazyLock`。raw Once owner 在发布 `Running` 后被同 CPU
+   抢占，而 replacement task 在 IRQ/preempt-disabled 区域等待同一 Once，会形成
+   owner 永远无法恢复的抢占反转。普通 task/deferred 路径使用 `PreemptOnce`；early
+   boot、CPU offline 或 hard-IRQ 专用对象必须另行证明不存在竞争、抢占与分配。
 
 ## 验证
 
 `components/kspin` 测试覆盖无 feature 的多核互斥、非 LIFO IRQ guard、try-lock
-回滚、解锁/恢复/调度顺序、临时 unlocked 以及 Mutex/RwLock 公共 API。
+回滚、解锁/恢复/调度顺序、临时 unlocked、preemption-aware Once initializer 以及
+Mutex/RwLock 公共 API。

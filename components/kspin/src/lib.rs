@@ -11,11 +11,13 @@
 extern crate std;
 
 mod context;
+mod once;
 mod raw;
 mod runtime_call;
 mod wrapper;
 
 pub use context::*;
+pub use once::*;
 pub use raw::*;
 use trait_ffi::def_extern_trait;
 pub use wrapper::*;

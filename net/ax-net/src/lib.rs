@@ -81,6 +81,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
+use ax_kspin::{PreemptLazy as LazyLock, PreemptOnce as Once};
 use ax_sync::SpinMutex;
 use ax_task::{IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, PollSet};
@@ -88,7 +89,6 @@ use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
-use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -167,6 +167,10 @@ static NET_IRQ_REGISTRATION: Once<&'static IrqWaitRegistration> = Once::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+fn net_poll_device_waker() -> &'static Waker {
+    LazyLock::force(&NET_POLL_DEVICE_WAKER)
+}
 
 fn get_service() -> ax_sync::SpinMutexGuard<'static, Service> {
     SERVICE
@@ -297,9 +301,6 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     for name in router.device_names() {
         info!("Device: {}", name);
     }
-    router.start_rx_workers();
-    router.start_tx_workers();
-
     let control = Arc::new(NetControl::new(interfaces, routes, dns));
     let mut service = Service::new(router, control.clone());
     service.iface.update_ip_addrs(|ip_addrs| {
@@ -312,9 +313,11 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         service.enable_dhcp(id, dev, name, mac, metric);
     }
     let dhcp_enabled = service.dhcp_enabled();
+    let workers = service.prepare_device_workers();
+    workers.register_device_waker(net_poll_device_waker());
     NET_CONTROL.call_once(|| control);
     SERVICE.call_once(|| SpinMutex::new(service));
-    get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
+    workers.start();
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
     if dhcp_enabled {
@@ -620,17 +623,20 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     } else {
         EthernetDevice::new(config.name.clone(), dev, Some(cidr))
     };
-    let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
-    if let Some(client_ip) = config.dhcp_server_client_ip {
-        let client_ip = Ipv4Address::from(client_ip);
-        let subnet_mask = mask_from_prefix(config.prefix_len);
-        get_service().enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
-    }
+    let workers = {
+        let mut service = get_service();
+        let dev_idx = service.register_static_device(config.name.clone(), eth_dev, mac, cidr);
+        if let Some(client_ip) = config.dhcp_server_client_ip {
+            let client_ip = Ipv4Address::from(client_ip);
+            let subnet_mask = mask_from_prefix(config.prefix_len);
+            service.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
+        }
+        service.prepare_device_workers_for(dev_idx)
+    };
+    workers.register_device_waker(net_poll_device_waker());
+    workers.start();
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
-    if config.dedicated_poll {
-        get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
-    }
     request_poll();
 }
 
@@ -995,6 +1001,36 @@ fn wait_for_dhcp_bootstrap() {
         ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
     }
     warn!("DHCP bootstrap timed out");
+}
+
+#[cfg(test)]
+mod initialization_contract_tests {
+    #[test]
+    fn device_pollsets_are_initialized_before_service_publication_and_worker_start() {
+        let source = include_str!("lib.rs");
+        let init_network = source
+            .split_once("pub fn init_network")
+            .expect("init_network must exist")
+            .1
+            .split_once("fn validate_config")
+            .expect("init_network must precede validate_config")
+            .0;
+        let initialize_pollsets = init_network
+            .find("workers.register_device_waker(net_poll_device_waker())")
+            .expect("prepared device poll sets must be initialized before publication");
+        let publish_service = init_network
+            .find("SERVICE.call_once")
+            .expect("the initialized Service must be published once");
+        let start_workers = init_network
+            .find("workers.start()")
+            .expect("prepared device workers must start after publication");
+
+        assert!(
+            initialize_pollsets < publish_service && publish_service < start_workers,
+            "a runnable worker must never observe or contend with a partially initialized device \
+             PollSet"
+        );
+    }
 }
 
 #[cfg(test)]

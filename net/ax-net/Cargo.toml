@@ -30,7 +30,6 @@ log = { workspace = true }
 rd-net = { workspace = true }
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
-spin = { workspace = true }
 
 [dependencies.smoltcp]
 workspace = true

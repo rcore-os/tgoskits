@@ -83,7 +83,7 @@ use crate::{
     consts::STANDARD_MTU,
     device::{ArpEntry, EthernetDevice},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, PreparedDeviceWorkers, RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -585,7 +585,6 @@ impl Service {
             },
             routes,
         );
-        self.router.start_device_workers(dev);
         dev
     }
 
@@ -1042,8 +1041,12 @@ impl Service {
         self.router.register_waker(binding, waker);
     }
 
-    pub fn register_device_waker(&mut self, waker: &Waker) {
-        self.router.register_device_waker(waker);
+    pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {
+        self.router.prepare_device_workers()
+    }
+
+    pub(crate) fn prepare_device_workers_for(&self, dev: usize) -> PreparedDeviceWorkers {
+        self.router.prepare_device_workers_for(dev)
     }
 }
 
