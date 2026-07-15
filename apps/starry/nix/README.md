@@ -96,17 +96,19 @@ build; it does not prove that a local `buildPhase` ran.
 ## Kernel Regression Tests
 
 Kernel-level semantics (pipe poll, pidfd, rsext4 open-unlink, mount namespace
-isolation, etc.) are covered separately by the **qemu-smp1/system** grouped suite:
+isolation, etc.) are covered separately by the unified **qemu/system** grouped
+suite. The legacy SMP-specific split has been removed from the active runner
+layout; the system configs now run with `-smp 4`.
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/system
-cargo xtask starry test qemu --arch aarch64 -c qemu-smp1/system
+cargo xtask starry test qemu --arch x86_64 -c qemu/system
+cargo xtask starry test qemu --arch aarch64 -c qemu/system
 ```
 
 These C-language regression tests were migrated from the former
 `test-nix-prereqs` case and now live alongside other kernel regression tests
 under the unified system grouped suite.
-See `test-suit/starryos/qemu-smp1/system/`.
+See `test-suit/starryos/qemu/system/`.
 
 ## Nix Sandbox Debug Regression Suite (003)
 

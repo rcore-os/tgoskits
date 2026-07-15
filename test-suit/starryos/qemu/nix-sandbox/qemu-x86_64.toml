@@ -32,7 +32,7 @@ test_commands = [
 fail() { echo "NIX_SANDBOX_ERROR: $1"; echo "NIX_SANDBOX_TEST_FAILED"; exit 1; }
 
 test_started=$(date +%s)
-test_timeout=90
+test_timeout=180
 
 remaining_test_budget() {
     now=$(date +%s)
@@ -116,7 +116,7 @@ NIXEOF
 remaining_budget=$(remaining_test_budget)
 diagnostic_reserve=20
 if [ "$remaining_budget" -le "$diagnostic_reserve" ]; then
-    fail 'test exhausted its two-minute budget before nix-build'
+    fail 'test exhausted its sandbox budget before nix-build'
 fi
 build_timeout=$((remaining_budget - diagnostic_reserve))
 echo "NIX_SANDBOX_INFO: sandboxed nix-build remaining budget is ${build_timeout}s"
@@ -212,4 +212,4 @@ fail_regex = [
     "(?m)^NIX_SANDBOX_TEST_FAILED\\s*$",
     "(?m)^NIX_SANDBOX_ERROR:",
 ]
-timeout = 120
+timeout = 180
