@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    context::{ResolvedStarryRequest, STARRY_PACKAGE},
+    context::{ResolvedStarryRequest, STARRY_PACKAGE, find_workspace_root},
     starry::build::LogLevel,
 };
 
@@ -56,6 +56,14 @@ fn resolve_build_info_path_uses_default_starry_location() {
         root.path()
             .join("tmp/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
     );
+}
+
+#[test]
+fn starry_manifest_declares_std_compat_for_dynamic_std_linking() {
+    let manifest =
+        fs::read_to_string(find_workspace_root().join("os/StarryOS/starryos/Cargo.toml")).unwrap();
+
+    assert!(manifest.contains("\"std-compat\""));
 }
 
 #[test]
