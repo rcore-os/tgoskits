@@ -21,10 +21,11 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)permission denied",
 ]
-# Keep this CI case as a bounded UEFI smoke test. Full x86_64 VMX UEFI
-# guest execution is still incomplete and does not reliably reach NimbOS
-# usertests yet.
+# Keep this CI case as a bounded UEFI smoke test. The host AxVisor image must
+# also be entered through OVMF; otherwise QEMU falls back to SeaBIOS and the
+# UEFI-only AxVisor/NimbOS handoff never starts.
 success_regex = ["VM\\[1\\] boot success"]
 timeout = 180
-to_bin = false
-uefi = false
+# UEFI execution requires the converted BIN artifact on the ESP.
+to_bin = true
+uefi = true

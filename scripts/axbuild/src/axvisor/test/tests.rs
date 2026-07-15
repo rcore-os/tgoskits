@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ostool::run::qemu::QemuConfig;
 use tempfile::tempdir;
 
 use super::*;
@@ -159,6 +160,16 @@ fn checked_in_test_build_vmconfigs_exist() {
     }
 
     assert!(checked > 0);
+}
+
+#[test]
+fn nimbos_uefi_case_uses_uefi_host_boot() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
+    let config: QemuConfig = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+
+    assert!(config.uefi);
+    assert!(config.to_bin);
 }
 
 #[test]
