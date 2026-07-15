@@ -64,6 +64,10 @@ impl PlatOp for Plat {
         gic_irq_id(HwIrq(raw as u32))
     }
 
+    fn mark_forwarded_hw(active: &mut Self::ActiveIrq) {
+        active.mark_forwarded_hw();
+    }
+
     fn systick_irq() -> IrqId {
         systick::systick_irq()
     }

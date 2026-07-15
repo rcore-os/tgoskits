@@ -377,7 +377,8 @@ impl HyperCall {
                 code: self.code,
                 operation,
             },
-            AxVmError::InvalidConfig { .. }
+            AxVmError::ForwardedIrqConfig { .. }
+            | AxVmError::InvalidConfig { .. }
             | AxVmError::Boot { .. }
             | AxVmError::Memory { .. }
             | AxVmError::Device { .. }

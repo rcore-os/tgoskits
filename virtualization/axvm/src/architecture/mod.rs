@@ -2,6 +2,7 @@
 
 mod capabilities;
 mod exit;
+pub(crate) mod irq_policy;
 pub(crate) mod ops;
 mod types;
 

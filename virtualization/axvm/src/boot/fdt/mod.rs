@@ -32,6 +32,20 @@ fn guest_fdt_policy() -> test_core::GuestFdtPolicy {
         patch_runtime: test_runtime_patch,
         patch_provided: test_provided_patch,
         decode_interrupt: |specifier| specifier.first().copied(),
+        prepare_host_irq_routes: test_core::forwarded_irq::prepare_aarch64_hybrid_routes,
+        enrich_guest_interrupts: test_enrich_guest_interrupts,
+    }
+}
+
+#[cfg(test)]
+fn test_enrich_guest_interrupts(
+    config: &mut crate::config::AxVMConfig,
+    dtb: &[u8],
+) -> crate::AxVmResult {
+    if config.interrupt_mode() == axvm_types::VMInterruptMode::Hybrid {
+        Ok(())
+    } else {
+        test_core::parse_vm_interrupt(config, dtb)
     }
 }
 
@@ -62,3 +76,6 @@ fn test_provided_patch(
 ) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
 }
+
+#[cfg(test)]
+mod forwarded_irq_tests;

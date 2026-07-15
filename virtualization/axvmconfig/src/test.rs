@@ -462,6 +462,8 @@ emu_devices = []
     test_deser("no_irq", VMInterruptMode::NoIrq);
     test_deser("no", VMInterruptMode::NoIrq);
     test_deser("none", VMInterruptMode::NoIrq);
+    test_deser("hybrid", VMInterruptMode::Hybrid);
+    test_deser("mixed", VMInterruptMode::Hybrid);
 }
 
 #[test]

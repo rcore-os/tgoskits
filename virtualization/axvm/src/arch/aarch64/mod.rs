@@ -32,6 +32,7 @@ pub(crate) mod fdt;
 mod gic;
 mod images;
 mod ipi;
+mod irq;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
@@ -198,6 +199,34 @@ impl ArchOps for Aarch64Arch {
             stop_reason: None,
         })
     }
+
+    fn register_platform_irq_injector() {
+        irq::register_platform_irq_injector();
+    }
+
+    fn setup_forwarding_once(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> crate::AxVmResult {
+        if vm.interrupt_mode() != axvm_types::VMInterruptMode::Hybrid {
+            return Ok(());
+        }
+        let cpu_id = vcpu
+            .phys_cpu_set()
+            .and_then(first_cpu_in_mask)
+            .unwrap_or_else(|| default_host().this_cpu_id());
+        irq::setup_hybrid_forwarding(vm, cpu_id)
+    }
+
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef, runtime: &crate::vm::VmRuntimeHandle) {
+        if vm.interrupt_mode() == axvm_types::VMInterruptMode::Hybrid {
+            irq::unregister_forward_spis(vm, runtime.forwarding_generation_id());
+        }
+    }
+}
+
+fn first_cpu_in_mask(mask: usize) -> Option<usize> {
+    (mask != 0).then_some(mask.trailing_zeros() as usize)
 }
 
 struct AxvmArmHostOps;

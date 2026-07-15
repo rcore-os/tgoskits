@@ -22,35 +22,13 @@ use axvm_types::VMInterruptMode;
 
 use crate::{AxVmResult, ax_err};
 
-/// Host platform hook for registering the RISC-V physical IRQ injector.
+pub(crate) mod forwarding;
+
+/// Host platform hook for registering a physical IRQ injector.
 #[ax_crate_interface::def_interface]
-pub trait RiscvPlatformIrqInjectorIf {
+pub trait PlatformIrqInjectorIf {
     /// Registers a callback that forwards a physical IRQ line into the current guest.
     fn register_virtual_irq_injector(injector: fn(usize) -> bool);
-
-    /// Routes physical PLIC IRQs that may be forwarded to a guest toward the vCPU CPU.
-    fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]);
-}
-
-#[expect(
-    dead_code,
-    reason = "the RISC-V architecture backend is not compiled for this target"
-)]
-pub(crate) fn register_riscv_virtual_irq_injector(injector: fn(usize) -> bool) {
-    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(
-        injector
-    ));
-}
-
-#[expect(
-    dead_code,
-    reason = "the RISC-V architecture backend is not compiled for this target"
-)]
-pub(crate) fn set_riscv_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
-    ax_crate_interface::call_interface!(RiscvPlatformIrqInjectorIf::set_virtual_irq_targets(
-        cpu_id,
-        irq_sources
-    ));
 }
 
 /// Resolves device interrupt lines against one VM's interrupt backend.

@@ -284,6 +284,11 @@ pub fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
     resolve_source(source)
 }
 
+/// Resolves a hardware line in the platform primary external interrupt controller.
+pub fn resolve_external_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
+    resolve_external(hwirq)
+}
+
 /// Resolves an architecture-local/per-CPU hardware interrupt through the
 /// platform IRQ domain.
 pub fn resolve_percpu_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
@@ -353,6 +358,9 @@ pub trait IrqIf {
     /// Resolves a firmware/controller interrupt source to a framework IRQ id.
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError>;
 
+    /// Resolves a hardware line in the platform primary external interrupt controller.
+    fn resolve_external(hwirq: HwIrq) -> Result<IrqId, IrqError>;
+
     /// Resolves an architecture-local/per-CPU hardware interrupt.
     fn resolve_percpu(hwirq: HwIrq) -> Result<IrqId, IrqError>;
 }
@@ -405,6 +413,10 @@ mod tests {
         }
 
         fn resolve_source(_source: IrqSource) -> Result<IrqId, IrqError> {
+            Err(IrqError::Unsupported)
+        }
+
+        fn resolve_external(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
             Err(IrqError::Unsupported)
         }
 

@@ -23,6 +23,11 @@ pub trait PlatOp {
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
+    /// Marks an active physical IRQ as forwarded through a hardware-mapped
+    /// virtual interrupt. Architectures without this capability keep the
+    /// default no-op implementation.
+    fn mark_forwarded_hw(_active: &mut Self::ActiveIrq) {}
+
     fn systick_irq() -> IrqId;
 
     fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {

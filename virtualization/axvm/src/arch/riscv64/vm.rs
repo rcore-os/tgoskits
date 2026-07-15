@@ -22,6 +22,11 @@ use crate::{
 
 impl Riscv64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+        crate::architecture::irq_policy::validate_irq_mode(
+            "RISC-V",
+            false,
+            config.interrupt_mode(),
+        )?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
