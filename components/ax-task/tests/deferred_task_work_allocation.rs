@@ -2,8 +2,13 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    boxed::Box,
+    cell::Cell,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ax_task::{
@@ -15,21 +20,40 @@ mod support;
 
 struct CountingAllocator;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static DEADLINE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
+std::thread_local! {
+    static ALLOCATION_AUDIT: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
 // SAFETY: every operation is forwarded unchanged to the system allocator; the
-// counter only observes allocations made by the operation under test.
+// thread-local counter only observes allocations made by the operation under
+// test, excluding the test harness and unrelated test threads.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         // SAFETY: this implementation forwards the caller's allocator contract.
-        unsafe { System.alloc(layout) }
+        let pointer = unsafe { System.alloc(layout) };
+        record_allocation(pointer);
+        pointer
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: this implementation forwards the caller's allocator contract.
+        let pointer = unsafe { System.alloc_zeroed(layout) };
+        record_allocation(pointer);
+        pointer
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         // SAFETY: this implementation forwards the caller's allocator contract.
         unsafe { System.dealloc(pointer, layout) };
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: this implementation forwards the caller's allocator contract.
+        let replacement = unsafe { System.realloc(pointer, layout, new_size) };
+        record_allocation(replacement);
+        replacement
     }
 }
 
@@ -80,6 +104,33 @@ fn deadline_overrun_collection_uses_only_registry_owned_storage() {
     assert_no_alloc(|| assert_eq!(system.dispatch_deadline_overruns(1), Ok(0)));
 }
 
+#[test]
+fn allocation_audit_ignores_allocations_from_other_threads() {
+    let phase = Arc::new(AtomicUsize::new(0));
+    let helper_phase = Arc::clone(&phase);
+    let helper = std::thread::spawn(move || {
+        helper_phase.store(1, Ordering::Release);
+        while helper_phase.load(Ordering::Acquire) != 2 {
+            core::hint::spin_loop();
+        }
+        let unrelated = Box::new([0_u8; 64]);
+        std::hint::black_box(&unrelated);
+        helper_phase.store(3, Ordering::Release);
+        drop(unrelated);
+    });
+    while phase.load(Ordering::Acquire) != 1 {
+        core::hint::spin_loop();
+    }
+
+    assert_no_alloc(|| {
+        phase.store(2, Ordering::Release);
+        while phase.load(Ordering::Acquire) != 3 {
+            core::hint::spin_loop();
+        }
+    });
+    helper.join().expect("allocation helper must finish");
+}
+
 fn deadline_overrun_fixture(
     extension_ops: &'static ThreadExtensionOps,
 ) -> (TaskSystem, Pin<Box<ax_task::CpuLocal>>) {
@@ -114,11 +165,31 @@ fn deadline_overrun_fixture(
     (system, cpu)
 }
 
-fn assert_no_alloc(operation: impl FnOnce()) {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
-    operation();
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
-    assert_eq!(after, before, "deferred notification collection allocated");
+fn record_allocation(pointer: *mut u8) {
+    if pointer.is_null() {
+        return;
+    }
+    let _ = ALLOCATION_AUDIT.try_with(|audit| {
+        if let Some(allocations) = audit.get() {
+            audit.set(Some(allocations.saturating_add(1)));
+        }
+    });
+}
+
+fn assert_no_alloc<T>(operation: impl FnOnce() -> T) -> T {
+    ALLOCATION_AUDIT.with(|audit| {
+        assert_eq!(
+            audit.replace(Some(0)),
+            None,
+            "allocation audits must not nest"
+        );
+        let value = operation();
+        let allocations = audit
+            .replace(None)
+            .expect("allocation audit must remain active");
+        assert_eq!(allocations, 0, "deferred notification collection allocated");
+        value
+    })
 }
 
 unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
