@@ -101,6 +101,18 @@ pub(crate) fn board_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> 
         .collect())
 }
 
+pub(crate) fn default_qemu_board_for_target(
+    workspace_root: &Path,
+    package: &str,
+    target: &str,
+) -> anyhow::Result<Option<Board>> {
+    Ok(board_default_list(workspace_root)?
+        .into_iter()
+        .find(|board| {
+            board.name.starts_with("qemu-") && board.package == package && board.target == target
+        }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
@@ -174,5 +186,38 @@ log = "Info"
 
         let board = load_board_file(&path).unwrap();
         assert_eq!(board.target, "aarch64-unknown-none-softfloat");
+    }
+
+    #[test]
+    fn default_qemu_board_matches_package_and_target() {
+        let root = tempdir().unwrap();
+        write_workspace(root.path());
+        write_board(
+            root.path(),
+            "qemu-aarch64",
+            r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+"#,
+        );
+
+        let board = default_qemu_board_for_target(
+            root.path(),
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+        )
+        .unwrap();
+        assert_eq!(board.unwrap().name, "qemu-aarch64");
+        assert!(
+            default_qemu_board_for_target(
+                root.path(),
+                "another-package",
+                "aarch64-unknown-none-softfloat",
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 }

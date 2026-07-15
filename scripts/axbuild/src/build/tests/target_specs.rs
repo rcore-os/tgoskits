@@ -14,11 +14,11 @@ fn std_c_toolchain_env_does_not_require_installed_cross_compiler() {
     );
     assert_eq!(
         env.get("CFLAGS_riscv64gc_unknown_linux_musl"),
-        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany -fno-stack-protector".to_string())
     );
     assert_eq!(
         env.get("CXXFLAGS_riscv64gc_unknown_linux_musl"),
-        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany".to_string())
+        Some(&"-march=rv64gc -mabi=lp64d -mcmodel=medany -fno-stack-protector".to_string())
     );
     assert!(!env.contains_key("BINDGEN_EXTRA_CLANG_ARGS_riscv64gc_unknown_linux_musl"));
 }
@@ -29,11 +29,11 @@ fn std_c_toolchain_env_exports_loongarch_softfloat_abi_flags() {
 
     assert_eq!(
         env.get("CFLAGS_loongarch64_unknown_linux_musl"),
-        Some(&"-mabi=lp64s -msoft-float".to_string())
+        Some(&"-mabi=lp64s -msoft-float -fno-stack-protector".to_string())
     );
     assert_eq!(
         env.get("CXXFLAGS_loongarch64_unknown_linux_musl"),
-        Some(&"-mabi=lp64s -msoft-float".to_string())
+        Some(&"-mabi=lp64s -msoft-float -fno-stack-protector".to_string())
     );
     if let Some(bindgen_args) = env.get("BINDGEN_EXTRA_CLANG_ARGS_loongarch64_unknown_linux_musl") {
         assert!(bindgen_args.contains("--target=loongarch64-linux-musl"));
@@ -197,5 +197,26 @@ fn std_target_specs_embed_final_link_policy() {
 
         assert!(!link_args.contains(&"-static"));
         assert!(!link_args.contains(&"-no-pie"));
+    }
+}
+
+#[test]
+fn riscv_target_specs_disable_global_pointer_relaxation() {
+    let workspace = crate::context::workspace_root_path().unwrap();
+
+    for relative_path in [
+        "scripts/targets/std/riscv64gc-unknown-linux-musl.json",
+        "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json",
+    ] {
+        let path = workspace.join(relative_path);
+        let spec: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let link_args = gnu_lld_pre_link_args(&spec);
+
+        assert!(
+            link_args.contains(&"--no-relax"),
+            "RISC-V target spec must disable GP relaxation: {}",
+            path.display()
+        );
     }
 }

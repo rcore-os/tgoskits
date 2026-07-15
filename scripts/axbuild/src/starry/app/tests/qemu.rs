@@ -196,6 +196,156 @@ fail_regex = []
 }
 
 #[test]
+fn selfhost_x86_app_preserves_the_persistent_build_contract() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let app_dir = repo.join("apps/starry/selfhost/selfhost-full-kernel");
+    let config_path = app_dir.join("qemu-x86_64.toml");
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(
+        config.get("snapshot").and_then(toml::Value::as_bool),
+        Some(false),
+        "{} must persist the guest-built kernel",
+        config_path.display()
+    );
+    assert_eq!(
+        config.get("shell_init_cmd").and_then(toml::Value::as_str),
+        Some("/bin/sh /opt/starry-selfhost-run.sh"),
+        "{} must use the staged non-interactive guest runner",
+        config_path.display()
+    );
+    let qemu_args = config
+        .get("args")
+        .and_then(toml::Value::as_array)
+        .expect("selfhost qemu args must be an array");
+    let qemu_args = qemu_args
+        .iter()
+        .map(|arg| arg.as_str().expect("QEMU arguments must be strings"))
+        .collect::<Vec<_>>();
+    assert!(
+        qemu_args.contains(&"-no-shutdown")
+            && qemu_args.windows(2).any(|args| args == ["-smp", "4"])
+            && qemu_args.windows(2).any(|args| args == ["-m", "16G"])
+            && qemu_args
+                .windows(2)
+                .any(|args| args == ["-netdev", "user,id=net0"])
+            && qemu_args
+                .windows(2)
+                .any(|args| args == ["-device", "virtio-net-pci,netdev=net0"]),
+        "{} must wait for an explicit success or failure marker before QEMU exits",
+        config_path.display()
+    );
+    assert!(
+        fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("rootfs-x86_64-selfhost.img"),
+        "{} must select a managed per-app rootfs",
+        config_path.display()
+    );
+
+    let prebuild_path = app_dir.join("prebuild.sh");
+    let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+    assert!(
+        prebuild.contains("tgoskits-src.tar")
+            && prebuild.contains("starry-selfhost-run.sh")
+            && prebuild.contains("starry-selfhost-reboot-guard.sh")
+            && prebuild.contains("cargo xtask image resize")
+            && prebuild.contains("SELFHOST_ROOTFS_SIZE_MIB:-32768")
+            && prebuild.contains("stage_guest_resolver")
+            && prebuild.contains("/run/systemd/resolve/resolv.conf")
+            && prebuild.contains("sha256sum --check --status")
+            && prebuild.contains("--prefix=\"$toolchain_dir\"")
+            && prebuild.contains(".starry-selfhost-toolchain-version"),
+        "{} must stage source, the guest runner, the reboot guard, and a usable resolver into a \
+         32 GiB rootfs, and must install verified Rust components into a versioned toolchain \
+         archive",
+        prebuild_path.display()
+    );
+
+    let guest_runner_path = app_dir.join("guest-selfbuild.sh");
+    let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
+    assert!(
+        guest_runner.contains("x86_64-unknown-linux-musl")
+            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-05-28\"")
+            && guest_runner.contains("RUSTUP_TOOLCHAIN=\"starry-selfhost-")
+            && guest_runner.contains("--default-toolchain none")
+            && guest_runner.contains("export RUSTUP_TOOLCHAIN")
+            && guest_runner.contains("rustc -vV")
+            && guest_runner.contains("cargo-binutils --version 0.4.0 --locked")
+            && guest_runner.contains("ksym --version 0.6.0 --locked")
+            && guest_runner.contains("tg-xtask")
+            && guest_runner.contains("SELF_COMPILE_SUCCESS")
+            && !guest_runner.contains("SELFHOST_RUST_TOOLCHAIN")
+            && !guest_runner.contains("x86_64-unknown-linux-gnu")
+            && !guest_runner.contains("export CARGO_TARGET_DIR")
+            && guest_runner.contains("SELFHOST_TARGET_DIR:-/opt/starry-selfhost-target")
+            && guest_runner.contains("ln -s \"$TARGET_DIR\" \"$SOURCE_DIR/target\"")
+            && guest_runner.contains("SELFHOST_CARGO_BUILD_JOBS:-2")
+            && guest_runner
+                .contains("$SOURCE_DIR/target/x86_64-unknown-linux-musl/release/starryos"),
+        "{} must build the canonical x86_64 path with a native musl host toolchain",
+        guest_runner_path.display()
+    );
+}
+
+#[test]
+fn selfhost_reboot_guard_reports_the_interrupted_phase() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let guard =
+        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild-reboot-guard.sh");
+    let root = tempdir().unwrap();
+    let state = root.path().join("state");
+    let bin_dir = root.path().join("bin");
+    let poweroff = bin_dir.join("poweroff");
+    let poweroff_marker = root.path().join("poweroff-called");
+    fs::create_dir(&bin_dir).unwrap();
+    fs::write(
+        &poweroff,
+        "#!/bin/sh\nprintf 'called\\n' >\"$POWER_OFF_MARKER\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&poweroff, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&state, "running test-run kernel\n").unwrap();
+
+    let output = Command::new("/bin/sh")
+        .arg(&guard)
+        .env("SELFHOST_STATE_FILE", &state)
+        .env("POWER_OFF_MARKER", &poweroff_marker)
+        .env("PATH", &bin_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("SELF_COMPILE_FAILED: unexpected guest reboot during kernel")
+    );
+    assert_eq!(fs::read_to_string(&poweroff_marker).unwrap(), "called\n");
+
+    fs::write(&state, "ready test-run prebuild\n").unwrap();
+    fs::remove_file(&poweroff_marker).unwrap();
+    let output = Command::new("/bin/sh")
+        .arg(&guard)
+        .env("SELFHOST_STATE_FILE", &state)
+        .env("POWER_OFF_MARKER", &poweroff_marker)
+        .env("PATH", &bin_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("SELF_COMPILE_FAILED"));
+    assert!(!poweroff_marker.exists());
+}
+
+#[test]
 fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
     let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
     let qemu_config_path = case_dir.join("qemu-x86_64.toml");

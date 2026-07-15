@@ -21,7 +21,11 @@ impl Default for InferenceConfig {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InferTiming {
-    /// CPU-side JPEG decode, resize, letterbox, and tensor packing microseconds.
+    /// JPEG decode microseconds.
+    pub decode_us: i64,
+    /// Resize, letterbox clear, and planar pack microseconds.
+    pub resize_us: i64,
+    /// Decode plus CPU-side resize, letterbox, and tensor packing microseconds.
     pub preprocess_us: i64,
     /// CVI_NN_Forward microseconds.
     pub forward_us: i64,
@@ -59,7 +63,8 @@ mod imp {
     use super::{CameraFrame, Detection, InferTiming, InferenceConfig, TpuError};
     use crate::{
         detector::{correct_yolo_boxes, nms, parse_yolov8_output},
-        image_bridge,
+        image_bridge::{self, ImagePreprocessTiming},
+        yuv420::{PlanarYuv420, Yuv420Preprocessor},
     };
 
     const CVI_FMT_FP32: i32 = 0;
@@ -137,6 +142,7 @@ mod imp {
         input_w: i32,
         output_shapes: Vec<CviShape>,
         preprocessor: image_bridge::ImagePreprocessor,
+        yuv_preprocessor: Yuv420Preprocessor,
     }
 
     impl YoloModel {
@@ -199,6 +205,7 @@ mod imp {
                 input_w,
                 output_shapes,
                 preprocessor: image_bridge::ImagePreprocessor::new(),
+                yuv_preprocessor: Yuv420Preprocessor::new(),
             })
         }
 
@@ -214,21 +221,9 @@ mod imp {
             &mut self,
             frame: &CameraFrame,
             config: InferenceConfig,
-            mut timing: Option<&mut InferTiming>,
+            timing: Option<&mut InferTiming>,
         ) -> Result<Vec<Detection>, TpuError> {
-            let input_ptr = unsafe { CVI_NN_TensorPtr(self.input) as *mut u8 };
-            if input_ptr.is_null() {
-                return Err(TpuError::new("input tensor pointer is null"));
-            }
-
-            let input_len = rgb_tensor_len(self.input_w, self.input_h)?;
-            let input_tensor = unsafe { &*self.input };
-            if input_tensor.mem_size < input_len {
-                return Err(TpuError::new(format!(
-                    "input tensor buffer is too small: mem_size={} required={input_len}",
-                    input_tensor.mem_size
-                )));
-            }
+            let (input_ptr, input_len) = self.input_buffer()?;
             let input = unsafe { slice::from_raw_parts_mut(input_ptr, input_len) };
 
             let pre_start = Instant::now();
@@ -238,6 +233,69 @@ mod imp {
                 .map_err(|err| TpuError::new(format!("MJPEG decode/preprocess failed: {err}")))?;
             let preprocess_us = pre_start.elapsed().as_micros() as i64;
 
+            self.forward_preprocessed(
+                preprocess,
+                preprocess_us,
+                frame.width,
+                frame.height,
+                config,
+                timing,
+            )
+        }
+
+        pub fn infer_yuv420_timed(
+            &mut self,
+            frame: PlanarYuv420<'_>,
+            decode_us: i64,
+            config: InferenceConfig,
+            timing: Option<&mut InferTiming>,
+        ) -> Result<Vec<Detection>, TpuError> {
+            let (input_ptr, input_len) = self.input_buffer()?;
+            let input = unsafe { slice::from_raw_parts_mut(input_ptr, input_len) };
+            let layout = frame.layout();
+            let pre_start = Instant::now();
+            let preprocess = self
+                .yuv_preprocessor
+                .preprocess_into(frame, input, self.input_w, self.input_h, decode_us)
+                .map_err(|err| TpuError::new(format!("JPU YUV420 preprocess failed: {err}")))?;
+            let preprocess_us = decode_us
+                .saturating_add(i64::try_from(pre_start.elapsed().as_micros()).unwrap_or(i64::MAX));
+
+            self.forward_preprocessed(
+                preprocess,
+                preprocess_us,
+                layout.source.width,
+                layout.source.height,
+                config,
+                timing,
+            )
+        }
+
+        fn input_buffer(&self) -> Result<(*mut u8, usize), TpuError> {
+            let input_ptr = unsafe { CVI_NN_TensorPtr(self.input) as *mut u8 };
+            if input_ptr.is_null() {
+                return Err(TpuError::new("input tensor pointer is null"));
+            }
+            let input_len = rgb_tensor_len(self.input_w, self.input_h)?;
+            let input_tensor = unsafe { &*self.input };
+            if input_tensor.mem_size < input_len {
+                return Err(TpuError::new(format!(
+                    "input tensor buffer is too small: mem_size={} required={input_len}",
+                    input_tensor.mem_size
+                )));
+            }
+            Ok((input_ptr, input_len))
+        }
+
+        fn forward_preprocessed(
+            &mut self,
+            preprocess: ImagePreprocessTiming,
+            preprocess_us: i64,
+            fallback_width: u32,
+            fallback_height: u32,
+            config: InferenceConfig,
+            timing: Option<&mut InferTiming>,
+        ) -> Result<Vec<Detection>, TpuError> {
             let fwd_start = Instant::now();
             let rc = unsafe {
                 CVI_NN_Forward(
@@ -260,12 +318,12 @@ mod imp {
             let image_w = if preprocess.src_w > 0 {
                 preprocess.src_w
             } else {
-                frame.width as i32
+                fallback_width as i32
             };
             let image_h = if preprocess.src_h > 0 {
                 preprocess.src_h
             } else {
-                frame.height as i32
+                fallback_height as i32
             };
             correct_yolo_boxes(
                 &mut detections,
@@ -276,8 +334,10 @@ mod imp {
             );
             let postprocess_us = post_start.elapsed().as_micros() as i64;
 
-            if let Some(t) = timing.as_deref_mut() {
+            if let Some(t) = timing {
                 *t = InferTiming {
+                    decode_us: preprocess.decode_us,
+                    resize_us: preprocess.resize_us,
                     preprocess_us,
                     forward_us,
                     postprocess_us,
@@ -392,6 +452,7 @@ mod imp {
     use std::path::Path;
 
     use super::{CameraFrame, Detection, InferTiming, InferenceConfig, TpuError};
+    use crate::yuv420::PlanarYuv420;
 
     pub struct YoloModel;
 
@@ -415,6 +476,18 @@ mod imp {
         pub fn infer_timed(
             &mut self,
             _frame: &CameraFrame,
+            _config: InferenceConfig,
+            _timing: Option<&mut InferTiming>,
+        ) -> Result<Vec<Detection>, TpuError> {
+            Err(TpuError::new(
+                "akars was built without SG2002 TPU runtime support",
+            ))
+        }
+
+        pub fn infer_yuv420_timed(
+            &mut self,
+            _frame: PlanarYuv420<'_>,
+            _decode_us: i64,
             _config: InferenceConfig,
             _timing: Option<&mut InferTiming>,
         ) -> Result<Vec<Detection>, TpuError> {

@@ -306,12 +306,13 @@ event-listener = { version = "5.4.0", default-features = false }
 futures = { version = "0.3", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
-toml = "1"
+toml = { version = "1.1.2", default-features = false }
 dma-api = { version = "0.9.3", path = "memory/dma-api" }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
+cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.24.0" }
 riscv = { version = "0.16.1", default-features = false }
@@ -322,6 +323,7 @@ fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
+sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }
 simple-ahci = "0.1.1-preview.1"
 bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"

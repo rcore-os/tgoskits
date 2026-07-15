@@ -13,21 +13,35 @@ use arm_vcpu::{
 };
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
-use ax_errno::{AxError, AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
     AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, CpuUpExit, HypercallExit, MmioReadExit, MmioWriteExit, SendIpiExit,
-    SysRegReadExit, SysRegWriteExit, VcpuCreateContext, VcpuRunAction, VcpuSetupContext,
-    target_phys_cpu_ids,
+use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use crate::{
+    AxVmResult, ax_err,
+    host::{HostCpu, HostMemory, HostTime, default_host},
 };
-use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
 
+mod capabilities;
+#[path = "../../architecture/cpu_up.rs"]
+mod cpu_up;
+pub(crate) mod fdt;
+mod gic;
+mod images;
+mod ipi;
 mod npt;
+#[path = "../../architecture/sysreg.rs"]
+mod sysreg;
+mod vm;
+
+pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+use cpu_up::{CpuUpExit, CpuUpOps};
+pub use images::ImageLoader;
+use ipi::SendIpiExit;
+use sysreg::{SysRegReadExit, SysRegWriteExit};
 
 pub(crate) struct Aarch64Arch;
 
@@ -36,70 +50,16 @@ pub(crate) enum Aarch64DeferredRunWork {
     ExternalInterrupt { vector: usize },
 }
 
+impl CpuUpOps for Aarch64Arch {}
+
 impl ArchOps for Aarch64Arch {
     type VCpu = AxvmArmVcpu;
     type PerCpu = AxvmArmPerCpu;
-    type VcpuCreateState = ();
     type DeferredRunWork = Aarch64DeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
         arm_vcpu::has_hardware_support()
-    }
-
-    fn max_guest_page_table_levels() -> usize {
-        arm_vcpu::max_guest_page_table_levels()
-    }
-
-    fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxResult<usize> {
-        let mut selected = usize::MAX;
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            let levels = crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                .unwrap_or_else(arm_vcpu::max_guest_page_table_levels);
-            if levels == 0 {
-                return ax_err!(
-                    Unsupported,
-                    "AArch64 nested paging is not enabled on target CPU"
-                );
-            }
-            selected = selected.min(levels);
-        }
-        if selected == usize::MAX {
-            selected = arm_vcpu::max_guest_page_table_levels();
-        }
-        match selected {
-            3 | 4 => Ok(selected),
-            _ => ax_err!(Unsupported, "unsupported AArch64 stage-2 page-table levels"),
-        }
-    }
-
-    fn nested_paging_config(
-        root_paddr: PhysAddr,
-        levels: usize,
-        vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<NestedPagingConfig> {
-        let mut pa_bits = usize::MAX;
-        for cpu_id in target_phys_cpu_ids(vcpu_mappings) {
-            let bits =
-                crate::percpu::cpu_guest_phys_addr_bits(cpu_id).unwrap_or_else(arm_vcpu::pa_bits);
-            pa_bits = pa_bits.min(bits);
-        }
-        if pa_bits == usize::MAX {
-            pa_bits = arm_vcpu::pa_bits();
-        }
-
-        let gpa_bits = match levels {
-            3 => 39,
-            4 => 48,
-            _ => return ax_err!(InvalidInput, "unsupported AArch64 stage-2 levels"),
-        };
-        Ok(NestedPagingConfig::new(
-            root_paddr, levels, gpa_bits, pa_bits,
-        ))
-    }
-
-    fn new_nested_page_table(levels: usize) -> AxResult<Self::NestedPageTable> {
-        npt::NestedPageTable::new(levels)
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
@@ -110,67 +70,11 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
-    fn new_vcpu_create_state(
-        _vcpu_mappings: &[(usize, Option<usize>, usize)],
-    ) -> AxResult<Self::VcpuCreateState> {
-        Ok(())
-    }
-
-    fn build_vcpu_create_config(
-        _state: &Self::VcpuCreateState,
-        ctx: VcpuCreateContext,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::CreateConfig> {
-        Ok(ArmVcpuCreateConfig {
-            mpidr_el1: ctx.phys_cpu_id as _,
-            dtb_addr: ctx.dtb_addr.unwrap_or_default().as_usize(),
-        })
-    }
-
-    fn build_vcpu_setup_config(
-        ctx: VcpuSetupContext<'_>,
-    ) -> AxResult<<Self::VCpu as VmArchVcpuOps>::SetupConfig> {
-        let passthrough = ctx.interrupt_mode == axvm_types::VMInterruptMode::Passthrough;
-        Ok(ArmVcpuSetupConfig {
-            passthrough_interrupt: passthrough,
-            passthrough_timer: passthrough,
-        })
-    }
-
-    fn ipi_targets(
-        vm: &crate::AxVMRef,
-        current_vcpu_id: usize,
-        target_cpu: u64,
-        target_cpu_aux: u64,
-        send_to_all: bool,
-        send_to_self: bool,
-    ) -> crate::CpuMask<64> {
-        let mut targets = crate::CpuMask::new();
-        if send_to_all {
-            for vcpu in vm.vcpu_list() {
-                if vcpu.id() != current_vcpu_id {
-                    targets.set(vcpu.id(), true);
-                }
-            }
-        } else if send_to_self {
-            targets.set(current_vcpu_id, true);
-        } else {
-            for (vcpu_id, _, phys_id) in vm.get_vcpu_affinities_pcpu_ids() {
-                let affinity = phys_id as u64;
-                let aff0 = affinity & 0xff;
-                let aff123 = affinity & !0xff;
-                if aff123 == target_cpu && aff0 < 16 && (target_cpu_aux & (1u64 << aff0)) != 0 {
-                    targets.set(vcpu_id, true);
-                }
-            }
-        }
-        targets
-    }
-
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -200,7 +104,7 @@ impl ArchOps for Aarch64Arch {
                     data,
                 },
             ),
-            ArmVmExit::SysRegRead { addr, reg } => super::handle_sys_reg_read(
+            ArmVmExit::SysRegRead { addr, reg } => sysreg::handle_read(
                 vm,
                 vcpu,
                 SysRegReadExit {
@@ -208,7 +112,7 @@ impl ArchOps for Aarch64Arch {
                     reg,
                 },
             ),
-            ArmVmExit::SysRegWrite { addr, value } => super::handle_sys_reg_write(
+            ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
                 vm,
                 SysRegWriteExit {
                     addr: arm_sys_reg_addr_to_ax(addr),
@@ -229,13 +133,16 @@ impl ArchOps for Aarch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Wait))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: true,
+                    stop_reason: None,
+                }))
             }
             ArmVmExit::CpuUp {
                 target_cpu,
                 entry_point,
                 arg,
-            } => super::handle_cpu_up::<Self>(
+            } => cpu_up::handle::<Self>(
                 vm,
                 vcpu,
                 CpuUpExit {
@@ -246,9 +153,10 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction::Stop(
-                    crate::StopReason::SystemDown,
-                )))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: false,
+                    stop_reason: Some(crate::StopReason::SystemDown),
+                }))
             }
             ArmVmExit::SendIPI {
                 target_cpu,
@@ -256,7 +164,7 @@ impl ArchOps for Aarch64Arch {
                 send_to_all,
                 send_to_self,
                 vector,
-            } => super::handle_send_ipi::<Self>(
+            } => ipi::handle(
                 vm,
                 vcpu.id(),
                 SendIpiExit {
@@ -267,7 +175,10 @@ impl ArchOps for Aarch64Arch {
                     vector,
                 },
             ),
-            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::Yield)),
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            })),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
     }
@@ -276,13 +187,16 @@ impl ArchOps for Aarch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
-    ) -> AxResult<VcpuRunAction> {
+    ) -> AxVmResult<VcpuRunAction> {
         match work {
             Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
                 Self::after_external_interrupt(vm, vcpu, vector);
             }
         }
-        Ok(VcpuRunAction::Yield)
+        Ok(VcpuRunAction {
+            waits_for_event: false,
+            stop_reason: None,
+        })
     }
 }
 
@@ -310,34 +224,34 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     type SetupConfig = ArmVcpuSetupConfig;
     type Exit = ArmVmExit;
 
-    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> AxResult<Self> {
+    fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
     }
 
-    fn set_entry(&mut self, entry: GuestPhysAddr) -> AxResult {
+    fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
         arm_result(self.0.set_entry(ax_guest_phys_addr_to_arm(entry)))
     }
 
-    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxResult {
+    fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         arm_result(
             self.0
                 .set_nested_page_table(ax_nested_paging_to_arm(config)),
         )
     }
 
-    fn setup(&mut self, config: Self::SetupConfig) -> AxResult {
+    fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
         arm_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> AxResult<Self::Exit> {
+    fn run(&mut self) -> BackendResult<Self::Exit> {
         arm_result(self.0.run())
     }
 
-    fn bind(&mut self) -> AxResult {
+    fn bind(&mut self) -> BackendResult {
         arm_result(self.0.bind())
     }
 
-    fn unbind(&mut self) -> AxResult {
+    fn unbind(&mut self) -> BackendResult {
         arm_result(self.0.unbind())
     }
 
@@ -345,7 +259,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> AxResult {
+    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         arm_result(self.0.inject_interrupt(vector))
     }
 
@@ -357,7 +271,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 pub(crate) struct AxvmArmPerCpu(ArmPerCpu);
 
 impl VmArchPerCpuOps for AxvmArmPerCpu {
-    fn new(cpu_id: usize) -> AxResult<Self> {
+    fn new(cpu_id: usize) -> BackendResult<Self> {
         arm_result(ArmPerCpu::new(cpu_id)).map(Self)
     }
 
@@ -365,11 +279,11 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
+    fn hardware_enable(&mut self) -> BackendResult {
         arm_result(self.0.hardware_enable::<AxvmArmHostOps>())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    fn hardware_disable(&mut self) -> BackendResult {
         arm_result(self.0.hardware_disable())
     }
 
@@ -382,15 +296,15 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
     }
 }
 
-fn arm_result<T>(result: ArmVcpuResult<T>) -> AxResult<T> {
-    result.map_err(arm_error_to_ax)
+fn arm_result<T>(result: ArmVcpuResult<T>) -> BackendResult<T> {
+    result.map_err(arm_error_to_backend)
 }
 
-fn arm_error_to_ax(err: ArmVcpuError) -> AxError {
+fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
     match err {
-        ArmVcpuError::InvalidInput => AxError::InvalidInput,
-        ArmVcpuError::Unsupported => AxError::Unsupported,
-        ArmVcpuError::BadState => AxError::BadState,
+        ArmVcpuError::InvalidInput => BackendError::InvalidInput,
+        ArmVcpuError::Unsupported => BackendError::Unsupported,
+        ArmVcpuError::BadState => BackendError::InvalidState,
     }
 }
 
@@ -429,16 +343,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_arm_vcpu_errors_to_ax_errors() {
+    fn converts_arm_vcpu_errors_to_backend_errors() {
         assert_eq!(
-            arm_error_to_ax(ArmVcpuError::InvalidInput),
-            AxError::InvalidInput
+            arm_error_to_backend(ArmVcpuError::InvalidInput),
+            BackendError::InvalidInput
         );
         assert_eq!(
-            arm_error_to_ax(ArmVcpuError::Unsupported),
-            AxError::Unsupported
+            arm_error_to_backend(ArmVcpuError::Unsupported),
+            BackendError::Unsupported
         );
-        assert_eq!(arm_error_to_ax(ArmVcpuError::BadState), AxError::BadState);
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::BadState),
+            BackendError::InvalidState
+        );
     }
 
     fn assert_arm_exit_type<T: VmArchVcpuOps<Exit = ArmVmExit>>() {}
@@ -498,7 +415,7 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     }
 
     fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = default_host().register_timer(deadline.as_nanos() as u64, callback);
+        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
     }
 
     fn read_vgicd_iidr() -> u32 {

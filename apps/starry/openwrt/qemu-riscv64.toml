@@ -1,0 +1,16 @@
+# openwrt riscv64 - OpenWrt-userland carpet (uci + opkg). Platform: dynamic (uefi=false /
+# to_bin=true). uci/opkg are cross-compiled from OpenWrt upstream source in prebuild; the carpet
+# is fully offline (no guest network), driving uci against a synthetic /etc/config tree and opkg
+# against a file:// feed it builds at runtime under TCG.
+args = [
+    "-nographic", "-m", "1024M", "-smp", "1", "-cpu", "rv64",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-openwrt.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 5400

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    AddressSpacePolicy, AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig,
-    VMInterruptMode, VmMemMappingType,
+    AddressSpacePolicy, AxVMCrateConfig, AxVmConfigError, EmulatedDeviceType, VMBootProtocol,
+    VMDevicesConfig, VMInterruptMode, VmMemMappingType,
 };
 
 #[test]
@@ -330,7 +330,56 @@ fn test_boot_config_validation_rejects_direct_bios_mix() {
         ..Default::default()
     };
 
-    assert!(direct_with_bios.validate_boot_config().is_err());
+    assert_eq!(
+        direct_with_bios.validate_boot_config(),
+        Err(AxVmConfigError::BootProtocolConflict {
+            protocol: VMBootProtocol::Direct,
+            enable_bios: true,
+        })
+    );
+}
+
+#[test]
+fn test_boot_config_validation_returns_typed_firmware_errors() {
+    let mut uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::MissingFirmwarePath {
+            protocol: VMBootProtocol::Uefi,
+        })
+    );
+
+    uefi_config.uefi_firmware_path = Some("OVMF_CODE.fd".to_string());
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::MissingFirmwareLoadAddress {
+            protocol: VMBootProtocol::Uefi,
+        })
+    );
+}
+
+#[test]
+fn test_boot_config_validation_returns_typed_architecture_error() {
+    let uefi_config = crate::VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        uefi_firmware_path: Some("OVMF_CODE.fd".to_string()),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        uefi_config.validate_boot_config_for_arch("aarch64"),
+        Err(AxVmConfigError::UnsupportedBootProtocol {
+            protocol: VMBootProtocol::Uefi,
+            arch: "aarch64".to_string(),
+        })
+    );
 }
 
 #[test]
@@ -498,7 +547,7 @@ fn test_emulated_device_type_display() {
 
 #[test]
 fn test_config_from_toml_error_handling() {
-    use crate::AxVMCrateConfig;
+    use crate::{AxVMCrateConfig, AxVmConfigError};
 
     let invalid_toml = r#"
 [base
@@ -506,7 +555,7 @@ id = "invalid"
     "#;
 
     let result = AxVMCrateConfig::from_toml(invalid_toml);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 
     let invalid_data_type = r#"
 [base]
@@ -517,7 +566,7 @@ cpu_num = 1
     "#;
 
     let result = AxVMCrateConfig::from_toml(invalid_data_type);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 }
 
 #[test]

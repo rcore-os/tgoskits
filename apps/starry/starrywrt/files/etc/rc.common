@@ -1,0 +1,20 @@
+#!/bin/sh
+# StarryWRT /etc/rc.common - the OpenWrt init framework shim. Each /etc/init.d/<svc> script
+# starts with `#!/bin/sh /etc/rc.common`, so this file receives the script path as $1 and the
+# verb (start/stop/restart/enable/boot/status) as $2. It sources the service, then dispatches.
+# This is the single-core Phase-1 runner; a full procd StarryWRT replaces it with procd's own
+# rc.common. It keeps the OpenWrt-standard verb surface so the init scripts are unmodified.
+. "$1"
+
+ACTION="${2:-}"
+case "$ACTION" in
+	start|boot)   type start >/dev/null 2>&1 && start ;;
+	stop|shutdown)type stop  >/dev/null 2>&1 && stop  ;;
+	restart)      type stop  >/dev/null 2>&1 && stop; type start >/dev/null 2>&1 && start ;;
+	reload)       type reload>/dev/null 2>&1 && reload || { type restart >/dev/null 2>&1 && restart; } ;;
+	enable)       exit 0 ;;
+	disable)      exit 0 ;;
+	enabled)      exit 0 ;;
+	status)       exit 0 ;;
+	*) echo "usage: $1 {start|stop|restart|reload|enable|disable|status}" >&2; exit 1 ;;
+esac

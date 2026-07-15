@@ -134,6 +134,25 @@ fn load_build_info_creates_missing_default_file() {
 }
 
 #[test]
+fn qemu_build_mode_initializes_missing_configs_for_all_supported_targets() {
+    let root = tempdir().unwrap();
+
+    for target in [
+        "aarch64-unknown-none-softfloat",
+        "x86_64-unknown-none",
+        "riscv64gc-unknown-none-elf",
+        "loongarch64-unknown-none-softfloat",
+    ] {
+        let path = root.path().join(format!("build-{target}.toml"));
+
+        let mode = load_arceos_build_mode(&path).unwrap();
+
+        assert_eq!(mode, ArceosBuildMode::RustStd);
+        assert!(path.is_file());
+    }
+}
+
+#[test]
 fn build_config_without_app_c_uses_std_rust_mode() {
     let root = tempdir().unwrap();
     let path = root.path().join("build-x86_64-unknown-none.toml");

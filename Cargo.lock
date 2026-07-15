@@ -426,7 +426,6 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
  "ax-crate-interface",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -434,6 +433,7 @@ dependencies = [
  "bitmaps",
  "log",
  "spin",
+ "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
 
@@ -1170,7 +1170,6 @@ name = "axaddrspace"
 version = "0.5.16"
 dependencies = [
  "assert_matches",
- "ax-errno 0.6.1",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
@@ -1179,6 +1178,7 @@ dependencies = [
  "lazy_static",
  "log",
  "page-table-generic",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1242,7 +1242,6 @@ name = "axdevice"
 version = "0.5.4"
 dependencies = [
  "arm_vgic",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -1253,6 +1252,7 @@ dependencies = [
  "paste",
  "rand 0.10.1",
  "riscv_vplic",
+ "thiserror 2.0.18",
  "x86_vlapic",
 ]
 
@@ -1260,11 +1260,11 @@ dependencies = [
 name = "axdevice_base"
 version = "0.6.1"
 dependencies = [
- "ax-errno 0.6.1",
  "ax-memory-addr",
  "axvm-types",
  "log",
  "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1295,7 +1295,7 @@ dependencies = [
 name = "axhvc"
 version = "0.4.10"
 dependencies = [
- "ax-errno 0.6.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1459,7 +1459,6 @@ dependencies = [
  "anyhow",
  "ax-crate-interface",
  "ax-driver",
- "ax-errno 0.6.1",
  "ax-hal",
  "ax-std",
  "axbuild",
@@ -1489,7 +1488,6 @@ dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
- "ax-errno 0.6.1",
  "ax-hal",
  "ax-kernel-guard",
  "ax-kspin",
@@ -1524,6 +1522,7 @@ dependencies = [
  "riscv_vcpu",
  "riscv_vplic",
  "spin",
+ "thiserror 2.0.18",
  "x86",
  "x86_vcpu",
  "x86_vlapic",
@@ -1534,16 +1533,15 @@ name = "axvm-types"
 version = "0.7.0"
 dependencies = [
  "ax-cpumask",
- "ax-errno 0.6.1",
  "ax-memory-addr",
  "bitflags 2.13.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "axvmconfig"
 version = "0.8.1"
 dependencies = [
- "ax-errno 0.6.1",
  "axvm-types",
  "clap",
  "env_logger",
@@ -1551,7 +1549,8 @@ dependencies = [
  "schemars",
  "serde",
  "serde_repr",
- "toml 0.9.12+spec-1.1.0",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -2619,6 +2618,13 @@ dependencies = [
  "sdhci-host",
  "sdio-host2",
  "sdmmc-protocol",
+]
+
+[[package]]
+name = "cvi-vdec-uapi"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -6654,7 +6660,6 @@ name = "riscv_vplic"
 version = "0.4.20"
 dependencies = [
  "ax-crate-interface",
- "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
  "axdevice_base",
@@ -6662,6 +6667,7 @@ dependencies = [
  "bitmaps",
  "log",
  "riscv-h",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7310,6 +7316,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sg200x-jpu"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "log",
+ "thiserror 2.0.18",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7589,9 +7605,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1527984ca054dfca79333baec451042863f485fbee01b7bf6d911de915cac865"
+checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
 dependencies = [
  "lock_api",
 ]
@@ -7685,7 +7701,9 @@ dependencies = [
  "cfg-if",
  "chrono",
  "crab-usb",
+ "cvi-vdec-uapi",
  "ddebug",
+ "dma-api",
  "downcast-rs",
  "enum_dispatch",
  "event-listener",
@@ -7718,6 +7736,7 @@ dependencies = [
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
+ "sg200x-jpu",
  "slab",
  "some-serial",
  "spin",
@@ -8963,7 +8982,6 @@ dependencies = [
 name = "virtualization-tests"
 version = "0.1.0"
 dependencies = [
- "ax-errno 0.6.1",
  "ax-plat",
  "axdevice",
  "axdevice_base",

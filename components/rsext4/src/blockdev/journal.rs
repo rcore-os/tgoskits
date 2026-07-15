@@ -98,6 +98,23 @@ mod tests {
             .expect("read target after auto commit");
         assert_eq!(dev.buffer()[0], 1);
     }
+
+    #[test]
+    fn bulk_read_overlays_pending_journal_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        let pending = vec![0x5a; BLOCK_SIZE];
+        dev.write_blocks(&pending, target, 1, true)
+            .expect("queue metadata update");
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("bulk read pending metadata");
+
+        assert_eq!(observed, pending);
+    }
 }
 
 /// Block device proxy that optionally routes metadata writes through JBD2.
@@ -276,9 +293,8 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
-        if committed {
-            let _ = self.inner.invalidate_cache();
+        if Self::enqueue_journal_update(system, raw_dev, updates)? {
+            self.inner.invalidate_cache()?;
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
         Ok(())
@@ -317,7 +333,28 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
-        self.inner.read_blocks(buf, block_id, count)
+        if !self.journal_use || count == 0 {
+            return self.inner.read_blocks(buf, block_id, count);
+        }
+
+        let required = BLOCK_SIZE * count as usize;
+        if buf.len() < required {
+            return Err(Ext4Error::buffer_too_small(buf.len(), required));
+        }
+
+        self.inner.read_blocks(buf, block_id, count)?;
+
+        let Some(system) = self.system.as_ref() else {
+            return Ok(());
+        };
+        for i in 0..count {
+            let bid = block_id.checked_add(i)?;
+            if let Some(update) = system.commit_queue.iter().find(|queued| queued.0 == bid) {
+                let off = (i as usize) * BLOCK_SIZE;
+                buf[off..off + BLOCK_SIZE].copy_from_slice(&update.1[..BLOCK_SIZE]);
+            }
+        }
+        Ok(())
     }
 
     /// Writes multiple blocks, optionally journaling metadata buffers.
@@ -355,7 +392,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
         }
         if committed_any {
-            let _ = self.inner.invalidate_cache();
+            self.inner.invalidate_cache()?;
         }
 
         Ok(())

@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+# StarryWRT dnsmasq init script - OpenWrt-style. Reads /etc/config/dhcp via uci and launches
+# dnsmasq as the LAN DNS/DHCP server. (Under a full procd StarryWRT this is procd-managed;
+# in the single-core Phase-1 boot the rc runner execs it directly.)
+START=19
+STOP=98
+
+start() {
+	CONF=/tmp/dnsmasq.conf
+	DOMAIN="$(uci -q get dhcp.@dnsmasq[0].domain || echo lan)"
+	CACHE="$(uci -q get dhcp.@dnsmasq[0].cachesize || echo 1000)"
+	{
+		echo "domain=$DOMAIN"
+		echo "cache-size=$CACHE"
+		echo "local=/$DOMAIN/"
+		echo "conf-file=/dev/null"
+		echo "no-resolv"
+	} > "$CONF"
+	dnsmasq -C "$CONF" -x /var/run/dnsmasq.pid
+}
+
+stop() {
+	[ -f /var/run/dnsmasq.pid ] || return 0
+	PID="$(cat /var/run/dnsmasq.pid)"
+	kill "$PID" 2>/dev/null
+	i=0; while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.25; i=$((i+1)); done
+	kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+	rm -f /var/run/dnsmasq.pid
+}

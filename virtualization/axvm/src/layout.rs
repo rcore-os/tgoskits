@@ -17,13 +17,14 @@
 use alloc::{format, vec::Vec};
 use core::cmp::{max, min};
 
-use ax_errno::{AxResult, ax_err_type};
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
 use axdevice_base::Resource;
 use axvm_types::{
     AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, MappingFlags, PassThroughAddressConfig,
     PassThroughDeviceConfig,
 };
+
+use crate::{AxVmResult, ax_err_type};
 
 /// The ownership class of a guest physical range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +218,11 @@ pub struct GuestRegionPlanner {
 
 impl GuestRegionPlanner {
     /// Creates a planner for a guest physical address space.
-    pub fn new(policy: AddressSpacePolicy, guest_base: usize, guest_size: usize) -> AxResult<Self> {
+    pub fn new(
+        policy: AddressSpacePolicy,
+        guest_base: usize,
+        guest_size: usize,
+    ) -> AxVmResult<Self> {
         let guest_end = checked_end("guest address space", guest_base, guest_size)?;
         let windows = match policy {
             AddressSpacePolicy::Virtualized => Vec::new(),
@@ -237,7 +242,7 @@ impl GuestRegionPlanner {
     }
 
     /// Reserves a VM-owned range and punches it out of passthrough windows.
-    pub fn reserve(&mut self, base: usize, length: usize, kind: VmRegionKind) -> AxResult {
+    pub fn reserve(&mut self, base: usize, length: usize, kind: VmRegionKind) -> AxVmResult {
         let (base, size) = normalize_guest_range(kind.name(), base, length)?;
         self.ensure_guest_range(kind.name(), base, size)?;
         let region = PlannedRegion { base, size, kind };
@@ -286,7 +291,7 @@ impl GuestRegionPlanner {
         base_gpa: usize,
         base_hpa: usize,
         length: usize,
-    ) -> AxResult {
+    ) -> AxVmResult {
         let (base_gpa, base_hpa, size) =
             normalize_linear_range("passthrough", base_gpa, base_hpa, length)?;
         self.ensure_guest_range("passthrough", base_gpa, size)?;
@@ -348,12 +353,12 @@ impl GuestRegionPlanner {
     }
 
     /// Adds an explicit identity passthrough mapping.
-    pub fn add_identity_passthrough(&mut self, base_gpa: usize, length: usize) -> AxResult {
+    pub fn add_identity_passthrough(&mut self, base_gpa: usize, length: usize) -> AxVmResult {
         self.add_passthrough_mapping(base_gpa, base_gpa, length)
     }
 
     /// Finishes the layout and returns final stage-2 mappings.
-    pub fn finish(mut self) -> AxResult<VmAddressLayout> {
+    pub fn finish(mut self) -> AxVmResult<VmAddressLayout> {
         let mut mappings: Vec<_> = self
             .windows
             .drain(..)
@@ -420,7 +425,7 @@ impl GuestRegionPlanner {
         self.windows = next_windows;
     }
 
-    fn ensure_guest_range(&self, name: &str, base: usize, size: usize) -> AxResult {
+    fn ensure_guest_range(&self, name: &str, base: usize, size: usize) -> AxVmResult {
         let end = checked_end(name, base, size)?;
         if base < self.guest_base || end > self.guest_end {
             return Err(ax_err_type!(
@@ -444,7 +449,7 @@ pub(crate) fn build_address_layout(
     passthrough_addresses: &[PassThroughAddressConfig],
     owned_regions: &[GuestOwnedRegion],
     emulated_resources: &[Resource],
-) -> AxResult<VmAddressLayout> {
+) -> AxVmResult<VmAddressLayout> {
     let mut planner = GuestRegionPlanner::new(policy, guest_base, guest_size)?;
 
     for region in owned_regions {
@@ -484,7 +489,7 @@ fn device_mapping_flags() -> MappingFlags {
     MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
 }
 
-fn normalize_guest_range(name: &str, base: usize, length: usize) -> AxResult<(usize, usize)> {
+fn normalize_guest_range(name: &str, base: usize, length: usize) -> AxVmResult<(usize, usize)> {
     let end = checked_end(name, base, length)?;
     let aligned_base = align_down_4k(base);
     let aligned_end = align_up_checked(end).ok_or_else(|| {
@@ -501,7 +506,7 @@ fn normalize_linear_range(
     base_gpa: usize,
     base_hpa: usize,
     length: usize,
-) -> AxResult<(usize, usize, usize)> {
+) -> AxVmResult<(usize, usize, usize)> {
     let end_gpa = checked_end(name, base_gpa, length)?;
     checked_end(name, base_hpa, length)?;
 
@@ -537,7 +542,7 @@ fn normalize_linear_range(
     Ok((aligned_gpa, aligned_hpa, aligned_size))
 }
 
-fn checked_end(name: &str, base: usize, length: usize) -> AxResult<usize> {
+fn checked_end(name: &str, base: usize, length: usize) -> AxVmResult<usize> {
     if length == 0 {
         return Err(ax_err_type!(
             InvalidInput,
@@ -575,7 +580,7 @@ fn same_linear_mapping(left: &VmStage2Mapping, right: &VmStage2Mapping) -> bool 
 fn merge_linear_mappings(
     left: VmStage2Mapping,
     right: VmStage2Mapping,
-) -> AxResult<VmStage2Mapping> {
+) -> AxVmResult<VmStage2Mapping> {
     debug_assert!(same_linear_mapping(&left, &right));
     let base_gpa = min(left.gpa.as_usize(), right.gpa.as_usize());
     let end_gpa = max(left.gpa_end(), right.gpa_end());

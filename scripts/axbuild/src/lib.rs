@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
+mod agent_review_bench;
 pub mod arceos;
 pub mod axloader;
 pub mod axvisor;
@@ -51,6 +52,11 @@ pub(crate) struct SyncLintArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run offline Codex review benchmarks from historical PR snapshots
+    AgentReviewBench {
+        #[command(subcommand)]
+        command: agent_review_bench::Command,
+    },
     /// Run std tests for the configured workspace package whitelist
     Test,
     /// Run kernel axtest targets through QEMU or a remote board
@@ -102,6 +108,7 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
         Commands::Test => test::std::run_std_test_command(),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => {
@@ -135,6 +142,122 @@ mod tests {
     struct TestCli {
         #[command(subcommand)]
         command: Commands,
+    }
+
+    fn assert_os_command_contract(os: &'static str, command: &[&'static str]) {
+        let mut args = vec!["xtask", os];
+        args.extend_from_slice(command);
+        TestCli::try_parse_from(args).unwrap_or_else(|err| {
+            panic!(
+                "{os} must support the shared CLI contract `{}`: {err}",
+                command.join(" ")
+            )
+        });
+    }
+
+    #[test]
+    fn arceos_starry_and_axvisor_share_the_base_cli_contract() {
+        let common_commands: &[&[&str]] = &[
+            &[
+                "build",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+            ],
+            &[
+                "qemu",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--qemu-config",
+                "qemu.toml",
+                "--rootfs",
+                "rootfs.img",
+            ],
+            &[
+                "uboot",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--uboot-config",
+                "uboot.toml",
+            ],
+            &[
+                "board",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--board-config",
+                "board.toml",
+                "--board-type",
+                "qemu",
+                "--server",
+                "127.0.0.1",
+                "--port",
+                "5555",
+            ],
+            &["defconfig", "qemu-aarch64"],
+            &["config", "ls"],
+            &["test", "qemu", "--list"],
+            &["test", "board", "--list"],
+        ];
+
+        for os in ["arceos", "starry", "axvisor"] {
+            for command in common_commands {
+                assert_os_command_contract(os, command);
+            }
+        }
+    }
+
+    #[test]
+    fn os_specific_cli_extensions_remain_additive() {
+        assert_os_command_contract(
+            "arceos",
+            &[
+                "qemu",
+                "--package",
+                "arceos-helloworld",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+            ],
+        );
+        assert_os_command_contract(
+            "axvisor",
+            &[
+                "qemu",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--vmconfigs",
+                "vm-1.toml",
+                "--vmconfigs",
+                "vm-2.toml",
+            ],
+        );
+        assert_os_command_contract("axvisor", &["test", "uboot", "--board", "qemu-aarch64"]);
     }
 
     #[test]

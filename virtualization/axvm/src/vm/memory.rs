@@ -3,10 +3,10 @@
 use alloc::vec::Vec;
 use core::alloc::Layout;
 
-use ax_errno::{AxResult, ax_err_type};
 use axvm_types::{GuestPhysAddr, VmMemConfig, VmMemMappingType};
 
 use super::{AxVM, VMMemoryRegion};
+use crate::{AxVmResult, ax_err_type};
 
 const VM_MEMORY_ALIGN: usize = 2 * 1024 * 1024;
 
@@ -18,7 +18,7 @@ pub struct PreparedMemoryLayout {
 }
 
 impl PreparedMemoryLayout {
-    fn new(regions: Vec<VMMemoryRegion>) -> AxResult<Self> {
+    fn new(regions: Vec<VMMemoryRegion>) -> AxVmResult<Self> {
         let main_memory = regions
             .first()
             .cloned()
@@ -42,8 +42,8 @@ impl PreparedMemoryLayout {
 
 pub(crate) trait MemoryRegionMapper {
     fn prepared_memory_regions(&self) -> Vec<VMMemoryRegion>;
-    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxResult<()>;
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxResult;
+    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult<()>;
+    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult;
 }
 
 impl MemoryRegionMapper for AxVM {
@@ -51,11 +51,11 @@ impl MemoryRegionMapper for AxVM {
         self.memory_regions()
     }
 
-    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxResult<()> {
+    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult<()> {
         self.alloc_memory_region(layout, gpa).map(|_| ())
     }
 
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxResult {
+    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult {
         self.map_reserved_memory_region(layout, gpa)
     }
 }
@@ -70,7 +70,7 @@ impl<'a, M: MemoryRegionMapper + ?Sized> MemoryLayoutBuilder<'a, M> {
         Self { mapper, configs }
     }
 
-    pub(crate) fn prepare(&self) -> AxResult<PreparedMemoryLayout> {
+    pub(crate) fn prepare(&self) -> AxVmResult<PreparedMemoryLayout> {
         let existing = self.mapper.prepared_memory_regions();
         if !existing.is_empty() {
             return PreparedMemoryLayout::new(existing);
@@ -100,7 +100,7 @@ pub(crate) struct MemoryRegionPlan {
 }
 
 impl MemoryRegionPlan {
-    pub(crate) fn from_config(config: &VmMemConfig) -> AxResult<Self> {
+    pub(crate) fn from_config(config: &VmMemConfig) -> AxVmResult<Self> {
         let layout = Layout::from_size_align(config.size, VM_MEMORY_ALIGN).map_err(|err| {
             ax_err_type!(
                 InvalidInput,
@@ -155,7 +155,7 @@ mod tests {
             &self,
             layout: Layout,
             gpa: Option<GuestPhysAddr>,
-        ) -> AxResult<()> {
+        ) -> AxVmResult<()> {
             let gpa = gpa.unwrap_or_else(|| GuestPhysAddr::from(0x5000_0000));
             self.regions.borrow_mut().push(VMMemoryRegion {
                 gpa,
@@ -170,7 +170,7 @@ mod tests {
             &self,
             layout: Layout,
             gpa: Option<GuestPhysAddr>,
-        ) -> AxResult {
+        ) -> AxVmResult {
             let gpa = gpa.ok_or_else(|| ax_err_type!(InvalidInput, "reserved GPA is required"))?;
             self.map_reserved_calls
                 .set(self.map_reserved_calls.get() + 1);

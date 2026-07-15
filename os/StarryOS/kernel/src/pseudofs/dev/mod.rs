@@ -37,7 +37,11 @@ pub mod tpu;
 pub mod tty;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
+mod cvi_jpu;
+#[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
+#[cfg(feature = "sg2002-cvi-usb-camera")]
+mod cvi_vdec;
 
 use alloc::{format, sync::Arc};
 use core::{
@@ -707,15 +711,27 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             ),
         );
         #[cfg(feature = "sg2002-cvi-usb-camera")]
-        root.add(
-            "cvi-usb-camera0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(10, 202),
-                Arc::new(cvi_usb_camera::CviCamera::new()),
-            ),
-        );
+        {
+            let jpu = Arc::new(cvi_jpu::CviJpu::new());
+            root.add(
+                "cvi-usb-camera0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(10, 202),
+                    Arc::new(cvi_usb_camera::CviCamera::new(jpu.clone())),
+                ),
+            );
+            root.add(
+                "cvi_vc_dec0",
+                Device::new(
+                    fs.clone(),
+                    NodeType::CharacterDevice,
+                    DeviceId::new(10, 203),
+                    Arc::new(cvi_vdec::CviVdec::new(jpu)),
+                ),
+            );
+        }
     }
     SimpleDir::new_maker(fs, Arc::new(root))
 }

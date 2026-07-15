@@ -20,6 +20,7 @@ use std::{
     vec::Vec,
 };
 
+use anyhow::Context;
 use axvm::{StopReason, VmStatus, VmVcpuState};
 #[cfg(feature = "fs")]
 use std::fs::read_to_string;
@@ -34,7 +35,6 @@ fn can_start_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Running => Err("VM is already running"),
         VmStatus::Paused => Err("VM is suspended, use 'vm resume' instead"),
         VmStatus::Stopping => Err("VM is stopping, wait for it to fully stop"),
-        VmStatus::Uninit => Err("VM is still loading"),
         VmStatus::Pausing => Err("VM is pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
         VmStatus::Failed => Err("VM is failed"),
@@ -54,7 +54,7 @@ fn can_stop_vm(status: VmStatus, force: bool) -> Result<(), &'static str> {
             }
         }
         VmStatus::Stopped => Err("VM is already stopped"),
-        VmStatus::Uninit | VmStatus::Ready => Ok(()), // Allow stopping VMs in these states
+        VmStatus::Ready => Ok(()), // Allow stopping VMs before their first start.
         VmStatus::Pausing => Err("VM is pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
         VmStatus::Failed => Err("VM is failed"),
@@ -68,7 +68,6 @@ fn can_suspend_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Paused => Err("VM is already suspended"),
         VmStatus::Stopped => Err("VM is stopped, cannot suspend"),
         VmStatus::Stopping => Err("VM is stopping, cannot suspend"),
-        VmStatus::Uninit => Err("VM is loading, cannot suspend"),
         VmStatus::Ready => Err("VM is not running, cannot suspend"),
         VmStatus::Pausing => Err("VM is already pausing"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
@@ -83,7 +82,6 @@ fn can_resume_vm(status: VmStatus) -> Result<(), &'static str> {
         VmStatus::Running => Err("VM is already running"),
         VmStatus::Stopped => Err("VM is stopped, use 'vm start' instead"),
         VmStatus::Stopping => Err("VM is stopping, cannot resume"),
-        VmStatus::Uninit => Err("VM is loading, cannot resume"),
         VmStatus::Ready => Err("VM is not started yet, use 'vm start' instead"),
         VmStatus::Pausing => Err("VM is pausing, wait before resuming"),
         VmStatus::Destroying | VmStatus::Destroyed => Err("VM is being destroyed"),
@@ -156,11 +154,8 @@ fn vm_create(cmd: &ParsedCommand) {
                         vm_id, config_path
                     );
                 }
-                Err(_) => {
-                    println!(
-                        "✗ Failed to create VM from {}: Configuration error or panic occurred",
-                        config_path
-                    );
+                Err(error) => {
+                    println!("✗ Failed to create VM from {config_path}: {error:#}");
                 }
             },
             Err(e) => {
@@ -205,7 +200,7 @@ fn vm_start(cmd: &ParsedCommand) {
             }
 
             if let Err(e) = start_single_vm(vm.clone()) {
-                println!("✗ VM[{}] failed to start: {:?}", vm.id(), e);
+                println!("✗ VM[{}] failed to start: {e:#}", vm.id());
             } else {
                 println!("✓ VM[{}] started successfully", vm.id());
                 started_count += 1;
@@ -233,21 +228,13 @@ fn vm_start(cmd: &ParsedCommand) {
 
 /// Start a single VM by setting up vCPUs and calling boot.
 /// Returns Ok(()) if successful, Err otherwise.
-fn start_single_vm(vm: axvm::AxVMRef) -> Result<(), &'static str> {
+fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     let vm_id = vm.id();
     let status = vm.status();
 
     // Validate state transition using helper function
-    can_start_vm(status)?;
-
-    match crate::manager::AxvmManager::start_vm(vm_id) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            // Revert status on failure
-            error!("Failed to boot VM[{}]: {:?}", vm_id, err);
-            Err("Failed to boot VM")
-        }
-    }
+    can_start_vm(status).map_err(anyhow::Error::msg)?;
+    crate::manager::AxvmManager::start_vm(vm_id).with_context(|| format!("boot VM[{vm_id}]"))
 }
 
 fn start_vm_by_id(vm_id: usize) {
@@ -256,7 +243,7 @@ fn start_vm_by_id(vm_id: usize) {
             println!("✓ VM[{}] started successfully", vm_id);
         }
         Some(Err(err)) => {
-            println!("✗ VM[{}] failed to start: {}", vm_id, err);
+            println!("✗ VM[{vm_id}] failed to start: {err:#}");
         }
         None => {
             println!("✗ VM[{}] not found", vm_id);
@@ -288,10 +275,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
         let status = vm.status();
 
         // Validate state transition using helper function
-        if let Err(err) = can_stop_vm(status, force) {
-            println!("⚠ VM[{}] {}", vm_id, err);
-            return Err(err);
-        }
+        can_stop_vm(status, force).map_err(anyhow::Error::msg)?;
 
         // Print appropriate message based on status
         match status {
@@ -305,7 +289,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
                     println!("Gracefully stopping VM[{}]...", vm_id);
                 }
             }
-            VmStatus::Uninit | VmStatus::Ready => {
+            VmStatus::Ready => {
                 println!(
                     "⚠ VM[{}] is in {:?} state, stopping anyway...",
                     vm_id, status
@@ -315,13 +299,8 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
         }
 
         // Call shutdown
-        match crate::manager::AxvmManager::stop_vm(vm_id) {
-            Ok(_) => Ok(()),
-            Err(_err) => {
-                // Revert status on failure
-                Err("Failed to shutdown VM")
-            }
-        }
+        crate::manager::AxvmManager::stop_vm(vm_id)
+            .with_context(|| format!("send shutdown request to VM[{vm_id}]"))
     }) {
         Some(Ok(_)) => {
             println!("✓ VM[{}] stop signal sent successfully", vm_id);
@@ -330,7 +309,7 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
             );
         }
         Some(Err(err)) => {
-            println!("✗ Failed to stop VM[{}]: {:?}", vm_id, err);
+            println!("✗ Failed to stop VM[{vm_id}]: {err:#}");
         }
         None => {
             println!("✗ VM[{}] not found", vm_id);
@@ -361,7 +340,7 @@ fn reset_vm_by_id(vm_id: usize) {
     println!("Resetting VM[{}]...", vm_id);
     match crate::manager::AxvmManager::reset_vm(vm_id) {
         Ok(()) => println!("✓ VM[{}] reset and started successfully", vm_id),
-        Err(err) => println!("✗ VM[{}] reset failed: {:?}", vm_id, err),
+        Err(err) => println!("✗ VM[{vm_id}] reset failed: {err:#}"),
     }
 }
 
@@ -395,13 +374,13 @@ fn vm_suspend(cmd: &ParsedCommand) {
 fn suspend_vm_by_id(vm_id: usize) {
     println!("Suspending VM[{}]...", vm_id);
 
-    let result: Option<Result<(), &str>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    let result: Option<anyhow::Result<()>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.status();
 
         // Check if VM can be suspended
-        can_suspend_vm(status)?;
+        can_suspend_vm(status).map_err(anyhow::Error::msg)?;
 
-        vm.pause().map_err(|_| "Failed to suspend VM")?;
+        vm.pause().with_context(|| format!("suspend VM[{vm_id}]"))?;
         info!("VM[{}] status set to Paused", vm_id);
 
         Ok(())
@@ -462,7 +441,7 @@ fn suspend_vm_by_id(vm_id: usize) {
             println!("  Use 'vm resume {}' to resume the VM", vm_id);
         }
         Some(Err(err)) => {
-            println!("✗ Failed to suspend VM[{}]: {}", vm_id, err);
+            println!("✗ Failed to suspend VM[{vm_id}]: {err:#}");
         }
         None => {
             println!("✗ VM[{}] not found", vm_id);
@@ -492,13 +471,14 @@ fn vm_resume(cmd: &ParsedCommand) {
 fn resume_vm_by_id(vm_id: usize) {
     println!("Resuming VM[{}]...", vm_id);
 
-    let result: Option<Result<(), &str>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    let result: Option<anyhow::Result<()>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
         let status = vm.status();
 
         // Check if VM can be resumed
-        can_resume_vm(status)?;
+        can_resume_vm(status).map_err(anyhow::Error::msg)?;
 
-        crate::manager::AxvmManager::resume_vm(vm_id).map_err(|_| "Failed to resume VM")?;
+        crate::manager::AxvmManager::resume_vm(vm_id)
+            .with_context(|| format!("resume suspended VM[{vm_id}]"))?;
 
         info!("VM[{}] resumed", vm_id);
         Ok(())
@@ -509,7 +489,7 @@ fn resume_vm_by_id(vm_id: usize) {
             println!("✓ VM[{}] resumed successfully", vm_id);
         }
         Some(Err(err)) => {
-            println!("✗ Failed to resume VM[{}]: {}", vm_id, err);
+            println!("✗ Failed to resume VM[{vm_id}]: {err:#}");
         }
         None => {
             println!("✗ VM[{}] not found", vm_id);
@@ -610,7 +590,7 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     match crate::manager::AxvmManager::remove_vm(vm_id) {
         Some(vm) => {
             if let Err(err) = vm.destroy() {
-                println!("⚠ VM[{}] destroy failed: {:?}", vm_id, err);
+                println!("⚠ VM[{vm_id}] destroy failed: {err}");
             }
             println!("✓ VM[{}] removed from VM list", vm_id);
 

@@ -139,6 +139,9 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Validate CI source paths
+        run: python3 scripts/test/check_ci_paths.py
+
       - name: Detect CI-relevant changes
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -155,18 +158,19 @@ jobs:
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
-              - "bootloader/axloader/**"
+              - "apps/**"
+              - "bootloader/**"
               - "components/**"
               - "drivers/**"
+              - "memory/**"
               - "net/**"
               - "os/**"
               - "platforms/**"
-              - "virtualization/**"
-              - "memory/**"
               - "scripts/**"
               - "test-suit/**"
+              - "tools/**"
+              - "virtualization/**"
               - "xtask/**"
-              - "apps/starry/aka00-tennis-yolo/**"
             base_container_publish:
               - "container/Dockerfile"
               - "rust-toolchain.toml"
