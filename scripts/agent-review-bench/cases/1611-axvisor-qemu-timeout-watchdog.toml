@@ -1,0 +1,16 @@
+id = "1611-axvisor-qemu-timeout-watchdog"
+pr = 1611
+title = "QEMU：移除 SVM 和 VMX 冒烟测试的显式超时"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "dbbe0e06576fd1446c014d4edea3aa480505b5e9"
+head = "6a4a23fe147e02d46c66df1d2fca8269098c2fba"
+source = "https://github.com/rcore-os/tgoskits/pull/1611#discussion_r3583879562"
+fixed_by = "a1a6ed0ce4ac56e006280cca268973578bd7a89d"
+
+[[expected]]
+id = "axvisor-nested-qemu-watchdog-disabled"
+path = "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml"
+line = 25
+severity = "major"
+description = "SVM 与 VMX 嵌套虚拟化冒烟配置删掉了仅有的有限 timeout。解析后 QemuConfig.timeout 变为 None，测试运行器因而不再安装 watchdog；一旦 QEMU 启动、guest shell 或结束条件卡住，任务会无限等待。慢速 runner 已可通过提高基线值或 timeout scale 放宽，不应通过删除超时规避失败。"
+match_if = "评审必须指出：SVM 和 VMX 配置删除 timeout 会使 watchdog 失效，并导致 QEMU 或 guest shell 卡住时无限等待；同时要求为两者恢复有限超时，允许调整基线值或使用 timeout scale。只泛泛建议增加超时或只讨论测试速度不算命中。"

@@ -8,8 +8,8 @@ use anyhow::{Context, bail};
 use toml::Value;
 use walkdir::{DirEntry, WalkDir};
 
-const SPIN_VERSION_REQ: &str = "=0.12.0";
-const SPIN_LOCKFILE_VERSION: &str = "0.12.0";
+const SPIN_VERSION_REQ: &str = "=0.12.2";
+const SPIN_LOCKFILE_VERSION: &str = "0.12.2";
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const ALLOWED_SPIN_FEATURES: &[&str] = &[
     "lazylock",
@@ -663,7 +663,7 @@ mod tests {
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
         write_file(
@@ -685,7 +685,7 @@ spin = { workspace = true }
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abc"
 "#,
@@ -714,7 +714,7 @@ checksum = "abc"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 
 [patch.crates-io]
 spin = { path = "components/spin" }
@@ -740,7 +740,7 @@ spin = { path = "components/spin" }
             r#"
 [package]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 "#,
         );
 
@@ -765,7 +765,7 @@ version = "0.12.0"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", path = "components/spin", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
+spin = { version = "=0.12.2", path = "components/spin", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
@@ -790,7 +790,7 @@ spin = { version = "=0.12.0", path = "components/spin", default-features = false
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = true, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
+spin = { version = "=0.12.2", default-features = true, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
@@ -815,7 +815,7 @@ spin = { version = "=0.12.0", default-features = true, features = ["lazylock", "
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "portable-atomic", "rwlock", "use_ticket_mutex"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "portable-atomic", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
@@ -842,7 +842,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["once"] }
+spin = { version = "=0.12.2", default-features = false, features = ["once"] }
 "#,
         );
 
@@ -892,7 +892,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", features = ["once"] }
+spin = { version = "=0.12.2", features = ["once"] }
 "#,
         );
 
@@ -919,7 +919,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["once", "portable-atomic"] }
+spin = { version = "=0.12.2", default-features = false, features = ["once", "portable-atomic"] }
 "#,
         );
 
@@ -946,7 +946,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin_compat = { package = "spin", version = "=0.12.0", default-features = false, features = ["once"] }
+spin_compat = { package = "spin", version = "=0.12.2", default-features = false, features = ["once"] }
 "#,
         );
 
@@ -996,7 +996,7 @@ spin = { workspace = true, features = ["rwlock"] }
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 "#,
         );
 
@@ -1019,7 +1019,7 @@ version = "0.12.0"
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#,
         );
@@ -1054,7 +1054,7 @@ checksum = "abc"
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("must stay at 0.12.0"))
+                .any(|finding| finding.message.contains("must stay at 0.12.2"))
         );
     }
 

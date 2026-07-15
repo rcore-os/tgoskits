@@ -1,0 +1,16 @@
+id = "1583-rtl8125-regression-covers-constants-only"
+pr = 1583
+title = "修复 realtek-rtl8125：通告千兆自协商能力"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "ba27d7b061b47d22b16a53c847b1a4abc2bece71"
+head = "214ccd50c9df852efaa74822341294defa92e001"
+source = "https://github.com/rcore-os/tgoskits/pull/1583#discussion_r3567595139"
+fixed_by = "7b37887e616abdb4b6e98c1e07f533607f51e2b7"
+
+[[expected]]
+id = "rtl8125-regression-does-not-exercise-phy-sequence"
+path = "drivers/net/realtek-rtl8125/src/hw.rs"
+line = 550
+severity = "major"
+description = "该回归测试只检查新常量之间的关系，从未调用 hw_phy_config，也未观察 PHY 读写。因此，即使删除生产代码中的 MII_CTRL1000 和 MII_BMCR 配置，测试仍会通过，原来的自协商缺陷也会复现。"
+match_if = "评审必须指出：新增测试只验证常量，而没有覆盖生产 PHY 配置行为，所以移除新增的页选择、通告和重启序列后测试仍不会失败；并要求通过记录型或 mock PHY 边界，或等价方式建立确定性的生产路径回归测试。"

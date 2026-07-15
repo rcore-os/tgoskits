@@ -22,7 +22,7 @@ args = [
   "-m",
   "512M",
 ]
-timeout = 300
+timeout = 600
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
