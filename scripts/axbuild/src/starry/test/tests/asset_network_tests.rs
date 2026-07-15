@@ -107,6 +107,8 @@ fn nix_sandbox_cases_enforce_bounded_truthful_completion() {
             "/tmp/nix-sandbox/build.log",
             "NIX_SANDBOX_BUILDER_STARTED:$build_token",
             "NIX_SANDBOX_BUILDER_DONE:$build_token",
+            "NIX_SANDBOX_BUILD_OK:$build_token",
+            "recovered nonzero nix-build exit",
             "NIX_SANDBOX_BUILD_EXIT=$build_rc",
         ] {
             assert!(

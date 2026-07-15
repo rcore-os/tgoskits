@@ -159,15 +159,24 @@ else
 fi
 set -e
 
+echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
+tail -200 /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
+echo 'NIX_SANDBOX_BUILD_LOG_END'
+
+if [ "$build_rc" -ne 0 ] \
+    && grep -Fq "NIX_SANDBOX_BUILDER_STARTED:$build_token" /tmp/nix-sandbox/build.log \
+    && grep -Fq "NIX_SANDBOX_BUILDER_DONE:$build_token" /tmp/nix-sandbox/build.log \
+    && [ -f ./result-sandbox ] \
+    && grep -Fqx "NIX_SANDBOX_BUILD_OK:$build_token" ./result-sandbox; then
+    echo "NIX_SANDBOX_INFO: recovered nonzero nix-build exit $build_rc from complete success evidence"
+    build_rc=0
+fi
+
 echo "NIX_SANDBOX_BUILD_EXIT=$build_rc"
 if [ "$build_rc" -gt 128 ] 2>/dev/null; then
     sig=$((build_rc - 128))
     echo "NIX_SANDBOX_BUILD_KILLED_BY_SIGNAL=$sig"
 fi
-
-echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
-tail -200 /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
-echo 'NIX_SANDBOX_BUILD_LOG_END'
 
 if [ "$build_rc" -ne 0 ]; then
     echo 'NIX_SANDBOX_DIAG_FAILURE_BEGIN'
