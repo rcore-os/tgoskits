@@ -89,6 +89,8 @@ pub struct AxVmDevices {
     fw_cfg: Option<Arc<FwCfg>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
+    /// Optional VM-local IRQ line pulsed by IVC notify.
+    ivc_notify_irq: Option<usize>,
 }
 
 /// The implemention for AxVmDevices
@@ -110,6 +112,7 @@ impl AxVmDevices {
             loongarch_pch_pic: None,
             fw_cfg: None,
             ivc_channel: None,
+            ivc_notify_irq: None,
         }
     }
 
@@ -426,11 +429,13 @@ impl AxVmDevices {
                             start: config.base_gpa,
                             end: config.base_gpa + config.length,
                         })));
+                        this.ivc_notify_irq = config.cfg_list.first().copied();
                         info!(
-                            "IVCChannel initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
+                            "IVCChannel initialized with base GPA {base_gpa:#x}, length \
+                             {length:#x}, notify_irq={notify_irq:?}",
                             base_gpa = config.base_gpa,
-                            length = config.length
+                            length = config.length,
+                            notify_irq = this.ivc_notify_irq
                         );
                     } else {
                         warn!("IVCChannel already initialized, ignoring additional config");
@@ -471,6 +476,11 @@ impl AxVmDevices {
         } else {
             ax_err!(InvalidInput, "IVC channel not exists")
         }
+    }
+
+    /// Returns the optional VM-local IRQ line used by IVC notify.
+    pub fn ivc_notify_irq(&self) -> Option<usize> {
+        self.ivc_notify_irq
     }
 
     /// Releases an IVC channel at the specified address and size.

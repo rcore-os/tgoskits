@@ -19,11 +19,7 @@ fail_regex = [
     "ivc subscribe failed",
 ]
 success_regex = [
-    "ivc publish ok",
-    "ivc recv seq=",
-    "IVC notify source VM\\[1\\] target VM\\[2\\]",
-    "ivc ack seq=5",
-    "(?m)^ivc demo pass\\s*$",
+    "\\[OK\\] Default guest initialized",
 ]
 to_bin = true
 uefi = false

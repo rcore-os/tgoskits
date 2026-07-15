@@ -56,6 +56,8 @@ excluded_devices = [
 
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+# For ivc-channel, EmuConfig[0] is an optional VM-local notify IRQ line.
+# Keep it away from QEMU virt platform device SPIs such as the PL011 UART.
 emu_devices = [
-  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, []],
+  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [60]],
 ]

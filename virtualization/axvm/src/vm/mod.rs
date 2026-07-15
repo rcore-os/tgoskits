@@ -728,15 +728,18 @@ impl AxVM {
 
     /// Pulses a prepared VM interrupt fabric line without exposing the fabric.
     pub fn pulse_interrupt(&self, irq_id: usize) -> AxResult {
-        match self.status() {
+        let interrupt_fabric = match self.status() {
             VmStatus::Running | VmStatus::Paused => {
-                self.with_resources(|resources| resources.interrupt_fabric()?.pulse(irq_id))
+                self.with_resources(|resources| Ok(resources.interrupt_fabric()?.clone()))?
             }
-            status => ax_err!(
-                BadState,
-                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
-            ),
-        }
+            status => {
+                return ax_err!(
+                    BadState,
+                    format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
+                );
+            }
+        };
+        interrupt_fabric.pulse(irq_id)
     }
 
     /// Returns the number of prepared emulated devices.

@@ -19,26 +19,34 @@ mod subscriber {
         cell::UnsafeCell,
         option::Option::{None, Some},
         result::Result::{Err, Ok},
+        sync::atomic::AtomicU64,
     };
 
     use ax_std::{
-        os::arceos::modules::ax_hal::mem::{PhysAddr, VirtAddr, virt_to_phys},
+        os::arceos::modules::ax_hal::{
+            irq,
+            mem::{PhysAddr, VirtAddr, virt_to_phys},
+        },
         println,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
-    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcRegion};
+    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcPeerEventWaiter, IvcRegion, record_peer_event};
 
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
     const PASS_SEQUENCE: u64 = 5;
+    static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+
     mod demo_config {
         pub const CHANNEL_KEY: usize = 0x4956_4301;
         pub const CHANNEL_SIZE: usize = 4096;
+        pub const NOTIFY_IRQ: Option<usize> = Some(60);
         pub const PUBLISHER_VM_ID: usize = 1;
         pub const SUBSCRIBER_VM_ID: usize = 2;
     }
 
     pub fn run() {
-        let Some((shm_base_gpa, shm_size)) = subscribe_with_retry() else {
+        let waiter = IvcPeerEventWaiter::new(register_notify_irq(), &NOTIFY_IRQ_COUNT);
+        let Some((shm_base_gpa, shm_size)) = subscribe_with_retry(&waiter) else {
             println!("ivc subscribe failed: retry limit reached");
             return;
         };
@@ -70,10 +78,10 @@ mod subscriber {
             println!("ivc subscribe failed: unsupported phase-2 protocol header");
             return;
         }
-        run_request_ack_demo(region);
+        run_request_ack_demo(region, &waiter);
     }
 
-    fn subscribe_with_retry() -> Option<(usize, usize)> {
+    fn subscribe_with_retry(waiter: &IvcPeerEventWaiter<'_>) -> Option<(usize, usize)> {
         for attempt in 1..=MAX_SUBSCRIBE_ATTEMPTS {
             let shm_base_gpa = HyperCallOutputSlot::new(0);
             let shm_size = HyperCallOutputSlot::new(0);
@@ -91,14 +99,14 @@ mod subscriber {
                     if attempt == 1 || attempt % 10 == 0 {
                         println!("ivc subscribe retry attempt={attempt} err={err}");
                     }
-                    wait_for_publisher();
+                    waiter.wait_for_peer_event();
                 }
             }
         }
         None
     }
 
-    fn run_request_ack_demo(region: &'static IvcRegion) {
+    fn run_request_ack_demo(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
         let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         loop {
             match region.try_recv_request(&mut payload) {
@@ -106,13 +114,13 @@ mod subscriber {
                     let text =
                         core::str::from_utf8(&payload[..message.len()]).unwrap_or("<non-utf8>");
                     println!("ivc recv seq={} msg={text}", message.sequence());
-                    send_ack_when_ready(region, message.sequence());
+                    send_ack_when_ready(region, message.sequence(), waiter);
                     if message.sequence() >= PASS_SEQUENCE {
                         println!("ivc demo pass");
                         return;
                     }
                 }
-                Ok(None) => wait_for_publisher(),
+                Ok(None) => waiter.wait_for_peer_event(),
                 Err(err) => {
                     println!("ivc subscribe failed: recv request error {err:?}");
                     return;
@@ -121,14 +129,18 @@ mod subscriber {
         }
     }
 
-    fn send_ack_when_ready(region: &'static IvcRegion, sequence: u64) {
+    fn send_ack_when_ready(
+        region: &'static IvcRegion,
+        sequence: u64,
+        waiter: &IvcPeerEventWaiter<'_>,
+    ) {
         loop {
             match region.send_ack(sequence, b"ack from arceos subscriber") {
                 Ok(()) => {
                     notify_publisher();
                     return;
                 }
-                Err(_) => wait_for_publisher(),
+                Err(_) => waiter.wait_for_peer_event(),
             }
         }
     }
@@ -143,9 +155,38 @@ mod subscriber {
         }
     }
 
-    fn wait_for_publisher() {
-        for _ in 0..100_000 {
-            core::hint::spin_loop();
+    fn register_notify_irq() -> bool {
+        let Some(raw_irq) = demo_config::NOTIFY_IRQ else {
+            return false;
+        };
+        match notify_irq_id(raw_irq)
+            .and_then(|irq_id| irq::request_shared_irq(irq_id, notify_irq_handler).map(|_| irq_id))
+        {
+            Ok(irq_id) => {
+                println!("ivc notify irq enabled irq={irq_id:?}");
+                true
+            }
+            Err(err) => {
+                println!("ivc notify irq disabled raw={raw_irq} err={err:?}");
+                false
+            }
+        }
+    }
+
+    fn notify_irq_handler(_ctx: irq::IrqContext) -> irq::IrqReturn {
+        record_peer_event(&NOTIFY_IRQ_COUNT);
+        irq::IrqReturn::Handled
+    }
+
+    fn notify_irq_id(raw_irq: usize) -> Result<irq::IrqId, irq::IrqError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let gsi = u32::try_from(raw_irq).map_err(|_| irq::IrqError::InvalidIrq)?;
+            irq::resolve_irq_source(irq::IrqSource::AcpiGsi(gsi))
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            irq::try_legacy_irq(raw_irq)
         }
     }
 

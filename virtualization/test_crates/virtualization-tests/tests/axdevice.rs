@@ -243,13 +243,23 @@ fn device_config(
     base_gpa: usize,
     length: usize,
 ) -> EmulatedDeviceConfig {
+    device_config_with_args(name, emu_type, base_gpa, length, vec![])
+}
+
+fn device_config_with_args(
+    name: &str,
+    emu_type: EmulatedDeviceType,
+    base_gpa: usize,
+    length: usize,
+    cfg_list: Vec<usize>,
+) -> EmulatedDeviceConfig {
     EmulatedDeviceConfig {
         name: String::from(name),
         base_gpa,
         length,
         irq_id: 0,
         emu_type,
-        cfg_list: vec![],
+        cfg_list,
     }
 }
 
@@ -846,6 +856,33 @@ fn test_build_with_factories_preserves_legacy_ivc_config() {
     .unwrap();
 
     assert_eq!(devices.devices().count(), 0);
+}
+
+#[test]
+fn test_ivc_notify_irq_is_optional() {
+    let devices = AxVmDevices::new(AxVmDeviceConfig::new(vec![device_config(
+        "ivc",
+        EmulatedDeviceType::IVCChannel,
+        0x4_0000,
+        0x2000,
+    )]))
+    .unwrap();
+
+    assert_eq!(devices.ivc_notify_irq(), None);
+}
+
+#[test]
+fn test_ivc_notify_irq_uses_first_config_arg() {
+    let devices = AxVmDevices::new(AxVmDeviceConfig::new(vec![device_config_with_args(
+        "ivc",
+        EmulatedDeviceType::IVCChannel,
+        0x4_0000,
+        0x2000,
+        vec![33],
+    )]))
+    .unwrap();
+
+    assert_eq!(devices.ivc_notify_irq(), Some(33));
 }
 
 #[test]

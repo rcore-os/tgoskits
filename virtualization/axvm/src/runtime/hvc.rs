@@ -303,9 +303,22 @@ impl HyperCall {
                     runtime.notify_all();
                     Ok(())
                 })?;
+                let notify_irq = target_vm.get_devices()?.ivc_notify_irq();
+                if let Some(irq) = notify_irq
+                    && let Err(err) = target_vm.pulse_interrupt(irq)
+                {
+                    warn!(
+                        "IVC notify could not pulse VM[{}] irq {}: {err:?}",
+                        route.target_vm_id, irq
+                    );
+                }
                 info!(
-                    "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x}",
-                    route.source_vm_id, route.target_vm_id, route.publisher_vm_id, route.key
+                    "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",
+                    route.source_vm_id,
+                    route.target_vm_id,
+                    route.publisher_vm_id,
+                    route.key,
+                    notify_irq
                 );
 
                 Ok(0)

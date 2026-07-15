@@ -7,7 +7,7 @@ use ax_errno::{AxResult, ax_err, ax_err_type};
 use axdevice_base::DeviceRegistry as _;
 use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
-use super::{Aarch64Arch, npt};
+use super::{Aarch64Arch, irq, npt};
 use crate::{
     config::AxVMConfig,
     vm::{
@@ -37,7 +37,7 @@ impl Aarch64Arch {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
+                let interrupt_fabric = irq::configure(vm.id(), vm.interrupt_mode())?;
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {

@@ -30,6 +30,7 @@ pub(crate) mod fdt;
 mod gic;
 mod images;
 mod ipi;
+mod irq;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
