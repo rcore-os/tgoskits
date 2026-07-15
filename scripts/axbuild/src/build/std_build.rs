@@ -288,31 +288,10 @@ pub(super) fn pass_std_build_nested_features(
         }
     }
 
-    // Runtime-discovered platforms must map MMIO regions and initialize their
-    // interrupt controller before an application-specific feature can do so.
-    // Keep this baseline in every std-aware build so minimal applications can
-    // boot on QEMU without supplying platform plumbing themselves.
-    for feature in ["irq", "paging", "std-compat"] {
-        if axstd_feature_is_available(feature, axstd_features) {
-            cargo_features.push(format!("ax-std/{feature}"));
-        }
-    }
-
     cargo_features.sort();
     cargo_features.dedup();
 
     *features = cargo_features;
-}
-
-pub(super) fn inject_arceos_feature_for_std_build(
-    features: &mut Vec<String>,
-    app_features: &[String],
-) {
-    if app_features.iter().any(|feature| feature == "arceos")
-        && !features.iter().any(|feature| feature == "arceos")
-    {
-        features.push("arceos".to_string());
-    }
 }
 
 pub(super) fn axstd_feature_name(feature: &str) -> &str {

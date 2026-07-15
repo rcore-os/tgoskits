@@ -222,7 +222,6 @@ impl BuildInfo {
         )?;
         let app_features = package_feature_names(package, metadata)?;
         let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
-        inject_arceos_feature_for_std_build(&mut cargo.features, &app_features);
         pass_std_build_nested_features(
             &mut cargo.env,
             &mut cargo.features,
@@ -257,20 +256,15 @@ impl BuildInfo {
 
     pub(super) fn resolve_std_features_with_metadata(
         &mut self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
+        _package: &str,
+        _target: &str,
+        _metadata: &Metadata,
     ) {
-        let _ = target;
-        self.features
-            .extend(std_package_metadata_features(package, metadata));
         self.resolve_std_features();
 
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
             self.features.push("smp".to_string());
         }
-        self.features.push("smp".to_string());
-
         self.resolve_std_features();
     }
 
@@ -398,7 +392,7 @@ impl Default for BuildInfo {
         Self {
             env: HashMap::new(),
             log: LogLevel::Warn,
-            features: vec!["ax-std".to_string()],
+            features: Vec::new(),
             max_cpu_num: None,
         }
     }

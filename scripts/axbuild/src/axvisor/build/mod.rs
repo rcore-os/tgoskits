@@ -2,7 +2,6 @@ mod config;
 mod features;
 mod load;
 mod metadata;
-mod x86;
 
 #[cfg(test)]
 mod tests;
@@ -10,7 +9,7 @@ mod tests;
 pub type AxvisorBuildInfo = config::AxvisorBuildInfo;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 pub(crate) use config::AxvisorBoardFile;
 pub use config::{AXVISOR_PACKAGE, AxvisorBoardConfig};
 pub(crate) use load::{
@@ -109,7 +108,22 @@ fn patch_axvisor_cargo_config(
     }
 
     if request.arch == "x86_64" {
-        x86::normalize_backend_features(&mut cargo.features)?;
+        let has_vmx = cargo
+            .features
+            .iter()
+            .any(|feature| matches!(feature.as_str(), "vmx" | "axvm/vmx"));
+        let has_svm = cargo
+            .features
+            .iter()
+            .any(|feature| matches!(feature.as_str(), "svm" | "axvm/svm"));
+        match (has_vmx, has_svm) {
+            (true, true) => bail!("x86_64 Axvisor features `vmx` and `svm` are mutually exclusive"),
+            (false, false) => bail!(
+                "x86_64 Axvisor build config must explicitly enable exactly one virtualization \
+                 backend feature: `vmx` or `svm`"
+            ),
+            _ => {}
+        }
     }
     cargo.features.sort();
     cargo.features.dedup();

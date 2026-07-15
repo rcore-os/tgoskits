@@ -212,6 +212,26 @@ log = "Info"
 }
 
 #[test]
+fn load_cargo_config_requires_explicit_x86_virtualization_backend() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("build-x86_64.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let err =
+        load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap_err();
+
+    assert!(err.to_string().contains("vmx"));
+    assert!(err.to_string().contains("svm"));
+}
+
+#[test]
 fn load_target_from_board_config_reads_target() {
     let root = tempdir().unwrap();
     let path = root.path().join("qemu-aarch64.toml");

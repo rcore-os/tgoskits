@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
+fn std_build_does_not_use_package_metadata_to_enable_features() {
     let workspace = temp_workspace("std-app", "").unwrap();
     let app_manifest = workspace.join("app/Cargo.toml");
     fs::write(
@@ -32,20 +32,12 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
         ],
     );
 
-    assert_eq!(
-        info.features,
-        vec![
-            "ax-std/dns".to_string(),
-            "ax-std/multitask".to_string(),
-            "ax-std/net".to_string(),
-            "ax-std/std-compat".to_string(),
-        ]
-    );
+    assert_eq!(info.features, vec!["ax-std/dns".to_string()]);
     assert!(envs.is_empty());
 }
 
 #[test]
-fn std_build_auto_enables_app_arceos_feature_when_declared() {
+fn std_build_does_not_auto_enable_app_arceos_feature() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {
         features: Vec::new(),
@@ -58,16 +50,7 @@ fn std_build_auto_enables_app_arceos_feature_when_declared() {
     )
     .unwrap();
 
-    assert!(cargo.features.contains(&"arceos".to_string()));
-}
-
-#[test]
-fn std_build_does_not_inject_arceos_feature_when_app_lacks_it() {
-    let mut features = vec!["dns".to_string()];
-
-    inject_arceos_feature_for_std_build(&mut features, &["dns".to_string()]);
-
-    assert_eq!(features, vec!["dns".to_string()]);
+    assert!(!cargo.features.contains(&"arceos".to_string()));
 }
 
 #[test]
@@ -94,8 +77,8 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
             .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
     );
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
     assert!(cargo.features.contains(&"ax-std/net".to_string()));
     assert!(cargo.to_bin);
@@ -131,8 +114,8 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     );
     assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(
         cargo
             .features

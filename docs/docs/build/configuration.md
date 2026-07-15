@@ -207,7 +207,7 @@ pub struct BuildInfo {
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `env` | `{}` | 默认不注入额外环境变量；网络地址等需要由具体 build config 或子系统配置显式提供 |
-| `features` | `["ax-std"]` | 最小 feature 集 |
+| `features` | `[]` | 不补充应用 feature；应用和 build config 自行声明所需能力 |
 | `log` | `Warn` | 默认日志级别 |
 | `max_cpu_num` | `None` | 不限制（单核） |
 
@@ -216,15 +216,9 @@ pub struct BuildInfo {
 - `max_cpu_num`：值为 0 时报错（必须大于 0）
 - 旧 `plat_dyn` 字段：已移除，配置中出现该字段会报错
 
-### Axvisor x86 虚拟化后端检测
+### Axvisor x86 虚拟化后端
 
-Axvisor 在 x86_64 架构上需要虚拟化后端 support（Intel VMX 或 AMD SVM）。`axvisor/build/x86.rs` 中的 `normalize_backend_features()` 负责自动检测或验证：
-
-1. **已显式指定**：若 features 中包含 `vmx` 或 `svm`，直接使用（两者同时存在则报错）
-2. **未指定时自动检测**：通过 CPUID 读取宿主 CPU 厂商信息：
-   - `GenuineIntel` → `vmx`
-   - `AuthenticAMD` → `svm`
-3. **环境变量覆盖**：设置 `AXVISOR_X86_BACKEND=vmx|intel|svm|amd` 跳过 CPUID 检测
+Axvisor 的 x86_64 build config 必须在 `features` 中显式选择且只选择一个后端：Intel 使用 `vmx`，AMD 使用 `svm`。axbuild 不读取宿主 CPUID，也不通过环境变量补充该 feature；缺失或同时配置两个后端都会报错。
 
 ### 加载流程
 
@@ -301,7 +295,6 @@ axbuild 在编译期和运行时使用多个环境变量，分布在配置、运
 | `STARRY_APK_REGION` | `china` | StarryOS APK 镜像源区域：`china`/`cn`（`mirrors.cernet.edu.cn`）或 `us`/`usa`（`dl-cdn.alpinelinux.org`） |
 | `TGOS_IMAGE_LOCAL_STORAGE` | `<workspace>/tmp/axbuild/rootfs` | TGOS 镜像本地存储路径（覆盖 `ImageConfig.local_storage`，影响 `cargo xtask image` 与所有子系统的 rootfs 拉取） |
 | `TGOS_IMAGE_REGISTRY_FALLBACK_URL` | `.../rcore-os/tgosimages/.../v0.0.6.toml` | TGOS 镜像注册表的 fallback URL（当 `default.toml` 拉取失败时使用） |
-| `AXVISOR_X86_BACKEND` | — | Axvisor x86_64 虚拟化后端强制选择：`vmx`/`intel` 或 `svm`/`amd`（跳过 CPUID 自动检测） |
 | `AXLOADER_X86_64_UEFI_FIRMWARE` | — | axloader HTTP smoke test 优先使用的 OVMF 固件路径（仅 `cargo xtask axloader test qemu`） |
 | `AXVISOR_X86_64_UEFI_FIRMWARE` | — | axloader HTTP smoke test 的兼容旧变量；Axvisor UEFI CI 也会用它向 `setup_qemu.sh` 传递 OVMF 路径 |
 | `AXBUILD_KEEP_QEMU_LOG` | — | 设为非空保留 QEMU 运行日志（用于 backtrace 符号化后的事后分析） |

@@ -218,7 +218,7 @@ fn std_build_dynamic_x86_64_prepares_binary_artifact() {
     );
     assert!(cargo.to_bin);
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
     assert_eq!(
         cargo.env.get("AX_TARGET"),
         Some(&"x86_64-unknown-none".to_string())

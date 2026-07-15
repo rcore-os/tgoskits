@@ -139,12 +139,6 @@ pub(super) fn map_c_app_features(
         }
         features.insert(normalized.to_string());
     }
-    if features
-        .iter()
-        .any(|feature| matches!(feature.as_str(), "fs" | "net" | "pipe" | "select" | "epoll"))
-    {
-        features.insert("fd".to_string());
-    }
     features.into_iter().collect()
 }
 

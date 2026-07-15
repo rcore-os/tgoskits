@@ -6,11 +6,8 @@ authors = ["eternalcomet <mydragonos@outlook.com>"]
 publish = false
 
 [features]
-default = []
-arceos = ["dep:ax-std", "ax-std/fs"]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos", "ax-std/fs"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true }
-
-[package.metadata.axstd]
-features = ["log-level-off"]

@@ -242,10 +242,6 @@ pub(super) fn workspace_package<'a>(
         .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))
 }
 
-pub(super) fn metadata_package<'a>(metadata: &'a Metadata, package: &str) -> Option<&'a Package> {
-    metadata.packages.iter().find(|pkg| pkg.name == package)
-}
-
 pub(super) fn detect_std_feature_prefix_family(
     package: &str,
     metadata: &Metadata,
@@ -299,13 +295,6 @@ pub(super) struct AxplatMetadata {
     dynamic: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-#[serde(rename_all = "kebab-case")]
-pub(super) struct AxstdMetadata {
-    features: Vec<String>,
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone)]
 pub(super) struct PlatformPackage {
@@ -320,21 +309,6 @@ pub(super) fn platform_metadata(package: &Package) -> Option<AxplatMetadata> {
         .get("axplat")
         .cloned()
         .and_then(|metadata| serde_json::from_value(metadata).ok())
-}
-
-pub(super) fn axstd_metadata(package: &Package) -> Option<AxstdMetadata> {
-    package
-        .metadata
-        .get("axstd")
-        .cloned()
-        .and_then(|metadata| serde_json::from_value(metadata).ok())
-}
-
-pub(super) fn std_package_metadata_features(package: &str, metadata: &Metadata) -> Vec<String> {
-    metadata_package(metadata, package)
-        .and_then(axstd_metadata)
-        .map(|metadata| metadata.features)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

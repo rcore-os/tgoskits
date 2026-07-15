@@ -21,6 +21,10 @@ crate-type = ["rlib", "staticlib"]
 [features]
 default = ["alloc", "tls", "fd"]
 
+# Baseline required by every ArceOS Rust application. Applications enable this
+# through their own `arceos` feature instead of axbuild completing it at runtime.
+arceos = ["irq", "paging", "std-compat", "smp"]
+
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 

@@ -99,7 +99,6 @@ fn map_c_app_features_preserves_driver_features() {
     );
 
     assert!(features.contains(&"net".to_string()));
-    assert!(features.contains(&"fd".to_string()));
     assert!(!features.contains(&removed_static_driver_feature.to_string()));
     assert!(features.contains(&"ax-driver/virtio-net".to_string()));
 }
@@ -170,6 +169,13 @@ fn map_c_app_features_preserves_paging_facade_feature() {
     let features = map_c_app_features(&strings(&["paging"]), &[]);
 
     assert_eq!(features, vec!["paging".to_string()]);
+}
+
+#[test]
+fn map_c_app_features_does_not_add_fd_for_higher_level_features() {
+    let features = map_c_app_features(&strings(&["fs"]), &[]);
+
+    assert_eq!(features, strings(&["fs"]));
 }
 
 #[test]

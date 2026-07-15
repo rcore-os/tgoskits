@@ -287,14 +287,12 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
-default = []
-arceos = ["dep:ax-std"]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true }
 
-[package.metadata.axstd]
-features = ["log-level-debug"]
 ```
 
 **3) `src/main.rs`**
