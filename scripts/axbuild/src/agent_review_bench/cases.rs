@@ -159,9 +159,9 @@ pub(super) fn prepare_case(workspace_root: &Path, case: &BenchCase) -> anyhow::R
                 case.head
             );
         }
-        if !line_is_added(workspace_root, case, expected)? {
+        if !line_is_in_head_hunk(workspace_root, case, expected)? {
             bail!(
-                "expected finding `{}` line {} is not an added HEAD-side line in `{}`",
+                "expected finding `{}` line {} is not a HEAD-side line in a changed hunk of `{}`",
                 expected.id,
                 expected.line,
                 expected.path
@@ -303,7 +303,7 @@ fn ensure_commit(workspace_root: &Path, case: &BenchCase, sha: &str) -> anyhow::
     Ok(())
 }
 
-fn line_is_added(
+fn line_is_in_head_hunk(
     workspace_root: &Path,
     case: &BenchCase,
     expected: &ExpectedFinding,
@@ -312,7 +312,7 @@ fn line_is_added(
         workspace_root,
         &[
             "diff",
-            "--unified=0",
+            "--unified=1",
             &case.base,
             &case.head,
             "--",
@@ -390,6 +390,8 @@ fn git_status(workspace_root: &Path, args: &[&str]) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     fn sample_case() -> BenchCase {
@@ -426,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn selectors_form_a_union() {
+    fn selectors_form_a_deduplicated_union() {
         let first = sample_case();
         let mut second = sample_case();
         second.id = "0002-second".into();
@@ -434,12 +436,87 @@ mod tests {
         second.expected[0].id = "second-finding".into();
         let cases = [first, second];
 
-        let selected = select_cases(&cases, &["0001-sample".into()], &[2]).unwrap();
+        let selected = select_cases(
+            &cases,
+            &["0001-sample".into(), "0001-sample".into()],
+            &[2, 2],
+        )
+        .unwrap();
         assert_eq!(selected.len(), 2);
     }
 
     #[test]
     fn rejects_unknown_selector() {
         assert!(select_cases(&[sample_case()], &["missing".into()], &[]).is_err());
+    }
+
+    #[test]
+    fn accepts_head_context_line_adjacent_to_deletion() {
+        let (repo, case) = case_with_file_change(
+            "setting = true\ntimeout = 300\nfail_regex = []\n",
+            "setting = true\nfail_regex = []\n",
+            2,
+        );
+
+        assert!(line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
+    }
+
+    #[test]
+    fn accepts_added_head_line() {
+        let (repo, case) = case_with_file_change(
+            "setting = true\nfail_regex = []\n",
+            "setting = true\ntimeout = 300\nfail_regex = []\n",
+            2,
+        );
+
+        assert!(line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
+    }
+
+    #[test]
+    fn rejects_unchanged_head_line_outside_diff_hunk() {
+        let (repo, case) = case_with_file_change(
+            "setting = true\ntimeout = 300\nfirst = 1\nsecond = 2\nthird = 3\n",
+            "setting = true\nfirst = 1\nsecond = 2\nthird = 3\n",
+            4,
+        );
+
+        assert!(!line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
+    }
+
+    fn case_with_file_change(
+        base_content: &str,
+        head_content: &str,
+        expected_line: usize,
+    ) -> (tempfile::TempDir, BenchCase) {
+        let repo = tempdir().unwrap();
+        initialize_repo(repo.path());
+        let base = commit_file(repo.path(), base_content, "base");
+        let head = commit_file(repo.path(), head_content, "change file");
+        let mut case = sample_case();
+        case.base = base;
+        case.head = head;
+        case.expected[0].path = "case.toml".into();
+        case.expected[0].line = expected_line;
+        (repo, case)
+    }
+
+    fn initialize_repo(repo: &Path) {
+        git_output(repo, &["init", "--quiet"]).unwrap();
+        git_output(repo, &["config", "user.name", "Agent Review Bench"]).unwrap();
+        git_output(
+            repo,
+            &["config", "user.email", "agent-review-bench@example.com"],
+        )
+        .unwrap();
+    }
+
+    fn commit_file(repo: &Path, content: &str, message: &str) -> String {
+        fs::write(repo.join("case.toml"), content).unwrap();
+        git_output(repo, &["add", "case.toml"]).unwrap();
+        git_output(repo, &["commit", "--quiet", "-m", message]).unwrap();
+        git_output(repo, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string()
     }
 }

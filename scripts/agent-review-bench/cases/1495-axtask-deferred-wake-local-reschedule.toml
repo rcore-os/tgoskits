@@ -1,6 +1,6 @@
 id = "1495-axtask-deferred-wake-local-reschedule"
 pr = 1495
-title = "fix(axtask): defer cross-core wake instead of spinning on remote on_cpu"
+title = "修复 axtask：延迟跨核唤醒，避免在远端 on_cpu 上自旋"
 remote = "https://github.com/rcore-os/tgoskits.git"
 base = "baf4aa42e883b78156011636d189f348409ff4c1"
 head = "c74237d2c10754b1341e03f495caafd261cf8b7e"
@@ -12,5 +12,5 @@ id = "axtask-owner-drain-needs-local-reschedule"
 path = "os/arceos/modules/axtask/src/run_queue.rs"
 line = 1125
 severity = "major"
-description = "When the owner CPU drains a deferred wake, it always calls kick_remote_cpu(target). select_wake_run_queue can choose the same owner CPU as target, and that self-kick is a no-op. The runnable task can therefore miss the reschedule that the original remote waker supplied and remain queued while the owner enters idle or until a later tick."
-match_if = "A finding must identify that the deferred-wake drain loses required scheduling notification when target is the current/owner CPU because kick_remote_cpu is ineffective for a self-target, and require an explicit local reschedule path or equivalent preserved handoff state."
+description = "owner CPU 清空 deferred wake 时总是调用 kick_remote_cpu(target)。select_wake_run_queue 可能再次选择同一个 owner CPU 作为 target，而这种 self-kick 不会产生作用。因此，可运行任务会丢失原始远端唤醒者提供的 reschedule 通知，并可能在 owner 进入 idle 后一直留在队列中，直到后续 tick 才得到调度。"
+match_if = "评审必须指出：deferred-wake drain 在 target 为当前或 owner CPU 时会丢失必要的调度通知，因为 kick_remote_cpu 对 self-target 无效；并要求显式触发本地 reschedule，或用等价机制保留 handoff 状态。"
