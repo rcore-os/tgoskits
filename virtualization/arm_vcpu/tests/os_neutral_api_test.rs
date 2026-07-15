@@ -17,10 +17,10 @@
 use core::mem::size_of;
 
 use arm_vcpu::{
-    ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-    Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps,
-    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
-    ArmVmExit, TrapFrame,
+    ARM_VCPU_GUEST_TPIDR_EL0_OFFSET, ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET,
+    ARM_VCPU_HOST_TPIDR_EL0_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE, Aarch64PerCpu, Aarch64VCpu,
+    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
+    ArmVcpu, ArmVcpuError, ArmVcpuResult, ArmVmExit, TrapFrame,
 };
 
 struct DummyHost;
@@ -50,6 +50,14 @@ fn vcpu_and_percpu_types_are_host_generic_without_axvm_traits() {
     assert_eq!(
         ARM_VCPU_HOST_SP_EL0_OFFSET,
         ARM_VCPU_HOST_STACK_TOP_OFFSET + size_of::<u64>()
+    );
+    assert_eq!(
+        ARM_VCPU_HOST_TPIDR_EL0_OFFSET,
+        ARM_VCPU_HOST_SP_EL0_OFFSET + size_of::<u64>()
+    );
+    assert_eq!(
+        ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
+        ARM_VCPU_HOST_TPIDR_EL0_OFFSET + size_of::<u64>()
     );
 }
 

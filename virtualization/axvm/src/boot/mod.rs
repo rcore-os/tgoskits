@@ -8,6 +8,7 @@ pub mod guest_platform;
 pub mod images;
 mod policy;
 mod prepared;
+mod snapshot;
 
 pub use images::*;
 pub use policy::{
@@ -15,6 +16,7 @@ pub use policy::{
     boot_firmware_load_gpa, guest_boot_policy,
 };
 pub use prepared::{PreparedGuestBoot, prepare_guest_boot};
+pub(crate) use snapshot::BootMemorySnapshot;
 
 /// Initializes architecture-owned guest firmware resources.
 pub fn init_guest_boot_resources() {

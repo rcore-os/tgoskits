@@ -34,7 +34,7 @@ use crate::{
     AxVmError, AxVmResult,
     arch::ArchNestedPageTable,
     ax_err, ax_err_type,
-    boot::{GuestBootDescription, GuestFdtBuilder},
+    boot::{BootMemorySnapshot, GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
     irq::InterruptFabric,
@@ -46,7 +46,9 @@ use crate::{
 pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+mod start;
 pub use memory::PreparedMemoryLayout;
+use start::{StartCoordinator, execute_start_transaction, execute_stopped_restart};
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -210,6 +212,14 @@ impl VmRuntimeHandle {
     pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    pub(crate) fn vcpu_cpu_ids(&self) -> Vec<usize> {
+        self.vcpu_task_list
+            .lock()
+            .values()
+            .map(|task| task.cpu_id() as usize)
+            .collect()
     }
 
     pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
@@ -463,6 +473,8 @@ pub struct AxVM {
     id: usize,
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
+    start_coordinator: StartCoordinator,
+    boot_memory: Mutex<BootMemorySnapshot>,
     pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
 }
 
@@ -483,6 +495,8 @@ impl AxVM {
             id,
             name,
             machine: Mutex::new(Machine::Ready(resources)),
+            start_coordinator: StartCoordinator::new(),
+            boot_memory: Mutex::new(BootMemorySnapshot::new()),
             pending_fw_cfg: Mutex::new(None),
         });
 
@@ -635,38 +649,127 @@ impl AxVM {
         Ok(image_load_hva)
     }
 
+    pub(crate) fn record_boot_memory_bytes(
+        &self,
+        load_gpa: GuestPhysAddr,
+        bytes: &[u8],
+    ) -> AxVmResult {
+        self.boot_memory.lock().record_bytes(load_gpa, bytes)
+    }
+
+    pub(crate) fn record_boot_memory_fill(
+        &self,
+        load_gpa: GuestPhysAddr,
+        size: usize,
+        byte: u8,
+    ) -> AxVmResult {
+        self.boot_memory.lock().record_fill(load_gpa, size, byte)
+    }
+
+    pub(crate) fn finish_boot_memory_snapshot(&self) -> AxVmResult {
+        self.boot_memory.lock().finish()
+    }
+
+    pub(crate) fn fill_guest_memory(
+        &self,
+        load_gpa: GuestPhysAddr,
+        size: usize,
+        byte: u8,
+    ) -> AxVmResult {
+        let regions = self.get_image_load_region(load_gpa, size)?;
+        let mut filled_size = 0;
+        for region in regions {
+            // SAFETY: `get_image_load_region` returns writable guest-memory
+            // chunks whose combined length is bounded by `size`.
+            unsafe { core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
+            crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
+            filled_size += region.len();
+        }
+        if filled_size == size {
+            Ok(())
+        } else {
+            ax_err!(
+                InvalidData,
+                format!("VM memory was only partially filled: {filled_size}/{size} bytes")
+            )
+        }
+    }
+
+    fn clear_guest_owned_memory(&self) -> AxVmResult {
+        self.with_resources_mut(|resources| {
+            for region in resources
+                .memory_regions
+                .iter_mut()
+                .filter(|region| region.needs_dealloc)
+            {
+                // SAFETY: Allocated VM regions remain owned by `resources` and
+                // all old vCPU tasks have been joined before restart restore.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts_mut(region.hva.as_mut_ptr(), region.size())
+                };
+                bytes.fill(0);
+                crate::clean_dcache_range(region.hva, region.size());
+            }
+            Ok(())
+        })
+    }
+
+    fn restore_boot_memory(&self) -> AxVmResult {
+        self.boot_memory.lock().restore_with(
+            || self.clear_guest_owned_memory(),
+            |gpa, bytes| self.write_to_guest(gpa, bytes),
+            |gpa, size, byte| self.fill_guest_memory(gpa, size, byte),
+        )
+    }
+
     /// Starts the VM by transitioning to Running state.
     pub fn start(self: &Arc<Self>) -> AxVmResult {
-        if self.status() == VmStatus::Stopped {
-            if let Some(runtime) = self.take_stopped_runtime() {
-                runtime.join_all_vcpu_tasks(self.id());
+        self.start_coordinator.run(|| {
+            if self.status() == VmStatus::Stopped {
+                execute_stopped_restart(
+                    || {
+                        if let Some(runtime) = self.take_stopped_runtime() {
+                            runtime.join_all_vcpu_tasks(self.id());
+                        }
+                    },
+                    || self.restore_boot_memory(),
+                    || self.prepare(),
+                )?;
             }
-            self.prepare()?;
-        }
-        info!("Starting VM[{}]", self.id());
-        let primary_vcpu = self
-            .vcpu(0)
-            .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
-        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
-        let runtime = Arc::new(VmRuntimeHandle::new());
+            info!("Starting VM[{}]", self.id());
+            self.with_resources(|resources| {
+                resources
+                    .vcpu_list()
+                    .map_err(|error| AxVmError::resource_unavailable("vCPU list", error))?;
+                resources
+                    .devices()
+                    .map_err(|error| AxVmError::resource_unavailable("devices", error))?;
+                resources
+                    .interrupt_fabric()
+                    .map_err(|error| AxVmError::resource_unavailable("interrupt fabric", error))?;
+                Ok(())
+            })?;
+            let primary_vcpu = self
+                .vcpu(0)
+                .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
+            let forwarding_vcpu = primary_vcpu.clone();
+            let runtime = Arc::new(VmRuntimeHandle::new());
+            let generation = runtime.forwarding_generation_id();
 
-        self.machine.lock().start_with(|resources| {
-            resources
-                .vcpu_list()
-                .map_err(|error| AxVmError::resource_unavailable("vCPU list", error))?;
-            resources
-                .devices()
-                .map_err(|error| AxVmError::resource_unavailable("devices", error))?;
-            resources
-                .interrupt_fabric()
-                .map_err(|error| AxVmError::resource_unavailable("interrupt fabric", error))?;
-            Ok(runtime.clone())
-        })?;
-
-        runtime.register_vcpu_participant();
-        let task = crate::host::task::spawn_task(primary_task);
-        runtime.add_vcpu_task(0, task);
-        Ok(())
+            execute_start_transaction(
+                || crate::arch::prepare_runtime_start(self, &forwarding_vcpu, generation),
+                || self.machine.lock().start_with(|_| Ok(runtime.clone())),
+                || {
+                    crate::arch::cancel_runtime_start(self, generation);
+                },
+                || {
+                    runtime.register_vcpu_participant();
+                    let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
+                    let task = crate::host::task::spawn_task(primary_task);
+                    runtime.add_vcpu_task(0, task);
+                },
+            )
+        })
     }
 
     /// Returns if the VM is running.
@@ -768,6 +871,8 @@ impl AxVM {
     pub fn reset(self: &Arc<Self>) -> AxVmResult {
         info!("Resetting VM[{}]", self.id());
         self.stop_and_join_runtime(StopReason::Forced)?;
+
+        self.restore_boot_memory()?;
 
         self.machine.lock().reset_with(|resources| {
             resources

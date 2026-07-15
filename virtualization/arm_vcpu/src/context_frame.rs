@@ -234,7 +234,9 @@ impl GuestSystemRegisters {
     ///
     /// This method uses inline assembly to read the values of various system registers
     /// and stores them in the corresponding fields of the `GuestSystemRegisters` structure.
-    pub unsafe fn store(&mut self) {
+    /// `guest_tpidr_el0` must be captured by the VM-exit trampoline before it restores
+    /// the host TLS pointer.
+    pub unsafe fn store(&mut self, guest_tpidr_el0: u64) {
         unsafe {
             asm!("mrs {0}, CNTVOFF_EL2", out(reg) self.cntvoff_el2);
             asm!("mrs {0}, CNTP_CVAL_EL0", out(reg) self.cntp_cval_el0);
@@ -265,7 +267,7 @@ impl GuestSystemRegisters {
             asm!("mrs {0}, AMAIR_EL1", out(reg) self.amair_el1);
             asm!("mrs {0}, VBAR_EL1", out(reg) self.vbar_el1);
             asm!("mrs {0:x}, CONTEXTIDR_EL1", out(reg) self.contextidr_el1);
-            asm!("mrs {0}, TPIDR_EL0", out(reg) self.tpidr_el0);
+            self.tpidr_el0 = guest_tpidr_el0;
             asm!("mrs {0}, TPIDR_EL1", out(reg) self.tpidr_el1);
             asm!("mrs {0}, TPIDRRO_EL0", out(reg) self.tpidrro_el0);
 

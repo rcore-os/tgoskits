@@ -18,6 +18,14 @@ pub(crate) fn next_generation_id() -> usize {
     assert_ne!(id, 0, "forwarding generation ID space exhausted");
     id
 }
+#[allow(
+    dead_code,
+    reason = "the host-tested mask policy has a production consumer only on AArch64"
+)]
+pub(crate) fn exclusive_cpu_from_mask(mask: Option<usize>) -> Option<usize> {
+    let mask = mask?;
+    (mask.count_ones() == 1).then_some(mask.trailing_zeros() as usize)
+}
 
 /// An atomic owner table whose releases are scoped to one runtime generation.
 #[allow(
@@ -28,6 +36,36 @@ pub(crate) struct GenerationOwnerTable<const N: usize> {
     owners: [AtomicUsize; N],
     generations: [AtomicUsize; N],
     update_lock: SpinRaw<()>,
+}
+#[allow(
+    dead_code,
+    reason = "the host-tested ownership model has a production consumer only on AArch64"
+)]
+pub(crate) struct PendingGenerationClaim<'a, const N: usize> {
+    table: &'a GenerationOwnerTable<N>,
+    owner: usize,
+    generation: usize,
+    newly_claimed: Vec<usize>,
+    committed: bool,
+}
+
+#[allow(
+    dead_code,
+    reason = "the host-tested ownership model has a production consumer only on AArch64"
+)]
+impl<const N: usize> PendingGenerationClaim<'_, N> {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl<const N: usize> Drop for PendingGenerationClaim<'_, N> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.table
+                .release_generation(self.owner, self.generation, &self.newly_claimed);
+        }
+    }
 }
 
 #[allow(
@@ -48,14 +86,15 @@ impl<const N: usize> GenerationOwnerTable<N> {
         owner: usize,
         generation: usize,
         indices: &[usize],
-    ) -> Result<Vec<usize>, usize> {
+    ) -> Result<PendingGenerationClaim<'_, N>, usize> {
         assert_ne!(owner, 0, "zero is reserved for an unowned IRQ");
         assert_ne!(generation, 0, "zero is reserved for no runtime generation");
         let _guard = self.update_lock.lock();
 
         if let Some(&conflict) = indices.iter().find(|&&index| {
-            let current = self.owners[index].load(Ordering::Acquire);
-            current != 0 && current != owner
+            let current_owner = self.owners[index].load(Ordering::Acquire);
+            let current_generation = self.generations[index].load(Ordering::Acquire);
+            current_owner != 0 && (current_owner != owner || current_generation != generation)
         }) {
             return Err(conflict);
         }
@@ -68,7 +107,13 @@ impl<const N: usize> GenerationOwnerTable<N> {
                 newly_claimed.push(index);
             }
         }
-        Ok(newly_claimed)
+        Ok(PendingGenerationClaim {
+            table: self,
+            owner,
+            generation,
+            newly_claimed,
+            committed: false,
+        })
     }
 
     pub(crate) fn release_generation(&self, owner: usize, generation: usize, indices: &[usize]) {
@@ -214,7 +259,6 @@ pub(crate) fn lr_matches_route(snapshot: LrSnapshot, request: LrRouteRequest) ->
 mod tests {
     extern crate std;
 
-    use alloc::vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::{
         sync::{Arc, Barrier},
@@ -227,25 +271,81 @@ mod tests {
     use crate::AxVmError;
 
     #[test]
-    fn failed_generation_release_keeps_preexisting_claim() {
+    fn generation_claim_same_owner_different_generation_conflicts_without_claiming_free_prefix() {
         let owners = super::GenerationOwnerTable::<8>::new();
+        owners.claim_all(3, 10, &[1]).unwrap().commit();
 
-        assert_eq!(owners.claim_all(3, 10, &[1]).unwrap(), vec![1]);
-        assert!(owners.claim_all(3, 11, &[1, 2]).is_ok());
-        owners.release_generation(3, 11, &[1, 2]);
+        let conflict = match owners.claim_all(3, 11, &[1, 2]) {
+            Err(index) => index,
+            Ok(_) => panic!("a different generation must conflict"),
+        };
 
-        assert!(owners.is_owned_by(1, 3));
+        assert_eq!(conflict, 1);
         assert!(!owners.is_owned_by(2, 3));
     }
 
     #[test]
-    fn conflicting_batch_does_not_claim_its_free_prefix() {
+    fn generation_claim_late_old_release_keeps_new_generation() {
         let owners = super::GenerationOwnerTable::<8>::new();
-        owners.claim_all(1, 1, &[4]).unwrap();
+        owners.claim_all(3, 10, &[1]).unwrap().commit();
+        owners.release_generation(3, 10, &[1]);
+        owners.claim_all(3, 11, &[1]).unwrap().commit();
 
-        assert_eq!(owners.claim_all(2, 2, &[3, 4]), Err(4));
+        owners.release_generation(3, 10, &[1]);
+        assert!(owners.is_owned_by(1, 3));
+
+        owners.release_generation(3, 11, &[1]);
+        assert!(!owners.is_owned_by(1, 3));
+    }
+
+    #[test]
+    fn generation_claim_uncommitted_guard_rolls_back_on_drop() {
+        let owners = super::GenerationOwnerTable::<8>::new();
+        let claim = owners.claim_all(3, 10, &[1, 2]).unwrap();
+
+        drop(claim);
+
+        assert!(!owners.is_owned_by(1, 3));
+        assert!(!owners.is_owned_by(2, 3));
+    }
+
+    #[test]
+    fn generation_claim_committed_guard_survives_drop() {
+        let owners = super::GenerationOwnerTable::<8>::new();
+        owners.claim_all(3, 10, &[1]).unwrap().commit();
+
+        assert!(owners.is_owned_by(1, 3));
+    }
+
+    #[test]
+    fn generation_claim_conflicting_batch_does_not_claim_its_free_prefix() {
+        let owners = super::GenerationOwnerTable::<8>::new();
+        owners.claim_all(1, 1, &[4]).unwrap().commit();
+
+        let conflict = match owners.claim_all(2, 2, &[3, 4]) {
+            Err(index) => index,
+            Ok(_) => panic!("another owner must conflict"),
+        };
+
+        assert_eq!(conflict, 4);
         assert!(!owners.is_owned_by(3, 2));
         assert!(owners.is_owned_by(4, 1));
+    }
+
+    #[test]
+    fn exclusive_cpu_from_mask_rejects_none_or_empty() {
+        assert_eq!(super::exclusive_cpu_from_mask(None), None);
+        assert_eq!(super::exclusive_cpu_from_mask(Some(0)), None);
+    }
+
+    #[test]
+    fn exclusive_cpu_from_mask_rejects_multiple_bits() {
+        assert_eq!(super::exclusive_cpu_from_mask(Some(0b1010)), None);
+    }
+
+    #[test]
+    fn exclusive_cpu_from_mask_accepts_one_bit() {
+        assert_eq!(super::exclusive_cpu_from_mask(Some(0b1000)), Some(3));
     }
 
     #[test]

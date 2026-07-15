@@ -114,6 +114,53 @@ fn failed_vm_initialization_resets_transient_resources_before_retry() {
     assert!(initialize.contains("resources.reset_transient_resources()"));
     assert!(initialize.contains("return Err(err)"));
 }
+#[test]
+fn aarch64_hybrid_forwarding_is_prepared_before_vcpu_spawn() {
+    let vm = include_str!("../src/vm/mod.rs");
+    let start = vm
+        .split_once("pub fn start(self: &Arc<Self>)")
+        .expect("AxVM start entry point must exist")
+        .1
+        .split_once("/// Returns if the VM is running")
+        .expect("AxVM start body must end before running query")
+        .0;
+    let coordinator = start
+        .find("start_coordinator.run")
+        .expect("VM start must enter its per-VM coordinator");
+    let prepare = start
+        .find("arch::prepare_runtime_start")
+        .expect("VM start must prepare architecture forwarding");
+    let commit = start
+        .find(".start_with")
+        .expect("VM start must commit lifecycle state");
+    let spawn = start
+        .find("spawn_task")
+        .expect("VM start must spawn the primary vCPU");
+
+    assert!(coordinator < prepare);
+    assert!(prepare < commit);
+    assert!(commit < spawn);
+
+    let ops = include_str!("../src/architecture/ops.rs");
+    assert!(ops.contains("fn prepare_runtime_start"));
+    assert!(ops.contains("fn cancel_runtime_start"));
+    assert!(ops.contains("fn setup_forwarding_once"));
+
+    let runtime = include_str!("../src/runtime/vcpus.rs");
+    assert!(runtime.contains("run_forwarding_setup_once"));
+    assert!(runtime.contains("CurrentArch::setup_forwarding_once"));
+
+    let aarch64 = include_str!("../src/arch/aarch64/mod.rs");
+    assert!(!aarch64.contains("fn setup_forwarding_once"));
+    assert!(aarch64.contains("fn prepare_runtime_start"));
+    assert!(aarch64.contains("irq::setup_hybrid_forwarding(vm, cpu_id, generation)"));
+    assert!(aarch64.contains("fn cancel_runtime_start"));
+    assert!(aarch64.contains("irq::unregister_forward_spis(vm, generation)"));
+
+    let irq = include_str!("../src/arch/aarch64/irq.rs");
+    assert!(irq.contains("generation: usize"));
+    assert!(!irq.contains("vm.with_runtime"));
+}
 
 #[test]
 fn runtime_vcpu_loop_only_consumes_scheduler_actions() {

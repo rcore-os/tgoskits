@@ -19,7 +19,7 @@ use crate::{
     ax_err, ax_err_type,
     boot::{
         BootImageProvider, StaticVmImage,
-        images::{ImageLoaderCore, load_vm_image_from_memory},
+        images::{ImageLoaderCore, fill_vm_boot_memory, load_vm_image_from_memory},
     },
 };
 
@@ -316,28 +316,8 @@ fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> Ax
         .iter()
         .find(|region| region.gpa == load_gpa.as_usize())
         .map_or(firmware.len(), |region| region.size);
-    fill_vm_region(load_gpa, flash_len, 0xff, loader.vm.clone())?;
+    fill_vm_boot_memory(load_gpa, flash_len, 0xff, loader.vm.clone())?;
     load_vm_image_from_memory(firmware, load_gpa, loader.vm.clone())
-}
-
-fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxVmResult {
-    let regions = vm.get_image_load_region(load_addr, size)?;
-    let mut filled_size = 0;
-    for region in regions {
-        // SAFETY: AxVM returned this writable guest-memory region and the fill
-        // is bounded by its length.
-        unsafe { core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
-        crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
-        filled_size += region.len();
-    }
-    if filled_size == size {
-        Ok(())
-    } else {
-        ax_err!(
-            InvalidData,
-            format!("VM memory was only partially filled: {filled_size}/{size} bytes")
-        )
-    }
 }
 
 fn ram_regions(vm: &AxVMRef) -> Vec<MemoryRegion> {

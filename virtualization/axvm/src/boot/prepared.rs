@@ -30,9 +30,15 @@ impl PreparedGuestBoot {
         vm: AxVMRef,
         provider: &dyn BootImageProvider,
     ) -> AxVmResult {
-        let mut loader =
-            ImageLoaderCore::new(main_memory, self.config, vm, provider, self.guest_dtb);
-        loader.load()
+        let mut loader = ImageLoaderCore::new(
+            main_memory,
+            self.config,
+            vm.clone(),
+            provider,
+            self.guest_dtb,
+        );
+        loader.load()?;
+        vm.finish_boot_memory_snapshot()
     }
 }
 

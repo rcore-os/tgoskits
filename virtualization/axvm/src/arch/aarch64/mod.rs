@@ -204,18 +204,44 @@ impl ArchOps for Aarch64Arch {
         irq::register_platform_irq_injector();
     }
 
-    fn setup_forwarding_once(
+    fn prepare_runtime_start(
         vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        primary_vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        generation: usize,
     ) -> crate::AxVmResult {
         if vm.interrupt_mode() != axvm_types::VMInterruptMode::Hybrid {
             return Ok(());
         }
-        let cpu_id = vcpu
-            .phys_cpu_set()
-            .and_then(first_cpu_in_mask)
-            .unwrap_or_else(|| default_host().this_cpu_id());
-        irq::setup_hybrid_forwarding(vm, cpu_id)
+        let requested_mask = primary_vcpu.phys_cpu_set().ok_or_else(|| {
+            crate::AxVmError::invalid_input(
+                "prepare AArch64 Hybrid forwarding",
+                "primary vCPU has no fixed physical CPU mask",
+            )
+        })?;
+        crate::irq::forwarding::exclusive_cpu_from_mask(Some(requested_mask)).ok_or_else(|| {
+            crate::AxVmError::invalid_input(
+                "prepare AArch64 Hybrid forwarding",
+                format_args!("primary vCPU mask {requested_mask:#x} is not exclusive"),
+            )
+        })?;
+        let effective_mask =
+            crate::runtime::vcpus::vcpu_task_cpu_mask(vm.id(), primary_vcpu.id(), requested_mask);
+        let cpu_id = crate::irq::forwarding::exclusive_cpu_from_mask(Some(effective_mask))
+            .ok_or_else(|| {
+                crate::AxVmError::invalid_input(
+                    "prepare AArch64 Hybrid forwarding",
+                    format_args!(
+                        "primary vCPU effective mask {effective_mask:#x} is not exclusive"
+                    ),
+                )
+            })?;
+        irq::setup_hybrid_forwarding(vm, cpu_id, generation)
+    }
+
+    fn cancel_runtime_start(vm: &crate::AxVMRef, generation: usize) {
+        if vm.interrupt_mode() == axvm_types::VMInterruptMode::Hybrid {
+            irq::unregister_forward_spis(vm, generation);
+        }
     }
 
     fn on_last_vcpu_exit(vm: &crate::AxVMRef, runtime: &crate::vm::VmRuntimeHandle) {
@@ -223,10 +249,6 @@ impl ArchOps for Aarch64Arch {
             irq::unregister_forward_spis(vm, runtime.forwarding_generation_id());
         }
     }
-}
-
-fn first_cpu_in_mask(mask: usize) -> Option<usize> {
-    (mask != 0).then_some(mask.trailing_zeros() as usize)
 }
 
 struct AxvmArmHostOps;
