@@ -37,7 +37,7 @@ cargo +stable install ostool --version '^0.15'
 - `cargo-binutils`：提供 `rust-objcopy`、`rust-objdump` 等工具
 - `ostool`：AxVisor 的自定义构建运行器
 
-## 3. KVM 配置（仅 NimbOS x86_64 需要）
+## 3. KVM 和 UEFI 固件配置（仅 NimbOS x86_64 需要）
 
 NimbOS 运行在 x86_64 QEMU 上并依赖 KVM 硬件加速。ArceOS 和 Linux 使用 AArch64 QEMU（TCG 模式），不需要 KVM，可跳过本节。
 
@@ -65,67 +65,54 @@ newgrp kvm
 id  # 输出应包含 "kvm"
 ```
 
+x86_64 UEFI guest 需要 OVMF 固件。Debian/Ubuntu 安装：
+
+```bash
+sudo apt install ovmf
+```
+
+如果固件不在标准路径，导出：
+
+```bash
+export AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd
+```
+
 ## 4. 运行客户机
 
-本分支提供了一键部署脚本 `scripts/setup_qemu.sh`，自动完成镜像下载、配置路径修改和 rootfs 准备。
+> **注意**：本节所有命令均在 **axvisor 目录**（`os/axvisor/`）下执行。如果在 tgoskits 仓库根目录，请先运行 `cd os/axvisor`。
 
-LoongArch64 的 AxVisor shell smoke 是另一条单独路径：它不依赖 guest 镜像，但要求使用带虚拟化扩展支持的 LoongArch QEMU，例如 `QEMU-LVZ`。它也不走 `scripts/setup_qemu.sh`；如果你误用了 `./scripts/setup_qemu.sh loongarch64`，脚本会直接提示改用 `./scripts/quick-start.sh qemu-loongarch64 start`。
+本项目提供 `scripts/quick-start.sh` 一键启动脚本，自动完成镜像下载、配置生成、编译和 QEMU 启动。
 
 ### ArceOS（AArch64）
 
 ```bash
-./scripts/setup_qemu.sh arceos
-
-cargo xtask qemu \
-  --config configs/board/qemu-aarch64.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+./scripts/quick-start.sh qemu-aarch64 start --arceos
 ```
 
-启动成功标志：输出中出现 `Hello, world!`
+ArceOS 是一个轻量微内核，启动后打印 `Hello, world!` 随即退出。Guest 退出后你进入 **AxVisor 管理 Shell**（`axvisor:/$`），可以继续操作 hypervisor。
 
 ### Linux（AArch64）
 
 ```bash
-./scripts/setup_qemu.sh linux
-
-cargo xtask qemu \
-  --config configs/board/qemu-aarch64.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml
+./scripts/quick-start.sh qemu-aarch64 start --linux
 ```
 
-启动成功标志：输出中出现 `test pass!`
+启动后进入 **Linux Guest 的 BusyBox 交互 shell**（提示符 `~ #`）。在另一个终端执行 `pkill qemu` 或关闭 QEMU 窗口退出。
 
 ### NimbOS（x86_64，需要 KVM）
 
+NimbOS 镜像不在标准 registry 中，须通过分步方式启动：
+
 ```bash
+# 第 1 步：下载镜像 + 生成配置
 ./scripts/setup_qemu.sh nimbos
 
-cargo xtask qemu \
-  --config configs/board/qemu-x86_64.toml \
-  --qemu-config .github/workflows/qemu-x86_64-kvm.toml \
-  --vmconfigs tmp/vmconfigs/nimbos-x86_64-qemu-smp1.generated.toml
+# 第 2 步：复制脚本打印的绝对路径命令，编译 + 启动
 ```
 
-启动成功后会进入 Rust user shell（`>>` 提示符），输入 `usertests` 运行测试套件，全部通过后输出 `usertests passed!`
+启动后进入 **Rust user shell**（`>>` 提示符），可输入 `usertests` 等命令运行测试
 
 > **注意**：NimbOS 依赖 VT-x/KVM。如果 `/dev/kvm` 不存在或权限不足，会报 `Permission denied` 错误。WSL2 需要内核支持嵌套虚拟化才能使用 KVM。
-
-### ArceOS（RISC-V64）
-
-```bash
-./scripts/setup_qemu.sh arceos-riscv64
-
-cargo xtask qemu \
-  --build-config configs/board/qemu-riscv64.toml \
-  --qemu-config .github/workflows/qemu-riscv64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-riscv64-qemu-smp1.generated.toml
-```
-
-启动成功标志：输出中出现 `Hello, world!`
-
-当前 `qemu-riscv64` 这条快速启动链路支持的是 RISC-V 版 ArceOS Guest。像 `riscv64 AxVisor -> aarch64 ArceOS` 这样的跨 ISA 启动，在现有 hypervisor 栈里还没有接通。
 
 ### AxVisor Shell（LoongArch64，需要 QEMU-LVZ）
 
@@ -133,21 +120,37 @@ cargo xtask qemu \
 ./scripts/quick-start.sh qemu-loongarch64 start
 ```
 
-这条命令会直接启动 AxVisor 并进入内建 shell，而不是先引导 guest 镜像。
+这条命令直接启动 AxVisor，不加载 guest 镜像。启动后进入 **AxVisor 管理 Shell**（`axvisor:/$`），提示符前会先看到 `Welcome to AxVisor Shell!`。
 
-启动成功标志：输出中出现 `Welcome to AxVisor Shell!`
+> **注意**：标准版 `qemu-system-loongarch64` 通常不暴露 LoongArch 虚拟化扩展。请使用 `QEMU-LVZ`，或设置 `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` 指向已验证的二进制。
 
-> **注意**：标准版 `qemu-system-loongarch64` 通常不会暴露 LoongArch 虚拟化扩展。请使用 `QEMU-LVZ`，或者通过 `AXBUILD_QEMU_SYSTEM_LOONGARCH64=/path/to/qemu-system-loongarch64` 指向一个已经确认支持虚拟化扩展的二进制。
+## 5. 分步执行（开发调试用）
 
-## 5. setup_qemu.sh 做了什么
+如果需要反复编译调试但不想每次都重新下载镜像，可分两步：
 
-对于需要 guest 镜像的启动链路，该脚本自动完成以下三步，省去手动操作：
+**第 1 步**：下载镜像 + 生成配置（只需执行一次）
 
-1. **下载镜像**：调用 `cargo axvisor image pull` 将 Guest 镜像下载并解压到 `/tmp/.axvisor-images/`
-2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，并用 `sed` 更新 `kernel_path`（以及 NimbOS 的 `bios_path`）到实际镜像路径，不修改仓库内 `configs/vms/**/*.toml`
-3. **准备 rootfs**：将 `rootfs.img` 复制到项目的 `tmp/` 目录下供 QEMU 使用
+```bash
+./scripts/setup_qemu.sh <guest>
+# 示例: ./scripts/setup_qemu.sh linux
+```
 
-如果不想使用脚本，也可以手动执行上述步骤。
+**第 2 步**：编译 + 启动（可重复执行）
+
+`setup_qemu.sh` 执行后会打印完整的 `cargo xtask axvisor qemu` 命令，使用绝对路径，直接复制粘贴即可。示例：
+
+```bash
+cargo xtask axvisor qemu \
+  --config /home/user/tgoskits/os/axvisor/configs/board/qemu-aarch64.toml \
+  --qemu-config /home/user/tgoskits/os/axvisor/.github/workflows/qemu-aarch64.toml \
+  --vmconfigs /home/user/tgoskits/os/axvisor/tmp/vmconfigs/linux-aarch64-qemu-smp1.generated.toml
+```
+
+`setup_qemu.sh` 自动完成以下三步：
+
+1. **下载镜像**：调用 `cargo xtask image pull` 将 Guest 镜像和 rootfs 下载到 axbuild 镜像缓存
+2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，用 `sed` 更新 `kernel_path` 到实际镜像路径
+3. **准备 rootfs**：将 rootfs 镜像复制到 `tmp/` 目录供 QEMU 使用
 
 ## 常见问题
 
@@ -165,18 +168,11 @@ VM 配置中的 `kernel_path` 指向了不存在的文件。运行 `./scripts/se
 
 ### LoongArch64 下出现 `Hardware support: false`，随后 panic
 
-这说明当前启动使用的 LoongArch QEMU 二进制没有提供虚拟化扩展。请切换到 `QEMU-LVZ`，或在运行 `./scripts/quick-start.sh qemu-loongarch64 start` 前导出 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，把它指向一个已验证支持虚拟化扩展的 `qemu-system-loongarch64`。
+当前使用的 LoongArch QEMU 二进制没有提供虚拟化扩展。请切换到 `QEMU-LVZ`，或导出 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 指向已验证的二进制。
 
 ### `Auto syncing from registry ... timed out`
 
-这通常是访问 GitHub Raw 不稳定导致的。`cargo axvisor image pull` 现在会在命令内部处理 registry 引导逻辑：优先使用默认 registry，若其中声明了 include 就继续跟随 include；若默认入口不可用，则自动回退到内建 fallback registry（当前指向 `v0.0.25.toml`）。
-
-如果你所在网络环境对部分 URL 不稳定，可显式覆盖 fallback registry：
-
-```bash
-export AXVISOR_REGISTRY_FALLBACK_URL="https://raw.githubusercontent.com/arceos-hypervisor/axvisor-guest/refs/heads/main/registry/v0.0.25.toml"
-./scripts/setup_qemu.sh arceos
-```
+访问 GitHub Raw 不稳定。`cargo xtask image pull` 内部处理 registry 引导逻辑，会自动回退到 fallback registry。
 
 ### 首次构建非常慢
 

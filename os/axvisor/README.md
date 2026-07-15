@@ -92,7 +92,7 @@ AxVisor uses the xtask tool for build management, supporting multiple hardware p
 3. **Execute Build**: Use `cargo xtask build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask build --config configs/board/<board_name>.toml`.
 
 4. **Run on QEMU or Board**:
-   - QEMU: `cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
+   - QEMU: `cargo xtask axvisor qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
    - U-Boot board flow: `cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
 
 For local bring-up, you can also use `./scripts/quick-start.sh` for the supported QEMU and board platforms. See the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for examples.

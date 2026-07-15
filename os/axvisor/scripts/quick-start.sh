@@ -786,14 +786,14 @@ setup_rdk_s100() {
         info "Using existing ArceOS image directory: tmp/images/${arceos_image}"
     else
         info "Downloading ArceOS image..."
-        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${arceos_image}" --output-dir tmp/images
+        run_cmd cargo xtask image pull "${image_pull_args[@]}" "${arceos_image}" --output-dir tmp/images
     fi
 
     if [ -d "tmp/images/${linux_image}" ]; then
         info "Using existing Linux image directory: tmp/images/${linux_image}"
     else
         info "Downloading Linux image (including device tree)..."
-        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${linux_image}" --output-dir tmp/images
+        run_cmd cargo xtask image pull "${image_pull_args[@]}" "${linux_image}" --output-dir tmp/images
     fi
 
     info "Preparing board config file..."

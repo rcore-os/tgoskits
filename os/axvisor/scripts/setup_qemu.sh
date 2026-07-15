@@ -71,13 +71,13 @@ bootstrap_image_registry() {
 
   if [ -z "${registry_url}" ]; then
     echo "  -> Could not resolve registry URL; letting cargo xtask handle image sync." >&2
-    return 1
+    return 0
   fi
 
   echo "  -> Bootstrapping local image registry from: ${registry_url}"
   if ! curl -4 --retry 5 --retry-delay 2 -fsSL "${registry_url}" -o "${storage_dir}/images.toml"; then
     echo "  -> Error: failed to bootstrap local image registry." >&2
-    return 1
+    return 0
   fi
   date +%s > "${storage_dir}/.last_sync" || true
 }
