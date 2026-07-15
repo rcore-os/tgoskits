@@ -350,7 +350,7 @@ impl<'a> SerialTransition<'a> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            while flag.load(Ordering::Relaxed) {
+            while flag.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }
         }
