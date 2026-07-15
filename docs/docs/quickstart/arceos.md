@@ -6,28 +6,31 @@ title: "ArceOS 快速上手"
 
 # ArceOS 快速上手
 
-ArceOS 的最短路径通常是选择一个示例包，通过 `cargo xtask arceos qemu` 直接构建并启动。
+ArceOS 的最短路径是直接运行 `cargo xtask arceos qemu`。该 QEMU 子命令会选择对应架构的 board 模板，默认启动 Hello World。
 
 ```mermaid
 flowchart LR
-  A[选择包] --> B[选择架构]
-  B --> C[cargo xtask arceos qemu]
-  C --> D{验证通过?}
-  D -- 是 --> E[测试套件]
-  D -- 否 --> F[检查环境]
-  F --> B
+  A[选择架构] --> B[cargo xtask arceos qemu]
+  B --> C{需要其他应用?}
+  C -- 否 --> D[Hello World]
+  C -- 是 --> E[--package 指定应用]
+  D --> F{验证通过?}
+  E --> F
+  F -- 是 --> G[测试套件]
+  F -- 否 --> H[检查环境]
+  H --> A
 ```
 
 ## 1. 快速启动
 
-本节给出 ArceOS 在不同架构上的最短启动命令。推荐优先选择 `arceos-helloworld`，因为它依赖最少、输出最直接，适合确认基础构建链路和 QEMU 路径是否正常。
+不带 `--package` 时，QEMU 子命令从 `os/arceos/configs/board/qemu-<arch>.toml` 读取默认应用与 feature；当前模板使用最小的 `arceos-helloworld`。需要运行其他应用时，再通过 `--package` 显式覆盖。
 
 ### 1.1 RISC-V 64
 
 `riscv64` 是当前最适合作为第一条验证路径的架构之一。命令短、反馈明确，也最便于和测试套件中的主流验证路径对应起来。
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
+cargo xtask arceos qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 1.2 AArch64
@@ -35,7 +38,7 @@ cargo xtask arceos qemu --package arceos-helloworld --target riscv64gc-unknown-n
 如果后续工作会涉及 StarryOS 或 Axvisor，AArch64 路径会更容易和其他系统对齐。它适合在完成第一条最小运行路径后继续验证。
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --target aarch64-unknown-none-softfloat
+cargo xtask arceos qemu --target aarch64-unknown-none-softfloat
 ```
 
 ### 1.3 x86_64
@@ -43,7 +46,7 @@ cargo xtask arceos qemu --package arceos-helloworld --target aarch64-unknown-non
 `x86_64` 更适合本地 x86 平台适配或与 PC 类平台环境对照时使用。启动方式与其他架构一致，主要差别在目标 triple 和底层平台配置。
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --target x86_64-unknown-none
+cargo xtask arceos qemu --target x86_64-unknown-none
 ```
 
 ### 1.4 LoongArch64
@@ -51,7 +54,7 @@ cargo xtask arceos qemu --package arceos-helloworld --target x86_64-unknown-none
 LoongArch64 路径适合作为补充验证，而不是第一次上手的默认首选。使用前建议先确认本地环境或容器环境中对应 QEMU 已可用。
 
 ```bash
-cargo xtask arceos qemu --package arceos-helloworld --target loongarch64-unknown-none-softfloat
+cargo xtask arceos qemu --target loongarch64-unknown-none-softfloat
 ```
 
 ## 2. 常用包

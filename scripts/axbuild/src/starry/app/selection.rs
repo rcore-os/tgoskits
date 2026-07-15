@@ -9,6 +9,7 @@ use super::{
     qemu::qemu_app_supports_arch,
     types::{StarryAppCase, StarryAppKind},
 };
+use crate::context::DEFAULT_STARRY_ARCH;
 
 pub(crate) fn print_apps(workspace_root: &Path, kind: Option<StarryAppKind>) -> anyhow::Result<()> {
     for app in filtered_apps(workspace_root, kind)? {
@@ -43,7 +44,8 @@ pub(crate) fn selected_apps(
     };
     apps.retain(|app| app.kind == kind);
     if args.all && args.qemu_config.is_none() {
-        let arch = args.arch.as_deref().unwrap_or("x86_64");
+        // Keep app selection aligned with the generic Starry command default.
+        let arch = args.arch.as_deref().unwrap_or(DEFAULT_STARRY_ARCH);
         apps.retain(|app| app.kind != StarryAppKind::Qemu || qemu_app_supports_arch(app, arch));
     }
     if let Some(case_name) = args.test_case.as_deref() {

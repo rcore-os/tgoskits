@@ -1,15 +1,17 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
-use log::warn;
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
 };
 
 use crate::{
-    context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
+    context::{
+        AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence,
+        resolve_arceos_arch_and_target,
+    },
     test::host_http::HostHttpServerGuard,
 };
 
@@ -178,8 +180,26 @@ impl ArceOS {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let mut build_args = BuildCliArgs::from(&args.build);
+        if build_args.package.is_none() && build_args.config.is_none() {
+            // Bare `arceos qemu` is a command-level default: select the matching
+            // board template, whose package and features define the runnable app.
+            // Explicit package/config selectors remain fully authoritative.
+            let (_, target) =
+                resolve_arceos_arch_and_target(build_args.arch.clone(), build_args.target.clone())?;
+            let board = board::default_qemu_board(self.app.workspace_root(), &target, None)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing ArceOS QEMU default config for target `{target}` under {}",
+                        board::board_dir(self.app.workspace_root())
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|_| "os/arceos/configs/board".to_string())
+                    )
+                })?;
+            build_args.config = Some(board.path);
+        }
         let request = self.prepare_request(
-            (&args.build).into(),
+            build_args,
             args.qemu_config,
             None,
             SnapshotPersistence::Store,
@@ -398,7 +418,6 @@ impl ArceOS {
                 if !extra_rustflags.is_empty() {
                     bail!("ArceOS board extra rustflags are only supported for RustStd packages");
                 }
-                let request = c_app_internal_request(&request);
                 let cargo = build::load_c_app_cargo_config(&request)?;
                 let board_config = self
                     .load_board_config(&cargo, board_config_path.as_deref())
@@ -456,7 +475,6 @@ impl ArceOS {
                     .map(|_| ())
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
-                let request = c_app_internal_request(&request);
                 let output = self.build_c_app_request(&request, app_dir, app_name)?;
                 println!("Built ArceOS C app ELF: {}", output.elf_path.display());
                 Ok(())
@@ -506,7 +524,6 @@ impl ArceOS {
         app_name: String,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
         let mut qemu = self
             .load_qemu_config(&request, &cargo)
@@ -536,7 +553,6 @@ impl ArceOS {
         app_name: String,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
         let uboot = self
             .load_uboot_config(&request, &cargo)
@@ -553,22 +569,6 @@ impl ArceOS {
     }
 }
 
-fn warn_if_c_app_package_override(request: &ResolvedBuildRequest) {
-    if request.package != "ax-libc" {
-        warn!(
-            "ArceOS C app build ignores --package {}; using ax-libc internally",
-            request.package
-        );
-    }
-}
-
-fn c_app_internal_request(request: &ResolvedBuildRequest) -> ResolvedBuildRequest {
-    warn_if_c_app_package_override(request);
-    let mut request = request.clone();
-    request.package = "ax-libc".to_string();
-    request
-}
-
 pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &str) -> PathBuf {
     workspace_root.join(format!("os/arceos/configs/qemu/qemu-{arch}.toml"))
 }
@@ -576,6 +576,7 @@ pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &st
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use ostool::run::qemu::QemuConfig;
     use tempfile::tempdir;
 
     use super::*;
@@ -675,6 +676,7 @@ mod tests {
             let board = board::load_board_file(&board_path).unwrap();
             assert_eq!(board.package, "arceos-helloworld");
             assert_eq!(board.target, target);
+            assert!(board.build_config.build_info.features.is_empty());
         }
     }
 

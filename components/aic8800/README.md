@@ -70,16 +70,15 @@ tarball。`build.rs` 在编译时把它们准备到 `OUT_DIR/firmware/`，`src/f
 `build.rs` 的固件来源优先级（命中即止）：
 
 1. `$AIC8800_FIRMWARE_DIR/<name>` — 显式本地缓存 / 离线镜像目录。
-2. 仓库内 `components/aic8800/firmware/<name>` — 由 `cargo xtask` 预下载填充；
-   在本仓库内（含离线）编译时走这条，**不联网**。
-3. 从上游 pin 的 commit 下载 — 用于脱离本仓库的独立构建（如 crates.io）。
+2. 仓库内 `components/aic8800/firmware/<name>` — 可选的本地缓存；手动放入并通过
+   SHA-256 校验后，可在离线构建时使用。
+3. 从上游 pin 的 commit 下载 — 任一构建在前两项均不可用时使用。
 
-清单、摘要与上游 pin 见 [`build.rs`](build.rs) 与
-[`scripts/axbuild/src/firmware.rs`](../../scripts/axbuild/src/firmware.rs)（两份保持同步），
-来源与文件列表见 [`firmware/README.md`](firmware/README.md)。
+清单、摘要与上游 pin 见 [`build.rs`](build.rs)，来源与文件列表见
+[`firmware/README.md`](firmware/README.md)。
 
 > 因此发布包可独立构建：`cargo publish` 校验 tarball 时会执行本 crate 的
-> `build.rs` 自行准备固件，不依赖仓库根目录 `cargo xtask` 的预下载副作用。
+> `build.rs` 自行准备固件，不依赖仓库根目录的全局预下载副作用。
 
 ## 依赖
 

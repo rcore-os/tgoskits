@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
@@ -29,7 +29,7 @@ struct VmKernelRootfsProbe {
 }
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
-    let mut request = axvisor.prepare_request(
+    let request = axvisor.prepare_request(
         (&args.build).into(),
         args.qemu_config,
         None,
@@ -52,11 +52,6 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         explicit_rootfs.as_deref(),
     )
     .await?;
-    prepare_loongarch_linux_vmconfigs(
-        &mut request,
-        axvisor.app.workspace_root(),
-        explicit_rootfs.as_deref(),
-    )?;
     let cargo = build::load_cargo_config(&request)?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
@@ -64,84 +59,6 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         .app
         .qemu(cargo, request.build_info_path, Some(qemu))
         .await
-}
-
-pub(crate) fn prepare_loongarch_linux_vmconfigs(
-    request: &mut ResolvedAxvisorRequest,
-    workspace_root: &Path,
-    _explicit_rootfs: Option<&Path>,
-) -> anyhow::Result<()> {
-    if request.arch != "loongarch64" || request.vmconfigs.is_empty() {
-        return Ok(());
-    }
-
-    let firmware_path = loongarch_uefi_firmware_path(workspace_root).ok_or_else(|| {
-        anyhow!("LoongArch UEFI firmware image was not found; expected ostool OVMF code.fd")
-    })?;
-    let out_dir = workspace_root.join("tmp/axbuild/axvisor/loongarch64");
-    let mut prepared_vmconfigs = Vec::with_capacity(request.vmconfigs.len());
-
-    for vmconfig in &request.vmconfigs {
-        let content = fs::read_to_string(vmconfig)
-            .map_err(|e| anyhow!("failed to read vm config {}: {e}", vmconfig.display()))?;
-        let value: toml::Value = toml::from_str(&content)
-            .map_err(|e| anyhow!("failed to parse vm config {}: {e}", vmconfig.display()))?;
-        let guest_kernel = value
-            .get("kernel")
-            .and_then(|kernel| kernel.get("kernel_path"))
-            .and_then(|path| path.as_str());
-
-        if guest_kernel != Some("/guest/linux/linux-qemu") {
-            prepared_vmconfigs.push(vmconfig.clone());
-            continue;
-        }
-
-        let prepared_vmconfig = out_dir.join(
-            vmconfig
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("linux-rootfs-smp1.toml")),
-        );
-        fs::create_dir_all(&out_dir)
-            .with_context(|| format!("failed to create {}", out_dir.display()))?;
-        let patched = replace_toml_string_value(
-            &content,
-            "uefi_firmware_path",
-            &firmware_path.display().to_string(),
-        );
-        fs::write(&prepared_vmconfig, patched)
-            .with_context(|| format!("failed to write {}", prepared_vmconfig.display()))?;
-        prepared_vmconfigs.push(prepared_vmconfig);
-    }
-
-    request.vmconfigs = prepared_vmconfigs;
-    Ok(())
-}
-
-fn loongarch_uefi_firmware_path(workspace_root: &Path) -> Option<PathBuf> {
-    [
-        PathBuf::from("/tmp/ostool/ovmf/loongarch64/code.fd"),
-        workspace_root.join("tmp/ostool/ovmf/loongarch64/code.fd"),
-        workspace_root.join("tmp/loongarch-uefi-stage1/assets/qemu-binary/QEMU_EFI.fd"),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
-}
-
-fn replace_toml_string_value(content: &str, key: &str, value: &str) -> String {
-    let prefix = format!("{key} = ");
-    content
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with(&prefix) {
-                let indent_len = line.len() - line.trim_start().len();
-                format!("{}{}\"{}\"", &line[..indent_len], prefix, value)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
 }
 
 pub(super) async fn load_patched_qemu_config(

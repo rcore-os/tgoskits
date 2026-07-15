@@ -2,7 +2,7 @@
 //!
 //! 所有固件文件通过 include_bytes!() 在编译时嵌入内核镜像。
 //! 固件 blob 由 `build.rs` 准备到 `OUT_DIR/firmware/`（来源优先级：
-//! `$AIC8800_FIRMWARE_DIR` → 仓库内 `firmware/`（xtask 预下载）→ 上游下载），
+//! `$AIC8800_FIRMWARE_DIR` → 仓库内 `firmware/`（可选本地缓存）→ 上游下载），
 //! 每个文件均按 SHA-256 校验，因此 blob 不必随源码/发布包分发。
 //!
 //! 运行时通过 get_firmware_set() 根据芯片型号和版本选择正确的固件组合。
