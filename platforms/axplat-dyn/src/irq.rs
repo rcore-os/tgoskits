@@ -1,5 +1,8 @@
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "hv"),
+    all(target_arch = "riscv64", feature = "hv"),
+))]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 use ax_plat::irq::IrqOutcome;
@@ -10,30 +13,20 @@ use ax_plat::irq::{
 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
 mod loongarch64_hv;
 
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "hv"),
+    all(target_arch = "riscv64", feature = "hv"),
+))]
 static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_TARGET_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_AFFINITY_CONFIGURED: [AtomicBool; RISCV_PLIC_SOURCE_COUNT] =
-    [const { AtomicBool::new(false) }; RISCV_PLIC_SOURCE_COUNT];
-#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
+#[cfg(test)]
 const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
 
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+#[cfg(any(
+    all(target_arch = "aarch64", feature = "hv"),
+    all(target_arch = "riscv64", feature = "hv"),
+))]
 pub fn register_virtual_irq_injector(injector: fn(usize) -> bool) {
     VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-pub fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
-    VIRTUAL_IRQ_TARGET_CPU.store(cpu_id, Ordering::Release);
-    for configured in &VIRTUAL_IRQ_AFFINITY_CONFIGURED {
-        configured.store(false, Ordering::Release);
-    }
-    for &irq in irq_sources {
-        route_virtual_irq_to_target_cpu(irq as usize);
-    }
 }
 
 struct IrqIfImpl;
@@ -68,8 +61,21 @@ impl IrqIf for IrqIfImpl {
     /// Handles the IRQ.
     fn handle(vector: TrapVector) -> Option<IrqId> {
         let irq = {
+            #[cfg(all(target_arch = "aarch64", feature = "hv"))]
+            let mut active = somehal::irq::begin_irq(vector.0)?;
+            #[cfg(not(all(target_arch = "aarch64", feature = "hv")))]
             let active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
+
+            #[cfg(all(target_arch = "aarch64", feature = "hv"))]
+            {
+                let forwardable = is_aarch64_guest_forwardable(irq);
+                let injected = forwardable && inject_aarch64_virtual_irq(irq.hwirq.0 as usize);
+                if should_mark_aarch64_forwarded_hw(forwardable, injected) {
+                    active.mark_forwarded_hw();
+                    return Some(irq);
+                }
+            }
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
             if should_forward_riscv_guest_irq(irq, IrqOutcome::default())
@@ -120,6 +126,24 @@ impl IrqIf for IrqIfImpl {
         somehal::irq::resolve_irq_source(source)
     }
 
+    fn resolve_external(hwirq: ax_plat::irq::HwIrq) -> Result<IrqId, IrqError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            somehal::irq::aarch64_gic_irq_id_checked(hwirq)
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            let domain = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic)
+                .ok_or(IrqError::Unsupported)?;
+            Ok(IrqId::new(domain, hwirq))
+        }
+        #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+        {
+            let _ = hwirq;
+            Err(IrqError::Unsupported)
+        }
+    }
+
     fn resolve_percpu(hwirq: ax_plat::irq::HwIrq) -> Result<IrqId, IrqError> {
         #[cfg(target_arch = "aarch64")]
         {
@@ -150,6 +174,17 @@ fn should_forward_riscv_guest_irq(irq: IrqId, _host_outcome: IrqOutcome) -> bool
     is_guest_forwardable(irq)
 }
 
+#[cfg(any(all(target_arch = "aarch64", feature = "hv"), test))]
+fn is_aarch64_guest_forwardable(irq: IrqId) -> bool {
+    (irq.hwirq.0 == 27 || (32..1020).contains(&irq.hwirq.0))
+        && somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::AArch64Gic)
+}
+
+#[cfg(any(all(target_arch = "aarch64", feature = "hv"), test))]
+fn should_mark_aarch64_forwarded_hw(forwardable: bool, injected: bool) -> bool {
+    forwardable && injected
+}
+
 #[cfg(test)]
 fn riscv_plic_source_index(irq: IrqId) -> Option<usize> {
     if !is_guest_forwardable(irq) {
@@ -169,8 +204,6 @@ fn is_loongarch_guest_forwardable(irq: IrqId) -> bool {
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 fn inject_virtual_irq(irq: usize) -> bool {
-    route_virtual_irq_to_target_cpu(irq);
-
     let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
     if injector.is_null() {
         trace!("skip RISC-V virtual IRQ {irq}: injector is not registered");
@@ -179,32 +212,14 @@ fn inject_virtual_irq(irq: usize) -> bool {
     unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
 }
 
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn route_virtual_irq_to_target_cpu(irq: usize) {
-    if irq == 0 || irq >= RISCV_PLIC_SOURCE_COUNT {
-        return;
+#[cfg(all(target_arch = "aarch64", feature = "hv"))]
+fn inject_aarch64_virtual_irq(irq: usize) -> bool {
+    let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
+    if injector.is_null() {
+        trace!("skip AArch64 virtual IRQ {irq}: injector is not registered");
+        return false;
     }
-    let target_cpu = VIRTUAL_IRQ_TARGET_CPU.load(Ordering::Acquire);
-    if target_cpu == usize::MAX {
-        return;
-    }
-    let configured = &VIRTUAL_IRQ_AFFINITY_CONFIGURED[irq];
-    if configured.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    let Some(domain) = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic)
-    else {
-        configured.store(false, Ordering::Release);
-        trace!("skip RISC-V virtual IRQ {irq} affinity: PLIC domain is not registered");
-        return;
-    };
-    let irq_id = IrqId::new(domain, ax_plat::irq::HwIrq(irq as u32));
-    let affinity = somehal::irq::IrqAffinity::Fixed { cpu_id: target_cpu };
-    if let Err(err) = somehal::irq::irq_set_affinity(irq_id, affinity) {
-        configured.store(false, Ordering::Release);
-        trace!("skip RISC-V virtual IRQ {irq} affinity to CPU {target_cpu}: {err:?}");
-    }
+    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
 }
 
 #[cfg(test)]
@@ -229,6 +244,23 @@ mod tests {
         IrqId::new(domain, HwIrq(hwirq))
     }
 
+    fn aarch64_gic_irq(hwirq: u32) -> IrqId {
+        static GIC_DOMAIN: Once<somehal::irq::IrqDomainId> = Once::new();
+
+        let domain = *GIC_DOMAIN.call_once(|| {
+            somehal::irq::domain_by_kind(somehal::irq::IrqDomainKind::AArch64Gic)
+                .map(|domain| domain.id)
+                .unwrap_or_else(|| {
+                    somehal::irq::alloc_irq_domain(
+                        rdrive::DeviceId::new(),
+                        somehal::irq::IrqDomainKind::AArch64Gic,
+                    )
+                    .unwrap()
+                })
+        });
+        IrqId::new(domain, HwIrq(hwirq))
+    }
+
     #[test]
     fn cpu_local_irq_is_never_forwarded_to_guest() {
         let irq = IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(5));
@@ -241,6 +273,23 @@ mod tests {
         let irq = plic_irq(10);
 
         assert!(super::is_guest_forwardable(irq));
+    }
+
+    #[test]
+    fn aarch64_active_irq_is_marked_only_after_successful_injection() {
+        assert!(super::should_mark_aarch64_forwarded_hw(true, true));
+        assert!(!super::should_mark_aarch64_forwarded_hw(true, false));
+        assert!(!super::should_mark_aarch64_forwarded_hw(false, true));
+    }
+
+    #[test]
+    fn aarch64_gic_virtual_timer_and_spis_are_forwardable_to_hybrid_guest() {
+        assert!(super::is_aarch64_guest_forwardable(aarch64_gic_irq(27)));
+        assert!(super::is_aarch64_guest_forwardable(aarch64_gic_irq(32)));
+        assert!(super::is_aarch64_guest_forwardable(aarch64_gic_irq(1019)));
+        assert!(!super::is_aarch64_guest_forwardable(aarch64_gic_irq(26)));
+        assert!(!super::is_aarch64_guest_forwardable(aarch64_gic_irq(1020)));
+        assert!(!super::is_aarch64_guest_forwardable(plic_irq(27)));
     }
 
     #[test]

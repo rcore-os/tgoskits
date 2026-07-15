@@ -60,8 +60,12 @@ impl ArchOps for X86_64Arch {
         x86_vcpu::initialize_hardware_support().is_ok()
     }
 
-    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+    fn before_first_run(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> crate::AxVmResult {
         irq::enable_ioapic_irq_forwarding(vm, vcpu);
+        Ok(())
     }
 
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
@@ -79,8 +83,8 @@ impl ArchOps for X86_64Arch {
         irq::inject_pending_serial_irq(vm, vcpu);
     }
 
-    fn on_last_vcpu_exit(vm_id: usize) {
-        irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef, _runtime: &crate::vm::VmRuntimeHandle) {
+        irq::disable_ioapic_irq_forwarding_for_vm(vm.id());
     }
 
     fn handle_vcpu_exit_bound(

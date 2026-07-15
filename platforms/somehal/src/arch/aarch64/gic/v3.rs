@@ -112,21 +112,31 @@ pub fn is_support_icc() -> bool {
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
     ack: IntId,
+    forwarded_hw: bool,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    /// Defers physical deactivation to the guest EOI through a HW-mapped LR.
+    pub fn mark_forwarded_hw(&mut self) {
+        self.forwarded_hw = true;
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
         eoi1(self.ack);
-        if eoi_mode() {
+        if should_deactivate_physical_irq(eoi_mode(), self.forwarded_hw) {
             dir(self.ack);
         }
     }
+}
+
+fn should_deactivate_physical_irq(split_eoi: bool, forwarded_hw: bool) -> bool {
+    split_eoi && !forwarded_hw
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {
@@ -138,7 +148,29 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     Some(ActiveIrq {
         irq: (ack.to_u32() as usize).into(),
         ack,
+        forwarded_hw: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_eoi_deactivates_regular_physical_irq() {
+        assert!(should_deactivate_physical_irq(true, false));
+    }
+
+    #[test]
+    fn split_eoi_keeps_hw_forwarded_irq_active_for_guest_eoi() {
+        assert!(!should_deactivate_physical_irq(true, true));
+    }
+
+    #[test]
+    fn combined_eoi_never_uses_explicit_dir() {
+        assert!(!should_deactivate_physical_irq(false, false));
+        assert!(!should_deactivate_physical_irq(false, true));
+    }
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {

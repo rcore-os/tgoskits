@@ -24,6 +24,16 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_gic_spi,
+        prepare_host_irq_routes: core::forwarded_irq::prepare_aarch64_hybrid_routes,
+        enrich_guest_interrupts,
+    }
+}
+
+fn enrich_guest_interrupts(config: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
+    if config.interrupt_mode() == axvm_types::VMInterruptMode::Hybrid {
+        Ok(())
+    } else {
+        core::parse_vm_interrupt(config, dtb)
     }
 }
 

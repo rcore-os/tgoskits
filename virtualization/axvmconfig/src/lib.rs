@@ -529,6 +529,8 @@ enum VMInterruptModeSerde {
     NoIrq,
     #[serde(rename = "emu", alias = "emulated")]
     Emulated,
+    #[serde(rename = "hybrid", alias = "mixed")]
+    Hybrid,
     #[serde(rename = "passthrough", alias = "pt")]
     Passthrough,
 }
@@ -538,6 +540,7 @@ impl From<VMInterruptModeSerde> for VMInterruptMode {
         match value {
             VMInterruptModeSerde::NoIrq => Self::NoIrq,
             VMInterruptModeSerde::Emulated => Self::Emulated,
+            VMInterruptModeSerde::Hybrid => Self::Hybrid,
             VMInterruptModeSerde::Passthrough => Self::Passthrough,
         }
     }
@@ -548,6 +551,7 @@ impl From<&VMInterruptMode> for VMInterruptModeSerde {
         match value {
             VMInterruptMode::NoIrq => Self::NoIrq,
             VMInterruptMode::Emulated => Self::Emulated,
+            VMInterruptMode::Hybrid => Self::Hybrid,
             VMInterruptMode::Passthrough => Self::Passthrough,
         }
     }

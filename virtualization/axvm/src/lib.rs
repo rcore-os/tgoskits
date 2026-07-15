@@ -73,6 +73,8 @@ pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
 };
 
+pub use self::error::ForwardedIrqConfigError;
+
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
 

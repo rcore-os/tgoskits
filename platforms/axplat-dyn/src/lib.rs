@@ -32,5 +32,9 @@ pub fn enable_timer_irq() {
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }
-#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
-pub use irq::{register_virtual_irq_injector, set_virtual_irq_targets};
+#[cfg(all(
+    feature = "irq",
+    any(target_arch = "aarch64", target_arch = "riscv64"),
+    feature = "hv"
+))]
+pub use irq::register_virtual_irq_injector;

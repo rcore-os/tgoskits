@@ -12,6 +12,7 @@ use crate::{
 
 pub(crate) mod create;
 mod device;
+pub(crate) mod forwarded_irq;
 mod parser;
 mod policy;
 mod print;
@@ -29,12 +30,21 @@ pub fn prepare_dtb_guest(
     vm_create_config: &mut AxVMCrateConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
+    prepare_dtb_guest_with_host_fdt(vm_config, vm_create_config, provider, try_get_host_fdt())
+}
+
+pub(crate) fn prepare_dtb_guest_with_host_fdt(
+    vm_config: &mut AxVMConfig,
+    vm_create_config: &mut AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+    host_fdt_bytes: Option<&[u8]>,
+) -> AxVmResult<Option<GuestDtbImage>> {
+    (selected_guest_fdt_policy().prepare_host_irq_routes)(vm_config, host_fdt_bytes)?;
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         skip_guest_dtb(vm_config, vm_create_config);
         return Ok(None);
     }
 
-    let host_fdt_bytes = try_get_host_fdt();
     let guest_dtb = build_guest_dtb(vm_config, vm_create_config, provider, host_fdt_bytes)?;
     enrich_guest_config(vm_config, vm_create_config, guest_dtb.as_ref())?;
     Ok(guest_dtb)
@@ -57,7 +67,7 @@ fn build_guest_dtb(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut AxVMCrateConfig,
     provider: &dyn BootImageProvider,
-    host_fdt_bytes: Option<&'static [u8]>,
+    host_fdt_bytes: Option<&[u8]>,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     let provided_dtb = get_developer_provided_dtb(vm_config, vm_create_config, provider)?;
 
@@ -99,7 +109,7 @@ fn build_guest_dtb(
     }
 }
 
-fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxVmResult<fdt_edit::Fdt> {
+fn parse_host_fdt(host_fdt_bytes: &[u8]) -> AxVmResult<fdt_edit::Fdt> {
     fdt_edit::Fdt::from_bytes(host_fdt_bytes)
         .map_err(|err| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {err:#?}")))
 }
@@ -116,7 +126,7 @@ fn enrich_guest_config(
 
     parse_reserved_memory_regions(vm_create_config, dtb)?;
     parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
-    parse_vm_interrupt(vm_config, dtb)
+    (selected_guest_fdt_policy().enrich_guest_interrupts)(vm_config, dtb)
 }
 
 fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {

@@ -33,7 +33,19 @@ pub(crate) trait ArchOps {
         vcpu.set_gpr(0, arg);
     }
 
-    fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+    fn before_first_run(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
+    fn setup_forwarding_once(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
 
     fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
@@ -81,7 +93,7 @@ pub(crate) trait ArchOps {
         crate::check_timer_events();
     }
 
-    fn on_last_vcpu_exit(_vm_id: usize) {}
+    fn on_last_vcpu_exit(_vm: &crate::AxVMRef, _runtime: &crate::vm::VmRuntimeHandle) {}
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
 

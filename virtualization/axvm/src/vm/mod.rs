@@ -142,6 +142,12 @@ pub(crate) struct VmRuntimeHandle {
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     running_halting_vcpu_count: AtomicUsize,
+    #[allow(
+        dead_code,
+        reason = "the forwarding generation is consumed only by the AArch64 IRQ backend"
+    )]
+    forwarding_generation_id: usize,
+    forwarding_setup: crate::irq::forwarding::ForwardingSetup,
 }
 
 impl VmRuntimeHandle {
@@ -151,6 +157,8 @@ impl VmRuntimeHandle {
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
             running_halting_vcpu_count: AtomicUsize::new(0),
+            forwarding_generation_id: crate::irq::forwarding::next_generation_id(),
+            forwarding_setup: crate::irq::forwarding::ForwardingSetup::new(),
         }
     }
 
@@ -225,14 +233,29 @@ impl VmRuntimeHandle {
         self.wait_queue.notify_all(false);
     }
 
-    pub(crate) fn mark_vcpu_running(&self) {
+    pub(crate) fn register_vcpu_participant(&self) {
         self.running_halting_vcpu_count
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn run_forwarding_setup_once(
+        &self,
+        setup: impl FnOnce() -> AxVmResult,
+    ) -> AxVmResult {
+        self.forwarding_setup.run_once(setup)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the forwarding generation is consumed only by the AArch64 IRQ backend"
+    )]
+    pub(crate) const fn forwarding_generation_id(&self) -> usize {
+        self.forwarding_generation_id
+    }
+
     pub(crate) fn mark_vcpu_exiting(&self) -> bool {
         self.running_halting_vcpu_count
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
             })
             == Ok(1)
@@ -595,6 +618,7 @@ impl AxVM {
             Ok(runtime.clone())
         })?;
 
+        runtime.register_vcpu_participant();
         let task = crate::host::task::spawn_task(primary_task);
         runtime.add_vcpu_task(0, task);
         Ok(())

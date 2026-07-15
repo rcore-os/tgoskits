@@ -16,6 +16,7 @@
 
 use alloc::{string::String, vec::Vec};
 
+use axvm_types::Aarch64GicSpi;
 pub use axvm_types::{
     AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
     PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
@@ -68,6 +69,42 @@ pub struct VMImageConfig {
     pub ramdisk: Option<RamdiskInfo>,
 }
 
+/// An identity-mapped AArch64 physical SPI forwarded in Hybrid mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Aarch64ForwardedIrq {
+    guest_intid: u32,
+    host_spi: Aarch64GicSpi,
+}
+
+#[allow(
+    dead_code,
+    reason = "typed Hybrid route accessors have a production consumer only on AArch64"
+)]
+impl Aarch64ForwardedIrq {
+    /// Creates an identity route from a host SPI to the same guest INTID.
+    pub(crate) const fn identity(host_spi: Aarch64GicSpi) -> Self {
+        Self {
+            guest_intid: host_spi.intid(),
+            host_spi,
+        }
+    }
+
+    /// Returns the full guest-visible GIC INTID.
+    pub(crate) const fn guest_intid(self) -> u32 {
+        self.guest_intid
+    }
+
+    /// Returns the host-FDT zero-based SPI offset.
+    pub(crate) const fn host_spi_offset(self) -> u32 {
+        self.host_spi.intid() - 32
+    }
+
+    /// Returns the full host GIC INTID.
+    pub(crate) const fn host_intid(self) -> u32 {
+        self.host_spi.intid()
+    }
+}
+
 /// Runtime configuration for one VM.
 #[derive(Debug, Default)]
 pub struct AxVMConfig {
@@ -91,6 +128,12 @@ pub struct AxVMConfig {
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<u32>,
+    /// AArch64 physical SPIs forwarded only by the Hybrid backend.
+    #[allow(
+        dead_code,
+        reason = "the architecture-neutral config stores routes consumed only on AArch64"
+    )]
+    aarch64_hybrid_forwarded_irqs: Vec<Aarch64ForwardedIrq>,
     interrupt_mode: VMInterruptMode,
 }
 
@@ -134,6 +177,7 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
+            aarch64_hybrid_forwarded_irqs: Vec::new(),
             interrupt_mode: params.interrupt_mode,
         }
     }
@@ -292,6 +336,41 @@ impl AxVMConfig {
         &self.passthrough_irq_list
     }
 
+    #[allow(
+        dead_code,
+        reason = "Hybrid route mutation and access have production consumers only on AArch64"
+    )]
+    /// Adds an AArch64 physical IRQ route used only by Hybrid mode.
+    pub(crate) fn add_aarch64_hybrid_forwarded_irq(&mut self, route: Aarch64ForwardedIrq) {
+        if !self.aarch64_hybrid_forwarded_irqs.contains(&route) {
+            self.aarch64_hybrid_forwarded_irqs.push(route);
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Hybrid route mutation and access have production consumers only on AArch64"
+    )]
+    /// Replaces the AArch64 Hybrid route set after successful host discovery.
+    pub(crate) fn replace_aarch64_hybrid_forwarded_irqs(
+        &mut self,
+        routes: impl IntoIterator<Item = Aarch64ForwardedIrq>,
+    ) {
+        self.aarch64_hybrid_forwarded_irqs.clear();
+        for route in routes {
+            self.add_aarch64_hybrid_forwarded_irq(route);
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Hybrid route mutation and access have production consumers only on AArch64"
+    )]
+    /// Returns AArch64 physical IRQ routes used only by Hybrid mode.
+    pub(crate) fn aarch64_hybrid_forwarded_irqs(&self) -> &[Aarch64ForwardedIrq] {
+        &self.aarch64_hybrid_forwarded_irqs
+    }
+
     /// Returns the interrupt mode of the VM.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.interrupt_mode
@@ -398,6 +477,8 @@ impl PhysCpuList {
 mod tests {
     use alloc::vec;
 
+    use axvm_types::Aarch64GicSpi;
+
     use super::*;
 
     fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
@@ -425,5 +506,27 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
+
+    #[test]
+    fn aarch64_identity_route_preserves_offset_and_full_intid() {
+        let route = Aarch64ForwardedIrq::identity(Aarch64GicSpi::new(1).unwrap());
+
+        assert_eq!(route.guest_intid(), 33);
+        assert_eq!(route.host_spi_offset(), 1);
+        assert_eq!(route.host_intid(), 33);
+    }
+
+    #[test]
+    fn aarch64_forwarded_routes_are_independent_from_legacy_irqs() {
+        let route = Aarch64ForwardedIrq::identity(Aarch64GicSpi::new(2).unwrap());
+        let mut config = AxVMConfig::default_for_test(1, "hybrid");
+
+        config.add_aarch64_hybrid_forwarded_irq(route);
+        config.add_aarch64_hybrid_forwarded_irq(route);
+        config.add_pass_through_irq(9);
+
+        assert_eq!(config.aarch64_hybrid_forwarded_irqs(), &[route]);
+        assert_eq!(config.pass_through_irqs(), &[9]);
     }
 }

@@ -660,8 +660,34 @@ pub enum VMInterruptMode {
     NoIrq,
     /// The VM will use the emulated interrupt controller to handle interrupts.
     Emulated,
+    /// Physical device interrupts are forwarded to the guest, while emulated
+    /// devices and virtual timers use software interrupt injection.
+    Hybrid,
     /// The VM will use the passthrough interrupt controller (including GPPT) to handle interrupts.
     Passthrough,
+}
+
+/// A GIC shared peripheral interrupt represented by its zero-based SPI offset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Aarch64GicSpi(u32);
+
+impl Aarch64GicSpi {
+    const INTID_BASE: u32 = 32;
+    const SPI_COUNT: u32 = 988;
+
+    /// Creates a validated GIC SPI from its zero-based offset.
+    pub const fn new(offset: u32) -> Option<Self> {
+        if offset < Self::SPI_COUNT {
+            Some(Self(offset))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the architectural GIC interrupt ID.
+    pub const fn intid(self) -> u32 {
+        self.0 + Self::INTID_BASE
+    }
 }
 
 /// The type of emulated device.
@@ -738,6 +764,16 @@ pub enum EmulatedDeviceType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aarch64_gic_spi_validates_offset_and_intid() {
+        let first = Aarch64GicSpi::new(0).unwrap();
+        let last = Aarch64GicSpi::new(987).unwrap();
+
+        assert_eq!(first.intid(), 32);
+        assert_eq!(last.intid(), 1019);
+        assert!(Aarch64GicSpi::new(988).is_none());
+    }
 
     struct MockPerCpu {
         enabled: bool,

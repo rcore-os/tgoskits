@@ -1,6 +1,6 @@
 //! AxVM-owned error contract.
 
-use alloc::{format, string::String};
+use alloc::{format, string::String, vec::Vec};
 use core::fmt::Display;
 
 use axaddrspace::AddrSpaceError;
@@ -14,9 +14,76 @@ use crate::{VMId, VmStatus};
 /// Result type returned by AxVM operations.
 pub type AxVmResult<T = ()> = Result<T, AxVmError>;
 
+/// A malformed or unsupported host-FDT interrupt route.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ForwardedIrqConfigError {
+    /// A passthrough selector is not a canonical host-FDT path.
+    #[error("invalid host-FDT passthrough selection {selection}")]
+    InvalidSelection { selection: String },
+    /// No interrupt controller can be resolved for a node.
+    #[error("host-FDT node {node} has no resolvable interrupt parent for {raw:?}")]
+    MissingInterruptParent { node: String, raw: Vec<u32> },
+    /// An interrupt-parent phandle does not identify a controller.
+    #[error(
+        "host-FDT node {node} references unknown interrupt controller {phandle:#x} for {raw:?}"
+    )]
+    UnknownController {
+        node: String,
+        phandle: u32,
+        raw: Vec<u32>,
+    },
+    /// The resolved controller does not define its specifier width.
+    #[error(
+        "interrupt controller {controller} ({phandle:?}) has no #interrupt-cells for node {node}: \
+         {raw:?}"
+    )]
+    MissingInterruptCells {
+        node: String,
+        controller: String,
+        phandle: Option<u32>,
+        raw: Vec<u32>,
+    },
+    /// An interrupt tuple ends before the controller-sized specifier is complete.
+    #[error(
+        "truncated interrupt specifier for node {node}, controller {controller} ({phandle:?}): \
+         {raw:?}"
+    )]
+    TruncatedSpecifier {
+        node: String,
+        controller: String,
+        phandle: Option<u32>,
+        raw: Vec<u32>,
+    },
+    /// The resolved controller is not a supported GIC.
+    #[error(
+        "unsupported interrupt controller {controller} ({phandle:?}, {compatible}) for node \
+         {node}: {raw:?}"
+    )]
+    UnsupportedController {
+        node: String,
+        controller: String,
+        phandle: Option<u32>,
+        compatible: String,
+        raw: Vec<u32>,
+    },
+    /// A selected device describes a non-SPI or out-of-range GIC source.
+    #[error(
+        "unsupported GIC source for node {node}, controller {controller} ({phandle:?}): {raw:?}"
+    )]
+    UnsupportedGicSource {
+        node: String,
+        controller: String,
+        phandle: Option<u32>,
+        raw: Vec<u32>,
+    },
+}
+
 /// Errors reported by AxVM to a hypervisor application.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AxVmError {
+    /// A host-FDT physical interrupt route is malformed or unsupported.
+    #[error("invalid forwarded IRQ configuration: {source}")]
+    ForwardedIrqConfig { source: ForwardedIrqConfigError },
     /// The VM configuration is internally inconsistent or malformed.
     #[error("invalid VM configuration: {detail}")]
     InvalidConfig { detail: String },

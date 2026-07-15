@@ -148,6 +148,14 @@ impl ActiveIrq {
             Self::V3(active) => active.id(),
         }
     }
+
+    /// Leaves a GICv3 physical IRQ active until the guest completes the
+    /// hardware-mapped virtual interrupt.
+    pub fn mark_forwarded_hw(&mut self) {
+        if let Self::V3(active) = self {
+            active.mark_forwarded_hw();
+        }
+    }
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {

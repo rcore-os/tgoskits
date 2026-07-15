@@ -173,12 +173,20 @@ pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     }
 }
 
-/// Marks the VCpu of the specified VM as running.
-fn mark_vcpu_running(vm: &VMRef) {
-    let _ = vm.with_runtime(|runtime| {
-        runtime.mark_vcpu_running();
-        Ok(())
-    });
+fn finish_vcpu_exit_if_last(vm: &VMRef, runtime: &VmRuntimeHandle, vcpu_id: usize) {
+    let vm_id = vm.id();
+    if !runtime.mark_vcpu_exiting() {
+        return;
+    }
+
+    info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
+    if let Err(err) = vm.finish_stop() {
+        warn!("VM[{vm_id}] finish stop failed: {err:?}");
+    }
+    info!("VM[{vm_id}] state changed to Stopped");
+    CurrentArch::on_last_vcpu_exit(vm, runtime);
+    sub_running_vm_count(1);
+    crate::host::task::wait_queue_wake(&super::VMM, 1);
 }
 
 /// Boot target VCpu on the specified VM.
@@ -215,11 +223,10 @@ pub(crate) fn vcpu_on(
     vcpu.set_entry(entry_point)?;
     CurrentArch::set_vcpu_on_args(&vcpu, vcpu_id, arg);
 
+    let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
+    runtime.register_vcpu_participant();
     let vcpu_task = alloc_vcpu_task(&vm, vcpu);
-    vm.with_runtime(|runtime| {
-        runtime.add_vcpu_task(vcpu_id, vcpu_task);
-        Ok(())
-    })?;
+    runtime.add_vcpu_task(vcpu_id, vcpu_task);
     Ok(())
 }
 
@@ -304,11 +311,25 @@ fn vcpu_run() {
     };
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
-    wait_for(&runtime, || vm.running());
+    wait_for(&runtime, || vm.running() || vm.stopping() || vm.stopped());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
-    CurrentArch::before_first_run(&vm, &vcpu);
-    mark_vcpu_running(&vm);
+    if vm.stopping() || vm.stopped() {
+        finish_vcpu_exit_if_last(&vm, &runtime, vcpu_id);
+        return;
+    }
+    let setup_result = runtime
+        .run_forwarding_setup_once(|| CurrentArch::setup_forwarding_once(&vm, &vcpu))
+        .and_then(|()| CurrentArch::before_first_run(&vm, &vcpu));
+    if let Err(err) = setup_result {
+        error!("VM[{vm_id}] VCpu[{vcpu_id}] first-run setup failed: {err:?}");
+        if let Err(stop_err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
+            warn!("VM[{vm_id}] shutdown failed after first-run setup error: {stop_err:?}");
+        }
+        notify_all_vcpus(vm_id);
+        finish_vcpu_exit_if_last(&vm, &runtime, vcpu_id);
+        return;
+    }
 
     loop {
         CurrentArch::before_vcpu_run(&vm, &vcpu);
@@ -356,19 +377,7 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
 
-            if runtime.mark_vcpu_exiting() {
-                info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
-
-                if let Err(err) = vm.finish_stop() {
-                    warn!("VM[{vm_id}] finish stop failed: {err:?}");
-                }
-                info!("VM[{}] state changed to Stopped", vm_id);
-
-                CurrentArch::on_last_vcpu_exit(vm_id);
-
-                sub_running_vm_count(1);
-                crate::host::task::wait_queue_wake(&super::VMM, 1);
-            }
+            finish_vcpu_exit_if_last(&vm, &runtime, vcpu_id);
 
             break;
         }

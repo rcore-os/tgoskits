@@ -196,6 +196,10 @@ impl IrqIf for DummyIrq {
         }
     }
 
+    fn resolve_external(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
     fn resolve_percpu(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
         Err(IrqError::Unsupported)
     }

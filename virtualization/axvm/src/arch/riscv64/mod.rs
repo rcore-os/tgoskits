@@ -61,9 +61,12 @@ impl ArchOps for Riscv64Arch {
         register_platform_irq_injector();
     }
 
-    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+    fn before_first_run(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> crate::AxVmResult {
         if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-            return;
+            return Ok(());
         }
         let Some(cpu_id) = vcpu.phys_cpu_set().and_then(first_cpu_in_mask) else {
             warn!(
@@ -71,10 +74,25 @@ impl ArchOps for Riscv64Arch {
                 vm.id(),
                 vcpu.id()
             );
-            return;
+            return Ok(());
         };
-        let irq_sources = vm.with_config(|config| config.pass_through_irqs().to_vec());
-        crate::irq::set_riscv_virtual_irq_targets(cpu_id, &irq_sources);
+        let affinity = ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(cpu_id));
+        for source in vm.with_config(|config| config.pass_through_irqs().to_vec()) {
+            let irq =
+                ax_hal::irq::resolve_external_irq(ax_hal::irq::HwIrq(source)).map_err(|error| {
+                    crate::AxVmError::interrupt(
+                        "resolve RISC-V passthrough IRQ",
+                        format_args!("{error:?}"),
+                    )
+                })?;
+            ax_hal::irq::set_affinity(irq, affinity).map_err(|error| {
+                crate::AxVmError::interrupt(
+                    "route RISC-V passthrough IRQ",
+                    format_args!("{error:?}"),
+                )
+            })?;
+        }
+        Ok(())
     }
 
     fn vcpu_affinities(
@@ -435,7 +453,9 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
 }
 
 fn register_platform_irq_injector() {
-    crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
+    ax_crate_interface::call_interface!(
+        crate::irq::PlatformIrqInjectorIf::register_virtual_irq_injector(inject_virtual_irq)
+    );
 }
 
 fn first_cpu_in_mask(mask: usize) -> Option<usize> {
