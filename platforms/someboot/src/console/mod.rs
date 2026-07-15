@@ -612,8 +612,8 @@ mod tests {
 
     fn reset_handover_state(console: &'static dyn Con) {
         WRITE_CALLS.store(0, Ordering::Relaxed);
-        RUNTIME_OUTPUT_STATE.store(OUTPUT_ACTIVE, Ordering::Relaxed);
-        ACTIVE_HANDOVER_TOKEN.store(0, Ordering::Relaxed);
+        RUNTIME_OUTPUT_STATE.store(OUTPUT_ACTIVE, Ordering::Release);
+        ACTIVE_HANDOVER_TOKEN.store(0, Ordering::Release);
         unsafe { set_out(console) };
     }
 
@@ -668,8 +668,8 @@ mod tests {
     fn handover_waits_for_inflight_access_and_blocks_every_output_entry() {
         let _test_guard = TEST_LOCK.lock();
         reset_handover_state(&BLOCKING_CON);
-        BLOCKING_ENTERED.store(false, Ordering::Relaxed);
-        BLOCKING_RELEASED.store(false, Ordering::Relaxed);
+        BLOCKING_ENTERED.store(false, Ordering::Release);
+        BLOCKING_RELEASED.store(false, Ordering::Release);
 
         let writer = thread::spawn(|| assert_eq!(_write_bytes(b"inflight"), 8));
         while !BLOCKING_ENTERED.load(Ordering::Acquire) {
