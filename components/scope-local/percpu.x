@@ -2,6 +2,12 @@ CPU_NUM = 4;
 
 SECTIONS
 {
+    .ax_percpu_init : ALIGN(8) {
+        __AX_PERCPU_INIT_START = .;
+        KEEP(*(.ax_percpu.init))
+        __AX_PERCPU_INIT_END = .;
+    }
+
     .ax_percpu_alignment : {
         __AX_PERCPU_ALIGNMENT_START = .;
         KEEP(*(.ax_percpu.align))
@@ -16,6 +22,7 @@ SECTIONS
         _percpu_start = .;
         _percpu_load_start = .;
         KEEP(*(.percpu.000.header))
+        *(SORT_BY_NAME(.percpu.storage*))
         *(SORT_BY_NAME(.percpu.*))
         *(.percpu)
         KEEP(*(.percpu_end))

@@ -13,7 +13,6 @@ use crate::{BoundCpuPin, CpuIndex, CpuPin, PerCpuError};
 /// representation, including its alignment requirement.
 #[doc(hidden)]
 pub unsafe trait PerCpuSymbol<T> {
-    fn symbol_vma() -> usize;
     fn offset() -> usize;
     fn current_ptr(pin: &BoundCpuPin<'_>) -> *const T;
     unsafe fn current_ptr_unchecked() -> *const T;
@@ -51,12 +50,6 @@ where
         Self {
             _marker: PhantomData,
         }
-    }
-
-    /// Returns this symbol's link-time virtual address.
-    #[inline]
-    pub fn symbol_vma(&self) -> usize {
-        S::symbol_vma()
     }
 
     /// Returns this symbol's byte offset in one CPU-local area.

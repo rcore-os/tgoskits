@@ -1,7 +1,7 @@
 use std::{
     panic,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -10,6 +10,8 @@ use std::{
 use ax_kspin::{LockRuntime, LockdepEvent, PreemptGuard, impl_trait};
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
+
+mod support;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -36,7 +38,6 @@ impl_trait! {
 #[ctor]
 fn init_percpu() {
     CPU_COUNT.store(ax_percpu::init().max(1), Ordering::Release);
-    bind_test_cpu(0);
 
     let area = ax_percpu::area(ax_percpu::CpuIndex::try_from(0).unwrap()).unwrap();
     println!("per-CPU area base = {:#x}", area.runtime_base());
@@ -46,9 +47,7 @@ fn init_percpu() {
 fn bind_test_cpu(cpu_id: usize) {
     let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id).unwrap();
     let area = ax_percpu::area(cpu_index).unwrap();
-    // SAFETY: each host test thread binds its own thread-local anchor before
-    // accessing the process-lifetime test area assigned to that logical CPU.
-    unsafe { ax_percpu::bind_current(area) }.unwrap();
+    support::bind_test_area(area);
 }
 
 fn fresh_test_cpu() -> usize {
@@ -60,9 +59,21 @@ fn fresh_test_cpu() -> usize {
     cpu_id
 }
 
+fn test_guard() -> MutexGuard<'static, ()> {
+    let guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Rust's test harness invokes each test on a worker thread. Binding in the
+    // process constructor would initialize only the harness thread, so every
+    // worker must establish its own modeled CPU register state after it wins
+    // the serialization lock.
+    bind_test_cpu(0);
+    guard
+}
+
 #[test]
 fn scope_init() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static DATA: usize = 42;
     }
@@ -71,7 +82,7 @@ fn scope_init() {
 
 #[test]
 fn scope_init_is_per_item_lazy() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     UNUSED_INIT_COUNT.store(0, Ordering::Relaxed);
     scope_local! {
         static DATA: usize = 42;
@@ -87,7 +98,7 @@ fn scope_init_is_per_item_lazy() {
 
 #[test]
 fn pinned_irq_access_does_not_initialize_an_item() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static DATA: usize = 7;
     }
@@ -109,7 +120,7 @@ fn pinned_irq_access_does_not_initialize_an_item() {
 
 #[test]
 fn scope() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static DATA: usize = 0;
     }
@@ -131,7 +142,7 @@ fn scope() {
 
 #[test]
 fn scope_drop() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -151,7 +162,7 @@ fn scope_drop() {
 
 #[test]
 fn scope_panic_unwind_drop() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -169,7 +180,7 @@ fn scope_panic_unwind_drop() {
 
 #[test]
 fn thread_share_item() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -196,7 +207,7 @@ fn thread_share_item() {
 
 #[test]
 fn thread_share_scope() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static SHARED: Arc<()> = Arc::new(());
     }
@@ -219,7 +230,7 @@ fn thread_share_scope() {
 
 #[test]
 fn thread_isolation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     scope_local! {
         static DATA: usize = 42;
         static DATA2: AtomicUsize = AtomicUsize::new(42);

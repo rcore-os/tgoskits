@@ -1,8 +1,10 @@
 use core::{
     arch::naked_asm,
     mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
 };
 
+use ax_cpu_local::CurrentThreadHeader;
 use ax_memory_addr::VirtAddr;
 
 use crate::KernelTlsBase;
@@ -266,6 +268,8 @@ pub struct TaskContext {
     pub sp: usize,
     /// loongArch need to save 10 static registers from $r22 to $r31
     pub s: [usize; 10],
+    /// Pinned task-owned header loaded into `$tp` by LinuxCurrent images.
+    current_header: usize,
     /// Kernel task TLS pointer (`$tp`).
     ///
     /// The CPU-local base (`$r21`) is deliberately absent: it belongs to the
@@ -285,8 +289,12 @@ const _: () = {
     assert!(offset_of!(TaskContext, sp) == offset_of!(TaskContext, ra) + size_of::<usize>());
     assert!(size_of::<[usize; 10]>() == 10 * size_of::<usize>());
     assert!(
-        offset_of!(TaskContext, kernel_tls)
+        offset_of!(TaskContext, current_header)
             == offset_of!(TaskContext, s) + size_of::<[usize; 10]>()
+    );
+    assert!(
+        offset_of!(TaskContext, kernel_tls)
+            == offset_of!(TaskContext, current_header) + size_of::<usize>()
     );
 };
 
@@ -296,6 +304,7 @@ impl Default for TaskContext {
             ra: 0,
             sp: 0,
             s: [0; 10],
+            current_header: 0,
             kernel_tls: KernelTlsBase::new(0),
             #[cfg(feature = "fp-simd")]
             fpu: FpuState::default(),
@@ -314,20 +323,37 @@ impl TaskContext {
     pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         self.sp = kstack_top.as_usize();
         self.ra = entry;
-        self.kernel_tls = kernel_tls;
+        self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
+    /// Sets the pinned task-owned current-thread header.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.current_header = header.as_ptr() as usize;
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+    }
+
+    /// Completes FPU work before current-thread publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.fpu.save();
-            next_ctx.fpu.restore();
+            _next_ctx.fpu.restore();
         }
-        unsafe { context_switch(self, next_ctx) }
+    }
+
+    /// Performs only the final GPR/current/TLS transfer.
+    ///
+    /// # Safety
+    ///
+    /// Scheduling must be serialized, FPU state prepared, and the next current
+    /// header published. No fallible Rust work may follow before this call.
+    #[inline(always)]
+    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
@@ -393,8 +419,9 @@ unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
     )
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         include_asm_macros!(),
         "
@@ -444,5 +471,58 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
         s8_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 8]>(),
         frame_pointer_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 9]>(),
         kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        include_asm_macros!(),
+        "
+        // Save old callee state. The CPU-owned r21/KS3 anchor and the
+        // LinuxCurrent task-owned tp value are not generic saved registers.
+        st.d    $ra, $a0, {ra_offset}
+        st.d    $sp, $a0, {sp_offset}
+        st.d    $s0, $a0, {s0_offset}
+        st.d    $s1, $a0, {s1_offset}
+        st.d    $s2, $a0, {s2_offset}
+        st.d    $s3, $a0, {s3_offset}
+        st.d    $s4, $a0, {s4_offset}
+        st.d    $s5, $a0, {s5_offset}
+        st.d    $s6, $a0, {s6_offset}
+        st.d    $s7, $a0, {s7_offset}
+        st.d    $s8, $a0, {s8_offset}
+        st.d    $fp, $a0, {frame_pointer_offset}
+
+        // Restore next state and make tp current immediately before the direct
+        // return. r21 and KS3 continue to identify the physical CPU.
+        ld.d    $fp, $a1, {frame_pointer_offset}
+        ld.d    $s8, $a1, {s8_offset}
+        ld.d    $s7, $a1, {s7_offset}
+        ld.d    $s6, $a1, {s6_offset}
+        ld.d    $s5, $a1, {s5_offset}
+        ld.d    $s4, $a1, {s4_offset}
+        ld.d    $s3, $a1, {s3_offset}
+        ld.d    $s2, $a1, {s2_offset}
+        ld.d    $s1, $a1, {s1_offset}
+        ld.d    $s0, $a1, {s0_offset}
+        ld.d    $sp, $a1, {sp_offset}
+        ld.d    $ra, $a1, {ra_offset}
+        ld.d    $tp, $a1, {current_header_offset}
+        ret",
+        ra_offset = const offset_of!(TaskContext, ra),
+        sp_offset = const offset_of!(TaskContext, sp),
+        s0_offset = const offset_of!(TaskContext, s),
+        s1_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 1]>(),
+        s2_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 2]>(),
+        s3_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 3]>(),
+        s4_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 4]>(),
+        s5_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 5]>(),
+        s6_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 6]>(),
+        s7_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 7]>(),
+        s8_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 8]>(),
+        frame_pointer_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 9]>(),
+        current_header_offset = const offset_of!(TaskContext, current_header),
     )
 }

@@ -77,6 +77,11 @@ pub trait ArchTrait {
 
     fn cpu_current_hartid() -> usize;
 
+    /// Returns the stable CPU-local host-level byte for the live final image.
+    fn cpu_local_host_level() -> u8 {
+        0
+    }
+
     fn jump_to(entry: usize, sp: usize) -> !;
 
     fn post_allocator();
@@ -207,6 +212,8 @@ fn prime_entry() -> ! {
     // mem::init_after_mmu();
     mem::memory_map_setup();
     mem::print_memory_map();
+
+    smp::initialize_percpu_layout();
 
     unsafe extern "C" {
         fn __someboot_main() -> !;

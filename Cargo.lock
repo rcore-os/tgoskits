@@ -606,6 +606,9 @@ dependencies = [
 [[package]]
 name = "ax-cpu-local"
 version = "0.1.0"
+dependencies = [
+ "trait-ffi",
+]
 
 [[package]]
 name = "ax-cpumask"
@@ -782,6 +785,7 @@ version = "0.5.28"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
+ "ax-cpu-local",
  "ax-kspin",
  "ax-memory-addr",
  "ax-page-table-multiarch",
@@ -967,6 +971,7 @@ name = "ax-percpu"
 version = "0.4.14"
 dependencies = [
  "ax-cpu-local",
+ "ax-lazyinit",
  "ax-percpu-macros",
  "spin",
  "thiserror 2.0.18",
@@ -1331,6 +1336,7 @@ version = "0.7.12"
 dependencies = [
  "anyhow",
  "ax-cpu",
+ "ax-cpu-local",
  "ax-driver",
  "ax-errno 0.6.1",
  "ax-kspin",
@@ -1432,6 +1438,7 @@ name = "axvisor"
 version = "0.5.21"
 dependencies = [
  "anyhow",
+ "ax-cpu",
  "ax-cpu-local",
  "ax-crate-interface",
  "ax-driver",
@@ -7075,6 +7082,7 @@ dependencies = [
 name = "scope-local"
 version = "0.4.2"
 dependencies = [
+ "ax-cpu-local",
  "ax-kspin",
  "ax-percpu",
  "ctor 0.6.3",
@@ -7561,6 +7569,7 @@ dependencies = [
  "heapless",
  "kasm-aarch64",
  "kernutil",
+ "libc",
  "log",
  "loongArch64",
  "num-align",
@@ -7590,6 +7599,7 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
  "arm-gic-driver",
+ "ax-cpu-local",
  "ax-kspin",
  "ax-riscv-plic",
  "irq-framework",

@@ -18,8 +18,8 @@ host-test = ["ax-cpu-local/host-test"]
 # For single CPU use, just make the per-CPU data a global variable.
 sp-naive = ["ax-percpu-macros/sp-naive"]
 
-# ARM specific, whether to run at the EL2 privilege level.
-arm-el2 = ["ax-cpu-local/arm-el2"]
+# Select the final-image unikernel TLS/current-register ownership mode.
+tls = ["ax-cpu-local/tls"]
 
 # Allow using non-zero VMA addresses for `.percpu` section. Required for testing
 # on Linux user-space. May reduce performance slightly.
@@ -39,3 +39,6 @@ ax-cpu-local.workspace = true
 ax-percpu-macros = { workspace = true }
 spin.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+ax-lazyinit.workspace = true

@@ -207,6 +207,6 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 
 - 平台 crate 实现的是链接期全局接口，不是运行时插件。`ax-crate-interface` 只为每个 `*If` trait 保留一个实现槽。
 - `axplat-dyn` 与另一个外部平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
-- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会同时开启 `somehal/hv` 和 `ax-cpu/arm-el2`。
+- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。`axplat-dyn/hv` 只传播 `somehal/hv`；CPU-local host level 在 final-high platform binding 时从 live runtime state 确定，不由通用 `hv` feature 推测。`ax-cpu/arm-el2` 只能由 AArch64 Axvisor 最终镜像按 target 显式启用，不得污染其它架构或 AArch64 EL1 镜像。
 - `AX_PLATFORM_CRATE` 只决定 `ax-hal` 生成哪个 crate 标识符；Cargo 仍需要通过 `ax-hal` 自己的 feature/依赖把该 crate 放进依赖图。
 - `unsafe extern "Rust"` 入口符号的调用方必须确保 `cpu_id`、`arg` 语义与平台宏文档一致：`arg` 通常是 bootloader 传下来的 device tree blob 地址。

@@ -31,6 +31,7 @@ impl_task_runtime! {
             }
         }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+        fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
         fn finish_initial_context_switch() {}
         fn scheduler_frame_guard_enter(
             _origin: RuntimeScheduleOrigin,
@@ -64,6 +65,9 @@ impl_task_runtime! {
                 RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
             }
         }
+        fn bind_context_thread(_binding: ContextThreadBinding) -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
         fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
             RuntimeStatus::Unsupported
         }
@@ -82,6 +86,17 @@ impl_task_runtime! {
             panic!("ax-net test scheduler invariant {code} failed with {argument:#x}")
         }
     }
+}
+
+#[test]
+fn pure_model_exports_the_context_binding_symbol() {
+    assert_eq!(
+        ax_task::runtime::task_runtime::bind_context_thread(ContextThreadBinding {
+            context: ExecutionContextHandle::NONE,
+            identity: ThreadIdentityV1::new(0, 0),
+        }),
+        RuntimeStatus::Success
+    );
 }
 
 struct NetTestLockRuntime;

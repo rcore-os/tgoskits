@@ -2,8 +2,10 @@ use core::{
     arch::naked_asm,
     fmt,
     mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
 };
 
+use ax_cpu_local::CurrentThreadHeader;
 use ax_memory_addr::VirtAddr;
 
 use crate::KernelTlsBase;
@@ -356,6 +358,8 @@ pub struct TaskContext {
     kstack_top: VirtAddr,
     /// `RSP` after all callee-saved registers are pushed.
     rsp: u64,
+    /// Pinned task-owned header published through the CPU current slot.
+    current_header: usize,
     /// Kernel task-local storage base held in the FS segment base.
     kernel_tls: KernelTlsBase,
     /// Extended states, i.e., FP/SIMD states.
@@ -370,21 +374,28 @@ const _: () = {
     assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
     assert!(offset_of!(TaskContext, kstack_top) == 0);
     assert!(offset_of!(TaskContext, rsp) == size_of::<VirtAddr>());
-    assert!(offset_of!(TaskContext, kernel_tls) == offset_of!(TaskContext, rsp) + size_of::<u64>());
+    assert!(
+        offset_of!(TaskContext, current_header) == offset_of!(TaskContext, rsp) + size_of::<u64>()
+    );
+    assert!(
+        offset_of!(TaskContext, kernel_tls)
+            == offset_of!(TaskContext, current_header) + size_of::<usize>()
+    );
 };
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
-    /// Note the context is not initialized, it will be filled by [`switch_to`]
-    /// (for initial tasks) and [`init`] (for regular tasks) methods.
+    /// Note the context is not initialized, it will be filled by
+    /// [`switch_to_raw`](Self::switch_to_raw) (for initial tasks) and [`init`]
+    /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
-    /// [`switch_to`]: TaskContext::switch_to
     pub fn new() -> Self {
         Self {
             kstack_top: va!(0),
             rsp: 0,
+            current_header: 0,
             kernel_tls: KernelTlsBase::new(0),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
@@ -410,25 +421,45 @@ impl TaskContext {
             self.rsp = frame_ptr as u64;
         }
         self.kstack_top = kstack_top;
-        self.kernel_tls = kernel_tls;
+        self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
+    /// Sets the pinned task-owned current-thread header restored by the raw
+    /// switch tail in LinuxCurrent images.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.current_header = header.as_ptr() as usize;
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+    }
+
+    /// Completes every helper operation that must precede current publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.ext_state.save();
-            next_ctx.ext_state.restore();
+            _next_ctx.ext_state.restore();
         }
-        unsafe { context_switch(self, next_ctx) }
+    }
+
+    /// Performs only the final register/stack transfer to `next_ctx`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have serialized scheduling, prepared FP/SIMD state, and
+    /// published `next_ctx.current_header`. No fallible Rust work may be placed
+    /// between this call and the naked switch tail.
+    #[inline(always)]
+    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         "
         .code64
@@ -463,5 +494,33 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
         rsp_offset = const offset_of!(TaskContext, rsp),
         kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
         fs_base_msr = const 0xc000_0100_u32,
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        "
+        .code64
+        push    rbp
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15
+        mov     [rdi + {rsp_offset}], rsp
+
+        // LinuxCurrent uses the already-published kernel GS slot. FS remains
+        // userspace-owned and must not be touched by a kernel task switch.
+        mov     rsp, [rsi + {rsp_offset}]
+        pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        pop     rbp
+        ret",
+        rsp_offset = const offset_of!(TaskContext, rsp),
     )
 }

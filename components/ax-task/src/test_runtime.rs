@@ -25,6 +25,10 @@ std::thread_local! {
     static SCHEDULER_IPI_BUSY_REMAINING: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_IPI_SEND_COUNT: Cell<usize> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
+    static CONTEXT_BIND_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static LAST_CONTEXT_BINDING: Cell<Option<ContextThreadBinding>> = const { Cell::new(None) };
+    static CONTEXT_SWITCH_TAIL_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static CONTEXT_SWITCH_TAIL_COUNT: Cell<usize> = const { Cell::new(0) };
     static HOOK_REENTRY_QUERY: Cell<HookReentryQuery> = const { Cell::new(HookReentryQuery::None) };
     static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
 }
@@ -111,6 +115,11 @@ impl TaskRuntime for UnitTestRuntime {
                 .expect("test IRQ token must be active");
             tokens.swap_remove(index);
         });
+    }
+
+    fn finish_context_switch_tail() -> RuntimeStatus {
+        CONTEXT_SWITCH_TAIL_COUNT.with(|count| count.set(count.get() + 1));
+        CONTEXT_SWITCH_TAIL_STATUS.with(Cell::get)
     }
 
     fn finish_initial_context_switch() {
@@ -215,6 +224,10 @@ impl TaskRuntime for UnitTestRuntime {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
     }
+    fn bind_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
+        LAST_CONTEXT_BINDING.with(|observed| observed.set(Some(binding)));
+        CONTEXT_BIND_STATUS.with(Cell::get)
+    }
     fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
         RuntimeStatus::Unsupported
     }
@@ -236,6 +249,24 @@ impl TaskRuntime for UnitTestRuntime {
     fn fatal_invariant(_code: u32, _argument: usize) -> ! {
         panic!("scheduler invariant reported by unit test")
     }
+}
+
+pub(crate) fn configure_context_binding(status: RuntimeStatus) {
+    CONTEXT_BIND_STATUS.with(|current| current.set(status));
+    LAST_CONTEXT_BINDING.with(|observed| observed.set(None));
+}
+
+pub(crate) fn last_context_binding() -> Option<ContextThreadBinding> {
+    LAST_CONTEXT_BINDING.with(Cell::get)
+}
+
+pub(crate) fn configure_context_switch_tail(status: RuntimeStatus) {
+    CONTEXT_SWITCH_TAIL_STATUS.with(|current| current.set(status));
+    CONTEXT_SWITCH_TAIL_COUNT.with(|count| count.set(0));
+}
+
+pub(crate) fn context_switch_tail_count() -> usize {
+    CONTEXT_SWITCH_TAIL_COUNT.with(Cell::get)
 }
 
 pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus, busy_before_status: usize) {

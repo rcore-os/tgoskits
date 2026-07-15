@@ -27,13 +27,11 @@ paging = [
     "dep:ax-page-table-multiarch",
     "ax-page-table-multiarch/ax-errno",
 ]
-tls = ["ax-cpu/tls"]
+tls = ["ax-cpu/tls", "ax-cpu-local/tls", "ax-percpu/tls", "axplat-dyn/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
 hv = [
     "paging",
-    "ax-cpu/arm-el2",
     "ax-cpu/exception-table",
-    "ax-percpu/arm-el2",
     "axplat-dyn/hv",
 ]
 host-test = []
@@ -44,6 +42,7 @@ ipi = ["irq"]
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-cpu.workspace = true
+ax-cpu-local.workspace = true
 ax-kspin.workspace = true
 ax-plat.workspace = true
 cfg-if.workspace = true

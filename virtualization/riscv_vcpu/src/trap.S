@@ -1,4 +1,16 @@
 
+/*
+ * Restore the CPU-owned host anchor and task-owned host TLS immediately after
+ * the guest register image is durable. No host per-CPU or Rust access is safe
+ * before all three values are live again.
+ */
+.macro RESTORE_HOST_ANCHORS
+    ld    t1, ({hyp_sscratch})(a0)
+    csrw  sscratch, t1
+    ld    gp, ({hyp_gp})(a0)
+    ld    tp, ({hyp_tp})(a0)
+.endm
+
 /// Enter the guest given in `VmCpuRegisters` from `a0`
 .global _run_guest
 _run_guest:
@@ -130,6 +142,8 @@ _guest_exit:
     csrr  t0, sscratch
     sd    t0, ({guest_a0})(a0)
 
+    RESTORE_HOST_ANCHORS
+
 _restore_csrs:
     /* Swap in hypervisor CSRs. */
     ld    t1, ({hyp_sstatus})(a0)
@@ -147,9 +161,6 @@ _restore_csrs:
     ld    t1, ({hyp_stvec})(a0)
     csrw  stvec, t1
 
-    ld    t1, ({hyp_sscratch})(a0)
-    csrw  sscratch, t1
-
     /* Save guest EPC. */
     csrr  t1, sepc
     sd    t1, ({guest_sepc})(a0)
@@ -157,8 +168,6 @@ _restore_csrs:
 
     /* Restore hypervisor GPRs. */
     ld   ra, ({hyp_ra})(a0)
-    ld   gp, ({hyp_gp})(a0)
-    ld   tp, ({hyp_tp})(a0)
     ld   s0, ({hyp_s0})(a0)
     ld   s1, ({hyp_s1})(a0)
     ld   a1, ({hyp_a1})(a0)

@@ -186,6 +186,10 @@ impl ArchTrait for Arch {
     type P = Generic;
     type Console = console::Console;
 
+    fn cpu_local_host_level() -> u8 {
+        u8::from(cfg!(feature = "hv"))
+    }
+
     fn _va(paddr: usize) -> *mut u8 {
         (paddr + addrspace::PAGE_OFFSET) as *mut u8
     }

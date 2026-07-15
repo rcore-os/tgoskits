@@ -1,6 +1,5 @@
 use core::arch::naked_asm;
 
-use super::addrspace::KERNEL_BASE;
 use crate::efi_stub::{
     __x86_64_efi_pe_entry,
     pe::{
@@ -13,7 +12,7 @@ use crate::efi_stub::{
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".head.text")]
+#[unsafe(link_section = ".head.text.000.header")]
 pub unsafe extern "C" fn _head() {
     naked_asm!(
         ".word {dos_signature}",
@@ -91,7 +90,7 @@ pub unsafe extern "C" fn _head() {
         ".short 0",
         ".long 0xc0000040",
         dos_signature = const IMAGE_DOS_SIGNATURE,
-        phys_link_kaddr = const KERNEL_BASE,
+        phys_link_kaddr = const crate::consts::KERNEL_LOAD_ADDRESS,
         linux_pe_magic = const LINUX_PE_MAGIC,
         image_nt_signature = const IMAGE_NT_SIGNATURE,
         file_machine = const IMAGE_FILE_MACHINE_AMD64,
@@ -102,5 +101,46 @@ pub unsafe extern "C" fn _head() {
         minor_image_version = const LINUX_EFISTUB_MINOR_VERSION,
         efi_pe_entry = sym __x86_64_efi_pe_entry,
         image_subsystem = const IMAGE_SUBSYSTEM_EFI_APPLICATION,
+    )
+}
+
+/// Position-independent raw-image entry before any Rust execution.
+///
+/// The direct-loader path cannot call even a small Rust relocation helper:
+/// its prologue or GOT loads may themselves require the still-unapplied dynamic
+/// relocations. This naked loop reaches the relocation table only through
+/// RIP-relative references, applies `R_X86_64_RELATIVE`, marks the path as
+/// non-UEFI, and only then transfers control to the ordinary Rust entry.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".head.text.100.raw_entry")]
+pub unsafe extern "C" fn x86_64_raw_entry() -> ! {
+    naked_asm!(
+        "lea r8, [rip + {head}]",
+        "mov r9, {linked_base}",
+        "sub r8, r9",
+        "lea r9, [rip + __rela_dyn_begin]",
+        "lea r10, [rip + __rela_dyn_end]",
+        "2:",
+        "cmp r9, r10",
+        "jae 4f",
+        "mov eax, dword ptr [r9 + 8]",
+        "cmp eax, {relative_relocation}",
+        "jne 3f",
+        "mov rax, qword ptr [r9]",
+        "add rax, r8",
+        "mov rcx, qword ptr [r9 + 16]",
+        "add rcx, r8",
+        "mov qword ptr [rax], rcx",
+        "3:",
+        "add r9, 24",
+        "jmp 2b",
+        "4:",
+        "xor edi, edi",
+        "jmp {rust_entry}",
+        head = sym _head,
+        linked_base = const super::addrspace::KERNEL_BASE,
+        relative_relocation = const 8_u32,
+        rust_entry = sym super::entry::kernel_entry,
     )
 }

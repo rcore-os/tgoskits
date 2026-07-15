@@ -1,12 +1,11 @@
 use core::{alloc::Layout, mem::size_of, ops::Range};
 
 use super::{
-    __cpu_id_list, PerCpuLayoutError, PerCpuMeta, alloc_percpu_region, allocated_cpu_count,
-    checked_align_up_pow2, checked_allocation_layout, cpu_count, meta_align, percpu_data_range,
-    percpu_link_range, percpu_link_size, percpu_region_align, publish_runtime_percpu,
-    set_percpu_range,
+    PerCpuLayoutError, PerCpuMeta, alloc_percpu_region, allocated_cpu_count, checked_align_up_pow2,
+    checked_allocation_layout, cpu_count, meta_align, percpu_data_range, percpu_link_size,
+    percpu_region_align, set_percpu_range,
 };
-use crate::mem::{__kimage_va, __percpu, phys_to_virt, stack_size, virt_to_phys};
+use crate::mem::stack_size;
 
 #[derive(Clone, Copy, Debug)]
 struct LayoutRequirements {
@@ -171,11 +170,10 @@ fn region_slot_start(
 }
 
 pub fn alloc_percpu() {
-    println!("Initializing per-CPU data");
+    println!("Reserving per-CPU data");
     let cpu_count = cpu_count();
     let layout = layout_info(cpu_count)
         .unwrap_or_else(|error| panic!("invalid firmware per-CPU layout: {error}"));
-    let link_range = percpu_link_range();
     let link_size = layout.data_size;
     let total_size = layout.allocation_layout.size();
 
@@ -200,10 +198,6 @@ pub fn alloc_percpu() {
     let percpu_data = alloc_percpu_region(layout.allocation_layout);
     set_percpu_range(percpu_data, total_size, cpu_count);
 
-    unsafe {
-        core::ptr::write_bytes(phys_to_virt(percpu_data), 0, total_size);
-    }
-
     println!(
         "Per-CPU data allocated at {:#x} - {:#x}",
         percpu_data_range().start,
@@ -222,63 +216,6 @@ pub fn alloc_percpu() {
         "Per-CPU prealloc layout: meta @ {meta_region_start:#x}, stack @ {stack_region_start:#x}, \
          data @ {data_region_start:#x}"
     );
-
-    let link_phys_start = virt_to_phys(link_range.start as *const u8);
-    let entry_phys = virt_to_phys(super::super::entry::secondary_entry as *const () as *const u8);
-    let entry_virt = __kimage_va(entry_phys);
-
-    for (cpu_index, hardware_id) in __cpu_id_list().enumerate() {
-        let cpu_data_start =
-            cpu_data_start(cpu_index).expect("validated per-CPU data slot must remain addressable");
-        let meta_start =
-            cpu_meta_start(cpu_index).expect("validated metadata slot must remain addressable");
-        let stack_start =
-            cpu_stack_start(cpu_index).expect("validated stack slot must remain addressable");
-        debug_assert_eq!(meta_start % meta_align(), 0);
-        debug_assert_eq!(stack_start % crate::mem::page_size(), 0);
-        debug_assert_eq!(cpu_data_start % layout.allocation_layout.align(), 0);
-        println!(
-            "Initializing per-CPU RAM for CPU{cpu_index} - hard id {hardware_id:#x}, meta @ \
-             {meta_start:#x}, stack @ {stack_start:#x}, percpu @ {cpu_data_start:#x}"
-        );
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                phys_to_virt(link_phys_start) as *const u8,
-                phys_to_virt(cpu_data_start),
-                link_size,
-            );
-        }
-
-        let meta_va = phys_to_virt(meta_start);
-        debug_assert_eq!((meta_va as usize) % meta_align(), 0);
-
-        let stack_top = stack_start
-            .checked_add(stack_size())
-            .expect("validated stack extent must not overflow");
-        let stack_top_virt = __percpu(stack_top);
-
-        let meta = PerCpuMeta {
-            stack_top,
-            cpu_id: hardware_id,
-            cpu_idx: cpu_index,
-            stack_top_virt: stack_top_virt as _,
-            entry_virt: entry_virt as _,
-            boot_table_paddr: 0,
-            primary_table_paddr: 0,
-        };
-        unsafe {
-            *meta_va.cast::<PerCpuMeta>() = meta;
-        }
-    }
-
-    publish_runtime_percpu(cpu_count);
-
-    for meta in super::cpu_meta_list() {
-        println!(
-            "CPU{} - hard id {:#x}, stack top @{:#x}, stack top virt @{:#x}, entry virt @{:#x}",
-            meta.cpu_idx, meta.cpu_id, meta.stack_top, meta.stack_top_virt, meta.entry_virt
-        );
-    }
 }
 
 pub(crate) fn cpu_meta_addr(cpu_index: usize) -> Option<usize> {
@@ -287,6 +224,10 @@ pub(crate) fn cpu_meta_addr(cpu_index: usize) -> Option<usize> {
 
 pub(crate) fn percpu_data_phys(cpu_index: usize) -> Option<usize> {
     cpu_data_start(cpu_index)
+}
+
+pub(crate) fn cpu_stack_top(cpu_index: usize) -> Option<usize> {
+    cpu_stack_start(cpu_index)?.checked_add(stack_size())
 }
 
 #[cfg(test)]

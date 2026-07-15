@@ -4,6 +4,9 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(feature = "uspace", feature = "tls"))]
+compile_error!("ax-cpu userspace requires LinuxCurrent and cannot enable kernel TLS mode");
+
 #[macro_use]
 extern crate log;
 
@@ -34,6 +37,18 @@ impl KernelTlsBase {
     /// Returns the virtual address represented by this TLS base.
     pub const fn as_usize(self) -> usize {
         self.0
+    }
+
+    pub(crate) fn for_task_context(requested: Self) -> Self {
+        if cfg!(feature = "tls") {
+            requested
+        } else {
+            assert!(
+                requested.0 == 0,
+                "LinuxCurrent task contexts must not own a kernel TLS register"
+            );
+            Self(0)
+        }
     }
 }
 

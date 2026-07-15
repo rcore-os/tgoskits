@@ -10,15 +10,32 @@
 extern crate std;
 
 mod header;
+mod identity;
+pub mod platform;
 mod register;
-mod relocation;
 mod symbol;
 
+pub mod abi;
+
+pub use abi::*;
 pub use header::*;
-pub use register::*;
-pub use relocation::*;
+pub use identity::*;
+pub use register::{
+    CpuLocalError, PreparedCurrentThreadPublish, commit_current_thread_publish,
+    prepare_current_thread_publish, prepare_current_thread_publish_for_binding, runtime_anchor,
+};
 #[doc(hidden)]
-pub use symbol::{cpu_area_header_link_address, cpu_area_template_size};
+pub use symbol::{cpu_area_template_base, cpu_area_template_size};
+
+/// Architecture register allowlist used only by the platform binder/provider.
+#[doc(hidden)]
+pub mod raw {
+    pub use crate::register::{
+        current_area_base_raw, current_area_base_unchecked, current_cpu_binding as current_binding,
+        current_thread, get_task_pointer_raw as get_task_pointer, install_binding,
+        set_task_pointer_raw as set_task_pointer,
+    };
+}
 
 /// LoongArch host scratch-register assignments shared by trap and vCPU code.
 #[cfg(target_arch = "loongarch64")]
@@ -29,10 +46,10 @@ pub mod loongarch64 {
     pub const KSAVE_T0: usize = 1;
     /// Second temporary-register scratch slot used by exception entry.
     pub const KSAVE_T1: usize = 2;
-    /// CPU-local relocation shadow restored by exception entry.
+    /// CPU-local runtime area-base shadow restored by exception entry.
     pub const KSAVE_PERCPU: usize = 3;
 
-    /// Host CPU-local relocation shadow.
+    /// Host CPU-local runtime area-base shadow.
     pub const HOST_PERCPU_KS: usize = KSAVE_PERCPU;
     /// Host stack scratch reserved for vCPU entry and exit.
     pub const HOST_VCPU_KS: usize = 4;

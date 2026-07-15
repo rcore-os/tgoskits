@@ -28,6 +28,11 @@ static mut PERCPU_END: usize = 0;
 static PERCPU_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PERCPU_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+const PERCPU_LAYOUT_GENERATION: u32 = 1;
+const PERCPU_LAYOUT_COOKIE: usize = 0x534f_4d45;
+const AX_CPU_LOCAL_ABI_VERSION: u16 = 2;
+const AX_PERCPU_INIT_OK: u32 = 0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 enum PerCpuLayoutError {
     #[error("firmware did not provide any usable CPU")]
@@ -94,6 +99,79 @@ fn percpu_template_alignment() -> Result<usize, PerCpuLayoutError> {
 
 pub fn alloc_percpu() {
     layout::alloc_percpu();
+}
+
+/// Constructs the final CPU-area values and publishes platform metadata.
+///
+/// Early boot reserves only raw physical storage. This function must run from
+/// the final high-address image, after relocation reset, and before any CPU is
+/// bound or made visible to runtime placement. The external ABI is scalar-only
+/// so someboot does not acquire a semantic dependency on `ax-percpu`.
+pub(crate) fn initialize_percpu_layout() {
+    unsafe extern "C" {
+        fn __ax_percpu_image_register_mode_v1() -> u8;
+        fn __ax_percpu_initialize_layout_v2(
+            runtime_base: usize,
+            area_stride: usize,
+            area_count: u32,
+            flags: u32,
+            abi_version: u16,
+            register_mode: u8,
+            host_level: u8,
+            generation: u32,
+            cookie: usize,
+        ) -> u32;
+    }
+
+    let cpu_count = allocated_cpu_count();
+    let area_count =
+        u32::try_from(cpu_count).expect("reserved per-CPU area count must fit the value-only ABI");
+    assert_ne!(area_count, 0, "per-CPU storage must contain CPU zero");
+    let runtime_base =
+        percpu_data_ptr(0).expect("reserved CPU zero data area must remain addressable") as usize;
+    let area_stride = layout::percpu_data_stride();
+    let last_offset = area_stride
+        .checked_mul(cpu_count - 1)
+        .expect("reserved per-CPU area offset must not overflow");
+    runtime_base
+        .checked_add(last_offset)
+        .expect("reserved per-CPU runtime layout must not wrap");
+
+    // SAFETY: prime_entry is the unique final-high caller. Early allocation
+    // reserved, zeroed, and mapped every area for the kernel lifetime; runtime
+    // metadata and online count remain unpublished until construction and
+    // cache maintenance complete below.
+    let status = unsafe {
+        let register_mode = __ax_percpu_image_register_mode_v1();
+        __ax_percpu_initialize_layout_v2(
+            runtime_base,
+            area_stride,
+            area_count,
+            0,
+            AX_CPU_LOCAL_ABI_VERSION,
+            register_mode,
+            Arch::cpu_local_host_level(),
+            PERCPU_LAYOUT_GENERATION,
+            PERCPU_LAYOUT_COOKIE,
+        )
+    };
+    assert_eq!(
+        status, AX_PERCPU_INIT_OK,
+        "final CPU-local typed initialization rejected the reserved layout"
+    );
+
+    initialize_runtime_metadata();
+    let allocation = percpu_data_range();
+    let allocation_size = allocation
+        .end
+        .checked_sub(allocation.start)
+        .expect("reserved per-CPU range must remain ordered");
+    dcache_range(
+        DCacheOp::CleanInvalidate,
+        __percpu(allocation.start),
+        allocation_size,
+    );
+    publish_runtime_percpu(cpu_count);
 }
 
 pub(crate) fn init_percpu() {
@@ -174,6 +252,9 @@ pub fn cpu_meta_list() -> impl Iterator<Item = PerCpuMeta> {
 }
 
 pub fn cpu_meta(idx: usize) -> Option<PerCpuMeta> {
+    if idx >= runtime_cpu_count() {
+        return None;
+    }
     let meta_start = cpu_meta_addr(idx)?;
     let meta_va = phys_to_virt(meta_start);
     debug_assert_eq!((meta_va as usize) % meta_align(), 0);
@@ -221,9 +302,9 @@ pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
 
 /// Contiguous runtime layout of the platform-owned CPU-local data areas.
 ///
-/// The platform publishes this value after [`alloc_percpu`] has copied the
-/// linked template into CPU-lifetime storage. The kernel may register it once
-/// with its CPU-local semantic layer before binding the bootstrap CPU.
+/// The platform publishes this value only after [`initialize_percpu_layout`]
+/// has constructed every typed value and immutable prefix in CPU-lifetime
+/// storage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct PerCpuDataLayout {
@@ -237,7 +318,7 @@ pub struct PerCpuDataLayout {
 
 /// Returns the platform-owned contiguous CPU-local data layout.
 pub fn percpu_data_layout() -> Option<PerCpuDataLayout> {
-    let area_count = u32::try_from(allocated_cpu_count()).ok()?;
+    let area_count = u32::try_from(runtime_cpu_count()).ok()?;
     if area_count == 0 {
         return None;
     }
@@ -252,11 +333,25 @@ pub fn percpu_data_layout() -> Option<PerCpuDataLayout> {
     })
 }
 
+/// Returns the final mapped stack top without reading unpublished metadata.
+///
+/// Primary MMU transitions use this pure reserved-layout calculation before
+/// [`initialize_percpu_layout`] constructs and publishes [`PerCpuMeta`].
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
+pub(crate) fn primary_stack_top_virtual(cpu_index: usize) -> Option<usize> {
+    layout::cpu_stack_top(cpu_index).map(|stack_top| __percpu(stack_top) as usize)
+}
+
 /// Returns the current hardware CPU ID from the early boot register convention.
 ///
 /// On RISC-V, `sscratch` points to the versioned boot record that owns the hart
-/// ID. The platform binder later replaces that pointer with the runtime
-/// `CpuAreaHeader` anchor before the CPU becomes online.
+/// ID. Before online publication, the platform binder selects LinuxCurrent
+/// (`tp` is the boot/current header and `sscratch=0`) or UnikernelTls
+/// (`sscratch` is the CPU-area prefix and `tp` is TLS).
 pub fn early_current_hart_id() -> usize {
     Arch::cpu_current_hartid()
 }
@@ -361,6 +456,32 @@ fn publish_runtime_percpu(cpu_count: usize) {
     PERCPU_RUNTIME_COUNT.store(cpu_count, Ordering::Release);
 }
 
+fn initialize_runtime_metadata() {
+    let entry_phys =
+        crate::mem::virt_to_phys(crate::entry::secondary_entry as *const () as *const u8);
+    let entry_virt = crate::mem::__kimage_va(entry_phys) as usize;
+    for (cpu_index, hardware_id) in __cpu_id_list().enumerate() {
+        let meta_start = cpu_meta_addr(cpu_index)
+            .expect("reserved per-CPU metadata slot must remain addressable");
+        let stack_top = layout::cpu_stack_top(cpu_index)
+            .expect("reserved per-CPU stack slot must remain addressable");
+        let meta = PerCpuMeta {
+            stack_top,
+            cpu_id: hardware_id,
+            cpu_idx: cpu_index,
+            stack_top_virt: __percpu(stack_top) as usize,
+            entry_virt,
+            boot_table_paddr: 0,
+            primary_table_paddr: 0,
+        };
+        let meta_va = phys_to_virt(meta_start);
+        debug_assert_eq!((meta_va as usize) % meta_align(), 0);
+        // SAFETY: early allocation reserved this unique raw metadata slot and
+        // no consumer can observe it before runtime count publication.
+        unsafe { meta_va.cast::<PerCpuMeta>().write(meta) };
+    }
+}
+
 pub(crate) fn allocated_cpu_count() -> usize {
     PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed)
 }
@@ -372,10 +493,16 @@ fn percpu_data_range() -> core::ops::Range<usize> {
 fn alloc_percpu_region(layout: Layout) -> usize {
     unsafe { crate::mem::ram::flush_to_memory_map(MemoryType::Reserved) };
 
-    unsafe {
+    let physical_base = unsafe {
         crate::mem::ram::alloc_and_flush_to_memory_map(layout, MemoryType::PerCpuData)
             .expect("validated per-CPU allocation must fit available boot memory")
-    }
+    };
+    // SAFETY: the early bump allocator uniquely owns this complete allocation,
+    // and the existing early physical mapping makes it writable. Clearing raw
+    // storage prevents stale firmware bytes from being mistaken for values;
+    // final-high typed initialization still constructs every Rust object.
+    unsafe { crate::mem::phys_to_virt(physical_base).write_bytes(0, layout.size()) };
+    physical_base
 }
 
 #[cfg(test)]

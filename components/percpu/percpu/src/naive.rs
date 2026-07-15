@@ -7,9 +7,9 @@ pub(crate) fn percpu_area_size() -> usize {
     0
 }
 
-/// Returns the link-time per-CPU base for API compatibility.
+/// Returns the single-CPU template origin for API compatibility.
 #[doc(hidden)]
-pub(crate) fn percpu_link_base() -> usize {
+pub(crate) fn percpu_template_base() -> usize {
     0
 }
 

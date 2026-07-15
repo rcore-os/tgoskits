@@ -1,6 +1,58 @@
 #![cfg(all(target_os = "linux", feature = "host-test", feature = "non-zero-vma"))]
 
+use core::num::NonZeroUsize;
+
+use ax_lazyinit::LazyInit;
 use ax_percpu::*;
+
+struct HostCpuLocalPlatform;
+
+#[ax_cpu_local::impl_extern_trait(name = "ax-cpu-local_0_1", abi = "rust")]
+impl ax_cpu_local::CpuLocalPlatformV1 for HostCpuLocalPlatform {
+    fn current_cpu_binding() -> ax_cpu_local::CpuBindingResultV1 {
+        // SAFETY: every host-test access is covered by a thread-local CpuPin;
+        // this explicit fake provider is the only layer allowed to interpret
+        // the host architecture fixture's raw anchor.
+        let pin = unsafe { ax_cpu_local::CpuPin::new_unchecked() };
+        // SAFETY: the local pin covers this value-only test-register read.
+        let area_base = unsafe { ax_cpu_local::raw::current_area_base_raw(&pin) };
+        if area_base == 0 || !area_base.is_multiple_of(core::mem::align_of::<CpuAreaPrefixV2>()) {
+            return ax_cpu_local::CpuBindingResultV1::error(
+                ax_cpu_local::CpuLocalStatus::NotInitialized,
+            );
+        }
+        // SAFETY: this test installs only areas from ax-percpu's
+        // shutdown-lifetime host allocation.
+        let prefix = unsafe { &*(area_base as *const CpuAreaPrefixV2) };
+        let binding = prefix.header().binding();
+        if binding.area_base != area_base
+            || ax_cpu_local::CpuAreaInitV2::from_binding(binding).is_none()
+        {
+            return ax_cpu_local::CpuBindingResultV1::error(
+                ax_cpu_local::CpuLocalStatus::InvalidBinding,
+            );
+        }
+        ax_cpu_local::CpuBindingResultV1::ok(binding)
+    }
+
+    fn get_tp() -> usize {
+        0
+    }
+
+    unsafe fn set_tp(_value: usize) -> ax_cpu_local::CpuLocalStatus {
+        ax_cpu_local::CpuLocalStatus::Unsupported
+    }
+
+    fn current_thread() -> usize {
+        let result = Self::current_cpu_binding();
+        if result.status != ax_cpu_local::CpuLocalStatus::Ok {
+            return 0;
+        }
+        // SAFETY: successful binding validation proves a live PrefixV2.
+        let prefix = unsafe { &*(result.binding.area_base as *const CpuAreaPrefixV2) };
+        prefix.runtime_anchor().current_thread_raw()
+    }
+}
 
 unsafe extern "C" {
     static __AX_PERCPU_LINKER_ALIGNMENT_START: u8;
@@ -27,6 +79,26 @@ static USIZE: usize = 0;
 
 #[def_percpu]
 static INITIALIZED: usize = 0x5a5a_a5a5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum BootPhase {
+    Ready = 7,
+}
+
+#[def_percpu]
+static BOOT_PHASE: BootPhase = BootPhase::Ready;
+
+#[def_percpu]
+static NON_ZERO: NonZeroUsize = NonZeroUsize::new(0x55aa).expect("constant must be nonzero");
+
+#[def_percpu]
+static LAZY_VALUE: LazyInit<usize> = LazyInit::new();
+
+static FINAL_IMAGE_MARKER: u8 = 0x5a;
+
+#[def_percpu]
+static FINAL_IMAGE_REFERENCE: &'static u8 = &FINAL_IMAGE_MARKER;
 
 struct Struct {
     foo: usize,
@@ -68,7 +140,7 @@ fn test_percpu() {
     let migration_pin = &migration_pin_guard;
 
     #[cfg(not(feature = "sp-naive"))]
-    let installed = {
+    let installed_area = {
         assert_eq!(init(), 4);
         assert_eq!(init(), 0, "CPU-local storage initialization is one-shot");
         let layout = layout().unwrap();
@@ -97,18 +169,19 @@ fn test_percpu() {
             Err(PerCpuError::MisalignedStride { alignment, .. })
                 if alignment == required_alignment
         ));
-        // SAFETY: `init` owns the complete aligned host fixture until process
-        // exit and copied the linked template into every area.
-        assert_eq!(unsafe { install_layout(layout) }, Ok(()));
-        let conflicting_layout = PerCpuLayoutV1 {
-            runtime_base: layout.runtime_base + layout.area_stride,
-            ..layout
-        };
-        // SAFETY: the request is rejected against the already installed live
-        // fixture before it can publish a different address range.
+        // SAFETY: the same raw layout was already consumed by `init`; this call
+        // verifies that typed construction cannot run a second time.
         assert!(matches!(
-            unsafe { install_layout(conflicting_layout) },
-            Err(PerCpuError::LayoutAlreadyInstalled { .. })
+            unsafe {
+                initialize_layout(PerCpuLayoutInitV2::new(
+                    layout,
+                    1,
+                    1,
+                    ax_cpu_local::image_register_mode(),
+                    HostLevelV1::Supervisor,
+                ))
+            },
+            Err(PerCpuError::LayoutAlreadyInitialized)
         ));
         assert!(matches!(
             area(CpuIndex::try_from(layout.area_count as usize).unwrap()),
@@ -116,40 +189,28 @@ fn test_percpu() {
         ));
 
         let area = area(CpuIndex::try_from(0).unwrap()).unwrap();
-        let foreign_prefix = Box::leak(Box::new(CpuAreaPrefix::TEMPLATE));
-        let foreign_base = core::ptr::from_mut(foreign_prefix).addr();
-        let foreign_anchor = CpuLocalAnchor::new(
-            foreign_base,
-            PerCpuRelocation::from_bases(foreign_base, area.runtime_base()),
-        );
-        // SAFETY: the leaked prefix is aligned, initialized, writable, and
-        // remains mapped. It models an early-boot anchor outside the layout.
-        unsafe { ax_cpu_local::install_current(foreign_anchor) };
         assert!(matches!(
             bound_current(migration_pin),
-            Err(PerCpuError::CurrentAreaOutsideLayout { runtime_base })
-                if runtime_base == foreign_base
+            Err(PerCpuError::CurrentAreaUnbound)
         ));
 
-        let installed = unsafe { bind_current(area) }.unwrap();
-        // SAFETY: the test keeps its migration pin live across both reads.
-        let committed_base = unsafe { ax_cpu_local::current_area_base_raw(migration_pin) };
-        assert!(matches!(
-            unsafe { bind_current(area) },
-            Err(PerCpuError::AreaAlreadyBound { cpu_index }) if cpu_index == area.cpu_index()
-        ));
-        // SAFETY: a recoverable second-bind rejection must leave the committed
-        // architecture anchor untouched while the same migration pin is live.
+        // SAFETY: this explicit host platform fixture owns the offline CPU 0
+        // binding window and keeps the initialized area live until shutdown.
+        unsafe { ax_cpu_local::raw::install_binding(area.binding()) }.unwrap();
+        let committed_binding = ax_cpu_local::platform::current_cpu_binding();
         assert_eq!(
-            unsafe { ax_cpu_local::current_area_base_raw(migration_pin) },
-            committed_base
+            ax_cpu_local::platform::current_cpu_binding(),
+            committed_binding
         );
-        assert_eq!(installed.header().cpu_index(), Some(area.cpu_index()));
-        assert_eq!(installed.header().self_base(), area.runtime_base());
-        assert_eq!(installed.header().relocation(), area.relocation());
-        assert_eq!(installed.header().generation(), 1);
-        assert_ne!(installed.header().cookie(), 0);
-        assert_eq!(installed.verify(migration_pin), Ok(()));
+        let header = area.prefix().header();
+        assert_eq!(header.cpu_index(), Some(area.cpu_index()));
+        assert_eq!(header.self_base(), area.runtime_base());
+        assert_eq!(header.generation(), 1);
+        assert_ne!(header.cookie(), 0);
+        assert_eq!(
+            header.register_mode(),
+            Some(ax_cpu_local::image_register_mode())
+        );
         let bound_pin = bound_current(migration_pin).unwrap();
         assert_eq!(current_cpu_index(&bound_pin), Ok(area.cpu_index()));
         println!(
@@ -157,14 +218,11 @@ fn test_percpu() {
             area.runtime_base()
         );
         println!("per-CPU area size = {}", area.area_size());
-        installed
+        area
     };
 
-    #[cfg(feature = "sp-naive")]
-    let base = 0;
-
     #[cfg(not(feature = "sp-naive"))]
-    let base = installed.area().runtime_base();
+    let base = installed_area.runtime_base();
 
     let bound_pin = bound_current(migration_pin).unwrap();
     let pin = &bound_pin;
@@ -179,17 +237,20 @@ fn test_percpu() {
     println!("over-aligned offset: {:#x}", OVER_ALIGNED.offset());
     println!();
 
-    assert_eq!(base + BOOL.offset(), BOOL.current_ptr(pin) as usize);
-    assert_eq!(base + U8.offset(), U8.current_ptr(pin) as usize);
-    assert_eq!(base + U16.offset(), U16.current_ptr(pin) as usize);
-    assert_eq!(base + U32.offset(), U32.current_ptr(pin) as usize);
-    assert_eq!(base + U64.offset(), U64.current_ptr(pin) as usize);
-    assert_eq!(base + USIZE.offset(), USIZE.current_ptr(pin) as usize);
-    assert_eq!(base + STRUCT.offset(), STRUCT.current_ptr(pin) as usize);
-    assert_eq!(
-        base + OVER_ALIGNED.offset(),
-        OVER_ALIGNED.current_ptr(pin) as usize
-    );
+    #[cfg(not(feature = "sp-naive"))]
+    {
+        assert_eq!(base + BOOL.offset(), BOOL.current_ptr(pin) as usize);
+        assert_eq!(base + U8.offset(), U8.current_ptr(pin) as usize);
+        assert_eq!(base + U16.offset(), U16.current_ptr(pin) as usize);
+        assert_eq!(base + U32.offset(), U32.current_ptr(pin) as usize);
+        assert_eq!(base + U64.offset(), U64.current_ptr(pin) as usize);
+        assert_eq!(base + USIZE.offset(), USIZE.current_ptr(pin) as usize);
+        assert_eq!(base + STRUCT.offset(), STRUCT.current_ptr(pin) as usize);
+        assert_eq!(
+            base + OVER_ALIGNED.offset(),
+            OVER_ALIGNED.current_ptr(pin) as usize
+        );
+    }
     assert_eq!(
         OVER_ALIGNED.current_ptr(pin) as usize % core::mem::align_of::<OverAligned>(),
         0
@@ -232,6 +293,15 @@ fn test_percpu() {
     assert_eq!(U64.read_current(pin), 0xa2ce_a2ce_a2ce_a2ce);
     assert_eq!(USIZE.read_current(pin), 0xffff_0000);
     assert_eq!(INITIALIZED.read_current(pin), 0x5a5a_a5a5);
+    BOOT_PHASE.with_current_ref(pin, |phase| assert_eq!(*phase, BootPhase::Ready));
+    NON_ZERO.with_current_ref(pin, |value| assert_eq!(value.get(), 0x55aa));
+    LAZY_VALUE.with_current_ref(pin, |value| {
+        assert_eq!(value.call_once(|| 0x1111), Some(&0x1111));
+    });
+    FINAL_IMAGE_REFERENCE.with_current_ref(pin, |reference| {
+        assert!(core::ptr::eq(*reference, &FINAL_IMAGE_MARKER));
+        assert_eq!(**reference, 0x5a);
+    });
 
     STRUCT.with_current_ref(pin, |s| {
         println!("struct.foo value: {:#x}", s.foo);
@@ -250,6 +320,19 @@ fn test_percpu() {
 #[cfg(not(feature = "sp-naive"))]
 fn test_remote_access() {
     let cpu1 = CpuIndex::try_from(1).unwrap();
+    // Every typed initializer constructs an independent CPU-owned value. CPU
+    // zero's mutation above must not affect CPU one before any remote write.
+    unsafe {
+        assert!(!*BOOL.remote_ptr(cpu1).unwrap());
+        assert_eq!(*U8.remote_ptr(cpu1).unwrap(), 0);
+        assert_eq!(*BOOT_PHASE.remote_ptr(cpu1).unwrap(), BootPhase::Ready);
+        assert_eq!((*NON_ZERO.remote_ptr(cpu1).unwrap()).get(), 0x55aa);
+        assert!(!(*LAZY_VALUE.remote_ptr(cpu1).unwrap()).is_inited());
+        assert!(core::ptr::eq(
+            *FINAL_IMAGE_REFERENCE.remote_ptr(cpu1).unwrap(),
+            &FINAL_IMAGE_MARKER,
+        ));
+    }
     // test remote write
     unsafe {
         *BOOL.remote_ref_mut_raw(cpu1).unwrap() = false;
@@ -282,11 +365,13 @@ fn test_remote_access() {
     // A physical CPU binds exactly once. Model CPU 1 with a distinct host
     // thread instead of rebinding the CPU 0 thread's architecture anchor.
     std::thread::spawn(move || {
-        let installed = unsafe { bind_current(area(cpu1).unwrap()) }.unwrap();
+        let cpu_area = area(cpu1).unwrap();
+        // SAFETY: this dedicated host thread is the offline CPU 1 platform
+        // binder and the initialized area remains live until process shutdown.
+        unsafe { ax_cpu_local::raw::install_binding(cpu_area.binding()) }.unwrap();
         // SAFETY: this host thread remains the modeled CPU 1 for its lifetime.
         let migration_pin_guard = unsafe { CpuPin::new_unchecked() };
         let migration_pin = &migration_pin_guard;
-        assert_eq!(installed.verify(migration_pin), Ok(()));
         let bound_pin = bound_current(migration_pin).unwrap();
         let pin = &bound_pin;
         assert_eq!(current_cpu_index(pin), Ok(cpu1));
@@ -306,6 +391,15 @@ fn test_remote_access() {
         assert_eq!(U64.read_current(pin), 0xfeed_feed_feed_feed);
         assert_eq!(USIZE.read_current(pin), 0x0000_ffff);
         assert_eq!(INITIALIZED.read_current(pin), 0x5a5a_a5a5);
+        BOOT_PHASE.with_current_ref(pin, |phase| assert_eq!(*phase, BootPhase::Ready));
+        NON_ZERO.with_current_ref(pin, |value| assert_eq!(value.get(), 0x55aa));
+        LAZY_VALUE.with_current_ref(pin, |value| {
+            assert_eq!(value.call_once(|| 0x2222), Some(&0x2222));
+        });
+        FINAL_IMAGE_REFERENCE.with_current_ref(pin, |reference| {
+            assert!(core::ptr::eq(*reference, &FINAL_IMAGE_MARKER));
+            assert_eq!(**reference, 0x5a);
+        });
 
         STRUCT.with_current_ref(pin, |s| {
             println!("struct.foo value on CPU 1: {:#x}", s.foo);

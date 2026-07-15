@@ -29,10 +29,12 @@ dynamic  = true
 | `efi` | ✗ | `somehal/efi` → UEFI 启动路径 |
 | `fp-simd` | ✗ | `ax-cpu/fp-simd`，aarch64/loongarch64 启用 FP/SIMD |
 | `uspace` | ✗ | `somehal/uspace` + 用户态地址空间 |
-| `hv` | ✗ | `somehal/hv` + `ax-cpu/arm-el2`，hypervisor 模式 |
+| `hv` | ✗ | 仅传播 `somehal/hv`；CPU-local host level 由 final-high runtime binding 提供 |
 | `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
 
 依赖：`anyhow`、`ax-cpu`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`（`custom-base`）、`rdrive`、`somehal`、`spin`。
+
+`hv` 不是 CPU 异常级别的跨架构编译开关。AArch64 Axvisor 最终镜像需在 target-specific 组装处单独启用 `ax-cpu/arm-el2`；RISC-V、LoongArch、x86_64 和 AArch64 EL1 镜像都不应因 `axplat-dyn/hv` 获得该 feature。
 
 ## lib.rs 总览
 

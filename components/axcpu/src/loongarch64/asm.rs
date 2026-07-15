@@ -9,6 +9,7 @@ use loongArch64::register::{
     eentry, pgdh, pgdl,
 };
 
+#[cfg(feature = "tls")]
 use crate::KernelTlsBase;
 
 /// Allows the current CPU to respond to interrupts.
@@ -185,6 +186,7 @@ pub unsafe fn write_pwc(pwcl: u32, pwch: u32) {
 /// This register follows the execution context across CPUs. It is distinct
 /// from the CPU-local base kept in `$r21`.
 #[inline]
+#[cfg(feature = "tls")]
 pub fn read_thread_pointer() -> KernelTlsBase {
     let address;
     unsafe { asm!("move {}, $tp", out(reg) address) };
@@ -202,6 +204,7 @@ pub fn read_thread_pointer() -> KernelTlsBase {
 /// is becoming current and that no Rust code observes a half-completed context
 /// switch.
 #[inline]
+#[cfg(feature = "tls")]
 pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
     unsafe { asm!("move $tp, {}", in(reg) kernel_tls.as_usize()) }
 }

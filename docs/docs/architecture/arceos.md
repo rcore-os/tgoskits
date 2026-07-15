@@ -203,12 +203,14 @@ sequenceDiagram
 
 CPU-local anchor、内核任务 TLS 和用户寄存器由不同层拥有，不能随任务上下文一起迁移：
 
-| 架构 | CPU-local anchor | 内核任务 TLS | 用户态 round-trip |
+| 架构 | CPU-local anchor | 任务指针 / TLS | 用户态 round-trip |
 | --- | --- | --- | --- |
 | x86_64 | kernel GS base | FS base | user FS/GS |
-| AArch64 | TPIDR_EL1/EL2 | TPIDR_EL0 | user TPIDR_EL0 |
-| RISC-V | `sscratch -> CpuAreaHeader` | `tp` | user `gp/tp` |
-| LoongArch | live `r21` 与 KS3 mirror | `tp` | user `r21/tp` |
+| AArch64 | TPIDR_EL1/EL2 | LinuxCurrent: SP_EL0=current；UnikernelTls: TPIDR_EL0=TLS | user TPIDR_EL0 |
+| RISC-V | LinuxCurrent: 由 `tp` 中的 `CurrentThreadHeader` 恢复 area，正常态 `sscratch=0`；UnikernelTls: `sscratch`=prefix | LinuxCurrent: `tp`=current；UnikernelTls: `tp`=TLS | user `gp/tp` |
+| LoongArch | live `r21` 与 KS3 mirror | LinuxCurrent: `tp`=current；UnikernelTls: `tp`=TLS | user `r21/tp` |
+
+两种 register mode 是最终镜像级 ABI，不能在运行时混用。platform binder 必须使用 `CpuBindingV1` 中冻结的 mode 安装完整寄存状态，`ax-percpu` 只验证 binding 和 layout，不猜测具体寄存。
 
 `ax-cpu-local` 独占少量寄存器指令和固定 `CpuAreaHeader` ABI；`ax-percpu` 只负责布局、offset 与普通 Rust 地址计算。`IrqGuard` 或 `PreemptGuard` 借出的 `CpuPin` 只证明不会迁移；安全 current accessor 必须再经 `ax_percpu::bound_current` 验证 live anchor 与 layout/header，接收借用该迁移证明的 `BoundCpuPin`。`TaskContext` 只保存 callee-saved 寄存器、SP、任务 TLS 与可选 FPU 状态；页表根统一由 `TaskRuntime::install_address_space` 安装，CPU anchor 与 CR3/TTBR/SATP/PGDL 都不得进入任务上下文。
 

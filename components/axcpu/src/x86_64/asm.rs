@@ -3,9 +3,12 @@
 use core::arch::asm;
 
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
-use x86::{controlregs, msr, tlb};
+#[cfg(feature = "tls")]
+use x86::msr;
+use x86::{controlregs, tlb};
 use x86_64::instructions::interrupts;
 
+#[cfg(feature = "tls")]
 use crate::KernelTlsBase;
 
 /// Allows the current CPU to respond to interrupts.
@@ -116,6 +119,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 ///
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
+#[cfg(feature = "tls")]
 pub fn read_thread_pointer() -> KernelTlsBase {
     KernelTlsBase::new(unsafe { msr::rdmsr(msr::IA32_FS_BASE) as usize })
 }
@@ -128,6 +132,7 @@ pub fn read_thread_pointer() -> KernelTlsBase {
 ///
 /// This function is unsafe as it changes the CPU states.
 #[inline]
+#[cfg(feature = "tls")]
 pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
     unsafe { msr::wrmsr(msr::IA32_FS_BASE, kernel_tls.as_usize() as u64) }
 }

@@ -19,7 +19,7 @@ ax-std = [
 ax-driver.workspace = true
 ax-hal = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 axplat-dyn.workspace = true
 axtest.workspace = true
 crab-usb.workspace = true

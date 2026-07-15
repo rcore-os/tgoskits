@@ -85,6 +85,30 @@ fn trap_entry_separates_kernel_percpu_from_user_u0() {
 }
 
 #[test]
+fn kernel_trap_initializes_the_complete_typed_register_frame() {
+    let kernel_entry = section(
+        TRAP_ENTRY,
+        "    bnez    $t1, .Ltrap_from_user",
+        ".Ltrap_from_user:",
+    );
+    assert!(
+        kernel_entry.contains("STD     $r0, $sp, 0"),
+        "the skipped r0 slot must be initialized before Rust borrows the whole trap frame"
+    );
+    assert_in_order(
+        kernel_entry,
+        "addi.d  $sp, $sp, -{trapframe_size}",
+        "STD     $r0, $sp, 0",
+    );
+
+    let user_entry = section(TRAP_ENTRY, ".Ltrap_from_user:", ".Ltrap_stack_ready:");
+    assert!(
+        !user_entry.contains("STD     $r0, $sp, 0"),
+        "the user path temporarily owns slot zero as its kernel continuation"
+    );
+}
+
+#[test]
 fn task_switch_owns_tls_but_never_percpu() {
     let task_context_definition = section(
         TASK_CONTEXT,
@@ -145,11 +169,15 @@ fn task_context_does_not_own_address_space_installation() {
 #[test]
 fn raw_tp_access_is_typed_as_task_tls() {
     assert!(
-        ARCH_ASM.contains("pub fn read_thread_pointer() -> KernelTlsBase"),
+        ARCH_ASM
+            .contains("#[cfg(feature = \"tls\")]\npub fn read_thread_pointer() -> KernelTlsBase"),
         "reading kernel tp must return task-owned TLS state"
     );
     assert!(
-        ARCH_ASM.contains("pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase)"),
+        ARCH_ASM.contains(
+            "#[cfg(feature = \"tls\")]\npub unsafe fn write_thread_pointer(kernel_tls: \
+             KernelTlsBase)"
+        ),
         "writing kernel tp must require task-owned TLS state"
     );
     assert!(

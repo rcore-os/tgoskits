@@ -119,6 +119,7 @@ core::arch::global_asm!(
     #[cfg(feature = "arm-el2")]
     concat!(".equ arm_el2, 1\n", include_str!("trap.S")),
     trapframe_size = const core::mem::size_of::<RawTrapFrame>(),
+    current_thread_offset = const ax_cpu_local::CPU_AREA_CURRENT_THREAD_OFFSET,
     TRAP_KIND_SYNC = const TrapKind::Synchronous as u8,
     TRAP_KIND_IRQ = const TrapKind::Irq as u8,
     TRAP_KIND_FIQ = const TrapKind::Fiq as u8,

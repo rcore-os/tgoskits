@@ -3,6 +3,7 @@
 use std::{fs, path::Path};
 
 const SOMEBOOT: &str = include_str!("../../../../../platforms/someboot/src/lib.rs");
+const SOMEBOOT_SMP: &str = include_str!("../../../../../platforms/someboot/src/smp/mod.rs");
 const DYNAMIC_BOOT: &str = include_str!("../../../../../platforms/axplat-dyn/src/boot.rs");
 const DYNAMIC_MEMORY: &str = include_str!("../../../../../platforms/axplat-dyn/src/mem.rs");
 const PLATFORM_PERCPU: &str = include_str!("../../../../../platforms/ax-plat/src/percpu.rs");
@@ -14,9 +15,16 @@ fn platform_entry_is_the_only_runtime_cpu_area_binder() {
         "someboot must hand boot identity to the platform without installing the runtime anchor",
     );
     assert!(
-        DYNAMIC_BOOT.contains("ax_percpu::install_layout")
-            && DYNAMIC_BOOT.contains("ax_percpu::bind_current"),
-        "the selected platform entry must install and bind the CPU-area layout",
+        SOMEBOOT_SMP.contains("__ax_percpu_initialize_layout_v2("),
+        "someboot final-high must construct and freeze the CPU-area layout before platform entry",
+    );
+    assert!(
+        DYNAMIC_BOOT.contains("ax_cpu_local::raw::install_binding(binding)"),
+        "the selected platform entry must bind the validated area through the leaf raw primitive",
+    );
+    assert!(
+        !DYNAMIC_BOOT.contains("ax_percpu::bind_current"),
+        "ax-percpu must remain the pure-Rust layout layer, not the register binder",
     );
     assert!(
         !DYNAMIC_MEMORY.contains("_percpu_base_ptr"),
@@ -29,17 +37,21 @@ fn platform_entry_is_the_only_runtime_cpu_area_binder() {
     );
 
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let binders = production_call_sites(&workspace, "ax_percpu::bind_current(");
+    let binders = production_call_sites(&workspace, "ax_cpu_local::raw::install_binding(");
     assert_eq!(
         binders,
         ["platforms/axplat-dyn/src/boot.rs"],
         "every production source directory must retain exactly one CPU-area binder",
     );
-    let layout_installers = production_call_sites(&workspace, "ax_percpu::install_layout(");
+    let layout_initializers =
+        production_call_sites(&workspace, "__ax_percpu_initialize_layout_v2(");
     assert_eq!(
-        layout_installers,
-        ["platforms/axplat-dyn/src/boot.rs"],
-        "the platform binder must also be the only runtime layout installer",
+        layout_initializers,
+        [
+            "components/percpu/percpu/src/initialization.rs",
+            "platforms/someboot/src/smp/mod.rs",
+        ],
+        "the layout ABI must retain one semantic definition and one final-high boot caller",
     );
 }
 
@@ -80,7 +92,10 @@ fn visit_rust_sources(workspace: &Path, directory: &Path, needle: &str, matches:
             continue;
         }
         let source = fs::read_to_string(&path).expect("production Rust source must be UTF-8");
-        if source.contains(needle) {
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .map_or(source.as_str(), |(production, _)| production);
+        if production.contains(needle) {
             matches.push(
                 path.strip_prefix(workspace)
                     .expect("source must stay inside the workspace")

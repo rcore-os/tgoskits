@@ -1407,6 +1407,9 @@ fn axvm_ipi_routes_hold_one_cpu_pin_through_identity_and_send() {
 fn axvm_test_linker_keeps_cpu_area_header_at_template_offset_zero() {
     let linker_script = include_str!("../percpu-test.x");
 
+    assert!(linker_script.contains("__AX_PERCPU_INIT_START = .;"));
+    assert!(linker_script.contains("KEEP(*(.ax_percpu.init))"));
+    assert!(linker_script.contains("__AX_PERCPU_INIT_END = .;"));
     assert!(
         linker_script.contains("__AX_CPU_AREA_PREFIX == _percpu_load_start"),
         "the AxVM test image must enforce the production CPU-area header ABI",

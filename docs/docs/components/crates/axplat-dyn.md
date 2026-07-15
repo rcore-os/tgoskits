@@ -177,7 +177,9 @@ flowchart TD
 | `smp` | 透传到 `ax-plat/smp`，启用次核入口、次核初始化和 `cpu_boot()` 路径 |
 | `irq` | 透传到 `ax-plat/irq`，编译 `irq.rs` 并启用 timer IRQ 相关接口 |
 | `uspace` | 透传到 `somehal/uspace`，说明该路径允许 `somehal` 切换到含用户态支持的构建 |
-| `hv` | 透传到 `somehal/hv` 与 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
+| `hv` | 仅透传到 `somehal/hv`；CPU-local host level 由 final-high runtime binding 确定 |
+
+只有 AArch64 Axvisor 最终镜像可以在 target-specific 组装处显式启用 `ax-cpu/arm-el2`。其它架构与 AArch64 EL1 镜像不得因 `axplat-dyn/hv` 间接获得该 feature。
 
 需要注意，默认 feature 就是 `["smp", "irq"]`，这意味着该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
 
@@ -195,7 +197,7 @@ flowchart TD
 | --- | --- |
 | `axplat` | 提供平台契约与 `call_main()` / `call_secondary_main()` |
 | `somehal` | 提供真实平台事实与入口宏，是本 crate 的核心下层 |
-| `ax-cpu` | 在 `hv` 等场景提供 CPU 模式支持 |
+| `ax-cpu` | 提供通用 CPU/trap 能力；`arm-el2` 不由本 crate 的通用 `hv` feature 传播 |
 | `axklib` | 提供 `iomap()` 等内核内存映射辅助 |
 | `ax-driver` | 提供共享驱动 probe 与 adapter 入口 |
 | `rdrive`、`rdif-block` | 提供运行时设备探测与块设备能力边界 |

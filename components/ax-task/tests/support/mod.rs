@@ -104,6 +104,8 @@ impl_trait! {
             });
         }
 
+        fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
+
         fn finish_initial_context_switch() {
             // Integration tests do not execute real architecture context
             // switches; their scheduler baton is modeled by the facade tests.
@@ -168,6 +170,9 @@ impl_trait! {
             } else {
                 RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
             }
+        }
+        fn bind_context_thread(_binding: ContextThreadBinding) -> RuntimeStatus {
+            RuntimeStatus::Success
         }
         fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
             DESTROYED_CONTEXTS.with(|count| count.set(count.get() + 1));

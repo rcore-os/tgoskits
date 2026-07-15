@@ -91,6 +91,23 @@ impl<'pin> PinnedCpuContext<'pin> {
     const fn identity(&self) -> HostCpuIdentity {
         self.identity
     }
+
+    /// Verifies that backend assembly restored the live host CPU-local anchor.
+    ///
+    /// The cached [`BoundCpuPin`] proves which area this scope owns, while a
+    /// fresh `bound_current` observes the architecture register after a backend
+    /// transition. A mismatch is unrecoverable: continuing could direct host
+    /// per-CPU accesses into guest or another CPU's state.
+    fn assert_host_cpu_binding(&self, phase: &'static str) {
+        let current = ax_percpu::bound_current(self.cpu_pin).unwrap_or_else(|error| {
+            panic!("{phase} did not restore host CPU-local state: {error}")
+        });
+        assert_eq!(
+            HostCpuIdentity::current(&current),
+            self.identity,
+            "{phase} restored a different host CPU-local identity"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -373,9 +390,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         )?;
         // SAFETY: `Running(identity)` exclusively reserves the backend until
         // the result is committed below.
-        let result = unsafe { self.arch_vcpu_mut_reserved() }
-            .run(pinned_cpu.cpu_pin())
-            .map_err(|error| map_vcpu_backend_error("run vCPU", error));
+        let result = unsafe { self.arch_vcpu_mut_reserved() }.run(pinned_cpu.cpu_pin());
+        pinned_cpu.assert_host_cpu_binding("after guest exit");
+        let result = result.map_err(|error| map_vcpu_backend_error("run vCPU", error));
         // VM entry errors still return through the architecture exit path. The
         // backend must remain bound so host-owned state can always be restored.
         self.finish_reserved_state(
@@ -395,9 +412,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         )?;
         // SAFETY: `Binding(identity)` exclusively reserves the backend until
         // the result is committed below.
-        let result = unsafe { self.arch_vcpu_mut_reserved() }
-            .bind(pinned_cpu.cpu_pin())
-            .map_err(|error| map_vcpu_backend_error("bind vCPU", error));
+        let result = unsafe { self.arch_vcpu_mut_reserved() }.bind(pinned_cpu.cpu_pin());
+        pinned_cpu.assert_host_cpu_binding("after vCPU bind");
+        let result = result.map_err(|error| map_vcpu_backend_error("bind vCPU", error));
         self.finish_reserved_state(
             VcpuLifecycleState::Binding(identity),
             if result.is_ok() {
@@ -419,9 +436,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         )?;
         // SAFETY: `Unbinding(identity)` exclusively reserves the backend until
         // the result is committed below.
-        let result = unsafe { self.arch_vcpu_mut_reserved() }
-            .unbind(pinned_cpu.cpu_pin())
-            .map_err(|error| map_vcpu_backend_error("unbind vCPU", error));
+        let result = unsafe { self.arch_vcpu_mut_reserved() }.unbind(pinned_cpu.cpu_pin());
+        pinned_cpu.assert_host_cpu_binding("after vCPU unbind");
+        let result = result.map_err(|error| map_vcpu_backend_error("unbind vCPU", error));
         self.finish_reserved_state(
             VcpuLifecycleState::Unbinding(identity),
             if result.is_ok() {
@@ -762,7 +779,8 @@ mod tests {
     };
 
     use ax_cpu_local::{
-        CpuAreaPrefix, CpuIndex, CpuLocalAnchor, PerCpuRelocation, install_current,
+        CPU_AREA_BOOT_THREAD_OFFSET, CpuAreaInitV2, CpuAreaPrefixV2, CpuIndex, HostLevelV1,
+        image_register_mode,
     };
     use axvm_types::{HostPhysAddr, VmBackendResult};
 
@@ -855,20 +873,29 @@ mod tests {
     }
 
     struct InstalledTestCpu {
-        _prefix: alloc::boxed::Box<CpuAreaPrefix>,
+        _prefix: alloc::boxed::Box<CpuAreaPrefixV2>,
         pin: CpuPin,
     }
 
     impl InstalledTestCpu {
         fn install() -> Self {
-            let mut prefix = alloc::boxed::Box::new(CpuAreaPrefix::TEMPLATE);
+            let mut prefix = alloc::boxed::Box::new(CpuAreaPrefixV2::template());
             let runtime_base = (&raw mut *prefix).cast::<u8>() as usize;
-            let anchor = CpuLocalAnchor::new(runtime_base, PerCpuRelocation::from_raw(0));
             let cpu_index = CpuIndex::try_from(0).unwrap();
-            *prefix = CpuAreaPrefix::for_area(cpu_index, anchor, 1, 0xace0);
+            let init = CpuAreaInitV2::new(
+                image_register_mode(),
+                HostLevelV1::Supervisor,
+                cpu_index,
+                1,
+                runtime_base,
+                runtime_base + CPU_AREA_BOOT_THREAD_OFFSET,
+                0xace0,
+            );
+            let binding = init.binding();
+            *prefix = CpuAreaPrefixV2::initialize(init).unwrap();
             // SAFETY: the boxed prefix stays mapped and exclusively owned by
             // this test, which is single-threaded and never enables migration.
-            unsafe { install_current(anchor) };
+            unsafe { ax_cpu_local::raw::install_binding(binding) }.unwrap();
             Self {
                 _prefix: prefix,
                 // SAFETY: this test never schedules or moves between CPUs.

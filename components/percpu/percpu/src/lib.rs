@@ -8,6 +8,8 @@ extern crate self as ax_percpu;
 #[cfg(not(feature = "sp-naive"))]
 mod alignment;
 mod area;
+#[cfg(not(feature = "sp-naive"))]
+mod initialization;
 mod value;
 
 #[cfg(all(not(feature = "sp-naive"), not(feature = "custom-base")))]
@@ -22,15 +24,17 @@ mod storage;
 #[cfg(not(feature = "sp-naive"))]
 pub(crate) use alignment::required_area_alignment;
 pub use ax_percpu_macros::def_percpu;
+#[cfg(not(feature = "sp-naive"))]
+pub use initialization::initialize_layout;
 
 #[cfg(all(not(feature = "sp-naive"), not(feature = "custom-base")))]
 pub use self::linked_layout::{init, linker_layout};
 #[cfg(all(not(feature = "sp-naive"), not(feature = "custom-base")))]
-pub(crate) use self::linked_layout::{percpu_area_size, percpu_link_base};
+pub(crate) use self::linked_layout::{percpu_area_size, percpu_template_base};
 #[cfg(any(feature = "sp-naive", feature = "custom-base"))]
 pub use self::storage::init;
 #[cfg(any(feature = "sp-naive", feature = "custom-base"))]
-pub(crate) use self::storage::{percpu_area_size, percpu_link_base};
+pub(crate) use self::storage::{percpu_area_size, percpu_template_base};
 pub use self::{
     area::*,
     value::{ObjectAccess, PerCpu, PrimitiveAccess},
@@ -43,12 +47,16 @@ fn required_area_alignment() -> Result<usize, PerCpuError> {
 
 #[doc(hidden)]
 pub mod __priv {
+    #[cfg(not(feature = "sp-naive"))]
+    pub use crate::initialization::{PerCpuInitDescriptor, PerCpuInitRegistration};
     pub use crate::value::PerCpuSymbol;
 
     /// Calculates one symbol's offset from the per-CPU template header.
     #[inline(always)]
-    pub fn symbol_offset(symbol_vma: usize) -> usize {
-        symbol_vma.wrapping_sub(crate::percpu_link_base())
+    pub fn symbol_offset(symbol_address: usize) -> usize {
+        symbol_address
+            .checked_sub(crate::percpu_template_base())
+            .expect("per-CPU symbol must follow the loaded template prefix")
     }
 
     /// Calculates a symbol address covered by an explicit CPU pin.
@@ -65,10 +73,9 @@ pub mod __priv {
     /// returned pointer is no longer used.
     #[inline(always)]
     pub unsafe fn current_symbol_ptr_unchecked<T>(offset: usize) -> *const T {
-        // SAFETY: the caller supplies the installed binding and pinning
-        // lifetime that the raw compatibility API cannot express in its
-        // signature.
-        let area_base = unsafe { ax_cpu_local::current_area_base_unchecked() }.as_ptr() as usize;
+        let binding = ax_cpu_local::platform::current_cpu_binding()
+            .expect("unchecked CPU-local access requires a platform-published binding");
+        let area_base = binding.area_base;
         area_base.wrapping_add(offset) as *const T
     }
 }

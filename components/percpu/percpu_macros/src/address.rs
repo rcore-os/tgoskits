@@ -1,18 +1,10 @@
 use quote::quote;
 use syn::{Ident, Type};
 
-/// Generates the link-time integer address of one per-CPU symbol.
-pub fn gen_symbol_vma(symbol: &Ident) -> proc_macro2::TokenStream {
-    quote! {
-        ::core::ptr::addr_of!(#symbol) as usize
-    }
-}
-
 /// Generates the byte offset of one symbol from the per-CPU template header.
 pub fn gen_offset(symbol: &Ident) -> proc_macro2::TokenStream {
-    let symbol_vma = gen_symbol_vma(symbol);
     quote! {
-        ax_percpu::__priv::symbol_offset(#symbol_vma)
+        ax_percpu::__priv::symbol_offset(::core::ptr::addr_of!(#symbol).cast::<u8>() as usize)
     }
 }
 

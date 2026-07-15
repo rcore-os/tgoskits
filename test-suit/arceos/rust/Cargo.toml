@@ -75,7 +75,7 @@ all = [
 [dependencies]
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }

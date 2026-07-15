@@ -11,8 +11,10 @@ const STACK_ALIGNMENT: usize = 16;
 /// someboot entry paths.
 ///
 /// Firmware's `a0` hart ID is captured here before shared Rust executes.
-/// During early boot, `sscratch` points to this record. The platform binder
-/// later replaces `sscratch` with the runtime CPU-area header.
+/// During early boot, `sscratch` points to this record. The final platform
+/// binder consumes it into mode-specific state: LinuxCurrent publishes the
+/// boot/current header in `tp` and clears `sscratch`; UnikernelTls replaces
+/// `sscratch` with the CPU-area prefix and reserves `tp` for TLS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub(crate) struct CpuBootInfoV1 {
@@ -98,8 +100,8 @@ pub(crate) unsafe fn read_at(record_addr: usize) -> CpuBootInfoV1 {
 
 /// Returns the current CPU's typed early-boot identity record.
 ///
-/// This accessor is valid only before the platform binder changes `sscratch`
-/// from [`CpuBootInfoV1`] to the runtime CPU-area header.
+/// This accessor is valid only before the platform binder replaces the early
+/// boot record with the selected LinuxCurrent or UnikernelTls register state.
 pub(crate) fn current() -> CpuBootInfoV1 {
     let record_addr: usize;
     unsafe {

@@ -24,13 +24,14 @@ license = "Apache-2.0"
 default = []
 exception-table = []
 fp-simd = []
-tls = []
+tls = ["ax-cpu-local/tls"]
 uspace = ["exception-table"]
 arm-el2 = ["ax-page-table-entry/arm-el2"]
 xuantie-c9xx = ["ax-page-table-entry/xuantie-c9xx"]
 
 [dependencies]
 axbacktrace = { workspace = true }
+ax-cpu-local = { workspace = true }
 cfg-if = "1.0"
 log = "0.4"
 ax-memory-addr = { workspace = true }
@@ -48,11 +49,9 @@ aarch64-cpu = "11.0"
 tock-registers = "0.10"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
-ax-cpu-local = { workspace = true }
 riscv.workspace = true
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-cpu-local = { workspace = true }
 loongArch64 = "0.2"
 ax-page-table-multiarch = { workspace = true }
 [lints.clippy]

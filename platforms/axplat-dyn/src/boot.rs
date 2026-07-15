@@ -1,7 +1,7 @@
 use ax_memory_addr::VirtAddr;
 use somehal::{
     KernelOp,
-    setup::{CpuBindError, CpuRegisterBinding, MapError, MmioAddr, MmioOp, MmioRaw},
+    setup::{CpuBindError, CpuBindingV1, MapError, MmioAddr, MmioOp, MmioRaw},
 };
 
 #[somehal::entry(Kernel)]
@@ -12,7 +12,7 @@ fn main() -> ! {
     }
 
     let cpu_idx = somehal::smp::early_current_cpu_idx();
-    install_percpu_layout();
+    validate_frozen_percpu_layout();
     bind_current_cpu(cpu_binding(cpu_idx)).expect("failed to bind the primary CPU-local area");
     ax_plat::call_main(cpu_idx, args)
 }
@@ -25,38 +25,36 @@ fn secondary_main() {
     }
 }
 
-fn install_percpu_layout() {
+fn validate_frozen_percpu_layout() {
     let platform = somehal::smp::percpu_data_layout()
         .expect("someboot must publish CPU-local storage before platform entry");
-    // SAFETY: someboot owns this mapped region until shutdown and copied the
-    // complete linked template into every aligned area before platform entry.
-    unsafe {
-        ax_percpu::install_layout(ax_percpu::PerCpuLayoutV1 {
-            runtime_base: platform.runtime_base,
-            area_stride: platform.area_stride,
-            area_count: platform.area_count,
-            flags: 0,
-        })
-    }
-    .expect("platform CPU-local layout must be valid and unique");
+    let installed = ax_percpu::layout()
+        .expect("someboot final-high must install the CPU-local layout exactly once");
+    assert_eq!(installed.runtime_base, platform.runtime_base);
+    assert_eq!(installed.area_stride, platform.area_stride);
+    assert_eq!(installed.area_count, platform.area_count);
+    assert_eq!(installed.flags, 0);
 }
 
-fn cpu_binding(cpu_idx: usize) -> CpuRegisterBinding {
+fn cpu_binding(cpu_idx: usize) -> CpuBindingV1 {
     somehal::setup::cpu_register_binding(cpu_idx)
         .expect("platform must allocate CPU-local storage for every boot CPU")
 }
 
-fn bind_current_cpu(binding: CpuRegisterBinding) -> Result<(), CpuBindError> {
-    let cpu_index = ax_percpu::CpuIndex::try_from(binding.cpu_index() as usize)
+fn bind_current_cpu(binding: CpuBindingV1) -> Result<(), CpuBindError> {
+    let cpu_index = ax_percpu::CpuIndex::try_from(binding.cpu_index as usize)
         .map_err(|_| CpuBindError::InvalidCpu)?;
     let area = ax_percpu::area(cpu_index).map_err(|_| CpuBindError::LayoutMismatch)?;
-    if area.runtime_base() != binding.area_base() {
+    if area.binding() != binding || area.prefix().header().binding() != binding {
         return Err(CpuBindError::LayoutMismatch);
     }
     // SAFETY: platform entry runs before the CPU is online, with local IRQs
     // masked and no scheduler capable of migrating this execution. Someboot
     // owns the mapped area for the CPU's complete lifetime.
-    unsafe { ax_percpu::bind_current(area) }.map_err(|_| CpuBindError::Register)?;
+    unsafe { ax_cpu_local::raw::install_binding(binding) }.map_err(|_| CpuBindError::Register)?;
+    if ax_cpu_local::platform::current_cpu_binding() != Ok(binding) {
+        return Err(CpuBindError::Register);
+    }
     Ok(())
 }
 
@@ -74,7 +72,7 @@ pub fn bootargs() -> Option<&'static str> {
 pub struct Kernel;
 
 impl KernelOp for Kernel {
-    fn bind_current_cpu(&self, binding: CpuRegisterBinding) -> Result<(), CpuBindError> {
+    fn bind_current_cpu(&self, binding: CpuBindingV1) -> Result<(), CpuBindError> {
         bind_current_cpu(binding)
     }
 

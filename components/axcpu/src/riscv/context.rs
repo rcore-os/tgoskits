@@ -1,8 +1,10 @@
 use core::{
     arch::naked_asm,
     mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
 };
 
+use ax_cpu_local::CurrentThreadHeader;
 use ax_memory_addr::VirtAddr;
 use riscv::register::sstatus::{self, FS};
 
@@ -308,12 +310,10 @@ pub struct TaskContext {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
-    /// Kernel task-local storage pointer (`tp`).
-    ///
-    /// The CPU-local anchor belongs to `sscratch` and is deliberately absent
-    /// from task context. Address-space installation is likewise owned by the
-    /// task runtime rather than this register image.
-    tp: usize,
+    /// Pinned task-owned header loaded into `tp` by LinuxCurrent images.
+    current_header: usize,
+    /// Kernel task-local storage pointer loaded into `tp` by UnikernelTls.
+    kernel_tls: KernelTlsBase,
     #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
@@ -325,17 +325,21 @@ const _: () = {
     assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
     assert!(offset_of!(TaskContext, ra) == 0);
     assert!(offset_of!(TaskContext, sp) == offset_of!(TaskContext, ra) + size_of::<usize>());
-    assert!(offset_of!(TaskContext, tp) % size_of::<usize>() == 0);
+    assert!(offset_of!(TaskContext, current_header) % size_of::<usize>() == 0);
+    assert!(
+        offset_of!(TaskContext, kernel_tls)
+            == offset_of!(TaskContext, current_header) + size_of::<usize>()
+    );
 };
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
-    /// Note the context is not initialized, it will be filled by [`switch_to`]
-    /// (for initial tasks) and [`init`] (for regular tasks) methods.
+    /// Note the context is not initialized, it will be filled by
+    /// [`switch_to_raw`](Self::switch_to_raw) (for initial tasks) and [`init`]
+    /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
-    /// [`switch_to`]: TaskContext::switch_to
     pub fn new() -> Self {
         Self::default()
     }
@@ -345,20 +349,36 @@ impl TaskContext {
     pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: KernelTlsBase) {
         self.sp = kstack_top.as_usize();
         self.ra = entry;
-        self.tp = tls_area.as_usize();
+        self.kernel_tls = KernelTlsBase::for_task_context(tls_area);
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
+    /// Sets the pinned task-owned current-thread header.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.current_header = header.as_ptr() as usize;
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+    }
+
+    /// Completes FP/SIMD work before current-thread publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
-            self.fp_state.switch_to(&next_ctx.fp_state);
+            self.fp_state.switch_to(&_next_ctx.fp_state);
         }
+    }
 
-        unsafe { context_switch(self, next_ctx) }
+    /// Performs only the final GPR/current/TLS transfer.
+    ///
+    /// # Safety
+    ///
+    /// Scheduling must be serialized, FP state prepared, and the next current
+    /// header published. No fallible Rust work may follow before this call.
+    #[inline(always)]
+    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
@@ -399,8 +419,9 @@ unsafe extern "C" fn clear_fp_registers() {
     )
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         include_asm_macros!(),
         "
@@ -419,7 +440,7 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
         STR     s9, a0, {s9_index}
         STR     s10, a0, {s10_index}
         STR     s11, a0, {s11_index}
-        STR     tp, a0, {tp_index}
+        STR     tp, a0, {kernel_tls_index}
 
         // restore new context
         LDR     s11, a1, {s11_index}
@@ -435,7 +456,7 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
         LDR     s1, a1, {s1_index}
         LDR     s0, a1, {s0_index}
         LDR     sp, a1, {sp_index}
-        LDR     tp, a1, {tp_index}
+        LDR     tp, a1, {kernel_tls_index}
         LDR     ra, a1, {ra_index}
 
         ret",
@@ -453,6 +474,65 @@ unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task:
         s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
         s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
         s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
-        tp_index = const offset_of!(TaskContext, tp) / size_of::<usize>(),
+        kernel_tls_index = const offset_of!(TaskContext, kernel_tls) / size_of::<usize>(),
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        include_asm_macros!(),
+        "
+        // Save old context. CPU-owned sscratch and task-owned tp are not
+        // folded into the generic callee-saved register image.
+        STR     ra, a0, {ra_index}
+        STR     sp, a0, {sp_index}
+        STR     s0, a0, {s0_index}
+        STR     s1, a0, {s1_index}
+        STR     s2, a0, {s2_index}
+        STR     s3, a0, {s3_index}
+        STR     s4, a0, {s4_index}
+        STR     s5, a0, {s5_index}
+        STR     s6, a0, {s6_index}
+        STR     s7, a0, {s7_index}
+        STR     s8, a0, {s8_index}
+        STR     s9, a0, {s9_index}
+        STR     s10, a0, {s10_index}
+        STR     s11, a0, {s11_index}
+
+        // Restore all next state, then make tp current immediately before the
+        // direct return into the next task. gp remains the psABI global pointer.
+        LDR     s11, a1, {s11_index}
+        LDR     s10, a1, {s10_index}
+        LDR     s9, a1, {s9_index}
+        LDR     s8, a1, {s8_index}
+        LDR     s7, a1, {s7_index}
+        LDR     s6, a1, {s6_index}
+        LDR     s5, a1, {s5_index}
+        LDR     s4, a1, {s4_index}
+        LDR     s3, a1, {s3_index}
+        LDR     s2, a1, {s2_index}
+        LDR     s1, a1, {s1_index}
+        LDR     s0, a1, {s0_index}
+        LDR     sp, a1, {sp_index}
+        LDR     tp, a1, {current_header_index}
+        LDR     ra, a1, {ra_index}
+        ret",
+        ra_index = const offset_of!(TaskContext, ra) / size_of::<usize>(),
+        sp_index = const offset_of!(TaskContext, sp) / size_of::<usize>(),
+        s0_index = const offset_of!(TaskContext, s0) / size_of::<usize>(),
+        s1_index = const offset_of!(TaskContext, s1) / size_of::<usize>(),
+        s2_index = const offset_of!(TaskContext, s2) / size_of::<usize>(),
+        s3_index = const offset_of!(TaskContext, s3) / size_of::<usize>(),
+        s4_index = const offset_of!(TaskContext, s4) / size_of::<usize>(),
+        s5_index = const offset_of!(TaskContext, s5) / size_of::<usize>(),
+        s6_index = const offset_of!(TaskContext, s6) / size_of::<usize>(),
+        s7_index = const offset_of!(TaskContext, s7) / size_of::<usize>(),
+        s8_index = const offset_of!(TaskContext, s8) / size_of::<usize>(),
+        s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
+        s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
+        s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
+        current_header_index = const offset_of!(TaskContext, current_header) / size_of::<usize>(),
     )
 }

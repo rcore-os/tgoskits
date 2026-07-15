@@ -17,14 +17,13 @@ fn source(relative: &str) -> String {
 fn secondary_cpu_binds_its_anchor_before_hal_or_irq_state() {
     let setup = source("platforms/somehal/src/setup.rs");
     assert!(
-        setup.contains("fn bind_current_cpu(&self, binding: CpuRegisterBinding)"),
+        setup.contains("fn bind_current_cpu(&self, binding: CpuBindingV1)"),
         "the platform runtime must expose an early CPU-anchor binding capability"
     );
     assert!(
-        setup.contains("pub struct CpuRegisterBinding")
-            && setup.contains("area_base: usize")
-            && setup.contains("cpu_index: u32"),
-        "early binding must cross the runtime boundary as a validated value object"
+        setup.contains("pub use ax_cpu_local::CpuBindingV1")
+            && setup.contains("CpuAreaHeader) }.binding()"),
+        "early binding must reuse the frozen CPU-local ABI value"
     );
 
     let somehal = source("platforms/somehal/src/lib.rs");
@@ -52,7 +51,7 @@ fn secondary_cpu_binds_its_anchor_before_hal_or_irq_state() {
         .find("impl KernelOp for Kernel")
         .expect("dynamic platform must implement the somehal kernel boundary");
     assert!(
-        platform[kernel_impl..].contains("fn bind_current_cpu(&self, binding: CpuRegisterBinding)"),
+        platform[kernel_impl..].contains("fn bind_current_cpu(&self, binding: CpuBindingV1)"),
         "the selected platform must implement the early CPU-anchor binding capability"
     );
 }

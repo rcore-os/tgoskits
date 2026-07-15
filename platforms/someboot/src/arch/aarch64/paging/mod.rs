@@ -26,8 +26,8 @@ pub fn enable_mmu() -> ! {
     let mmu_entry_phys = super::entry::mmu_entry as *const () as usize;
     println!("MMU Entry point at physical address: {:#x}", mmu_entry_phys);
 
-    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
-    let v_sp = meta.stack_top_virt;
+    let v_sp = crate::smp::primary_stack_top_virtual(crate::smp::early_current_cpu_idx())
+        .expect("primary reserved stack must be addressable before final per-CPU initialization");
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
     // Do not touch the debug UART in this final pre-relocation window. Some

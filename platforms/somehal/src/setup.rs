@@ -1,41 +1,18 @@
+pub use ax_cpu_local::CpuBindingV1;
 pub use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
 
-/// Validated value-only description of the CPU area selected by someboot.
-///
-/// The platform runtime must still match this value against its installed
-/// CPU-local layout before installing the architecture register. Keeping the
-/// fields private prevents higher layers from silently substituting another
-/// CPU or address after someboot resolved the immutable metadata table.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct CpuRegisterBinding {
-    area_base: usize,
-    cpu_index: u32,
-    reserved: u32,
-}
-
-impl CpuRegisterBinding {
-    /// Returns the logical CPU selected by immutable boot metadata.
-    pub const fn cpu_index(self) -> u32 {
-        self.cpu_index
-    }
-
-    /// Returns the mapped runtime base of that CPU's area.
-    pub const fn area_base(self) -> usize {
-        self.area_base
-    }
-}
-
 /// Resolves a value-only binding from someboot's immutable CPU-area table.
-pub fn cpu_register_binding(cpu_index: usize) -> Result<CpuRegisterBinding, CpuBindError> {
+pub fn cpu_register_binding(cpu_index: usize) -> Result<CpuBindingV1, CpuBindError> {
     let cpu_index = u32::try_from(cpu_index).map_err(|_| CpuBindError::InvalidCpu)?;
     let area_base =
         crate::smp::percpu_data_ptr(cpu_index as usize).ok_or(CpuBindError::MissingArea)? as usize;
-    Ok(CpuRegisterBinding {
-        area_base,
-        cpu_index,
-        reserved: 0,
-    })
+    // SAFETY: someboot final-high constructed every frozen prefix before
+    // publishing PerCpuMeta and keeps the mapped area live until shutdown.
+    let binding = unsafe { &*(area_base as *const ax_cpu_local::CpuAreaHeader) }.binding();
+    if binding.area_base != area_base || binding.cpu_index != cpu_index {
+        return Err(CpuBindError::LayoutMismatch);
+    }
+    Ok(binding)
 }
 
 /// Failure to bind the CPU-owned architecture register before HAL startup.
@@ -61,7 +38,7 @@ pub enum CpuBindError {
 pub trait KernelOp: MmioOp {
     /// Installs the CPU-owned architecture anchor before any HAL lock or IRQ
     /// path can observe the secondary CPU.
-    fn bind_current_cpu(&self, binding: CpuRegisterBinding) -> Result<(), CpuBindError> {
+    fn bind_current_cpu(&self, binding: CpuBindingV1) -> Result<(), CpuBindError> {
         let _ = binding;
         Err(CpuBindError::Unsupported)
     }

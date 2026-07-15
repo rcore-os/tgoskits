@@ -128,8 +128,8 @@ pub fn enable_mmu() -> ! {
         panic!("failed to setup x86_64 page table: {err:?}");
     }
 
-    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
-    let v_sp = meta.stack_top_virt;
+    let v_sp = crate::smp::primary_stack_top_virtual(crate::smp::early_current_cpu_idx())
+        .expect("primary reserved stack must be addressable before final per-CPU initialization");
     let v_entry = __kimage_va(super::entry::mmu_entry as *const () as usize) as usize;
     println!("x86_64 switching CR3 and resetting relocations before high-half jump");
 

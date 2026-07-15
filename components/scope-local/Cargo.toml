@@ -15,4 +15,5 @@ spin = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.6"
+ax-cpu-local.workspace = true
 ax-percpu = { workspace = true, features = ["host-test", "non-zero-vma"] }

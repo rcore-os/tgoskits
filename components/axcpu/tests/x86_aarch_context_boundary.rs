@@ -5,26 +5,28 @@ use std::{fs, path::PathBuf};
 #[test]
 fn x86_task_context_switches_tls_only_in_the_naked_window() {
     let source = read_arch_source("x86_64/context.rs");
-    let rust_switch = function_body(&source, "pub fn switch_to");
-    let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch"#);
+    let rust_switch = function_body(&source, "pub fn prepare_switch_to");
+    let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
     assert!(!rust_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("rdmsr"));
     assert!(naked_switch.contains("wrmsr"));
     assert!(naked_switch.contains("kernel_tls_offset"));
+    assert!(!source.contains("pub fn switch_to("));
     assert!(!task_context_definition(&source).contains("cr3"));
 }
 
 #[test]
 fn aarch64_task_context_switches_tls_only_in_the_naked_window() {
     let source = read_arch_source("aarch64/context.rs");
-    let rust_switch = function_body(&source, "pub fn switch_to");
-    let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch"#);
+    let rust_switch = function_body(&source, "pub fn prepare_switch_to");
+    let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
     assert!(!rust_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("tpidr_el0"));
+    assert!(!source.contains("pub fn switch_to("));
     assert!(!task_context_definition(&source).contains("ttbr0_el1"));
 }
 
@@ -33,11 +35,16 @@ fn architecture_tls_accessors_expose_task_owned_kernel_tls() {
     for relative in ["x86_64/asm.rs", "aarch64/asm.rs"] {
         let source = read_arch_source(relative);
         assert!(
-            source.contains("pub fn read_thread_pointer() -> KernelTlsBase"),
+            source.contains(
+                "#[cfg(feature = \"tls\")]\npub fn read_thread_pointer() -> KernelTlsBase"
+            ),
             "{relative} must return the task-owned TLS newtype",
         );
         assert!(
-            source.contains("pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase)"),
+            source.contains(
+                "#[cfg(feature = \"tls\")]\npub unsafe fn write_thread_pointer(kernel_tls: \
+                 KernelTlsBase)"
+            ),
             "{relative} must require the task-owned TLS newtype",
         );
     }

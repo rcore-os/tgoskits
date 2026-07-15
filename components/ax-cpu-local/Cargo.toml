@@ -12,8 +12,12 @@ license.workspace = true
 [features]
 default = []
 
+# Select the no-userspace UnikernelTls register ownership model. Images that
+# leave this disabled use LinuxCurrent semantics.
+tls = []
+
 # Use a thread-local register model for host-side tests.
 host-test = []
 
-# Select the EL2 CPU-local register for an AArch64 hypervisor host.
-arm-el2 = []
+[dependencies]
+trait-ffi.workspace = true

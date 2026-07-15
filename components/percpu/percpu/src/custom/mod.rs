@@ -10,7 +10,7 @@ pub fn init() -> usize {
     }
 }
 
-/// Returns the linked CPU-local template size.
+/// Returns the reserved CPU-local template size.
 #[cfg(any(feature = "host-test", feature = "linked-template"))]
 pub(crate) fn percpu_area_size() -> usize {
     ax_cpu_local::cpu_area_template_size()
@@ -25,18 +25,18 @@ pub(crate) fn percpu_area_size() -> usize {
     panic!("custom-base CPU-local access requires an explicit host-test storage fixture")
 }
 
-/// Returns the link-time base used by symbol relocation.
+/// Returns the loaded template base used by relative symbol offsets.
 #[doc(hidden)]
 #[cfg(any(feature = "host-test", feature = "linked-template"))]
-pub(crate) fn percpu_link_base() -> usize {
-    ax_cpu_local::cpu_area_header_link_address()
+pub(crate) fn percpu_template_base() -> usize {
+    ax_cpu_local::cpu_area_template_base()
 }
 
 /// Rejects host execution unless the consumer selected an explicit storage
 /// fixture; see [`percpu_area_size`].
 #[doc(hidden)]
 #[cfg(not(any(feature = "host-test", feature = "linked-template")))]
-pub(crate) fn percpu_link_base() -> usize {
+pub(crate) fn percpu_template_base() -> usize {
     panic!("custom-base CPU-local access requires an explicit host-test storage fixture")
 }
 
@@ -83,22 +83,11 @@ mod host {
         layout
             .validate()
             .expect("host CPU-local layout must be valid");
-        for cpu_index in 0..area_count {
-            // SAFETY: the custom host linker script maps the initialized
-            // template. Each destination lies in a distinct, writable slice
-            // of the storage allocation held for the process lifetime.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    percpu_link_base() as *const u8,
-                    (runtime_base + cpu_index * stride) as *mut u8,
-                    percpu_area_size(),
-                );
-            }
-        }
-        // SAFETY: `storage` owns the complete aligned region, every area has
-        // received the linked template, and the fixture leaks it until exit.
-        unsafe { crate::install_layout(layout) }.expect("host CPU-local layout must install once");
-        area_count
+        // SAFETY: `storage` owns zeroed, aligned raw areas for the complete
+        // process lifetime. No host thread can access them before this unique
+        // typed initialization completes.
+        unsafe { crate::initialize_layout(crate::PerCpuLayoutInitV2::for_supervisor_image(layout)) }
+            .expect("host CPU-local layout must initialize once")
     }
 
     fn align_up(value: usize, alignment: usize) -> Option<usize> {

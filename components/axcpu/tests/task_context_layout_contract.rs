@@ -18,6 +18,8 @@ fn every_task_context_has_a_compile_time_layout_contract() {
         ("loongarch64", LOONGARCH_CONTEXT),
     ] {
         let task_context = section(source, "pub struct TaskContext", "impl TaskContext");
+        assert!(task_context.contains("current_header"));
+        assert!(task_context.contains("kernel_tls"));
         assert!(
             source.contains("const _: () = {")
                 && source.contains("size_of::<KernelTlsBase>() == size_of::<usize>()"),
@@ -68,6 +70,8 @@ fn aarch64_switch_uses_only_rust_derived_task_offsets() {
             "AArch64 context switch must use the named `{field}` offset",
         );
     }
+    assert_rust_derived_offset(AARCH64_CONTEXT, "current_header", "offset");
+    assert!(AARCH64_CONTEXT.contains("{current_header_offset}"));
     for base in ["x0", "x1"] {
         assert!(!context_switch.contains(&format!("[{base}]")));
         for index in 0..=12 {
@@ -83,7 +87,7 @@ fn aarch64_switch_uses_only_rust_derived_task_offsets() {
 fn riscv_switch_uses_only_rust_derived_task_offsets() {
     let context_switch = naked_context_switch(RISCV_CONTEXT);
     for field in [
-        "ra", "sp", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "tp",
+        "ra", "sp", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
     ] {
         assert_rust_derived_offset(RISCV_CONTEXT, field, "index");
         assert!(
@@ -91,6 +95,10 @@ fn riscv_switch_uses_only_rust_derived_task_offsets() {
             "RISC-V context switch must use the named `{field}` index",
         );
     }
+    assert_rust_derived_offset(RISCV_CONTEXT, "kernel_tls", "index");
+    assert_rust_derived_offset(RISCV_CONTEXT, "current_header", "index");
+    assert!(RISCV_CONTEXT.contains("{kernel_tls_index}"));
+    assert!(RISCV_CONTEXT.contains("{current_header_index}"));
     assert_no_numeric_macro_slots(context_switch, "a0", 0..=13);
     assert_no_numeric_macro_slots(context_switch, "a1", 0..=13);
 }
@@ -121,6 +129,8 @@ fn loongarch_switch_uses_only_rust_derived_task_offsets() {
     for field in ["ra", "sp", "kernel_tls"] {
         assert_rust_derived_offset(LOONGARCH_CONTEXT, field, "offset");
     }
+    assert_rust_derived_offset(LOONGARCH_CONTEXT, "current_header", "offset");
+    assert!(LOONGARCH_CONTEXT.contains("{current_header_offset}"));
     assert!(
         LOONGARCH_CONTEXT.contains("s0_offset = const offset_of!(TaskContext, s)"),
         "LoongArch saved-register array offsets must derive from its Rust field",

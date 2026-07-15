@@ -40,34 +40,39 @@ fn assert_in_order(source: &str, earlier: &str, later: &str) {
 
 #[test]
 fn task_context_switches_tp_inside_the_naked_handoff() {
-    let rust_switch = section(
+    let prepare = section(
         CONTEXT,
-        "    pub fn switch_to(&mut self, next_ctx: &Self) {",
-        "#[cfg(feature = \"fp-simd\")]\n#[unsafe(naked)]",
+        "    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {",
+        "    /// Performs only the final GPR/current/TLS transfer.",
     );
     assert!(
-        !rust_switch.contains("write_thread_pointer"),
+        !prepare.contains("write_thread_pointer"),
         "Rust must not install next tp while the previous stack is still active"
     );
+    assert!(!CONTEXT.contains("pub fn switch_to(&mut self, next_ctx: &Self)"));
 
-    let raw_switch = section(
+    let tls_switch = section(
         CONTEXT,
-        "unsafe extern \"C\" fn context_switch",
-        "        ra_index = const",
+        "#[cfg(feature = \"tls\")]\n#[unsafe(naked)]",
+        "#[cfg(not(feature = \"tls\"))]",
     );
     assert!(
-        raw_switch.contains("STR     tp, a0, {tp_index}"),
-        "the final assembly handoff must save previous tp"
+        tls_switch.contains("STR     tp, a0, {kernel_tls_index}"),
+        "UnikernelTls must save previous task TLS"
     );
     assert!(
-        raw_switch.contains("LDR     tp, a1, {tp_index}"),
-        "the final assembly handoff must restore next tp"
+        tls_switch.contains("LDR     tp, a1, {kernel_tls_index}"),
+        "UnikernelTls must restore next task TLS"
     );
-    assert_in_order(
-        raw_switch,
-        "STR     tp, a0, {tp_index}",
-        "LDR     tp, a1, {tp_index}",
+    let linux_switch = section(
+        CONTEXT,
+        "#[cfg(not(feature = \"tls\"))]\n#[unsafe(naked)]",
+        "current_header_index = const offset_of!(TaskContext, current_header)",
     );
+    assert!(!linux_switch.contains("STR     tp"));
+    assert!(linux_switch.contains("LDR     tp, a1, {current_header_index}"));
+    assert_in_order(linux_switch, "LDR     sp", "LDR     tp");
+    assert_in_order(linux_switch, "LDR     tp", "\n        ret\"");
 }
 
 #[test]
@@ -103,8 +108,13 @@ fn task_context_owns_kernel_tls_but_not_address_space() {
         "TaskContext::init must distinguish kernel TLS from an arbitrary address"
     );
     assert!(
-        CONTEXT.contains("tp_index = const offset_of!(TaskContext, tp)"),
-        "assembly offsets must be derived from the Rust TaskContext layout"
+        CONTEXT.contains(
+            "kernel_tls_index = const offset_of!(TaskContext, kernel_tls) / size_of::<usize>()"
+        ) && CONTEXT.contains(
+            "current_header_index = const offset_of!(TaskContext, current_header) / \
+             size_of::<usize>()"
+        ),
+        "both image-mode assembly offsets must derive from TaskContext"
     );
 
     for forbidden in ["pub tp: usize", "pub satp:"] {
@@ -124,11 +134,14 @@ fn task_context_owns_kernel_tls_but_not_address_space() {
 #[test]
 fn thread_pointer_api_exposes_task_owned_kernel_tls() {
     assert!(
-        ASM.contains("pub fn read_thread_pointer() -> KernelTlsBase"),
+        ASM.contains("#[cfg(feature = \"tls\")]\npub fn read_thread_pointer() -> KernelTlsBase"),
         "reading tp must preserve the task-owned kernel TLS type"
     );
     assert!(
-        ASM.contains("pub unsafe fn write_thread_pointer(tls_base: KernelTlsBase)"),
+        ASM.contains(
+            "#[cfg(feature = \"tls\")]\npub unsafe fn write_thread_pointer(tls_base: \
+             KernelTlsBase)"
+        ),
         "writing tp must not accept an untyped CPU-local or arbitrary address"
     );
     assert!(
@@ -140,27 +153,29 @@ fn thread_pointer_api_exposes_task_owned_kernel_tls() {
 #[test]
 fn trap_entry_uses_privilege_origin_and_restores_cpu_anchor_before_rust() {
     assert!(
-        TRAP_ENTRY.contains("sstatus.SPP"),
-        "trap origin must be derived from saved privilege state"
+        TRAP_ENTRY.contains("csrrw   tp, sscratch, tp")
+            && TRAP_ENTRY.contains("bnez    tp, .Ltrap_from_user"),
+        "LinuxCurrent must use the tp/sscratch origin handshake"
     );
     assert!(
-        !TRAP_ENTRY.contains("sscratch == 0"),
-        "sscratch is a CPU anchor and its value must not encode trap origin"
+        TRAP_ENTRY.contains("csrw    sscratch, zero"),
+        "kernel Rust must observe canonical sscratch=0"
     );
     assert!(
         TRAP_ENTRY.contains("__global_pointer$"),
         "kernel gp must be restored to the standard RISC-V global pointer"
     );
     assert!(
-        !TRAP_ENTRY.contains("csrrw   sp, sscratch, sp"),
-        "sscratch is no longer a user-stack exchange register"
+        !TRAP_ENTRY.contains("csrrw   t0, sscratch, t0"),
+        "LinuxCurrent must not treat sscratch as the permanent CPU prefix"
     );
 
     for field in [
         "CPU_AREA_KERNEL_STACK_POINTER_OFFSET",
         "CPU_AREA_USER_TRAP_FRAME_OFFSET",
-        "CPU_AREA_ENTRY_SCRATCH0_OFFSET",
-        "CPU_AREA_ENTRY_SCRATCH1_OFFSET",
+        "CURRENT_THREAD_CPU_BASE_OFFSET",
+        "CURRENT_THREAD_TRAP_SCRATCH0_OFFSET",
+        "CURRENT_THREAD_TRAP_SCRATCH1_OFFSET",
     ] {
         assert!(
             TRAP_GLUE.contains(field),
@@ -173,7 +188,7 @@ fn trap_entry_uses_privilege_origin_and_restores_cpu_anchor_before_rust() {
         "trap_vector_base:",
         "j       riscv_trap_handler",
     );
-    assert_in_order(kernel_dispatch, "csrw    sscratch", "mv      a0, sp");
+    assert_in_order(kernel_dispatch, "csrw    sscratch, zero", "mv      a0, sp");
     assert_in_order(kernel_dispatch, "__global_pointer$", "mv      a0, sp");
 
     let enter_user = section(TRAP_ENTRY, "enter_user:", ".Ltrap_return:");
@@ -185,6 +200,29 @@ fn trap_entry_uses_privilege_origin_and_restores_cpu_anchor_before_rust() {
     assert!(
         TRAP_GLUE.contains("unsafe extern \"C\" fn riscv_trap_handler(raw_tf: *mut RawTrapFrame)"),
         "assembly must enter Rust through an explicit raw C ABI boundary"
+    );
+}
+
+#[test]
+fn kernel_trap_initializes_the_complete_typed_register_frame() {
+    let kernel_entry = section(
+        TRAP_ENTRY,
+        "    // Kernel trap: recover the interrupted current header and return",
+        ".Ltrap_from_user:",
+    );
+    assert!(
+        kernel_entry.contains("STR     zero, sp, 0"),
+        "the skipped x0 slot must be initialized before Rust borrows the whole trap frame"
+    );
+    assert_in_order(
+        kernel_entry,
+        "addi    sp, sp, -{trapframe_size}",
+        "STR     zero, sp, 0",
+    );
+    assert_in_order(
+        kernel_entry,
+        "STR     zero, sp, 0",
+        "\n    PUSH_GENERAL_REGS\n",
     );
 }
 

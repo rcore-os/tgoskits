@@ -81,6 +81,28 @@ fn vcpu_uses_kvm_scratch_without_clobbering_percpu_shadow() {
 }
 
 #[test]
+fn vm_exit_restores_host_tls_before_returning_to_rust() {
+    let trampoline = section(
+        VCPU_TRAMPOLINE,
+        "unsafe extern \"C\" fn vmexit_trampoline",
+        "ctx_size = const core::mem::size_of::<LoongArchContextFrame>()",
+    );
+
+    assert_in_order(trampoline, "ld.d $tp, $sp, 88", "jr $ra");
+    assert!(
+        !trampoline.contains("\"bl ") && !trampoline.contains("\"jirl "),
+        "the trampoline must not call Rust or helpers before returning with host tp"
+    );
+
+    let save_guest = section(VCPU_ENTRY, ".macro SAVE_GUEST_REGS", ".endm");
+    assert_in_order(save_guest, "st.d    $r21", "RESTORE_HOST_PERCPU");
+    assert!(
+        save_guest.contains("csrrd   $t0, HOST_VCPU_TMP_KS"),
+        "guest t0 must be recovered from KS5 before the host anchor is restored"
+    );
+}
+
+#[test]
 fn cpu_owned_gintc_and_full_ecfg_live_at_pinned_boundaries() {
     let setup = section(VCPU_RUN, "pub fn setup", "pub fn run");
     assert!(

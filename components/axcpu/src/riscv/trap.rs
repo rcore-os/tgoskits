@@ -1,8 +1,12 @@
 use core::mem::size_of;
 
+#[cfg(feature = "tls")]
+use ax_cpu_local::{CPU_AREA_ENTRY_SCRATCH0_OFFSET, CPU_AREA_ENTRY_SCRATCH1_OFFSET};
+use ax_cpu_local::{CPU_AREA_KERNEL_STACK_POINTER_OFFSET, CPU_AREA_USER_TRAP_FRAME_OFFSET};
+#[cfg(not(feature = "tls"))]
 use ax_cpu_local::{
-    CPU_AREA_ENTRY_SCRATCH0_OFFSET, CPU_AREA_ENTRY_SCRATCH1_OFFSET,
-    CPU_AREA_KERNEL_STACK_POINTER_OFFSET, CPU_AREA_USER_TRAP_FRAME_OFFSET,
+    CURRENT_THREAD_CPU_BASE_OFFSET, CURRENT_THREAD_TRAP_SCRATCH0_OFFSET,
+    CURRENT_THREAD_TRAP_SCRATCH1_OFFSET,
 };
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus;
@@ -28,9 +32,10 @@ const _: () = {
 
 /// Lifetime-bound view of a supervisor-origin RISC-V trap frame.
 ///
-/// The CPU-area anchor is held in `sscratch` and is therefore absent from the
-/// exposed register image. The saved status word remains owned by the trap
-/// return path and is preserved across probe writeback.
+/// CPU-owned anchor state is absent from the exposed register image. In
+/// LinuxCurrent, kernel `sscratch` is canonical zero and `tp` identifies the
+/// current header; UnikernelTls keeps the CPU prefix in `sscratch`. The saved
+/// status word remains owned by trap return and survives probe writeback.
 pub struct KernelTrapFrame<'a> {
     raw: &'a mut RawTrapFrame,
     _not_send: core::marker::PhantomData<*mut ()>,
@@ -89,9 +94,22 @@ impl core::fmt::Debug for KernelTrapFrame<'_> {
     }
 }
 
+#[cfg(not(feature = "tls"))]
 core::arch::global_asm!(
     include_asm_macros!(),
     include_str!("trap.S"),
+    trapframe_size = const size_of::<RawTrapFrame>(),
+    kernel_stack_pointer_index = const CPU_AREA_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
+    user_trap_frame_index = const CPU_AREA_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
+    thread_cpu_base_index = const CURRENT_THREAD_CPU_BASE_OFFSET / size_of::<usize>(),
+    thread_scratch0_index = const CURRENT_THREAD_TRAP_SCRATCH0_OFFSET / size_of::<usize>(),
+    thread_scratch1_index = const CURRENT_THREAD_TRAP_SCRATCH1_OFFSET / size_of::<usize>(),
+);
+
+#[cfg(feature = "tls")]
+core::arch::global_asm!(
+    include_asm_macros!(),
+    include_str!("trap_tls.S"),
     trapframe_size = const size_of::<RawTrapFrame>(),
     kernel_stack_pointer_index = const CPU_AREA_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
     user_trap_frame_index = const CPU_AREA_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),

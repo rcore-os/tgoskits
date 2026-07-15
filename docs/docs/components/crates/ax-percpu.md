@@ -3,71 +3,80 @@
 > 路径：`components/percpu/percpu`
 > 分层：通用 CPU-local 语义层（`no_std`）
 
-`ax-percpu` 管理 per-CPU 模板布局、符号 offset、CPU area 注册，以及 current/remote 地址计算。它不包含任何架构汇编，也不直接读写 GS、TPIDR、`sscratch`、`r21` 等寄存器；这些最小指令统一属于零依赖叶子 crate `ax-cpu-local`。
+`ax-percpu` 管理 per-CPU template、symbol offset、final-high typed initialization、冻结后的 area layout，以及 current/remote 地址计算。它不包含架构汇编，也不直接读写 GS、TPIDR、`sscratch`、`r21` 等寄存器；这些最小指令只允许位于 `ax-cpu-local`，该叶子 crate 仅依赖 value-only `trait-ffi` 边界。
 
 ## 分层与所有权
 
 ```text
 ax-cpu-local
-  ├─ CpuAreaHeader / CpuPin / CpuIndex
-  └─ 四架构 CPU anchor 的最小 inline asm
+  ├─ CpuAreaPrefixV2 / CpuPin / CpuIndex / CpuBindingV1
+  ├─ CpuLocalPlatformV1 value-only trait-ffi
+  └─ allowlist 中的四架构寄存器 primitive
 
 ax-percpu
-  ├─ .percpu 模板与 symbol offset
+  ├─ .percpu template、typed initializer table 与 symbol offset
   ├─ PerCpuLayoutV1 / PerCpuArea / BoundCpuPin
-  ├─ current = area base + symbol offset
+  ├─ current = platform binding.area_base + symbol offset
   └─ remote = runtime_base + cpu * stride + offset
 ```
 
-每个 area 从固定的 `CpuAreaPrefix` 开始：第一条 cache line 是只读身份 `CpuAreaHeader`，第二条 cache line 是 trap entry scratch。header 保存 `self_base`、relocation、`CpuIndex`、generation 与 cookie。链接脚本必须把 `.percpu.000.header` 放在模板 offset 0，并保证至少 64 字节对齐。64 字节只是 header 的下限，不是变量的上限；宏在 `.ax_percpu.align` 中记录每个 storage 的实际对齐，链接器以 `MAX(64, ALIGNOF(.percpu))` 对齐模板、runtime base 和 stride，Rust 注册逻辑再次核对两份元数据。
+每个 area 从固定 192 字节的 `CpuAreaPrefixV2` 开始：
 
-CPU anchor 的归属如下：
+- cache line 0：不可变 `CpuAreaHeader`，保存 ABI version、register mode、host level、CPU index、generation、direct area base、boot-thread pointer 与 cookie；
+- cache line 1：`CpuRuntimeAnchor`，保存 current-thread slot、kernel continuation、user frame 与 trap scratch；
+- cache line 2：永久 `BootThreadHeader`。
 
-| 架构 | CPU-owned anchor |
-| --- | --- |
-| x86_64 | kernel GS base 指向 `CpuAreaHeader` |
-| AArch64 | TPIDR_EL1/EL2 指向 `CpuAreaHeader` |
-| RISC-V | `sscratch` 指向 `CpuAreaHeader` |
-| LoongArch | `r21` 与 KS3 保存 relocation mirror |
+header 不保存 relocation。链接脚本必须把 `.percpu.000.header` 放在 template offset 0，并让 prefix 至少 64 字节对齐。64 字节不是普通 per-CPU 对象的对齐上限；宏在 `.ax_percpu.align` 中发布每个 storage 的真实对齐，链接器按 `MAX(64, ALIGNOF(.percpu))` 对齐 template、runtime base 和 stride，Rust 初始化逻辑再核对 descriptor 最大值。
 
-anchor 永远不进入任务上下文。RISC-V `gp` 是标准 psABI global pointer，`tp` 是任务 TLS；LoongArch 用户 `r21` 只在 user trap frame 中保存和恢复。
+CPU-owned anchor 永远不进入任务上下文，`ax-percpu` 也不假设某一种寄存器编码。RISC-V 的 `gp` 始终是标准 psABI global pointer；LinuxCurrent 模式由 pinned `CurrentThreadHeader` 的 `tp` 恢复 area，正常内核态 `sscratch=0`，trap 仅在 entry/return handshake 中借用它；UnikernelTls 模式才由 `sscratch` 保存 area、`tp` 保存 TLS。LoongArch 的 kernel `r21` 与 KS3 保存 direct area base，用户 `r21` 只由 user trap context 保存和恢复。
 
-## 初始化协议
+## final-high typed initialization
 
-平台先准备连续、CPU-lifetime 的区域，并一次注册：
+early boot 只分配、清零并映射 raw area storage，不复制 template 中任意 Rust 对象。完成最终镜像 relocation 后，唯一 final-high 入口构造所有 area：
 
 ```rust,ignore
-unsafe {
-    ax_percpu::install_layout(ax_percpu::PerCpuLayoutV1 {
-        runtime_base,
-        area_stride,
-        area_count,
-        flags: 0,
-})?;
-}
+let layout = ax_percpu::PerCpuLayoutV1 {
+    runtime_base,
+    area_stride,
+    area_count,
+    flags: 0,
+};
+let init = ax_percpu::PerCpuLayoutInitV2::new(
+    layout,
+    generation,
+    cookie,
+    register_mode,
+    host_level,
+);
+
+unsafe { ax_percpu::initialize_layout(init)? };
 ```
 
-`install_layout` 是 `unsafe`，因为数值校验无法证明 runtime range 已映射、可读写且持续到关机；平台调用者必须提供该存储生命周期保证。
+`#[def_percpu]` 为每个对象在 `.percpu.storage` 生成 `MaybeUninit<Storage>`，并在 `.ax_percpu.init` 生成 registration。`initialize_layout` 在第一次 destination write 前校验全部 prefix facts、descriptor 范围、size、alignment、overflow 与 pairwise overlap；通过后才在每个最终 area 地址用 typed initializer 和 `ptr::write` 独立构造值。它不会把一个 Rust 对象的字节复制到另一个 allocation。
 
-每个 CPU 在 IRQ/trap 尚不可进入、调度尚未开放时执行唯一绑定：
+descriptor/registration constructor 是隐藏的 `unsafe const fn`。其 safety contract 要求 thunk 属于同一 final image、终身有效、每次返回完全相同的 storage/function descriptor；否则“先验证全部记录、后写入”的两阶段协议无法成立。
+
+layout 初始化和发布都只能成功一次，持续到关机；`flags` 当前必须为零。本版本不支持 CPU hotplug、运行期重绑定或动态卸载。
+
+## 平台绑定边界
+
+`ax-percpu` 不安装架构寄存器。它只向 platform binder 提供完整 value-only binding：
 
 ```rust,ignore
 let cpu = ax_percpu::CpuIndex::try_from(cpu_id)?;
 let area = ax_percpu::area(cpu)?;
-unsafe { ax_percpu::bind_current(area)? };
+
+// Only the offline, IRQ/trap-excluded platform binder may call this leaf API.
+unsafe { ax_cpu_local::raw::install_binding(area.binding())? };
 ```
 
-`bind_current` 在写 header 或架构寄存器前完成所有可恢复校验；一旦进入 commit，后续 verify 失败属于不可回滚的架构不变量并立即 fatal，不能把已经发布的 CPU anchor 伪装成普通 `Err` 返回。
+真实 OS 必须实现唯一 `CpuLocalPlatformV1` provider；普通 consumer 只调用 `ax_cpu_local::platform` client facade。`ax-percpu` 没有 `bind_current`、`InstalledPerCpuArea` 或 raw register accessor，避免语义层再次成为第二个 binder。CPU 完成 prefix 初始化和平台绑定前不得 online。
 
-相同 layout 的重复注册是幂等的，冲突 layout 会返回错误。`flags` 当前必须为零；stride、对齐、模板大小、CPU 数量和地址溢出都会被校验。layout 与 area 持续到关机，本版本不支持 CPU hotplug 或重绑定。
-
-ArceOS 动态平台的唯一 binder 是 `axplat-dyn` platform entry。`ax-plat` 和 `ax-runtime` 只能验证 header 并发布自己的 per-CPU 字段，不得再次写 CPU anchor。
+host integration test 也不获得默认 provider。每个独立测试二进制必须显式提供自己的 fake `CpuLocalPlatformV1`，避免测试符号与真实 OS provider 冲突。
 
 ## 访问 API
 
-`#[def_percpu]` 生成统一的 `PerCpu<T, Symbol, AccessKind>` 描述符；`custom-base` 不再生成另一套包装类型。
-
-`CpuPin` 只证明操作期间不会迁移，不证明架构 anchor 已指向已安装 area。安全 current access 必须先调用 `bound_current(&CpuPin)`，得到同时借用迁移证明并验证 layout、stride、header index/generation/cookie 的 `BoundCpuPin`。`PreemptGuard`、`IrqGuard` 和 `PreemptIrqGuard` 只能借出 `CpuPin`，不能直接构造更强的绑定证明；两种 pin 都不证明 IRQ 排他或可变别名排他。
+`CpuPin` 只证明操作期间不会迁移，不证明 CPU area 已绑定。安全 current access 必须先调用 `bound_current(&CpuPin)`；该函数消费 platform facade 返回的完整 binding，按 CPU index 找到 frozen layout area，逐项匹配 ABI/mode/host/generation/base/boot-thread/cookie，再校验不可变 prefix，最终返回借用原 pin 的 `BoundCpuPin`。
 
 ```rust,ignore
 #[ax_percpu::def_percpu]
@@ -81,27 +90,30 @@ fn publish(pin: &ax_percpu::CpuPin, value: usize) -> Result<(), ax_percpu::PerCp
 }
 ```
 
-- `bool/u8/u16/u32/u64/usize` 使用对应 `Atomic*` 模板，安全 `read_current/write_current` 是 Relaxed atomic，hard IRQ 重入不会产生 Rust data race。
+- `bool/u8/u16/u32/u64/usize` 使用对应 `Atomic*` storage；安全 `read_current/write_current` 是 Relaxed atomic，hard IRQ 重入不会产生 Rust data race。
 - 对象只在 `T: Sync` 时提供 HRTB `with_current_ref`，闭包不能安全导出临时引用。
-- 对象可变访问仅提供 `unsafe with_current_mut_raw`/raw pointer API；调用者必须额外证明 IRQ、嵌套调用和 remote access 均不产生别名。
-- remote access 接收 typed `CpuIndex`，通过已安装 layout 做 O(1) 计算；产生引用的 remote API 是 `unsafe`。
-- `repr(align(...))` 可高于 cache line 或 page；平台分配器必须使用链接器发布的实际 template alignment，不得把 64B header alignment 或 4K page size 当成 symbol alignment 上限。
-
-旧的 `init_percpu_reg`、`read_percpu_reg`、`write_percpu_reg`、整数式 `percpu_area_base` API 已删除。early boot、trap prologue 和 LockRuntime 只能使用清楚标注且局部封装的 raw API。
+- 对象可变访问仅提供 `unsafe with_current_mut_raw`/raw pointer API；调用者必须额外证明 IRQ、嵌套调用和 remote access 不会形成别名。
+- `PerCpuArea::prefix/runtime_anchor` 提供 typed shutdown-lifetime remote view；`BoundCpuPin::prefix/runtime_anchor` 提供 pinned current view，不需要 consumer cast runtime address。
+- remote access 接收 typed `CpuIndex`，通过 frozen layout 做 O(1) 地址计算；产生引用的 remote API 仍是 `unsafe`。
+- `repr(align(...))` 可以高于 cache line 或 page；platform allocator 必须服从链接器发布的真实 template alignment。
 
 ## Feature
 
-- `custom-base`：区域由平台外部分配；仍使用相同 layout、area 和变量 API。
-- `sp-naive`：单核退化模型，不读取架构 anchor。
-- `host-test`：host 线程本地 anchor 与测试存储。
-- `non-zero-vma`：允许 host/test 的模板不是零 VMA。
-- `arm-el2`：AArch64 使用 TPIDR_EL2。
+- `custom-base`：area storage 由平台外部分配；变量 API 不变。
+- `linked-template`：显式使用最终内核镜像保留的 template bounds。
+- `sp-naive`：单核退化模型，不查询 platform binding。
+- `host-test`：启用 host register/storage fixture，但不提供默认 trait-ffi provider。
+- `non-zero-vma`：允许 host/test template 使用非零 VMA。
+- `tls`：选择 final-image `UnikernelTls` mode，并转发到 `ax-cpu-local/tls`。
+
+不存在 `arm-el2` feature。AArch64 host level 必须在 final-high 阶段读取 live `CurrentEL`，不能由 Cargo feature 猜测。
 
 ## 验证重点
 
-- `ax-percpu` 与 `percpu_macros` 中不得出现 `asm!`/`global_asm!` 或架构寄存器名。
-- `ax-percpu` 不依赖 `ax-task`、`ax-runtime`、`ax-hal` 或具体平台。
-- 无 `BoundCpuPin` 不能调用安全 current accessor；它必须借用仍存活的 `CpuPin`，且二者与 guard 都不可跨线程。
-- normal、`custom-base`、`sp-naive` 三种模式必须共享同一变量 API。
-- 链接脚本必须分别保留 `.percpu` 模板与 `.ax_percpu.align` descriptor 表；runtime base 和 stride 必须满足 descriptor 最大值，且 linker `ALIGNOF(.percpu)` 与 Rust descriptor 最大值必须一致。
-- 四架构启动必须在 CPU online 前完成 header 初始化与 anchor 验证。
+- `ax-percpu` 与 `percpu_macros` 中必须为零 `asm!`/`global_asm!`、零架构寄存器名；`percpu_macros/src/arch.rs` 不得存在。
+- `ax-percpu` 不依赖 `ax-task`、`ax-runtime`、`ax-hal` 或具体平台；`ax-cpu-local` 只能依赖 `trait-ffi`。
+- 无 `BoundCpuPin` 不能调用安全 current accessor；`CpuPin`、`BoundCpuPin` 与 guard 都不可跨线程。
+- normal、`custom-base`、`sp-naive` 与 `tls` 组合共享同一变量 API。
+- linker 必须分别保留 `.percpu`、`.ax_percpu.init` 与 `.ax_percpu.align`，prefix 必须位于 offset 0。
+- final-high 初始化前不得访问 area；平台绑定完成前 CPU 不得 online。
+- x86 raw ELF entry 必须在任何 Rust frame 前完成 relocation，并用三个真实 runtime load bias 执行验证。

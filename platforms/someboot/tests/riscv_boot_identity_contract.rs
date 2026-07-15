@@ -41,7 +41,14 @@ fn riscv_sscratch_points_to_a_versioned_boot_record() {
         .split("pub fn enable_mmu_secondary")
         .next()
         .unwrap();
-    assert!(primary.contains("let v_sp = meta.stack_top_virt;"));
+    assert!(
+        primary.contains("primary_stack_top_virtual(crate::smp::early_current_cpu_idx())"),
+        "the primary pre-finalization path must derive its stack from reserved layout facts"
+    );
+    assert!(
+        !primary.contains("cpu_meta(") && !primary.contains("meta.stack_top_virt"),
+        "the primary MMU transition must not read metadata before final-high initialization"
+    );
 
     let secondary = paging
         .split("pub fn enable_mmu_secondary")

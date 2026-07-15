@@ -4,71 +4,43 @@ use std::{fs, path::Path};
 
 #[test]
 #[cfg(feature = "host-test")]
-fn host_threads_inherit_the_bootstrap_fixture_anchor_until_overridden() {
-    let bootstrap_prefix = Box::leak(Box::new(ax_cpu_local::CpuAreaPrefix::TEMPLATE));
-    let bootstrap_base = (bootstrap_prefix as *mut ax_cpu_local::CpuAreaPrefix) as usize;
-    let bootstrap_anchor = ax_cpu_local::CpuLocalAnchor::new(
-        bootstrap_base,
-        ax_cpu_local::PerCpuRelocation::from_raw(0),
-    );
-    *bootstrap_prefix = ax_cpu_local::CpuAreaPrefix::for_area(
-        ax_cpu_local::CpuIndex::try_from(0).unwrap(),
-        bootstrap_anchor,
-        1,
-        0xace0,
-    );
-    // SAFETY: the leaked prefix remains mapped for the process lifetime, and
-    // this host fixture cannot receive architecture traps.
-    unsafe { ax_cpu_local::install_current(bootstrap_anchor) };
-
-    let inherited_base = std::thread::spawn(move || {
-        let inherited_base = {
-            // SAFETY: this fixture thread cannot migrate while it observes the
-            // inherited bootstrap anchor.
-            let pin = unsafe { ax_cpu_local::CpuPin::new_unchecked() };
-            // SAFETY: the fixture anchor is mapped and this thread remains on
-            // the modeled CPU for the complete raw register read.
-            unsafe { ax_cpu_local::current_area_base_raw(&pin) }
-        };
-
-        let override_prefix = Box::leak(Box::new(ax_cpu_local::CpuAreaPrefix::TEMPLATE));
-        let override_base = (override_prefix as *mut ax_cpu_local::CpuAreaPrefix) as usize;
-        let override_anchor = ax_cpu_local::CpuLocalAnchor::new(
-            override_base,
-            ax_cpu_local::PerCpuRelocation::from_raw(0),
+fn each_host_thread_must_install_its_own_cpu_binding() {
+    std::thread::spawn(|| {
+        // SAFETY: this fixture thread models one non-migrating CPU.
+        let pin = unsafe { ax_cpu_local::CpuPin::new_unchecked() };
+        assert_eq!(
+            ax_cpu_local::raw::current_binding(&pin),
+            Err(ax_cpu_local::CpuLocalError::NotInitialized)
         );
-        *override_prefix = ax_cpu_local::CpuAreaPrefix::for_area(
+
+        let prefix = Box::leak(Box::new(ax_cpu_local::CpuAreaPrefix::template()));
+        let base = (prefix as *mut ax_cpu_local::CpuAreaPrefix) as usize;
+        *prefix = ax_cpu_local::CpuAreaPrefix::for_area(
             ax_cpu_local::CpuIndex::try_from(1).unwrap(),
-            override_anchor,
+            base,
             1,
             0xace0,
         );
-        // SAFETY: the leaked override remains live for the process, and this
-        // fixture thread is pinned to the modeled CPU for the following read.
-        unsafe { ax_cpu_local::install_current(override_anchor) };
-
-        // SAFETY: the fixture thread cannot migrate after its explicit
-        // thread-local installation.
-        let override_pin = unsafe { ax_cpu_local::CpuPin::new_unchecked() };
+        // SAFETY: this thread explicitly owns the leaked CPU fixture and cannot
+        // receive modeled traps while installing the complete frozen binding.
+        unsafe { ax_cpu_local::raw::install_binding(prefix.header().binding()) }.unwrap();
         assert_eq!(
-            unsafe { ax_cpu_local::current_area_base_raw(&override_pin) },
-            override_base
+            unsafe { ax_cpu_local::raw::current_area_base_raw(&pin) },
+            base
         );
-        inherited_base
     })
     .join()
     .unwrap();
-
-    assert_eq!(inherited_base, bootstrap_base);
 }
 
 const REGISTER: &str = include_str!("../src/register.rs");
+const IDENTITY: &str = include_str!("../src/identity.rs");
 const SYMBOL: &str = include_str!("../src/symbol.rs");
 
 #[test]
 fn architecture_assembly_stays_in_the_leaf_allowlist() {
     let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = ["register.rs", "symbol.rs"];
+    let allowed = ["register.rs"];
 
     for entry in fs::read_dir(source_dir).expect("ax-cpu-local source directory must be readable") {
         let path = entry.expect("source entry must be readable").path();
@@ -123,68 +95,99 @@ fn leaf_exports_only_raw_value_reads_for_higher_layer_verification() {
 }
 
 #[test]
-fn link_address_materialization_preserves_the_full_pointer_width() {
+fn template_metadata_uses_position_independent_rust_addresses() {
     assert!(
-        SYMBOL.contains("mov {address}, offset {prefix}")
-            && !SYMBOL.contains("mov {address:e}, offset {prefix}"),
-        "x86_64 must not zero-extend a 32-bit link address"
+        !SYMBOL.contains("asm!(") && !SYMBOL.contains("target_arch"),
+        "template metadata must not embed architecture-specific absolute relocations"
     );
-    for relocation in ["abs_g0_nc", "abs_g1_nc", "abs_g2_nc", "abs_g3"] {
+    for symbol in ["__AX_CPU_AREA_PREFIX", "__AX_CPU_AREA_TEMPLATE_END"] {
         assert!(
-            SYMBOL.contains(relocation),
-            "AArch64 link address materialization is missing {relocation}"
+            SYMBOL.contains(&format!("addr_of!(crate::{symbol})")),
+            "rustc must materialize the load-relocated address of {symbol}"
         );
     }
-    for relocation in ["%highest", "%higher"] {
-        assert!(
-            SYMBOL.contains(relocation),
-            "RISC-V link address materialization is missing {relocation}"
-        );
-    }
-    for instruction in ["lu32i.d", "lu52i.d"] {
-        assert!(
-            SYMBOL.contains(instruction),
-            "LoongArch link address materialization is missing {instruction}"
-        );
-    }
+    assert!(
+        SYMBOL.contains("checked_sub") && SYMBOL.contains("checked_add"),
+        "template size must be derived from a checked relative range"
+    );
 }
 
 #[test]
-fn riscv_uses_only_the_scratch_anchor() {
-    let backend = architecture_backend("riscv32", "loongarch64");
-    assert!(backend.contains("csrw sscratch"));
+fn riscv_uses_linux_current_or_unikernel_scratch_by_image_mode() {
+    let backend = architecture_backend(REGISTER, "riscv32", "loongarch64");
+    assert!(backend.contains("csrw sscratch, zero"));
+    assert!(backend.contains("csrw sscratch, {base}"));
+    assert!(backend.contains("mv tp, {current}"));
     assert!(backend.contains("csrr {base}, sscratch"));
     for register in words(backend) {
         assert!(
-            !matches!(register, "gp" | "tp"),
-            "RISC-V CPU-local code must not borrow task/global register {register}"
+            register != "gp",
+            "RISC-V CPU-local code must preserve the psABI global pointer"
         );
     }
 }
 
 #[test]
 fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
-    let x86 = architecture_backend("x86_64", "aarch64");
+    let x86 = architecture_backend(REGISTER, "x86_64", "aarch64");
     assert!(x86.contains("IA32_GS_BASE"));
-    assert!(x86.contains("rdmsr"));
-    assert!(!x86.contains("gs:["));
+    assert!(x86.contains("gs:[{self_base_offset}]"));
+    assert!(x86.contains("gs:[{current_thread_offset}]"));
+    let x86_install = x86
+        .split_once("pub unsafe fn install_current")
+        .unwrap()
+        .1
+        .split_once("pub unsafe fn read_current_area_base")
+        .unwrap()
+        .0;
+    assert!(!x86_install.contains("IA32_FS_BASE"));
 
-    let aarch64 = architecture_backend("aarch64", "riscv32");
+    let aarch64 = architecture_backend(REGISTER, "aarch64", "riscv32");
     assert!(aarch64.contains("TPIDR_EL1"));
     assert!(aarch64.contains("TPIDR_EL2"));
-    assert!(!aarch64.contains("TPIDR_EL0"));
+    let install = aarch64
+        .split_once("pub unsafe fn install_current")
+        .unwrap()
+        .1
+        .split_once("pub unsafe fn read_current_area_base")
+        .unwrap()
+        .0;
+    let area_read = aarch64
+        .split_once("pub unsafe fn read_current_area_base")
+        .unwrap()
+        .1
+        .split_once("pub unsafe fn read_current_thread")
+        .unwrap()
+        .0;
+    assert!(!install.contains("TPIDR_EL0"));
+    assert!(!area_read.contains("TPIDR_EL0"));
+    let task_pointer = aarch64
+        .split_once("pub unsafe fn get_task_pointer")
+        .unwrap()
+        .1;
+    assert!(task_pointer.contains("TPIDR_EL0"));
+    assert!(task_pointer.contains("RegisterModeV1::LinuxCurrent"));
 }
 
 #[test]
-fn loongarch_mirrors_the_live_relocation_in_ks3() {
-    let backend = architecture_backend("loongarch64", "arm");
+fn loongarch_mirrors_the_direct_area_base_in_ks3() {
+    let backend = architecture_backend(REGISTER, "loongarch64", "arm");
     assert!(backend.contains("csrwr {shadow}, 0x33"));
-    assert!(backend.contains("move $r21, {relocation}"));
+    assert!(backend.contains("move $r21, {base}"));
     assert!(backend.contains("csrrd {shadow}, 0x33"));
+    assert!(
+        !backend.contains("cpu_area_header_link_address") && !backend.contains("PerCpuRelocation"),
+        "the CPU-owned LoongArch anchor must not depend on the kernel image address"
+    );
+
+    assert!(
+        !IDENTITY.contains("CpuLocalAnchor") && !IDENTITY.contains("relocation"),
+        "single-word anchor values must not bypass the complete frozen binding"
+    );
 }
 
-fn architecture_backend<'source>(start: &str, end: &str) -> &'source str {
-    REGISTER
+fn architecture_backend<'source>(source: &'source str, start: &str, end: &str) -> &'source str {
+    source
         .split_once(&format!("target_arch = \"{start}\""))
         .unwrap_or_else(|| panic!("missing {start} register backend"))
         .1

@@ -59,9 +59,10 @@ fn architecture_register_code_is_owned_by_ax_cpu_local() {
     }
 
     let cpu_local_manifest = read_file(&cpu_local_dir.join("Cargo.toml"));
-    assert!(
-        !cpu_local_manifest.contains("[dependencies]") && !cpu_local_manifest.contains("[target.'"),
-        "ax-cpu-local must remain a zero-dependency architecture leaf"
+    assert_eq!(
+        manifest_dependency_keys(&cpu_local_manifest),
+        vec!["trait-ffi"],
+        "ax-cpu-local may depend only on the value-only trait-ffi boundary"
     );
 
     let forbidden = [
@@ -122,15 +123,23 @@ fn architecture_register_code_is_owned_by_ax_cpu_local() {
         }
     }
 
-    let macro_arch = read_file(
+    assert!(
+        !percpu_dir
+            .parent()
+            .expect("ax-percpu must have a parent directory")
+            .join("percpu_macros/src/arch.rs")
+            .exists(),
+        "percpu_macros must not retain an architecture code-generation module"
+    );
+    let macro_address = read_file(
         &percpu_dir
             .parent()
             .expect("ax-percpu must have a parent directory")
-            .join("percpu_macros/src/arch.rs"),
+            .join("percpu_macros/src/address.rs"),
     );
     for leaked_configuration in ["target_arch", "ax-cpu-local/", "ax_cpu_local/"] {
         assert!(
-            !macro_arch.contains(leaked_configuration),
+            !macro_address.contains(leaked_configuration),
             "generated per-CPU access must not leak leaf configuration {leaked_configuration:?}"
         );
     }
@@ -190,7 +199,6 @@ fn custom_storage_selects_linked_template_metadata_explicitly() {
 
     for script in [
         workspace_dir.join("platforms/someboot/src/ld/data.ld"),
-        workspace_dir.join("os/arceos/modules/axhal/axplat.lds.S"),
         percpu_dir.join("test_percpu.x"),
         percpu_dir.join("test_percpu_custom.x"),
         workspace_dir.join("components/scope-local/percpu.x"),
@@ -321,76 +329,80 @@ fn safe_current_access_requires_a_verified_bound_cpu_pin() {
         "ax-kspin may create only the migration proof; it must not forge a bound-area proof"
     );
 
-    let raw_anchor = area_api
-        .find("ax_cpu_local::current_area_base_raw(pin)")
-        .expect("bound_current must first read the raw architecture value");
-    let range_check = area_api[raw_anchor..]
-        .find("area_from_runtime_base(runtime_base)")
-        .map(|offset| raw_anchor + offset)
-        .expect("bound_current must match the raw value against layout range and stride");
-    let header_check = area_api[range_check..]
-        .find("verify_current(current_area, pin)")
-        .map(|offset| range_check + offset)
+    let bound_current = function_body(&area_api, "pub fn bound_current(");
+    let capability_query = bound_current
+        .find("current_platform_binding()?")
+        .expect("bound_current must consume the trait-ffi platform binding capability");
+    let layout_check = bound_current[capability_query..]
+        .find("area_from_binding(binding)")
+        .map(|offset| capability_query + offset)
+        .expect("bound_current must match the value-only binding against the frozen layout");
+    let header_check = bound_current[layout_check..]
+        .find("validate_init(current_area.init_facts())")
+        .map(|offset| layout_check + offset)
         .expect("bound_current must validate the immutable header");
     assert!(
-        raw_anchor < range_check && range_check < header_check,
-        "an unbound register value must be rejected before any header dereference"
+        capability_query < layout_check && layout_check < header_check,
+        "a platform binding must match the frozen layout before any header dereference"
+    );
+    assert!(
+        !bound_current.contains("current_area_base_raw")
+            && !bound_current.contains("area_from_runtime_base"),
+        "safe current access must not reinterpret raw architecture-register values"
     );
 }
 
 #[test]
-fn cpu_binding_preflights_every_recoverable_error_before_commit() {
+fn cpu_binding_is_owned_only_by_the_platform_boundary() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let area_api = read_file(&percpu_dir.join("src/area.rs"));
 
     assert!(
-        area_api.contains("struct PreparedCurrentBinding"),
-        "CPU binding needs an opaque prepared state before publishing the header or register"
+        area_api.contains("pub fn binding(self) -> CpuBindingV1")
+            && area_api.contains("pub fn bound_current("),
+        "ax-percpu must expose value-only area facts and verify the platform-published binding"
     );
-
-    let binding = function_body(&area_api, "pub unsafe fn bind_current(");
-    let prepare = binding
-        .find("prepare_current_binding(area)?")
-        .expect("bind_current must finish recoverable validation before commit");
-    let commit = binding
-        .find("commit_current_binding(prepared)")
-        .expect("bind_current must have one explicit commit point");
-    assert!(
-        prepare < commit,
-        "CPU binding must prepare before its irreversible commit"
-    );
-
-    let commit_signature = function_signature(&area_api, "unsafe fn commit_current_binding(");
-    assert!(
-        !commit_signature.contains("Result"),
-        "the irreversible commit API must not advertise recoverable failure"
-    );
-    let commit_body = function_body(&area_api, "unsafe fn commit_current_binding(");
-    assert!(
-        commit_body.contains("ax_cpu_local::install_current")
-            && commit_body.contains("fatal_current_binding_invariant"),
-        "post-publication verification failure must be an explicit fatal invariant"
-    );
-    assert!(
-        !commit_body.contains("return Err") && !commit_body.contains('?'),
-        "the irreversible commit path must not expose a recoverable error"
-    );
+    for forbidden in [
+        "pub unsafe fn bind_current(",
+        "InstalledPerCpuArea",
+        "raw::install_binding",
+        "current_area_base_raw",
+    ] {
+        assert!(
+            !area_api.contains(forbidden),
+            "ax-percpu must not own platform binding primitive {forbidden:?}"
+        );
+    }
 }
 
 #[test]
-fn dynamic_hypervisor_feature_selects_the_el2_cpu_anchor_backend() {
+fn final_image_mode_is_distinct_from_the_live_aarch64_host_level() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_dir = percpu_dir
         .ancestors()
         .nth(3)
         .expect("ax-percpu must remain under components/percpu/percpu");
-    let platform_manifest = read_file(&workspace_dir.join("platforms/axplat-dyn/Cargo.toml"));
+    let manifest = read_file(&percpu_dir.join("Cargo.toml"));
+    let area_api = read_file(&percpu_dir.join("src/area.rs"));
+    let someboot = read_file(&workspace_dir.join("platforms/someboot/src/smp/mod.rs"));
+    let aarch64 = read_file(&workspace_dir.join("platforms/someboot/src/arch/aarch64/mod.rs"));
 
     assert!(
-        platform_manifest
-            .contains("hv = [\"somehal/hv\", \"ax-cpu/arm-el2\", \"ax-percpu/arm-el2\"]"),
-        "axplat-dyn's standalone hv feature must select TPIDR_EL2 in ax-cpu-local through \
-         ax-percpu"
+        manifest.contains("tls = [\"ax-cpu-local/tls\"]") && !manifest.contains("arm-el2"),
+        "ax-percpu may select final-image TLS semantics, but the CPU-local leaf must discover the \
+         live AArch64 host level instead of encoding it as a Cargo feature"
+    );
+    assert!(
+        area_api.contains("pub const fn new(") && !area_api.contains("pub fn for_image("),
+        "production initialization must supply an explicit live host level instead of using an \
+         ambiguous final-image default"
+    );
+    assert!(
+        someboot.contains("Arch::cpu_local_host_level()")
+            && aarch64.contains("CurrentEL.read(CurrentEL::EL)")
+            && aarch64.contains("1 => 0")
+            && aarch64.contains("2 => 1"),
+        "final-high AArch64 initialization must derive HostLevelV1 from the live exception level"
     );
 }
 
@@ -403,13 +415,16 @@ fn linker_contract_places_the_fixed_prefix_at_template_offset_zero() {
         let fixed_prefix = script
             .find("KEEP(*(.percpu.000.header))")
             .unwrap_or_else(|| panic!("{script_name} must retain the fixed CPU-area prefix"));
+        let generated_storage = script
+            .find("SORT_BY_NAME(.percpu.storage*)")
+            .unwrap_or_else(|| panic!("{script_name} must retain generated storage explicitly"));
         let ordinary_symbols = script
             .find("SORT_BY_NAME(.percpu.*)")
             .unwrap_or_else(|| panic!("{script_name} must sort ordinary per-CPU symbols"));
 
         assert!(
-            fixed_prefix < ordinary_symbols,
-            "{script_name} must place the fixed prefix before ordinary symbols"
+            fixed_prefix < generated_storage && generated_storage < ordinary_symbols,
+            "{script_name} must place the fixed prefix before generated storage and other symbols"
         );
         assert!(
             script.contains("__AX_CPU_AREA_PREFIX == _percpu_load_start"),
@@ -426,7 +441,7 @@ fn current_address_is_area_base_plus_template_offset() {
         &percpu_dir
             .parent()
             .expect("ax-percpu must have a parent directory")
-            .join("percpu_macros/src/arch.rs"),
+            .join("percpu_macros/src/address.rs"),
     );
 
     assert!(
@@ -434,19 +449,125 @@ fn current_address_is_area_base_plus_template_offset() {
         "pinned current access must calculate current area base + template offset"
     );
     assert!(
-        library.contains("current_area_base_unchecked()")
+        library.contains("platform::current_cpu_binding()")
+            && library.contains("binding.area_base")
             && library.contains(".wrapping_add(offset)"),
-        "unchecked current access must use the leaf's NonNull area base plus template offset"
+        "unchecked current access must consume the platform binding before adding the template \
+         offset"
     );
     assert!(
-        !library.contains("read_current_relocation(pin)")
-            && !library.contains("relocation().relocate(symbol_vma)"),
-        "ax-percpu current access must not retain relocation + symbol-VMA addressing"
+        !library.contains("current_area_base_raw")
+            && !library.contains("current_area_base_unchecked")
+            && !library.contains("PerCpuRelocation"),
+        "ax-percpu current access must not retain a raw register or relocation API"
     );
     assert!(
         macro_backend.contains("current_symbol_ptr::<#ty>(#pin, #offset)")
             && macro_backend.contains("current_symbol_ptr_unchecked::<#ty>(#offset)"),
         "the proc macro must pass a template offset, not a link-time VMA, to current access"
+    );
+    assert!(
+        !macro_backend.contains("gen_symbol_vma")
+            && !library.contains("symbol_vma")
+            && library.contains("checked_sub(crate::percpu_template_base())"),
+        "the public and generated APIs must expose only load-relative template offsets"
+    );
+}
+
+#[test]
+fn cpu_values_are_constructed_after_final_relocation_instead_of_copied() {
+    let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_dir = percpu_dir
+        .ancestors()
+        .nth(3)
+        .expect("ax-percpu must remain under components/percpu/percpu");
+    let macro_api = read_file(
+        &percpu_dir
+            .parent()
+            .expect("ax-percpu must have a parent directory")
+            .join("percpu_macros/src/lib.rs"),
+    );
+    let initialization = read_file(&percpu_dir.join("src/initialization.rs"));
+    let someboot = read_file(&workspace_dir.join("platforms/someboot/src/smp/mod.rs"));
+    let legacy = read_file(&workspace_dir.join("platforms/someboot/src/smp/legacy.rs"));
+    let prealloc = read_file(&workspace_dir.join("platforms/someboot/src/smp/prealloc.rs"));
+    let prime_entry = read_file(&workspace_dir.join("platforms/someboot/src/lib.rs"));
+    let linker = read_file(&workspace_dir.join("platforms/someboot/src/ld/data.ld"));
+
+    assert!(
+        macro_api.contains("MaybeUninit<#storage_type>")
+            && macro_api.contains("unsafe(link_section = \".percpu.storage\")")
+            && !macro_api.contains(".percpu.data")
+            && macro_api.contains(".ax_percpu.init")
+            && macro_api.contains("PerCpuInitRegistration"),
+        "def_percpu must reserve uninitialized storage and register a typed final-address \
+         initializer"
+    );
+    assert!(
+        initialization.contains("pub unsafe fn initialize_layout(")
+            && initialization.contains("validate_init_records")
+            && initialization.contains("validate_prefixes")
+            && initialization.contains("initialize_area"),
+        "ax-percpu must validate the complete relative init table before constructing any area"
+    );
+    assert!(
+        linker.contains("__AX_PERCPU_INIT_START")
+            && linker.contains("KEEP(*(.ax_percpu.init))")
+            && linker.contains("__AX_PERCPU_INIT_END"),
+        "the final image must retain and bound the typed per-CPU initializer table"
+    );
+
+    for (name, source) in [("legacy", &legacy), ("prealloc", &prealloc)] {
+        let allocation = function_body(source, "pub fn alloc_percpu(");
+        assert!(
+            !allocation.contains("copy_nonoverlapping")
+                && !allocation.contains("PerCpuMeta {")
+                && !allocation.contains("publish_runtime_percpu"),
+            "someboot {name} early allocation must reserve raw storage without copying values or \
+             publishing metadata"
+        );
+    }
+    assert!(
+        someboot.contains("pub(crate) fn initialize_percpu_layout(")
+            && someboot.contains("__ax_percpu_initialize_layout_v2")
+            && someboot.contains("publish_runtime_percpu"),
+        "someboot must finalize per-CPU values and metadata through the value-only ax-percpu ABI"
+    );
+
+    let prime = function_body(&prime_entry, "fn prime_entry(");
+    let initialize = prime
+        .find("smp::initialize_percpu_layout()")
+        .expect("prime_entry must initialize the final high-address per-CPU layout");
+    let metadata_read = prime
+        .find("smp::cpu_meta(cpu_idx)")
+        .expect("prime_entry must obtain its final stack from initialized metadata");
+    assert!(
+        initialize < metadata_read,
+        "final per-CPU initialization must precede the first metadata read"
+    );
+}
+
+#[test]
+fn typed_initializer_registration_is_an_explicit_unsafe_trust_boundary() {
+    let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let initialization = read_file(&percpu_dir.join("src/initialization.rs"));
+    let macro_api = read_file(
+        &percpu_dir
+            .parent()
+            .expect("ax-percpu must have a parent directory")
+            .join("percpu_macros/src/lib.rs"),
+    );
+
+    assert!(
+        initialization.contains("pub const unsafe fn new(\n        storage_address:")
+            && initialization.contains("pub const unsafe fn new(describe:"),
+        "safe callers must not be able to forge mutable or nondeterministic initializer records"
+    );
+    assert!(
+        initialization.contains("same descriptor on every invocation")
+            && macro_api.contains("PerCpuInitDescriptor::new(")
+            && macro_api.contains("PerCpuInitRegistration::new(#descriptor_name)"),
+        "the generated unsafe registration must document and uphold descriptor determinism"
     );
 }
 
@@ -467,6 +588,26 @@ fn rust_sources(directory: &Path) -> Vec<std::path::PathBuf> {
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+}
+
+fn manifest_dependency_keys(manifest: &str) -> Vec<&str> {
+    let mut in_dependencies = false;
+    let mut dependencies = Vec::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_dependencies = line == "[dependencies]";
+            continue;
+        }
+        if !in_dependencies || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once('=') {
+            dependencies.push(name.trim().trim_end_matches(".workspace"));
+        }
+    }
+    dependencies.sort_unstable();
+    dependencies
 }
 
 fn function_body<'source>(source: &'source str, signature: &str) -> &'source str {
@@ -491,15 +632,4 @@ fn function_body<'source>(source: &'source str, signature: &str) -> &'source str
         }
     }
     panic!("unterminated function body for {signature:?}")
-}
-
-fn function_signature<'source>(source: &'source str, signature: &str) -> &'source str {
-    let function_start = source
-        .find(signature)
-        .unwrap_or_else(|| panic!("missing function signature {signature:?}"));
-    let body_start = source[function_start..]
-        .find('{')
-        .map(|offset| function_start + offset)
-        .expect("function must have a body");
-    &source[function_start..body_start]
 }

@@ -1,11 +1,9 @@
-use core::{
-    marker::PhantomData,
-    mem::size_of,
-    sync::atomic::{Ordering, compiler_fence},
-};
+use core::mem::size_of;
 
 pub use ax_cpu_local::{
-    CpuAreaHeader, CpuAreaPrefix, CpuIndex, CpuLocalAnchor, CpuPin, PerCpuRelocation,
+    CPU_AREA_BOOT_THREAD_OFFSET, CPU_LOCAL_ABI_VERSION, CpuAreaHeader, CpuAreaInitV2,
+    CpuAreaPrefix, CpuAreaPrefixV2, CpuBindingResultV1, CpuBindingV1, CpuIndex, CpuLocalStatus,
+    CpuPin, CpuRuntimeAnchor, HostLevelV1, RegisterModeV1,
 };
 
 /// Currently supported flag bits in [`PerCpuLayoutV1`].
@@ -16,7 +14,7 @@ static INSTALLED_LAYOUT: spin::Once<InstalledLayout> = spin::Once::new();
 
 /// Versioned value-only description of contiguous runtime CPU-local areas.
 ///
-/// Template link address, initialized template size, generation, and identity
+/// Loaded template address, initialized template size, generation, and identity
 /// cookie are crate-owned facts and deliberately do not cross this FFI shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -34,33 +32,105 @@ pub struct PerCpuLayoutV1 {
 impl PerCpuLayoutV1 {
     /// Validates this value against the linked per-CPU template.
     pub fn validate(self) -> Result<(), PerCpuError> {
-        InstalledLayout::from_public(self).map(|_| ())
+        InstalledLayout::from_public(self, LayoutIdentity::for_supervisor_image(self)).map(|_| ())
     }
 }
 
-/// Installs the process-wide runtime CPU-area layout exactly once.
+/// Complete value-only facts for one final CPU-area initialization.
 ///
-/// Reinstalling the identical value is idempotent. A conflicting value is
-/// rejected so remote CPU-area lookup cannot silently change beneath callers.
-///
-/// # Safety
-///
-/// Every byte described by the validated area count, stride, and linked
-/// template size must be mapped, initialized from the complete template,
-/// correctly aligned, and remain readable for the kernel lifetime. Each area
-/// must remain writable until its unique [`bind_current`] publication. These
-/// guarantees let [`bound_current`] reject an untrusted architecture-register
-/// value by range and stride before it dereferences an immutable header.
-pub unsafe fn install_layout(layout: PerCpuLayoutV1) -> Result<(), PerCpuError> {
-    let candidate = InstalledLayout::from_public(layout)?;
-    let installed = INSTALLED_LAYOUT.try_call_once(|| Ok::<_, PerCpuError>(candidate))?;
-    if installed.public == layout {
-        Ok(())
-    } else {
-        Err(PerCpuError::LayoutAlreadyInstalled {
-            installed: installed.public,
-            requested: layout,
-        })
+/// The platform owns the runtime storage geometry and its shutdown-lifetime
+/// identity. `ax-percpu` validates these scalars against the loaded template
+/// before constructing any Rust value in any area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct PerCpuLayoutInitV2 {
+    /// Runtime address of CPU zero's fixed [`CpuAreaPrefixV2`].
+    pub runtime_base: usize,
+    /// Runtime byte stride between adjacent CPU areas.
+    pub area_stride: usize,
+    /// Number of addressable CPU areas.
+    pub area_count: u32,
+    /// Reserved layout flags. Unknown bits are rejected.
+    pub flags: u32,
+    /// CPU-local prefix ABI version.
+    pub abi_version: u16,
+    /// [`RegisterModeV1`] encoded as a stable byte.
+    pub register_mode: u8,
+    /// [`HostLevelV1`] encoded as a stable byte.
+    pub host_level: u8,
+    /// Nonzero generation frozen into every area header.
+    pub generation: u32,
+    /// Nonzero identity cookie frozen into every area header.
+    pub cookie: usize,
+}
+
+impl PerCpuLayoutInitV2 {
+    /// Creates initialization facts with a typed register-ownership mode.
+    pub const fn new(
+        layout: PerCpuLayoutV1,
+        generation: u32,
+        cookie: usize,
+        register_mode: RegisterModeV1,
+        host_level: HostLevelV1,
+    ) -> Self {
+        Self {
+            runtime_base: layout.runtime_base,
+            area_stride: layout.area_stride,
+            area_count: layout.area_count,
+            flags: layout.flags,
+            abi_version: CPU_LOCAL_ABI_VERSION,
+            register_mode: register_mode.as_u8(),
+            host_level: host_level.as_u8(),
+            generation,
+            cookie,
+        }
+    }
+
+    /// Creates facts for linked host fixtures and supervisor-only images.
+    ///
+    /// Platform boot paths must use [`Self::new`] with their live host level.
+    #[cfg(all(
+        not(feature = "sp-naive"),
+        any(not(feature = "custom-base"), feature = "host-test")
+    ))]
+    pub(crate) fn for_supervisor_image(layout: PerCpuLayoutV1) -> Self {
+        let identity = LayoutIdentity::for_supervisor_image(layout);
+        Self {
+            runtime_base: layout.runtime_base,
+            area_stride: layout.area_stride,
+            area_count: layout.area_count,
+            flags: layout.flags,
+            abi_version: identity.abi_version,
+            register_mode: identity.register_mode,
+            host_level: identity.host_level,
+            generation: identity.generation,
+            cookie: identity.cookie,
+        }
+    }
+
+    /// Returns the v1 storage geometry carried by these v2 facts.
+    pub const fn layout(self) -> PerCpuLayoutV1 {
+        PerCpuLayoutV1 {
+            runtime_base: self.runtime_base,
+            area_stride: self.area_stride,
+            area_count: self.area_count,
+            flags: self.flags,
+        }
+    }
+
+    /// Validates these facts against the loaded template without writing.
+    pub fn validate(self) -> Result<(), PerCpuError> {
+        InstalledLayout::from_public(self.layout(), self.identity()).map(|_| ())
+    }
+
+    pub(crate) const fn identity(self) -> LayoutIdentity {
+        LayoutIdentity {
+            abi_version: self.abi_version,
+            register_mode: self.register_mode,
+            host_level: self.host_level,
+            generation: self.generation,
+            cookie: self.cookie,
+        }
     }
 }
 
@@ -78,7 +148,7 @@ pub fn layout() -> Result<PerCpuLayoutV1, PerCpuError> {
 ///
 /// This capability borrows the original [`CpuPin`], so it cannot outlive the
 /// scheduler or IRQ guard that prevents migration. Construction first matches
-/// the raw architecture-register value to the installed layout and only then
+/// the platform's value-only binding to the installed layout and only then
 /// dereferences and validates the immutable header.
 ///
 /// ```compile_fail
@@ -112,6 +182,16 @@ impl BoundCpuPin<'_> {
         self.area.cookie
     }
 
+    /// Returns the fixed typed prefix covered by this migration pin.
+    pub fn prefix(&self) -> &CpuAreaPrefixV2 {
+        self.area.prefix()
+    }
+
+    /// Borrows the current CPU's runtime anchor under this migration pin.
+    pub fn runtime_anchor(&self) -> &CpuRuntimeAnchor {
+        self.prefix().runtime_anchor()
+    }
+
     pub(crate) const fn area_base(&self) -> usize {
         self.area.runtime_base
     }
@@ -126,8 +206,10 @@ pub fn bound_current(pin: &CpuPin) -> Result<BoundCpuPin<'_>, PerCpuError> {
             area: PerCpuArea {
                 cpu_index: CpuIndex::from_u32(0).expect("CPU zero must be representable"),
                 runtime_base: 0,
-                link_base: 0,
                 area_size: 0,
+                abi_version: CPU_LOCAL_ABI_VERSION,
+                register_mode: ax_cpu_local::image_register_mode().as_u8(),
+                host_level: HostLevelV1::Supervisor.as_u8(),
                 generation: CPU_AREA_GENERATION,
                 cookie: ax_cpu_local::CPU_AREA_DEFAULT_COOKIE,
             },
@@ -136,17 +218,12 @@ pub fn bound_current(pin: &CpuPin) -> Result<BoundCpuPin<'_>, PerCpuError> {
 
     #[cfg(not(feature = "sp-naive"))]
     {
-        // SAFETY: CpuPin covers the register read. The returned integer remains
-        // untrusted until area_from_runtime_base proves range and stride.
-        let runtime_base = unsafe { ax_cpu_local::current_area_base_raw(pin) };
-        if runtime_base == 0 {
-            return Err(PerCpuError::CurrentAreaUnbound);
-        }
-        let current_area = installed_layout()?.area_from_runtime_base(runtime_base)?;
-        // SAFETY: unsafe install_layout guarantees the matched area is mapped;
-        // CpuPin keeps the current architecture register stable while its
-        // immutable header is checked.
-        unsafe { verify_current(current_area, pin) }?;
+        let binding = current_platform_binding()?;
+        let current_area = installed_layout()?.area_from_binding(binding)?;
+        current_area
+            .prefix()
+            .validate_init(current_area.init_facts())
+            .map_err(PerCpuError::Header)?;
         Ok(BoundCpuPin {
             _migration_pin: pin,
             area: current_area,
@@ -163,125 +240,13 @@ pub const fn current_cpu_index(pin: &BoundCpuPin<'_>) -> Result<CpuIndex, PerCpu
     Ok(pin.area.cpu_index)
 }
 
-#[derive(Debug)]
-struct PreparedCurrentBinding {
-    area: PerCpuArea,
-    prefix: CpuAreaPrefix,
-    pin: CpuPin,
-}
-
-/// Initializes an offline area and installs it as the current CPU's anchor.
-///
-/// The returned capability is `!Send` and does not restore the previous anchor
-/// when dropped; CPU-local binding is CPU-lifetime state.
-///
-/// # Safety
-///
-/// The current execution context must be unable to migrate, local IRQs must be
-/// disabled, `area` must belong to this physical CPU, and its full memory range
-/// must be mapped, writable, exclusively owned, initialized from the complete
-/// linked per-CPU template, and remain live for the CPU's lifetime. Merely
-/// zeroing the area is insufficient because a macro-generated object may not
-/// admit an all-zero bit pattern. Each physical CPU and each area may be bound
-/// exactly once. No trap may consume the anchor until this function returns.
-///
-/// # Panics
-///
-/// Panics after publication only if the architecture register implementation
-/// violates its installation contract. Recoverable validation failures are
-/// returned before either the header or register is changed.
-pub unsafe fn bind_current(area: PerCpuArea) -> Result<InstalledPerCpuArea, PerCpuError> {
-    // SAFETY: forwarded caller guarantees mapped exclusive storage and a
-    // migration/IRQ-free preparation window.
-    let prepared = unsafe { prepare_current_binding(area)? };
-    // SAFETY: the same caller contract remains live across the immediately
-    // following irreversible publication.
-    Ok(unsafe { commit_current_binding(prepared) })
-}
-
-/// Validates every recoverable binding prerequisite without publishing state.
-///
-/// # Safety
-///
-/// `area` must satisfy [`bind_current`]'s storage, lifetime, CPU ownership, and
-/// execution-context requirements for the complete prepare/commit sequence.
-unsafe fn prepare_current_binding(area: PerCpuArea) -> Result<PreparedCurrentBinding, PerCpuError> {
-    // SAFETY: the caller guarantees a live, aligned, initialized prefix. A
-    // published header is immutable, so observing it cannot race a legal
-    // binder; exclusive ownership rules out two first binders.
-    let header = unsafe { &*area.header_ptr() };
-    if !header.is_unbound() {
-        return Err(PerCpuError::AreaAlreadyBound {
-            cpu_index: area.cpu_index,
-        });
+#[cfg(not(feature = "sp-naive"))]
+fn current_platform_binding() -> Result<CpuBindingV1, PerCpuError> {
+    match ax_cpu_local::platform::current_cpu_binding() {
+        Ok(binding) => Ok(binding),
+        Err(CpuLocalStatus::NotInitialized) => Err(PerCpuError::CurrentAreaUnbound),
+        Err(status) => Err(PerCpuError::PlatformBindingStatus(status)),
     }
-    // SAFETY: the caller guarantees this context cannot migrate.
-    let pin = unsafe { CpuPin::new_unchecked() };
-    let prefix =
-        CpuAreaPrefix::for_area(area.cpu_index, area.anchor(), area.generation, area.cookie);
-    Ok(PreparedCurrentBinding { area, prefix, pin })
-}
-
-/// Publishes a prepared header and architecture register as one fatal commit.
-///
-/// # Safety
-///
-/// The caller must preserve the complete safety contract used to construct
-/// `prepared`. Once this function starts, an architecture mismatch is an
-/// unrecoverable implementation invariant rather than an ordinary error.
-unsafe fn commit_current_binding(prepared: PreparedCurrentBinding) -> InstalledPerCpuArea {
-    let PreparedCurrentBinding { area, prefix, pin } = prepared;
-    // SAFETY: the caller owns mapped writable storage for the complete area.
-    unsafe { area.prefix_ptr().write(prefix) };
-    compiler_fence(Ordering::Release);
-    // SAFETY: prefix publication and caller IRQ/lifetime guarantees satisfy the
-    // architecture installation contract.
-    unsafe { ax_cpu_local::install_current(area.anchor()) };
-    // SAFETY: the same caller contract keeps the area mapped and pinned.
-    if let Err(error) = unsafe { verify_current(area, &pin) } {
-        fatal_current_binding_invariant(error);
-    }
-    InstalledPerCpuArea {
-        area,
-        _not_send_or_sync: PhantomData,
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn fatal_current_binding_invariant(error: PerCpuError) -> ! {
-    panic!("architecture CPU-local binding commit violated its invariant: {error}")
-}
-
-/// Verifies one area against the current architecture anchor and header.
-///
-/// # Safety
-///
-/// `area` must describe mapped live storage initialized by [`bind_current`],
-/// and `pin` must cover this complete verification operation.
-pub unsafe fn verify_current(area: PerCpuArea, pin: &CpuPin) -> Result<(), PerCpuError> {
-    compiler_fence(Ordering::Acquire);
-    // Read the register as a value before touching memory. An architecture's
-    // early-boot anchor may still name a boot identity record before binding.
-    // SAFETY: CpuPin covers this register read; the caller separately promises
-    // that `area` is mapped and live.
-    let actual_base = unsafe { ax_cpu_local::current_area_base_raw(pin) };
-    if actual_base != area.runtime_base {
-        return Err(PerCpuError::RegisterBaseMismatch {
-            expected: area.runtime_base,
-            actual: actual_base,
-        });
-    }
-    // SAFETY: forwarded caller contract guarantees a live aligned immutable
-    // header. Borrow only the first cache line: trap entry owns the adjacent
-    // CpuEntryScratch and may mutate it asynchronously.
-    let header = unsafe { &*area.header_ptr() };
-    if header.is_unbound() {
-        return Err(PerCpuError::CurrentAreaUnbound);
-    }
-    header
-        .validate(area.cpu_index, area.anchor(), area.generation, area.cookie)
-        .map_err(PerCpuError::Header)
 }
 
 /// Descriptor for one CPU-local area in the installed layout.
@@ -289,8 +254,10 @@ pub unsafe fn verify_current(area: PerCpuArea, pin: &CpuPin) -> Result<(), PerCp
 pub struct PerCpuArea {
     cpu_index: CpuIndex,
     runtime_base: usize,
-    link_base: usize,
     area_size: usize,
+    abi_version: u16,
+    register_mode: u8,
+    host_level: u8,
     generation: u32,
     cookie: usize,
 }
@@ -311,78 +278,116 @@ impl PerCpuArea {
         self.area_size
     }
 
-    /// Returns the link-to-runtime relocation for this area.
-    pub fn relocation(self) -> PerCpuRelocation {
-        PerCpuRelocation::from_bases(self.runtime_base(), self.link_base)
+    /// Returns the complete value-only binding for the platform binder.
+    pub fn binding(self) -> CpuBindingV1 {
+        self.init_facts().binding()
     }
 
-    /// Returns the architecture installation value for this area.
-    pub fn anchor(self) -> CpuLocalAnchor {
-        CpuLocalAnchor::new(self.runtime_base(), self.relocation())
+    /// Returns the typed shutdown-lifetime prefix for this initialized area.
+    pub fn prefix(self) -> &'static CpuAreaPrefixV2 {
+        assert_ne!(
+            self.runtime_base, 0,
+            "the sp-naive compatibility area has no CPU-area prefix"
+        );
+        // SAFETY: PerCpuArea is obtainable only from the frozen initialized
+        // layout, whose unsafe installation contract keeps every area mapped
+        // for the shutdown lifetime.
+        unsafe { &*self.prefix_ptr() }
     }
 
-    fn prefix_ptr(self) -> *mut CpuAreaPrefix {
-        self.runtime_base as *mut CpuAreaPrefix
+    /// Returns this remote area's shutdown-lifetime runtime anchor.
+    pub fn runtime_anchor(self) -> &'static CpuRuntimeAnchor {
+        self.prefix().runtime_anchor()
     }
 
-    fn header_ptr(self) -> *const CpuAreaHeader {
-        self.runtime_base as *const CpuAreaHeader
-    }
-}
-
-/// Verified current-CPU binding capability.
-///
-/// ```compile_fail
-/// fn require_send<T: Send>() {}
-/// require_send::<ax_percpu::InstalledPerCpuArea>();
-/// ```
-#[derive(Debug)]
-pub struct InstalledPerCpuArea {
-    area: PerCpuArea,
-    _not_send_or_sync: PhantomData<*mut ()>,
-}
-
-impl InstalledPerCpuArea {
-    /// Returns the installed area descriptor.
-    pub const fn area(&self) -> PerCpuArea {
-        self.area
+    pub(crate) fn init_facts(self) -> CpuAreaInitV2 {
+        let boot_thread = self
+            .runtime_base
+            .checked_add(CPU_AREA_BOOT_THREAD_OFFSET)
+            .expect("installed CPU-area boot-thread address must not overflow");
+        CpuAreaInitV2::from_binding(CpuBindingV1 {
+            abi_version: self.abi_version,
+            register_mode: self.register_mode,
+            host_level: self.host_level,
+            cpu_index: self.cpu_index.as_u32(),
+            generation: self.generation,
+            area_base: self.runtime_base,
+            boot_thread,
+            cookie: self.cookie,
+        })
+        .expect("installed layout must retain validated CPU-area initialization facts")
     }
 
-    /// Revalidates the current register and immutable header identity.
-    ///
-    /// A binding remains installed for the CPU lifetime, but it is not a
-    /// migration guard. The caller must therefore supply a fresh pin covering
-    /// this operation instead of reusing the early-boot proof.
-    pub fn verify(&self, pin: &CpuPin) -> Result<(), PerCpuError> {
-        // SAFETY: successful construction established live storage and the
-        // caller-provided pin covers this complete verification.
-        unsafe { verify_current(self.area, pin) }
+    #[cfg(not(feature = "sp-naive"))]
+    pub(crate) fn runtime_ptr(self) -> *mut u8 {
+        self.runtime_base as *mut u8
     }
 
-    /// Returns the fixed immutable area header.
-    pub fn header(&self) -> &CpuAreaHeader {
-        // SAFETY: successful bind established a live aligned immutable
-        // header. This does not borrow the trap-owned entry scratch cache line.
-        unsafe { &*self.area.header_ptr() }
+    pub(crate) fn prefix_ptr(self) -> *mut CpuAreaPrefixV2 {
+        self.runtime_base as *mut CpuAreaPrefixV2
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct InstalledLayout {
+pub(crate) struct InstalledLayout {
     public: PerCpuLayoutV1,
-    link_base: usize,
+    template_base: usize,
     area_size: usize,
+    required_alignment: usize,
+    abi_version: u16,
+    register_mode: u8,
+    host_level: u8,
     generation: u32,
     cookie: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LayoutIdentity {
+    pub(crate) abi_version: u16,
+    pub(crate) register_mode: u8,
+    pub(crate) host_level: u8,
+    pub(crate) generation: u32,
+    pub(crate) cookie: usize,
+}
+
+impl LayoutIdentity {
+    pub(crate) fn for_supervisor_image(layout: PerCpuLayoutV1) -> Self {
+        let template_base = crate::percpu_template_base();
+        let area_size = crate::percpu_area_size();
+        Self {
+            abi_version: CPU_LOCAL_ABI_VERSION,
+            register_mode: ax_cpu_local::image_register_mode().as_u8(),
+            host_level: HostLevelV1::Supervisor.as_u8(),
+            generation: CPU_AREA_GENERATION,
+            cookie: layout_cookie(layout, template_base, area_size),
+        }
+    }
+}
+
 impl InstalledLayout {
-    fn from_public(public: PerCpuLayoutV1) -> Result<Self, PerCpuError> {
+    pub(crate) fn from_public(
+        public: PerCpuLayoutV1,
+        identity: LayoutIdentity,
+    ) -> Result<Self, PerCpuError> {
         if public.area_count == 0 {
             return Err(PerCpuError::EmptyLayout);
         }
         if public.flags & !PERCPU_LAYOUT_V1_SUPPORTED_FLAGS != 0 {
             return Err(PerCpuError::UnsupportedFlags(public.flags));
+        }
+        if identity.abi_version != CPU_LOCAL_ABI_VERSION
+            || identity.generation == 0
+            || identity.cookie == 0
+            || RegisterModeV1::try_from_raw(identity.register_mode).is_none()
+            || HostLevelV1::try_from_raw(identity.host_level).is_none()
+        {
+            return Err(PerCpuError::InvalidLayoutIdentity {
+                abi_version: identity.abi_version,
+                generation: identity.generation,
+                cookie: identity.cookie,
+                register_mode: identity.register_mode,
+                host_level: identity.host_level,
+            });
         }
         let area_size = crate::percpu_area_size();
         let required_alignment = crate::required_area_alignment()?;
@@ -405,21 +410,23 @@ impl InstalledLayout {
                 alignment: required_alignment,
             });
         }
-        let link_base = crate::percpu_link_base();
-        if !link_base.is_multiple_of(required_alignment) {
+        let template_base = crate::percpu_template_base();
+        if !template_base.is_multiple_of(required_alignment) {
             return Err(PerCpuError::MisalignedTemplateBase {
-                base: link_base,
+                base: template_base,
                 alignment: required_alignment,
             });
         }
-        let header_link_address = ax_cpu_local::cpu_area_header_link_address();
-        if link_base != header_link_address {
+        let header_address = ax_cpu_local::cpu_area_template_base();
+        if template_base != header_address {
             return Err(PerCpuError::HeaderPlacement {
-                template_link_base: link_base,
-                header_link_address,
+                template_base,
+                header_address,
             });
         }
         let last_index = public.area_count as usize - 1;
+        CpuIndex::from_u32(public.area_count - 1)
+            .ok_or(PerCpuError::InvalidAreaCount(public.area_count))?;
         let last_offset = public
             .area_stride
             .checked_mul(last_index)
@@ -429,17 +436,20 @@ impl InstalledLayout {
             .checked_add(last_offset)
             .and_then(|base| base.checked_add(area_size))
             .ok_or(PerCpuError::AddressOverflow)?;
-        let cookie = layout_cookie(public, link_base, area_size);
         Ok(Self {
             public,
-            link_base,
+            template_base,
             area_size,
-            generation: CPU_AREA_GENERATION,
-            cookie,
+            required_alignment,
+            abi_version: identity.abi_version,
+            register_mode: identity.register_mode,
+            host_level: identity.host_level,
+            generation: identity.generation,
+            cookie: identity.cookie,
         })
     }
 
-    fn area(self, cpu_index: CpuIndex) -> Result<PerCpuArea, PerCpuError> {
+    pub(crate) fn area(self, cpu_index: CpuIndex) -> Result<PerCpuArea, PerCpuError> {
         if cpu_index.as_u32() >= self.public.area_count {
             return Err(PerCpuError::CpuOutOfRange {
                 cpu_index,
@@ -459,27 +469,51 @@ impl InstalledLayout {
         Ok(PerCpuArea {
             cpu_index,
             runtime_base,
-            link_base: self.link_base,
             area_size: self.area_size,
+            abi_version: self.abi_version,
+            register_mode: self.register_mode,
+            host_level: self.host_level,
             generation: self.generation,
             cookie: self.cookie,
         })
     }
 
     #[cfg(not(feature = "sp-naive"))]
-    fn area_from_runtime_base(self, runtime_base: usize) -> Result<PerCpuArea, PerCpuError> {
-        let offset = runtime_base
-            .checked_sub(self.public.runtime_base)
-            .ok_or(PerCpuError::CurrentAreaOutsideLayout { runtime_base })?;
-        if !offset.is_multiple_of(self.public.area_stride) {
-            return Err(PerCpuError::CurrentAreaOutsideLayout { runtime_base });
+    pub(crate) const fn area_size(self) -> usize {
+        self.area_size
+    }
+
+    #[cfg(not(feature = "sp-naive"))]
+    pub(crate) const fn template_base(self) -> usize {
+        self.template_base
+    }
+
+    #[cfg(not(feature = "sp-naive"))]
+    pub(crate) const fn required_alignment(self) -> usize {
+        self.required_alignment
+    }
+
+    #[cfg(not(feature = "sp-naive"))]
+    pub(crate) const fn public(self) -> PerCpuLayoutV1 {
+        self.public
+    }
+
+    #[cfg(not(feature = "sp-naive"))]
+    fn area_from_binding(self, binding: CpuBindingV1) -> Result<PerCpuArea, PerCpuError> {
+        let cpu_index = binding
+            .cpu_index()
+            .ok_or(PerCpuError::PlatformBindingStatus(
+                CpuLocalStatus::InvalidBinding,
+            ))?;
+        let area = self.area(cpu_index)?;
+        let expected = area.init_facts().binding();
+        if binding != expected {
+            return Err(PerCpuError::CurrentBindingMismatch {
+                expected,
+                actual: binding,
+            });
         }
-        let index = offset / self.public.area_stride;
-        if index >= self.public.area_count as usize {
-            return Err(PerCpuError::CurrentAreaOutsideLayout { runtime_base });
-        }
-        let cpu_index = CpuIndex::try_from(index).map_err(|_| PerCpuError::AddressOverflow)?;
-        self.area(cpu_index)
+        Ok(area)
     }
 
     fn validate_area_base(
@@ -506,11 +540,20 @@ fn installed_layout() -> Result<InstalledLayout, PerCpuError> {
         .ok_or(PerCpuError::LayoutNotInstalled)
 }
 
-fn layout_cookie(layout: PerCpuLayoutV1, link_base: usize, area_size: usize) -> usize {
+#[cfg(not(feature = "sp-naive"))]
+pub(crate) fn freeze_initialized_layout(layout: InstalledLayout) {
+    assert!(
+        INSTALLED_LAYOUT.get().is_none(),
+        "CPU-local layout publication must occur exactly once after typed initialization"
+    );
+    INSTALLED_LAYOUT.call_once(|| layout);
+}
+
+fn layout_cookie(layout: PerCpuLayoutV1, template_base: usize, area_size: usize) -> usize {
     let mixed = layout.runtime_base.rotate_left(7)
         ^ layout.area_stride.rotate_left(17)
         ^ (layout.area_count as usize).rotate_left(29)
-        ^ link_base.rotate_left(11)
+        ^ template_base.rotate_left(11)
         ^ area_size
         ^ ax_cpu_local::CPU_AREA_DEFAULT_COOKIE;
     if mixed == 0 {
@@ -520,12 +563,15 @@ fn layout_cookie(layout: PerCpuLayoutV1, link_base: usize, area_size: usize) -> 
     }
 }
 
-/// Failure to install, locate, bind, or verify a CPU-local area.
+/// Failure to initialize, locate, or verify a CPU-local area.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PerCpuError {
     /// No CPU areas were supplied.
     #[error("CPU-local layout contains no areas")]
     EmptyLayout,
+    /// The area count includes the reserved invalid CPU-index encoding.
+    #[error("CPU-local area count {0} cannot be represented by CpuIndex")]
+    InvalidAreaCount(u32),
     /// Reserved layout flags were supplied.
     #[error("CPU-local layout has unsupported flags {0:#x}")]
     UnsupportedFlags(u32),
@@ -596,28 +642,80 @@ pub enum PerCpuError {
     /// Address calculation overflowed.
     #[error("CPU-local layout address calculation overflowed")]
     AddressOverflow,
+    /// Frozen ABI, ownership mode, host level, generation, or cookie is invalid.
+    #[error(
+        "CPU-local layout identity has ABI {abi_version}, mode {register_mode}, host level \
+         {host_level}, generation {generation}, and cookie {cookie:#x}"
+    )]
+    InvalidLayoutIdentity {
+        /// Requested CPU-local ABI version.
+        abi_version: u16,
+        /// Requested nonzero generation.
+        generation: u32,
+        /// Requested nonzero identity cookie.
+        cookie: usize,
+        /// Stable CPU register mode byte.
+        register_mode: u8,
+        /// Stable host privilege byte.
+        host_level: u8,
+    },
+    /// Initializer table boundaries are inconsistent.
+    #[error("CPU-local initializer table range {start:#x}..{end:#x} is malformed")]
+    MalformedInitTable {
+        /// First registration address.
+        start: usize,
+        /// One-past-the-end registration address.
+        end: usize,
+    },
+    /// One typed initializer does not fit the validated template layout.
+    #[error(
+        "CPU-local initializer {index} has invalid offset {offset:#x}, size {size:#x}, or \
+         alignment {alignment:#x}"
+    )]
+    MalformedInitRecord {
+        /// Registration index in the final image.
+        index: usize,
+        /// Destination offset from the CPU-area prefix.
+        offset: usize,
+        /// Size of the typed storage object.
+        size: usize,
+        /// Alignment of the typed storage object.
+        alignment: usize,
+    },
+    /// Two typed initializer destinations overlap.
+    #[error(
+        "CPU-local initializer destinations overlap at offsets {first_offset:#x} and \
+         {second_offset:#x}"
+    )]
+    OverlappingInitRecords {
+        /// First overlapping destination offset.
+        first_offset: usize,
+        /// Second overlapping destination offset.
+        second_offset: usize,
+    },
+    /// Another CPU-local initialization attempt is still active.
+    #[error("CPU-local layout initialization is already in progress")]
+    LayoutInitializationInProgress,
+    /// The CPU-local layout has already been initialized and frozen.
+    #[error("CPU-local layout has already been initialized")]
+    LayoutAlreadyInitialized,
+    /// This target does not provide the ELF typed-initializer table contract.
+    #[error("CPU-local typed initializer table is unavailable on this target")]
+    InitializerTableUnavailable,
     /// The fixed header is not first in the linked per-CPU template.
     #[error(
-        "CPU-local template base {template_link_base:#x} differs from header address \
-         {header_link_address:#x}"
+        "CPU-local template base {template_base:#x} differs from header address \
+         {header_address:#x}"
     )]
     HeaderPlacement {
-        /// Linked template start.
-        template_link_base: usize,
-        /// Fixed prefix link address.
-        header_link_address: usize,
+        /// Loaded template start.
+        template_base: usize,
+        /// Fixed prefix address in the loaded image.
+        header_address: usize,
     },
     /// No runtime layout has been installed.
     #[error("CPU-local runtime layout is not installed")]
     LayoutNotInstalled,
-    /// Another runtime layout was already installed.
-    #[error("CPU-local layout is already installed as {installed:?}, rejected {requested:?}")]
-    LayoutAlreadyInstalled {
-        /// Existing immutable layout.
-        installed: PerCpuLayoutV1,
-        /// Conflicting requested layout.
-        requested: PerCpuLayoutV1,
-    },
     /// Requested logical CPU is not present in the installed layout.
     #[error("CPU {cpu_index:?} is outside layout area count {area_count}")]
     CpuOutOfRange {
@@ -626,37 +724,52 @@ pub enum PerCpuError {
         /// Number of installed areas.
         area_count: u32,
     },
-    /// The requested area was already published for a CPU lifetime.
-    #[error("CPU-local area for {cpu_index:?} is already bound")]
-    AreaAlreadyBound {
-        /// Logical CPU owning the immutable area header.
-        cpu_index: CpuIndex,
-    },
-    /// The current architecture anchor names an unpublished area header.
+    /// The platform reports no published current area.
     #[error("current CPU-local area is not bound to a logical CPU")]
     CurrentAreaUnbound,
-    /// The raw architecture anchor does not name an exact installed area.
-    #[error("current CPU-local anchor {runtime_base:#x} is outside the installed layout")]
-    CurrentAreaOutsideLayout {
-        /// Untrusted address read from the architecture register.
-        runtime_base: usize,
-    },
-    /// Architecture register identity changed or differs from the expected area.
-    #[error("current CPU-local anchor {actual:#x} differs from expected area {expected:#x}")]
-    RegisterBaseMismatch {
-        /// Expected runtime area base.
-        expected: usize,
-        /// Address observed from the architecture register.
-        actual: usize,
+    /// The platform capability could not return a usable current binding.
+    #[error("CPU-local platform binding query returned {0:?}")]
+    PlatformBindingStatus(CpuLocalStatus),
+    /// The platform binding differs from the installed layout identity.
+    #[error("current CPU-local binding {actual:?} differs from expected {expected:?}")]
+    CurrentBindingMismatch {
+        /// Binding derived from the installed layout and logical CPU.
+        expected: CpuBindingV1,
+        /// Binding returned by the platform capability.
+        actual: CpuBindingV1,
     },
     /// Fixed-header identity differs from the expected area.
     #[error("CPU-local header verification failed: {0}")]
     Header(ax_cpu_local::CpuAreaHeaderError),
+    /// Complete fixed-prefix construction facts are invalid.
+    #[error("CPU-local prefix initialization failed: {0}")]
+    Prefix(ax_cpu_local::CpuAreaInitError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnitCpuLocalPlatform;
+
+    #[ax_cpu_local::impl_extern_trait(name = "ax-cpu-local_0_1", abi = "rust")]
+    impl ax_cpu_local::CpuLocalPlatformV1 for UnitCpuLocalPlatform {
+        fn current_cpu_binding() -> CpuBindingResultV1 {
+            CpuBindingResultV1::error(CpuLocalStatus::NotInitialized)
+        }
+
+        fn get_tp() -> usize {
+            0
+        }
+
+        unsafe fn set_tp(_value: usize) -> CpuLocalStatus {
+            CpuLocalStatus::Unsupported
+        }
+
+        fn current_thread() -> usize {
+            0
+        }
+    }
 
     #[test]
     fn public_layout_shape_is_stable() {
@@ -673,6 +786,36 @@ mod tests {
         assert_eq!(
             core::mem::offset_of!(PerCpuLayoutV1, flags),
             2 * size_of::<usize>() + 4
+        );
+    }
+
+    #[test]
+    fn initialization_shape_is_value_only_and_stable() {
+        assert_eq!(size_of::<PerCpuLayoutInitV2>(), 3 * size_of::<usize>() + 16);
+        assert_eq!(core::mem::offset_of!(PerCpuLayoutInitV2, runtime_base), 0);
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, area_stride),
+            size_of::<usize>()
+        );
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, abi_version),
+            2 * size_of::<usize>() + 8
+        );
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, register_mode),
+            2 * size_of::<usize>() + 10
+        );
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, host_level),
+            2 * size_of::<usize>() + 11
+        );
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, generation),
+            2 * size_of::<usize>() + 12
+        );
+        assert_eq!(
+            core::mem::offset_of!(PerCpuLayoutInitV2, cookie),
+            2 * size_of::<usize>() + 16
         );
     }
 
@@ -695,9 +838,9 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "host-test")]
+    #[cfg(all(feature = "host-test", not(feature = "sp-naive")))]
     #[test]
-    fn uninstalled_host_anchor_is_a_typed_unbound_error() {
+    fn uninstalled_host_binding_is_a_typed_unbound_error() {
         // SAFETY: the unit-test thread never enables a scheduler or migrates.
         let pin = unsafe { CpuPin::new_unchecked() };
         assert!(matches!(

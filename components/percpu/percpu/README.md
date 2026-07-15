@@ -2,30 +2,51 @@
 
 Architecture-independent per-CPU layout and typed access for `no_std` kernels.
 
-`ax-percpu` owns template layout, symbol offsets, immutable runtime-area registration, and current/remote address calculation. Architecture register instructions live exclusively in the zero-dependency `ax-cpu-local` crate.
+`ax-percpu` owns template layout, symbol offsets, immutable runtime-area registration, and current/remote address calculation. Architecture register instructions live exclusively in the `ax-cpu-local` leaf, whose only dependency is the value-only `trait-ffi` boundary.
 
-Every runtime area begins with a fixed `CpuAreaHeader`. A platform installs one contiguous layout and binds each CPU before it becomes online:
+Every runtime area begins with a fixed `CpuAreaPrefixV2`. A final-high platform
+entry constructs one contiguous layout exactly once, then binds each CPU before
+it becomes online:
 
 ```rust,ignore
 unsafe {
-    ax_percpu::install_layout(ax_percpu::PerCpuLayoutV1 {
+    let layout = ax_percpu::PerCpuLayoutV1 {
         runtime_base,
         area_stride,
         area_count,
         flags: 0,
-    })?;
+    };
+    let init = ax_percpu::PerCpuLayoutInitV2::new(
+        layout,
+        generation,
+        cookie,
+        register_mode,
+        host_level,
+    );
+    ax_percpu::initialize_layout(init)?;
 }
 
 let cpu = ax_percpu::CpuIndex::try_from(cpu_id)?;
 let area = ax_percpu::area(cpu)?;
-unsafe { ax_percpu::bind_current(area)? };
+unsafe { ax_cpu_local::raw::install_binding(area.binding())? };
 ```
 
-Externally allocated areas must contain a complete copy of the linked template
-before binding; zero-initializing arbitrary object storage is not sufficient.
+Externally allocated areas are raw storage. `def_percpu` emits `MaybeUninit`
+storage in `.percpu.storage` plus a typed initializer registration; final-high initialization first
+validates the complete relative descriptor table and then constructs every
+CPU-owned value independently with `ptr::write`. It never copies the loaded
+bytes of an arbitrary Rust value into another allocation.
 
-Safe current access requires a `BoundCpuPin` obtained by validating the raw
-CPU anchor against the installed layout while a `CpuPin` prevents migration:
+Initializer expressions must be const-evaluable values that do not refer to
+their own generated per-CPU storage address. Rust const evaluation treats
+separate statics as separate allocations, so a self-referential initializer
+cannot be relocated into each destination. Such values must store an empty
+state and establish self-pointers explicitly after binding through a
+type-specific unsafe initialization protocol.
+
+Safe current access requires a `BoundCpuPin` obtained by matching the
+platform-published value-only binding against the installed layout while a
+`CpuPin` prevents migration:
 
 ```rust,no_run
 #[ax_percpu::def_percpu]
@@ -70,9 +91,11 @@ A non-kernel host consumer using `custom-base` may link source-only tests, but
 runtime layout or value access fails explicitly unless that consumer selects a
 host storage fixture. Use `sp-naive` for single-CPU model tests, or `host-test`
 with the crate's linker fixture when replicated areas are part of the test.
-Under `host-test`, the first explicitly installed anchor is the immutable
-bootstrap fallback inherited by newly created host threads; a thread that
-models another CPU must explicitly bind its own area before access.
+Each `host-test` integration binary must provide its own explicit
+`CpuLocalPlatformV1` fake; the library does not link a default provider that
+could conflict with a real OS. The host register fixture is thread-local, so
+every test-harness or modeled CPU thread must explicitly install its own
+complete area binding before access; there is no process-global fallback.
 
 ## Validation
 

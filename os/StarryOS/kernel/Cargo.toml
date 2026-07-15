@@ -82,7 +82,12 @@ ax-runtime = { workspace = true, features = [
     "net",
 ] }
 ax-sync = { workspace = true, features = ["multitask"] }
-ax-std = { workspace = true, features = ["irq", "multitask"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "irq",
+    "multitask",
+] }
 ax-dma = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
@@ -168,7 +173,14 @@ rbpf = { version = "0.4", default-features = false }
 [dev-dependencies]
 axtest.workspace = true
 ax-hal.workspace = true
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "fs",
+    "multitask",
+    "irq",
+] }
 
 [[test]]
 name = "axtest_kernel"

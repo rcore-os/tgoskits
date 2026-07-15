@@ -177,7 +177,7 @@ ax-posix-api = { version = "0.5.29", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.9", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.10.4", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.8", path = "components/axsched" }
-ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd" }
+ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.5.28", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.7.0", path = "components/ax-task" }
 axtest = { version = "0.5.12", path = "components/axtest/axtest" }
@@ -329,6 +329,7 @@ uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
+trait-ffi = "0.2.11"
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }

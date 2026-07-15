@@ -55,6 +55,12 @@ fn preserves_arch_specific_linker_contracts() {
 
     let x86_64 = render_linker_script(LinkerArch::X86_64, CONFIG);
     assert!(x86_64.contains("OUTPUT_ARCH(i386:x86-64)"));
+    assert!(x86_64.contains("KERNEL_LOAD_ADDRESS = 0x200000;"));
+    assert!(
+        x86_64.contains(
+            "_kernel_entry = ABSOLUTE(KERNEL_LOAD_ADDRESS + (x86_64_raw_entry - _head));"
+        )
+    );
     assert!(x86_64.contains("_kernel_image_size = ABSOLUTE(_end - _head);"));
     assert!(!x86_64.contains("*(.options)"));
 

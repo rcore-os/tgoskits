@@ -986,6 +986,10 @@ impl CpuLocal {
         self.fields_mut().switch_handoff.take()
     }
 
+    pub(crate) fn switch_handoff(&self) -> Option<SwitchHandoff> {
+        self.switch_handoff
+    }
+
     pub(crate) fn scheduler_enter(self: Pin<&mut Self>) -> bool {
         // `need_resched` is cleared only after entering the scheduler, never by
         // wake, timer, IPI, or preemption-disable paths. The AcqRel claim pairs

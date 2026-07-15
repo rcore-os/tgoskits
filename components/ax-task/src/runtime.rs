@@ -259,6 +259,42 @@ pub struct UserContextRequest {
     pub address_space: AddressSpaceHandle,
 }
 
+/// Versioned generation-bearing thread identity for runtime context binding.
+///
+/// The explicit fields keep the scheduler's private integer encoding out of OS
+/// runtime implementations while remaining a value-only trait-FFI type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ThreadIdentityV1 {
+    /// Task-system registry slot.
+    pub slot: u32,
+    /// Non-zero reuse generation for `slot`.
+    pub generation: u32,
+}
+
+impl ThreadIdentityV1 {
+    /// Creates a runtime identity from its explicit generation-bearing parts.
+    pub const fn new(slot: u32, generation: u32) -> Self {
+        Self { slot, generation }
+    }
+}
+
+/// Immutable association between one runtime context and scheduler identity.
+///
+/// Contexts are created before the scheduler allocates a generation-bearing
+/// thread ID. The scheduler submits this value exactly once after ID allocation
+/// and before the thread can become `Ready`. Keeping both fields scalar makes
+/// the operation suitable for the trait-FFI boundary without exporting a
+/// scheduler object, reference, or ownership-bearing handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ContextThreadBinding {
+    /// Live runtime-owned execution context to bind.
+    pub context: ExecutionContextHandle,
+    /// Typed scheduler identity without exposing [`crate::ThreadId`]'s encoding.
+    pub identity: ThreadIdentityV1,
+}
+
 /// Allocation requirements for a thread-local storage area.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -351,6 +387,16 @@ pub trait TaskRuntime {
     /// must be exited exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn irq_guard_exit(token: IrqGuardToken);
 
+    /// Withdraws the outgoing runtime context's CPU binding after raw switch.
+    ///
+    /// The incoming context calls this exactly once while local IRQs remain
+    /// disabled and before the scheduler clears the outgoing thread's
+    /// `on_cpu` publication. The implementation must not allocate, block,
+    /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. A
+    /// failure must leave the tail transaction retryable because the
+    /// scheduler deliberately keeps the outgoing context unreclaimable.
+    fn finish_context_switch_tail() -> RuntimeStatus;
+
     /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///
     /// The baton is not an [`IrqGuardToken`] and never belongs to a task. A
@@ -434,6 +480,17 @@ pub trait TaskRuntime {
     /// On success, `handle` must follow the same ownership contract as
     /// [`Self::create_kernel_context`].
     fn create_user_context(request: UserContextRequest) -> RuntimeHandleResult;
+
+    /// Binds a created context to its final generation-bearing thread ID.
+    ///
+    /// The runtime must validate the context handle and install the association
+    /// atomically. A failed call must leave the context unbound so construction
+    /// can destroy it. This hook runs under the task registry's IRQ-safe lock;
+    /// it must not allocate, block, invoke callbacks, or re-enter ax-task.
+    ///
+    /// Providers without execution contexts still export this capability and
+    /// return `Unsupported`, keeping trait-FFI symbol completeness explicit.
+    fn bind_context_thread(binding: ContextThreadBinding) -> RuntimeStatus;
 
     /// Destroys an execution context that cannot be scheduled again.
     fn destroy_context(context: ExecutionContextHandle) -> RuntimeStatus;

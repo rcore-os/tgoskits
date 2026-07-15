@@ -5,6 +5,7 @@ use core::arch::asm;
 use aarch64_cpu::{asm::barrier, registers::*};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
+#[cfg(feature = "tls")]
 use crate::KernelTlsBase;
 
 /// Allows the current CPU to respond to interrupts.
@@ -236,6 +237,7 @@ pub unsafe fn write_exception_vector_base(vbar: usize) {
 ///
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
+#[cfg(feature = "tls")]
 pub fn read_thread_pointer() -> KernelTlsBase {
     KernelTlsBase::new(TPIDR_EL0.get() as usize)
 }
@@ -248,6 +250,7 @@ pub fn read_thread_pointer() -> KernelTlsBase {
 ///
 /// This function is unsafe as it changes the current CPU states.
 #[inline]
+#[cfg(feature = "tls")]
 pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
     TPIDR_EL0.set(kernel_tls.as_usize() as _)
 }

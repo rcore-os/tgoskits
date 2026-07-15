@@ -4,12 +4,15 @@ use alloc::{boxed::Box, string::String};
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
+    mem::offset_of,
     pin::Pin,
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering},
 };
 
-use ax_cpu_local::CpuPin;
+use ax_cpu_local::{
+    ContextIdentity, CpuAreaPrefixV2, CpuBindingEpoch, CpuPin, CurrentThreadHeader, ThreadIdentity,
+};
 use ax_kspin::{IrqGuard, SpinNoIrq};
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
@@ -26,14 +29,30 @@ use ax_task::{
     CpuLocal, CpuLocalOwnerBorrow, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources,
     ThreadSpec, impl_trait as impl_task_runtime,
     runtime::{
-        AddressSpaceHandle, CpuRemoteHandle, CurrentCpuLocalHandle, ExecutionContextHandle,
-        IrqGuardToken, KernelContextRequest, RuntimeCpuId, RuntimeHandleResult, RuntimeStatus,
-        StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, TlsHandle, TlsRequest,
-        UserContextRequest,
+        AddressSpaceHandle, ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle,
+        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, RuntimeCpuId,
+        RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TaskRuntime,
+        TaskSystemHandle, TlsHandle, TlsRequest, UserContextRequest,
     },
 };
 
 static TASK_SYSTEM: LazyInit<Pin<Box<TaskSystem>>> = LazyInit::new();
+
+/// The already-running primary context is the unikernel's process owner.
+///
+/// Unlike a spawned runtime thread, it has no join record: returning from it
+/// terminates the whole system. Retaining its generation-checked identity
+/// keeps that role explicit instead of inferring it from a missing extension.
+static PRIMARY_BOOTSTRAP_THREAD: LazyInit<PrimaryBootstrapThread> = LazyInit::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrimaryBootstrapThread(ThreadId);
+
+impl PrimaryBootstrapThread {
+    fn owns(self, thread: ThreadId) -> bool {
+        self.0 == thread
+    }
+}
 
 static TASK_TIMER_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -49,12 +68,6 @@ static CPU_LOCAL: LazyInit<Pin<Box<CpuLocal>>> = LazyInit::new();
 /// owner borrow while no shared query is live.
 #[ax_percpu::def_percpu]
 static CPU_LOCAL_OWNER_HANDLE: usize = 0;
-
-#[ax_percpu::def_percpu]
-static CURRENT_RUNTIME_STACK: usize = 0;
-
-#[ax_percpu::def_percpu]
-static CURRENT_RUNTIME_CONTEXT: usize = 0;
 
 #[cfg(feature = "tls")]
 #[ax_percpu::def_percpu]
@@ -120,14 +133,19 @@ pub fn install_sched_switch_trace_hook(hook: SchedSwitchTraceHook) {
 pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) -> bool {
     #[cfg(feature = "stack-guard-page")]
     {
-        // SAFETY: the current CPU writes this per-CPU slot immediately before
-        // switching to the context whose stack handle it retains.
-        let stack = unsafe { CURRENT_RUNTIME_STACK.read_current_raw() };
+        // SAFETY: trap execution cannot migrate before returning through its
+        // architecture epilogue. The pinned current-thread header is the sole
+        // source of the matching runtime context and stack identity.
+        let cpu_pin = unsafe { CpuPin::new_unchecked() };
+        let Ok((_prefix, context)) = current_runtime_context(&cpu_pin) else {
+            return false;
+        };
+        let stack = context.stack.into_raw();
         if stack == 0 {
             return false;
         }
         // SAFETY: the scheduler owns the stack resource until after its context
-        // can no longer run, so the current context's published handle is live.
+        // can no longer run, and the current header keeps this context on-CPU.
         let stack = unsafe { &*ptr::with_exposed_provenance::<RuntimeStack>(stack) };
         let StackBacking::GuardedPages { guard_size, .. } = &stack.backing else {
             return false;
@@ -205,9 +223,218 @@ enum StackBacking {
     GuardedPages { pages: usize, guard_size: usize },
 }
 
+#[derive(Clone, Copy)]
+struct RuntimeSwitchTail {
+    previous: NonNull<CurrentThreadHeader>,
+    binding_epoch: CpuBindingEpoch,
+}
+
+/// Runtime-owned architecture context and its pinned scheduler identity.
+///
+/// The header stays at offset zero so a current-thread publication can be
+/// checked against its context handle without a second registry or per-CPU
+/// pointer. `switch_tail` is written only while this context is off-CPU and is
+/// consumed exactly once after it becomes current with local IRQs disabled.
+#[repr(C)]
 struct RuntimeContext {
-    inner: UnsafeCell<ax_hal::context::TaskContext>,
+    header: CurrentThreadHeader,
+    inner: Box<UnsafeCell<ax_hal::context::TaskContext>>,
     stack: StackHandle,
+    switch_tail: UnsafeCell<Option<RuntimeSwitchTail>>,
+}
+
+const _: () = assert!(offset_of!(RuntimeContext, header) == 0);
+
+impl RuntimeContext {
+    fn allocate(inner: ax_hal::context::TaskContext, stack: StackHandle) -> *mut RuntimeContext {
+        let inner = Box::new(UnsafeCell::new(inner));
+        let identity = ContextIdentity::from_raw(inner.get().expose_provenance())
+            .expect("an architecture context allocation must have a non-zero identity");
+        Box::into_raw(Box::new(Self {
+            header: CurrentThreadHeader::new(identity),
+            inner,
+            stack,
+            switch_tail: UnsafeCell::new(None),
+        }))
+    }
+
+    fn header(&self) -> Pin<&CurrentThreadHeader> {
+        // SAFETY: every RuntimeContext is constructed in a Box and is never
+        // moved before destruction after its header is no longer published.
+        unsafe { Pin::new_unchecked(&self.header) }
+    }
+
+    fn context_identity(&self) -> ContextIdentity {
+        self.header.context_identity()
+    }
+
+    fn architecture_context_identity(&self) -> usize {
+        self.inner.get().expose_provenance()
+    }
+
+    fn switch_tail(&self) -> Option<RuntimeSwitchTail> {
+        // SAFETY: only the incoming scheduler continuation reads this slot;
+        // the context is current and local IRQs serialize scheduler entry.
+        unsafe { *self.switch_tail.get() }
+    }
+
+    unsafe fn stage_switch_tail(&self, tail: RuntimeSwitchTail) -> Result<(), RuntimeStatus> {
+        // SAFETY: the scheduler selected this context while it is off-CPU and
+        // holds the only right to prepare its next incoming continuation.
+        let slot = unsafe { &mut *self.switch_tail.get() };
+        if slot.is_some() {
+            return Err(RuntimeStatus::Busy);
+        }
+        *slot = Some(tail);
+        Ok(())
+    }
+
+    unsafe fn finish_switch_tail(&self) -> RuntimeStatus {
+        // SAFETY: the current incoming continuation owns this slot with local
+        // IRQs disabled; copy first so a failed unbind remains retryable.
+        let slot = unsafe { &mut *self.switch_tail.get() };
+        let Some(tail) = *slot else {
+            return RuntimeStatus::InvalidHandle;
+        };
+        // SAFETY: the outgoing header stays pinned and unreclaimable through
+        // the scheduler `on_cpu` handoff; this tail owns its exact epoch.
+        let previous = unsafe { Pin::new_unchecked(tail.previous.as_ref()) };
+        if unsafe { previous.unbind_cpu(tail.binding_epoch) }.is_err() {
+            return RuntimeStatus::Busy;
+        }
+        *slot = None;
+        RuntimeStatus::Success
+    }
+}
+
+fn current_cpu_prefix(cpu_pin: &CpuPin) -> Result<&CpuAreaPrefixV2, RuntimeStatus> {
+    let area_base = ax_hal::percpu::cpu_base(cpu_pin)
+        .map_err(|_| RuntimeStatus::NotInitialized)?
+        .as_ptr()
+        .expose_provenance();
+    // SAFETY: the typed CPU-local query verified the complete immutable area
+    // identity while `cpu_pin` prevents migration. The prefix lives until
+    // shutdown, and this borrow is limited to the supplied pin.
+    Ok(unsafe { &*ptr::with_exposed_provenance::<CpuAreaPrefixV2>(area_base) })
+}
+
+fn runtime_context(
+    handle: ExecutionContextHandle,
+) -> Result<&'static RuntimeContext, RuntimeStatus> {
+    if handle.is_none() {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    let context = ptr::with_exposed_provenance::<RuntimeContext>(handle.into_raw());
+    // SAFETY: TaskRuntime receives only live handles created by this provider;
+    // the scheduler retains context ownership through every runtime call.
+    let context = unsafe { &*context };
+    if context.context_identity().as_usize() != context.architecture_context_identity() {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    Ok(context)
+}
+
+fn current_runtime_context(
+    cpu_pin: &CpuPin,
+) -> Result<(&CpuAreaPrefixV2, &'static RuntimeContext), RuntimeStatus> {
+    let prefix = current_cpu_prefix(cpu_pin)?;
+    let current = ax_hal::percpu::current_thread(cpu_pin)
+        .map_err(|_| RuntimeStatus::InvalidHandle)?
+        .as_ptr()
+        .expose_provenance();
+    let binding = prefix.header().binding();
+    if current == 0 || current == binding.boot_thread {
+        return Err(RuntimeStatus::NotInitialized);
+    }
+    let header = ptr::with_exposed_provenance::<CurrentThreadHeader>(current);
+    // SAFETY: the CPU runtime slot may publish only a pinned header whose live
+    // CPU binding matches this prefix. The supplied pin covers the load and
+    // every validation below.
+    let header = unsafe { &*header };
+    // RuntimeContext is `repr(C)` and the pinned header is its offset-zero
+    // owner identity. The independently allocated architecture context keeps
+    // ContextIdentity free of self-referential outer pointers.
+    let context = unsafe { &*ptr::from_ref(header).cast::<RuntimeContext>() };
+    if !ptr::eq(context.header().get_ref(), header)
+        || context.context_identity().as_usize() != context.architecture_context_identity()
+    {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    let Some(current_binding) = header.cpu_binding() else {
+        return Err(RuntimeStatus::InvalidHandle);
+    };
+    if current_binding.area_base() != binding.area_base
+        || current_binding.cpu_index().as_u32() != binding.cpu_index
+    {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    Ok((prefix, context))
+}
+
+unsafe fn prepare_current_runtime_context_publish<'pin>(
+    cpu_pin: &'pin CpuPin,
+    context: &'pin RuntimeContext,
+) -> Result<ax_hal::percpu::PreparedCurrentThreadPublish<'pin>, RuntimeStatus> {
+    let header = context.header();
+    // SAFETY: the caller already bound this pinned header to the current CPU and
+    // excludes traps/scheduler re-entry until the raw context switch.
+    unsafe { ax_hal::percpu::prepare_current_thread_publish(cpu_pin, header) }
+        .map_err(|_| RuntimeStatus::InvalidHandle)
+}
+
+fn bind_bootstrap_runtime_context(
+    cpu_pin: &CpuPin,
+    handle: ExecutionContextHandle,
+    kernel_tls: usize,
+) -> Result<(), TaskError> {
+    let prefix = current_cpu_prefix(cpu_pin).map_err(runtime_status_error)?;
+    let binding = prefix.header().binding();
+    let boot_thread =
+        ax_hal::percpu::current_thread(cpu_pin).map_err(|_| TaskError::InvalidConfiguration)?;
+    if boot_thread.as_ptr().expose_provenance() != binding.boot_thread {
+        return Err(TaskError::InvalidConfiguration);
+    }
+    let context = runtime_context(handle).map_err(runtime_status_error)?;
+    // SAFETY: the CPU is offline with IRQs disabled, this context was just
+    // installed as its bootstrap scheduler record, and the header stays pinned
+    // in the runtime allocation until that record is reaped.
+    unsafe { context.header().bind_cpu(binding) }.map_err(|_| TaskError::InvalidConfiguration)?;
+    #[cfg(feature = "tls")]
+    unsafe {
+        // SAFETY: bootstrap runs in the platform's IRQ-disabled CPU-binding
+        // window and the scheduler record now owns the matching TLS resource.
+        ax_hal::percpu::install_bootstrap_kernel_tls(ax_hal::context::KernelTlsBase::new(
+            kernel_tls,
+        ))
+        .map_err(|_| TaskError::InvalidConfiguration)?;
+        let prepared = prepare_current_runtime_context_publish(cpu_pin, context)
+            .map_err(runtime_status_error)?;
+        ax_hal::percpu::commit_current_thread_publish(prepared);
+    }
+    #[cfg(not(feature = "tls"))]
+    unsafe {
+        assert_eq!(
+            kernel_tls, 0,
+            "TLS-disabled bootstrap must retain a zero TLS identity"
+        );
+        // SAFETY: the CPU is still offline with IRQs disabled. The typed HAL
+        // operation installs the LinuxCurrent register and matching Release
+        // slot as one bootstrap-only transition.
+        ax_hal::percpu::install_bootstrap_current_thread(cpu_pin, context.header())
+            .map_err(|_| TaskError::InvalidConfiguration)?;
+    }
+    Ok(())
+}
+
+fn finish_runtime_context_switch_tail() -> RuntimeStatus {
+    // SAFETY: TaskSystem calls this only with its scheduler-frame pin and local
+    // IRQs disabled after execution has entered the incoming context.
+    let cpu_pin = unsafe { CpuPin::new_unchecked() };
+    let Ok((_prefix, current)) = current_runtime_context(&cpu_pin) else {
+        return RuntimeStatus::InvalidHandle;
+    };
+    // SAFETY: the incoming context exclusively owns its staged one-shot tail.
+    unsafe { current.finish_switch_tail() }
 }
 
 struct InitialContextState {
@@ -378,7 +605,9 @@ unsafe fn runtime_thread_data_from_raw(data: usize) -> &'static RuntimeThreadDat
 pub(crate) fn initialize_primary(cpu_id: usize) -> Result<(), TaskError> {
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(ax_hal::cpu_num()))?);
     TASK_SYSTEM.init_once(system);
-    initialize_current_cpu(cpu_id)
+    let bootstrap = initialize_current_cpu(cpu_id)?;
+    PRIMARY_BOOTSTRAP_THREAD.init_once(PrimaryBootstrapThread(bootstrap));
+    Ok(())
 }
 
 /// Installs temporary TLS before platform late-init can enter Rust code that
@@ -399,14 +628,26 @@ pub(crate) fn initialize_early_bootstrap_tls() -> Result<(), TaskError> {
     if result.handle == 0 {
         return Err(TaskError::InvalidRuntimeHandle);
     }
+    // SAFETY: success returned a fresh, non-zero runtime TLS allocation.
+    let early_tls = unsafe { TlsHandle::from_raw(result.handle) };
     unsafe {
         // SAFETY: this CPU exclusively initializes its per-CPU bootstrap slot.
         // Publishing the owner before the hardware pointer keeps an early
         // failure from losing the allocation's destruction right.
         EARLY_BOOTSTRAP_TLS.write_current_raw(result.handle);
-        ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
-            runtime_tls_pointer(TlsHandle::from_raw(result.handle)),
-        ));
+        if ax_hal::percpu::install_bootstrap_kernel_tls(ax_hal::context::KernelTlsBase::new(
+            runtime_tls_pointer(early_tls),
+        ))
+        .is_err()
+        {
+            EARLY_BOOTSTRAP_TLS.write_current_raw(0);
+            assert_eq!(
+                deallocate_runtime_tls(early_tls),
+                RuntimeStatus::Success,
+                "failed to roll back rejected bootstrap TLS"
+            );
+            return Err(TaskError::InvalidConfiguration);
+        }
     }
     Ok(())
 }
@@ -414,7 +655,7 @@ pub(crate) fn initialize_early_bootstrap_tls() -> Result<(), TaskError> {
 /// Creates and publishes the calling secondary CPU's local scheduler object.
 #[cfg(feature = "smp")]
 pub(crate) fn initialize_secondary(cpu_id: usize) -> Result<(), TaskError> {
-    initialize_current_cpu(cpu_id)
+    initialize_current_cpu(cpu_id).map(|_| ())
 }
 
 /// Publishes a prepared CPU after local timer and scheduler-IPI paths are ready.
@@ -473,6 +714,17 @@ fn idle_entry_action(
 
 /// Stores the exit code, marks the current thread exited, and switches away.
 pub fn exit_current(exit_code: i32) -> ! {
+    let current = current_thread_id()
+        .unwrap_or_else(|error| panic!("failed to identify exiting runtime thread: {error}"));
+    let primary = PRIMARY_BOOTSTRAP_THREAD
+        .get()
+        .unwrap_or_else(|| panic!("primary bootstrap thread identity is not initialized"));
+    if primary.owns(current) {
+        debug!("main task exited: exit_code={exit_code}");
+        let _irq = IrqGuard::new();
+        ax_hal::power::system_off();
+    }
+
     let exit_permit = ax_task::prepare_current_exit()
         .unwrap_or_else(|error| panic!("failed to prepare scheduler thread exit: {error}"));
     publish_current_runtime_exit(exit_code)
@@ -923,7 +1175,7 @@ pub(crate) fn on_scheduler_ipi() {
     }
 }
 
-fn initialize_current_cpu(cpu_id: usize) -> Result<(), TaskError> {
+fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     let system = task_system().ok_or(TaskError::NotInitialized)?;
     let cpu_id = u32::try_from(cpu_id).map_err(|_| TaskError::InvalidCpu(u32::MAX))?;
     let owner = CpuId::new(cpu_id);
@@ -950,27 +1202,28 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<(), TaskError> {
     let bootstrap_context = bootstrap_resources.context();
     #[cfg(feature = "tls")]
     let bootstrap_tls = bootstrap_resources.tls();
-    system.install_bootstrap_thread(cpu.as_mut(), unsafe {
+    let bootstrap = system.install_bootstrap_thread(cpu.as_mut(), unsafe {
         // SAFETY: bootstrap_resources is a fresh unique runtime bundle.
         ThreadSpec::new(SchedulePolicy::default())
             .with_affinity(owner_affinity.clone())
             .with_resources(bootstrap_resources)
     })?;
+    let bootstrap_thread = bootstrap.id();
+    drop(bootstrap);
+    #[cfg(feature = "tls")]
+    let bootstrap_kernel_tls = runtime_tls_pointer(bootstrap_tls);
+    #[cfg(not(feature = "tls"))]
+    let bootstrap_kernel_tls = 0;
+    // SAFETY: platform entry bound the immutable CPU area, local IRQs remain
+    // disabled, and this CPU is not scheduler-visible yet.
+    let cpu_pin = unsafe { CpuPin::new_unchecked() };
     // Publish the physical bootstrap resources only after their scheduler
-    // record owns them. A failed installation must not leave this CPU using
-    // TLS or a context that no scheduler record can eventually release.
-    unsafe {
-        // SAFETY: installation committed this live context as the current
-        // thread on the owner CPU, which exclusively writes its per-CPU slot.
-        CURRENT_RUNTIME_CONTEXT.write_current_raw(bootstrap_context.into_raw());
-    }
+    // record owns them. A failed installation must not leave this CPU using a
+    // context or TLS allocation that no scheduler record can release.
+    bind_bootstrap_runtime_context(&cpu_pin, bootstrap_context, bootstrap_kernel_tls)
+        .unwrap_or_else(|error| panic!("failed to publish bootstrap runtime context: {error}"));
     #[cfg(feature = "tls")]
     unsafe {
-        // SAFETY: the installed bootstrap record now retains the matching TLS
-        // allocation until its context can no longer execute on this CPU.
-        ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
-            runtime_tls_pointer(bootstrap_tls),
-        ));
         let early_tls = TlsHandle::from_raw(EARLY_BOOTSTRAP_TLS.read_current_raw());
         assert!(
             !early_tls.is_none(),
@@ -1010,7 +1263,7 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<(), TaskError> {
         unsafe { PROGRAMMED_TASK_TIMER_DEADLINE_NS.write_current_raw(0) };
     }
     crate::guard::assert_boot_guards_released();
-    Ok(())
+    Ok(bootstrap_thread)
 }
 
 fn create_idle_resources() -> ThreadResources {
@@ -1565,22 +1818,17 @@ fn create_runtime_context_parts(
     }
     #[cfg(feature = "uspace")]
     let _ = address_space;
-    let context = Box::new(RuntimeContext {
-        inner: UnsafeCell::new(context),
-        stack: stack_handle,
-    });
-    RuntimeHandleResult::success(Box::into_raw(context).expose_provenance())
+    RuntimeHandleResult::success(
+        RuntimeContext::allocate(context, stack_handle).expose_provenance(),
+    )
 }
 
 fn create_bootstrap_context() -> ExecutionContextHandle {
     let context = ax_hal::context::TaskContext::new();
-    let context = Box::new(RuntimeContext {
-        inner: UnsafeCell::new(context),
-        stack: StackHandle::NONE,
-    });
+    let context = RuntimeContext::allocate(context, StackHandle::NONE);
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeContext
     // that stays live until destroy_runtime_context consumes the handle.
-    unsafe { ExecutionContextHandle::from_raw(Box::into_raw(context).expose_provenance()) }
+    unsafe { ExecutionContextHandle::from_raw(context.expose_provenance()) }
 }
 
 #[cfg(feature = "uspace")]
@@ -1627,6 +1875,12 @@ fn destroy_runtime_context(handle: ExecutionContextHandle) -> RuntimeStatus {
         return RuntimeStatus::InvalidHandle;
     }
     let context = ptr::with_exposed_provenance_mut::<RuntimeContext>(handle.into_raw());
+    // SAFETY: the scheduler keeps the runtime handle live while asking whether
+    // its physical CPU handoff has completed.
+    let context_ref = unsafe { &*context };
+    if context_ref.header.cpu_binding().is_some() || context_ref.switch_tail().is_some() {
+        return RuntimeStatus::Busy;
+    }
     // SAFETY: the scheduler proves this context cannot run again and consumes
     // its runtime handle exactly once.
     drop(unsafe { Box::from_raw(context) });
@@ -1725,6 +1979,10 @@ impl_task_runtime! {
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {
             #[cfg(not(test))]
             crate::guard::exit_irq("task runtime");
+        }
+
+        fn finish_context_switch_tail() -> RuntimeStatus {
+            finish_runtime_context_switch_tail()
         }
 
         fn finish_initial_context_switch() {
@@ -1856,6 +2114,27 @@ impl_task_runtime! {
             create_user_runtime_context(_request)
         }
 
+        fn bind_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
+            let Some(thread_identity) = ThreadIdentity::from_parts(
+                binding.identity.slot,
+                binding.identity.generation,
+            ) else {
+                return RuntimeStatus::InvalidArgument;
+            };
+            let Ok(context) = runtime_context(binding.context) else {
+                return RuntimeStatus::InvalidHandle;
+            };
+            let header = context.header();
+            if header.bind_thread(thread_identity).is_err() {
+                return RuntimeStatus::InvalidArgument;
+            }
+            // Scheduler construction invokes this exactly once before the
+            // context can enter a run queue. The bootstrap placeholder is
+            // likewise not consumed by assembly until its first switch-out.
+            unsafe { &mut *context.inner.get() }.set_current_header(header.as_non_null());
+            RuntimeStatus::Success
+        }
+
         fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
             destroy_runtime_context(_context)
         }
@@ -1870,27 +2149,88 @@ impl_task_runtime! {
             crate::guard::assert_scheduler_switch_baton();
             let previous_raw = previous.into_raw();
             let next_raw = next.into_raw();
-            let published_previous = unsafe { CURRENT_RUNTIME_CONTEXT.read_current_raw() };
-            assert_eq!(
-                published_previous,
-                previous_raw,
-                "scheduler previous context differs from the executing context"
-            );
+            // SAFETY: the active scheduler baton keeps this execution pinned
+            // with local IRQs disabled until the raw switch commits.
+            let cpu_pin = unsafe { CpuPin::new_unchecked() };
+            let (prefix, published_previous) = current_runtime_context(&cpu_pin)
+                .unwrap_or_else(|status| panic!("current runtime context is invalid: {status:?}"));
             let previous = ptr::with_exposed_provenance_mut::<RuntimeContext>(previous_raw);
             let next = ptr::with_exposed_provenance_mut::<RuntimeContext>(next_raw);
-            // SAFETY: this owner CPU publishes the next context's live stack
-            // before transferring execution to it.
-            unsafe { CURRENT_RUNTIME_STACK.write_current_raw((*next).stack.into_raw()) };
-            // SAFETY: the same owner CPU exclusively publishes the current
-            // execution-context pointer for exec-time address-space updates.
-            unsafe { CURRENT_RUNTIME_CONTEXT.write_current_raw(next.expose_provenance()) };
+            assert!(
+                ptr::eq(published_previous, previous),
+                "scheduler previous context differs from the pinned current header"
+            );
+            // SAFETY: both handles are live and uniquely owned by the committed
+            // scheduler switch plan until this handoff finishes.
+            let previous_context = unsafe { &*previous };
+            let next_context = unsafe { &*next };
+            // SAFETY: the committed scheduler plan owns mutable access to the
+            // outgoing architecture context and shared access to the off-CPU
+            // incoming context until the raw handoff.
+            let previous_arch_context = unsafe { &mut *previous_context.inner.get() };
+            let next_arch_context = unsafe { &*next_context.inner.get() };
+            assert_eq!(
+                previous_arch_context.current_header(),
+                Some(previous_context.header().as_non_null()),
+                "outgoing architecture context retained a different current header"
+            );
+            assert_eq!(
+                next_arch_context.current_header(),
+                Some(next_context.header().as_non_null()),
+                "incoming architecture context retained a different current header"
+            );
+            let previous_binding = previous_context
+                .header
+                .cpu_binding()
+                .unwrap_or_else(|| panic!("scheduler previous context is not CPU-bound"));
+            assert!(
+                next_context.header.cpu_binding().is_none(),
+                "scheduler next context is already CPU-bound"
+            );
+            assert!(
+                next_context.switch_tail().is_none(),
+                "scheduler next context retained an unfinished switch tail"
+            );
+            // FP/SIMD state may execute architecture helpers and therefore must
+            // finish before the incoming CPU binding or current slot changes.
+            previous_arch_context.prepare_switch_to(next_arch_context);
+            // SAFETY: the scheduler selected `next` while it is off-CPU and
+            // the current CPU's immutable prefix binding remains pinned.
+            let next_epoch = unsafe { next_context.header().bind_cpu(prefix.header().binding()) }
+                .unwrap_or_else(|error| panic!("failed to bind next runtime context: {error}"));
+            // Validate every fallible publication condition before staging the
+            // irreversible scheduler baton transfer.
+            let prepared_current = match unsafe {
+                prepare_current_runtime_context_publish(&cpu_pin, next_context)
+            } {
+                Ok(prepared) => prepared,
+                Err(status) => {
+                    // SAFETY: publication and tail staging have not occurred;
+                    // this path still owns the exact binding just installed.
+                    let rollback = unsafe { next_context.header().unbind_cpu(next_epoch) };
+                    assert!(rollback.is_ok(), "failed to roll back incoming CPU binding");
+                    panic!("failed to prepare next runtime context: {status:?}");
+                }
+            };
+            let tail = RuntimeSwitchTail {
+                previous: previous_context.header().as_non_null(),
+                binding_epoch: previous_binding.epoch(),
+            };
+            if let Err(status) = unsafe { next_context.stage_switch_tail(tail) } {
+                // SAFETY: current-thread publication has not changed, so this
+                // path still owns the exact incoming binding it just created.
+                let rollback = unsafe { next_context.header().unbind_cpu(next_epoch) };
+                assert!(rollback.is_ok(), "failed to roll back incoming CPU binding");
+                panic!("failed to stage runtime switch tail: {status:?}");
+            }
             crate::guard::transfer_scheduler_switch_baton();
             // SAFETY: the scheduler commits unique ownership of the previous
-            // running context and immutable access to the selected next context.
-            // TaskSystem is the sole `on_cpu` authority and completes that
-            // ownership handoff only after this call resumes on the incoming
-            // stack (or in its fresh entry trampoline).
-            unsafe { (&mut *(*previous).inner.get()).switch_to(&*(*next).inner.get()) };
+            // running context and immutable access to the selected next
+            // context. The infallible Release publication and naked switch are
+            // deliberately adjacent: no old-context Rust may observe the next
+            // current slot. TaskSystem completes `on_cpu` only in switch tail.
+            unsafe { ax_hal::percpu::commit_current_thread_publish(prepared_current) };
+            unsafe { previous_arch_context.switch_to_raw(next_arch_context) };
         }
 
         fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {

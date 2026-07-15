@@ -17,7 +17,9 @@ use crate::{
     inbox::{InboxKind, InboxMessage, PublishResult, SchedulerInbox},
     lock::{IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
-    runtime::{ExecutionContextHandle, RuntimeStatus, task_runtime},
+    runtime::{
+        ContextThreadBinding, ExecutionContextHandle, RuntimeStatus, ThreadIdentityV1, task_runtime,
+    },
     system::cpu::{CurrentDispatch, CurrentDispatchState, SchedulerIpiRetrySet},
 };
 
@@ -330,6 +332,23 @@ impl TaskSystem {
             exit_callback_claimed: false,
             charged_runtime_ns: 0,
         };
+        let context = record.resources.context();
+        if !context.is_none() {
+            let status = task_runtime::bind_context_thread(ContextThreadBinding {
+                context,
+                identity: ThreadIdentityV1::new(id.slot(), id.generation()),
+            });
+            if status != RuntimeStatus::Success {
+                let failed_slot = &mut state.slots[slot as usize];
+                debug_assert!(failed_slot.record.is_none());
+                failed_slot.generation = next_generation(failed_slot.generation);
+                state.free_slots.push(slot);
+                state.deadline_admission.release(reservation);
+                drop(state);
+                drop(record);
+                return Err(TaskError::RuntimeFailure(status as u32));
+            }
+        }
         state.slots[slot as usize].record = Some(record);
         Ok(ThreadHandle { core })
     }
@@ -1484,9 +1503,17 @@ impl TaskSystem {
     /// left the previous stack. Deferred migration publication and exit hooks
     /// therefore cannot make a context runnable or reapable too early.
     pub fn complete_context_switch(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
-        let Some(handoff) = cpu.as_mut().take_switch_handoff() else {
+        let Some(expected_handoff) = cpu.as_ref().get_ref().switch_handoff() else {
             return Ok(());
         };
+        ensure_runtime_success(task_runtime::finish_context_switch_tail())?;
+        let handoff = cpu
+            .as_mut()
+            .take_switch_handoff()
+            .ok_or(TaskError::InvalidConfiguration)?;
+        if handoff != expected_handoff {
+            return Err(TaskError::InvalidConfiguration);
+        }
         {
             let mut state = self.state.lock();
             let migration = {
@@ -4144,6 +4171,82 @@ mod tests {
     }
 
     #[test]
+    fn context_is_bound_to_the_allocated_thread_before_new_is_published() {
+        crate::test_runtime::configure_context_binding(RuntimeStatus::Success);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let context = unsafe {
+            // SAFETY: the unit runtime models this non-zero scalar as a live
+            // context until the task-system fixture is dropped.
+            ExecutionContextHandle::from_raw(0x1000)
+        };
+        let resources = unsafe {
+            // SAFETY: the fake runtime accepts the unique context handle above;
+            // the remaining resource handles are intentionally absent.
+            ThreadResources::new(
+                context,
+                crate::runtime::StackHandle::NONE,
+                crate::runtime::TlsHandle::NONE,
+                crate::runtime::AddressSpaceHandle::NONE,
+            )
+        };
+
+        let thread = system
+            .create_thread(unsafe {
+                // SAFETY: this specification is the sole owner of `resources`.
+                ThreadSpec::new(Default::default()).with_resources(resources)
+            })
+            .unwrap();
+
+        assert_eq!(system.thread_state(thread.id()), Ok(ThreadState::New));
+        assert_eq!(
+            crate::test_runtime::last_context_binding(),
+            Some(ContextThreadBinding {
+                context,
+                identity: ThreadIdentityV1::new(thread.id().slot(), thread.id().generation()),
+            })
+        );
+    }
+
+    #[test]
+    fn failed_context_binding_retires_the_allocated_generation() {
+        crate::test_runtime::configure_context_binding(RuntimeStatus::InvalidHandle);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let context = unsafe {
+            // SAFETY: the unit runtime validates this modeled handle through its
+            // configured failing context-binding result.
+            ExecutionContextHandle::from_raw(0x2000)
+        };
+        let resources = unsafe {
+            // SAFETY: ownership is transferred once into the failed create path.
+            ThreadResources::new(
+                context,
+                crate::runtime::StackHandle::NONE,
+                crate::runtime::TlsHandle::NONE,
+                crate::runtime::AddressSpaceHandle::NONE,
+            )
+        };
+
+        let error = system
+            .create_thread(unsafe {
+                // SAFETY: this specification is the sole resource owner.
+                ThreadSpec::new(Default::default()).with_resources(resources)
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            TaskError::RuntimeFailure(RuntimeStatus::InvalidHandle as u32)
+        );
+        let failed = crate::test_runtime::last_context_binding().unwrap();
+
+        crate::test_runtime::configure_context_binding(RuntimeStatus::Success);
+        let replacement = system
+            .create_thread(ThreadSpec::new(Default::default()))
+            .unwrap();
+        assert_eq!(replacement.id().slot(), failed.identity.slot);
+        assert_ne!(replacement.id().generation(), failed.identity.generation);
+    }
+
+    #[test]
     fn generation_rejects_a_stale_registry_identity() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
         let first = system
@@ -4257,6 +4360,42 @@ mod tests {
         assert_eq!(system.reap_thread(exiting), Err(TaskError::ThreadBusy));
 
         system.complete_context_switch(cpu.as_mut()).unwrap();
+        system.reap_thread(exiting).unwrap();
+    }
+
+    #[test]
+    fn failed_runtime_switch_tail_keeps_outgoing_context_unreclaimable() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let bootstrap = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+        let exiting = bootstrap.id();
+        drop(bootstrap);
+        system.exit_current(cpu.as_mut()).unwrap();
+        crate::test_runtime::configure_context_switch_tail(RuntimeStatus::InvalidHandle);
+
+        assert_eq!(
+            system.complete_context_switch(cpu.as_mut()),
+            Err(TaskError::RuntimeFailure(
+                RuntimeStatus::InvalidHandle as u32
+            ))
+        );
+        assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
+        assert!(cpu.switch_handoff().is_some());
+        assert_eq!(system.reap_thread(exiting), Err(TaskError::ThreadBusy));
+
+        crate::test_runtime::configure_context_switch_tail(RuntimeStatus::Success);
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
         system.reap_thread(exiting).unwrap();
     }
 

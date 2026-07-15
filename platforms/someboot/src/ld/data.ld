@@ -5,6 +5,12 @@
         ${data_extra}
     }
 
+    .ax_percpu_init : ALIGN(8) {
+        __AX_PERCPU_INIT_START = .;
+        KEEP(*(.ax_percpu.init))
+        __AX_PERCPU_INIT_END = .;
+    }
+
     .ax_percpu_alignment : {
         __AX_PERCPU_ALIGNMENT_START = .;
         KEEP(*(.ax_percpu.align))
@@ -17,6 +23,7 @@
     .percpu : {
         __percpu_start = .;
         KEEP(*(.percpu.000.header))
+        *(SORT_BY_NAME(.percpu.storage*))
         *(SORT_BY_NAME(.percpu.*))
         *(.percpu .percpu_data .percpu_data.*)
         KEEP(*(.percpu_end))

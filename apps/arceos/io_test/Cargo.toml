@@ -10,7 +10,7 @@ default = []
 arceos = ["dep:ax-std", "ax-std/fs"]
 
 [dependencies]
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 
 [package.metadata.axstd]
 features = ["log-level-off"]

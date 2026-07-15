@@ -200,14 +200,43 @@ fn ipi_callback_contract_forbids_sleeping_or_irq_unsafe_work() {
 }
 
 #[test]
-fn current_task_pointer_access_is_pinned_on_every_architecture() {
-    assert!(AXHAL_PERCPU.contains("let guard = ax_kspin::IrqGuard::new();"));
-    assert!(AXHAL_PERCPU.contains("ax_percpu::bound_current(guard.cpu_pin())"));
-    assert!(AXHAL_PERCPU.contains("CURRENT_TASK_PTR.read_current(&cpu_pin)"));
-    assert!(AXHAL_PERCPU.contains("CURRENT_TASK_PTR.write_current(&cpu_pin, ptr as usize)"));
-    assert!(!AXHAL_PERCPU.contains("CURRENT_TASK_PTR.read_current_raw()"));
-    assert!(!AXHAL_PERCPU.contains("CURRENT_TASK_PTR.write_current_raw("));
-    assert!(!AXHAL_PERCPU.contains("target_arch = \"x86_64\""));
+fn current_thread_identity_requires_a_pin_and_two_phase_scheduler_publication() {
+    let cpu_base = source_section(
+        AXHAL_PERCPU,
+        "pub fn cpu_base(",
+        "/// Returns the pinned current execution-context header.",
+    );
+    let current_thread = source_section(
+        AXHAL_PERCPU,
+        "pub fn current_thread(",
+        "/// Validates current-thread publication before the irreversible switch tail.",
+    );
+    assert!(cpu_base.contains("&CpuPin"));
+    assert!(current_thread.contains("&CpuPin"));
+
+    let scheduler_switch = source_section(
+        TASK_RUNTIME,
+        "unsafe fn switch_context(",
+        "fn install_address_space(",
+    );
+    let prepare = scheduler_switch
+        .find("prepare_current_runtime_context_publish(&cpu_pin, next_context)")
+        .expect("scheduler must validate publication under its CPU pin");
+    let transfer = scheduler_switch
+        .find("transfer_scheduler_switch_baton()")
+        .expect("scheduler must transfer its baton before publication");
+    let commit = scheduler_switch
+        .find("commit_current_thread_publish(prepared_current)")
+        .expect("scheduler must perform the infallible Release commit");
+    let raw_switch = scheduler_switch
+        .find("switch_to_raw(next_arch_context)")
+        .expect("scheduler must immediately enter the naked switch tail");
+    assert!(prepare < transfer && transfer < commit && commit < raw_switch);
+
+    assert!(!AXHAL_PERCPU.contains("CURRENT_TASK_PTR"));
+    assert!(!TASK_RUNTIME.contains("CURRENT_TASK_PTR"));
+    assert!(!AXHAL_PERCPU.contains("pub unsafe fn publish_current_thread("));
+    assert!(!TASK_RUNTIME.contains("ax_hal::percpu::publish_current_thread("));
 }
 
 #[test]

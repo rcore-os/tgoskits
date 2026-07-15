@@ -5,6 +5,8 @@ use std::{
 
 use scope_local::scope_local;
 
+mod support;
+
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
@@ -48,9 +50,7 @@ fn first_pinned_irq_lookup_does_not_initialize_or_allocate() {
     ax_percpu::init();
     let cpu = ax_percpu::CpuIndex::try_from(0).unwrap();
     let area = ax_percpu::area(cpu).unwrap();
-    // SAFETY: this single-threaded test binds its process-lifetime host area
-    // before creating the explicit pin used below.
-    unsafe { ax_percpu::bind_current(area) }.unwrap();
+    support::bind_test_area(area);
     // SAFETY: this single-threaded test binds one CPU area and cannot migrate
     // during the immediately following lookup.
     let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };

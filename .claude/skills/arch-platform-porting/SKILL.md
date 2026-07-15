@@ -53,6 +53,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Establish an early console before risky transitions, then ensure a post-UEFI/post-MMU console path exists without Boot Services.
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
+- Both x86 UEFI and direct/non-UEFI entry must apply the image load bias before
+  the first Rust call, GOT access, or per-CPU initializer-table access. They
+  converge on the same final-high `prime_entry`; a direct boot path is not a
+  fixed-address exception.
 - On AArch64, pass EL transition state into the post-relocation entry path when it must be kept in Rust globals; do not write relocatable statics before relocation has been applied.
 - Clear BSS exactly once and after preserving any entry data that lives there.
 - On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP for firmware-described devices, but do not rediscover RTC in someboot/somehal through those tables. The dynamic UEFI RTC path should first use the UEFI Runtime Service `GetTime`; LS7A RTC nodes such as `loongson,ls7a-rtc` and ACPI `LOON0001` belong to the `ax-driver` fallback path when firmware RTC is unavailable.
@@ -80,7 +84,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
    runtime CPU count.
 4. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, per-CPU base, and logical ID.
 5. Flush boot arguments and page tables before `cpu_on`.
-6. In the secondary path, initialize arch address windows and stack, then make the selected platform's value-only `CpuRegisterBinding` the first `somehal` operation. The binding must install and verify the initialized `CpuAreaHeader` through `ax-cpu-local` before `arch::secondary_init`, GIC/timer setup, `ax-kspin`, logging, or any other code that can inspect CPU-local state. The platform entry is the only CPU-area binder; generic runtime code may publish its own fields but must not replace the hardware anchor.
+6. In the secondary path, initialize arch address windows and stack, then make the selected platform's value-only `CpuBindingV1` the first `somehal` operation. The binding must install and verify the initialized `CpuAreaHeader` through `ax-cpu-local` before `arch::secondary_init`, GIC/timer setup, `ax-kspin`, logging, or any other code that can inspect CPU-local state. The platform entry is the only CPU-area binder; generic runtime code may publish its own fields but must not replace the hardware anchor.
 7. After the architecture anchor is bound but before generic OS runtime state is initialized, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 8. Publish that CPU's controller-local IPI target only after its private interrupt interface is initialized. Treat missing redistributor/target identity, duplicate GICv2 target bits, or unencodable GICv3 affinity as a bring-up failure; do not add the CPU to the online mask and hope the first IPI repairs it.
 9. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
@@ -92,11 +96,20 @@ hardware registers and separate Rust types. `ax-cpu-local` is the only crate
 allowed to contain the small architecture register primitives; `ax-percpu` and
 its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic.
 
-- Every runtime per-CPU area starts with a 64-byte `CpuAreaHeader`, followed by
-  one cache line of trap-entry scratch. Publish and verify `self_base`,
-  relocation, logical CPU index, generation, and cookie before the CPU can
-  receive traps or become online. Install `PerCpuLayoutV1` once; remote access
-  derives an area in O(1) and must not call a platform base callback.
+- Every runtime per-CPU area starts with a feature-invariant, three-cache-line
+  `CpuAreaPrefixV2`: an immutable `CpuAreaHeader`, a CPU-owned runtime anchor
+  containing the current-thread slot and trap/stack pointers, and a permanent
+  `BootThreadHeader`. The header publishes `self_base`, logical CPU index,
+  generation, cookie, ABI version, register mode, and host exception level; it
+  never stores a template relocation. Remote access derives an area in O(1)
+  from the frozen layout and must not call a platform base callback.
+- `#[def_percpu]` reserves `MaybeUninit<StorageType>` only. It must register a
+  typed initializer retained in `.ax_percpu.init`; never copy an initialized
+  Rust object from a template. Early someboot allocates raw areas only. After
+  the final high mapping and load-bias relocation are complete, `prime_entry`
+  validates every relative descriptor, constructs every prefix and typed value
+  exactly once, publishes the frozen layout with Release ordering, and only
+  then exposes per-CPU metadata or enters `__someboot_main`.
 - Treat the header's 64-byte alignment as a minimum, never as a maximum symbol
   alignment. Linker scripts must retain `.ax_percpu.align`, derive the template
   requirement with `MAX(64, ALIGNOF(.percpu))`, and apply it to both the runtime
@@ -111,37 +124,57 @@ its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic
   stronger bound proof. Only early boot, trap entry, context-switch glue, and
   the lock runtime may use explicitly documented unchecked access. A safe
   accessor must not return a reference that can outlive its `BoundCpuPin`.
-- x86_64 kernel GS base and AArch64 TPIDR_EL1/EL2 store the runtime
-  `CpuAreaHeader*`; their relocation is read from that header. FS and
-  TPIDR_EL0 remain task TLS. RISC-V likewise uses `sscratch` for
-  `CpuAreaHeader*`, standard psABI `gp`, and task TLS in `tp`. LoongArch keeps
-  the relocation in live `r21` and its KS3 mirror, with task TLS in `tp`.
-- Architecture-leaf assembly that materializes the fixed header's link address
-  must preserve the complete pointer width. Cover both low physical links and
-  sign-extended/high-half links; a low 16/32-bit immediate is not a valid
-  substitute even when one current platform happens to place `.percpu` at zero.
-- On RISC-V, the naked firmware entry must capture the `a0` hart ID in a
-  versioned `CpuBootInfoV1`; before the platform binder runs, `sscratch` points
-  to that typed record and never contains the raw hart ID. The binder replaces
-  it with the runtime header. A physical-to-high-virtual MMU jump must preserve
-  the record's reserved stack slot, enter a high-address naked trampoline,
-  rebuild `__global_pointer$`, and only then call shared Rust. Do not carry hart
-  IDs in `tp` or repurpose `gp` for per-CPU addressing.
+- Select exactly one final-image register mode. `LinuxCurrent` is mandatory for
+  StarryOS and Axvisor: x86 reads current from the kernel-GS CPU slot, AArch64
+  uses `SP_EL0=current` with TPIDR_EL1/EL2 as the CPU base, RISC-V uses
+  `tp=current` with the current header carrying the CPU base, and LoongArch uses
+  `tp=current` with `r21`/KS3 as the CPU base. `UnikernelTls` is allowed only in
+  an ArceOS image without userspace: FS_BASE, TPIDR_EL0, or `tp` holds kernel
+  TLS and current is read from the CPU slot; RISC-V then keeps the CPU prefix in
+  `sscratch`. Cargo `tls` selects this image mode but must never change prefix,
+  thread-header, or `TaskContext` layout. Reject `uspace + tls` at build time.
+- ArceOS, StarryOS, and Axvisor production images on all four architectures use
+  the dynamic `someboot -> somehal -> axplat-dyn` path and may be loaded at an
+  arbitrary slide. Keep the fixed header at template offset zero, let ordinary
+  Rust `addr_of!` materialize both loaded template boundaries, and immediately
+  reduce generated variable addresses to checked offsets from that loaded
+  origin. Runtime access is always `area_base + template_offset`; do not expose
+  symbol VMAs or hand-code absolute symbol relocations in `ax-cpu-local` or the
+  proc macro. The platform ABI publishes only runtime base, stride, count, and
+  CPU binding. It must not pass a link VMA or image slide into `ax-percpu`.
+- On RISC-V, the naked firmware entry captures `a0` in `CpuBootInfoV1`; an early
+  scratch pointer may name that record, never the raw hart ID. After binding,
+  `LinuxCurrent` follows Linux entry semantics: kernel `tp` names the pinned
+  current-thread header and kernel `sscratch` is zero; user execution places
+  kernel `tp` in `sscratch`, trap entry exchanges it with user `tp`, and kernel
+  entry clears `sscratch` again. `UnikernelTls` instead keeps the CPU prefix in
+  `sscratch` and TLS in `tp`. Every high-address trampoline rebuilds canonical
+  `__global_pointer$`; `gp` is never a CPU ID or per-CPU anchor.
 - LoongArch KS allocation is fixed: KS0 is trap stack, KS1/KS2 are trap
-  temporaries, KS3 mirrors per-CPU relocation, and KS4/KS5 belong to vCPU host
+  temporaries, KS3 mirrors the direct per-CPU area base, and KS4/KS5 belong to vCPU host
   stack/temporary state. User trap entry saves user `r21` before loading the
   KS3 kernel value; kernel return never restores a frame's `r21`.
-- `TaskContext` owns callee-saved state, stack, kernel TLS, and optional FP/SIMD
-  only. It never contains GS/TPIDR_EL1/EL2/`sscratch`/kernel `r21`, nor an
-  address-space register. Save and restore task TLS in the final naked switch
-  window; after installing next TLS, do not execute old-task Rust helpers,
-  hooks, logging, FPU code, or MM code.
+- Each runtime context pins one independent `CurrentThreadHeader`. It gains its
+  generation-bearing identity exactly once before `New` can become `Ready`;
+  scheduler migration updates its CPU base/index/epoch only while the context
+  is off CPU, then publishes the binding with Release ordering. `TaskContext`
+  has a feature-invariant current-header and kernel-TLS slot (zero when TLS is
+  disabled), plus callee state, stack and optional FP/SIMD. It never contains a
+  CPU anchor or address-space register. Publish the next CPU slot/header, then
+  install next current/TLS in the final naked switch window; execute no old-task
+  Rust helper, hook, log, FPU helper, or MM helper afterward.
 - An AArch64 vCPU must treat `TPIDR_EL0` as shared host-task/guest state. Save
   host `TPIDR_EL0` before guest entry, install the guest value only in the final
   assembly window immediately preceding `eret`, and on VM exit save the guest
   value then restore the host value before any Rust helper, log, or exit handler
   can run. Derive both slots with `offset_of!`; generic system-register
   save/restore helpers must not touch `TPIDR_EL0`.
+- AArch64 LinuxCurrent lends `SP_EL0` to user SP only across the final `eret`
+  window. Lower-EL trap entry must save user `SP_EL0`/`TPIDR_EL0`, reload the
+  pinned current header from the TPIDR_EL1/EL2 CPU-prefix slot, and restore
+  `SP_EL0=current` before returning to Rust. Select `arm-el2` only in the
+  AArch64 hypervisor final-image dependency; a generic `hv` feature must not
+  contaminate EL1 or non-AArch64 dependency graphs.
 - AMD SVM `VMLOAD` installs guest FS/GS and therefore crosses both host
   CPU-local and task-local ownership boundaries. Keep guest `VMLOAD -> VMRUN ->
   VMSAVE -> host VMLOAD` in one naked assembly window with no Rust call,
@@ -166,7 +199,7 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   guard state before allocating or publishing `CpuLocal`. Do not add the CPU to
   the scheduler online mask until its bootstrap context, timer and IPI receive
   path are ready.
-- If Rust TLS is enabled, install a temporary task-owned bootstrap TLS area as
+- Only an `UnikernelTls` image installs a temporary task-owned bootstrap TLS area as
   soon as the allocator and architecture per-CPU register are ready. Platform
   late-init, exception reporting, logging, and `std` may touch TLS before the
   scheduler exists. Never use this TLS register as a CPU ID or per-CPU anchor.

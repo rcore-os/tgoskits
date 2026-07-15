@@ -37,12 +37,11 @@ pub fn init() -> usize {
     allocate_host_areas();
 
     let layout = linker_layout().expect("linker-provided CPU-local layout must be valid");
-    copy_template_to_primary_host_area(&layout);
-    copy_template_to_secondary_areas(&layout);
-    // SAFETY: the linker reserves every area for the kernel lifetime and the
-    // initialization above copies the complete linked template before publish.
-    unsafe { crate::install_layout(layout) }.expect("CPU-local layout installation must be unique");
-    layout.area_count as usize
+    // SAFETY: the linker reserves every aligned area for the kernel lifetime.
+    // Host storage is freshly zeroed; bare-metal storage has not contained a
+    // published Rust value. No CPU can access an area before this call.
+    unsafe { crate::initialize_layout(crate::PerCpuLayoutInitV2::for_supervisor_image(layout)) }
+        .expect("CPU-local layout initialization must be unique")
 }
 
 /// Returns a typed description of the linker-reserved CPU-local layout.
@@ -75,16 +74,18 @@ fn linked_area_count(area_stride: usize) -> usize {
 
 /// Returns the initialized template size for one CPU.
 pub(crate) fn percpu_area_size() -> usize {
-    percpu_link_end().wrapping_sub(percpu_link_base())
+    percpu_template_end()
+        .checked_sub(percpu_template_base())
+        .expect("CPU-local template end must follow its prefix")
 }
 
-/// Returns the link-time base used by per-CPU symbol relocation.
+/// Returns the loaded template base used by relative symbol offsets.
 #[doc(hidden)]
-pub(crate) fn percpu_link_base() -> usize {
+pub(crate) fn percpu_template_base() -> usize {
     _percpu_load_start as *const () as usize
 }
 
-fn percpu_link_end() -> usize {
+fn percpu_template_end() -> usize {
     _percpu_load_end as *const () as usize
 }
 
@@ -104,7 +105,7 @@ fn runtime_area_region_base() -> usize {
 fn validate_link_address_mode() {
     #[cfg(not(feature = "non-zero-vma"))]
     assert_eq!(
-        percpu_link_base(),
+        percpu_template_base(),
         0,
         "the per-CPU template must be linked at zero unless non-zero-vma is enabled"
     );
@@ -123,42 +124,5 @@ fn allocate_host_areas() {
             // complete host-test process, matching kernel CPU-area lifetime.
             unsafe { std::alloc::alloc_zeroed(layout) as usize }
         });
-    }
-}
-
-fn copy_template_to_primary_host_area(layout: &PerCpuLayoutV1) {
-    #[cfg(feature = "host-test")]
-    {
-        // SAFETY: the host linker script maps the initialized template at its
-        // link address. The freshly allocated primary area is non-overlapping,
-        // writable, and remains live for the test process.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                percpu_link_base() as *const u8,
-                layout.runtime_base as *mut u8,
-                percpu_area_size(),
-            );
-        }
-    }
-    #[cfg(not(feature = "host-test"))]
-    let _ = layout;
-}
-
-fn copy_template_to_secondary_areas(layout: &PerCpuLayoutV1) {
-    let primary_base = layout.runtime_base;
-    let area_size = percpu_area_size();
-    for cpu_id in 1..layout.area_count as usize {
-        let secondary_base = primary_base + cpu_id * layout.area_stride;
-        #[cfg(not(feature = "host-test"))]
-        assert!(secondary_base + area_size <= _percpu_end as *const () as usize);
-        // SAFETY: linker_layout validates non-overlapping areas. Startup owns
-        // every secondary area exclusively and the primary holds the template.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                primary_base as *const u8,
-                secondary_base as *mut u8,
-                area_size,
-            );
-        }
     }
 }

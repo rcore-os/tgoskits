@@ -62,13 +62,16 @@ pub fn init_secondary(cpu_id: usize) {
 fn verify_platform_binding(cpu_id: usize) {
     let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
         .expect("logical CPU index must fit the CPU-local ABI");
-    let area = ax_percpu::area(cpu_index)
+    let expected = ax_percpu::area(cpu_index)
         .expect("the selected platform must install its CPU-local layout before ax-runtime");
     // SAFETY: runtime per-CPU initialization precedes scheduler publication and
     // IRQ enablement, so this CPU cannot migrate for the verification window.
     let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
-    // SAFETY: the selected platform bound this same CPU-lifetime area before
-    // transferring control to ax-runtime.
-    unsafe { ax_percpu::verify_current(area, &pin) }
-        .expect("the selected platform bound the wrong CPU-local area");
+    let bound = ax_percpu::bound_current(&pin)
+        .expect("the selected platform must expose the frozen current CPU binding");
+    assert_eq!(
+        bound.area(),
+        expected,
+        "the selected platform bound the wrong CPU-local area"
+    );
 }

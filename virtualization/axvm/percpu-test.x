@@ -4,6 +4,12 @@ PROVIDE(STACK_SIZE = 0x40000);
 
 SECTIONS
 {
+    .ax_percpu_init : {
+        __AX_PERCPU_INIT_START = .;
+        KEEP(*(.ax_percpu.init))
+        __AX_PERCPU_INIT_END = .;
+    }
+
     .ax_percpu_alignment : {
         __AX_PERCPU_ALIGNMENT_START = .;
         KEEP(*(.ax_percpu.align))

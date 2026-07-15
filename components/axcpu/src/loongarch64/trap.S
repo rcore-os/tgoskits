@@ -12,6 +12,10 @@ exception_entry_base:
 
     csrwr   $t0, KSAVE_KSP
     addi.d  $sp, $sp, -{trapframe_size}
+    // PUSH_GENERAL_REGS deliberately skips architectural r0. Only a kernel
+    // trap owns a fresh frame here; the user path reserves slot zero for its
+    // kernel continuation until .Lexit_user consumes it.
+    STD     $r0, $sp, 0
     b       .Ltrap_stack_ready
 
 .Ltrap_from_user:
