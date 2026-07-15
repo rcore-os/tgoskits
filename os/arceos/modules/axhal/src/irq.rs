@@ -12,8 +12,8 @@ pub use ax_plat::irq::{
     X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
     free_irq, handle, in_irq_context, init_boot_irqs, irq_status, legacy_irq, legacy_irq_raw,
     prepare_irq_context, request_irq, request_percpu_irq, request_shared_irq, resolve_irq_source,
-    resolve_percpu_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync, synchronize_irq,
-    try_legacy_irq,
+    resolve_percpu_irq, run_on_cpu_sync, set_affinity, set_enable, set_run_on_cpu_sync,
+    synchronize_irq, try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};

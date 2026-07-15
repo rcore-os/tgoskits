@@ -238,10 +238,7 @@ pub enum ArmVmExit {
         value: u64,
     },
     /// A physical host interrupt should be handled by the embedding VMM.
-    ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
-    },
+    ExternalInterrupt,
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {
         /// Guest-provided target state.
@@ -260,16 +257,8 @@ pub enum ArmVmExit {
     SystemDown,
     /// The guest wrote a GIC SGI system register.
     SendIPI {
-        /// Primary target selector.
-        target_cpu: u64,
-        /// Auxiliary target selector.
-        target_cpu_aux: u64,
-        /// Whether the SGI targets all other vCPUs.
-        send_to_all: bool,
-        /// Whether the SGI targets the current vCPU.
-        send_to_self: bool,
-        /// SGI interrupt ID.
-        vector: u64,
+        /// Complete ICC_SGI1R_EL1 value, including affinity and range selector.
+        value: u64,
     },
     /// The vCPU handled the event internally.
     Nothing,

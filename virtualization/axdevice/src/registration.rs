@@ -18,7 +18,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axdevice_base::Device;
 
-use crate::DeviceManagerResult;
+use crate::{ControllerRegistration, DeviceManagerResult};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
@@ -33,6 +33,8 @@ pub enum DeviceRegistration {
     Device(Arc<dyn Device>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
+    /// An interrupt controller and its connection capabilities.
+    InterruptController(ControllerRegistration),
 }
 
 /// A set of device capabilities that must be registered atomically.
@@ -43,6 +45,7 @@ pub enum DeviceRegistration {
 pub struct DeviceBundle {
     pub(crate) devices: Vec<Arc<dyn Device>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
+    pub(crate) interrupt_controllers: Vec<ControllerRegistration>,
 }
 
 impl DeviceBundle {
@@ -51,6 +54,7 @@ impl DeviceBundle {
         Self {
             devices: Vec::new(),
             pollable: Vec::new(),
+            interrupt_controllers: Vec::new(),
         }
     }
 
@@ -66,6 +70,9 @@ impl DeviceBundle {
         match registration {
             DeviceRegistration::Device(device) => self.devices.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
+            DeviceRegistration::InterruptController(controller) => {
+                self.interrupt_controllers.push(controller);
+            }
         }
     }
 
@@ -77,7 +84,7 @@ impl DeviceBundle {
 
     /// Returns whether this bundle contains no capabilities.
     pub fn is_empty(&self) -> bool {
-        self.devices.is_empty() && self.pollable.is_empty()
+        self.devices.is_empty() && self.pollable.is_empty() && self.interrupt_controllers.is_empty()
     }
 }
 

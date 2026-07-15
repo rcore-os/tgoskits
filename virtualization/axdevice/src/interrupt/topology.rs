@@ -1,0 +1,449 @@
+//! Interrupt topology registration, validation, and connection flow.
+
+use alloc::{format, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use ax_kspin::SpinRaw;
+use axdevice_base::{
+    InterruptControllerId, InterruptEndpoint, IrqError, IrqLine, MsiEndpoint, WiredIrqInput,
+};
+use axvm_types::VMInterruptMode;
+
+use super::{
+    ControllerRef, ControllerRegistration, ControllerRole, MsiRequest, VcpuInterruptBinding,
+    VcpuInterruptId, VcpuInterruptPort, WiredIrqRequest,
+    registry::{ControllerEntry, find_controller, find_controller_mut, registration_order},
+};
+use crate::{DeviceManagerError, DeviceManagerResult};
+
+/// One VM's validated interrupt-controller graph.
+pub struct InterruptTopology {
+    mode: VMInterruptMode,
+    controllers: SpinRaw<Vec<ControllerEntry>>,
+    bindings: SpinRaw<Vec<RegisteredBinding>>,
+    connected_cascades: SpinRaw<Vec<InterruptControllerId>>,
+    finalized: AtomicBool,
+}
+
+struct RegisteredBinding {
+    vcpu: VcpuInterruptId,
+    binding: Arc<dyn VcpuInterruptBinding>,
+}
+
+impl InterruptTopology {
+    /// Creates an empty topology for one VM interrupt mode.
+    pub const fn new(mode: VMInterruptMode) -> Self {
+        Self {
+            mode,
+            controllers: SpinRaw::new(Vec::new()),
+            bindings: SpinRaw::new(Vec::new()),
+            connected_cascades: SpinRaw::new(Vec::new()),
+            finalized: AtomicBool::new(false),
+        }
+    }
+
+    /// Returns the configured VM interrupt mode.
+    pub const fn mode(&self) -> VMInterruptMode {
+        self.mode
+    }
+
+    /// Registers one controller before topology finalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate IDs, multiple default controllers, a
+    /// controller without capabilities, or registration after finalization.
+    pub fn register_controller(&self, registration: ControllerRegistration) -> DeviceManagerResult {
+        if self.finalized.load(Ordering::Acquire) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register interrupt controller",
+                detail: "the interrupt topology is already finalized".into(),
+            });
+        }
+        if self.mode == VMInterruptMode::NoIrq {
+            return Err(DeviceManagerError::Unsupported {
+                operation: "register interrupt controller",
+                detail: "the VM is configured with interrupt_mode=no_irq".into(),
+            });
+        }
+        if registration.wired_inputs().is_none()
+            && registration.message_inputs().is_none()
+            && registration.vcpu_controller().is_none()
+        {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register interrupt controller",
+                detail: format!("controller {:?} exposes no capabilities", registration.id()),
+            });
+        }
+
+        let mut controllers = self.controllers.lock();
+        if controllers
+            .iter()
+            .any(|entry| entry.registration.id() == registration.id())
+        {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "register interrupt controller",
+                detail: format!("controller {:?} is already registered", registration.id()),
+            });
+        }
+        if registration.role() == ControllerRole::Default
+            && controllers
+                .iter()
+                .any(|entry| entry.registration.role() == ControllerRole::Default)
+        {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "register interrupt controller",
+                detail: "a default interrupt controller is already registered".into(),
+            });
+        }
+        controllers.push(ControllerEntry {
+            registration,
+            wired_inputs: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Connects one device source to a wired controller input.
+    pub fn connect_irq(&self, request: WiredIrqRequest) -> DeviceManagerResult<IrqLine> {
+        self.require_irq_mode("connect wired interrupt")?;
+        let controller_id = self.resolve_controller(request.controller())?;
+        let input = self.open_wired_input(controller_id, request)?;
+        input.connect().map_err(Into::into)
+    }
+
+    /// Connects one MSI-producing device event to a controller.
+    pub fn connect_msi(&self, request: MsiRequest) -> DeviceManagerResult<MsiEndpoint> {
+        self.require_irq_mode("connect message interrupt")?;
+        let controller_id = self.resolve_controller(request.controller())?;
+        let capability = {
+            let controllers = self.controllers.lock();
+            let entry = find_controller(&controllers, controller_id)?;
+            entry
+                .registration
+                .message_inputs()
+                .cloned()
+                .ok_or_else(|| DeviceManagerError::Unsupported {
+                    operation: "connect message interrupt",
+                    detail: format!("controller {controller_id:?} has no MSI input capability"),
+                })?
+        };
+        let endpoint = capability.connect(request.device(), request.event())?;
+        if endpoint.controller() != controller_id
+            || endpoint.message().device() != request.device()
+            || endpoint.message().event() != request.event()
+        {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "connect message interrupt",
+                detail: "controller returned an endpoint for a different MSI request".into(),
+            });
+        }
+        Ok(endpoint)
+    }
+
+    /// Validates cascades, connects controller outputs, and attaches vCPUs.
+    pub fn finalize(&self, ports: &[VcpuInterruptPort]) -> DeviceManagerResult {
+        if self
+            .finalized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "finalize interrupt topology",
+                detail: "the topology is already finalized".into(),
+            });
+        }
+
+        let result = self.finalize_inner(ports);
+        if result.is_err() {
+            self.rollback_finalization();
+        }
+        result
+    }
+
+    /// Removes every capability installed during a failed VM preparation.
+    ///
+    /// This operation disconnects controller cascades before dropping vCPU
+    /// bindings and controller registrations, so the same topology object can
+    /// be configured again after the caller has rebuilt its device set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first controller-output disconnection failure after still
+    /// clearing all topology-owned registrations.
+    pub fn reset_after_failed_preparation(&self) -> DeviceManagerResult {
+        let disconnect_result = self.disconnect_cascades();
+        self.bindings.lock().clear();
+        self.controllers.lock().clear();
+        self.finalized.store(false, Ordering::Release);
+        disconnect_result
+    }
+
+    /// Restores all controller bindings associated with `vcpu`.
+    pub fn load_vcpu(&self, vcpu: VcpuInterruptId) -> DeviceManagerResult {
+        for binding in self.bindings_for(vcpu) {
+            binding.load()?;
+        }
+        Ok(())
+    }
+
+    /// Saves all controller bindings associated with `vcpu` in reverse order.
+    pub fn save_vcpu(&self, vcpu: VcpuInterruptId) -> DeviceManagerResult {
+        let mut bindings = self.bindings_for(vcpu);
+        bindings.reverse();
+        for binding in bindings {
+            binding.save()?;
+        }
+        Ok(())
+    }
+
+    /// Reconciles completed and pending controller work for `vcpu`.
+    pub fn synchronize_vcpu(&self, vcpu: VcpuInterruptId) -> DeviceManagerResult {
+        for binding in self.bindings_for(vcpu) {
+            binding.synchronize()?;
+        }
+        Ok(())
+    }
+
+    /// Returns whether the topology has completed cascade and vCPU binding.
+    pub fn is_finalized(&self) -> bool {
+        self.finalized.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn unregister_controller(
+        &self,
+        controller: InterruptControllerId,
+    ) -> DeviceManagerResult {
+        if self.finalized.load(Ordering::Acquire) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "unregister interrupt controller",
+                detail: "the interrupt topology is already finalized".into(),
+            });
+        }
+        let mut controllers = self.controllers.lock();
+        let Some(index) = controllers
+            .iter()
+            .position(|entry| entry.registration.id() == controller)
+        else {
+            return Err(DeviceManagerError::ResourceNotFound {
+                operation: "unregister interrupt controller",
+                resource: format!("interrupt controller {controller:?}"),
+            });
+        };
+        controllers.remove(index);
+        Ok(())
+    }
+
+    fn finalize_inner(&self, ports: &[VcpuInterruptPort]) -> DeviceManagerResult {
+        validate_unique_vcpu_ports(ports)?;
+        let ordered_ids = registration_order(&self.controllers.lock())?;
+        self.connect_cascades(&ordered_ids)?;
+        self.attach_vcpus(&ordered_ids, ports)
+    }
+
+    fn connect_cascades(&self, ordered_ids: &[InterruptControllerId]) -> DeviceManagerResult {
+        for controller_id in ordered_ids {
+            let cascade = {
+                let controllers = self.controllers.lock();
+                find_controller(&controllers, *controller_id)?
+                    .registration
+                    .cascade()
+                    .cloned()
+            };
+            if let Some(cascade) = cascade {
+                let line = self.connect_irq(cascade.parent())?;
+                cascade.connect_output(line)?;
+                self.connected_cascades.lock().push(*controller_id);
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_vcpus(
+        &self,
+        ordered_ids: &[InterruptControllerId],
+        ports: &[VcpuInterruptPort],
+    ) -> DeviceManagerResult {
+        let mut attached = Vec::new();
+        for controller_id in ordered_ids {
+            let capability = {
+                let controllers = self.controllers.lock();
+                find_controller(&controllers, *controller_id)?
+                    .registration
+                    .vcpu_controller()
+                    .cloned()
+            };
+            if let Some(capability) = capability {
+                for port in ports {
+                    attached.push(RegisteredBinding {
+                        vcpu: port.id(),
+                        binding: capability.attach_vcpu(port.clone())?,
+                    });
+                }
+            }
+        }
+        *self.bindings.lock() = attached;
+        Ok(())
+    }
+
+    fn open_wired_input(
+        &self,
+        controller_id: InterruptControllerId,
+        request: WiredIrqRequest,
+    ) -> DeviceManagerResult<WiredIrqInput> {
+        let capability = {
+            let controllers = self.controllers.lock();
+            let entry = find_controller(&controllers, controller_id)?;
+            if let Some((_, input)) = entry
+                .wired_inputs
+                .iter()
+                .find(|(input, _)| *input == request.input())
+            {
+                if input.trigger() != request.trigger() {
+                    return Err(IrqError::InvalidTriggerMode {
+                        endpoint: InterruptEndpoint::Wired {
+                            controller: controller_id,
+                            input: request.input(),
+                        },
+                        operation: "connect interrupt source",
+                        expected: input.trigger(),
+                        actual: request.trigger(),
+                    }
+                    .into());
+                }
+                return Ok(input.clone());
+            }
+            entry.registration.wired_inputs().cloned().ok_or_else(|| {
+                DeviceManagerError::Unsupported {
+                    operation: "connect wired interrupt",
+                    detail: format!("controller {controller_id:?} has no wired inputs"),
+                }
+            })?
+        };
+
+        let opened = capability.input(request.input(), request.trigger())?;
+        if opened.controller() != controller_id
+            || opened.input() != request.input()
+            || opened.trigger() != request.trigger()
+        {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "connect wired interrupt",
+                detail: "controller returned an input for a different request".into(),
+            });
+        }
+
+        let mut controllers = self.controllers.lock();
+        let entry = find_controller_mut(&mut controllers, controller_id)?;
+        if let Some((_, existing)) = entry
+            .wired_inputs
+            .iter()
+            .find(|(input, _)| *input == request.input())
+        {
+            return Ok(existing.clone());
+        }
+        entry.wired_inputs.push((request.input(), opened.clone()));
+        Ok(opened)
+    }
+
+    fn resolve_controller(
+        &self,
+        reference: ControllerRef,
+    ) -> DeviceManagerResult<InterruptControllerId> {
+        let controllers = self.controllers.lock();
+        super::registry::resolve_controller(&controllers, reference)
+    }
+
+    fn require_irq_mode(&self, operation: &'static str) -> DeviceManagerResult {
+        if self.mode == VMInterruptMode::NoIrq {
+            return Err(DeviceManagerError::Unsupported {
+                operation,
+                detail: "the VM is configured with interrupt_mode=no_irq".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn bindings_for(&self, vcpu: VcpuInterruptId) -> Vec<Arc<dyn VcpuInterruptBinding>> {
+        self.bindings
+            .lock()
+            .iter()
+            .filter(|registered| registered.vcpu == vcpu)
+            .map(|registered| registered.binding.clone())
+            .collect()
+    }
+
+    fn rollback_finalization(&self) {
+        if let Err(error) = self.disconnect_cascades() {
+            warn!("failed to roll back interrupt-controller cascades: {error}");
+        }
+        self.bindings.lock().clear();
+        self.finalized.store(false, Ordering::Release);
+    }
+
+    fn disconnect_cascades(&self) -> DeviceManagerResult {
+        let connected = core::mem::take(&mut *self.connected_cascades.lock());
+        let cascades = {
+            let controllers = self.controllers.lock();
+            let mut cascades = Vec::with_capacity(connected.len());
+            for controller_id in connected.into_iter().rev() {
+                let cascade = find_controller(&controllers, controller_id)?
+                    .registration
+                    .cascade()
+                    .cloned()
+                    .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                        operation: "disconnect interrupt-controller cascade",
+                        detail: format!("controller {controller_id:?} lost its registered cascade"),
+                    })?;
+                cascades.push(cascade);
+            }
+            cascades
+        };
+
+        let mut first_error = None;
+        for cascade in cascades {
+            if let Err(error) = cascade.disconnect_output()
+                && first_error.is_none()
+            {
+                first_error = Some(DeviceManagerError::from(error));
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+impl core::fmt::Debug for InterruptTopology {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("InterruptTopology")
+            .field("mode", &self.mode)
+            .field("controller_count", &self.controllers.lock().len())
+            .field("binding_count", &self.bindings.lock().len())
+            .field("cascade_count", &self.connected_cascades.lock().len())
+            .field("finalized", &self.is_finalized())
+            .finish()
+    }
+}
+
+impl Drop for InterruptTopology {
+    fn drop(&mut self) {
+        if let Err(error) = self.disconnect_cascades() {
+            warn!(
+                "failed to disconnect interrupt-controller cascades during topology drop: {error}"
+            );
+        }
+    }
+}
+
+fn validate_unique_vcpu_ports(ports: &[VcpuInterruptPort]) -> DeviceManagerResult {
+    for (index, port) in ports.iter().enumerate() {
+        if ports[..index]
+            .iter()
+            .any(|existing| existing.id() == port.id())
+        {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "attach interrupt controller to vCPU",
+                detail: format!("vCPU interrupt port {:?} is duplicated", port.id()),
+            });
+        }
+    }
+    Ok(())
+}

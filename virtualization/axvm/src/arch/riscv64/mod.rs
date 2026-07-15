@@ -27,14 +27,27 @@ mod cpu_up;
 pub(crate) mod fdt;
 mod images;
 mod irq;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod npt;
 mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
+pub(crate) use irq::VmArchState;
 
 pub(crate) struct Riscv64Arch;
+
+pub(crate) struct VmRuntimeArchState;
+
+impl VmRuntimeArchState {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    pub(crate) const fn register_vcpu(&self, _vcpu_id: usize) {}
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RiscvDeferredRunWork {
@@ -44,6 +57,11 @@ pub(crate) enum RiscvDeferredRunWork {
 impl CpuUpOps for Riscv64Arch {
     fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
+    }
+
+    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
+        vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
+        vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }
 }
 
@@ -74,7 +92,9 @@ impl ArchOps for Riscv64Arch {
             return;
         };
         let irq_sources = vm.with_config(|config| config.pass_through_irqs().to_vec());
-        crate::irq::set_riscv_virtual_irq_targets(cpu_id, &irq_sources);
+        ax_crate_interface::call_interface!(
+            crate::irq::RiscvPlatformIrqInjectorIf::set_virtual_irq_targets(cpu_id, &irq_sources)
+        );
     }
 
     fn vcpu_affinities(
@@ -89,11 +109,6 @@ impl ArchOps for Riscv64Arch {
             }
         }
         vcpus
-    }
-
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
-        vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
-        vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
     }
 
     fn after_external_interrupt(
@@ -239,7 +254,7 @@ fn handle_riscv_nested_page_fault(
     }
 
     let ax_flags = riscv_access_flags_to_ax(access_flags);
-    if vm.handle_nested_page_fault(ax_addr, ax_flags) {
+    if nested_page_fault::handle(vm, ax_addr, ax_flags) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(
@@ -322,10 +337,6 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.0.set_gpr(reg, val);
-    }
-
-    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        riscv_result(self.0.inject_interrupt(vector))
     }
 
     fn set_return_value(&mut self, val: usize) {
@@ -435,7 +446,9 @@ impl RiscvVplicHostIf for RiscvVplicHostIfImpl {
 }
 
 fn register_platform_irq_injector() {
-    crate::irq::register_riscv_virtual_irq_injector(inject_virtual_irq);
+    ax_crate_interface::call_interface!(
+        crate::irq::RiscvPlatformIrqInjectorIf::register_virtual_irq_injector(inject_virtual_irq)
+    );
 }
 
 fn first_cpu_in_mask(mask: usize) -> Option<usize> {
@@ -450,18 +463,15 @@ fn inject_virtual_irq(irq_id: usize) -> bool {
 
     debug!("injecting RISC-V virtual IRQ id: {irq_id}");
 
-    let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
-        if let Err(err) = vm.pulse_interrupt(irq_id) {
-            warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
-            return false;
-        }
-        true
-    }) else {
+    let Some(vm) = crate::get_vm_by_id(vm_id) else {
         warn!("cannot inject RISC-V virtual IRQ {irq_id}: VM[{vm_id}] not found");
         return false;
     };
-
-    injected
+    if let Err(err) = irq::signal_external_interrupt(&vm, irq_id) {
+        warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

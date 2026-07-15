@@ -1,9 +1,13 @@
 //! LoongArch64 VM resource creation and initialization.
 
-use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
+use alloc::sync::Arc;
+
+use axvm_types::{EmulatedDeviceType, NestedPagingConfig, VmArchVcpuOps};
 use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
-use super::{LoongArch64Arch, loongarch_result, npt};
+use super::{
+    LoongArch64Arch, interrupt_controller::LoongArchInterruptController, loongarch_result, npt,
+};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
@@ -44,13 +48,14 @@ impl LoongArch64Arch {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let interrupt_topology =
+                    Arc::new(axdevice::InterruptTopology::new(vm.interrupt_mode()));
+                init_vm_with(vm, &factories, interrupt_topology)
             }
             VmInitRequest::Provided {
                 factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+                interrupt_topology,
+            } => init_vm_with(vm, factories, interrupt_topology),
         }
     }
 }
@@ -58,9 +63,9 @@ impl LoongArch64Arch {
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let state_count = placements
             .iter()
@@ -86,8 +91,19 @@ fn init_vm_with(
                 iocsr_state: iocsr_state.clone(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let mut devices = PreparedDevices::empty();
+        register_interrupt_controller(
+            resources.config(),
+            &mut devices.devices,
+            interrupt_topology,
+        )?;
+        devices.register_configured(
+            resources.config().emu_devices(),
+            factories,
+            interrupt_topology,
+        )?;
         devices.register_special_devices(vm)?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
@@ -96,6 +112,47 @@ fn init_vm_with(
 
         Ok(PreparedVm::new(vcpus, devices))
     })
+}
+
+fn register_interrupt_controller(
+    config: &AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+    interrupt_topology: &axdevice::InterruptTopology,
+) -> AxVmResult {
+    let mut pch_pic_configs = config
+        .emu_devices()
+        .iter()
+        .filter(|config| config.emu_type == EmulatedDeviceType::LoongArchPchPic);
+    let Some(pch_pic_config) = pch_pic_configs.next() else {
+        return Ok(());
+    };
+    if pch_pic_configs.next().is_some() {
+        return Err(AxVmError::invalid_config(
+            "a LoongArch VM may register only one PCH-PIC controller",
+        ));
+    }
+
+    let pch_pic = Arc::new(axdevice::LoongArchPchPic::new(
+        pch_pic_config.base_gpa.into(),
+        pch_pic_config.length,
+    ));
+    let controller = Arc::new(LoongArchInterruptController::new(
+        axdevice::InterruptControllerId::new(0),
+        pch_pic.clone(),
+    ));
+    devices
+        .add_loongarch_pch_pic_controller(
+            axdevice::MmioDeviceAdapter::from_arc(pch_pic),
+            controller.clone(),
+            controller.registration(),
+            interrupt_topology,
+        )
+        .map_err(|error| AxVmError::device("register LoongArch PCH-PIC/EIOINTC topology", error))?;
+    info!(
+        "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
+        pch_pic_config.base_gpa, pch_pic_config.length
+    );
+    Ok(())
 }
 
 fn build_vcpu_setup_config(

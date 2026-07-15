@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
+#[cfg(feature = "fs")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -36,10 +33,7 @@ use axvm::{
 use axvm::{AxVmError, AxVmResult};
 use axvmconfig::{AxVMCrateConfig, VMType};
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
+#[cfg(feature = "fs")]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
@@ -111,10 +105,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
+    #[cfg(feature = "fs")]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
     if let Some(linux) = get_image_header(&vm_create_config, &image_provider) {
@@ -161,10 +152,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     #[cfg(target_arch = "loongarch64")]
     crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
+    #[cfg(feature = "fs")]
     if release_host_filesystem {
         #[cfg(target_arch = "x86_64")]
         register_x86_host_fs_passthrough_irq_route();
@@ -215,10 +203,7 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrat
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
+#[cfg(feature = "fs")]
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
         && (!config.devices.passthrough_devices.is_empty()
@@ -226,10 +211,7 @@ fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
             || !config.devices.passthrough_ports.is_empty())
 }
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
+#[cfg(feature = "fs")]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }

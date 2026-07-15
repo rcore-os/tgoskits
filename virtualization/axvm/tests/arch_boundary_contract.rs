@@ -90,7 +90,7 @@ fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
     let preparation = include_str!("../src/vm/prepare.rs");
     assert!(preparation.contains("VmInitRequest::Provided"));
     assert!(preparation.contains("factories,"));
-    assert!(preparation.contains("interrupt_fabric,"));
+    assert!(preparation.contains("interrupt_topology,"));
 
     for source in [
         include_str!("../src/arch/aarch64/vm.rs"),
@@ -99,7 +99,7 @@ fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
         include_str!("../src/arch/x86_64/vm.rs"),
     ] {
         assert!(source.contains("VmInitRequest::Provided"));
-        assert!(source.contains("init_vm_with(vm, factories, interrupt_fabric)"));
+        assert!(source.contains("init_vm_with(vm, factories, interrupt_topology)"));
     }
 }
 
@@ -298,6 +298,32 @@ fn host_time_trait_only_exposes_common_clock_capabilities() {
 }
 
 #[test]
+fn aarch64_timer_serializes_generation_check_with_token_install() {
+    let source = include_str!("../src/arch/aarch64/timer/state.rs");
+    let schedule = source
+        .split_once("fn schedule(")
+        .expect("AArch64 timer must have a scheduling step")
+        .1
+        .split_once("fn cancel_scheduled(")
+        .expect("AArch64 timer scheduling must precede cancellation")
+        .0;
+    let lock = schedule
+        .find("self.scheduled_token.lock()")
+        .expect("timer scheduling must lock its token slot");
+    let generation = schedule
+        .find("self.generation.load(Ordering::Acquire)")
+        .expect("timer scheduling must reject stale generations");
+    let install = schedule
+        .find("replace(token)")
+        .expect("timer scheduling must install the new token");
+
+    assert!(
+        lock < generation && generation < install,
+        "the generation check and token replacement must share one serialized section"
+    );
+}
+
+#[test]
 fn vcpu_setup_context_keeps_named_capabilities() {
     let types = include_str!("../src/architecture/types.rs");
     let ops = include_str!("../src/architecture/ops.rs");
@@ -339,6 +365,26 @@ fn eager_vm_lifecycle_has_no_uninit_state() {
     assert!(!status.contains("Uninit"));
     assert!(!machine.contains("Machine::Uninit"));
     assert!(vm.contains("machine: Mutex::new(Machine::Ready(resources))"));
+}
+
+#[test]
+fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
+    let source = include_str!("../../axvm-types/src/lib.rs");
+    let vcpu_protocol = source
+        .split_once("pub trait VmArchVcpuOps")
+        .expect("axvm-types must define the shared vCPU protocol")
+        .1
+        .split_once("pub trait VmArchPerCpuOps")
+        .expect("the vCPU protocol must precede the per-CPU protocol")
+        .0;
+
+    for controller_operation in ["fn inject_interrupt", "fn handle_eoi"] {
+        assert!(
+            !vcpu_protocol.contains(controller_operation),
+            "interrupt controller operation leaked into the shared vCPU protocol: \
+             {controller_operation}"
+        );
+    }
 }
 
 fn find_target_arch_cfg_outside_arch(

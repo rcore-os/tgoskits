@@ -3,9 +3,10 @@
 //! This module owns the AxVM/ArceOS glue for the OS-neutral `x86_vcpu` and
 //! `x86_vlapic` cores.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc, vec::Vec};
 use core::{arch::asm, time::Duration};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{
     AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
     MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
@@ -23,9 +24,8 @@ use x86_vlapic::{
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
-    AxVmError, AxVmResult, StopReason,
+    AxVmError, AxVmResult, StopReason, VmStatus, ax_err_type,
     host::{HostMemory, default_host},
-    manager,
     vcpu::get_current_vcpu,
 };
 
@@ -34,12 +34,17 @@ mod capabilities;
 mod exit;
 pub(crate) mod fdt;
 mod host_irq;
+mod interrupt_controller;
 pub(crate) mod irq;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod npt;
 pub(crate) mod port;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
+#[path = "../../architecture/timer_scheduler.rs"]
+mod vm_timer_scheduler;
 
 use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
@@ -49,6 +54,46 @@ const QEMU_EXIT_MAGIC: u64 = 0x2000;
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
+
+pub(crate) struct VmArchState;
+
+impl VmArchState {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+pub(crate) struct VmRuntimeArchState {
+    pending_interrupts: Mutex<BTreeMap<usize, Vec<usize>>>,
+}
+
+impl VmRuntimeArchState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_interrupts: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn register_vcpu(&self, vcpu_id: usize) {
+        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) {
+        self.pending_interrupts
+            .lock()
+            .entry(vcpu_id)
+            .or_default()
+            .push(vector);
+    }
+
+    pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<usize> {
+        self.pending_interrupts
+            .lock()
+            .get_mut(&vcpu_id)
+            .map(core::mem::take)
+            .unwrap_or_default()
+    }
+}
 
 impl ArchOps for X86_64Arch {
     type VCpu = AxvmX86Vcpu;
@@ -67,6 +112,13 @@ impl ArchOps for X86_64Arch {
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         irq::drain_pending_ioapic_irqs(vm, vcpu);
         irq::activate_ready_ioapic_forwarding_routes(vm);
+    }
+
+    fn deliver_pending_controller_interrupts(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) {
+        deliver_pending_controller_interrupts(vm, vcpu);
     }
 
     fn after_external_interrupt(
@@ -251,14 +303,14 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-        Some(crate::timer::register_timer(
+        Some(vm_timer_scheduler::register(
             deadline_nanos,
             Box::new(move |deadline: Duration| callback(deadline.as_nanos() as u64)),
         ))
     }
 
     fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+        vm_timer_scheduler::cancel(token);
     }
 
     fn write_bytes(bytes: &[u8]) {
@@ -277,15 +329,15 @@ impl X86VlapicHostOps for AxvmX86HostOps {
 
     fn current_vm_vcpu_num() -> usize {
         let vm_id = Self::current_vm_id();
-        manager::with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0)
+        crate::get_vm_by_id(vm_id).map_or(0, |vm| vm.vcpu_num())
     }
 
     fn current_vm_active_vcpus() -> usize {
-        manager::active_vcpu_mask(Self::current_vm_id()).unwrap_or(0)
+        active_vcpu_mask(Self::current_vm_id()).unwrap_or(0)
     }
 
     fn active_vcpus(vm_id: X86VmId) -> Option<usize> {
-        manager::active_vcpu_mask(vm_id)
+        active_vcpu_mask(vm_id)
     }
 
     fn inject_interrupt(
@@ -293,8 +345,66 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult {
-        manager::inject_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
+        queue_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
     }
+}
+
+fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    let cpu_id = vm.with_runtime(|runtime| {
+        let cpu_id = runtime.vcpu_task_cpu(vcpu_id)?;
+        runtime.arch_state().queue_interrupt(vcpu_id, vector);
+        Ok(cpu_id)
+    })?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_all();
+        Ok(())
+    })?;
+    crate::host::task::send_ipi(cpu_id);
+    Ok(())
+}
+
+fn deliver_pending_controller_interrupts(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
+) {
+    let Ok(interrupts) =
+        vm.with_runtime(|runtime| Ok(runtime.arch_state().drain_pending_interrupts(vcpu.id())))
+    else {
+        warn!(
+            "VM[{}] vCPU runtime not found while synchronizing the x86 interrupt controller",
+            vm.id()
+        );
+        return;
+    };
+    for vector in interrupts {
+        if let Err(error) = vcpu.get_arch_vcpu().deliver_local_apic_vector(vector) {
+            warn!(
+                "failed to deliver x86 controller vector {vector:#x} to VM[{}] VCpu[{}]: {error}",
+                vm.id(),
+                vcpu.id()
+            );
+        }
+    }
+}
+
+fn active_vcpu_mask(vm_id: X86VmId) -> Option<usize> {
+    crate::get_vm_by_id(vm_id).map(|vm| {
+        let vcpu_num = vm.vcpu_num();
+        if vcpu_num >= usize::BITS as usize {
+            usize::MAX
+        } else {
+            (1usize << vcpu_num) - 1
+        }
+    })
 }
 
 impl X86HostOps for AxvmX86HostOps {
@@ -329,10 +439,8 @@ impl X86HostOps for AxvmX86HostOps {
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
         let vcpu = get_current_vcpu::<AxvmX86Vcpu>().ok_or(X86VcpuError::BadState)?;
         let mut byte = [0u8; 1];
-        let result = manager::with_vm(vcpu.vm_id(), |vm| {
-            vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte)
-        })
-        .ok_or(X86VcpuError::BadState)?;
+        let vm = crate::get_vm_by_id(vcpu.vm_id()).ok_or(X86VcpuError::BadState)?;
+        let result = vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte);
         result.map_err(|_| X86VcpuError::BadState)?;
         Ok(byte[0])
     }
@@ -352,6 +460,25 @@ impl X86HostOps for AxvmX86HostOps {
 }
 
 pub(crate) struct AxvmX86Vcpu(x86_vcpu::X86ArchVCpu<AxvmX86HostOps>);
+
+impl AxvmX86Vcpu {
+    fn deliver_local_apic_vector(&mut self, vector: usize) -> BackendResult {
+        x86_result(self.0.inject_interrupt(vector))
+    }
+
+    fn deliver_ioapic_interrupt(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        x86_result(
+            self.0.inject_interrupt_with_trigger(
+                vector,
+                trigger == InterruptTriggerMode::LevelTriggered,
+            ),
+        )
+    }
+}
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
     type CreateConfig = X86VCpuCreateConfig;
@@ -396,27 +523,6 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        x86_result(self.0.inject_interrupt(vector))
-    }
-
-    fn inject_interrupt_with_trigger(
-        &mut self,
-        vector: usize,
-        trigger: InterruptTriggerMode,
-    ) -> BackendResult {
-        x86_result(
-            self.0.inject_interrupt_with_trigger(
-                vector,
-                trigger == InterruptTriggerMode::LevelTriggered,
-            ),
-        )
-    }
-
-    fn handle_eoi(&mut self) -> Option<u8> {
-        self.0.handle_eoi()
-    }
-
     fn set_return_value(&mut self, val: usize) {
         self.0.set_return_value(val);
     }
@@ -445,30 +551,34 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
 pub(crate) fn register_arch_device(
     config: &EmulatedDeviceConfig,
     devices: &mut axdevice::AxVmDevices,
+    interrupt_topology: &axdevice::InterruptTopology,
 ) -> AxVmResult {
     match config.emu_type {
         EmulatedDeviceType::Console => {
-            let serial = Arc::new(axdevice::X86SerialPortDevice::<AxvmX86HostOps>::new());
+            let irq = interrupt_topology
+                .connect_irq(axdevice::WiredIrqRequest::new(
+                    axdevice::ControllerInputId::new(irq::COM1_GSI),
+                    InterruptTriggerMode::LevelTriggered,
+                ))
+                .map_err(|error| AxVmError::device("connect x86 COM1 IRQ4", error))?;
+            let serial =
+                Arc::new(axdevice::X86SerialPortDevice::<AxvmX86HostOps>::new_with_irq(irq));
             devices
                 .add_x86_serial_dev(serial)
                 .map_err(|error| AxVmError::device("register x86 serial device", error))?;
             info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
         }
         EmulatedDeviceType::X86IoApic => {
-            let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
-                x86_vlapic::X86GuestPhysAddr::from_usize(config.base_gpa),
-                Some(config.length),
-            ));
-            devices
-                .add_x86_ioapic_dev(ioapic)
-                .map_err(|error| AxVmError::device("register x86 I/O APIC", error))?;
-            info!(
-                "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
-                config.base_gpa, config.length
-            );
+            debug!("x86 IOAPIC controller was registered during the controller phase");
         }
         EmulatedDeviceType::X86Pit => {
-            let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
+            let irq = interrupt_topology
+                .connect_irq(axdevice::WiredIrqRequest::new(
+                    axdevice::ControllerInputId::new(irq::PIT_TIMER_GSI),
+                    InterruptTriggerMode::EdgeTriggered,
+                ))
+                .map_err(|error| AxVmError::device("connect x86 PIT IRQ0", error))?;
+            let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new_with_irq(irq));
             devices
                 .add_x86_pit_dev(pit)
                 .map_err(|error| AxVmError::device("register x86 PIT", error))?;
@@ -501,7 +611,7 @@ fn handle_x86_nested_page_fault(
         }));
     }
 
-    if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
+    if nested_page_fault::handle(vm, exit.addr, exit.access_flags) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(

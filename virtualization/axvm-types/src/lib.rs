@@ -449,24 +449,6 @@ pub trait VmArchVcpuOps: Sized {
     ) -> Option<VmExit> {
         None
     }
-    /// Injects an interrupt into the vCPU.
-    fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
-    /// Injects an interrupt with trigger-mode metadata.
-    fn inject_interrupt_with_trigger(
-        &mut self,
-        vector: usize,
-        trigger: InterruptTriggerMode,
-    ) -> VmBackendResult {
-        debug_assert!(
-            trigger == InterruptTriggerMode::EdgeTriggered,
-            "level-triggered interrupt injection requires an architecture-specific implementation"
-        );
-        self.inject_interrupt(vector)
-    }
-    /// Processes a guest EOI and returns an external EOI vector when needed.
-    fn handle_eoi(&mut self) -> Option<u8> {
-        None
-    }
     /// Sets the guest return value.
     fn set_return_value(&mut self, val: usize);
 }
@@ -808,10 +790,6 @@ mod tests {
         }
 
         fn set_gpr(&mut self, _reg: usize, _val: usize) {}
-
-        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
-            Ok(())
-        }
 
         fn set_return_value(&mut self, _val: usize) {}
     }

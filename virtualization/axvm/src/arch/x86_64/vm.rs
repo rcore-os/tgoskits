@@ -15,7 +15,7 @@ use x86_vcpu::{
 
 #[cfg(feature = "vmx")]
 use super::x86_apic_access_page_addr;
-use super::{X86_64Arch, npt, x86_result};
+use super::{X86_64Arch, interrupt_controller::X86InterruptController, npt, x86_result};
 use crate::{
     AxVmError, AxVmResult, ax_err, ax_err_type,
     config::AxVMConfig,
@@ -54,13 +54,14 @@ impl X86_64Arch {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let interrupt_topology =
+                    Arc::new(axdevice::InterruptTopology::new(vm.interrupt_mode()));
+                init_vm_with(vm, &factories, interrupt_topology)
             }
             VmInitRequest::Provided {
                 factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+                interrupt_topology,
+            } => init_vm_with(vm, factories, interrupt_topology),
         }
     }
 }
@@ -68,14 +69,25 @@ impl X86_64Arch {
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VCpuCreateConfig))?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(resources.config(), &mut devices.devices)?;
+        let mut devices = PreparedDevices::empty();
+        register_interrupt_controller(
+            resources.config(),
+            &mut devices.devices,
+            interrupt_topology,
+        )?;
+        devices.register_configured(
+            resources.config().emu_devices(),
+            factories,
+            interrupt_topology,
+        )?;
+        register_arch_devices(resources.config(), &mut devices.devices, interrupt_topology)?;
         devices.register_special_devices(vm)?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
         validate_guest_dtb(resources)?;
 
         let mut owned_regions = guest_owned_regions(resources);
@@ -114,7 +126,52 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
+fn register_interrupt_controller(
+    config: &AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+    interrupt_topology: &axdevice::InterruptTopology,
+) -> AxVmResult {
+    let mut ioapic_configs = config
+        .emu_devices()
+        .iter()
+        .filter(|config| config.emu_type == EmulatedDeviceType::X86IoApic);
+    let Some(ioapic_config) = ioapic_configs.next() else {
+        return Ok(());
+    };
+    if ioapic_configs.next().is_some() {
+        return Err(AxVmError::invalid_config(
+            "an x86 VM may register only one IOAPIC controller",
+        ));
+    }
+
+    let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
+        x86_vlapic::X86GuestPhysAddr::from_usize(ioapic_config.base_gpa),
+        Some(ioapic_config.length),
+    ));
+    let controller = Arc::new(X86InterruptController::new(
+        axdevice::InterruptControllerId::new(0),
+        ioapic.clone(),
+    ));
+    devices
+        .add_x86_ioapic_controller(
+            ioapic,
+            controller.clone(),
+            controller.registration(),
+            interrupt_topology,
+        )
+        .map_err(|error| AxVmError::device("register x86 APIC topology", error))?;
+    info!(
+        "x86 IOAPIC initialized with base GPA {:#x} and length {:#x}",
+        ioapic_config.base_gpa, ioapic_config.length
+    );
+    Ok(())
+}
+
+fn register_arch_devices(
+    config: &AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+    interrupt_topology: &axdevice::InterruptTopology,
+) -> AxVmResult {
     for port in config.pass_through_ports() {
         let passthrough = Arc::new(super::port::HostPortPassthrough::new(
             port.base,
@@ -133,7 +190,7 @@ fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevice
             })?;
     }
     for device_config in config.emu_devices() {
-        super::register_arch_device(device_config, devices)?;
+        super::register_arch_device(device_config, devices, interrupt_topology)?;
     }
     Ok(())
 }

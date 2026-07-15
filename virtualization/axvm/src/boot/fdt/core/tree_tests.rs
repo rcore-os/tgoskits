@@ -120,7 +120,7 @@ fn host_fdt_pointer_rejects_null() {
 }
 
 #[test]
-fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
+fn tree_copies_subtree_and_updates_the_copied_node() {
     let mut source = Fdt::new();
     let source_root = source.root_id();
     let bus = source.add_node(source_root, Node::new("soc"));
@@ -138,10 +138,8 @@ fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
     let copied = dest
         .copy_subtree_from(&source, bus, dest.inner().root_id(), false)
         .unwrap();
-    dest.inner_mut()
-        .node_mut(copied)
-        .unwrap()
-        .set_property(prop_str("dma-coherent", "true"));
+    dest.set_property(copied, prop_str("dma-coherent", "true"))
+        .unwrap();
 
     let bytes = dest.finish();
     let reparsed = Fdt::from_bytes(&bytes).unwrap();

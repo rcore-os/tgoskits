@@ -1,81 +1,56 @@
-<h1 align="center">arm_vgic</h1>
+# arm_vgic
 
-<p align="center">ARM Virtual Generic Interrupt Controller (VGIC) implementation</p>
+`arm_vgic` 是一个 `no_std`、每 VM 独立的 Arm GICv3 控制器领域 crate。它按
+GICv3 的物理结构建模 Distributor、每 vCPU Redistributor/虚拟 CPU Interface，
+以及可选的 ITS/LPI 域。MMIO 映射、host IRQ 发现、guest memory、定时器和 vCPU
+调度均留在 VMM 适配层，并通过受检 capability 接入。
 
-<div align="center">
+当前只支持 GICv3 Group 1 Non-secure；不支持 GICv2、Secure Group 0/1、GICv4
+vPE 和 nested virtualization。
 
-[![Crates.io](https://img.shields.io/crates/v/arm_vgic.svg)](https://crates.io/crates/arm_vgic)
-[![Docs.rs](https://docs.rs/arm_vgic/badge.svg)](https://docs.rs/arm_vgic)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+## 构造流程
 
-</div>
+先用 `GicV3Config` 一次性校验 GICD、GICR、可选 GITS、vCPU 数量、LR 数量和
+命令预算，再创建 `GicV3Controller`。设备连接中断源之前，必须用
+`attach_vcpu` 为每个 vCPU 建立 `GicV3VcpuBinding` 和固定 affinity。
 
-[English](README.md) | 中文
+Emulated ITS 必须通过 `new_with_guest_memory` 提供 VM 级 `GuestMemory`
+capability。ITS 只按受检 GPA 读取有预算上限的环形命令队列，不假设 GPA=HPA。
 
-# 介绍
+## 模式差异
 
-`arm_vgic` 提供了 ARM Virtual Generic Interrupt Controller (VGIC) implementation。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+- `Emulated`：GICD、GICR、SGI/PPI/SPI/LPI、CPU Interface 和 ITS 状态均按 VM
+  保存；binding 在 guest 运行前后保存全部 LR/APR，并在 LR 耗尽时通过
+  maintenance/refill 继续投递软件 pending。
+- `Passthrough`：guest SPI 和 ITS translation 必须分别通过
+  `bind_physical_spi`、`bind_physical_msi` 显式声明 host 资源和固定 vCPU
+  affinity。投递只经过物理 backend，不会回退到 LR；guest 不能直接访问共享
+  host ITS 寄存器。
 
-## 快速开始
+backend 必须校验平台 IRQ identity、affinity、地址、访问宽度和所有权。控制器在
+锁内只生成投递动作，释放锁后才唤醒 vCPU 或调用 backend。
 
-### 添加依赖
+## 错误语义
 
-在 `Cargo.toml` 中加入：
+所有可失败 API 返回 `VgicResult<T>`。`VgicError` 可区分非法 INTID、错误 INTID
+类别、非法寄存器访问、状态转换、guest-memory 访问、ITS 命令或预算、资源缺失/
+冲突、不支持能力和 backend 失败。架构规定的未知 RAZ/WI 寄存器读零/忽略写；
+非法宽度、对齐、范围和所有权均显式报错。
 
-```toml
-[dependencies]
-arm_vgic = "0.4.2"
-```
+## 破坏性 API 变化
 
-### 检查与测试
+新的 GICv3 API 直接替换旧 `Vgic`/GICv2、全局 host callback、全局 ITS/LPI
+状态、crate 内定时器和手动硬件注入函数。集成层现在必须注册
+`GicV3Controller`、绑定 vCPU，并让设备持有控制器创建的有线或 MSI endpoint。
+虚拟 CNTP 定时器属于 VMM，每 vCPU 应持有自己的 PPI 中断线。
 
-```bash
-# 进入 crate 目录
-cd virtualization/arm_vgic
-
-# 代码格式化
-cargo fmt --all
-
-# 运行 clippy
-cargo clippy --all-targets --all-features
-
-# 运行测试
-cargo test --all-features
-
-# 生成文档
-cargo doc --no-deps
-```
-
-## 集成方式
-
-### 示例
-
-```rust
-use arm_vgic as _;
-
-fn main() {
-    // 在这里将 `arm_vgic` 集成到你的项目中。
-}
-```
-
-### 文档
-
-生成并查看 API 文档：
+## 验证
 
 ```bash
-cargo doc --no-deps --open
+cargo fmt --all --check
+cargo clippy -p arm_vgic --all-targets --all-features -- -D warnings
+cargo test -p arm_vgic --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc -p arm_vgic --all-features --no-deps
 ```
 
-在线文档：[docs.rs/arm_vgic](https://docs.rs/arm_vgic)
-
-# 贡献
-
-1. Fork 仓库并创建分支
-2. 在本地运行格式化与检查
-3. 运行与该 crate 相关的测试
-4. 提交 PR 并确保 CI 通过
-
-# 许可证
-
-本项目采用 Apache License 2.0 许可证。详情见 [LICENSE](./LICENSE)。
+本项目使用 Apache-2.0 许可证。

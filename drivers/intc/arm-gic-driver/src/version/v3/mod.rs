@@ -439,6 +439,35 @@ impl Gic {
         }
     }
 
+    /// Resolves the ITS collection target for one processor affinity.
+    ///
+    /// Physical collection targets use the matching Redistributor frame's
+    /// physical address. Processor-number targets use that Redistributor's
+    /// `GICR_TYPER.Processor_Number` value.
+    pub fn collection_target_for_affinity(
+        &self,
+        gicr_phys_base: u64,
+        affinity: Affinity,
+        use_physical_target: bool,
+    ) -> Option<u64> {
+        let wanted = affinity.affinity();
+        for (index, redistributor) in self.rd_slice().iter().enumerate() {
+            // SAFETY: every pointer is produced by the bounded Redistributor
+            // iterator rooted in the validated GICR mapping.
+            let redistributor = unsafe { redistributor.as_ref() };
+            if redistributor.lpi.get_affinity() != wanted {
+                continue;
+            }
+            return if use_physical_target {
+                let offset = index.checked_mul(core::mem::size_of::<RedistributorV3>())?;
+                gicr_phys_base.checked_add(offset as u64)
+            } else {
+                Some(u64::from(redistributor.lpi.processor_number()) << 16)
+            };
+        }
+        None
+    }
+
     pub fn init_lpi_tables(
         &self,
         property_table_phys: u64,

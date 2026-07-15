@@ -1,10 +1,10 @@
 use std::{fs, path::Path};
 
-use arm_vgic::VgicError;
-use axdevice_base::{AccessWidth, DeviceError};
+use arm_vgic::{IntId, RegisterRegion, VgicError};
+use axvm_types::AccessWidth;
 
 #[test]
-fn crate_uses_typed_errors_without_errno_contracts() {
+fn crate_uses_typed_errors_without_kernel_errno_contracts() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
     assert!(!manifest.contains(&["ax", "errno"].join("-")));
@@ -12,28 +12,32 @@ fn crate_uses_typed_errors_without_errno_contracts() {
 }
 
 #[test]
-fn invalid_vgic_access_converts_to_device_input_error() {
+fn invalid_access_error_preserves_register_context() {
     let error = VgicError::InvalidAccess {
+        region: RegisterRegion::Distributor,
         operation: "read",
         offset: 0x80,
         width: AccessWidth::Qword,
+        detail: "register requires Dword".into(),
     };
-    let device: DeviceError = error.into();
 
-    assert!(matches!(device, DeviceError::InvalidInput { .. }));
-    assert!(device.to_string().contains("0x80"));
+    assert!(error.to_string().contains("Distributor"));
+    assert!(error.to_string().contains("0x80"));
+    assert!(error.to_string().contains("Qword"));
 }
 
-#[cfg(feature = "vgicv3")]
 #[test]
-fn vgic_rejects_out_of_range_irq_without_panicking() {
-    assert!(matches!(
-        arm_vgic::v3::vgicd::VGicD::validate_irq(1024),
-        Err(VgicError::InvalidIrq {
-            irq: 1024,
-            max: 1024,
-        })
-    ));
+fn intid_classification_rejects_architectural_reserved_ranges() {
+    assert!(matches!(IntId::new(31), Ok(IntId::Ppi(_))));
+    assert!(matches!(IntId::new(32), Ok(IntId::Spi(_))));
+    assert!(matches!(IntId::new(1019), Ok(IntId::Spi(_))));
+    assert!(matches!(IntId::new(8192), Ok(IntId::Lpi(_))));
+    for reserved in [1020, 1023, 1024, 8191] {
+        assert_eq!(
+            IntId::new(reserved),
+            Err(VgicError::InvalidIntId { raw: reserved })
+        );
+    }
 }
 
 fn assert_directory_excludes(directory: &Path, forbidden: &str) {

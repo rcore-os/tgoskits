@@ -1,30 +1,39 @@
 //! Device construction for VM preparation.
 
-use axdevice::{AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry};
+use axdevice::{
+    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, InterruptTopology,
+};
+use axvm_types::EmulatedDeviceConfig;
 
-use super::super::{AxVM, AxVMResources};
-use crate::{AxVmResult, irq::InterruptFabric};
+use super::super::AxVM;
+use crate::AxVmResult;
 
 pub(crate) struct PreparedDevices {
     pub(crate) devices: AxVmDevices,
 }
 
 impl PreparedDevices {
-    pub(crate) fn build_common(
-        resources: &AxVMResources,
-        factories: &DeviceFactoryRegistry,
-        interrupt_fabric: &InterruptFabric,
-    ) -> AxVmResult<Self> {
-        let build_context = DeviceBuildContext::new(interrupt_fabric);
-        let devices = AxVmDevices::build_with_factories(
-            AxVmDeviceConfig {
-                emu_configs: resources.config.emu_devices().to_vec(),
-            },
-            factories,
-            &build_context,
-        )?;
+    pub(crate) fn empty() -> Self {
+        Self {
+            devices: AxVmDevices::empty(),
+        }
+    }
 
-        Ok(Self { devices })
+    pub(crate) fn register_configured(
+        &mut self,
+        configs: &[EmulatedDeviceConfig],
+        factories: &DeviceFactoryRegistry,
+        interrupt_topology: &InterruptTopology,
+    ) -> AxVmResult {
+        self.devices
+            .register_configured_devices(
+                &AxVmDeviceConfig {
+                    emu_configs: configs.to_vec(),
+                },
+                factories,
+                &DeviceBuildContext::new(interrupt_topology),
+            )
+            .map_err(Into::into)
     }
 
     pub(crate) fn register_special_devices(&mut self, vm: &AxVM) -> AxVmResult {

@@ -55,13 +55,14 @@ pub(super) fn patch_runtime_fdt(
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
-    super::fdt::core::patch_guest_fdt_for_runtime(
+    let patched = super::fdt::core::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
         crate_config,
         initrd,
         true,
-    )
+    )?;
+    super::fdt::patch_emulated_timer_interrupts(&patched, crate_config.devices.interrupt_mode)
 }
 
 pub(super) fn patch_provided_fdt(
@@ -84,5 +85,6 @@ pub(super) fn patch_provided_fdt(
                 format!("Failed to parse host DTB image: {err:#?}")
             )
         })?;
-    super::fdt::update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)
+    let patched = super::fdt::update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)?;
+    super::fdt::patch_emulated_timer_interrupts(&patched, crate_config.devices.interrupt_mode)
 }

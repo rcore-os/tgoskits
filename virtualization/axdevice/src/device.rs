@@ -15,11 +15,7 @@
 use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
 use core::ops::Range;
 
-#[cfg(target_arch = "aarch64")]
-use arm_vgic::Vgic;
 use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(target_arch = "aarch64")]
-use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
@@ -30,16 +26,18 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
 #[cfg(target_arch = "x86_64")]
-use x86_vlapic::{IoApicEoi, IoApicInterrupt};
+use x86_vlapic::IoApicEoi;
 
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+use crate::DeviceRegistration;
+#[cfg(target_arch = "loongarch64")]
+use crate::LoongArchPchPicRuntimeOps;
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, FwCfg, PollableDeviceOps, range_alloc::RangeAllocator,
+    DeviceManagerResult, FwCfg, InterruptTopology, PollableDeviceOps, range_alloc::RangeAllocator,
 };
-#[cfg(target_arch = "loongarch64")]
-use crate::{LoongArchPchPic, PchPicOutputEvent};
 #[cfg(target_arch = "x86_64")]
-use crate::{X86IoApicDeviceOps, X86PitDeviceOps, X86SerialDeviceOps};
+use crate::{X86IoApicRuntimeOps, X86PitDeviceOps, X86SerialDeviceOps};
 
 #[inline]
 #[allow(dead_code)]
@@ -52,6 +50,17 @@ fn log_device_io(
 ) {
     let rw = if read { "read" } else { "write" };
     trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
+}
+
+#[cfg(target_arch = "aarch64")]
+fn unified_gic_registration_required(config: &EmulatedDeviceConfig) -> DeviceManagerError {
+    DeviceManagerError::InvalidConfig {
+        operation: "initialize AArch64 GICv3",
+        detail: format!(
+            "device '{}' must be consumed by the unified GICv3 platform registration",
+            config.name
+        ),
+    }
 }
 
 /// Internal range entry cached in the index maps.
@@ -74,7 +83,7 @@ pub struct AxVmDevices {
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// x86 IOAPIC — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
-    x86_ioapic: Option<Arc<dyn X86IoApicDeviceOps>>,
+    x86_ioapic: Option<Arc<dyn X86IoApicRuntimeOps>>,
     /// x86 PIT — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
     x86_pit: Option<Arc<dyn X86PitDeviceOps>>,
@@ -83,7 +92,7 @@ pub struct AxVmDevices {
     x86_serial: Option<Arc<dyn X86SerialDeviceOps>>,
     /// LoongArch PCH-PIC — kept for type-specific access.
     #[cfg(target_arch = "loongarch64")]
-    loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
+    loongarch_pch_pic: Option<Arc<dyn LoongArchPchPicRuntimeOps>>,
     /// QEMU fw_cfg — kept for DMA access routing.
     fw_cfg: Option<Arc<FwCfg>>,
     /// IVC channel range allocator
@@ -92,7 +101,8 @@ pub struct AxVmDevices {
 
 /// The implemention for AxVmDevices
 impl AxVmDevices {
-    fn empty() -> Self {
+    /// Creates an empty VM device registry for staged platform initialization.
+    pub fn empty() -> Self {
         Self {
             devices: Vec::new(),
             mmio_index: BTreeMap::new(),
@@ -127,11 +137,25 @@ impl AxVmDevices {
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
+        this.register_configured_devices(&config, factories, context)?;
+        Ok(this)
+    }
+
+    /// Builds and registers all devices described by `config` into this registry.
+    ///
+    /// This staged entry point lets an architecture register its interrupt
+    /// controller and attach vCPUs before interrupt-producing devices are built.
+    pub fn register_configured_devices(
+        &mut self,
+        config: &AxVmDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult {
         for config in &config.emu_configs {
             if factories.get(config.emu_type).is_some() {
-                this.register_factory_device(config, factories, context)?;
+                self.register_factory_device(config, factories, context)?;
             } else if Self::is_legacy_fallback(config.emu_type) {
-                Self::init(&mut this, core::slice::from_ref(config))?;
+                Self::init(self, core::slice::from_ref(config))?;
             } else {
                 return Err(DeviceManagerError::Unsupported {
                     operation: "build emulated device",
@@ -142,7 +166,7 @@ impl AxVmDevices {
                 });
             }
         }
-        Ok(this)
+        Ok(())
     }
 
     /// Builds and atomically registers one factory-managed device.
@@ -153,7 +177,7 @@ impl AxVmDevices {
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult {
         let bundle = factories.build(config, context)?;
-        self.register_bundle(bundle)
+        self.register_bundle_with_topology(bundle, context.interrupt_topology())
     }
 
     fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
@@ -173,7 +197,7 @@ impl AxVmDevices {
         )
     }
 
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    #[cfg(target_arch = "riscv64")]
     fn config_argument(
         config: &EmulatedDeviceConfig,
         index: usize,
@@ -196,10 +220,14 @@ impl AxVmDevices {
                 EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(
-                            MmioDeviceAdapter::from_arc(Arc::new(Vgic::new())) as Arc<dyn Device>
-                        )?;
+                        return Err(DeviceManagerError::Unsupported {
+                            operation: "initialize AArch64 interrupt controller",
+                            detail: format!(
+                                "device '{}' requests the removed GICv2 interface; configure a \
+                                 unified GICv3 Distributor and Redistributor instead",
+                                config.name
+                            ),
+                        });
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -212,29 +240,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTRedistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        const GPPT_GICR_ARGS: &str = "three arguments (cpu_num, stride, pcpu_id)";
-
-                        let cpu_num = Self::config_argument(config, 0, GPPT_GICR_ARGS)?;
-                        let stride = Self::config_argument(config, 1, GPPT_GICR_ARGS)?;
-                        let pcpu_id = Self::config_argument(config, 2, GPPT_GICR_ARGS)?;
-
-                        for i in 0..cpu_num {
-                            let addr = config.base_gpa + i * stride;
-                            let size = config.length;
-                            #[allow(clippy::arc_with_non_send_sync)]
-                            this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                                arm_vgic::v3::vgicr::VGicR::new(
-                                    addr.into(),
-                                    Some(size),
-                                    pcpu_id + i,
-                                ),
-                            )) as Arc<dyn Device>)?;
-
-                            info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                                 {addr:#x} and length {size:#x}"
-                            );
-                        }
+                        return Err(unified_gic_registration_required(config));
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -247,20 +253,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTDistributor => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                            arm_vgic::v3::vgicd::VGicD::new(
-                                config.base_gpa.into(),
-                                Some(config.length),
-                            ),
-                        )) as Arc<dyn Device>)?;
-
-                        info!(
-                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
+                        return Err(unified_gic_registration_required(config));
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -273,27 +266,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::GPPTITS => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        let host_gits_base =
-                            Self::config_argument(config, 0, "one argument (host_gits_base)")
-                                .map(PhysAddr::from_usize)?;
-
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                            arm_vgic::v3::gits::Gits::new(
-                                config.base_gpa.into(),
-                                Some(config.length),
-                                host_gits_base,
-                                false,
-                            ),
-                        )) as Arc<dyn Device>)?;
-
-                        info!(
-                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}, host GITS base {host_gits_base:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length,
-                            host_gits_base = host_gits_base
-                        );
+                        return Err(unified_gic_registration_required(config));
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -379,15 +352,7 @@ impl AxVmDevices {
                 EmulatedDeviceType::LoongArchPchPic => {
                     #[cfg(target_arch = "loongarch64")]
                     {
-                        let pch_pic =
-                            Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
-                        this.register(MmioDeviceAdapter::from_arc(pch_pic.clone())
-                            as Arc<dyn Device + Send + Sync + 'static>)?;
-                        this.loongarch_pch_pic = Some(pch_pic);
-                        info!(
-                            "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
-                        );
+                        debug!("LoongArch PCH-PIC registration is owned by the AxVM arch adapter");
                     }
                     #[cfg(not(target_arch = "loongarch64"))]
                     {
@@ -499,10 +464,34 @@ impl AxVmDevices {
         }
     }
 
-    /// Registers a bundle atomically.  If any device fails to register,
-    /// already-registered devices in this bundle are rolled back via
-    /// `pop()` + index-key removal.
+    /// Registers a bundle containing only device-local capabilities.
+    ///
+    /// Use [`Self::register_bundle_with_topology`] when the bundle contains an
+    /// interrupt-controller registration.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
+        if !bundle.interrupt_controllers.is_empty() {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device bundle",
+                detail: "interrupt controllers require an interrupt topology".into(),
+            });
+        }
+        self.register_bundle_inner(bundle, None)
+    }
+
+    /// Registers device and interrupt-controller capabilities atomically.
+    pub fn register_bundle_with_topology(
+        &mut self,
+        bundle: DeviceBundle,
+        interrupt_topology: &InterruptTopology,
+    ) -> DeviceManagerResult {
+        self.register_bundle_inner(bundle, Some(interrupt_topology))
+    }
+
+    fn register_bundle_inner(
+        &mut self,
+        bundle: DeviceBundle,
+        interrupt_topology: Option<&InterruptTopology>,
+    ) -> DeviceManagerResult {
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
                 .pollable_devices
@@ -517,27 +506,33 @@ impl AxVmDevices {
             }
         }
 
+        if !bundle.interrupt_controllers.is_empty() && interrupt_topology.is_none() {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device bundle",
+                detail: "interrupt controllers require an interrupt topology".into(),
+            });
+        }
+
+        let mut registered_controllers = Vec::new();
+        if let Some(topology) = interrupt_topology {
+            for controller in bundle.interrupt_controllers {
+                let id = controller.id();
+                if let Err(error) = topology.register_controller(controller) {
+                    Self::rollback_controllers(topology, &registered_controllers);
+                    return Err(error);
+                }
+                registered_controllers.push(id);
+            }
+        }
+
         let saved_len = self.devices.len();
         for device in &bundle.devices {
             match self.register(device.clone()) {
                 Ok(_id) => {}
                 Err(e) => {
-                    // Rollback: pop back to saved_len, remove from index maps.
-                    while self.devices.len() > saved_len {
-                        let popped = self.devices.pop().unwrap();
-                        for r in popped.resources() {
-                            match *r {
-                                Resource::MmioRange { base, .. } => {
-                                    self.mmio_index.remove(&base);
-                                }
-                                Resource::PortRange { base, .. } => {
-                                    self.port_index.remove(&base);
-                                }
-                                Resource::SysReg { addr, .. } => {
-                                    self.sysreg_index.remove(&addr);
-                                }
-                            }
-                        }
+                    self.rollback_devices(saved_len);
+                    if let Some(topology) = interrupt_topology {
+                        Self::rollback_controllers(topology, &registered_controllers);
                     }
                     return Err(e.into());
                 }
@@ -545,6 +540,38 @@ impl AxVmDevices {
         }
         self.pollable_devices.extend(bundle.pollable);
         Ok(())
+    }
+
+    fn rollback_devices(&mut self, saved_len: usize) {
+        while self.devices.len() > saved_len {
+            let Some(device) = self.devices.pop() else {
+                break;
+            };
+            for resource in device.resources() {
+                match *resource {
+                    Resource::MmioRange { base, .. } => {
+                        self.mmio_index.remove(&base);
+                    }
+                    Resource::PortRange { base, .. } => {
+                        self.port_index.remove(&base);
+                    }
+                    Resource::SysReg { addr, .. } => {
+                        self.sysreg_index.remove(&addr);
+                    }
+                }
+            }
+        }
+    }
+
+    fn rollback_controllers(
+        topology: &InterruptTopology,
+        controllers: &[axdevice_base::InterruptControllerId],
+    ) {
+        for controller in controllers.iter().rev() {
+            if let Err(error) = topology.unregister_controller(*controller) {
+                error!("failed to roll back interrupt controller {controller:?}: {error}");
+            }
+        }
     }
 
     // ─── Resource rollback ────────────────────────────────────────
@@ -904,46 +931,87 @@ impl AxVmDevices {
             .and_then(|ioapic| ioapic.vector_for_gsi(gsi))
     }
 
-    /// Assert an x86 IOAPIC GSI and return the interrupt to inject.
+    /// Signals an x86 IOAPIC GSI through its registered local-APIC output.
     #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
+    pub fn x86_ioapic_signal_gsi(&self, gsi: usize) -> DeviceManagerResult<bool> {
         self.x86_ioapic
             .as_ref()
-            .and_then(|ioapic| ioapic.assert_gsi(gsi))
+            .ok_or_else(|| DeviceManagerError::ResourceNotFound {
+                operation: "signal x86 IOAPIC GSI",
+                resource: "x86 IOAPIC controller".into(),
+            })?
+            .signal_gsi(gsi)
     }
 
     /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
     #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
+    pub fn x86_ioapic_end_of_interrupt(
+        &self,
+        vector: u8,
+    ) -> DeviceManagerResult<Option<IoApicEoi>> {
         self.x86_ioapic
             .as_ref()
-            .and_then(|ioapic| ioapic.end_of_interrupt(vector))
+            .ok_or_else(|| DeviceManagerError::ResourceNotFound {
+                operation: "complete x86 local APIC interrupt",
+                resource: "x86 IOAPIC controller".into(),
+            })?
+            .end_of_interrupt(vector)
     }
 
     /// Consume a pending x86 PIT channel 0 timer tick if the deadline is due.
     #[cfg(target_arch = "x86_64")]
-    pub fn x86_pit_consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.x86_pit
-            .as_ref()
-            .is_some_and(|pit| pit.consume_irq0_if_due(now_ns))
+    pub fn x86_pit_service_irq0(&self, now_ns: u64) -> DeviceManagerResult<bool> {
+        self.x86_pit.as_ref().map_or(Ok(false), |pit| {
+            pit.service_irq0(now_ns).map_err(Into::into)
+        })
     }
 
     /// Poll x86 COM1 and return whether it has a pending RX interrupt.
     #[cfg(target_arch = "x86_64")]
-    pub fn x86_serial_poll_irq(&self) -> bool {
+    pub fn x86_serial_service_irq(&self) -> DeviceManagerResult<bool> {
         self.x86_serial
             .as_ref()
-            .is_some_and(|serial| serial.poll_irq())
+            .map_or(Ok(false), |serial| serial.service_irq().map_err(Into::into))
     }
 
-    /// Add an x86 IOAPIC device to the generic registry and x86 runtime handle.
+    /// Atomically registers an x86 IOAPIC device and controller capabilities.
     #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_ioapic_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
+    pub fn add_x86_ioapic_controller<D, R>(
+        &mut self,
+        dev: Arc<D>,
+        runtime: Arc<R>,
+        controller: crate::ControllerRegistration,
+        topology: &InterruptTopology,
+    ) -> DeviceManagerResult
     where
-        D: Device + X86IoApicDeviceOps + 'static,
+        D: Device + 'static,
+        R: X86IoApicRuntimeOps + 'static,
     {
-        self.register(dev.clone() as Arc<dyn Device>)?;
-        self.x86_ioapic = Some(dev);
+        let bundle = DeviceBundle::new()
+            .with_registration(DeviceRegistration::InterruptController(controller))
+            .with_registration(DeviceRegistration::Device(dev as Arc<dyn Device>));
+        self.register_bundle_with_topology(bundle, topology)?;
+        self.x86_ioapic = Some(runtime);
+        Ok(())
+    }
+
+    /// Atomically registers a LoongArch PCH-PIC device and interrupt controller.
+    #[cfg(target_arch = "loongarch64")]
+    pub fn add_loongarch_pch_pic_controller<R>(
+        &mut self,
+        dev: Arc<dyn Device>,
+        runtime: Arc<R>,
+        controller: crate::ControllerRegistration,
+        topology: &InterruptTopology,
+    ) -> DeviceManagerResult
+    where
+        R: LoongArchPchPicRuntimeOps + 'static,
+    {
+        let bundle = DeviceBundle::new()
+            .with_registration(DeviceRegistration::InterruptController(controller))
+            .with_registration(DeviceRegistration::Device(dev));
+        self.register_bundle_with_topology(bundle, topology)?;
+        self.loongarch_pch_pic = Some(runtime);
         Ok(())
     }
 
@@ -986,20 +1054,12 @@ impl AxVmDevices {
             .cloned()
     }
 
-    /// Assert a LoongArch PCH-PIC input and return the routed EIOINTC vector.
+    /// Routes LoongArch PCH-PIC output events generated by MMIO writes.
     #[cfg(target_arch = "loongarch64")]
-    pub fn loongarch_pch_pic_assert_irq(&self, irq: usize) -> Option<Option<usize>> {
+    pub fn service_loongarch_pch_pic_outputs(&self) -> DeviceManagerResult {
         self.loongarch_pch_pic
             .as_ref()
-            .map(|pch_pic| pch_pic.set_irq_level(irq, true))
-    }
-
-    /// Drains LoongArch PCH-PIC output-line events generated by MMIO writes.
-    #[cfg(target_arch = "loongarch64")]
-    pub fn drain_loongarch_pch_pic_events(&self, f: impl FnMut(PchPicOutputEvent)) {
-        if let Some(pch_pic) = &self.loongarch_pch_pic {
-            pch_pic.drain_output_events(f);
-        }
+            .map_or(Ok(()), |controller| controller.service_output_events())
     }
 
     // ─── Find helpers ───────────────────────────────────────────────

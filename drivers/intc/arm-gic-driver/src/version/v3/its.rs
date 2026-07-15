@@ -167,6 +167,13 @@ impl ItsCommand {
         cmd.le()
     }
 
+    pub fn discard(device_id: u32, event_id: u32) -> Self {
+        let mut cmd = Self::opcode(0x0f);
+        cmd.encode_device(device_id);
+        cmd.encode_event(event_id);
+        cmd.le()
+    }
+
     pub fn sync(target_address: u64) -> Self {
         let mut cmd = Self::opcode(0x05);
         cmd.encode_target(target_address);

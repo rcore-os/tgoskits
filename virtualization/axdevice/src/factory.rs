@@ -16,39 +16,37 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{InterruptTriggerMode, IrqLine};
+use axdevice_base::{IrqLine, MsiEndpoint};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
-
-/// Resolves a VM-local interrupt line for a device under construction.
-pub trait IrqResolver: Send + Sync {
-    /// Resolves `line` with the requested trigger mode.
-    fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine>;
-}
+use crate::{
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, InterruptTopology, MsiRequest,
+    WiredIrqRequest,
+};
 
 /// VM-owned services available while a device factory is building a device.
 pub struct DeviceBuildContext<'a> {
-    irq_resolver: &'a dyn IrqResolver,
+    interrupt_topology: &'a InterruptTopology,
 }
 
 impl<'a> DeviceBuildContext<'a> {
-    /// Creates a device build context backed by `irq_resolver`.
-    pub const fn new(irq_resolver: &'a dyn IrqResolver) -> Self {
-        Self { irq_resolver }
+    /// Creates a device build context backed by one VM's interrupt topology.
+    pub const fn new(interrupt_topology: &'a InterruptTopology) -> Self {
+        Self { interrupt_topology }
     }
 
-    /// Resolves a VM-local interrupt line.
-    pub fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        self.irq_resolver.resolve_irq(line, trigger)
+    /// Connects one device source to a wired interrupt-controller input.
+    pub fn connect_irq(&self, request: WiredIrqRequest) -> DeviceManagerResult<IrqLine> {
+        self.interrupt_topology.connect_irq(request)
+    }
+
+    /// Connects one device event to a message-signaled interrupt controller.
+    pub fn connect_msi(&self, request: MsiRequest) -> DeviceManagerResult<MsiEndpoint> {
+        self.interrupt_topology.connect_msi(request)
+    }
+
+    pub(crate) const fn interrupt_topology(&self) -> &InterruptTopology {
+        self.interrupt_topology
     }
 }
 

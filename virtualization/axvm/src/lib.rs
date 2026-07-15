@@ -46,6 +46,10 @@ pub mod config;
 
 pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
+pub use axdevice::{
+    ControllerInputId, ControllerRef, InterruptControllerId, InterruptTopology, MsiRequest,
+    VcpuInterruptAffinity, VcpuInterruptId, VcpuInterruptPort, WiredIrqRequest,
+};
 /// Compatibility export for legacy/common normalized VM events.
 ///
 /// Architecture-local raw exits are handled by `arch::CurrentArch` through
@@ -62,11 +66,9 @@ pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
-pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm,
+    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{

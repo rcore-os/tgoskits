@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the legacy `Vgic`/GICv2 API with a GICv3-only per-VM controller,
+  validated configuration and typed INTID/affinity/ITS identifiers.
+- Move MMIO, host GIC discovery, guest memory, timer and scheduler integration
+  behind checked backend capabilities owned by the VMM.
+- Save and restore complete virtual CPU-interface state, retain software
+  pending interrupts when LRs are full, and drive maintenance refill without
+  panicking.
+- Implement a bounded software ITS command queue and explicit passthrough
+  SPI/MSI ownership with cleanup on controller drop.
+
+### Removed
+
+- Remove GICv2 support, global host callbacks and global ITS/LPI state, the
+  embedded virtual timer, GPA=HPA assumptions and manual inject functions.
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.2...arm_vgic-v0.5.3) - 2026-07-08
 
 ### Other

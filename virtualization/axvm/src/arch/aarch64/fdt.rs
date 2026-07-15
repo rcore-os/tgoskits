@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 
+use axvm_types::VMInterruptMode;
 use fdt_edit::Fdt;
 
 use crate::{
@@ -57,7 +58,7 @@ pub(super) fn update_cpu_node(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
     let mut tree = core::tree::FdtTree::from_fdt(fdt.clone());
-    tree.inner_mut().remove_by_path("/cpus");
+    tree.remove_path("/cpus");
 
     if let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") {
         let cpus_id =
@@ -72,20 +73,36 @@ pub(super) fn update_cpu_node(
             })
             .collect::<Vec<_>>();
         for path in cpu_paths {
-            tree.inner_mut().remove_by_path(&path);
+            tree.remove_path(&path);
         }
-        if let Some(cpus) = tree.inner_mut().node_mut(cpus_id) {
-            for property in [
+        tree.remove_properties(
+            cpus_id,
+            &[
                 "riscv,cbop-block-size",
                 "riscv,cboz-block-size",
                 "riscv,cbom-block-size",
-            ] {
-                cpus.remove_property(property);
-            }
-        }
+            ],
+        )?;
     }
 
     Ok(tree.finish())
+}
+
+pub(super) fn patch_emulated_timer_interrupts(
+    fdt_bytes: &[u8],
+    interrupt_mode: VMInterruptMode,
+) -> AxVmResult<Vec<u8>> {
+    const PHYSICAL_TIMER_INTERRUPT_COUNT: usize = 2;
+
+    if interrupt_mode != VMInterruptMode::Emulated {
+        return Ok(fdt_bytes.to_vec());
+    }
+
+    crate::boot::fdt::retain_compatible_interrupt_entries(
+        fdt_bytes,
+        "arm,armv8-timer",
+        PHYSICAL_TIMER_INTERRUPT_COUNT,
+    )
 }
 
 pub fn handle_fdt_operations(

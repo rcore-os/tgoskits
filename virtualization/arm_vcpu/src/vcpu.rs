@@ -164,11 +164,6 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         self.ctx.set_gpr(idx, val);
     }
 
-    /// Injects an interrupt into the guest vCPU.
-    pub fn inject_interrupt(&mut self, vector: usize) -> ArmVcpuResult {
-        H::inject_virtual_interrupt(vector as u8)
-    }
-
     /// Sets the guest return value.
     pub fn set_return_value(&mut self, val: usize) {
         // Return value is stored in x0.
@@ -338,9 +333,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
-            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {
-                vector: H::fetch_pending_host_irq().unwrap_or(0) as u64,
-            }),
+            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };
 
@@ -382,42 +375,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         match (addr, write) {
             (SYSREG_ICC_SGI1R_EL1, true) => {
                 debug!("arm_vcpu ICC_SGI1R_EL1 write: {value:#x}");
-
-                // TODO: support RangeSelector
-
-                let intid = (value >> 24) & 0b1111;
-                let irm = ((value >> 40) & 0b1) != 0;
-
-                // IRM == 1 => send to all except self
-                if irm {
-                    debug!("arm_vcpu ICC_SGI1R_EL1 write: irm == 1, send to all except self");
-
-                    return Ok(Some(ArmVmExit::SendIPI {
-                        target_cpu: 0,
-                        target_cpu_aux: 0,
-                        send_to_all: true,
-                        send_to_self: false,
-                        vector: intid,
-                    }));
-                }
-
-                let aff3 = (value >> 48) & 0xff;
-                let aff2 = (value >> 32) & 0xff;
-                let aff1 = (value >> 16) & 0xff;
-                let target_list = value & 0xffff;
-
-                debug!(
-                    "arm_vcpu ICC_SGI1R_EL1 write: aff3:{aff3:#x} aff2:{aff2:#x} aff1:{aff1:#x} \
-                     intid:{intid:#x} target_list:{target_list:#x}"
-                );
-
-                Ok(Some(ArmVmExit::SendIPI {
-                    target_cpu: (aff3 << 24) | (aff2 << 16) | (aff1 << 8),
-                    target_cpu_aux: target_list,
-                    send_to_all: false,
-                    send_to_self: false,
-                    vector: intid,
-                }))
+                Ok(Some(ArmVmExit::SendIPI { value }))
             }
             (SYSREG_ICC_SGI1R_EL1, false) => {
                 // ICC_SGI1R_EL1 is WO, we take it as RAZ.

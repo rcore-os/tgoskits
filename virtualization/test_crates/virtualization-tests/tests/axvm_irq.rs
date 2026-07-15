@@ -14,79 +14,24 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter,
+    AxVmDeviceConfig, AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, InterruptControllerId, InterruptTopology,
+    InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter, WiredInterruptInputs,
+    WiredIrqInput, WiredIrqRequest, WiredIrqSink,
 };
-use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceResult, InterruptTriggerMode, IrqError, IrqLine, IrqLineId,
-    IrqResult, IrqSink,
-};
-use axvm::{AxVmError, InterruptFabric};
+use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
 };
 
-struct TestConsole;
-
-#[ax_plat::impl_plat_interface]
-impl ConsoleIf for TestConsole {
-    fn write_bytes(_bytes: &[u8]) {}
-
-    fn read_bytes(_bytes: &mut [u8]) -> usize {
-        0
-    }
-
-    fn device_id() -> ax_plat::console::ConsoleDeviceIdResult {
-        Err(ax_plat::console::ConsoleDeviceIdError::NotSpecified)
-    }
-
-    fn claim_runtime_output() {}
-
-    fn irq_num() -> Option<irq_framework::IrqId> {
-        None
-    }
-
-    fn set_input_irq_enabled(_enabled: bool) {}
-
-    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
-        ax_plat::console::ConsoleIrqEvent::empty()
-    }
-}
-
-struct TestTime;
-
-#[ax_plat::impl_plat_interface]
-impl TimeIf for TestTime {
-    fn current_ticks() -> u64 {
-        0
-    }
-
-    fn ticks_to_nanos(ticks: u64) -> u64 {
-        ticks
-    }
-
-    fn nanos_to_ticks(nanos: u64) -> u64 {
-        nanos
-    }
-
-    fn epochoffset_nanos() -> u64 {
-        0
-    }
-
-    fn irq_num() -> irq_framework::IrqId {
-        irq_framework::IrqId::new(irq_framework::IrqDomainId(0), irq_framework::HwIrq(0))
-    }
-
-    fn set_oneshot_timer(_deadline_ns: u64) {}
-}
+const TEST_CONTROLLER: InterruptControllerId = InterruptControllerId::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IrqEvent {
-    SetLevel(IrqLineId, bool),
-    Pulse(IrqLineId),
+    SetLevel(ControllerInputId, bool),
+    Pulse(ControllerInputId),
 }
 
 #[derive(Default)]
@@ -100,18 +45,37 @@ impl RecordingIrqSink {
     }
 }
 
-impl IrqSink for RecordingIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
+impl WiredIrqSink for RecordingIrqSink {
+    fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
         self.events
             .lock()
             .unwrap()
-            .push(IrqEvent::SetLevel(line, asserted));
+            .push(IrqEvent::SetLevel(input, asserted));
         Ok(())
     }
 
-    fn pulse(&self, line: IrqLineId) -> IrqResult {
-        self.events.lock().unwrap().push(IrqEvent::Pulse(line));
+    fn pulse(&self, input: ControllerInputId) -> IrqResult {
+        self.events.lock().unwrap().push(IrqEvent::Pulse(input));
         Ok(())
+    }
+}
+
+struct RecordingControllerInputs {
+    sink: Arc<RecordingIrqSink>,
+}
+
+impl WiredInterruptInputs for RecordingControllerInputs {
+    fn input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        Ok(WiredIrqInput::new(
+            TEST_CONTROLLER,
+            input,
+            trigger,
+            self.sink.clone(),
+        ))
     }
 }
 
@@ -161,7 +125,10 @@ impl DeviceFactory for IrqMmioFactory {
                 detail: "device address range overflows".into(),
             });
         };
-        let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
+        let line = context.connect_irq(WiredIrqRequest::new(
+            ControllerInputId::new(config.irq_id),
+            InterruptTriggerMode::EdgeTriggered,
+        ))?;
         Ok(
             DeviceRegistration::Device(MmioDeviceAdapter::from_arc(Arc::new(IrqMmioDevice {
                 range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
@@ -189,42 +156,56 @@ fn irq_factory_registry() -> DeviceFactoryRegistry {
     factories
 }
 
-fn recording_fabric(mode: VMInterruptMode) -> (InterruptFabric, Weak<RecordingIrqSink>) {
+fn recording_topology() -> (InterruptTopology, Weak<RecordingIrqSink>) {
     let sink = Arc::new(RecordingIrqSink::default());
     let weak = Arc::downgrade(&sink);
-    (InterruptFabric::with_sink(mode, sink).unwrap(), weak)
+    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    topology
+        .register_controller(
+            ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)
+                .with_wired_inputs(Arc::new(RecordingControllerInputs { sink })),
+        )
+        .unwrap();
+    (topology, weak)
 }
 
 #[test]
-fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
+fn test_no_irq_topology_rejects_controller_and_line_connection() {
+    let topology = InterruptTopology::new(VMInterruptMode::NoIrq);
     let sink = Arc::new(RecordingIrqSink::default());
     assert!(matches!(
-        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink),
-        Err(AxVmError::InvalidInput { .. })
+        topology.register_controller(
+            ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)
+                .with_wired_inputs(Arc::new(RecordingControllerInputs { sink }))
+        ),
+        Err(DeviceManagerError::Unsupported { .. })
     ));
 
-    let fabric = InterruptFabric::new(VMInterruptMode::NoIrq);
-    let context = DeviceBuildContext::new(&fabric);
+    let context = DeviceBuildContext::new(&topology);
     assert!(matches!(
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0x6_0000, 12)]),
             &irq_factory_registry(),
             &context,
-        )
-        .err(),
-        Some(DeviceManagerError::Irq(IrqError::InvalidLine { .. }))
+        ),
+        Err(DeviceManagerError::Unsupported { .. })
     ));
 }
 
 #[test]
-fn test_interrupt_fabric_preserves_event_order() {
-    let sink = Arc::new(RecordingIrqSink::default());
-    let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
-    let level = fabric
-        .resolve_irq(13, InterruptTriggerMode::LevelTriggered)
+fn test_interrupt_topology_preserves_event_order() {
+    let (topology, sink) = recording_topology();
+    let level = topology
+        .connect_irq(WiredIrqRequest::new(
+            ControllerInputId::new(13),
+            InterruptTriggerMode::LevelTriggered,
+        ))
         .unwrap();
-    let edge = fabric
-        .resolve_irq(14, InterruptTriggerMode::EdgeTriggered)
+    let edge = topology
+        .connect_irq(WiredIrqRequest::new(
+            ControllerInputId::new(14),
+            InterruptTriggerMode::EdgeTriggered,
+        ))
         .unwrap();
 
     assert!(matches!(
@@ -240,39 +221,20 @@ fn test_interrupt_fabric_preserves_event_order() {
     edge.pulse().unwrap();
 
     assert_eq!(
-        sink.events(),
+        sink.upgrade().unwrap().events(),
         vec![
-            IrqEvent::SetLevel(IrqLineId(13), true),
-            IrqEvent::SetLevel(IrqLineId(13), false),
-            IrqEvent::Pulse(IrqLineId(14)),
+            IrqEvent::SetLevel(ControllerInputId::new(13), true),
+            IrqEvent::SetLevel(ControllerInputId::new(13), false),
+            IrqEvent::Pulse(ControllerInputId::new(14)),
         ]
     );
 }
 
 #[test]
-fn test_interrupt_fabric_can_signal_backend_directly() {
-    let sink = Arc::new(RecordingIrqSink::default());
-    let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
-
-    fabric.set_level(21, true).unwrap();
-    fabric.set_level(21, false).unwrap();
-    fabric.pulse(22).unwrap();
-
-    assert_eq!(
-        sink.events(),
-        vec![
-            IrqEvent::SetLevel(IrqLineId(21), true),
-            IrqEvent::SetLevel(IrqLineId(21), false),
-            IrqEvent::Pulse(IrqLineId(22)),
-        ]
-    );
-}
-
-#[test]
-fn test_factory_device_emits_irq_through_interrupt_fabric() {
-    let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
+fn test_factory_device_emits_irq_through_connected_input() {
+    let (topology, sink) = recording_topology();
     let devices = {
-        let context = DeviceBuildContext::new(&fabric);
+        let context = DeviceBuildContext::new(&topology);
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0x7_0000, 15)]),
             &irq_factory_registry(),
@@ -287,15 +249,15 @@ fn test_factory_device_emits_irq_through_interrupt_fabric() {
 
     assert_eq!(
         sink.upgrade().unwrap().events(),
-        vec![IrqEvent::Pulse(IrqLineId(15))]
+        vec![IrqEvent::Pulse(ControllerInputId::new(15))]
     );
 }
 
 #[test]
-fn test_dropping_devices_and_fabric_releases_irq_backend() {
-    let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
+fn test_dropping_devices_and_topology_releases_irq_backend() {
+    let (topology, sink) = recording_topology();
     let devices = {
-        let context = DeviceBuildContext::new(&fabric);
+        let context = DeviceBuildContext::new(&topology);
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0x8_0000, 16)]),
             &irq_factory_registry(),
@@ -304,18 +266,18 @@ fn test_dropping_devices_and_fabric_releases_irq_backend() {
         .unwrap()
     };
 
-    drop(fabric);
+    drop(topology);
     assert!(sink.upgrade().is_some());
     drop(devices);
     assert!(sink.upgrade().is_none());
 }
 
 #[test]
-fn test_equal_irq_numbers_are_isolated_between_fabrics() {
-    let (fabric_a, sink_a) = recording_fabric(VMInterruptMode::Emulated);
-    let (fabric_b, sink_b) = recording_fabric(VMInterruptMode::Emulated);
+fn test_equal_input_numbers_are_isolated_between_topologies() {
+    let (topology_a, sink_a) = recording_topology();
+    let (topology_b, sink_b) = recording_topology();
     let devices_a = {
-        let context = DeviceBuildContext::new(&fabric_a);
+        let context = DeviceBuildContext::new(&topology_a);
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0x9_0000, 17)]),
             &irq_factory_registry(),
@@ -324,7 +286,7 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
         .unwrap()
     };
     let devices_b = {
-        let context = DeviceBuildContext::new(&fabric_b);
+        let context = DeviceBuildContext::new(&topology_b);
         AxVmDevices::build_with_factories(
             AxVmDeviceConfig::new(vec![irq_device_config(0xa_0000, 17)]),
             &irq_factory_registry(),
@@ -339,7 +301,7 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
 
     assert_eq!(
         sink_a.upgrade().unwrap().events(),
-        vec![IrqEvent::Pulse(IrqLineId(17))]
+        vec![IrqEvent::Pulse(ControllerInputId::new(17))]
     );
     assert!(sink_b.upgrade().unwrap().events().is_empty());
     assert_eq!(devices_b.devices().count(), 1);

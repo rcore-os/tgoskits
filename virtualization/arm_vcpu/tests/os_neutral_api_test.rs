@@ -26,14 +26,6 @@ use arm_vcpu::{
 struct DummyHost;
 
 impl ArmHostOps for DummyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
-        Ok(())
-    }
-
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
-    }
-
     fn handle_current_host_irq() {}
 }
 
@@ -94,6 +86,16 @@ fn vm_exit_types_are_defined_by_arm_vcpu_core() {
             addr,
             reg: 1,
         } if addr.addr() == 0x3a_3016
+    ));
+
+    let sgi1r = 0x12_0003_45_0007u64;
+    assert!(matches!(
+        ArmVmExit::SendIPI { value: sgi1r },
+        ArmVmExit::SendIPI { value } if value == sgi1r
+    ));
+    assert!(matches!(
+        ArmVmExit::ExternalInterrupt,
+        ArmVmExit::ExternalInterrupt
     ));
 }
 

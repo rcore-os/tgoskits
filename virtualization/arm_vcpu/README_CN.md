@@ -57,14 +57,6 @@ use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
 struct MyHost;
 
 impl ArmHostOps for MyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
-        Ok(())
-    }
-
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
-    }
-
     fn handle_current_host_irq() {}
 }
 

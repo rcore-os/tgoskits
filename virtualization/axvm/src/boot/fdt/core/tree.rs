@@ -40,10 +40,6 @@ impl FdtTree {
         &self.fdt
     }
 
-    pub(crate) fn inner_mut(&mut self) -> &mut Fdt {
-        &mut self.fdt
-    }
-
     pub(crate) fn finish(mut self) -> Vec<u8> {
         self.normalize_guest_header();
         self.fdt.encode().as_ref().to_vec()
@@ -92,6 +88,25 @@ impl FdtTree {
         Ok(())
     }
 
+    pub(crate) fn remove_path(&mut self, path: &str) {
+        self.fdt.remove_by_path(path);
+    }
+
+    pub(crate) fn remove_properties(
+        &mut self,
+        node_id: NodeId,
+        property_names: &[&str],
+    ) -> AxVmResult {
+        let node = self
+            .fdt
+            .node_mut(node_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?;
+        for property_name in property_names {
+            node.remove_property(property_name);
+        }
+        Ok(())
+    }
+
     pub(crate) fn add_node(&mut self, parent: NodeId, node: Node) -> NodeId {
         self.fdt.add_node(parent, node)
     }
@@ -127,22 +142,26 @@ impl FdtTree {
 
     pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
-        let chosen = self
-            .fdt
-            .node_mut(chosen_id)
-            .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
-
-        if let Some(bootargs) = chosen
-            .get_property("bootargs")
-            .and_then(|prop| prop.as_str())
-            .map(sanitize_bootargs)
         {
-            chosen.set_property(prop_string("bootargs", &bootargs));
+            let chosen = self
+                .fdt
+                .node_mut(chosen_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
+            if let Some(bootargs) = chosen
+                .get_property("bootargs")
+                .and_then(|prop| prop.as_str())
+                .map(sanitize_bootargs)
+            {
+                chosen.set_property(prop_string("bootargs", &bootargs));
+            }
         }
 
-        chosen.remove_property("linux,initrd-start");
-        chosen.remove_property("linux,initrd-end");
+        self.remove_properties(chosen_id, &["linux,initrd-start", "linux,initrd-end"])?;
         if let Some((start, size)) = initrd_start_size {
+            let chosen = self
+                .fdt
+                .node_mut(chosen_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
             chosen.set_property(prop_u64("linux,initrd-start", start));
             chosen.set_property(prop_u64("linux,initrd-end", start.saturating_add(size)));
         }
@@ -221,7 +240,7 @@ impl FdtTree {
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
         paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
         for path in paths {
-            self.fdt.remove_by_path(&path);
+            self.remove_path(&path);
         }
     }
 }

@@ -3,11 +3,15 @@
 use alloc::{boxed::Box, string::String};
 use core::{any::Any, marker::PhantomData};
 
-use axdevice_base::{AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, Resource};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, IrqLine, IrqResult, Resource,
+};
 use x86_vlapic::{
     EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicEoi, IoApicInterrupt, X86AccessWidth,
     X86GuestPhysAddr, X86GuestPhysAddrRange, X86Port, X86PortRange, X86VlapicHostOps,
 };
+
+use crate::DeviceManagerResult;
 
 /// Type-specific IOAPIC capability used by the x86 interrupt runtime.
 pub trait X86IoApicDeviceOps: Send + Sync {
@@ -21,16 +25,28 @@ pub trait X86IoApicDeviceOps: Send + Sync {
     fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi>;
 }
 
+/// Runtime delivery side of the IOAPIC-to-local-APIC connection.
+pub trait X86IoApicRuntimeOps: Send + Sync {
+    /// Returns the guest vector programmed for a GSI when it is deliverable.
+    fn vector_for_gsi(&self, gsi: usize) -> Option<u8>;
+
+    /// Signals one GSI and queues any resulting local-APIC message.
+    fn signal_gsi(&self, gsi: usize) -> DeviceManagerResult<bool>;
+
+    /// Processes an EOI and queues any level-triggered redelivery.
+    fn end_of_interrupt(&self, vector: u8) -> DeviceManagerResult<Option<IoApicEoi>>;
+}
+
 /// Type-specific PIT capability used by the x86 interrupt runtime.
 pub trait X86PitDeviceOps: Send + Sync {
-    /// Consume a pending PIT IRQ0 tick if the deadline is due.
-    fn consume_irq0_if_due(&self, now_ns: u64) -> bool;
+    /// Delivers a pending PIT IRQ0 edge when the deadline is due.
+    fn service_irq0(&self, now_ns: u64) -> IrqResult<bool>;
 }
 
 /// Type-specific COM1 capability used by the x86 interrupt runtime.
 pub trait X86SerialDeviceOps: Send + Sync {
-    /// Poll host input and return whether COM1 should assert an IRQ.
-    fn poll_irq(&self) -> bool;
+    /// Polls host input and updates the COM1 level interrupt line.
+    fn service_irq(&self) -> IrqResult<bool>;
 }
 
 /// Unified-device adapter for [`EmulatedIoApic`].
@@ -110,6 +126,7 @@ impl Device for X86IoApicDevice {
 /// Unified-device adapter for [`EmulatedPit`].
 pub struct X86PitDevice<H: X86VlapicHostOps> {
     inner: EmulatedPit<H>,
+    irq: Option<IrqLine>,
     name: String,
     resources: Box<[Resource]>,
     _host: PhantomData<fn() -> H>,
@@ -122,6 +139,7 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
         let resources = port_resources(inner.address_range());
         Self {
             inner,
+            irq: None,
             name: String::from("x86-pit"),
             resources,
             _host: PhantomData,
@@ -132,6 +150,13 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
     pub const fn inner(&self) -> &EmulatedPit<H> {
         &self.inner
     }
+
+    /// Creates a PIT adapter connected to its IOAPIC input line.
+    pub fn new_with_irq(irq: IrqLine) -> Self {
+        let mut device = Self::new();
+        device.irq = Some(irq);
+        device
+    }
 }
 
 impl<H: X86VlapicHostOps> Default for X86PitDevice<H> {
@@ -141,8 +166,14 @@ impl<H: X86VlapicHostOps> Default for X86PitDevice<H> {
 }
 
 impl<H: X86VlapicHostOps> X86PitDeviceOps for X86PitDevice<H> {
-    fn consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.inner.consume_irq0_if_due(now_ns)
+    fn service_irq0(&self, now_ns: u64) -> IrqResult<bool> {
+        if !self.inner.consume_irq0_if_due(now_ns) {
+            return Ok(false);
+        }
+        if let Some(irq) = &self.irq {
+            irq.pulse()?;
+        }
+        Ok(true)
     }
 }
 
@@ -187,6 +218,7 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
 /// Unified-device adapter for [`EmulatedSerialPort`].
 pub struct X86SerialPortDevice<H: X86VlapicHostOps> {
     inner: EmulatedSerialPort<H>,
+    irq: Option<IrqLine>,
     name: String,
     resources: Box<[Resource]>,
     _host: PhantomData<fn() -> H>,
@@ -199,6 +231,7 @@ impl<H: X86VlapicHostOps> X86SerialPortDevice<H> {
         let resources = port_resources(inner.address_range());
         Self {
             inner,
+            irq: None,
             name: String::from("x86-serial-com1"),
             resources,
             _host: PhantomData,
@@ -209,6 +242,13 @@ impl<H: X86VlapicHostOps> X86SerialPortDevice<H> {
     pub const fn inner(&self) -> &EmulatedSerialPort<H> {
         &self.inner
     }
+
+    /// Creates a COM1 adapter connected to its IOAPIC input line.
+    pub fn new_with_irq(irq: IrqLine) -> Self {
+        let mut device = Self::new();
+        device.irq = Some(irq);
+        device
+    }
 }
 
 impl<H: X86VlapicHostOps> Default for X86SerialPortDevice<H> {
@@ -218,8 +258,16 @@ impl<H: X86VlapicHostOps> Default for X86SerialPortDevice<H> {
 }
 
 impl<H: X86VlapicHostOps> X86SerialDeviceOps for X86SerialPortDevice<H> {
-    fn poll_irq(&self) -> bool {
-        self.inner.poll_irq()
+    fn service_irq(&self) -> IrqResult<bool> {
+        let asserted = self.inner.poll_irq();
+        if let Some(irq) = &self.irq {
+            if asserted {
+                irq.raise()?;
+            } else {
+                irq.lower()?;
+            }
+        }
+        Ok(asserted)
     }
 }
 

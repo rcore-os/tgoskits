@@ -1,53 +1,83 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(target_arch = "loongarch64")]
 use ax_kspin::SpinNoIrq as Mutex;
+#[cfg(target_arch = "loongarch64")]
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
+#[cfg(target_arch = "loongarch64")]
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
-const PCH_PIC_INT_ID_LO: usize = 0x000;
-const PCH_PIC_INT_ID_HI: usize = 0x004;
-const PCH_PIC_INT_MASK_LO: usize = 0x020;
-const PCH_PIC_INT_MASK_HI: usize = 0x024;
-const PCH_PIC_HTMSI_EN_LO: usize = 0x040;
-const PCH_PIC_HTMSI_EN_HI: usize = 0x044;
-const PCH_PIC_INT_EDGE_LO: usize = 0x060;
-const PCH_PIC_INT_EDGE_HI: usize = 0x064;
-const PCH_PIC_INT_CLEAR_LO: usize = 0x080;
-const PCH_PIC_INT_CLEAR_HI: usize = 0x084;
-const PCH_PIC_AUTO_CTRL0_LO: usize = 0x0c0;
-const PCH_PIC_AUTO_CTRL0_HI: usize = 0x0c4;
-const PCH_PIC_AUTO_CTRL1_LO: usize = 0x0e0;
-const PCH_PIC_AUTO_CTRL1_HI: usize = 0x0e4;
-const PCH_PIC_ROUTE_ENTRY_BASE: usize = 0x100;
-const PCH_PIC_HTMSI_VEC_BASE: usize = 0x200;
-const PCH_PIC_INT_IRR_LO: usize = 0x380;
-const PCH_PIC_INT_IRR_HI: usize = 0x384;
-const PCH_PIC_INT_ISR_LO: usize = 0x3a0;
-const PCH_PIC_INT_ISR_HI: usize = 0x3a4;
-const PCH_PIC_POL_LO: usize = 0x3e0;
-const PCH_PIC_POL_HI: usize = 0x3e4;
-const PCH_PIC_IRQ_COUNT: usize = 64;
-const PCH_PIC_INT_ID_VAL: usize = 0x0700_0000;
-const PCH_PIC_INT_ID_VER: usize = 0x1;
-const PCH_PIC_IO_LOG_LIMIT: usize = 256;
-const PCH_PIC_IRQ_LOG_LIMIT: usize = 64;
-const PCH_PIC_LEVEL_LOG_LIMIT: usize = 64;
-const PCH_PIC_OUTPUT_QUEUE_CAPACITY: usize = 16;
+#[cfg(target_arch = "loongarch64")]
+use crate::DeviceManagerResult;
 
-static PCH_PIC_IO_LOGS: AtomicUsize = AtomicUsize::new(0);
+const PCH_PIC_IRQ_COUNT: usize = 64;
+const PCH_PIC_IRQ_LOG_LIMIT: usize = 64;
+// A single 64-bit clear may deassert every PCH input before AxVM drains the output.
+const PCH_PIC_OUTPUT_QUEUE_CAPACITY: usize = PCH_PIC_IRQ_COUNT;
+
 static PCH_PIC_IRQ_LOGS: AtomicUsize = AtomicUsize::new(0);
-static PCH_PIC_LEVEL_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_arch = "loongarch64")]
+mod device_registers {
+    use super::{AtomicUsize, Ordering};
+
+    pub(super) const PCH_PIC_INT_ID_LO: usize = 0x000;
+    pub(super) const PCH_PIC_INT_ID_HI: usize = 0x004;
+    pub(super) const PCH_PIC_INT_MASK_LO: usize = 0x020;
+    pub(super) const PCH_PIC_INT_MASK_HI: usize = 0x024;
+    pub(super) const PCH_PIC_HTMSI_EN_LO: usize = 0x040;
+    pub(super) const PCH_PIC_HTMSI_EN_HI: usize = 0x044;
+    pub(super) const PCH_PIC_INT_EDGE_LO: usize = 0x060;
+    pub(super) const PCH_PIC_INT_EDGE_HI: usize = 0x064;
+    pub(super) const PCH_PIC_INT_CLEAR_LO: usize = 0x080;
+    pub(super) const PCH_PIC_INT_CLEAR_HI: usize = 0x084;
+    pub(super) const PCH_PIC_AUTO_CTRL0_LO: usize = 0x0c0;
+    pub(super) const PCH_PIC_AUTO_CTRL0_HI: usize = 0x0c4;
+    pub(super) const PCH_PIC_AUTO_CTRL1_LO: usize = 0x0e0;
+    pub(super) const PCH_PIC_AUTO_CTRL1_HI: usize = 0x0e4;
+    pub(super) const PCH_PIC_ROUTE_ENTRY_BASE: usize = 0x100;
+    pub(super) const PCH_PIC_HTMSI_VEC_BASE: usize = 0x200;
+    pub(super) const PCH_PIC_INT_IRR_LO: usize = 0x380;
+    pub(super) const PCH_PIC_INT_IRR_HI: usize = 0x384;
+    pub(super) const PCH_PIC_INT_ISR_LO: usize = 0x3a0;
+    pub(super) const PCH_PIC_INT_ISR_HI: usize = 0x3a4;
+    pub(super) const PCH_PIC_POL_LO: usize = 0x3e0;
+    pub(super) const PCH_PIC_POL_HI: usize = 0x3e4;
+    pub(super) const PCH_PIC_INT_ID_VAL: usize = 0x0700_0000;
+    pub(super) const PCH_PIC_INT_ID_VER: usize = 0x1;
+    pub(super) const PCH_PIC_IO_LOG_LIMIT: usize = 256;
+    pub(super) const PCH_PIC_LEVEL_LOG_LIMIT: usize = 64;
+
+    pub(super) static PCH_PIC_IO_LOGS: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static PCH_PIC_LEVEL_LOGS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn should_log_io() -> bool {
+        PCH_PIC_IO_LOGS.fetch_add(1, Ordering::Relaxed) < PCH_PIC_IO_LOG_LIMIT
+    }
+
+    pub(super) fn should_log_level() -> bool {
+        PCH_PIC_LEVEL_LOGS.fetch_add(1, Ordering::Relaxed) < PCH_PIC_LEVEL_LOG_LIMIT
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+use device_registers::*;
 
 #[derive(Clone, Debug)]
 struct PchPicState {
     int_mask: u64,
+    #[cfg(target_arch = "loongarch64")]
     htmsi_en: u64,
+    #[cfg(target_arch = "loongarch64")]
     intedge: u64,
     last_intirr: u64,
     intirr: u64,
     intisr: u64,
+    #[cfg(target_arch = "loongarch64")]
     int_polarity: u64,
+    #[cfg(target_arch = "loongarch64")]
     auto_ctrl0: u64,
+    #[cfg(target_arch = "loongarch64")]
     auto_ctrl1: u64,
     route_entry: [u8; PCH_PIC_IRQ_COUNT],
     htmsi_vector: [u8; PCH_PIC_IRQ_COUNT],
@@ -60,13 +90,18 @@ impl Default for PchPicState {
     fn default() -> Self {
         let mut state = Self {
             int_mask: !0,
+            #[cfg(target_arch = "loongarch64")]
             htmsi_en: 0,
+            #[cfg(target_arch = "loongarch64")]
             intedge: 0,
             last_intirr: 0,
             intirr: 0,
             intisr: 0,
+            #[cfg(target_arch = "loongarch64")]
             int_polarity: 0,
+            #[cfg(target_arch = "loongarch64")]
             auto_ctrl0: 0,
+            #[cfg(target_arch = "loongarch64")]
             auto_ctrl1: 0,
             route_entry: [0; PCH_PIC_IRQ_COUNT],
             htmsi_vector: [0; PCH_PIC_IRQ_COUNT],
@@ -84,8 +119,27 @@ impl Default for PchPicState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PchPicOutputEvent {
-    pub vector: usize,
-    pub asserted: bool,
+    vector: usize,
+    asserted: bool,
+}
+
+impl PchPicOutputEvent {
+    /// Returns the EIOINTC vector driven by the PCH-PIC output.
+    pub const fn vector(self) -> usize {
+        self.vector
+    }
+
+    /// Returns whether the PCH-PIC output is asserted.
+    pub const fn is_asserted(self) -> bool {
+        self.asserted
+    }
+}
+
+/// Runtime operations supplied by the VM's PCH-PIC to EIOINTC adapter.
+#[cfg(target_arch = "loongarch64")]
+pub trait LoongArchPchPicRuntimeOps: Send + Sync {
+    /// Routes output events created by guest PCH-PIC register writes.
+    fn service_output_events(&self) -> DeviceManagerResult;
 }
 
 /// Minimal LS7A PCH-PIC model for LoongArch QEMU virt guests.
@@ -93,12 +147,14 @@ pub struct PchPicOutputEvent {
 /// Linux configures this irqchip through ACPI even when the backing PCI devices
 /// are passthrough. The model must preserve the mask/IRR/ISR/route state so the
 /// guest sees a coherent interrupt controller instead of changing the host PCH.
+#[cfg(target_arch = "loongarch64")]
 pub struct LoongArchPchPic {
     base: GuestPhysAddr,
     size: usize,
     state: Mutex<PchPicState>,
 }
 
+#[cfg(target_arch = "loongarch64")]
 impl LoongArchPchPic {
     pub fn new(base: GuestPhysAddr, size: usize) -> Self {
         Self {
@@ -129,16 +185,6 @@ impl LoongArchPchPic {
         routed
     }
 
-    /// Returns the pending EIOINTC source for an already-latched PCH source.
-    pub fn pending_vector(&self, irq: usize) -> Option<usize> {
-        let mut state = self.state.lock();
-        if irq >= PCH_PIC_IRQ_COUNT {
-            return None;
-        }
-
-        update_irq(&mut state, 1u64 << irq, true)
-    }
-
     /// Drains output-line events generated by MMIO register writes.
     pub fn drain_output_events(&self, mut f: impl FnMut(PchPicOutputEvent)) {
         loop {
@@ -154,6 +200,7 @@ impl LoongArchPchPic {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::LoongArchPchPic
@@ -195,6 +242,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn read_byte(state: &PchPicState, offset: usize) -> usize {
     if let Some(index) = reg8_offset(offset) {
         return match index {
@@ -208,14 +256,11 @@ fn read_byte(state: &PchPicState, offset: usize) -> usize {
         };
     }
 
-    match offset {
-        _ => {
-            let shift = (offset & 0x3) * 8;
-            (read_dword(state, offset & !0x3) >> shift) & 0xff
-        }
-    }
+    let shift = (offset & 0x3) * 8;
+    (read_dword(state, offset & !0x3) >> shift) & 0xff
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
     if let Some(index) = reg8_offset(offset) {
         match index {
@@ -234,17 +279,14 @@ fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
         return;
     }
 
-    match offset {
-        _ => {
-            let aligned = offset & !0x3;
-            let shift = (offset & 0x3) * 8;
-            let old = read_dword(state, aligned);
-            let new = (old & !(0xff << shift)) | ((val as usize) << shift);
-            write_dword(state, aligned, new as u32);
-        }
-    }
+    let aligned = offset & !0x3;
+    let shift = (offset & 0x3) * 8;
+    let old = read_dword(state, aligned);
+    let new = (old & !(0xff << shift)) | ((val as usize) << shift);
+    write_dword(state, aligned, new as u32);
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn read_split_bytes(state: &PchPicState, offset: usize, len: usize) -> usize {
     let mut value = 0;
     for idx in 0..len {
@@ -253,12 +295,14 @@ fn read_split_bytes(state: &PchPicState, offset: usize, len: usize) -> usize {
     value
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn write_split_bytes(state: &mut PchPicState, offset: usize, len: usize, val: usize) {
     for idx in 0..len {
         write_byte(state, offset + idx, (val >> (idx * 8)) as u8);
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn read_dword(state: &PchPicState, offset: usize) -> usize {
     match offset {
         PCH_PIC_INT_ID_LO => PCH_PIC_INT_ID_VAL,
@@ -286,6 +330,7 @@ fn read_dword(state: &PchPicState, offset: usize) -> usize {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn write_dword(state: &mut PchPicState, offset: usize, val: u32) {
     match offset {
         PCH_PIC_INT_MASK_LO => update_int_mask(state, val, false),
@@ -343,11 +388,13 @@ fn update_irq(state: &mut PchPicState, mask: u64, level: bool) -> Option<usize> 
     None
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn pch_pic_irq_index(offset: usize, base: usize) -> Option<usize> {
     let irq = offset - base;
     (irq < PCH_PIC_IRQ_COUNT).then_some(irq)
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn reg8_offset(offset: usize) -> Option<usize> {
     (PCH_PIC_ROUTE_ENTRY_BASE..PCH_PIC_INT_ISR_LO)
         .contains(&offset)
@@ -450,6 +497,7 @@ fn replace_u32(old: u64, val: u32, high: bool) -> u64 {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn log_pch_pic_io(op: &str, offset: usize, width: AccessWidth, value: usize) {
     let is_key_reg = matches!(
         offset,
@@ -460,7 +508,7 @@ fn log_pch_pic_io(op: &str, offset: usize, width: AccessWidth, value: usize) {
             | PCH_PIC_HTMSI_EN_LO
             | PCH_PIC_HTMSI_EN_HI
     );
-    if is_key_reg || PCH_PIC_IO_LOGS.fetch_add(1, Ordering::Relaxed) < PCH_PIC_IO_LOG_LIMIT {
+    if is_key_reg || should_log_io() {
         trace!(
             "LoongArch guest PCH-PIC {op}: offset={:#x}, width={:?}, value={:#x}",
             offset, width, value
@@ -468,8 +516,9 @@ fn log_pch_pic_io(op: &str, offset: usize, width: AccessWidth, value: usize) {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 fn log_pch_pic_level(state: &PchPicState, irq: usize, level: bool, routed: Option<usize>) {
-    if PCH_PIC_LEVEL_LOGS.fetch_add(1, Ordering::Relaxed) < PCH_PIC_LEVEL_LOG_LIMIT {
+    if should_log_level() {
         trace!(
             "LoongArch guest PCH-PIC level: input={}, level={}, routed={:?}, int_mask={:#x}, \
              intirr={:#x}, intisr={:#x}, htvec={}",
@@ -490,24 +539,24 @@ fn log_pch_pic_irq(state: &PchPicState, op: &str, irq: usize, level: bool, mask:
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
     use super::*;
 
     #[test]
     fn unmask_latched_irq_emits_assert_event() {
-        let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
-        assert_eq!(pic.set_irq_level(5, true), None);
+        let mut state = PchPicState::default();
+        let input = 1u64 << 5;
+        state.intirr |= input;
+        state.last_intirr |= input;
+        assert_eq!(update_irq(&mut state, input, true), None);
 
-        pic.handle_write(
-            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
-            AccessWidth::Dword,
-            !(1u32 << 5) as usize,
-        )
-        .unwrap();
+        update_int_mask(&mut state, !(input as u32), false);
 
         let mut events = Vec::new();
-        pic.drain_output_events(|event| events.push(event));
+        while let Some(event) = pop_output_event(&mut state) {
+            events.push(event);
+        }
         assert_eq!(
             events,
             vec![PchPicOutputEvent {
@@ -519,30 +568,54 @@ mod tests {
 
     #[test]
     fn clear_asserted_irq_emits_deassert_event() {
-        let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
-        pic.handle_write(
-            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
-            AccessWidth::Dword,
-            !(1u32 << 5) as usize,
-        )
-        .unwrap();
-        assert_eq!(pic.set_irq_level(5, true), Some(5));
+        let mut state = PchPicState::default();
+        let input = 1u64 << 5;
+        update_int_mask(&mut state, !(input as u32), false);
+        state.intirr |= input;
+        state.last_intirr |= input;
+        assert_eq!(update_irq(&mut state, input, true), Some(5));
 
-        pic.handle_write(
-            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_CLEAR_LO),
-            AccessWidth::Dword,
-            (1u32 << 5) as usize,
-        )
-        .unwrap();
+        clear_irq(&mut state, input);
 
         let mut events = Vec::new();
-        pic.drain_output_events(|event| events.push(event));
+        while let Some(event) = pop_output_event(&mut state) {
+            events.push(event);
+        }
         assert_eq!(
             events,
             vec![PchPicOutputEvent {
                 vector: 5,
                 asserted: false
             }]
+        );
+    }
+
+    #[test]
+    fn clearing_all_active_inputs_preserves_every_output_event() {
+        let mut state = PchPicState {
+            int_mask: 0,
+            ..PchPicState::default()
+        };
+        for input in 0..PCH_PIC_IRQ_COUNT {
+            let mask = 1u64 << input;
+            state.intirr |= mask;
+            assert_eq!(update_irq(&mut state, mask, true), Some(input));
+        }
+
+        clear_irq(&mut state, u64::MAX);
+
+        let mut events = Vec::new();
+        while let Some(event) = pop_output_event(&mut state) {
+            events.push(event);
+        }
+        assert_eq!(events.len(), PCH_PIC_IRQ_COUNT);
+        assert!(events.iter().all(|event| !event.is_asserted()));
+        assert!(
+            events
+                .iter()
+                .copied()
+                .map(PchPicOutputEvent::vector)
+                .eq(0..PCH_PIC_IRQ_COUNT)
         );
     }
 }

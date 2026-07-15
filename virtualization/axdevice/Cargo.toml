@@ -25,7 +25,7 @@ axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 thiserror = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm_vgic = { workspace = true, features = ["vgicv3"] }
+arm_vgic.workspace = true
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]

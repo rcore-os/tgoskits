@@ -72,9 +72,12 @@ ax-driver = { workspace = true }
 ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11.0"
 aarch64-cpu-ext = "0.1"
+aarch64_sysreg.workspace = true
 arm_vcpu = { workspace = true }
-arm_vgic = { workspace = true, features = ["vgicv3"] }
+arm_vgic.workspace = true
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
+rdif-msi.workspace = true
 rdrive.workspace = true

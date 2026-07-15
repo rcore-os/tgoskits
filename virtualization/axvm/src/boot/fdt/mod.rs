@@ -2,6 +2,10 @@
 
 use alloc::vec::Vec;
 
+mod interrupts;
+
+pub use interrupts::retain_compatible_interrupt_entries;
+
 pub use crate::arch::fdt::*;
 
 #[cfg(test)]

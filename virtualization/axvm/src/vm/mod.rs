@@ -20,11 +20,10 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
-use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
+use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, InterruptTopology};
 use axdevice_base::AccessWidth;
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -32,12 +31,11 @@ use axvm_types::{
 
 use crate::{
     AxVmError, AxVmResult,
-    arch::ArchNestedPageTable,
+    arch::{ArchNestedPageTable, VmArchState, VmRuntimeArchState},
     ax_err, ax_err_type,
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
-    irq::InterruptFabric,
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
     vcpu::AxVCpu,
@@ -116,12 +114,13 @@ pub(crate) struct AxVMResources {
     // Todo: use more efficient lock.
     pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
     nested_paging: NestedPagingConfig,
-    memory_regions: Vec<VMMemoryRegion>,
+    pub(crate) memory_regions: Vec<VMMemoryRegion>,
     config: AxVMConfig,
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Option<Box<[AxVCpuRef]>>,
     devices: Option<Arc<AxVmDevices>>,
-    interrupt_fabric: Option<InterruptFabric>,
+    interrupt_topology: Option<Arc<InterruptTopology>>,
+    arch_state: VmArchState,
     address_layout: Option<VmAddressLayout>,
     boot_description: GuestBootDescription,
 }
@@ -129,18 +128,11 @@ pub(crate) struct AxVMResources {
 unsafe impl Send for AxVMResources {}
 unsafe impl Sync for AxVMResources {}
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum PendingInterrupt {
-    Normal(usize),
-    External { vector: usize, physical_irq: usize },
-}
-
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
-    pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
+    arch_state: VmRuntimeArchState,
     running_halting_vcpu_count: AtomicUsize,
 }
 
@@ -149,64 +141,26 @@ impl VmRuntimeHandle {
         Self {
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
-            pending_interrupts: Mutex::new(BTreeMap::new()),
+            arch_state: VmRuntimeArchState::new(),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
 
     pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
-        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+        self.arch_state().register_vcpu(vcpu_id);
     }
 
-    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
+    pub(crate) fn vcpu_task_cpu(&self, vcpu_id: usize) -> AxVmResult<usize> {
+        self.vcpu_task_list
             .lock()
             .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        self.pending_interrupts
-            .lock()
-            .entry(vcpu_id)
-            .or_default()
-            .push(PendingInterrupt::Normal(vector));
-        Ok(task.cpu_id() as usize)
+            .map(|task| task.cpu_id() as usize)
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))
     }
 
-    #[expect(
-        dead_code,
-        reason = "only the LoongArch IRQ backend queues physical interrupts"
-    )]
-    pub(crate) fn queue_external_interrupt(
-        &self,
-        vcpu_id: usize,
-        vector: usize,
-        physical_irq: usize,
-    ) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
-            .get(&vcpu_id)
-            .cloned()
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        self.pending_interrupts
-            .lock()
-            .entry(vcpu_id)
-            .or_default()
-            .push(PendingInterrupt::External {
-                vector,
-                physical_irq,
-            });
-        Ok(task.cpu_id() as usize)
-    }
-
-    pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {
-        self.pending_interrupts
-            .lock()
-            .get_mut(&vcpu_id)
-            .map(core::mem::take)
-            .unwrap_or_default()
+    pub(crate) const fn arch_state(&self) -> &VmRuntimeArchState {
+        &self.arch_state
     }
 
     pub(crate) fn wait(&self) {
@@ -284,7 +238,8 @@ impl AxVMResources {
             phys_cpu_ls: PhysCpuList::default(),
             vcpu_list: None,
             devices: None,
-            interrupt_fabric: None,
+            interrupt_topology: None,
+            arch_state: VmArchState::new(),
             address_layout: None,
             boot_description: GuestBootDescription::none(),
         })
@@ -306,10 +261,14 @@ impl AxVMResources {
             .ok_or_else(|| ax_err_type!(BadState, "VM devices are not prepared"))
     }
 
-    fn interrupt_fabric(&self) -> AxVmResult<&InterruptFabric> {
-        self.interrupt_fabric
+    fn interrupt_topology(&self) -> AxVmResult<&Arc<InterruptTopology>> {
+        self.interrupt_topology
             .as_ref()
-            .ok_or_else(|| ax_err_type!(BadState, "VM interrupt fabric is not prepared"))
+            .ok_or_else(|| ax_err_type!(BadState, "VM interrupt topology is not prepared"))
+    }
+
+    pub(crate) const fn arch_state_mut(&mut self) -> &mut VmArchState {
+        &mut self.arch_state
     }
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
@@ -332,7 +291,8 @@ impl AxVMResources {
         }
         self.vcpu_list = None;
         self.devices = None;
-        self.interrupt_fabric = None;
+        self.interrupt_topology = None;
+        *self.arch_state_mut() = VmArchState::new();
         self.address_layout = None;
         Ok(())
     }
@@ -387,8 +347,6 @@ impl VMMemoryRegion {
         self.gpa.as_usize() == self.host_paddr().as_usize()
     }
 }
-
-const TEMP_MAX_VCPU_NUM: usize = 64;
 
 /// A Virtual Machine.
 pub struct AxVM {
@@ -445,7 +403,7 @@ impl AxVM {
             .unwrap_or(VMInterruptMode::NoIrq)
     }
 
-    fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
+    pub(crate) fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&AxVMResources) -> AxVmResult<R>,
     {
@@ -456,7 +414,11 @@ impl AxVM {
         f(resources)
     }
 
-    fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
+    pub(crate) fn prepared_interrupt_topology(&self) -> AxVmResult<Arc<InterruptTopology>> {
+        self.with_resources(|resources| resources.interrupt_topology().cloned())
+    }
+
+    pub(crate) fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&mut AxVMResources) -> AxVmResult<R>,
     {
@@ -590,8 +552,8 @@ impl AxVM {
                 .devices()
                 .map_err(|error| AxVmError::resource_unavailable("devices", error))?;
             resources
-                .interrupt_fabric()
-                .map_err(|error| AxVmError::resource_unavailable("interrupt fabric", error))?;
+                .interrupt_topology()
+                .map_err(|error| AxVmError::resource_unavailable("interrupt topology", error))?;
             Ok(runtime.clone())
         })?;
 
@@ -714,19 +676,6 @@ impl AxVM {
         self.with_resources(|resources| resources.devices())
     }
 
-    /// Pulses a prepared VM interrupt fabric line without exposing the fabric.
-    pub fn pulse_interrupt(&self, irq_id: usize) -> AxVmResult {
-        match self.status() {
-            VmStatus::Running | VmStatus::Paused => {
-                self.with_resources(|resources| resources.interrupt_fabric()?.pulse(irq_id))
-            }
-            status => ax_err!(
-                BadState,
-                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
-            ),
-        }
-    }
-
     /// Returns the number of prepared emulated devices.
     pub fn device_count(&self) -> usize {
         self.get_devices()
@@ -817,146 +766,6 @@ impl AxVM {
         }
 
         devices.handle_mmio_write(addr, width, data)?;
-        Ok(())
-    }
-
-    pub(crate) fn handle_nested_page_fault(
-        &self,
-        addr: GuestPhysAddr,
-        access_flags: MappingFlags,
-    ) -> bool {
-        self.with_resources_mut(|resources| {
-            let handled = resources
-                .address_space
-                .handle_page_fault(addr, access_flags);
-            Self::debug_nested_page_fault(self.id(), resources, addr, access_flags, handled);
-            Ok(handled)
-        })
-        .unwrap_or(false)
-    }
-
-    fn debug_nested_page_fault(
-        vm_id: usize,
-        resources: &AxVMResources,
-        addr: GuestPhysAddr,
-        access_flags: MappingFlags,
-        handled: bool,
-    ) {
-        let root = resources.address_space.page_table_root();
-        match resources.address_space.page_table().query(addr) {
-            Ok((hpa, flags, size)) => {
-                if handled {
-                    debug!(
-                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
-                         pte_flags={:?}, page_size={:?}, root={:#x}",
-                        vm_id,
-                        addr.as_usize(),
-                        hpa.as_usize(),
-                        access_flags,
-                        flags,
-                        size,
-                        root.as_usize()
-                    );
-                } else {
-                    warn!(
-                        "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, \
-                         pte_flags={:?}, page_size={:?}, root={:#x}",
-                        vm_id,
-                        addr.as_usize(),
-                        hpa.as_usize(),
-                        access_flags,
-                        flags,
-                        size,
-                        root.as_usize()
-                    );
-                }
-            }
-            Err(err) => {
-                if handled {
-                    debug!(
-                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
-                        vm_id,
-                        addr.as_usize(),
-                        access_flags,
-                        err,
-                        root.as_usize()
-                    );
-                } else {
-                    warn!(
-                        "VM[{}] stage2 query miss: gpa={:#x}, access={:?}, err={:?}, root={:#x}",
-                        vm_id,
-                        addr.as_usize(),
-                        access_flags,
-                        err,
-                        root.as_usize()
-                    );
-                }
-            }
-        }
-
-        let translate = resources.address_space.translate(addr);
-        if handled {
-            debug!(
-                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
-                vm_id,
-                addr.as_usize(),
-                translate
-            );
-        } else {
-            warn!(
-                "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
-                vm_id,
-                addr.as_usize(),
-                translate
-            );
-        }
-
-        for (idx, region) in resources.memory_regions.iter().enumerate() {
-            let start = region.gpa.as_usize();
-            let end = start + region.size();
-            if (start..end).contains(&addr.as_usize()) {
-                if handled {
-                    debug!(
-                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
-                         size={:#x} identical={}",
-                        vm_id,
-                        idx,
-                        start,
-                        end,
-                        region.hva.as_usize(),
-                        region.host_paddr().as_usize(),
-                        region.size(),
-                        region.is_identical()
-                    );
-                } else {
-                    warn!(
-                        "VM[{}] stage2 region hit[{}]: gpa=[{:#x},{:#x}) hva={:#x} hpa={:#x} \
-                         size={:#x} identical={}",
-                        vm_id,
-                        idx,
-                        start,
-                        end,
-                        region.hva.as_usize(),
-                        region.host_paddr().as_usize(),
-                        region.size(),
-                        region.is_identical()
-                    );
-                }
-            }
-        }
-    }
-
-    /// Injects an interrupt to the vCPU.
-    pub fn inject_interrupt_to_vcpu(
-        &self,
-        targets: CpuMask<TEMP_MAX_VCPU_NUM>,
-        irq: usize,
-    ) -> AxVmResult {
-        for vcpu in self.vcpu_list() {
-            if targets.get(vcpu.id()) {
-                crate::runtime::vcpus::queue_interrupt(self.id(), vcpu.id(), irq)?;
-            }
-        }
         Ok(())
     }
 
@@ -1309,7 +1118,8 @@ impl AxVM {
             );
         }
         resources.vcpu_list = None;
-        resources.interrupt_fabric = None;
+        resources.interrupt_topology = None;
+        *resources.arch_state_mut() = VmArchState::new();
 
         info!("VM[{vm_id}] resources cleanup completed");
     }

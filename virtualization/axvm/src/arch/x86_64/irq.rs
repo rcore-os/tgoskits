@@ -1,7 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRaw as Mutex;
-use axvm_types::VmArchVcpuOps;
 
 use crate::{
     InterruptTriggerMode,
@@ -13,8 +12,8 @@ use crate::{
 const IOAPIC_GSI_COUNT: usize = 24;
 const INVALID_RAW_IRQ: usize = usize::MAX;
 
-const PIT_TIMER_GSI: usize = 0;
-const COM1_GSI: usize = 4;
+pub(super) const PIT_TIMER_GSI: usize = 0;
+pub(super) const COM1_GSI: usize = 4;
 type IoApicForwardingActivator = fn();
 type IoApicForwardingActivatorSlot = Mutex<Option<IoApicForwardingActivator>>;
 static IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -32,6 +31,8 @@ static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
 static IOAPIC_HOST_IRQS: [AtomicUsize; IOAPIC_GSI_COUNT] =
     [const { AtomicUsize::new(INVALID_RAW_IRQ) }; IOAPIC_GSI_COUNT];
 static IOAPIC_IRQ_ACTIVATORS: [IoApicForwardingActivatorSlot; IOAPIC_GSI_COUNT] =
+    [const { Mutex::new(None) }; IOAPIC_GSI_COUNT];
+static IOAPIC_FORWARD_LINES: [Mutex<Option<axdevice::IrqLine>>; IOAPIC_GSI_COUNT] =
     [const { Mutex::new(None) }; IOAPIC_GSI_COUNT];
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
@@ -89,7 +90,7 @@ pub fn register_ioapic_irq_forwarding_activator(
     *IOAPIC_IRQ_ACTIVATORS[guest_gsi].lock() = Some(activator);
 }
 
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
+pub fn inject_due_pit_irq0(vm: &VMRef, _vcpu: &VCpuRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }
@@ -98,28 +99,12 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    if !devices.x86_pit_consume_irq0_if_due(now_ns) {
-        return;
+    if let Err(error) = devices.x86_pit_service_irq0(now_ns) {
+        warn!("failed to deliver x86 PIT IRQ0 through the APIC topology: {error}");
     }
-
-    let Some(irq) = devices.x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
-        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
-    };
-
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
 }
 
-pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
+pub fn inject_pending_serial_irq(vm: &VMRef, _vcpu: &VCpuRef) {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
         return;
     }
@@ -127,26 +112,9 @@ pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    if !devices.x86_serial_poll_irq() {
-        return;
+    if let Err(error) = devices.x86_serial_service_irq() {
+        warn!("failed to update x86 COM1 IRQ4 through the APIC topology: {error}");
     }
-
-    let Some(irq) = devices.x86_ioapic_assert_gsi(COM1_GSI) else {
-        trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
-        return;
-    };
-
-    trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -157,7 +125,8 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    let Some(eoi) = devices.x86_ioapic_end_of_interrupt(vector) else {
+    lower_forwarded_level_for_vector(&devices, vector);
+    let Ok(Some(eoi)) = devices.x86_ioapic_end_of_interrupt(vector) else {
         return;
     };
     let pending = eoi.pending;
@@ -165,24 +134,24 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         unmask_forwarded_host_gsi(eoi.gsi);
     }
 
-    let Some(irq) = pending else {
-        return;
-    };
+    let _ = vcpu;
+}
 
-    trace!(
-        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
-        irq.vector
-    );
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+fn lower_forwarded_level_for_vector(devices: &axdevice::AxVmDevices, vector: u8) {
+    for (gsi, forwarding_line) in IOAPIC_FORWARD_LINES.iter().enumerate() {
+        let line = forwarding_line.lock().clone();
+        let Some(line) = line else {
+            continue;
+        };
+        if line.trigger() != InterruptTriggerMode::LevelTriggered
+            || devices.x86_ioapic_vector_for_gsi(gsi) != Some(vector)
+        {
+            continue;
+        }
+        if let Err(error) = line.lower() {
+            warn!("failed to lower forwarded x86 GSI {gsi} after EOI {vector:#x}: {error}");
+        }
+    }
 }
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
@@ -256,6 +225,13 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
                     trace!(
                         "skip x86 IOAPIC forwarding fallback for guest GSI {gsi}: host IRQ \
                          {host_irq:?} already has an explicit guest route"
+                    );
+                    continue;
+                }
+
+                if let Err(error) = connect_forwarded_gsi(vm, gsi) {
+                    warn!(
+                        "failed to connect x86 forwarded GSI {gsi} to the IOAPIC topology: {error}"
                     );
                     continue;
                 }
@@ -400,6 +376,9 @@ pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
     IOAPIC_IRQ_FORWARD_VCPU_ID.store(usize::MAX, Ordering::Release);
     IOAPIC_IRQ_PENDING.store(0, Ordering::Release);
     IOAPIC_IRQ_PENDING_LEVEL.store(0, Ordering::Release);
+    for line in &IOAPIC_FORWARD_LINES {
+        line.lock().take();
+    }
     let masked = IOAPIC_IRQ_MASKED.swap(0, Ordering::AcqRel);
     for gsi in ioapic_irq_hook_gsis() {
         if masked & gsi_bit(gsi) != 0 {
@@ -425,32 +404,52 @@ fn forward_passthrough_gsi(
     let Ok(devices) = vm.get_devices() else {
         return false;
     };
-    let Some(guest_irq) = devices.x86_ioapic_assert_gsi(guest_gsi) else {
-        if devices.x86_ioapic_vector_for_gsi(guest_gsi).is_some() {
-            trace!(
-                "x86 passthrough IRQ for guest GSI {guest_gsi} is deferred by guest vIOAPIC state"
-            );
-            if !host_level_triggered {
-                unmask_forwarded_host_gsi(guest_gsi);
-            }
-            return true;
-        }
-
+    if devices.x86_ioapic_vector_for_gsi(guest_gsi).is_none() {
         trace!("x86 passthrough IRQ has no injectable guest vIOAPIC route for GSI {guest_gsi}");
         return false;
+    }
+    let line = IOAPIC_FORWARD_LINES[guest_gsi].lock().clone();
+    let Some(line) = line else {
+        trace!("x86 passthrough GSI {guest_gsi} has no topology connection");
+        return false;
     };
-
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            guest_irq.vector as _,
-            if guest_irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    let result = if host_level_triggered {
+        line.raise()
+    } else {
+        line.pulse()
+    };
+    if let Err(error) = result {
+        warn!("failed to signal forwarded x86 GSI {guest_gsi}: {error}");
+        return false;
+    }
+    let _ = vcpu;
     true
+}
+
+fn connect_forwarded_gsi(vm: &VMRef, gsi: usize) -> Result<(), axdevice::DeviceManagerError> {
+    if IOAPIC_FORWARD_LINES[gsi].lock().is_some() {
+        return Ok(());
+    }
+    let trigger = if IOAPIC_HOST_IRQ_LEVEL_TRIGGERED.load(Ordering::Acquire) & gsi_bit(gsi) != 0 {
+        InterruptTriggerMode::LevelTriggered
+    } else {
+        InterruptTriggerMode::EdgeTriggered
+    };
+    let topology = vm.prepared_interrupt_topology().map_err(|error| {
+        axdevice::DeviceManagerError::UnexpectedResponse {
+            operation: "connect forwarded x86 GSI",
+            detail: alloc::format!("{error}"),
+        }
+    })?;
+    let line = topology.connect_irq(axdevice::WiredIrqRequest::new(
+        axdevice::ControllerInputId::new(gsi),
+        trigger,
+    ))?;
+    let mut slot = IOAPIC_FORWARD_LINES[gsi].lock();
+    if slot.is_none() {
+        *slot = Some(line);
+    }
+    Ok(())
 }
 
 fn gsi_bit(gsi: usize) -> usize {

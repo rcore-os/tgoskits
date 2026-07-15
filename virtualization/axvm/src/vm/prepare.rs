@@ -6,17 +6,17 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
+use axdevice::{DeviceFactoryRegistry, InterruptTopology, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::{AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
+use crate::{AxVmResult, ax_err, ax_err_type};
 
 pub(crate) enum VmInitRequest<'a> {
     Default,
     Provided {
         factories: &'a DeviceFactoryRegistry,
-        interrupt_fabric: InterruptFabric,
+        interrupt_topology: Arc<InterruptTopology>,
     },
 }
 
@@ -37,17 +37,17 @@ impl AxVM {
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 
-    /// Sets up the VM with explicit device factories and an interrupt fabric.
+    /// Sets up the VM with explicit device factories and an interrupt topology.
     pub fn prepare_with_factories(
         &self,
         factories: &DeviceFactoryRegistry,
-        interrupt_fabric: InterruptFabric,
+        interrupt_topology: Arc<InterruptTopology>,
     ) -> AxVmResult {
         crate::arch::CurrentArch::init_vm(
             self,
             VmInitRequest::Provided {
                 factories,
-                interrupt_fabric,
+                interrupt_topology,
             },
         )
     }
@@ -61,8 +61,8 @@ pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
 
 pub(crate) fn complete_vm_init(
     vm: &AxVM,
-    interrupt_fabric: InterruptFabric,
-    initialize: impl FnOnce(&mut AxVMResources, &InterruptFabric) -> AxVmResult<PreparedVm>,
+    interrupt_topology: Arc<InterruptTopology>,
+    initialize: impl FnOnce(&mut AxVMResources, &InterruptTopology) -> AxVmResult<PreparedVm>,
 ) -> AxVmResult {
     let mut machine = vm.machine.lock();
     if !matches!(
@@ -78,11 +78,27 @@ pub(crate) fn complete_vm_init(
         .resources_mut()
         .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available for prepare"))?;
     resources.reset_transient_resources()?;
-    interrupt_fabric.validate_mode(resources.config.interrupt_mode())?;
+    if interrupt_topology.mode() != resources.config.interrupt_mode() {
+        return ax_err!(
+            InvalidInput,
+            format_args!(
+                "interrupt topology mode {:?} does not match VM interrupt mode {:?}",
+                interrupt_topology.mode(),
+                resources.config.interrupt_mode()
+            )
+        );
+    }
 
-    let prepared = match initialize(resources, &interrupt_fabric) {
+    let prepared = match initialize(resources, &interrupt_topology) {
         Ok(prepared) => prepared,
         Err(err) => {
+            if let Err(reset_err) = interrupt_topology.reset_after_failed_preparation() {
+                warn!(
+                    "VM[{}] failed to roll back interrupt topology after initialization error: \
+                     {reset_err:?}",
+                    vm.id()
+                );
+            }
             if let Err(reset_err) = resources.reset_transient_resources() {
                 warn!(
                     "VM[{}] failed to reset transient resources after initialization error: \
@@ -96,7 +112,7 @@ pub(crate) fn complete_vm_init(
     resources.phys_cpu_ls = resources.config.phys_cpu_ls.clone();
     resources.vcpu_list = Some(prepared.vcpus.into_boxed_slice());
     resources.devices = Some(Arc::new(prepared.devices.into_inner()));
-    resources.interrupt_fabric = Some(interrupt_fabric);
+    resources.interrupt_topology = Some(interrupt_topology);
 
     info!("VM setup: id={}", vm.id());
     Ok(())

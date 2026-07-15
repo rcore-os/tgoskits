@@ -1,5 +1,7 @@
 //! RISC-V VM resource creation and initialization.
 
+use alloc::sync::Arc;
+
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
@@ -36,13 +38,13 @@ impl Riscv64Arch {
                 let mut factories = default_device_factories()?;
                 let mode = vm.interrupt_mode();
                 let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let interrupt_topology = irq::configure(&mut factories, mode, &emulated_devices)?;
+                init_vm_with(vm, &factories, interrupt_topology)
             }
             VmInitRequest::Provided {
                 factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+                interrupt_topology,
+            } => init_vm_with(vm, factories, interrupt_topology),
         }
     }
 }
@@ -50,9 +52,9 @@ impl Riscv64Arch {
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let dtb_addr = resources
             .config()
@@ -65,8 +67,18 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let mut devices = PreparedDevices::empty();
+        devices.register_configured(
+            resources.config().emu_devices(),
+            factories,
+            interrupt_topology,
+        )?;
         devices.register_special_devices(vm)?;
+        let external_irq_sources = resources.config().pass_through_irqs().to_vec();
+        resources
+            .arch_state_mut()
+            .connect_external_irq_lines(interrupt_topology, &external_irq_sources)?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

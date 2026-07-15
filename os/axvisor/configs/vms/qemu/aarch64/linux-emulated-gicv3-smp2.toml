@@ -1,0 +1,33 @@
+# VM base information.
+[base]
+id = 1
+name = "linux-qemu-emulated-gicv3"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [0, 1]
+
+# Guest kernel image.
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1],
+]
+
+# The guest sees the host's QEMU devices, but their interrupts terminate at
+# the VM-local emulated GICv3 rather than the physical CPU interface.
+[devices]
+interrupt_mode = "emulated"
+passthrough_devices = [
+  ["/"],
+]
+passthrough_addresses = []
+excluded_devices = []
+emu_devices = [
+  ["gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [2, 0x2_0000, 0]],
+  ["gits", 0x0808_0000, 0x2_0000, 0, 0x22, [0x0808_0000]],
+]

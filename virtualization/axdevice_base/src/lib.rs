@@ -487,11 +487,14 @@ pub enum RegistryError {
 /// # Downcasting
 ///
 /// `Device` extends [`Any`](core::any::Any) so callers can downcast to a
-/// concrete device type via [`as_any`](Device::as_any):
+/// concrete device type via [`as_any`](Device::as_any). Downcasting is only
+/// intended for device-specific data-plane operations; interrupt-controller
+/// capabilities are registered separately and devices connect through owned
+/// interrupt endpoints.
 ///
 /// ```ignore
-/// if let Some(vgic) = device.as_any().downcast_ref::<VGicD>() {
-///     vgic.assign_irq(32, cpu_id, (0, 0, 0, cpu_id));
+/// if let Some(console) = device.as_any().downcast_ref::<GuestConsole>() {
+///     console.flush_output()?;
 /// }
 /// ```
 pub trait Device: Send + Sync + Any {
@@ -568,7 +571,7 @@ pub trait BusRouter {
 // ---------------------------------------------------------------------------
 
 mod adapter;
-mod irq;
+mod interrupt;
 
 pub use adapter::{MmioDeviceAdapter, PortDeviceAdapter, SysRegDeviceAdapter};
-pub use irq::{IrqError, IrqLine, IrqResult, IrqSink};
+pub use interrupt::*;

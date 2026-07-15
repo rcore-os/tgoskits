@@ -17,14 +17,16 @@ use std::sync::{Arc, Mutex};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
     DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
-    register_builtin_factories,
+    InterruptTopology, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter,
+    SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceRegistry as _, DeviceResult, InterruptTriggerMode, IrqError,
-    IrqLine, IrqLineId, Port, PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, DeviceResult, Port, PortRange, RegistryError,
+    SysRegAddr, SysRegAddrRange,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
+};
 
 /// Registers a legacy MMIO device through the new DeviceManager API.
 fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
@@ -235,21 +237,8 @@ fn device_config(
     }
 }
 
-struct RejectingIrqResolver;
-
-impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(
-        &self,
-        line: usize,
-        _trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        Err(IrqError::Unsupported {
-            line: IrqLineId(line),
-            operation: "resolve test IRQ",
-            detail: "test resolver rejects every line".into(),
-        }
-        .into())
-    }
+fn no_irq_topology() -> InterruptTopology {
+    InterruptTopology::new(VMInterruptMode::NoIrq)
 }
 
 struct MockMmioFactory;
@@ -481,8 +470,8 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 fn test_conflicting_factory_device_config_returns_structured_error() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let first = device_config(
         "factory-mmio-first",
         EmulatedDeviceType::VirtioBlk,
@@ -641,8 +630,8 @@ fn test_factory_registry_rejects_duplicate_device_type() {
 #[test]
 fn test_missing_factory_returns_unsupported() {
     let factories = DeviceFactoryRegistry::new();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let config = device_config(
         "missing-console",
         EmulatedDeviceType::VirtioConsole,
@@ -669,8 +658,8 @@ fn test_missing_factory_returns_unsupported() {
 fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let base = 0x1_0000;
     let devices = AxVmDevices::build_with_factories(
         AxVmDeviceConfig::new(vec![device_config(
@@ -700,8 +689,8 @@ fn test_factory_validation_failure_leaves_devices_unchanged() {
     let count_before = devices.devices().count();
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let invalid = device_config(
         "invalid-factory-mmio",
         EmulatedDeviceType::VirtioBlk,
@@ -720,8 +709,8 @@ fn test_factory_validation_failure_leaves_devices_unchanged() {
 fn test_builtin_meta_factory_builds_dummy_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let devices = AxVmDevices::build_with_factories(
         AxVmDeviceConfig::new(vec![device_config(
             "metadata",
@@ -836,8 +825,8 @@ fn test_native_device_port_resource_overflow_rejected() {
 fn test_build_with_factories_preserves_legacy_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let topology = no_irq_topology();
+    let context = DeviceBuildContext::new(&topology);
     let devices = AxVmDevices::build_with_factories(
         AxVmDeviceConfig::new(vec![device_config(
             "ivc",

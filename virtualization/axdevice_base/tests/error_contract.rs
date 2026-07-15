@@ -1,6 +1,8 @@
 use std::{fs, path::Path};
 
-use axdevice_base::{AccessWidth, DeviceError, IrqError, IrqLineId};
+use axdevice_base::{
+    AccessWidth, ControllerInputId, DeviceError, InterruptControllerId, InterruptEndpoint, IrqError,
+};
 
 #[test]
 fn crate_uses_typed_errors_without_errno_contracts() {
@@ -13,8 +15,11 @@ fn device_and_irq_errors_preserve_access_context() {
         expected: AccessWidth::Dword,
         actual: AccessWidth::Qword,
     };
-    let irq = IrqError::InvalidLine {
-        line: IrqLineId(9),
+    let irq = IrqError::InvalidInput {
+        endpoint: InterruptEndpoint::Wired {
+            controller: InterruptControllerId::new(2),
+            input: ControllerInputId::new(9),
+        },
         operation: "route",
         detail: "line is not assigned".into(),
     };

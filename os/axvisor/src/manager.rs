@@ -88,10 +88,7 @@ impl AxvmManager {
         axvm::get_vm_by_id(vm_id)
     }
 
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
+    #[cfg(feature = "fs")]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
             return;
@@ -105,10 +102,7 @@ impl AxvmManager {
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
-    #[cfg(not(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    )))]
+    #[cfg(not(feature = "fs"))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
@@ -229,12 +223,18 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
         routes.len()
     );
     for route in routes {
-        axvm::register_loongarch_guest_irq_route(
+        if let Err(error) = axvm::register_loongarch_guest_irq_route(
             route.physical_irq,
             vm_id,
             vcpu_id,
             route.guest_vector,
-        );
+        ) {
+            warn!(
+                "failed to register LoongArch passthrough IRQ {} -> guest input {} for VM[{}]: \
+                 {error:?}",
+                route.physical_irq, route.guest_vector, vm_id
+            );
+        }
     }
 }
 

@@ -3,12 +3,11 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use axdevice_base::DeviceRegistry as _;
 use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
-use super::{Aarch64Arch, npt};
+use super::{Aarch64Arch, gic::PreparedGicV3, npt, timer};
 use crate::{
-    AxVmError, AxVmResult, ax_err,
+    AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -37,13 +36,14 @@ impl Aarch64Arch {
         match request {
             VmInitRequest::Default => {
                 let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let interrupt_topology =
+                    Arc::new(axdevice::InterruptTopology::new(vm.interrupt_mode()));
+                init_vm_with(vm, &factories, interrupt_topology)
             }
             VmInitRequest::Provided {
                 factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+                interrupt_topology,
+            } => init_vm_with(vm, factories, interrupt_topology),
         }
     }
 }
@@ -51,9 +51,9 @@ impl Aarch64Arch {
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let dtb_addr = resources
             .config()
@@ -66,14 +66,46 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(vm, resources.config(), &mut devices.devices)?;
+        let prepared_gic = PreparedGicV3::from_vm_config(vm.id(), resources.config(), &placements)?;
+        let mut devices = PreparedDevices::empty();
+        if let Some(gic) = &prepared_gic {
+            gic.register(&mut devices.devices, interrupt_topology)?;
+        }
+        let ports = vcpus.interrupt_ports(vm.id(), &placements)?;
+        interrupt_topology.finalize(&ports)?;
+        let host_spi_forwarding = if let Some(gic) = &prepared_gic {
+            gic.connect_physical_spis(resources.config(), interrupt_topology)?
+        } else {
+            None
+        };
+        if let Some(gic) = &prepared_gic {
+            if gic.emulates_interrupts() {
+                timer::register_emulated_timers(
+                    &mut devices,
+                    gic.device_set(),
+                    &placements,
+                    interrupt_topology,
+                )?;
+            }
+            devices.register_configured(gic.ordinary_devices(), factories, interrupt_topology)?;
+        } else {
+            devices.register_configured(
+                resources.config().emu_devices(),
+                factories,
+                interrupt_topology,
+            )?;
+        }
         devices.register_special_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
         map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
         vcpus.setup(resources, build_vcpu_setup_config)?;
+        if let Some(gic) = prepared_gic {
+            resources
+                .arch_state_mut()
+                .set_gic_controller(gic.controller(), host_spi_forwarding);
+        }
 
         Ok(PreparedVm::new(vcpus, devices))
     })
@@ -88,47 +120,6 @@ fn build_vcpu_setup_config(
         passthrough_interrupt: passthrough,
         passthrough_timer: passthrough,
     })
-}
-
-fn register_arch_devices(
-    vm: &AxVM,
-    config: &AxVMConfig,
-    devices: &mut axdevice::AxVmDevices,
-) -> AxVmResult {
-    if config.interrupt_mode() == VMInterruptMode::Passthrough {
-        assign_passthrough_spis(vm, config, devices)?;
-    } else {
-        register_virtual_timers(devices)?;
-    }
-    Ok(())
-}
-
-fn assign_passthrough_spis(
-    vm: &AxVM,
-    config: &AxVMConfig,
-    devices: &axdevice::AxVmDevices,
-) -> AxVmResult {
-    let cpu_id = vm.id() - 1; // FIXME: get the real CPU id.
-    let Some(gicd) = devices
-        .devices()
-        .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
-    else {
-        warn!("Failed to assign SPIs: No VGicD found in device list");
-        return Ok(());
-    };
-
-    for spi in config.pass_through_spis() {
-        gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
-            .map_err(|error| AxVmError::interrupt("assign passthrough SPI", error))?;
-    }
-    Ok(())
-}
-
-fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxVmResult {
-    for device in axdevice::create_vtimer_devices() {
-        devices.register(Arc::from(device) as Arc<dyn axdevice_base::Device>)?;
-    }
-    Ok(())
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
