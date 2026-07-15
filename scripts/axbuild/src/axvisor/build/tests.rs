@@ -68,6 +68,29 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
+fn axvisor_ax_std_dependency_declares_std_compat() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == AXVISOR_PACKAGE)
+        .unwrap();
+    let ax_std = package
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name == "ax-std")
+        .unwrap();
+
+    assert!(
+        ax_std
+            .features
+            .iter()
+            .any(|feature| feature == "std-compat"),
+        "Axvisor must declare ax-std/std-compat in its dependency instead of relying on axbuild"
+    );
+}
+
+#[test]
 fn resolve_build_info_path_uses_default_axvisor_location() {
     let root = tempdir().unwrap();
     let path = resolve_build_info_path(
