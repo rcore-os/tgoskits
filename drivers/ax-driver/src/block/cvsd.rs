@@ -8,7 +8,6 @@ use cv181x_sdhci::rdif as cv181x_rdif;
 use cv181x_sdhci::{
     CV181X_SYSCON_REQUIRED_SIZE, CV181X_TOP_SYSCON_BASE, Cv181xConfig, Cv181xMmio, Cv181xSdhci,
 };
-use dma_api::DeviceDma;
 #[cfg(not(test))]
 use log::{info, warn};
 #[cfg(not(test))]
@@ -93,7 +92,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         config.has_card_detect_gpio,
     );
 
-    let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    let host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
     // PIO mode: no ADMA2, no IRQ. Uses FIFO polling for data transfer.
     // This avoids DMA bounce-buffer overhead and IRQ completion complexity.
     let mut card = SdioSdmmc::new_host2(host);
