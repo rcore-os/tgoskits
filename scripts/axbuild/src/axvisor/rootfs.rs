@@ -52,9 +52,12 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         explicit_rootfs.as_deref(),
     )
     .await?;
-    let cargo = build::load_cargo_config(&request)?;
+    let mut cargo = build::load_cargo_config(&request)?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
+    // Artifact conversion is a QEMU configuration choice. Propagate only the
+    // explicit `uefi`/`to_bin` request instead of guessing from the host arch.
+    cargo.to_bin = qemu.uefi || qemu.to_bin;
     axvisor
         .app
         .qemu(cargo, request.build_info_path, Some(qemu))

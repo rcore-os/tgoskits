@@ -235,7 +235,7 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_requires_explicit_x86_virtualization_backend() {
+fn load_cargo_config_temporarily_defaults_x86_to_vmx_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");
     fs::write(
@@ -247,11 +247,29 @@ log = "Info"
     )
     .unwrap();
 
-    let err =
-        load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap_err();
+    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
 
-    assert!(err.to_string().contains("vmx"));
-    assert!(err.to_string().contains("svm"));
+    assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"svm".to_string()));
+}
+
+#[test]
+fn load_cargo_config_preserves_explicit_x86_svm_backend() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("build-x86_64-svm.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = ["svm"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+
+    assert!(cargo.features.contains(&"svm".to_string()));
+    assert!(!cargo.features.contains(&"vmx".to_string()));
 }
 
 #[test]
@@ -561,7 +579,7 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_keeps_loongarch_dynamic_axvisor_as_elf() {
+fn load_cargo_config_prepares_loongarch_dynamic_axvisor_runtime_artifact() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(
@@ -587,7 +605,7 @@ log = "Info"
     })
     .unwrap();
 
-    assert!(!cargo.to_bin);
+    assert!(cargo.to_bin);
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));

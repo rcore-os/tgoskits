@@ -27,6 +27,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
   `qemu-*.toml` contract; axbuild must not infer or overwrite them from the target architecture
   or host `/dev/kvm` availability.
+  Axvisor x86_64 CI build groups select exactly one virtualization backend (`vmx` or `svm`);
+  the generic QEMU board remains backend-neutral while axbuild temporarily defaults an omitted
+  backend to `vmx`. AMD/SVM CI configurations must keep their explicit `svm` feature.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.

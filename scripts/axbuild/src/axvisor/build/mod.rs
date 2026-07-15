@@ -71,7 +71,6 @@ fn patch_axvisor_cargo_config(
     config_vmconfigs: &[PathBuf],
 ) -> anyhow::Result<()> {
     cargo.package = request.package.clone();
-    cargo.to_bin = default_axvisor_to_bin(&request.arch);
     ensure_axvisor_bin_arg(&mut cargo.args);
     cargo
         .env
@@ -107,10 +106,12 @@ fn patch_axvisor_cargo_config(
             .any(|feature| matches!(feature.as_str(), "svm" | "axvm/svm"));
         match (has_vmx, has_svm) {
             (true, true) => bail!("x86_64 Axvisor features `vmx` and `svm` are mutually exclusive"),
-            (false, false) => bail!(
-                "x86_64 Axvisor build config must explicitly enable exactly one virtualization \
-                 backend feature: `vmx` or `svm`"
-            ),
+            (false, false) => {
+                // Temporary compatibility for the generic x86 QEMU board. The
+                // backend feature will disappear once Axvisor selects the host
+                // virtualization implementation without Cargo feature gates.
+                cargo.features.push("vmx".to_string());
+            }
             _ => {}
         }
     }
@@ -129,10 +130,6 @@ fn resolve_build_config_vmconfig_path(request: &ResolvedAxvisorRequest, path: &P
         .and_then(Path::parent)
         .unwrap_or(&request.axvisor_dir);
     workspace_root.join(path)
-}
-
-fn default_axvisor_to_bin(arch: &str) -> bool {
-    !matches!(arch, "x86_64" | "loongarch64")
 }
 
 fn ensure_axvisor_bin_arg(args: &mut Vec<String>) {
