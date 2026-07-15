@@ -2,32 +2,67 @@
 
 use alloc::sync::{Arc, Weak};
 use core::{
+    mem::ManuallyDrop,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulingKey, SchedulingUrgency, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, IrqWakeHandle, Nice, PiWaitState, RtPriority,
+    SchedulePolicy, SchedulingKey, SchedulingUrgency, ThreadExtensionView, ThreadId,
+    ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
+    task_work::TaskWorkDoorbell,
     timer::TimerNode,
 };
 
 const REAP_CLAIMED: usize = 1 << (usize::BITS - 1);
 const REAP_MAX_UPGRADE_READERS: usize = REAP_CLAIMED - 1;
+const SCHEDULER_ACTIVITY_CLOSED: usize = 1 << (usize::BITS - 1);
+const SCHEDULER_ACTIVITY_MAX_READERS: usize = SCHEDULER_ACTIVITY_CLOSED - 1;
 const WAKE_PENDING: u8 = 1 << 0;
 const PARK_NOTIFIED: u8 = 1 << 1;
 const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 
 /// A strong reference used to inspect and control a live thread.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ThreadHandle {
-    pub(crate) core: Arc<ThreadCore>,
+    pub(crate) core: ManuallyDrop<Arc<ThreadCore>>,
+    reap_signal: Arc<ThreadReapSignal>,
+}
+
+impl Drop for ThreadHandle {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: `core` is wrapped solely so this destructor can release
+            // the strong count before publishing the reaper retry. It is
+            // dropped exactly once here and never accessed afterwards.
+            ManuallyDrop::drop(&mut self.core);
+        }
+        self.reap_signal.release_external_lease();
+    }
+}
+
+impl Clone for ThreadHandle {
+    fn clone(&self) -> Self {
+        let core = Arc::clone(&self.core);
+        let reap_signal = Arc::clone(&self.reap_signal);
+        reap_signal.acquire_external_lease();
+        Self {
+            core: ManuallyDrop::new(core),
+            reap_signal,
+        }
+    }
 }
 
 impl ThreadHandle {
     pub(crate) fn from_core(core: Arc<ThreadCore>) -> Self {
-        Self { core }
+        let reap_signal = Arc::clone(&core.reap_signal);
+        reap_signal.acquire_external_lease();
+        Self {
+            core: ManuallyDrop::new(core),
+            reap_signal,
+        }
     }
 
     /// Returns the generation-checked registry identity.
@@ -59,9 +94,7 @@ impl ThreadHandle {
 
     /// Creates a direct wake handle that does not consult the thread registry.
     pub fn wake_handle(&self) -> ThreadWakeHandle {
-        ThreadWakeHandle {
-            core: Arc::clone(&self.core),
-        }
+        ThreadWakeHandle::from_core(Arc::clone(&self.core))
     }
 
     /// Returns the current scheduling urgency key used by PI waiter ordering.
@@ -110,8 +143,9 @@ impl WeakThreadHandle {
         if !core.try_enter_weak_upgrade() {
             return None;
         }
-        core.exit_weak_upgrade();
-        Some(ThreadHandle { core })
+        let handle = ThreadHandle::from_core(core);
+        handle.core.exit_weak_upgrade();
+        Some(handle)
     }
 }
 
@@ -121,59 +155,66 @@ impl WeakThreadHandle {
 /// context. Creating, cloning, and dropping this owning reference are task-context
 /// operations; coroutine wakers defer their final release to the task-system
 /// reaper.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ThreadWakeHandle {
-    pub(crate) core: Arc<ThreadCore>,
+    pub(crate) core: ManuallyDrop<Arc<ThreadCore>>,
+    reap_signal: Arc<ThreadReapSignal>,
+}
+
+impl Drop for ThreadWakeHandle {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: identical ownership rule to ThreadHandle::drop above.
+            ManuallyDrop::drop(&mut self.core);
+        }
+        self.reap_signal.release_external_lease();
+    }
+}
+
+impl Clone for ThreadWakeHandle {
+    fn clone(&self) -> Self {
+        let core = Arc::clone(&self.core);
+        let reap_signal = Arc::clone(&self.reap_signal);
+        reap_signal.acquire_external_lease();
+        Self {
+            core: ManuallyDrop::new(core),
+            reap_signal,
+        }
+    }
 }
 
 impl ThreadWakeHandle {
+    fn from_core(core: Arc<ThreadCore>) -> Self {
+        let reap_signal = Arc::clone(&core.reap_signal);
+        reap_signal.acquire_external_lease();
+        Self {
+            core: ManuallyDrop::new(core),
+            reap_signal,
+        }
+    }
+
     /// Publishes a wake without allocating, taking a lock, or invoking callbacks.
     pub fn wake(&self) -> WakeResult {
-        if self.core.state() == ThreadState::Exited {
-            return WakeResult::Exited;
+        self.core.wake()
+    }
+
+    /// Creates a borrowed hard-IRQ wake capability for a pinned registration.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep this owning handle alive until the registration is
+    /// permanently detached from every [`crate::IrqWaitCell`].
+    pub(crate) unsafe fn irq_wake_handle(&self) -> IrqWakeHandle {
+        unsafe fn wake_thread_core(data: usize) {
+            let core = unsafe { &*core::ptr::with_exposed_provenance::<ThreadCore>(data) };
+            let _result = core.wake();
         }
-        let Some(target) = self.target_cpu() else {
-            return WakeResult::Unavailable;
-        };
-        let Some(cpu) = crate::facade::cpu_local_for_wake(target) else {
-            return WakeResult::Unavailable;
-        };
-        // Publish the inbox request and wake-before-park notification as one
-        // atomic state transition. Owner-side consumption can then preserve
-        // the notification only while PARKING without racing a newer wake.
-        if self.core.publish_wake() {
-            // A coalesced wake is also a recovery path for a doorbell claimed
-            // concurrently by the owner. Reassert scheduler work even though
-            // the first producer still owns the intrusive publication.
-            cpu.kick_scheduler_work();
-            return WakeResult::AlreadyPending;
-        }
-        let core = Arc::as_ptr(&self.core);
-        // SAFETY: this retained strong count is transferred to the inbox
-        // payload and released by the owner drain after consuming the node.
-        unsafe { Arc::increment_strong_count(core) };
-        // SAFETY: Arc allocation addresses are stable. The transferred strong
-        // count keeps the embedded node alive until owner-side drain.
-        let node = unsafe { Pin::new_unchecked(&(*core).remote_wake_node) };
-        let message = InboxMessage::remote_wake_with_payload(
-            self.thread_id(),
-            target,
-            core.expose_provenance(),
-        );
-        match cpu.publish_remote_wake(node, message) {
-            PublishResult::Published => WakeResult::Notified,
-            PublishResult::AlreadyPending => {
-                // SAFETY: publication did not take ownership of the retained
-                // reference, so this path releases it immediately.
-                unsafe { Arc::decrement_strong_count(core) };
-                WakeResult::AlreadyPending
-            }
-            PublishResult::WrongKind => {
-                // SAFETY: publication rejected the node before taking ownership.
-                unsafe { Arc::decrement_strong_count(core) };
-                self.core.discard_failed_wake();
-                WakeResult::Unavailable
-            }
+
+        unsafe {
+            IrqWakeHandle::from_raw(
+                Arc::as_ptr(&self.core).expose_provenance(),
+                wake_thread_core,
+            )
         }
     }
 
@@ -186,6 +227,55 @@ impl ThreadWakeHandle {
     pub fn target_cpu(&self) -> Option<CpuId> {
         let cpu = self.core.target_cpu.load(Ordering::Acquire);
         (cpu != u32::MAX).then(|| CpuId::new(cpu))
+    }
+}
+
+impl ThreadCore {
+    fn wake(&self) -> WakeResult {
+        if self.state() == ThreadState::Exited {
+            return WakeResult::Exited;
+        }
+        let cpu = self.target_cpu.load(Ordering::Acquire);
+        let Some(target) = (cpu != u32::MAX).then(|| CpuId::new(cpu)) else {
+            return WakeResult::Unavailable;
+        };
+        let Some(cpu) = crate::facade::cpu_local_for_wake(target) else {
+            return WakeResult::Unavailable;
+        };
+        // Publish the inbox request and wake-before-park notification as one
+        // atomic state transition. Owner-side consumption can then preserve
+        // the notification only while PARKING without racing a newer wake.
+        if self.publish_wake() {
+            // A coalesced wake is also a recovery path for a doorbell claimed
+            // concurrently by the owner. Reassert scheduler work even though
+            // the first producer still owns the intrusive publication.
+            cpu.kick_scheduler_work();
+            return WakeResult::AlreadyPending;
+        }
+        let core = self as *const ThreadCore;
+        // SAFETY: this retained strong count is transferred to the inbox
+        // payload and released by the owner drain after consuming the node.
+        unsafe { Arc::increment_strong_count(core) };
+        // SAFETY: Arc allocation addresses are stable. The transferred strong
+        // count keeps the embedded node alive until owner-side drain.
+        let node = unsafe { Pin::new_unchecked(&(*core).remote_wake_node) };
+        let message =
+            InboxMessage::remote_wake_with_payload(self.id, target, core.expose_provenance());
+        match cpu.publish_remote_wake(node, message) {
+            PublishResult::Published => WakeResult::Notified,
+            PublishResult::AlreadyPending => {
+                // SAFETY: publication did not take ownership of the retained
+                // reference, so this path releases it immediately.
+                unsafe { Arc::decrement_strong_count(core) };
+                WakeResult::AlreadyPending
+            }
+            PublishResult::WrongKind => {
+                // SAFETY: publication rejected the node before taking ownership.
+                unsafe { Arc::decrement_strong_count(core) };
+                self.discard_failed_wake();
+                WakeResult::Unavailable
+            }
+        }
     }
 }
 
@@ -222,6 +312,86 @@ impl ThreadRuntimeSnapshot {
 }
 
 #[derive(Debug)]
+struct ThreadReapSignal {
+    exited: AtomicBool,
+    external_leases: AtomicUsize,
+    task_work: Option<Arc<TaskWorkDoorbell>>,
+}
+
+#[must_use = "the scheduler activity guard serializes owner delivery against exit"]
+pub(crate) struct ThreadSchedulerActivity<'thread> {
+    core: &'thread ThreadCore,
+}
+
+impl Drop for ThreadSchedulerActivity<'_> {
+    fn drop(&mut self) {
+        self.core.finish_scheduler_activity();
+    }
+}
+
+#[must_use = "the scheduler exit guard closes new owner delivery until exit commits"]
+pub(crate) struct ThreadSchedulerExit<'thread> {
+    core: &'thread ThreadCore,
+}
+
+impl Drop for ThreadSchedulerExit<'_> {
+    fn drop(&mut self) {
+        self.core.finish_scheduler_exit();
+    }
+}
+
+#[must_use = "dropping the delivery lease makes an exited thread reapable"]
+pub(crate) struct ThreadSchedulerInboxDelivery<'thread> {
+    core: &'thread ThreadCore,
+}
+
+impl Drop for ThreadSchedulerInboxDelivery<'_> {
+    fn drop(&mut self) {
+        self.core.finish_scheduler_inbox_delivery();
+    }
+}
+
+impl ThreadReapSignal {
+    fn new(task_work: Option<Arc<TaskWorkDoorbell>>) -> Self {
+        Self {
+            exited: AtomicBool::new(false),
+            external_leases: AtomicUsize::new(0),
+            task_work,
+        }
+    }
+
+    fn mark_exited(&self) {
+        self.exited.store(true, Ordering::Release);
+    }
+
+    fn publish(&self) {
+        if let Some(task_work) = &self.task_work {
+            task_work.publish();
+        }
+    }
+
+    fn acquire_external_lease(&self) {
+        self.external_leases
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |leases| {
+                leases.checked_add(1)
+            })
+            .expect("thread external-lifetime lease count overflow");
+    }
+
+    fn release_external_lease(&self) {
+        let previous = self.external_leases.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous != 0, "unbalanced thread external-lifetime lease");
+        if previous == 1 && self.exited.load(Ordering::Acquire) {
+            self.publish();
+        }
+    }
+
+    fn external_lease_count(&self) -> usize {
+        self.external_leases.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct ThreadCore {
     id: ThreadId,
     sched: Arc<ThreadSchedCell>,
@@ -233,7 +403,10 @@ pub(crate) struct ThreadCore {
     effective_key_sequence: AtomicUsize,
     effective_deadline_ns: AtomicU64,
     state: AtomicU8,
+    reap_signal: Arc<ThreadReapSignal>,
     reap_gate: AtomicUsize,
+    scheduler_activity_gate: AtomicUsize,
+    scheduler_inbox_deliveries: AtomicUsize,
     wake_state: AtomicU8,
     park_generation: AtomicU64,
     target_cpu: AtomicU32,
@@ -256,8 +429,10 @@ impl ThreadCore {
         policy: SchedulePolicy,
         sched: Arc<ThreadSchedCell>,
         extension: Option<ThreadExtensionView>,
+        task_work: Option<Arc<TaskWorkDoorbell>>,
     ) -> Self {
         debug_assert_eq!(id, sched.id());
+        let reap_signal = Arc::new(ThreadReapSignal::new(task_work));
         Self {
             id,
             sched,
@@ -267,7 +442,10 @@ impl ThreadCore {
             effective_key_sequence: AtomicUsize::new(0),
             effective_deadline_ns: AtomicU64::new(0),
             state: AtomicU8::new(ThreadState::New as u8),
+            reap_signal,
             reap_gate: AtomicUsize::new(0),
+            scheduler_activity_gate: AtomicUsize::new(0),
+            scheduler_inbox_deliveries: AtomicUsize::new(0),
             wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
             target_cpu: AtomicU32::new(u32::MAX),
@@ -346,7 +524,14 @@ impl ThreadCore {
     }
 
     pub(crate) fn publish_state(&self, state: ThreadState) {
+        if state == ThreadState::Exited {
+            self.reap_signal.mark_exited();
+        }
         self.state.store(state as u8, Ordering::Release);
+    }
+
+    pub(crate) fn publish_task_work(&self) {
+        self.reap_signal.publish();
     }
 
     pub(crate) fn try_claim_reap(&self) -> bool {
@@ -355,8 +540,112 @@ impl ThreadCore {
             .is_ok()
     }
 
+    pub(crate) fn external_lease_count(&self) -> usize {
+        self.reap_signal.external_lease_count()
+    }
+
+    /// Reserves one owner-inbox delivery while exit publication is still open.
+    ///
+    /// The count outlives the producer-side activity guard and is transferred
+    /// with the intrusive message. Registry resource teardown observes this
+    /// count independently from scheduler-internal `Arc` references.
+    pub(crate) fn reserve_scheduler_inbox_delivery(&self) -> bool {
+        let Some(_activity) = self.try_scheduler_activity() else {
+            return false;
+        };
+        if self.state() == ThreadState::Exited {
+            return false;
+        }
+        self.scheduler_inbox_deliveries
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |deliveries| {
+                deliveries.checked_add(1)
+            })
+            .expect("scheduler inbox delivery count overflow");
+        true
+    }
+
+    /// Cancels a delivery reservation that was not accepted by an inbox.
+    pub(crate) fn cancel_scheduler_inbox_delivery(&self) {
+        self.finish_scheduler_inbox_delivery();
+    }
+
+    /// Takes responsibility for one delivery detached from an owner inbox.
+    pub(crate) fn accept_scheduler_inbox_delivery(&self) -> ThreadSchedulerInboxDelivery<'_> {
+        assert!(
+            self.scheduler_inbox_deliveries.load(Ordering::Acquire) != 0,
+            "owner consumed an unreserved scheduler inbox delivery"
+        );
+        ThreadSchedulerInboxDelivery { core: self }
+    }
+
+    pub(crate) fn scheduler_inbox_delivery_count(&self) -> usize {
+        self.scheduler_inbox_deliveries.load(Ordering::Acquire)
+    }
+
+    /// Enters one owner-side delivery section that must not overlap exit.
+    pub(crate) fn try_scheduler_activity(&self) -> Option<ThreadSchedulerActivity<'_>> {
+        let mut observed = self.scheduler_activity_gate.load(Ordering::Acquire);
+        loop {
+            if observed & SCHEDULER_ACTIVITY_CLOSED != 0 {
+                return None;
+            }
+            assert!(
+                observed < SCHEDULER_ACTIVITY_MAX_READERS,
+                "scheduler activity reader count overflow"
+            );
+            match self.scheduler_activity_gate.compare_exchange_weak(
+                observed,
+                observed + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(ThreadSchedulerActivity { core: self }),
+                Err(updated) => observed = updated,
+            }
+        }
+    }
+
+    /// Closes producer and owner delivery sections for one exit transition.
+    pub(crate) fn try_scheduler_exit(&self) -> Option<ThreadSchedulerExit<'_>> {
+        self.scheduler_activity_gate
+            .compare_exchange(
+                0,
+                SCHEDULER_ACTIVITY_CLOSED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| ThreadSchedulerExit { core: self })
+    }
+
     pub(crate) fn cancel_reap_claim(&self) {
         self.reap_gate.store(0, Ordering::Release);
+    }
+
+    fn finish_scheduler_activity(&self) {
+        let previous = self.scheduler_activity_gate.fetch_sub(1, Ordering::Release);
+        assert!(
+            previous != 0 && previous & SCHEDULER_ACTIVITY_CLOSED == 0,
+            "unbalanced scheduler activity guard"
+        );
+    }
+
+    fn finish_scheduler_exit(&self) {
+        assert_eq!(
+            self.scheduler_activity_gate.swap(0, Ordering::Release),
+            SCHEDULER_ACTIVITY_CLOSED,
+            "unbalanced scheduler exit guard"
+        );
+    }
+
+    fn finish_scheduler_inbox_delivery(&self) {
+        let previous = self
+            .scheduler_inbox_deliveries
+            .fetch_sub(1, Ordering::AcqRel);
+        assert!(previous != 0, "unbalanced scheduler inbox delivery");
+        if previous == 1 && self.reap_signal.exited.load(Ordering::Acquire) {
+            self.reap_signal.publish();
+        }
     }
 
     fn try_enter_weak_upgrade(&self) -> bool {
@@ -670,14 +959,15 @@ mod tests {
 
     fn test_core(id: ThreadId, policy: SchedulePolicy) -> Arc<ThreadCore> {
         let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
-        Arc::new(ThreadCore::new(id, policy, sched, None))
+        Arc::new(ThreadCore::new(id, policy, sched, None, None))
     }
 
     #[test]
     fn unavailable_wake_without_placement_can_be_retried() {
-        let wake = ThreadWakeHandle {
-            core: test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default()),
-        };
+        let wake = ThreadWakeHandle::from_core(test_core(
+            ThreadId::from_parts(0, 1),
+            SchedulePolicy::default(),
+        ));
 
         assert_eq!(wake.wake(), WakeResult::Unavailable);
         assert_eq!(wake.wake(), WakeResult::Unavailable);
@@ -685,9 +975,10 @@ mod tests {
 
     #[test]
     fn reaper_claim_closes_and_reopens_weak_upgrade_on_retry() {
-        let handle = ThreadHandle {
-            core: test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default()),
-        };
+        let handle = ThreadHandle::from_core(test_core(
+            ThreadId::from_parts(0, 1),
+            SchedulePolicy::default(),
+        ));
         let weak = handle.downgrade();
 
         assert!(handle.core.try_claim_reap());

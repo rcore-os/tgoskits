@@ -312,6 +312,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "multitask")]
     task::publish_current_cpu_online().expect("failed to publish primary scheduler CPU");
 
+    #[cfg(feature = "multitask")]
+    task::start_deferred_task_work_service()
+        .expect("failed to start deferred scheduler task-work service");
+
     // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
     // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
     // brings the chip up and that needs timing/task capabilities. The cores

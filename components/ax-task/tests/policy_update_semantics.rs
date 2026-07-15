@@ -150,6 +150,66 @@ fn coalesced_stale_message_applies_only_the_latest_policy_generation() {
 }
 
 #[test]
+fn exited_thread_waits_for_in_flight_policy_delivery() {
+    let (system, mut cpu) = online_system(1);
+    let thread = ready_thread(&system, SchedulePolicy::default());
+    let thread_id = thread.id();
+    system.enqueue(cpu.as_mut(), thread_id, 0).unwrap();
+
+    system
+        .set_thread_policy(
+            thread_id,
+            SchedulePolicy::fifo(RtPriority::new(80).unwrap()),
+        )
+        .unwrap();
+    system.dequeue(cpu.as_mut(), thread_id).unwrap();
+    system.mark_exited(thread_id).unwrap();
+    drop(thread);
+
+    assert_eq!(
+        system
+            .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+            .unwrap()
+            .processed(),
+        0,
+        "an inbox-held policy delivery must pin registry-owned resources"
+    );
+    system.drain_policy_updates(cpu.as_mut(), 1).unwrap();
+    assert_eq!(
+        system
+            .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+            .unwrap()
+            .processed(),
+        1
+    );
+    assert_eq!(
+        system.thread_state(thread_id),
+        Err(TaskError::StaleThreadId)
+    );
+}
+
+#[test]
+fn exited_thread_rejects_policy_and_affinity_mutation() {
+    let (system, _cpu) = online_system(1);
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.mark_exited(thread.id()).unwrap();
+
+    assert_eq!(
+        system.set_thread_policy(
+            thread.id(),
+            SchedulePolicy::fifo(RtPriority::new(80).unwrap()),
+        ),
+        Err(TaskError::NotReady)
+    );
+    assert_eq!(
+        system.set_affinity(thread.id(), ax_task::CpuSet::all(1)),
+        Err(TaskError::NotReady)
+    );
+}
+
+#[test]
 fn pending_deadline_to_fair_update_keeps_active_admission_reserved() {
     let (system, mut cpu) = online_system(1);
     let active = ready_thread(&system, deadline(90, 100));

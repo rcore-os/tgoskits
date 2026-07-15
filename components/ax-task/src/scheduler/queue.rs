@@ -248,7 +248,7 @@ impl RunQueue {
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
         let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
-        let core = Arc::new(ThreadCore::new(id, policy, sched, None));
+        let core = Arc::new(ThreadCore::new(id, policy, sched, None, None));
         self.enqueue(id, policy, entity, core, now_ns, reason)
     }
 

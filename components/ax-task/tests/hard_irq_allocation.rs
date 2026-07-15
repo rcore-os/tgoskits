@@ -162,6 +162,14 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         .take()
         .expect("completed future must publish its raw waker");
     let polls_before_irq_ops = polls.get();
+    let irq_reap_thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .expect("IRQ reap fixture must initialize");
+    let irq_reap_id = irq_reap_thread.id();
+    system
+        .mark_exited(irq_reap_id)
+        .expect("IRQ reap fixture must exit");
+    drop(irq_reap_thread);
 
     support::set_hard_irq(true);
     let raw_waker_audit = audit(|| {
@@ -189,7 +197,16 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         Err(ax_task::TaskError::UnsafeContext)
     );
     assert_zero_allocator_activity(hard_irq_reclaim_audit);
+    let hard_irq_thread_reap_audit = audit(|| system.reap_thread(irq_reap_id));
+    assert_eq!(
+        hard_irq_thread_reap_audit.value,
+        Err(ax_task::TaskError::UnsafeContext)
+    );
+    assert_zero_allocator_activity(hard_irq_thread_reap_audit);
     support::set_hard_irq(false);
+    system
+        .reap_thread(irq_reap_id)
+        .expect("ordinary task context must reap the IRQ fixture");
     assert_eq!(executor.reclaim_completed(DEFAULT_RECLAIM_BATCH), 1);
 
     let mut inbox_output = [InboxMessage::EMPTY; 1];

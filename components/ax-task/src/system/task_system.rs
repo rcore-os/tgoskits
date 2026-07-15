@@ -22,6 +22,7 @@ use crate::{
         ContextThreadBinding, ExecutionContextHandle, RuntimeStatus, ThreadIdentityV1, task_runtime,
     },
     system::cpu::{CurrentDispatch, CurrentDispatchState, SchedulerIpiRetrySet},
+    task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
 };
 
 /// Failure returned by [`TaskSystem::reap_thread_handle`].
@@ -62,6 +63,41 @@ impl OwnedThreadReapError {
     }
 }
 
+/// One bounded pass performed by the dedicated task-work service thread.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeferredTaskWorkBatch {
+    deadline_events: usize,
+    deadline_callbacks: usize,
+    exit_callbacks: usize,
+    reaped_threads: usize,
+    reclaimed_resources: usize,
+}
+
+impl DeferredTaskWorkBatch {
+    /// Returns the number of queue entries or resources consumed by this pass.
+    pub const fn processed(self) -> usize {
+        self.deadline_events + self.exit_callbacks + self.reaped_threads + self.reclaimed_resources
+    }
+
+    /// Returns the number of Deadline extension callbacks invoked.
+    pub const fn deadline_callbacks(self) -> usize {
+        self.deadline_callbacks
+    }
+
+    /// Returns whether another pass should run before the worker parks.
+    pub const fn made_progress(self) -> bool {
+        self.processed() != 0
+    }
+
+    /// Returns whether one category consumed the complete caller budget.
+    pub const fn saturated(self, limit: usize) -> bool {
+        self.deadline_events == limit
+            || self.exit_callbacks == limit
+            || self.reaped_threads == limit
+            || self.reclaimed_resources == limit
+    }
+}
+
 /// Complete OS-independent scheduler instance.
 ///
 /// No instance is stored globally. A runtime owns one pinned `TaskSystem` and
@@ -77,6 +113,7 @@ pub struct TaskSystem {
     state: IrqTicketLock<TaskSystemState>,
     root_domain: IrqTicketLock<RootDomainState>,
     deferred_reclaims: SchedulerInbox,
+    task_work: Arc<TaskWorkDoorbell>,
     topology_sequence: SequenceCounter,
     online_count: AtomicUsize,
     pending_deadline_admission_release: AtomicU64,
@@ -87,6 +124,7 @@ struct TaskSystemState {
     cpus: Vec<CpuRegistration>,
     slots: Vec<ThreadSlot>,
     free_slots: Vec<u32>,
+    deadline_callback_cursor: usize,
     deadline_admission: DeadlineAdmission,
 }
 
@@ -101,6 +139,64 @@ enum BalanceReason {
     RtDeadlinePush,
     IdlePull,
     FairPeriodic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DetachedPayloadKind {
+    RemoteWake,
+    SchedulerDelivery,
+}
+
+/// Owns the unprocessed suffix of one already-detached owner inbox batch.
+///
+/// `SchedulerInbox::drain` releases every intrusive node before the caller
+/// interprets any message. If processing one message fails, this guard still
+/// consumes every later raw `Arc` payload and its scheduler-delivery lease.
+struct DetachedOwnerMessageBatch<'batch> {
+    messages: &'batch [InboxMessage],
+    next: usize,
+    payload_kind: DetachedPayloadKind,
+}
+
+impl<'batch> DetachedOwnerMessageBatch<'batch> {
+    const fn new(messages: &'batch [InboxMessage], payload_kind: DetachedPayloadKind) -> Self {
+        Self {
+            messages,
+            next: 0,
+            payload_kind,
+        }
+    }
+
+    fn next(&mut self) -> Option<InboxMessage> {
+        let message = self.messages.get(self.next).copied()?;
+        self.next += 1;
+        Some(message)
+    }
+
+    fn release(message: InboxMessage, payload_kind: DetachedPayloadKind) {
+        if message.payload() == 0 {
+            return;
+        }
+        let core = unsafe {
+            // SAFETY: every non-zero owner message transfers exactly one
+            // `ThreadCore` Arc count into its payload. This detached batch owns
+            // that count even when normal message processing aborts early.
+            Arc::from_raw(ptr::with_exposed_provenance::<ThreadCore>(
+                message.payload(),
+            ))
+        };
+        if payload_kind == DetachedPayloadKind::SchedulerDelivery {
+            let _delivery = core.accept_scheduler_inbox_delivery();
+        }
+    }
+}
+
+impl Drop for DetachedOwnerMessageBatch<'_> {
+    fn drop(&mut self) {
+        for &message in &self.messages[self.next..] {
+            Self::release(message, self.payload_kind);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +232,7 @@ impl TaskSystem {
     pub fn new(config: TaskSystemConfig) -> Result<Self, TaskError> {
         validate_config(config)?;
         let scheduler_ipi_retries = Arc::new(SchedulerIpiRetrySet::new(config.cpu_count()));
+        let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())
             .map(|index| {
                 CpuRemote::create(
@@ -161,12 +258,14 @@ impl TaskSystem {
                 cpus: cpu_registrations,
                 slots: Vec::new(),
                 free_slots: Vec::new(),
+                deadline_callback_cursor: 0,
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
             root_domain: IrqTicketLock::new(RootDomainState {
                 online: CpuSet::empty(config.cpu_count()),
             }),
             deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
+            task_work,
             topology_sequence: SequenceCounter::default(),
             online_count: AtomicUsize::new(0),
             pending_deadline_admission_release: AtomicU64::new(0),
@@ -224,10 +323,67 @@ impl TaskSystem {
         if data != node.address() {
             task_runtime::fatal_invariant(0x4558_0007, data);
         }
-        self.deferred_reclaims.publish(
+        let result = self.deferred_reclaims.publish(
             node.inbox(),
             InboxMessage::reclaim(ThreadId::from_parts(0, 0), 0, data),
-        )
+        );
+        if result != PublishResult::WrongKind {
+            self.task_work.publish();
+        }
+        result
+    }
+
+    pub(crate) fn task_work_doorbell(&self) -> Arc<TaskWorkDoorbell> {
+        Arc::clone(&self.task_work)
+    }
+
+    pub(crate) fn begin_task_work_worker_install(&self) -> Result<(), TaskError> {
+        self.task_work.begin_worker_install()
+    }
+
+    pub(crate) fn finish_task_work_worker_install(&self) {
+        self.task_work.finish_worker_install();
+    }
+
+    pub(crate) fn cancel_task_work_worker_install(&self) {
+        self.task_work.cancel_worker_install();
+    }
+
+    /// Reports whether a sticky task-work publication awaits the service thread.
+    pub fn deferred_task_work_pending(&self) -> bool {
+        self.task_work.is_pending()
+    }
+
+    /// Runs one bounded task-context pass as the single task-work consumer.
+    ///
+    /// Deadline callbacks are serialized before exit callbacks and resource
+    /// destruction. A concurrent or reentrant consumer receives
+    /// [`TaskError::ThreadBusy`] without consuming work.
+    pub fn service_deferred_task_work(
+        &self,
+        limit: usize,
+    ) -> Result<DeferredTaskWorkBatch, TaskError> {
+        const MAX_SERVICE_BATCH: usize = 64;
+
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
+        let limit = limit.min(MAX_SERVICE_BATCH);
+        if limit == 0 {
+            return Ok(DeferredTaskWorkBatch::default());
+        }
+        let _consumer: TaskWorkConsumerGuard<'_> = self.task_work.try_claim_consumer()?;
+        let (deadline_events, deadline_callbacks) = self.dispatch_deadline_overruns_inner(limit)?;
+        let exit_callbacks = self.dispatch_exit_callbacks_inner(limit)?;
+        let reaped_threads = self.reap_unreferenced_exited_inner(limit)?;
+        let reclaimed_resources = self.drain_deferred_reclaims_inner(limit)?;
+        Ok(DeferredTaskWorkBatch {
+            deadline_events,
+            deadline_callbacks,
+            exit_callbacks,
+            reaped_threads,
+            reclaimed_resources,
+        })
     }
 
     /// Reclaims at most `limit` resources in ordinary task context.
@@ -239,11 +395,16 @@ impl TaskSystem {
     ///
     /// Returns [`TaskError::UnsafeContext`] from hard IRQ context.
     pub fn drain_deferred_reclaims(&self, limit: usize) -> Result<usize, TaskError> {
-        const MAX_DRAIN_BATCH: usize = 64;
-
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
+        let _consumer = self.task_work.try_claim_consumer()?;
+        self.drain_deferred_reclaims_inner(limit)
+    }
+
+    fn drain_deferred_reclaims_inner(&self, limit: usize) -> Result<usize, TaskError> {
+        const MAX_DRAIN_BATCH: usize = 64;
+
         let mut messages = [InboxMessage::EMPTY; MAX_DRAIN_BATCH];
         let batch = self
             .deferred_reclaims
@@ -397,6 +558,7 @@ impl TaskSystem {
             policy,
             Arc::clone(&sched),
             switch_extension,
+            Some(Arc::clone(&self.task_work)),
         ));
         let record = ThreadRecord {
             core: Arc::clone(&core),
@@ -406,6 +568,7 @@ impl TaskSystem {
             blocked_on: None,
             exit_callback_pending: false,
             exit_callback_claimed: false,
+            deadline_callback_claimed: false,
         };
         let context = record.resources.context();
         if !context.is_none() {
@@ -425,7 +588,7 @@ impl TaskSystem {
             }
         }
         state.slots[slot as usize].record = Some(record);
-        Ok(ThreadHandle { core })
+        Ok(ThreadHandle::from_core(core))
     }
 
     /// Transitions a new or waking thread to `Ready`.
@@ -614,8 +777,11 @@ impl TaskSystem {
             let batch = remote.remote_wake_inbox().drain(limit, buffer);
             (batch.drained(), batch.pending())
         };
-        for index in 0..drained {
-            let message = cpu.remote_wake_buffer[index];
+        let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
+        detached[..drained].copy_from_slice(&cpu.remote_wake_buffer[..drained]);
+        let mut messages =
+            DetachedOwnerMessageBatch::new(&detached[..drained], DetachedPayloadKind::RemoteWake);
+        while let Some(message) = messages.next() {
             if message.payload() == 0 {
                 continue;
             }
@@ -668,8 +834,13 @@ impl TaskSystem {
                 .drain(limit, &mut fields.migration_buffer);
             (batch.drained(), batch.pending())
         };
-        for index in 0..drained {
-            let message = cpu.migration_buffer[index];
+        let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
+        detached[..drained].copy_from_slice(&cpu.migration_buffer[..drained]);
+        let mut messages = DetachedOwnerMessageBatch::new(
+            &detached[..drained],
+            DetachedPayloadKind::SchedulerDelivery,
+        );
+        while let Some(message) = messages.next() {
             if message.is_balance_request() {
                 let source = message
                     .source_cpu()
@@ -704,7 +875,17 @@ impl TaskSystem {
                     message.payload(),
                 ))
             };
+            let _delivery = core.accept_scheduler_inbox_delivery();
             if core.id() != message.thread_id() {
+                continue;
+            }
+            let Some(_activity) = core.try_scheduler_activity() else {
+                // Exit owns the transition gate and will clear any pending
+                // migration target before publishing the reaper retry.
+                continue;
+            };
+            if core.state() == ThreadState::Exited {
+                core.sched().lock().migration_target = None;
                 continue;
             }
             let owner = cpu.owner();
@@ -1507,6 +1688,20 @@ impl TaskSystem {
         self.complete_context_switch(cpu.as_mut())?;
         let now_ns = task_runtime::monotonic_ns();
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
+        self.commit_current_exit_after_owner_drain(cpu, now_ns)
+    }
+
+    /// Commits the non-returning half of current exit after owner work drained.
+    ///
+    /// The scheduler activity gate closes the intentional drain-to-commit
+    /// window against a newly publishing remote policy or affinity update. A
+    /// message that won before the gate remains an in-flight late delivery and
+    /// pins registry resources until its owner drains it as an exited no-op.
+    fn commit_current_exit_after_owner_drain(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
         let decision = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
@@ -1519,8 +1714,12 @@ impl TaskSystem {
             Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
             let previous_core = previous_core.ok_or(TaskError::NoRunnableThread)?;
             Self::detach_owner_deadline_bandwidth(&previous_core, cpu.as_mut())?;
+            let _exit = previous_core
+                .try_scheduler_exit()
+                .ok_or(TaskError::ThreadBusy)?;
             {
                 let mut sched = previous_core.sched().lock();
+                sched.migration_target = None;
                 sched.transition(&previous_core, ThreadState::Exited)?;
                 sched.running_cpu = None;
                 let record = state.thread_record_mut(previous)?;
@@ -1564,13 +1763,13 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         let previous = handoff.previous.id();
-        let migration_target = {
+        let (migration_target, previous_exited) = {
             let mut sched = handoff.previous.sched().lock();
             if sched.on_cpu != Some(cpu.owner()) {
                 return Err(TaskError::InvalidConfiguration);
             }
             sched.on_cpu = None;
-            match handoff.migration_target {
+            let migration_target = match handoff.migration_target {
                 Some(_) => {
                     let target = sched
                         .migration_target
@@ -1585,7 +1784,11 @@ impl TaskSystem {
                     Some(target)
                 }
                 None => None,
-            }
+            };
+            (
+                migration_target,
+                sched.lifecycle.state() == ThreadState::Exited,
+            )
         };
         if let Some(target) = migration_target {
             Self::detach_owner_deadline_bandwidth(&handoff.previous, cpu.as_mut())?;
@@ -1593,6 +1796,9 @@ impl TaskSystem {
         }
         debug_assert_eq!(previous, handoff.previous.id());
         self.publish_owner_cpu_load_summary(cpu.as_mut());
+        if previous_exited {
+            self.task_work.publish();
+        }
         Ok(())
     }
 
@@ -1975,6 +2181,7 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         dispatch.finish_runtime_accounting(now_ns);
+        let mut deadline_task_work = false;
         if let (Some(donor_core), Some(cbs_generation)) = (
             dispatch.deadline_donor_core(),
             dispatch.deadline_cbs_generation(),
@@ -2014,6 +2221,7 @@ impl TaskSystem {
                 donor.entity = donor.base_entity;
             }
             donor.deadline_overrun_events = next_overrun_events;
+            deadline_task_work |= dispatch.deadline_overrun;
             donor.deadline_cbs_borrower = None;
             donor.deadline_cbs_generation = next_cbs_generation;
         }
@@ -2022,6 +2230,10 @@ impl TaskSystem {
             .charged_runtime_ns
             .saturating_add(dispatch.charged_runtime_ns());
         if sched.dispatch_generation != dispatch.policy_generation {
+            drop(sched);
+            if deadline_task_work {
+                dispatch.runtime_core_arc().publish_task_work();
+            }
             return Ok(());
         }
         sched.entity = dispatch.entity;
@@ -2036,7 +2248,12 @@ impl TaskSystem {
                     .deadline_overrun_events
                     .checked_add(1)
                     .ok_or(TaskError::InvalidConfiguration)?;
+                deadline_task_work = true;
             }
+        }
+        drop(sched);
+        if deadline_task_work {
+            dispatch.runtime_core_arc().publish_task_work();
         }
         Ok(())
     }
@@ -2127,6 +2344,9 @@ impl TaskSystem {
         let remote = self
             .cpu_remote(inbox_cpu)
             .ok_or(TaskError::CpuOffline(inbox_cpu.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
         let pointer = Arc::as_ptr(core);
         unsafe {
             // The retained count is transferred to the intrusive inbox.
@@ -2148,6 +2368,7 @@ impl TaskSystem {
                 // A rejected/coalesced publication did not consume this count.
                 Arc::decrement_strong_count(pointer);
             }
+            core.cancel_scheduler_inbox_delivery();
         }
         Ok(())
     }
@@ -2161,6 +2382,9 @@ impl TaskSystem {
         let remote = self
             .cpu_remote(owner)
             .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
         let pointer = Arc::as_ptr(core);
         // SAFETY: this count is transferred to the embedded inbox node and
         // consumed by exactly one later owner drain.
@@ -2178,6 +2402,7 @@ impl TaskSystem {
             // SAFETY: rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
         }
         Ok(())
     }
@@ -2190,6 +2415,9 @@ impl TaskSystem {
         let record = state.thread_record(thread)?;
         let core = Arc::clone(&record.core);
         let mut sched = record.sched.lock();
+        if sched.lifecycle.state() == ThreadState::Exited {
+            return Err(TaskError::NotReady);
+        }
         let is_deadline = matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
             || matches!(sched.base_policy, SchedulePolicy::Deadline(_));
         if is_deadline && !affinity.covers(&root_domain.online) {
@@ -2306,9 +2534,9 @@ impl TaskSystem {
         Ok(())
     }
 
-    /// Marks a non-queued thread exited and invokes its task-context exit hook.
+    /// Marks a non-queued thread exited and queues its task-context exit hook.
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
-        let extension = {
+        {
             let mut state = self.state.lock();
             let cleanup_deadline_member = {
                 let record = state.thread_record_mut(thread)?;
@@ -2336,31 +2564,30 @@ impl TaskSystem {
                 state.request_owner_reschedule(thread);
                 return Err(TaskError::ThreadBusy);
             }
-            let record = state.thread_record_mut(thread)?;
-            let mut sched = record.sched.lock();
-            sched.transition(&record.core, ThreadState::Exited)?;
-            record.exit_callback_pending = record.extension.is_some();
-            record.exit_callback_claimed = record.exit_callback_pending;
-            let extension = record.extension.as_ref().map(ThreadExtension::as_view);
-            drop(sched);
-            state.release_deadline_reservation_on_exit(thread)?;
-            extension
-        };
-        if let Some(extension) = extension {
-            // SAFETY: ThreadExtension::new requires the OS to keep `data` valid
-            // for this callback table until the reaper invokes `drop`.
-            unsafe { (extension.ops().on_exit)(extension.data(), thread) };
-            let mut state = self.state.lock();
-            let record = state.thread_record_mut(thread)?;
-            if !record.exit_callback_pending
-                || !record.exit_callback_claimed
-                || record.sched.lock().on_cpu.is_some()
             {
-                return Err(TaskError::InvalidConfiguration);
+                let record = state.thread_record_mut(thread)?;
+                let _exit = record
+                    .core
+                    .try_scheduler_exit()
+                    .ok_or(TaskError::ThreadBusy)?;
+                let mut sched = record.sched.lock();
+                if sched.queued_cpu.is_some() || sched.running_cpu.is_some() {
+                    return Err(TaskError::AlreadyQueued);
+                }
+                if sched.on_cpu.is_some() || sched.deadline_cbs_borrower.is_some() {
+                    return Err(TaskError::ThreadBusy);
+                }
+                if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
+                    return Err(TaskError::InvalidPiState);
+                }
+                sched.migration_target = None;
+                sched.transition(&record.core, ThreadState::Exited)?;
+                record.exit_callback_pending = record.extension.is_some();
+                record.exit_callback_claimed = false;
             }
-            record.exit_callback_pending = false;
-            record.exit_callback_claimed = false;
+            state.release_deadline_reservation_on_exit(thread)?;
         }
+        self.task_work.publish();
         Ok(())
     }
 
@@ -2376,6 +2603,11 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
+        let _consumer = self.task_work.try_claim_consumer()?;
+        self.dispatch_exit_callbacks_inner(limit)
+    }
+
+    fn dispatch_exit_callbacks_inner(&self, limit: usize) -> Result<usize, TaskError> {
         let mut dispatched = 0;
         while dispatched < limit {
             let callback = {
@@ -2396,6 +2628,9 @@ impl TaskSystem {
 
     /// Removes an exited registry record and makes its slot reusable.
     pub fn reap_thread(&self, thread: ThreadId) -> Result<(), TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
         let record = {
             let mut state = self.state.lock();
             state.remove_exited_thread(thread)?
@@ -2436,6 +2671,11 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return Err(TaskError::UnsafeContext);
         }
+        let _consumer = self.task_work.try_claim_consumer()?;
+        self.reap_unreferenced_exited_inner(limit)
+    }
+
+    fn reap_unreferenced_exited_inner(&self, limit: usize) -> Result<usize, TaskError> {
         let mut reaped = 0;
         while reaped < limit {
             let record = {
@@ -2526,9 +2766,7 @@ impl TaskSystem {
     pub fn thread_handle(&self, thread: ThreadId) -> Result<ThreadHandle, TaskError> {
         let state = self.state.lock();
         let record = state.thread_record(thread)?;
-        Ok(ThreadHandle {
-            core: Arc::clone(&record.core),
-        })
+        Ok(ThreadHandle::from_core(Arc::clone(&record.core)))
     }
 
     /// Borrows the opaque OS extension through a generation-valid strong handle.
@@ -2590,6 +2828,9 @@ impl TaskSystem {
             (Arc::clone(&record.core), Arc::clone(&record.sched))
         };
         let mut sched = sched_cell.lock();
+        if sched.lifecycle.state() == ThreadState::Exited {
+            return Err(TaskError::NotReady);
+        }
         let active_reservation = u128::from(sched.active_deadline_reservation);
         let desired_reservation = u128::from(sched.desired_deadline_reservation);
         let affinity = sched.affinity.clone();
@@ -2694,52 +2935,53 @@ impl TaskSystem {
         })
     }
 
-    /// Runs a bounded batch of deferred Deadline overrun callbacks.
+    /// Runs a bounded, allocation-free batch of deferred Deadline callbacks.
     ///
     /// Timer IRQ only publishes pending state. This task-context operation drops
-    /// the registry lock before invoking any OS extension callback.
-    pub fn dispatch_deadline_overruns(&self, limit: usize) -> usize {
-        let callbacks = {
-            let mut state = self.state.lock();
-            let mut callbacks = Vec::with_capacity(limit.min(state.slots.len()));
-            let mut processed = 0;
-            for slot in &mut state.slots {
-                if processed == limit {
-                    break;
-                }
-                let Some(record) = &mut slot.record else {
-                    continue;
-                };
-                let mut sched = record.sched.lock();
-                if sched.deadline_overrun_events == 0 {
-                    continue;
-                }
-                let events = sched
-                    .deadline_overrun_events
-                    .min(u64::try_from(limit - processed).unwrap_or(u64::MAX));
-                sched.deadline_overrun_events -= events;
-                let events = usize::try_from(events).unwrap_or(limit - processed);
-                processed += events;
-                if let Some(extension) = record.extension.as_ref() {
-                    callbacks.extend((0..events).map(|_| {
-                        (
-                            extension.as_view(),
-                            record.core.id(),
-                            Arc::clone(&record.core),
-                        )
-                    }));
-                }
-            }
-            callbacks
-        };
-        for (extension, thread, _retained_core) in &callbacks {
-            // SAFETY: the retained core keeps the extension's registry record
-            // live and callbacks run only after releasing scheduler locks.
-            unsafe {
-                (extension.ops().on_deadline_overrun)(extension.data(), *thread);
-            }
+    /// the registry lock before invoking any OS extension callback. Callback
+    /// collection retains one existing thread-core reference at a time instead
+    /// of allocating temporary storage in a scheduler-adjacent safe point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::UnsafeContext`] without consuming an event in hard
+    /// IRQ context, and [`TaskError::ThreadBusy`] when another task-work
+    /// consumer is already active.
+    pub fn dispatch_deadline_overruns(&self, limit: usize) -> Result<usize, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
         }
-        callbacks.len()
+        let _consumer = self.task_work.try_claim_consumer()?;
+        self.dispatch_deadline_overruns_inner(limit)
+            .map(|(_, dispatched)| dispatched)
+    }
+
+    fn dispatch_deadline_overruns_inner(&self, limit: usize) -> Result<(usize, usize), TaskError> {
+        const MAX_DISPATCH_BATCH: usize = 64;
+
+        let mut processed = 0;
+        let mut dispatched = 0;
+        while processed < limit.min(MAX_DISPATCH_BATCH) {
+            let claimed = {
+                let mut state = self.state.lock();
+                state.claim_pending_deadline_overrun()
+            };
+            let Some(callback) = claimed else {
+                break;
+            };
+            processed += 1;
+            let Some((extension, thread)) = callback else {
+                continue;
+            };
+            // SAFETY: the registry's callback claim prevents reaping while the
+            // callback runs, and every scheduler lock was released above.
+            unsafe {
+                (extension.ops().on_deadline_overrun)(extension.data(), thread);
+            }
+            self.state.lock().finish_deadline_callback(thread)?;
+            dispatched += 1;
+        }
+        Ok((processed, dispatched))
     }
 
     /// Creates a donation edge and a wake-before-block handshake token.
@@ -3500,6 +3742,33 @@ impl TaskSystem {
 }
 
 impl TaskSystemState {
+    fn claim_pending_deadline_overrun(
+        &mut self,
+    ) -> Option<Option<(ThreadExtensionView, ThreadId)>> {
+        let slot_count = self.slots.len();
+        if slot_count == 0 {
+            return None;
+        }
+        let start = self.deadline_callback_cursor % slot_count;
+        for offset in 0..slot_count {
+            let index = (start + offset) % slot_count;
+            let Some(record) = self.slots[index].record.as_mut() else {
+                continue;
+            };
+            let mut sched = record.sched.lock();
+            if sched.deadline_overrun_events == 0 || record.deadline_callback_claimed {
+                continue;
+            }
+            sched.deadline_overrun_events -= 1;
+            self.deadline_callback_cursor = (index + 1) % slot_count;
+            return Some(record.extension.as_ref().map(|extension| {
+                record.deadline_callback_claimed = true;
+                (extension.as_view(), record.core.id())
+            }));
+        }
+        None
+    }
+
     fn reserve_deadline(
         &mut self,
         policy: SchedulePolicy,
@@ -3610,13 +3879,13 @@ impl TaskSystemState {
     }
 
     fn remove_exited_thread(&mut self, thread: ThreadId) -> Result<ThreadRecord, TaskError> {
-        self.remove_exited_thread_with_count(thread, 1, None)
+        self.remove_exited_thread_with_lease_count(thread, 0, None)
     }
 
-    fn remove_exited_thread_with_count(
+    fn remove_exited_thread_with_lease_count(
         &mut self,
         thread: ThreadId,
-        expected_strong_count: usize,
+        expected_external_leases: usize,
         expected_core: Option<*const ThreadCore>,
     ) -> Result<ThreadRecord, TaskError> {
         let slot_index = thread.slot() as usize;
@@ -3637,12 +3906,15 @@ impl TaskSystemState {
                 return Err(TaskError::NotExited);
             }
             if sched.on_cpu.is_some()
+                || sched.migration_target.is_some()
                 || sched.deadline_bandwidth_cpu.is_some()
                 || sched.deadline_cleanup_pending
                 || sched.deadline_cbs_borrower.is_some()
                 || sched.deadline_overrun_events != 0
+                || record.deadline_callback_claimed
                 || record.exit_callback_pending
                 || record.exit_callback_claimed
+                || record.core.scheduler_inbox_delivery_count() != 0
             {
                 return Err(TaskError::ThreadBusy);
             }
@@ -3655,7 +3927,7 @@ impl TaskSystemState {
             if expected_core.is_some_and(|core| !core::ptr::eq(core, Arc::as_ptr(&record.core))) {
                 return Err(TaskError::StaleThreadId);
             }
-            if Arc::strong_count(&record.core) != expected_strong_count {
+            if record.core.external_lease_count() != expected_external_leases {
                 return Err(TaskError::ThreadBusy);
             }
             Ok(())
@@ -3681,7 +3953,7 @@ impl TaskSystemState {
         &mut self,
         handle: &ThreadHandle,
     ) -> Result<ThreadRecord, TaskError> {
-        self.remove_exited_thread_with_count(handle.id(), 2, Some(Arc::as_ptr(&handle.core)))
+        self.remove_exited_thread_with_lease_count(handle.id(), 1, Some(Arc::as_ptr(&handle.core)))
     }
 
     fn take_unreferenced_exited(&mut self) -> Result<Option<ThreadRecord>, TaskError> {
@@ -3694,12 +3966,15 @@ impl TaskSystemState {
                 let sched = record.sched.lock();
                 if sched.lifecycle.state() != ThreadState::Exited
                     || sched.on_cpu.is_some()
+                    || sched.migration_target.is_some()
                     || sched.deadline_bandwidth_cpu.is_some()
                     || sched.deadline_cleanup_pending
                     || sched.deadline_cbs_borrower.is_some()
                     || sched.deadline_overrun_events != 0
+                    || record.deadline_callback_claimed
                     || record.exit_callback_pending
                     || record.exit_callback_claimed
+                    || record.core.scheduler_inbox_delivery_count() != 0
                     || record.core.sleep_timer_cpu().is_some()
                 {
                     continue;
@@ -3708,7 +3983,7 @@ impl TaskSystemState {
                     .expect("thread registry slot must fit the ThreadId representation");
                 ThreadId::from_parts(slot_index, slot.generation)
             };
-            match self.remove_exited_thread_with_count(thread, 1, None) {
+            match self.remove_exited_thread_with_lease_count(thread, 0, None) {
                 Ok(record) => return Ok(Some(record)),
                 Err(TaskError::ThreadBusy) => continue,
                 Err(error) => return Err(error),
@@ -3727,6 +4002,8 @@ impl TaskSystemState {
             let sched = record.sched.lock();
             if sched.lifecycle.state() != ThreadState::Exited
                 || sched.on_cpu.is_some()
+                || sched.deadline_overrun_events != 0
+                || record.deadline_callback_claimed
                 || !record.exit_callback_pending
                 || record.exit_callback_claimed
             {
@@ -3759,6 +4036,15 @@ impl TaskSystemState {
         }
         record.exit_callback_pending = false;
         record.exit_callback_claimed = false;
+        Ok(())
+    }
+
+    fn finish_deadline_callback(&mut self, thread: ThreadId) -> Result<(), TaskError> {
+        let record = self.thread_record_mut(thread)?;
+        if !record.deadline_callback_claimed {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        record.deadline_callback_claimed = false;
         Ok(())
     }
 
@@ -3812,6 +4098,9 @@ impl TaskSystemState {
         let cpu_local = self
             .cpu_remote(inbox_cpu)
             .ok_or(TaskError::CpuOffline(inbox_cpu.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
         let pointer = Arc::as_ptr(core);
         // SAFETY: the retained count is transferred to the intrusive inbox
         // message and released by exactly one owner drain.
@@ -3831,6 +4120,7 @@ impl TaskSystemState {
             // SAFETY: a rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
         }
         Ok(())
     }
@@ -3854,6 +4144,9 @@ impl TaskSystemState {
             let Some(cpu_local) = self.cpu_remote(cpu) else {
                 return;
             };
+            if !record.core.reserve_scheduler_inbox_delivery() {
+                return;
+            }
             // SAFETY: this retained Arc count is transferred to the embedded
             // policy-update node and released by the owner drain.
             unsafe { Arc::increment_strong_count(core) };
@@ -3871,6 +4164,7 @@ impl TaskSystemState {
                 // SAFETY: rejected/coalesced publication did not consume the
                 // retained count allocated for this attempt.
                 unsafe { Arc::decrement_strong_count(core) };
+                record.core.cancel_scheduler_inbox_delivery();
             }
         }
     }
@@ -4255,6 +4549,7 @@ struct ThreadRecord {
     blocked_on: Option<PiWaitRegistration>,
     exit_callback_pending: bool,
     exit_callback_claimed: bool,
+    deadline_callback_claimed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4641,6 +4936,215 @@ mod tests {
     }
 
     #[test]
+    fn last_non_idle_exit_publishes_work_only_after_switch_tail() {
+        EXIT_CALLBACK_INVOCATIONS.store(0, Ordering::Release);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let extension = unsafe {
+            // SAFETY: the callback table ignores its scalar payload and records
+            // only ordinary-context exit invocation.
+            ThreadExtension::new(0, &EXIT_CALLBACK_TEST_OPS)
+        };
+        let exiting = system
+            .install_bootstrap_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+            )
+            .unwrap();
+        let exiting_id = exiting.id();
+        let idle = system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        drop(exiting);
+        drop(idle);
+
+        let decision = system.exit_current(cpu.as_mut()).unwrap();
+        assert_eq!(decision.next(), cpu.idle().unwrap());
+        assert!(
+            !system.deferred_task_work_pending(),
+            "the outgoing stack remains on_cpu until switch tail"
+        );
+        assert_eq!(EXIT_CALLBACK_INVOCATIONS.load(Ordering::Acquire), 0);
+
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        assert!(system.deferred_task_work_pending());
+        let batch = system.service_deferred_task_work(64).unwrap();
+        assert!(batch.made_progress());
+        assert_eq!(EXIT_CALLBACK_INVOCATIONS.load(Ordering::Acquire), 1);
+        assert_eq!(
+            system.thread_state(exiting_id),
+            Err(TaskError::StaleThreadId),
+            "the dedicated service pass must also reap the detached record"
+        );
+    }
+
+    #[test]
+    fn deadline_task_work_rotates_across_registry_slots() {
+        ROTATING_DEADLINE_CALLBACKS.store(0, Ordering::Release);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let low_slot = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let high_slot = system
+            .create_thread(
+                ThreadSpec::new(SchedulePolicy::default()).with_extension(unsafe {
+                    // SAFETY: the static callbacks accept the scalar test payload.
+                    ThreadExtension::new(0, &ROTATING_DEADLINE_TEST_OPS)
+                }),
+            )
+            .unwrap();
+        let high_slot_id = high_slot.id();
+        {
+            let state = system.state.lock();
+            state
+                .thread_record(low_slot.id())
+                .unwrap()
+                .sched
+                .lock()
+                .deadline_overrun_events = 1;
+            state
+                .thread_record(high_slot_id)
+                .unwrap()
+                .sched
+                .lock()
+                .deadline_overrun_events = 1;
+        }
+        system.mark_exited(high_slot_id).unwrap();
+        drop(high_slot);
+
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
+        assert_eq!(system.thread_state(high_slot_id), Ok(ThreadState::Exited));
+        {
+            let state = system.state.lock();
+            state
+                .thread_record(low_slot.id())
+                .unwrap()
+                .sched
+                .lock()
+                .deadline_overrun_events += 1;
+        }
+
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
+        assert_eq!(ROTATING_DEADLINE_CALLBACKS.load(Ordering::Acquire), 1);
+        assert_eq!(
+            system.thread_state(high_slot_id),
+            Err(TaskError::StaleThreadId),
+            "a continuously replenished low slot must not starve exit and reaping"
+        );
+    }
+
+    #[test]
+    fn last_handle_drop_publishes_after_its_strong_reference_is_released() {
+        let system = Arc::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let thread_id = thread.id();
+        system.mark_exited(thread_id).unwrap();
+
+        assert!(system.task_work.take_pending());
+        let first_pass = system.service_deferred_task_work(64).unwrap();
+        assert_eq!(first_pass.reaped_threads, 0);
+
+        let barrier: &'static crate::task_work::TestPublishBarrier =
+            Box::leak(Box::new(crate::task_work::TestPublishBarrier::new()));
+        system.task_work.install_test_publish_barrier(barrier);
+        let dropper = std::thread::spawn(move || drop(thread));
+        barrier.wait_until_entered();
+
+        assert!(system.task_work.take_pending());
+        let racing_pass = system.service_deferred_task_work(64).unwrap();
+        barrier.release();
+        dropper.join().unwrap();
+
+        assert_eq!(
+            racing_pass.reaped_threads, 1,
+            "the drop notification must become visible only after its Arc count decreases"
+        );
+        assert_eq!(
+            system.thread_state(thread_id),
+            Err(TaskError::StaleThreadId)
+        );
+    }
+
+    #[test]
+    fn public_task_work_consumers_cannot_bypass_single_consumer_ownership() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let _consumer = system.task_work.try_claim_consumer().unwrap();
+
+        assert_eq!(
+            system.dispatch_exit_callbacks(1),
+            Err(TaskError::ThreadBusy)
+        );
+        assert_eq!(
+            system.reap_unreferenced_exited(1),
+            Err(TaskError::ThreadBusy)
+        );
+        assert_eq!(
+            system.drain_deferred_reclaims(1),
+            Err(TaskError::ThreadBusy)
+        );
+    }
+
+    #[test]
+    fn switch_handoff_core_reference_does_not_block_detached_reaping() {
+        let system = Arc::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let exiting = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let exiting_id = exiting.id();
+        let idle = system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        drop(exiting);
+        drop(idle);
+
+        let decision = system.exit_current(cpu.as_mut()).unwrap();
+        assert_eq!(decision.next(), cpu.idle().unwrap());
+        let barrier: &'static crate::task_work::TestPublishBarrier =
+            Box::leak(Box::new(crate::task_work::TestPublishBarrier::new()));
+        system.task_work.install_test_publish_barrier(barrier);
+        let service_system = Arc::clone(&system);
+        let service = std::thread::spawn(move || {
+            barrier.wait_until_entered();
+            assert!(service_system.task_work.take_pending());
+            let batch = service_system.service_deferred_task_work(64).unwrap();
+            barrier.release();
+            batch
+        });
+
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        let racing_pass = service.join().unwrap();
+        assert_eq!(
+            racing_pass.reaped_threads, 1,
+            "scheduler-internal core references must not count as external lifetime leases"
+        );
+        assert_eq!(
+            system.thread_state(exiting_id),
+            Err(TaskError::StaleThreadId)
+        );
+    }
+
+    #[test]
     fn owned_reap_returns_handle_until_other_wake_references_are_gone() {
         let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
         let thread = system
@@ -4682,6 +5186,12 @@ mod tests {
         };
         assert!(core::ptr::eq(view.ops(), &DEADLINE_TEST_EXTENSION_OPS));
         system.mark_exited(thread.id()).unwrap();
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
         system.reap_thread_handle(thread).unwrap();
     }
 
@@ -4723,6 +5233,156 @@ mod tests {
 
         system.complete_context_switch(cpu.as_mut()).unwrap();
         system.reap_thread(exiting).unwrap();
+    }
+
+    #[test]
+    fn remote_affinity_published_after_exit_drain_is_a_late_noop() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let exiting = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let exiting_id = exiting.id();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+
+        system.drain_owner_work(cpu0.as_mut(), 0).unwrap();
+        let mut target_only = CpuSet::empty(2);
+        assert!(target_only.insert(CpuId::new(1)));
+        system.set_affinity(exiting_id, target_only).unwrap();
+        assert!(cpu0.has_remote_work());
+
+        system
+            .commit_current_exit_after_owner_drain(cpu0.as_mut(), 1)
+            .unwrap();
+        drop(exiting);
+        system.complete_context_switch(cpu0.as_mut()).unwrap();
+        assert_eq!(
+            system.service_deferred_task_work(1).unwrap().processed(),
+            0,
+            "the in-flight affinity delivery must pin the exited record"
+        );
+
+        system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
+        assert_eq!(cpu1.runnable_summary(), 0);
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
+        assert_eq!(
+            system.thread_state(exiting_id),
+            Err(TaskError::StaleThreadId)
+        );
+    }
+
+    #[test]
+    fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        let exiting = system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let exiting_id = exiting.id();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+
+        system.drain_owner_work(cpu0.as_mut(), 0).unwrap();
+        let deadline =
+            SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 10, DeadlineFlags::NONE).unwrap());
+        system.set_thread_policy(exiting_id, deadline).unwrap();
+        assert!(cpu0.has_remote_work());
+
+        system
+            .commit_current_exit_after_owner_drain(cpu0.as_mut(), 1)
+            .unwrap();
+        drop(exiting);
+        system.complete_context_switch(cpu0.as_mut()).unwrap();
+        assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 0);
+
+        system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
+        assert_eq!(
+            system.deadline_activity(exiting_id),
+            Err(TaskError::InvalidConfiguration),
+            "late policy delivery must not register an exited Deadline member"
+        );
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
+        assert_eq!(
+            system.thread_state(exiting_id),
+            Err(TaskError::StaleThreadId)
+        );
+    }
+
+    #[test]
+    fn failed_owner_batch_releases_all_detached_payloads() {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let thread_id = thread.id();
+        system.make_ready(thread_id).unwrap();
+        system.enqueue(cpu1.as_mut(), thread_id, 0).unwrap();
+
+        let malformed_owner = InboxMessage::balance_request(CpuId::new(0), CpuId::new(1), 1);
+        assert_eq!(
+            cpu1.remote()
+                .publish_migration(cpu0.balance_request_node(), malformed_owner),
+            PublishResult::Published
+        );
+        system
+            .set_thread_policy(
+                thread_id,
+                SchedulePolicy::fifo(RtPriority::new(80).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(
+            system.drain_policy_updates(cpu1.as_mut(), 1),
+            Err(TaskError::CpuOwnerMismatch {
+                expected: 0,
+                actual: 1,
+            })
+        );
+
+        system.dequeue(cpu1.as_mut(), thread_id).unwrap();
+        system.mark_exited(thread_id).unwrap();
+        drop(thread);
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress()
+        );
+        assert_eq!(
+            system.thread_state(thread_id),
+            Err(TaskError::StaleThreadId),
+            "an error in one detached message must release later retained payloads"
+        );
     }
 
     #[test]
@@ -5473,7 +6133,7 @@ mod tests {
             .set_thread_policy(donor.id(), SchedulePolicy::default())
             .unwrap();
         system.drain_policy_updates(cpu.as_mut(), 10).unwrap();
-        assert_eq!(system.dispatch_deadline_overruns(1), 1);
+        assert_eq!(system.dispatch_deadline_overruns(1), Ok(1));
         assert_eq!(DEADLINE_OVERRUN_CALLBACKS.load(Ordering::Relaxed), 1);
     }
 
@@ -5714,6 +6374,16 @@ mod tests {
         drop: no_extension_drop,
     };
 
+    static ROTATING_DEADLINE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    static ROTATING_DEADLINE_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
+        on_switch_in: no_extension_hook,
+        on_switch_out: no_extension_switch_out,
+        on_exit: no_extension_hook,
+        on_deadline_overrun: count_rotating_deadline_overrun,
+        drop: no_extension_drop,
+    };
+
     static EXIT_CALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
     static EXIT_CALLBACK_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
@@ -5735,6 +6405,10 @@ mod tests {
 
     unsafe extern "Rust" fn count_deadline_overrun(_data: usize, _thread: ThreadId) {
         DEADLINE_OVERRUN_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe extern "Rust" fn count_rotating_deadline_overrun(_data: usize, _thread: ThreadId) {
+        ROTATING_DEADLINE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
     }
 
     unsafe extern "Rust" fn count_exit_callback(_data: usize, _thread: ThreadId) {

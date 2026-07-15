@@ -254,10 +254,12 @@ impl RuntimeGuardState {
     }
 
     #[cfg(any(feature = "multitask", test))]
-    fn exit_scheduler_preempt(&mut self) {
+    fn exit_scheduler_preempt(&mut self, owner: &'static str) {
         assert!(
             self.irq.is_clear(),
-            "scheduler frame exited with a live IRQ guard"
+            "{owner} exited with live IRQ guard depth={}, outer_enabled={}",
+            self.irq.depth,
+            self.irq.outer_irqs_enabled,
         );
         assert!(
             self.preempt.has_one_scheduler_frame(),
@@ -361,8 +363,10 @@ pub(crate) fn exit_irq(owner: &'static str) {
 
 #[cfg(feature = "multitask")]
 pub(crate) fn finish_initial_context_switch() {
-    let _task_context_safe =
-        exit_scheduler_frame_guard(ax_task::runtime::RuntimeSchedulerReturn::Task);
+    let _task_context_safe = exit_scheduler_frame_guard_inner(
+        ax_task::runtime::RuntimeSchedulerReturn::Task,
+        "initial scheduler frame",
+    );
 }
 
 fn update_preempt_state(operation: impl FnOnce(&mut RuntimeGuardState)) {
@@ -462,6 +466,14 @@ pub(crate) fn enter_scheduler_frame_guard(
 pub(crate) fn exit_scheduler_frame_guard(
     return_to: ax_task::runtime::RuntimeSchedulerReturn,
 ) -> bool {
+    exit_scheduler_frame_guard_inner(return_to, "resumed scheduler frame")
+}
+
+#[cfg(feature = "multitask")]
+fn exit_scheduler_frame_guard_inner(
+    return_to: ax_task::runtime::RuntimeSchedulerReturn,
+    owner: &'static str,
+) -> bool {
     use ax_task::runtime::RuntimeSchedulerReturn;
 
     assert!(
@@ -469,7 +481,7 @@ pub(crate) fn exit_scheduler_frame_guard(
         "scheduler baton must keep hardware IRQs disabled until switch tail"
     );
     let mut state = read_state();
-    state.exit_scheduler_preempt();
+    state.exit_scheduler_preempt(owner);
     write_state(state);
     match return_to {
         RuntimeSchedulerReturn::Task => {
@@ -720,7 +732,7 @@ mod tests {
             SchedulerBatonState::Transferred
         );
 
-        state.exit_scheduler_preempt();
+        state.exit_scheduler_preempt("test scheduler frame");
         assert!(state.preempt.is_clear());
         assert_eq!(state.preempt.scheduler_baton, SchedulerBatonState::Finished);
     }
@@ -752,13 +764,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "scheduler frame exited with a live IRQ guard")]
+    #[should_panic(expected = "test scheduler frame exited with live IRQ guard depth=1")]
     fn scheduler_frame_cannot_cross_a_live_irq_guard() {
         let mut state = RuntimeGuardState::new();
         assert!(state.claim_task_scheduler());
         state.enter_irq(true);
 
-        state.exit_scheduler_preempt();
+        state.exit_scheduler_preempt("test scheduler frame");
     }
 
     #[test]
@@ -778,7 +790,7 @@ mod tests {
         let mut state = RuntimeGuardState::new();
         assert!(state.claim_task_scheduler());
 
-        state.exit_scheduler_preempt();
+        state.exit_scheduler_preempt("test scheduler frame");
         assert!(state.preempt.is_clear());
     }
 

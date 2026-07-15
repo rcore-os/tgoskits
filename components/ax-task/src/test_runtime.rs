@@ -31,6 +31,8 @@ std::thread_local! {
     static CONTEXT_SWITCH_TAIL_COUNT: Cell<usize> = const { Cell::new(0) };
     static HOOK_REENTRY_QUERY: Cell<HookReentryQuery> = const { Cell::new(HookReentryQuery::None) };
     static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
+    static IRQ_EXIT_SCHEDULE_REMAINING: Cell<usize> = const { Cell::new(0) };
+    static IRQ_EXIT_SCHEDULE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone, Copy)]
@@ -115,6 +117,24 @@ impl TaskRuntime for UnitTestRuntime {
                 .expect("test IRQ token must be active");
             tokens.swap_remove(index);
         });
+        let may_reenter = ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
+            && SCHEDULER_FRAME_DEPTH.with(|depth| depth.get() == 0)
+            && !IRQ_EXIT_SCHEDULE_ACTIVE.with(Cell::get)
+            && IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| {
+                let current = remaining.get();
+                if current == 0 {
+                    false
+                } else {
+                    remaining.set(current - 1);
+                    true
+                }
+            });
+        if may_reenter {
+            IRQ_EXIT_SCHEDULE_ACTIVE.with(|active| active.set(true));
+            crate::schedule_current_cpu()
+                .expect("configured IRQ-exit scheduler reentry must reach a safe point");
+            IRQ_EXIT_SCHEDULE_ACTIVE.with(|active| active.set(false));
+        }
     }
 
     fn finish_context_switch_tail() -> RuntimeStatus {
@@ -322,6 +342,15 @@ pub(crate) fn reenter_needs_reschedule_from_next_hook() {
 
 pub(crate) fn take_hook_reentry_error() -> Option<crate::TaskError> {
     HOOK_REENTRY_ERROR.with(|observed| observed.take())
+}
+
+pub(crate) fn configure_irq_exit_schedule_reentry(count: usize) {
+    IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| remaining.set(count));
+    IRQ_EXIT_SCHEDULE_ACTIVE.with(|active| active.set(false));
+}
+
+pub(crate) fn irq_exit_schedule_reentry_active() -> bool {
+    IRQ_EXIT_SCHEDULE_ACTIVE.with(Cell::get)
 }
 
 pub(crate) fn scheduler_frame_state() -> (usize, usize, usize) {

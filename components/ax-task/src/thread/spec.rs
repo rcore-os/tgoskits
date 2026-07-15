@@ -247,7 +247,9 @@ impl ThreadExtension {
     ///
     /// `data` must satisfy every callback contract in `ops`, and the owning OS
     /// must ensure callbacks do not allocate, block, or re-enter the scheduler
-    /// when invoked as switch hooks.
+    /// when invoked as switch hooks. Task-context callbacks must return to the
+    /// dedicated service thread; abandoning that stack leaves their explicit
+    /// in-flight lifetime claim closed to prevent use-after-free.
     pub const unsafe fn new(data: usize, ops: &'static ThreadExtensionOps) -> Self {
         Self { data, ops }
     }

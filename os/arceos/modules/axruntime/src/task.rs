@@ -665,6 +665,11 @@ pub(crate) fn publish_current_cpu_online() -> Result<(), TaskError> {
     system.bring_cpu_online(cpu.as_mut())
 }
 
+/// Starts the single ordinary-context worker for scheduler callbacks/reaping.
+pub(crate) fn start_deferred_task_work_service() -> Result<(), TaskError> {
+    ax_task::start_deferred_task_work_service()
+}
+
 /// Runs the owner CPU's scheduler/idle handshake forever.
 pub(crate) fn run_idle() -> ! {
     let guard = IrqGuard::new();

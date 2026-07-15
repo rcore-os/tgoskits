@@ -1,11 +1,13 @@
 //! Runtime-backed scheduler facade for crates below `ax-runtime`.
 
+use alloc::{boxed::Box, string::String};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, Nice, ParkCommit, ParkPrepare, PiLockId,
-    PiWaitToken, RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError,
-    TaskSystem, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
+    CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
+    IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiWaitToken, RtPriority,
+    ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
+    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
     ThreadWakeHandle, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
@@ -134,7 +136,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
     let system = runtime_task_system()?;
     drain_current_expired_timers(system, &mut scheduler_frame)?;
     let now_ns = task_runtime::monotonic_ns();
-    let (batch_limit, decision, now_ns) = {
+    let (decision, now_ns) = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let must_migrate = system.set_current_affinity(cpu.as_mut(), affinity)?;
         if !must_migrate {
@@ -145,7 +147,6 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         // baton and raw IRQ mask continuously owned until this context has moved;
         // exposing an IRQ-enabled validation window here could let IRQ-return
         // scheduling migrate the caller between publishing the mask and yielding.
-        let batch_limit = cpu.batch_limit();
         let thread = cpu.current().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0020, 0);
         });
@@ -157,9 +158,8 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
                 // therefore runtime invariants, like failures after exit publication.
                 task_runtime::fatal_invariant(0x4558_0021, thread.as_u64() as usize);
             });
-        (batch_limit, decision, now_ns)
+        (decision, now_ns)
     };
-    scheduler_frame.arm_deferred(system, batch_limit);
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     Ok(())
 }
@@ -238,15 +238,10 @@ pub unsafe fn finish_initial_context_switch() -> Result<(), TaskError> {
     if task_runtime::in_hard_irq() {
         return Err(TaskError::UnsafeContext);
     }
-    let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
-    let batch_limit = runtime_current_cpu_mut(&mut irq)?.batch_limit();
     complete_current_context_switch_tail(&mut irq)?;
     drop(irq);
     task_runtime::finish_initial_context_switch();
-    if current_accepts_task_work()? {
-        run_deferred_task_work(system, batch_limit)?;
-    }
     Ok(())
 }
 
@@ -304,13 +299,10 @@ pub(crate) fn commit_current_park(token: crate::ParkToken) -> Result<(), TaskErr
     let system = runtime_task_system()?;
     drain_current_expired_timers(system, &mut scheduler_frame)?;
     let now_ns = task_runtime::monotonic_ns();
-    let (batch_limit, commit) = {
+    let commit = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
-        let batch_limit = cpu.batch_limit();
-        let commit = system.commit_park(cpu.as_mut(), token)?;
-        (batch_limit, commit)
+        system.commit_park(cpu.as_mut(), token)?
     };
-    scheduler_frame.arm_deferred(system, batch_limit);
     match commit {
         ParkCommit::Notified => Ok(()),
         ParkCommit::Blocked(decision) => {
@@ -504,6 +496,129 @@ pub(crate) fn drain_deferred_reclaims(limit: usize) -> Result<usize, TaskError> 
     runtime_task_system()?.drain_deferred_reclaims(limit)
 }
 
+/// Creates the shutdown-lifetime service thread for callbacks and reclamation.
+///
+/// A runtime must call this once after publishing its primary scheduler CPU and
+/// before allowing ordinary application threads to exit. The service is the
+/// only consumer of deferred Deadline, exit, and destruction work.
+pub fn start_deferred_task_work_service() -> Result<(), TaskError> {
+    let system = runtime_task_system()?;
+    system.begin_task_work_worker_install()?;
+    let worker =
+        match ThreadBuilder::new(String::from("ax-task-reaper")).spawn(task_work_service_entry) {
+            Ok(worker) => worker,
+            Err(error) => {
+                system.cancel_task_work_worker_install();
+                return Err(error);
+            }
+        };
+    worker.detach_permanent();
+    Ok(())
+}
+
+fn task_work_service_entry() {
+    if task_work_service_loop().is_err() {
+        task_runtime::fatal_invariant(0x4558_0030, 0);
+    }
+}
+
+fn task_work_service_loop() -> Result<(), TaskError> {
+    const BATCH_LIMIT: usize = 64;
+
+    let system = runtime_task_system()?;
+    let doorbell = system.task_work_doorbell();
+    let wake_owner = current_thread_handle()?.wake_handle();
+    let irq_wake = unsafe {
+        // SAFETY: `waiter` below is leaked for the shutdown lifetime and owns
+        // this wake handle's strong ThreadCore reference.
+        wake_owner.irq_wake_handle()
+    };
+    let waiter = Box::leak(Box::new(TaskWorkWaiter {
+        _wake_owner: wake_owner,
+        registration: IrqWaitRegistration::new(irq_wake),
+    }));
+    let registration = unsafe {
+        // SAFETY: the leaked allocation never moves or expires, and the sole
+        // service thread serializes every register/unregister operation.
+        Pin::new_unchecked(&waiter.registration)
+    };
+    system.finish_task_work_worker_install();
+
+    loop {
+        let _published = doorbell.take_pending();
+        let Some(batch) = service_task_work_pass(system, &doorbell, BATCH_LIMIT)? else {
+            let _decision = yield_current_cpu()?;
+            continue;
+        };
+        if batch.made_progress() {
+            if batch.saturated(BATCH_LIMIT) {
+                let _decision = yield_current_cpu()?;
+            }
+            continue;
+        }
+        if doorbell.take_pending() {
+            continue;
+        }
+        wait_for_task_work(doorbell.event(), registration)?;
+    }
+}
+
+fn service_task_work_pass(
+    system: &TaskSystem,
+    doorbell: &crate::task_work::TaskWorkDoorbell,
+    limit: usize,
+) -> Result<Option<crate::DeferredTaskWorkBatch>, TaskError> {
+    match system.service_deferred_task_work(limit) {
+        Ok(batch) => Ok(Some(batch)),
+        Err(TaskError::ThreadBusy) => {
+            doorbell.reassert_pending();
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+struct TaskWorkWaiter {
+    _wake_owner: ThreadWakeHandle,
+    registration: IrqWaitRegistration,
+}
+
+fn wait_for_task_work(
+    event: &IrqWaitCell,
+    registration: Pin<&'static IrqWaitRegistration>,
+) -> Result<(), TaskError> {
+    let permit = acquire_blocking_permit()?;
+    match event.register(registration) {
+        IrqRegisterResult::Occupied => Err(TaskError::InvalidConfiguration),
+        IrqRegisterResult::ConsumedPending => match prepare_current_park(&permit)? {
+            ParkPrepare::Notified => Ok(()),
+            ParkPrepare::Prepared(park) => cancel_current_park(park),
+        },
+        IrqRegisterResult::Registered => {
+            let park = match prepare_current_park(&permit) {
+                Ok(ParkPrepare::Prepared(park)) => park,
+                Ok(ParkPrepare::Notified) => {
+                    let _removed = event.unregister(registration);
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _removed = event.unregister(registration);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = commit_current_park(park) {
+                let _removed = event.unregister(registration);
+                if cancel_current_park(park).is_err() {
+                    task_runtime::fatal_invariant(0x4558_0031, 0);
+                }
+                return Err(error);
+            }
+            let _removed = event.unregister(registration);
+            Ok(())
+        }
+    }
+}
+
 /// Runs one scheduler decision at a task/IRQ-return safe point.
 ///
 /// The typed outcome distinguishes a completed decision, an in-flight park
@@ -548,13 +663,10 @@ fn schedule_current_cpu_with_entry(
     system.service_scheduler_ipi_retries(64)?;
     drain_current_expired_timers(system, &mut scheduler_frame)?;
     let now_ns = task_runtime::monotonic_ns();
-    let (outcome, task_work_safe, batch_limit) = {
+    let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let current_state = cpu.current_lifecycle_state();
-        let task_work_safe =
-            current_state == Some(ThreadState::Running) && cpu.current() != cpu.idle();
-        let batch_limit = cpu.batch_limit();
-        let outcome = if !cpu.needs_reschedule() && !cpu.has_remote_work() {
+        if !cpu.needs_reschedule() && !cpu.has_remote_work() {
             if current_state == Some(ThreadState::Parking) {
                 SchedulerOutcome::ParkingDeferred
             } else {
@@ -562,12 +674,8 @@ fn schedule_current_cpu_with_entry(
             }
         } else {
             system.schedule_if_requested(cpu.as_mut(), now_ns)?
-        };
-        (outcome, task_work_safe, batch_limit)
+        }
     };
-    if task_work_safe && !outcome.parking_deferred() {
-        scheduler_frame.arm_deferred(system, batch_limit);
-    }
     if let Some(decision) = outcome.decision() {
         execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     }
@@ -613,13 +721,10 @@ pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
     let system = runtime_task_system()?;
     drain_current_expired_timers(system, &mut scheduler_frame)?;
     let now_ns = task_runtime::monotonic_ns();
-    let (batch_limit, decision) = {
+    let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
-        let batch_limit = cpu.batch_limit();
-        let decision = system.yield_current(cpu.as_mut(), now_ns)?;
-        (batch_limit, decision)
+        system.yield_current(cpu.as_mut(), now_ns)?
     };
-    scheduler_frame.arm_deferred(system, batch_limit);
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     Ok(decision)
 }
@@ -668,20 +773,17 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
         task_runtime::fatal_invariant(0x4558_0012, permit.thread.as_u64() as _)
     });
     let now_ns = task_runtime::monotonic_ns();
-    let (batch_limit, decision) = {
+    let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x4558_0013, permit.thread.as_u64() as _)
         });
         if cpu.current() != Some(permit.thread) {
             task_runtime::fatal_invariant(0x4558_0014, permit.thread.as_u64() as _);
         }
-        let batch_limit = cpu.batch_limit();
-        let decision = system.exit_current(cpu.as_mut()).unwrap_or_else(|_| {
+        system.exit_current(cpu.as_mut()).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x4558_0015, permit.thread.as_u64() as _)
-        });
-        (batch_limit, decision)
+        })
     };
-    scheduler_frame.arm_deferred(system, batch_limit);
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     // An exited context is never re-enqueued, so returning here indicates a
     // broken architecture switch contract.
@@ -757,21 +859,6 @@ fn complete_current_context_switch_tail(pin: &mut impl RuntimeCpuPin) -> Result<
     let system = runtime_task_system()?;
     let mut cpu = runtime_current_cpu_mut(pin)?;
     system.complete_context_switch(cpu.as_mut())
-}
-
-fn run_deferred_task_work(system: &TaskSystem, batch_limit: usize) -> Result<(), TaskError> {
-    system.dispatch_deadline_overruns(batch_limit);
-    system.dispatch_exit_callbacks(batch_limit)?;
-    system.reap_unreferenced_exited(batch_limit)?;
-    system.drain_deferred_reclaims(batch_limit)?;
-    Ok(())
-}
-
-fn current_accepts_task_work() -> Result<bool, TaskError> {
-    let cpu = runtime_current_cpu()?;
-    Ok(cpu.current().is_some()
-        && cpu.current() != cpu.idle()
-        && cpu.current_lifecycle_state() == Some(ThreadState::Running))
 }
 
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {
@@ -925,7 +1012,6 @@ impl Drop for RuntimeIrqGuard {
 }
 
 struct RuntimeSchedulerFrameGuard {
-    deferred: Option<(&'static TaskSystem, usize)>,
     return_to: RuntimeSchedulerReturn,
     _not_send: PhantomData<*mut ()>,
 }
@@ -952,27 +1038,15 @@ impl RuntimeSchedulerFrameGuard {
             RuntimeSchedulerEntry::IrqReturn => RuntimeSchedulerReturn::IrqReturn,
         };
         Ok(Self {
-            deferred: None,
             return_to,
             _not_send: PhantomData,
         })
-    }
-
-    fn arm_deferred(&mut self, system: &'static TaskSystem, batch_limit: usize) {
-        debug_assert!(self.deferred.is_none());
-        self.deferred = Some((system, batch_limit));
     }
 }
 
 impl Drop for RuntimeSchedulerFrameGuard {
     fn drop(&mut self) {
-        let task_context_safe = task_runtime::scheduler_frame_guard_exit(self.return_to);
-        if task_context_safe
-            && let Some((system, batch_limit)) = self.deferred
-            && run_deferred_task_work(system, batch_limit).is_err()
-        {
-            task_runtime::fatal_invariant(6, 0);
-        }
+        let _task_context_safe = task_runtime::scheduler_frame_guard_exit(self.return_to);
     }
 }
 
@@ -990,6 +1064,8 @@ mod tests {
     };
 
     static PARKING_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static REENTRANT_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT: AtomicUsize = AtomicUsize::new(0);
 
     static ORDERING_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: assert_address_space_installed,
@@ -1003,6 +1079,14 @@ mod tests {
         on_switch_in: ignore_thread_event,
         on_switch_out: ignore_switch_out,
         on_exit: count_parking_exit,
+        on_deadline_overrun: ignore_thread_event,
+        drop: ignore_drop,
+    };
+
+    static REENTRANT_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+        on_switch_in: ignore_thread_event,
+        on_switch_out: ignore_switch_out,
+        on_exit: count_reentrant_exit,
         on_deadline_overrun: ignore_thread_event,
         drop: ignore_drop,
     };
@@ -1181,6 +1265,75 @@ mod tests {
     }
 
     #[test]
+    fn irq_exit_scheduler_reentry_does_not_nest_task_work_on_one_thread_stack() {
+        REENTRANT_EXIT_CALLBACKS.store(0, Ordering::Release);
+        REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT.store(0, Ordering::Release);
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let bootstrap = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let extension = unsafe {
+            // SAFETY: the callback table owns no external data and records only
+            // whether task work ran inside the configured scheduler reentry.
+            ThreadExtension::new(0, &REENTRANT_EXIT_EXTENSION_OPS)
+        };
+        let exiting = system
+            .create_thread(
+                ThreadSpec::new(SchedulePolicy::fifo(RtPriority::new(1).unwrap()))
+                    .with_extension(extension),
+            )
+            .unwrap();
+        system.make_ready(exiting.id()).unwrap();
+        system.enqueue(cpu.as_mut(), exiting.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu.as_mut(), 0).unwrap().next(),
+            exiting.id()
+        );
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        assert_eq!(
+            system.exit_current(cpu.as_mut()).unwrap().next(),
+            bootstrap.id()
+        );
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::configure_irq_exit_schedule_reentry(1);
+        assert!(matches!(
+            schedule_current_cpu().unwrap(),
+            SchedulerOutcome::Quiescent
+        ));
+
+        assert_eq!(
+            REENTRANT_EXIT_CALLBACKS.load(Ordering::Acquire),
+            0,
+            "scheduler frames must only publish task work for the service thread"
+        );
+        let batch = system.service_deferred_task_work(1).unwrap();
+        assert!(batch.made_progress());
+        assert_eq!(REENTRANT_EXIT_CALLBACKS.load(Ordering::Acquire), 1);
+        assert_eq!(
+            REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT.load(Ordering::Acquire),
+            0,
+            "nested scheduler completion must not recursively run task work on the active stack"
+        );
+    }
+
+    #[test]
+    fn busy_task_work_consumer_is_retryable_for_the_service_thread() {
+        let system = TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap();
+        let doorbell = system.task_work_doorbell();
+        let _consumer = doorbell.try_claim_consumer().unwrap();
+
+        assert_eq!(service_task_work_pass(&system, &doorbell, 1).unwrap(), None);
+        assert!(
+            doorbell.is_pending(),
+            "the worker must retain a sticky retry after losing consumer ownership"
+        );
+    }
+
+    #[test]
     fn scheduler_safe_point_drains_owner_work_after_resched_bit_was_consumed() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -1283,6 +1436,13 @@ mod tests {
 
     unsafe extern "Rust" fn count_parking_exit(_data: usize, _thread: ThreadId) {
         PARKING_EXIT_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+    }
+
+    unsafe extern "Rust" fn count_reentrant_exit(_data: usize, _thread: ThreadId) {
+        REENTRANT_EXIT_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        if test_runtime::irq_exit_schedule_reentry_active() {
+            REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     unsafe extern "Rust" fn ignore_drop(_data: usize) {}

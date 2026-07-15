@@ -421,9 +421,9 @@ fn deadline_overrun_flag_defers_notification_to_task_context() {
     system.schedule(cpu.as_mut(), 5).unwrap();
 
     assert_eq!(DEADLINE_OVERRUNS.load(Ordering::Relaxed), 0);
-    assert_eq!(system.dispatch_deadline_overruns(1), 1);
+    assert_eq!(system.dispatch_deadline_overruns(1), Ok(1));
     assert_eq!(DEADLINE_OVERRUNS.load(Ordering::Relaxed), 1);
-    assert_eq!(system.dispatch_deadline_overruns(1), 0);
+    assert_eq!(system.dispatch_deadline_overruns(1), Ok(0));
 }
 
 #[test]

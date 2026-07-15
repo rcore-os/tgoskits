@@ -143,7 +143,16 @@ fn rejected_and_reaped_specs_drop_each_extension_exactly_once() {
     let id = handle.id();
     system.mark_exited(id).unwrap();
     drop(handle);
-    system.reap_thread(id).unwrap();
+    assert!(
+        system
+            .service_deferred_task_work(64)
+            .unwrap()
+            .made_progress()
+    );
+    assert_eq!(
+        system.thread_state(id),
+        Err(ax_task::TaskError::StaleThreadId)
+    );
     assert_eq!(DROP_COUNTS[1].load(Ordering::Acquire), 1);
 }
 
@@ -160,8 +169,9 @@ fn mark_exited_pins_extension_until_exit_callback_returns() {
     let id = handle.id();
     drop(handle);
 
-    let exiting_system = std::sync::Arc::clone(&system);
-    let exiting = std::thread::spawn(move || exiting_system.mark_exited(id));
+    system.mark_exited(id).unwrap();
+    let service_system = std::sync::Arc::clone(&system);
+    let servicing = std::thread::spawn(move || service_system.service_deferred_task_work(1));
     while !MARK_EXIT_CALLBACK_ENTERED.load(Ordering::Acquire) {
         std::thread::yield_now();
     }
@@ -169,10 +179,7 @@ fn mark_exited_pins_extension_until_exit_callback_returns() {
     let reap_during_callback = system.reap_thread(id);
     let drops_during_callback = MARK_EXIT_DROPS.load(Ordering::Acquire);
     MARK_EXIT_CALLBACK_RELEASE.store(true, Ordering::Release);
-    exiting.join().unwrap().unwrap();
-    if reap_during_callback.is_err() {
-        system.reap_thread(id).unwrap();
-    }
+    assert!(servicing.join().unwrap().unwrap().made_progress());
 
     assert_eq!(
         reap_during_callback,
@@ -202,10 +209,21 @@ fn extension_lease_pins_the_record_until_the_borrow_is_released() {
     system.mark_exited(id).unwrap();
     drop(handle);
     assert_eq!(system.reap_unreferenced_exited(1).unwrap(), 0);
+    assert!(
+        system
+            .service_deferred_task_work(1)
+            .unwrap()
+            .made_progress()
+    );
     assert_eq!(DROP_COUNTS[2].load(Ordering::Acquire), 0);
 
     drop(lease);
-    assert_eq!(system.reap_unreferenced_exited(1).unwrap(), 1);
+    assert!(
+        system
+            .service_deferred_task_work(1)
+            .unwrap()
+            .made_progress()
+    );
     assert_eq!(DROP_COUNTS[2].load(Ordering::Acquire), 1);
 }
 

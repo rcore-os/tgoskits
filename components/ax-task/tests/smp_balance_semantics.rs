@@ -334,6 +334,45 @@ fn in_flight_migration_is_forwarded_to_latest_affinity_target() {
     );
 }
 
+#[test]
+fn exited_thread_waits_for_in_flight_migration_delivery() {
+    let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
+    let thread = ready_thread(&system, SchedulePolicy::default());
+    let thread_id = thread.id();
+    system.enqueue(cpu0.as_mut(), thread_id, 0).unwrap();
+
+    system
+        .set_affinity(thread_id, singleton_affinity(2, 1))
+        .unwrap();
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
+    assert!(cpu1.has_remote_work());
+
+    system.mark_exited(thread_id).unwrap();
+    drop(thread);
+    assert_eq!(
+        system
+            .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+            .unwrap()
+            .processed(),
+        0,
+        "an inbox-held migration delivery must pin registry-owned resources"
+    );
+
+    system.drain_policy_updates(cpu1.as_mut(), 2).unwrap();
+    assert_eq!(cpu1.runnable_summary(), 0);
+    assert_eq!(
+        system
+            .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+            .unwrap()
+            .processed(),
+        1
+    );
+    assert_eq!(
+        system.thread_state(thread_id),
+        Err(ax_task::TaskError::StaleThreadId)
+    );
+}
+
 fn online_pair() -> (
     TaskSystem,
     core::pin::Pin<Box<ax_task::CpuLocal>>,

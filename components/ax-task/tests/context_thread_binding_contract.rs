@@ -39,7 +39,7 @@ fn task_system_binds_an_allocated_identity_before_ready_publication() {
         .find("task_runtime::bind_context_thread")
         .expect("a runtime context must be bound to its allocated ThreadId");
     let finish = create
-        .find("Ok(ThreadHandle { core })")
+        .find("Ok(ThreadHandle::from_core(core))")
         .expect("thread construction must have one success publication");
 
     assert!(
