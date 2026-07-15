@@ -1,7 +1,7 @@
 //! Structures and functions for user space.
 
 use core::{
-    mem::{offset_of, size_of},
+    mem::{align_of, offset_of, size_of},
     ops::{Deref, DerefMut},
 };
 
@@ -23,7 +23,7 @@ pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct UserContext {
     tf: TrapFrame,
     /// FS Segment Base
@@ -35,6 +35,12 @@ pub struct UserContext {
 }
 
 const _: () = {
+    // A privilege transition may align TSS.RSP0 down to 16 bytes before
+    // constructing the hardware frame. `enter_user` uses the end of `tf` as
+    // both RSP0 and the boundary above which it saves the kernel continuation,
+    // so both the object and that boundary must already be aligned.
+    assert!(align_of::<UserContext>() >= 16);
+    assert!(size_of::<TrapFrame>().is_multiple_of(16));
     assert!(offset_of!(UserContext, tf) == 0);
     assert!(offset_of!(UserContext, fs_base) == size_of::<TrapFrame>());
     assert!(offset_of!(UserContext, gs_base) == size_of::<TrapFrame>() + size_of::<u64>());

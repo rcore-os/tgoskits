@@ -146,6 +146,24 @@ fn x86_user_tls_changes_are_confined_to_the_assembly_entry_window() {
     assert!(entry.contains("kernel_fs_base_offset"));
 }
 
+#[cfg(all(target_arch = "x86_64", feature = "uspace"))]
+#[test]
+fn x86_user_context_keeps_the_tss_trap_stack_top_aligned() {
+    use core::mem::{align_of, size_of};
+
+    use ax_cpu::{UserRegisters, uspace::UserContext};
+
+    assert!(
+        align_of::<UserContext>() >= 16,
+        "x86 privilege transitions align TSS.RSP0 down to 16 bytes"
+    );
+    assert_eq!(
+        size_of::<UserRegisters>() % 16,
+        0,
+        "the trap-frame end used as TSS.RSP0 must preserve that alignment"
+    );
+}
+
 #[test]
 fn loongarch_kernel_probe_writeback_preserves_cpu_anchor() {
     let source = read_source("loongarch64/trap.rs");
@@ -185,7 +203,7 @@ fn starry_kernel_probes_use_the_typed_kernel_view() {
     assert!(trap.contains("cpu::KernelTrapFrame<'_>"));
     assert!(kprobe.contains("pub fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>)"));
     assert!(kprobe.contains("tf.apply_registers(&updated)"));
-    assert!(uprobe.contains("break_uprobe_handler(tf: &mut UserRegisters)"));
+    assert!(uprobe.contains("break_uprobe_handler(task: &UserTaskRef, tf: &mut UserRegisters)"));
 }
 
 fn read_source(relative: &str) -> String {

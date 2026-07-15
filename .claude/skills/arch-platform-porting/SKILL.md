@@ -163,6 +163,13 @@ its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic
   entry clears `sscratch` again. `UnikernelTls` instead keeps the CPU prefix in
   `sscratch` and TLS in `tp`. Every high-address trampoline rebuilds canonical
   `__global_pointer$`; `gp` is never a CPU ID or per-CPU anchor.
+- On x86_64, a user exception may align the TSS-provided RSP down to 16 bytes
+  before constructing its hardware frame. Any task-owned `UserContext` whose
+  trap-frame end is published as `TSS.RSP0` must therefore be explicitly
+  16-byte aligned, and the trap-frame size must preserve that alignment. Keep
+  compile-time layout assertions beside the type; do not rely on the enclosing
+  allocation or align only the value written by assembly, because either can
+  separate the hardware frame from its saved kernel continuation.
 - LoongArch KS allocation is fixed: KS0 is trap stack, KS1/KS2 are trap
   temporaries, KS3 mirrors the direct per-CPU area base, and KS4/KS5 belong to vCPU host
   stack/temporary state. User trap entry saves user `r21` before loading the
