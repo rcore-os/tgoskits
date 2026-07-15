@@ -10,6 +10,7 @@ pub enum LinkerArch {
 pub struct LinkerConfig {
     pub kernel_load_vaddr: u64,
     pub kernel_load_paddr: u64,
+    pub kernel_tls: bool,
 }
 
 struct LinkerTemplate {
@@ -24,6 +25,7 @@ const RODATA_PATH: &str = "src/ld/rodata.ld";
 const DATA_PATH: &str = "src/ld/data.ld";
 const RELA_DYN_PATH: &str = "src/ld/rela-dyn.ld";
 const BSS_PATH: &str = "src/ld/bss.ld";
+const BSS_NO_TLS_PATH: &str = "src/ld/bss-no-tls.ld";
 const DEBUG_PATH: &str = "src/ld/debug.ld";
 const DISCARD_EXIT_PATH: &str = "src/ld/discard-exit.ld";
 const DISCARD_DYNAMIC_PATH: &str = "src/ld/discard-dynamic.ld";
@@ -105,7 +107,7 @@ const LOONGARCH64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${tbss_output}", ":text :tls"),
     ("${pre_sbss_align}", ". = ALIGN(8);"),
     ("${sbss_extra}", ""),
-    ("${bss_output}", ""),
+    ("${bss_output}", ":text"),
     ("${cpu_stack_align}", ". = ALIGN(PAGE_SIZE);"),
     ("${discard_options}", "*(.options)"),
     ("${discard_dynamic_extra}", "*(.eh_frame)"),
@@ -166,7 +168,12 @@ pub fn render_linker_script(arch: LinkerArch, config: LinkerConfig) -> String {
     let template = arch.template();
     let mut script = template.content.to_string();
 
-    for (_, token, fragment) in FRAGMENTS {
+    for (path, token, default_fragment) in FRAGMENTS {
+        let fragment = if *path == BSS_PATH && !config.kernel_tls {
+            include_str!("../src/ld/bss-no-tls.ld")
+        } else {
+            default_fragment
+        };
         script = script.replace(token, fragment.trim_end());
     }
     for (token, value) in template.replacements {
@@ -174,6 +181,7 @@ pub fn render_linker_script(arch: LinkerArch, config: LinkerConfig) -> String {
     }
 
     script
+        .replace("${tls_phdr}", arch.tls_phdr(config.kernel_tls))
         .replace(
             "${kernel_load_vaddr}",
             &format!("{:#x}", config.kernel_load_vaddr as usize),
@@ -193,10 +201,23 @@ pub fn source_paths() -> Vec<&'static str> {
         LinkerArch::Riscv64.template().path,
     ];
     paths.extend(FRAGMENTS.iter().map(|(path, ..)| *path));
+    paths.push(BSS_NO_TLS_PATH);
     paths
 }
 
 impl LinkerArch {
+    fn tls_phdr(self, kernel_tls: bool) -> &'static str {
+        if !kernel_tls {
+            return "";
+        }
+
+        match self {
+            Self::Aarch64 | Self::Loongarch64 => "\ttls PT_TLS FLAGS(4);\t/* R__ */",
+            Self::X86_64 => "    tls PT_TLS FLAGS(4);",
+            Self::Riscv64 => "",
+        }
+    }
+
     fn template(self) -> LinkerTemplate {
         match self {
             LinkerArch::Aarch64 => LinkerTemplate {

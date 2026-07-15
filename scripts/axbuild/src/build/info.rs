@@ -96,6 +96,37 @@ pub(super) const STD_TARGET_DIR: &str = "std";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BareKernelLinkMode {
+    Default,
+    Pie,
+}
+
+impl BareKernelLinkMode {
+    fn rustflags(self, target: &str) -> Vec<String> {
+        match self {
+            Self::Default => Vec::new(),
+            Self::Pie => {
+                let mut flags = vec![
+                    "-Crelocation-model=pic".to_string(),
+                    "-Clink-args=-pie".to_string(),
+                ];
+                if target.starts_with("riscv64") {
+                    flags.push("-Clink-args=--no-relax".to_string());
+                }
+                flags.extend([
+                    "-Clink-args=--gc-sections".to_string(),
+                    "-Clink-args=-znorelro".to_string(),
+                    "-Clink-args=-znostart-stop-gc".to_string(),
+                    "-Clink-args=-Tlinker.x".to_string(),
+                    "-Clink-args=-u _head".to_string(),
+                ]);
+                flags
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StdFeaturePrefixFamily {
     AxStd,
 }
@@ -196,7 +227,7 @@ impl BuildInfo {
         self.into_base_cargo_config(package, target, args)
     }
 
-    pub(crate) fn into_prepared_base_cargo_config_with_metadata(
+    pub(crate) fn into_prepared_std_cargo_config_with_metadata(
         mut self,
         package: &str,
         target: &str,
@@ -242,6 +273,55 @@ impl BuildInfo {
         );
         cargo.to_bin = true;
         Ok(cargo)
+    }
+
+    pub(crate) fn into_prepared_no_std_cargo_config_with_metadata(
+        mut self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+        link_mode: BareKernelLinkMode,
+    ) -> anyhow::Result<Cargo> {
+        self.validated_max_cpu_num()?;
+        self.resolve_features_with_metadata(package, target, metadata);
+        self.reject_freestanding_std_compat()?;
+        self.enable_package_smp_feature(package, metadata)?;
+
+        let mut rustflags = toolchain_rustflags_for_features(&self.env, &self.features);
+        rustflags.extend(link_mode.rustflags(target));
+        let args = Self::build_cargo_args(target, &rustflags);
+
+        Ok(self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args))
+    }
+
+    fn reject_freestanding_std_compat(&self) -> anyhow::Result<()> {
+        if let Some(feature) = self
+            .features
+            .iter()
+            .find(|feature| feature.rsplit('/').next() == Some("std-compat"))
+        {
+            bail!("freestanding no_std build cannot enable `{feature}`");
+        }
+        Ok(())
+    }
+
+    fn enable_package_smp_feature(
+        &mut self,
+        package: &str,
+        metadata: &Metadata,
+    ) -> anyhow::Result<()> {
+        if !self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
+            return Ok(());
+        }
+        if package_feature_names(package, metadata)?
+            .iter()
+            .any(|feature| feature == "smp")
+        {
+            self.features.push("smp".to_string());
+            self.features.sort();
+            self.features.dedup();
+        }
+        Ok(())
     }
 
     pub(super) fn resolve_std_features(&mut self) {

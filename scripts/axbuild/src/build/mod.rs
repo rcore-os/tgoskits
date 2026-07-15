@@ -28,9 +28,11 @@ pub(crate) use config_file::{
     ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
     reject_arceos_app_c_field, reject_removed_std_field,
 };
+#[cfg(test)]
+pub(crate) use info::toolchain_rustflags_for_features;
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BuildInfo, append_encoded_rustflags, build_info_enables_backtrace_path,
-    env_truthy, toolchain_rustflags_for_features,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_encoded_rustflags,
+    build_info_enables_backtrace_path, env_truthy,
 };
 use info::{AXSTD_STD_PACKAGE, PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

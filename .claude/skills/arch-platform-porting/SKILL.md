@@ -22,7 +22,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 ## Porting Checklist
 
 - **Target and toolchain**: add or verify `scripts/targets` specs, target triple, panic strategy, relocation model, code model, ABI, soft-float setting, musl/std support, linker, objcopy, and `rust-src` availability.
-- **RISC-V per-CPU register contract**: `ax-percpu` reserves `x3`/`gp` as the per-CPU base, so every RISC-V kernel target spec must pass `--no-relax` to the linker. Do not enable global-pointer relaxation or define `__global_pointer$` unless the per-CPU register design changes at the same time.
+- **RISC-V global-pointer contract**: `gp` is always the canonical psABI global pointer and is never a CPU ID or per-CPU anchor. Current dynamic PIE targets keep `--no-relax` so the final-high entry can explicitly rebuild `__global_pointer$` before Rust or global-data access; do not remove it without the random-load-bias relocation tests proving every early path safe.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
@@ -126,13 +126,14 @@ its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic
   the lock runtime may use explicitly documented unchecked access. A safe
   accessor must not return a reference that can outlive its `BoundCpuPin`.
 - Select exactly one final-image register mode. `LinuxCurrent` is mandatory for
-  StarryOS and Axvisor: x86 reads current from the kernel-GS CPU slot, AArch64
-  uses `SP_EL0=current` with TPIDR_EL1/EL2 as the CPU base, RISC-V uses
-  `tp=current` with the current header carrying the CPU base, and LoongArch uses
-  `tp=current` with `r21`/KS3 as the CPU base. `UnikernelTls` is allowed only in
-  an ArceOS image without userspace: FS_BASE, TPIDR_EL0, or `tp` holds kernel
-  TLS and current is read from the CPU slot; RISC-V then keeps the CPU prefix in
-  `sscratch`. Cargo `tls` selects this image mode but must never change prefix,
+  StarryOS and any ArceOS image with userspace: x86 reads current from the
+  kernel-GS CPU slot, AArch64 uses `SP_EL0=current` with TPIDR_EL1/EL2 as the
+  CPU base, RISC-V uses `tp=current` with the current header carrying the CPU
+  base, and LoongArch uses `tp=current` with `r21`/KS3 as the CPU base.
+  `UnikernelTls` is selected by Axvisor and is allowed for ArceOS images without
+  host userspace: FS_BASE, TPIDR_EL0, or `tp` holds kernel TLS and current is
+  read from the CPU slot; RISC-V then keeps the CPU prefix in `sscratch`. Cargo
+  `tls` selects this image mode but must never change prefix,
   thread-header, or `TaskContext` layout. Reject `uspace + tls` at build time.
 - ArceOS, StarryOS, and Axvisor production images on all four architectures use
   the dynamic `someboot -> somehal -> axplat-dyn` path and may be loaded at an
@@ -281,8 +282,11 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   `CURRENT_VCPU`, bind/load host state, enter the guest, restore host anchors,
   unbind, and clear the per-CPU pointer. Backends should receive a borrowed
   pinned context; defer any blocking VM-exit handling until after the guard is
-  released. VMX refreshes HOST_GS_BASE on each bind, while RISC-V/LoongArch must
-  restore host `sscratch`/`r21` before calling Rust.
+  released. VMX refreshes HOST_FS_BASE and HOST_GS_BASE on each bind; SVM
+  restores host FS/GS through the host VMLOAD before returning to Rust;
+  AArch64 restores host TPIDR_EL0; RISC-V restores host `sscratch`, canonical
+  `gp`, and `tp`; and LoongArch restores host `r21`/KS3 and `tp` before calling
+  Rust.
 - Bound vCPU-exit handling may only copy fixed-size exit data or consume
   architecture state that must be captured before unbind. Hypercalls, MMIO,
   port I/O, system-register device callbacks, nested-page repair, CPU-up, and

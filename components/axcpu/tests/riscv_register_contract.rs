@@ -10,6 +10,7 @@
 const CONTEXT: &str = include_str!("../src/riscv/context.rs");
 const ASM: &str = include_str!("../src/riscv/asm.rs");
 const TRAP_ENTRY: &str = include_str!("../src/riscv/trap.S");
+const TLS_TRAP_ENTRY: &str = include_str!("../src/riscv/trap_tls.S");
 const TRAP_GLUE: &str = include_str!("../src/riscv/trap.rs");
 const VCPU_DETECT: &str = include_str!("../../../virtualization/riscv_vcpu/src/detect.rs");
 const SOMEBOOT_ENTRY: &str = include_str!("../../../platforms/someboot/src/arch/riscv64/entry.rs");
@@ -213,6 +214,29 @@ fn kernel_trap_initializes_the_complete_typed_register_frame() {
     assert!(
         kernel_entry.contains("STR     zero, sp, 0"),
         "the skipped x0 slot must be initialized before Rust borrows the whole trap frame"
+    );
+    assert_in_order(
+        kernel_entry,
+        "addi    sp, sp, -{trapframe_size}",
+        "STR     zero, sp, 0",
+    );
+    assert_in_order(
+        kernel_entry,
+        "STR     zero, sp, 0",
+        "\n    PUSH_GENERAL_REGS\n",
+    );
+}
+
+#[test]
+fn tls_kernel_trap_initializes_the_complete_typed_register_frame() {
+    let kernel_entry = section(
+        TLS_TRAP_ENTRY,
+        "    addi    sp, sp, -{trapframe_size}",
+        ".Ltrap_from_user:",
+    );
+    assert!(
+        kernel_entry.contains("STR     zero, sp, 0"),
+        "the TLS trap path must initialize the skipped x0 slot before Rust borrows the frame"
     );
     assert_in_order(
         kernel_entry,

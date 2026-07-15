@@ -278,7 +278,7 @@ BACKTRACE = "y"
 
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
+        .into_prepared_std_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -310,7 +310,7 @@ max_cpu_num = 4
 
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
+        .into_prepared_std_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -352,7 +352,7 @@ log = "Warn"
 
     let metadata = repo_metadata();
     let cargo = build_info
-        .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
+        .into_prepared_std_cargo_config_with_metadata(&request.package, &request.target, &metadata)
         .unwrap();
 
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
@@ -401,7 +401,7 @@ fn prepared_cargo_config_uses_unified_std_target() {
         features: vec!["lockdep".to_string()],
         ..ArceosBuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
         &metadata,
@@ -459,7 +459,7 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
+    .into_prepared_std_cargo_config_with_metadata(&request.package, &request.target, &metadata)
     .unwrap();
 
     assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
@@ -470,7 +470,7 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
 fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
     let metadata = repo_metadata();
     let cargo = ArceosBuildInfo::default()
-        .into_prepared_base_cargo_config_with_metadata(
+        .into_prepared_std_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
             &metadata,

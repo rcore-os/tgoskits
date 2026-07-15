@@ -9,7 +9,7 @@ ENTRY(x86_64_raw_entry)
 PHDRS {
     text PT_LOAD FLAGS(7);
     note PT_NOTE FLAGS(4);
-    tls PT_TLS FLAGS(4);
+${tls_phdr}
 }
 
 SECTIONS

@@ -538,7 +538,7 @@ fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alia
 }
 
 #[test]
-fn load_cargo_config_keeps_pie_target_for_non_kmod_dynamic_platform_request() {
+fn load_cargo_config_keeps_original_bare_target_for_dynamic_platform_request() {
     let mut request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",
@@ -551,13 +551,126 @@ fn load_cargo_config_keeps_pie_target_for_non_kmod_dynamic_platform_request() {
 
     let cargo = load_cargo_config(&request).unwrap();
 
+    assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
+}
+
+#[test]
+fn load_cargo_config_uses_bare_no_std_pie_contract() {
+    let target = "aarch64-unknown-none-softfloat";
+    let mut request = request(PathBuf::from("/tmp/.build.toml"), "aarch64", target);
+    request.build_info_override = Some(default_starry_build_info_for_target(target));
+
+    let cargo = load_cargo_config(&request).unwrap();
+    let args = cargo.args.join("\n");
+
+    assert_eq!(cargo.target, target);
     assert!(
         cargo
-            .target
-            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json"),
-        "expected pie target, got {}",
-        cargo.target
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-Z", "build-std=core,alloc"])
     );
+    for flag in [
+        "-Crelocation-model=pic",
+        "-Clink-args=-pie",
+        "-Clink-args=--gc-sections",
+        "-Clink-args=-znorelro",
+        "-Clink-args=-znostart-stop-gc",
+        "-Clink-args=-Tlinker.x",
+        "-Clink-args=-u _head",
+    ] {
+        assert!(args.contains(flag), "missing Starry PIE rustflag {flag}");
+    }
+    assert!(cargo.extra_config.is_none());
+    assert!(cargo.pre_build_cmds.is_empty());
+    assert!(!cargo.target.contains("scripts/targets/std"));
+    assert!(!cargo.args.iter().any(|arg| arg == "json-target-spec"));
+    assert!(!cargo.env.contains_key("CARGO_UNSTABLE_JSON_TARGET_SPEC"));
+    assert!(
+        cargo
+            .features
+            .iter()
+            .all(|feature| !feature.contains("std-compat"))
+    );
+}
+
+#[test]
+fn load_cargo_config_derives_to_bin_from_original_bare_target() {
+    for (arch, target, expected_to_bin) in [
+        ("x86_64", "x86_64-unknown-none", false),
+        ("loongarch64", "loongarch64-unknown-none-softfloat", false),
+        ("aarch64", "aarch64-unknown-none-softfloat", true),
+        ("riscv64", "riscv64gc-unknown-none-elf", true),
+    ] {
+        let mut request = request(PathBuf::from("/tmp/.build.toml"), arch, target);
+        request.build_info_override = Some(default_starry_build_info_for_target(target));
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert_eq!(cargo.target, target);
+        assert_eq!(
+            cargo.to_bin, expected_to_bin,
+            "unexpected artifact conversion for original target {target}"
+        );
+    }
+}
+
+#[test]
+fn load_cargo_config_applies_arch_specific_bare_pie_flags() {
+    for (arch, target, expected_flag) in [
+        (
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+            "-Clink-args=--no-relax",
+        ),
+        (
+            "loongarch64",
+            "loongarch64-unknown-none-softfloat",
+            "-Ctarget-feature=-ual",
+        ),
+    ] {
+        let mut request = request(PathBuf::from("/tmp/.build.toml"), arch, target);
+        request.build_info_override = Some(default_starry_build_info_for_target(target));
+
+        let cargo = load_cargo_config(&request).unwrap();
+
+        assert!(
+            cargo.args.join("\n").contains(expected_flag),
+            "missing architecture rustflag {expected_flag} for {target}"
+        );
+    }
+}
+
+#[test]
+fn load_cargo_config_rejects_std_compat_for_freestanding_kernel() {
+    for feature in ["std-compat", "ax-std/std-compat"] {
+        let target = "x86_64-unknown-none";
+        let mut request = request(PathBuf::from("/tmp/.build.toml"), "x86_64", target);
+        request.build_info_override = Some(StarryBuildInfo {
+            features: vec![feature.to_string()],
+            ..default_starry_build_info_for_target(target)
+        });
+
+        let err = load_cargo_config(&request).unwrap_err();
+
+        assert!(
+            err.to_string().contains("freestanding no_std build"),
+            "unexpected error for {feature}: {err:#}"
+        );
+    }
+}
+
+#[test]
+fn starry_kernel_entry_is_freestanding_c_abi() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/StarryOS/starryos/src/main.rs"),
+    )
+    .unwrap();
+
+    assert!(source.contains("#![no_std]"));
+    assert!(source.contains("#![no_main]"));
+    assert!(source.contains("extern \"C\" fn main()"));
+    assert!(!source.contains("cfg_attr(target_os"));
 }
 
 #[test]

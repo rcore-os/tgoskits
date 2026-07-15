@@ -1,5 +1,5 @@
-#![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_std]
+#![no_main]
 #![doc = include_str!("../../README.md")]
 
 extern crate alloc;
@@ -10,8 +10,8 @@ use ax_std as _;
 
 pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
 
-#[cfg_attr(target_os = "none", unsafe(no_mangle))]
-fn main() {
+#[unsafe(no_mangle)]
+extern "C" fn main() {
     let args = CMDLINE
         .iter()
         .copied()

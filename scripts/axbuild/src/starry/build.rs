@@ -15,6 +15,7 @@ use super::{Starry, board};
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::{
+    build::BareKernelLinkMode,
     context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked},
     support::process::ProcessExt,
 };
@@ -118,10 +119,11 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
-    let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
+    let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(
         &request.package,
         &request.target,
         metadata,
+        BareKernelLinkMode::Pie,
     )?;
     cargo
         .features

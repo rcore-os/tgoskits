@@ -5,9 +5,11 @@ const LINUX_CURRENT_IMAGES: &[&str] = &[
     "os/StarryOS/starryos/Cargo.toml",
     "os/StarryOS/lkm/hello/Cargo.toml",
     "os/StarryOS/lkm/kprobe_test/Cargo.toml",
-    "os/axvisor/Cargo.toml",
-    "virtualization/axvm/Cargo.toml",
 ];
+
+const UNIKERNEL_TLS_IMAGES: &[&str] = &["os/axvisor/Cargo.toml"];
+
+const REGISTER_MODE_NEUTRAL_LIBRARIES: &[&str] = &["virtualization/axvm/Cargo.toml"];
 
 const ARCEOS_UNIKERNEL_DEFAULT_CONSUMERS: &[&str] = &[
     "apps/arceos/arce_agent/Cargo.toml",
@@ -82,16 +84,48 @@ fn linux_current_images_do_not_select_unikernel_tls_defaults() {
 }
 
 #[test]
-fn axvm_does_not_select_the_host_cpu_register_mode() {
+fn axvisor_explicitly_selects_unikernel_tls_without_defaults() {
     let workspace = workspace_root();
-    let relative_path = "virtualization/axvm/Cargo.toml";
-    let manifest = read_manifest(&workspace, relative_path);
 
-    for dependency in inline_dependencies(&manifest, "ax-percpu") {
+    for relative_path in UNIKERNEL_TLS_IMAGES {
+        let manifest = read_manifest(&workspace, relative_path);
+        let dependencies = inline_dependencies(&manifest, "ax-std");
         assert!(
-            !dependency.contains("arm-el2"),
-            "{relative_path} must leave the host CPU-register mode to the final platform image"
+            !dependencies.is_empty(),
+            "{relative_path} must declare its ax-std image contract"
         );
+
+        for dependency in dependencies {
+            assert!(
+                dependency.contains("default-features = false")
+                    && !dependency.contains("\"default\"")
+                    && dependency.contains("\"tls\""),
+                "{relative_path} must explicitly select ax-std/tls without enabling defaults"
+            );
+        }
+    }
+}
+
+#[test]
+fn reusable_virtualization_libraries_do_not_select_the_host_register_mode() {
+    let workspace = workspace_root();
+
+    for relative_path in REGISTER_MODE_NEUTRAL_LIBRARIES {
+        let manifest = read_manifest(&workspace, relative_path);
+        for dependency in inline_dependencies(&manifest, "ax-std") {
+            assert!(
+                dependency.contains("default-features = false")
+                    && !dependency.contains("\"default\"")
+                    && !dependency.contains("\"tls\""),
+                "{relative_path} must leave TLS selection to the final platform image"
+            );
+        }
+        for dependency in inline_dependencies(&manifest, "ax-percpu") {
+            assert!(
+                !dependency.contains("arm-el2"),
+                "{relative_path} must leave the exception level to the final platform image"
+            );
+        }
     }
 }
 

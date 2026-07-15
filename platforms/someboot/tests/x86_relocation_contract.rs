@@ -6,8 +6,12 @@ use std::{
     process::Command,
 };
 
+#[path = "support/elf_image.rs"]
+pub mod elf_image;
+
+use elf_image::{ElfImage, MappingPermissions};
+
 const FIXTURE_LINK_BASE: u64 = 0xffff_ffff_8000_0000;
-const PAGE_SIZE: usize = 4096;
 
 #[test]
 fn raw_x86_entry_relocates_in_naked_pic_code_before_rust() {
@@ -222,11 +226,11 @@ SECTIONS {{
     let elf = ElfImage::parse(&image);
     let mut mappings = Vec::new();
     for _ in 0..3 {
-        mappings.push(elf.load(&image));
+        mappings.push(elf.load(&image, MappingPermissions::ReadWriteExecute));
     }
     let biases = mappings
         .iter()
-        .map(|mapping| (mapping.base as usize).wrapping_sub(elf.link_base))
+        .map(|mapping| mapping.base_address().wrapping_sub(elf.link_base()))
         .collect::<Vec<_>>();
     assert_eq!(
         biases
@@ -241,7 +245,7 @@ SECTIONS {{
         // SAFETY: ElfImage::load copied executable PT_LOAD bytes into this
         // private RWX mapping and the entry offset was bounds-checked.
         let entry: unsafe extern "C" fn() -> usize =
-            unsafe { core::mem::transmute(mapping.base.add(elf.entry_offset)) };
+            unsafe { core::mem::transmute(elf.entry_address(mapping)) };
         // SAFETY: the fixture entry has the declared no-argument ABI and its
         // terminal stub returns normally after checking the relocated pointer.
         assert_eq!(
@@ -305,140 +309,6 @@ fn run_output(command: &mut Command, operation: &str) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("tool output must be UTF-8")
-}
-
-#[derive(Clone, Copy)]
-struct LoadSegment {
-    file_offset: usize,
-    virtual_address: u64,
-    file_size: usize,
-    memory_size: usize,
-}
-
-struct ElfImage {
-    link_base: usize,
-    entry_offset: usize,
-    mapping_size: usize,
-    segments: Vec<LoadSegment>,
-}
-
-impl ElfImage {
-    fn parse(image: &[u8]) -> Self {
-        assert_eq!(&image[..4], b"\x7fELF", "fixture must be an ELF image");
-        assert_eq!(image[4], 2, "fixture must use ELF64");
-        let entry = read_u64(image, 24);
-        let program_offset = usize::try_from(read_u64(image, 32)).unwrap();
-        let program_size = usize::from(read_u16(image, 54));
-        let program_count = usize::from(read_u16(image, 56));
-        assert_eq!(program_size, 56, "fixture must use native ELF64 phdrs");
-
-        let mut segments = Vec::new();
-        for index in 0..program_count {
-            let offset = program_offset + index * program_size;
-            if read_u32(image, offset) != 1 {
-                continue;
-            }
-            let segment = LoadSegment {
-                file_offset: usize::try_from(read_u64(image, offset + 8)).unwrap(),
-                virtual_address: read_u64(image, offset + 16),
-                file_size: usize::try_from(read_u64(image, offset + 32)).unwrap(),
-                memory_size: usize::try_from(read_u64(image, offset + 40)).unwrap(),
-            };
-            assert!(segment.file_size <= segment.memory_size);
-            assert!(segment.file_offset + segment.file_size <= image.len());
-            segments.push(segment);
-        }
-        assert!(!segments.is_empty(), "fixture must contain PT_LOAD");
-        let link_base = segments
-            .iter()
-            .map(|segment| segment.virtual_address as usize & !(PAGE_SIZE - 1))
-            .min()
-            .unwrap();
-        let link_end = segments
-            .iter()
-            .map(|segment| usize::try_from(segment.virtual_address).unwrap() + segment.memory_size)
-            .max()
-            .unwrap();
-        let mapping_size = align_up(link_end.wrapping_sub(link_base), PAGE_SIZE);
-        let entry_offset = usize::try_from(entry).unwrap().wrapping_sub(link_base);
-        assert!(entry_offset < mapping_size, "ELF entry must lie in PT_LOAD");
-        Self {
-            link_base,
-            entry_offset,
-            mapping_size,
-            segments,
-        }
-    }
-
-    fn load(&self, image: &[u8]) -> ExecutableMapping {
-        // SAFETY: arguments request a new private anonymous mapping. The return
-        // value is checked against MAP_FAILED before use.
-        let base = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                self.mapping_size,
-                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(base, libc::MAP_FAILED, "fixture mmap must succeed");
-        let base = base.cast::<u8>();
-        for segment in &self.segments {
-            let destination_offset = usize::try_from(segment.virtual_address)
-                .unwrap()
-                .wrapping_sub(self.link_base);
-            assert!(destination_offset + segment.memory_size <= self.mapping_size);
-            // SAFETY: both source and destination ranges were bounds-checked;
-            // each destination lies in this fresh private mapping.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    image.as_ptr().add(segment.file_offset),
-                    base.add(destination_offset),
-                    segment.file_size,
-                );
-                base.add(destination_offset + segment.file_size)
-                    .write_bytes(0, segment.memory_size - segment.file_size);
-            }
-        }
-        ExecutableMapping {
-            base,
-            size: self.mapping_size,
-        }
-    }
-}
-
-struct ExecutableMapping {
-    base: *mut u8,
-    size: usize,
-}
-
-impl Drop for ExecutableMapping {
-    fn drop(&mut self) {
-        // SAFETY: this is the exact live mapping returned by mmap and owned by
-        // this value; no loaded function is running during drop.
-        assert_eq!(unsafe { libc::munmap(self.base.cast(), self.size) }, 0);
-    }
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-
-fn align_up(value: usize, alignment: usize) -> usize {
-    value
-        .checked_add(alignment - 1)
-        .expect("fixture size must not overflow")
-        & !(alignment - 1)
 }
 
 fn find_someboot_archive() -> PathBuf {

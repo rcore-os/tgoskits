@@ -71,41 +71,48 @@ fn detect_hgatp_mode(cpu_pin: &CpuPin, mode: HgatpValues) -> bool {
 
 /// Probes the H-extension CSR while preserving the kernel register contract.
 ///
-/// `sscratch` normally contains the current CPU anchor. The probe temporarily
-/// points it at stack-owned state only for the three-instruction assembly
-/// window that can trap; both the success path and the trap vector restore the
-/// anchor before control reaches Rust again.
+/// The host value of `sscratch` depends on the final-image register mode: it is
+/// zero in `LinuxCurrent` kernel context and names the CPU prefix in
+/// `UnikernelTls`. The probe temporarily points it at stack-owned state only for
+/// the three-instruction assembly window that can trap; both the success path
+/// and the trap vector restore the exact entry value before Rust runs again.
 #[inline]
 fn with_detect_trap(cpu_pin: &CpuPin) -> usize {
     let (sie, stvec) = init_detect_trap(cpu_pin);
-    let mut state = DetectState::new(read_cpu_anchor());
+    let mut state = DetectState::new(read_sscratch());
     run_h_extension_probe(&mut state);
     restore_detect_trap(sie, stvec);
     state.result
 }
 
 #[inline]
-fn read_cpu_anchor() -> usize {
-    let anchor;
+fn read_sscratch() -> usize {
+    let saved_sscratch;
     // SAFETY: H-extension detection runs in supervisor context, where reading
     // the host scratch CSR is permitted and has no side effects.
-    unsafe { asm!("csrr {}, sscratch", out(reg) anchor, options(nomem, nostack)) };
-    anchor
+    unsafe {
+        asm!(
+            "csrr {}, sscratch",
+            out(reg) saved_sscratch,
+            options(nomem, nostack)
+        )
+    };
+    saved_sscratch
 }
 
 #[inline]
 fn run_h_extension_probe(state: &mut DetectState) {
-    let anchor = state.cpu_anchor;
+    let saved_sscratch = state.saved_sscratch;
     // SAFETY: init_detect_trap installed the matching direct vector with local
     // interrupts disabled. `state` remains live across the complete assembly
-    // window, and both normal and exceptional paths restore the CPU anchor.
+    // window, and both normal and exceptional paths restore the entry CSR.
     unsafe {
         asm!(
             "csrw sscratch, {state}",
             "csrr {probe_value}, 0x680",
-            "csrw sscratch, {anchor}",
+            "csrw sscratch, {saved_sscratch}",
             state = in(reg) state,
-            anchor = in(reg) anchor,
+            saved_sscratch = in(reg) saved_sscratch,
             probe_value = out(reg) _,
             options(nostack)
         )
@@ -180,16 +187,16 @@ fn restore_detect_trap(sie: bool, stvec: Stvec) {
 /// Stack-owned state shared with the temporary probe trap vector.
 #[repr(C)]
 struct DetectState {
-    cpu_anchor: usize,
+    saved_sscratch: usize,
     result: usize,
     saved_t0: usize,
     saved_t1: usize,
 }
 
 impl DetectState {
-    const fn new(cpu_anchor: usize) -> Self {
+    const fn new(saved_sscratch: usize) -> Self {
         Self {
-            cpu_anchor,
+            saved_sscratch,
             result: 0,
             saved_t0: 0,
             saved_t1: 0,
@@ -216,12 +223,12 @@ unsafe extern "C" fn on_detect_trap() -> ! {
         "csrr   t1, sepc",
         "addi   t1, t1, 4",
         "csrw   sepc, t1",
-        "ld     t1, {cpu_anchor}(t0)",
+        "ld     t1, {saved_sscratch}(t0)",
         "csrw   sscratch, t1",
         "ld     t1, {saved_t1}(t0)",
         "ld     t0, {saved_t0}(t0)",
         "sret",
-        cpu_anchor = const offset_of!(DetectState, cpu_anchor),
+        saved_sscratch = const offset_of!(DetectState, saved_sscratch),
         result = const offset_of!(DetectState, result),
         saved_t0 = const offset_of!(DetectState, saved_t0),
         saved_t1 = const offset_of!(DetectState, saved_t1),

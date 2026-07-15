@@ -16,6 +16,7 @@ trap_vector_base:
     beqz    t1, .Ltrap_from_user
 
     addi    sp, sp, -{trapframe_size}
+    STR     zero, sp, 0
     PUSH_GENERAL_REGS
     LDR     t1, t0, {entry_scratch0_index}
     STR     t1, sp, 5
