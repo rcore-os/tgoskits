@@ -12,6 +12,9 @@ extern crate core;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate std;
+
 #[macro_use]
 pub mod console;
 

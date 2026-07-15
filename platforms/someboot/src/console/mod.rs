@@ -1,8 +1,9 @@
 use core::{
     cell::UnsafeCell,
     fmt::Write,
+    marker::PhantomData,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use byte_unit::{Byte, UnitType};
@@ -63,23 +64,23 @@ pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
 }
 
 pub fn _print(args: core::fmt::Arguments) {
-    if runtime_output_claimed() {
+    let Some(_lease) = EarlyConsoleAccess::acquire() else {
         return;
-    }
+    };
     let _ = ConFmt {}.write_fmt(args);
 }
 
 pub fn _write_bytes(bytes: &[u8]) -> usize {
-    if runtime_output_claimed() {
+    let Some(_lease) = EarlyConsoleAccess::acquire() else {
         return bytes.len();
-    }
+    };
     con().write_bytes(bytes)
 }
 
 pub fn _write_str(s: &str) {
-    if runtime_output_claimed() {
+    let Some(_lease) = EarlyConsoleAccess::acquire() else {
         return;
-    }
+    };
     con().write_str(s);
 }
 
@@ -182,7 +183,62 @@ impl Con for NoCon {
 }
 
 static mut CON: &dyn Con = &NoCon;
-static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
+const OUTPUT_PHASE_MASK: usize = 0b11;
+const OUTPUT_ACTIVE: usize = 0;
+const OUTPUT_PAUSED: usize = 1;
+const OUTPUT_CLAIMED: usize = 2;
+const OUTPUT_READER_ONE: usize = OUTPUT_PHASE_MASK + 1;
+
+static RUNTIME_OUTPUT_STATE: AtomicUsize = AtomicUsize::new(OUTPUT_ACTIVE);
+static NEXT_HANDOVER_TOKEN: AtomicUsize = AtomicUsize::new(1);
+static ACTIVE_HANDOVER_TOKEN: AtomicUsize = AtomicUsize::new(0);
+
+struct EarlyConsoleAccess {
+    tracked: bool,
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl EarlyConsoleAccess {
+    fn acquire() -> Option<Self> {
+        if !runtime_output_state_available() {
+            return Some(Self {
+                tracked: false,
+                _not_send_or_sync: PhantomData,
+            });
+        }
+
+        let mut state = RUNTIME_OUTPUT_STATE.load(Ordering::Acquire);
+        loop {
+            if state & OUTPUT_PHASE_MASK != OUTPUT_ACTIVE {
+                return None;
+            }
+            let next = state.checked_add(OUTPUT_READER_ONE)?;
+            match RUNTIME_OUTPUT_STATE.compare_exchange_weak(
+                state,
+                next,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(Self {
+                        tracked: true,
+                        _not_send_or_sync: PhantomData,
+                    });
+                }
+                Err(observed) => state = observed,
+            }
+        }
+    }
+}
+
+impl Drop for EarlyConsoleAccess {
+    fn drop(&mut self) {
+        if self.tracked {
+            let previous = RUNTIME_OUTPUT_STATE.fetch_sub(OUTPUT_READER_ONE, Ordering::Release);
+            debug_assert!(previous >= OUTPUT_READER_ONE);
+        }
+    }
+}
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {
@@ -190,26 +246,116 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     }
 }
 
-/// Marks the boot console output path as superseded by a runtime console.
+/// Pauses early UART access before a runtime driver starts taking ownership.
 ///
-/// Once an OS serial/tty runtime owns the UART registers, the boot console must
-/// not write the same hardware directly. It still reports bytes as consumed so
-/// generic logging paths cannot spin forever after the handoff.
-pub fn claim_runtime_output() {
-    RUNTIME_OUTPUT_CLAIMED.store(true, Ordering::Release);
+/// The transition is serialized with the final early-console register access.
+/// While paused, boot writes are reported as consumed and boot reads return no
+/// data. The caller must subsequently commit or abort the handover.
+pub fn begin_runtime_output_handover() -> usize {
+    if !runtime_output_state_available() {
+        return 0;
+    }
+
+    let mut state = RUNTIME_OUTPUT_STATE.load(Ordering::Acquire);
+    loop {
+        if state & OUTPUT_PHASE_MASK != OUTPUT_ACTIVE {
+            return 0;
+        }
+        let paused = (state & !OUTPUT_PHASE_MASK) | OUTPUT_PAUSED;
+        match RUNTIME_OUTPUT_STATE.compare_exchange_weak(
+            state,
+            paused,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(observed) => state = observed,
+        }
+    }
+
+    while RUNTIME_OUTPUT_STATE.load(Ordering::Acquire) & !OUTPUT_PHASE_MASK != 0 {
+        core::hint::spin_loop();
+    }
+
+    let mut token = NEXT_HANDOVER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    if token == 0 {
+        token = NEXT_HANDOVER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    }
+    if ACTIVE_HANDOVER_TOKEN
+        .compare_exchange(0, token, Ordering::Release, Ordering::Acquire)
+        .is_err()
+    {
+        RUNTIME_OUTPUT_STATE.store(OUTPUT_ACTIVE, Ordering::Release);
+        return 0;
+    }
+    token
+}
+
+/// Commits a previously paused runtime output handover.
+pub fn commit_runtime_output_handover(token: usize) -> bool {
+    if token == 0
+        || ACTIVE_HANDOVER_TOKEN
+            .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return false;
+    }
+    if RUNTIME_OUTPUT_STATE
+        .compare_exchange(
+            OUTPUT_PAUSED,
+            OUTPUT_CLAIMED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        ACTIVE_HANDOVER_TOKEN.store(token, Ordering::Release);
+        return false;
+    }
+    true
+}
+
+/// Restores boot polling after a runtime output handover failed.
+pub fn abort_runtime_output_handover(token: usize) -> bool {
+    if token == 0
+        || ACTIVE_HANDOVER_TOKEN
+            .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return false;
+    }
+    if RUNTIME_OUTPUT_STATE
+        .compare_exchange(
+            OUTPUT_PAUSED,
+            OUTPUT_ACTIVE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        ACTIVE_HANDOVER_TOKEN.store(token, Ordering::Release);
+        return false;
+    }
+    true
 }
 
 #[cfg(not(test))]
-fn runtime_output_claimed() -> bool {
+fn runtime_output_state_available() -> bool {
     // On AArch64, exclusive atomic instructions such as LDXR/LDAXR are not
     // reliable before the MMU is enabled. Keep the pre-MMU boot console path
     // free of atomic reads and only honor the runtime handoff afterwards.
-    crate::mem::mmu::is_mmu_enabled() && RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+    crate::mem::mmu::is_mmu_enabled()
 }
 
 #[cfg(test)]
-fn runtime_output_claimed() -> bool {
-    RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+fn runtime_output_state_available() -> bool {
+    true
+}
+
+#[cfg(test)]
+fn runtime_output_suppressed() -> bool {
+    runtime_output_state_available()
+        && RUNTIME_OUTPUT_STATE.load(Ordering::Acquire) & OUTPUT_PHASE_MASK != OUTPUT_ACTIVE
 }
 
 pub struct EarlySerial {
@@ -309,6 +455,7 @@ pub fn set_earlycon_serial(serial: EarlySerial) {
 }
 
 pub fn read_byte() -> Option<u8> {
+    let _lease = EarlyConsoleAccess::acquire()?;
     if let Some(byte) = <crate::arch::Arch as crate::ArchTrait>::Console::read_byte() {
         return Some(byte);
     }
@@ -321,10 +468,16 @@ pub fn irq_num() -> Option<usize> {
 }
 
 pub fn set_input_irq_enabled(enabled: bool) {
+    let Some(_lease) = EarlyConsoleAccess::acquire() else {
+        return;
+    };
     <crate::arch::Arch as crate::ArchTrait>::Console::set_input_irq_enabled(enabled);
 }
 
 pub fn handle_irq() -> u32 {
+    let Some(_lease) = EarlyConsoleAccess::acquire() else {
+        return 0;
+    };
     <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
@@ -356,7 +509,11 @@ impl<T> EarlyconMutex<T> {
         // single-core early-output phase and can access the serial object
         // directly; after MMU setup, the custom atomic lock below provides real
         // exclusion for later console users.
-        if !crate::mem::mmu::is_mmu_enabled() {
+        #[cfg(not(test))]
+        let mmu_enabled = crate::mem::mmu::is_mmu_enabled();
+        #[cfg(test)]
+        let mmu_enabled = false;
+        if !mmu_enabled {
             return unsafe { f(&mut *self.inner.get()) };
         }
 
@@ -434,13 +591,15 @@ impl Con for EarlyconCell {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::{sync::mpsc, thread, time::Duration};
 
     use super::*;
 
     struct CountingCon;
 
     static WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 
     impl Con for CountingCon {
         fn write_bytes(&self, bytes: &[u8]) -> usize {
@@ -451,22 +610,93 @@ mod tests {
 
     static COUNTING_CON: CountingCon = CountingCon;
 
-    #[test]
-    fn runtime_output_claim_consumes_without_touching_boot_console() {
+    fn reset_handover_state(console: &'static dyn Con) {
         WRITE_CALLS.store(0, Ordering::Relaxed);
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        RUNTIME_OUTPUT_STATE.store(OUTPUT_ACTIVE, Ordering::Relaxed);
+        ACTIVE_HANDOVER_TOKEN.store(0, Ordering::Relaxed);
+        unsafe { set_out(console) };
+    }
 
-        unsafe { set_out(&COUNTING_CON) };
+    #[test]
+    fn committed_runtime_output_consumes_without_touching_boot_console() {
+        let _test_guard = TEST_LOCK.lock();
+        reset_handover_state(&COUNTING_CON);
 
         assert_eq!(_write_bytes(b"before"), 6);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
 
-        claim_runtime_output();
+        let token = begin_runtime_output_handover();
+        assert_ne!(token, 0);
+        assert!(commit_runtime_output_handover(token));
 
         assert_eq!(_write_bytes(b"after"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+    }
 
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+    #[test]
+    fn runtime_output_handover_can_abort_before_commit() {
+        let _test_guard = TEST_LOCK.lock();
+        reset_handover_state(&COUNTING_CON);
+
+        let token = begin_runtime_output_handover();
+        assert_ne!(token, 0);
+        assert!(runtime_output_suppressed());
+        assert!(!commit_runtime_output_handover(token.wrapping_add(1)));
+        assert!(abort_runtime_output_handover(token));
+
+        assert!(!runtime_output_suppressed());
+    }
+
+    struct BlockingCon;
+
+    static BLOCKING_CON: BlockingCon = BlockingCon;
+    static BLOCKING_ENTERED: AtomicBool = AtomicBool::new(false);
+    static BLOCKING_RELEASED: AtomicBool = AtomicBool::new(false);
+
+    impl Con for BlockingCon {
+        fn write_bytes(&self, bytes: &[u8]) -> usize {
+            WRITE_CALLS.fetch_add(1, Ordering::Relaxed);
+            BLOCKING_ENTERED.store(true, Ordering::Release);
+            while !BLOCKING_RELEASED.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            bytes.len()
+        }
+    }
+
+    #[test]
+    fn handover_waits_for_inflight_access_and_blocks_every_output_entry() {
+        let _test_guard = TEST_LOCK.lock();
+        reset_handover_state(&BLOCKING_CON);
+        BLOCKING_ENTERED.store(false, Ordering::Relaxed);
+        BLOCKING_RELEASED.store(false, Ordering::Relaxed);
+
+        let writer = thread::spawn(|| assert_eq!(_write_bytes(b"inflight"), 8));
+        while !BLOCKING_ENTERED.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let transition = thread::spawn(move || {
+            sender.send(begin_runtime_output_handover()).unwrap();
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+
+        BLOCKING_RELEASED.store(true, Ordering::Release);
+        writer.join().unwrap();
+        let token = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        transition.join().unwrap();
+        assert_ne!(token, 0);
+
+        let calls = WRITE_CALLS.load(Ordering::Acquire);
+        assert_eq!(_write_bytes(b"bytes"), 5);
+        _write_str("string");
+        _print(format_args!("formatted"));
+        assert_eq!(WRITE_CALLS.load(Ordering::Acquire), calls);
+
+        assert!(abort_runtime_output_handover(token));
+        assert_eq!(_write_bytes(b"restored"), 8);
+        assert_eq!(WRITE_CALLS.load(Ordering::Acquire), calls + 1);
     }
 }
 

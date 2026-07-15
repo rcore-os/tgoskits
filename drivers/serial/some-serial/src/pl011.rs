@@ -1030,6 +1030,28 @@ mod tests {
     }
 
     #[test]
+    fn masking_irqs_preserves_polling_configuration() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        const IBRD: u32 = 13;
+        const FBRD: u32 = 2;
+        const LCR_H: u32 = UARTLCR_H::FEN::SET.value | UARTLCR_H::WLEN::EightBit.value;
+        const CR: u32 = UARTCR::UARTEN::SET.value | UARTCR::TXE::SET.value | UARTCR::RXE::SET.value;
+        write_test_reg(&mut regs, 0x024, IBRD);
+        write_test_reg(&mut regs, 0x028, FBRD);
+        write_test_reg(&mut regs, 0x02c, LCR_H);
+        write_test_reg(&mut regs, 0x030, CR);
+
+        uart.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        uart.set_irq_mask(InterruptMask::empty());
+
+        assert_eq!(read_test_reg(&regs, 0x038), 0);
+        assert_eq!(read_test_reg(&regs, 0x024), IBRD);
+        assert_eq!(read_test_reg(&regs, 0x028), FBRD);
+        assert_eq!(read_test_reg(&regs, 0x02c), LCR_H);
+        assert_eq!(read_test_reg(&regs, 0x030), CR);
+    }
+
+    #[test]
     fn hard_irq_does_not_claim_rx_ready_without_mis() {
         let (mut regs, mut uart) = pl011_with_registers();
 

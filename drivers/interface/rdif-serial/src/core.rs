@@ -230,6 +230,7 @@ impl<const N: usize> RxQueue<N> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PortState {
     Down,
+    Polling,
     Running,
 }
 
@@ -358,6 +359,27 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         core.irq_mask = InterruptMask::empty();
         core.tx_irq_enabled = false;
         core.state = PortState::Down;
+        self.tx.clear_from_owner();
+        self.rx.clear_from_owner();
+    }
+
+    /// Quiesces the interrupt-driven core without disabling the UART.
+    ///
+    /// This transition is intended for an early-console handover whose OS IRQ
+    /// registration could not be enabled after [`Self::startup`] armed the
+    /// device. It masks every device interrupt and returns the portable runtime
+    /// core to polling state, while deliberately preserving the UART enable
+    /// state, line divisor, and other polling configuration owned by the boot
+    /// console.
+    /// Software queues are discarded because no runtime consumer was published.
+    pub fn quiesce_to_polling(&self, mut lease: OwnerLease<'_>) {
+        self.assert_owner(&lease);
+        let mut core = unsafe { self.core.access(&mut lease) };
+
+        core.raw.set_irq_mask(InterruptMask::empty());
+        core.irq_mask = InterruptMask::empty();
+        core.tx_irq_enabled = false;
+        core.state = PortState::Polling;
         self.tx.clear_from_owner();
         self.rx.clear_from_owner();
     }
@@ -741,11 +763,30 @@ impl SerialCountersAtomic {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{collections::VecDeque, vec::Vec};
-    use core::num::NonZeroU32;
+    use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+    use core::{
+        num::NonZeroU32,
+        sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::{DataBits, IrqSnapshot, Parity, RxSample, StopBits};
+
+    struct MockProbe {
+        enabled: AtomicBool,
+        irq_mask: AtomicU32,
+        shutdowns: AtomicUsize,
+    }
+
+    impl MockProbe {
+        fn new() -> Self {
+            Self {
+                enabled: AtomicBool::new(true),
+                irq_mask: AtomicU32::new(0),
+                shutdowns: AtomicUsize::new(0),
+            }
+        }
+    }
 
     struct MockUart {
         irq: VecDeque<IrqSnapshot>,
@@ -754,6 +795,7 @@ mod tests {
         tx_load_size: usize,
         tx_written: Vec<u8>,
         mask: InterruptMask,
+        probe: Arc<MockProbe>,
     }
 
     impl MockUart {
@@ -765,7 +807,14 @@ mod tests {
                 tx_load_size: 16,
                 tx_written: Vec::new(),
                 mask: InterruptMask::empty(),
+                probe: Arc::new(MockProbe::new()),
             }
+        }
+
+        fn with_probe() -> (Self, Arc<MockProbe>) {
+            let uart = Self::new();
+            let probe = Arc::clone(&uart.probe);
+            (uart, probe)
         }
 
         fn irq(mut self, sources: IrqSource) -> Self {
@@ -803,7 +852,10 @@ mod tests {
             Ok(())
         }
 
-        fn shutdown(&mut self) {}
+        fn shutdown(&mut self) {
+            self.probe.enabled.store(false, Ordering::Release);
+            self.probe.shutdowns.fetch_add(1, Ordering::Relaxed);
+        }
 
         fn set_config(&mut self, _config: &Config) -> Result<(), ConfigError> {
             Ok(())
@@ -834,6 +886,7 @@ mod tests {
 
         fn set_irq_mask(&mut self, mask: InterruptMask) {
             self.mask = mask;
+            self.probe.irq_mask.store(mask.bits(), Ordering::Release);
         }
 
         fn take_irq_snapshot(&mut self) -> IrqSnapshot {
@@ -891,6 +944,37 @@ mod tests {
         assert_eq!(parts.irq.owner(), OwnerId(0));
         assert_eq!(parts.tx.write_room(), 7);
         assert!(!parts.rx.rx_pending());
+    }
+
+    #[test]
+    fn quiesce_restores_polling_without_shutting_down_uart() {
+        let (uart, probe) = MockUart::with_probe();
+        let uart = uart.irq(IrqSource::RX_DATA).rx_byte(b'x');
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+        let mut tx = parts.tx;
+        tx.submit(b"pending");
+        let mut irq = parts.irq;
+        assert_eq!(irq.handle(lease()).rx_pushed, 1);
+        let rx = parts.rx;
+        assert!(rx.rx_pending());
+        assert_eq!(
+            probe.irq_mask.load(Ordering::Acquire),
+            InterruptMask::RX.bits()
+        );
+
+        parts.port.quiesce_to_polling(lease());
+
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        assert!(probe.enabled.load(Ordering::Acquire));
+        assert_eq!(probe.shutdowns.load(Ordering::Relaxed), 0);
+        assert_eq!(irq.handle(lease()), SerialIrqOutcome::default());
+        assert_eq!(tx.chars_in_buffer(), 0);
+        assert!(!rx.rx_pending());
+
+        parts.port.shutdown(lease());
+        assert!(!probe.enabled.load(Ordering::Acquire));
+        assert_eq!(probe.shutdowns.load(Ordering::Relaxed), 1);
     }
 
     #[test]

@@ -9023,12 +9023,9 @@ dependencies = [
 name = "virtualization-tests"
 version = "0.1.0"
 dependencies = [
- "ax-plat",
  "axdevice",
  "axdevice_base",
- "axvm",
  "axvm-types",
- "irq-framework",
 ]
 
 [[package]]

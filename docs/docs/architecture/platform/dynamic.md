@@ -167,8 +167,15 @@ fn platform_name() -> &'static str {
 fn write_bytes(bytes) { somehal::console::_write_bytes(bytes) }
 fn read_byte()        { somehal::console::read_byte() }
 fn device_id()        { somehal::console::device_id() }
-fn claim_runtime_output() { somehal::console::claim_runtime_output() }
+fn begin_runtime_output_handover_raw() -> usize
+fn commit_runtime_output_handover_raw(token: usize) -> bool
+fn abort_runtime_output_handover_raw(token: usize) -> bool
 ```
+
+安全上层通过 `prepare_runtime_output_handover()` 获得可随内核任务迁移的 RAII token。平台在
+`Active → Paused` 时阻止新 early-console 访问并等待已有访问计数归零；runtime UART
+和 OS IRQ 均就绪后才提交为 `Claimed`，失败则由 token 的 `Drop` 恢复 `Active`。
+generation 不匹配的 stale token 不能改变当前阶段。
 
 x86_64 上特别处理：当 IRQ 向量落在 PCI INTx 区间时，通过 `ax_plat::irq::IrqSource::AcpiGsi` 翻译；否则按 legacy IRQ 处理。
 

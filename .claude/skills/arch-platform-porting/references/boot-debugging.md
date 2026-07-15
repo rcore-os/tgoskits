@@ -64,6 +64,24 @@ Use this order when auditing an early boot port:
   work, claimed generation, retry bit/count, safe-point acknowledgement, and
   final WFI recheck in that order. A stuck retry may suppress WFI, but the idle
   loop must still enter the local scheduler on every iteration.
+- When boot output and a runtime serial driver share one UART, use the typed
+  `Active -> Paused -> Claimed` platform handover. `Paused` must be serialized
+  with the last early-console register access and must make later early reads
+  and writes inert. Start the runtime UART with normal task latency; on failure,
+  mask its device IRQ with `quiesce_to_polling()` and restore its portable core
+  without shutting down or changing the boot line settings, then abort the
+  platform token. This catches
+  SMP write-after-check races that an atomic `claimed` flag alone cannot close.
+- A scheduler switch hook can publish a stable heap identity, but it cannot leak
+  a context-aware reader guard across the switch. If the first task operation
+  reports an unexpected preemption/lock depth, inspect OS scope/current hooks
+  for retained guards before changing the scheduler baton or task policy.
+- On x86_64, an immediate user fault followed by a kernel fault with `RSP` near
+  a user selector such as `0x1b` can be a misaligned `TSS.RSP0`, not a corrupt
+  TSS. IA-32e aligns the privilege-transition stack down to 16 bytes. Inspect
+  the published RSP0, handler-entry RSP, and the frame tail in GDB; require the
+  task-owned `UserContext` and its trap-frame end to be 16-byte aligned instead
+  of compensating only in entry assembly.
 
 ## RISC-V FDT SMP Notes
 

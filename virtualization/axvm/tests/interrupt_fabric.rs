@@ -14,7 +14,6 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
     DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
@@ -28,60 +27,6 @@ use axvm::{AxVmError, InterruptFabric};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
 };
-
-struct TestConsole;
-
-#[ax_plat::impl_plat_interface]
-impl ConsoleIf for TestConsole {
-    fn write_bytes(_bytes: &[u8]) {}
-
-    fn read_bytes(_bytes: &mut [u8]) -> usize {
-        0
-    }
-
-    fn device_id() -> ax_plat::console::ConsoleDeviceIdResult {
-        Err(ax_plat::console::ConsoleDeviceIdError::NotSpecified)
-    }
-
-    fn claim_runtime_output() {}
-
-    fn irq_num() -> Option<irq_framework::IrqId> {
-        None
-    }
-
-    fn set_input_irq_enabled(_enabled: bool) {}
-
-    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
-        ax_plat::console::ConsoleIrqEvent::empty()
-    }
-}
-
-struct TestTime;
-
-#[ax_plat::impl_plat_interface]
-impl TimeIf for TestTime {
-    fn current_ticks() -> u64 {
-        0
-    }
-
-    fn ticks_to_nanos(ticks: u64) -> u64 {
-        ticks
-    }
-
-    fn nanos_to_ticks(nanos: u64) -> u64 {
-        nanos
-    }
-
-    fn epochoffset_nanos() -> u64 {
-        0
-    }
-
-    fn irq_num() -> irq_framework::IrqId {
-        irq_framework::IrqId::new(irq_framework::IrqDomainId(0), irq_framework::HwIrq(0))
-    }
-
-    fn set_oneshot_timer(_deadline_ns: u64) {}
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IrqEvent {

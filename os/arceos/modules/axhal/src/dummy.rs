@@ -48,7 +48,17 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
-    fn claim_runtime_output() {}
+    fn begin_runtime_output_handover_raw() -> usize {
+        1
+    }
+
+    fn commit_runtime_output_handover_raw(_token: usize) -> bool {
+        true
+    }
+
+    fn abort_runtime_output_handover_raw(_token: usize) -> bool {
+        true
+    }
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {

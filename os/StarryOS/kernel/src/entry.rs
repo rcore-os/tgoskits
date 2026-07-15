@@ -4,7 +4,6 @@ use alloc::{
 };
 
 use ax_fs_ng::vfs::current_fs_context;
-use ax_kspin::PreemptIrqGuard;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::PiMutex;
 use starry_process::{Pid, Process};
@@ -70,9 +69,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    if let Err(err) = tty::bind_console_to(&proc) {
-        warn!("Failed to bind console tty: {err:?}");
-    }
+    let console_handover = tty::prepare_console_handover(&proc)
+        .unwrap_or_else(|err| panic!("Failed to prepare console tty handover: {err:?}"));
 
     let proc = ProcessData::new(
         proc,
@@ -90,22 +88,21 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
+    console_handover
+        .commit()
+        .unwrap_or_else(|err| panic!("Failed to commit console tty handover: {err:?}"));
+
     let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
 
-    let task = {
-        let _guard = PreemptIrqGuard::new();
-        let task = spawn_user_thread(
-            new_user_task(uctx, 0),
-            name,
-            crate::config::KERNEL_STACK_SIZE,
-            page_table_root,
-            thr,
-        )
-        .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));
-        add_task_to_table(&task);
-        tty::arm_console_irq();
-        task
-    };
+    let task = spawn_user_thread(
+        new_user_task(uctx, 0),
+        name,
+        crate::config::KERNEL_STACK_SIZE,
+        page_table_root,
+        thr,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));
+    add_task_to_table(&task);
 
     // TODO: wait for all processes to finish
     let exit_code = task.join();

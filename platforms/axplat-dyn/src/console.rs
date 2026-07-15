@@ -59,8 +59,16 @@ impl ConsoleIf for ConsoleIfImpl {
         })
     }
 
-    fn claim_runtime_output() {
-        somehal::console::claim_runtime_output();
+    fn begin_runtime_output_handover_raw() -> usize {
+        somehal::console::begin_runtime_output_handover()
+    }
+
+    fn commit_runtime_output_handover_raw(token: usize) -> bool {
+        somehal::console::commit_runtime_output_handover(token)
+    }
+
+    fn abort_runtime_output_handover_raw(token: usize) -> bool {
+        somehal::console::abort_runtime_output_handover(token)
     }
 
     /// Returns the IRQ number for the console input interrupt.

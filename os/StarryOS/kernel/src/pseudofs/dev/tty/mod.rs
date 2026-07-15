@@ -2,6 +2,7 @@ mod ptm;
 mod pts;
 mod pty;
 mod serial;
+mod serial_start;
 mod terminal;
 mod usb_serial;
 
@@ -35,9 +36,7 @@ pub use self::{
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
-    serial::{
-        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
-    },
+    serial::{SerialTtyDriver, console_device, prepare_console_handover, serial_tty_entries},
     usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
 };
 use crate::{

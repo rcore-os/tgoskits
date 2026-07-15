@@ -8,6 +8,7 @@ const KPROBE: &str = include_str!("../src/kprobe.rs");
 const MM_ACCESS: &str = include_str!("../src/mm/access.rs");
 const PIDFD: &str = include_str!("../src/syscall/fs/pidfd.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
+const SERIAL_TTY: &str = include_str!("../src/pseudofs/dev/tty/serial.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
 const SCHEDULER_IDENTITY: &str = include_str!("../src/task/scheduler_identity.rs");
 const TASK: &str = include_str!("../src/task/mod.rs");
@@ -17,6 +18,7 @@ const TRACEPOINT: &str = include_str!("../src/tracepoint/mod.rs");
 const TRACE_SCHED: &str = include_str!("../src/tracepoint/sched.rs");
 const UPROBE: &str = include_str!("../src/uprobe/mod.rs");
 const USER_LOOP: &str = include_str!("../src/task/user.rs");
+const ENTRY: &str = include_str!("../src/entry.rs");
 
 #[test]
 fn generic_block_on_has_no_implicit_starry_user_identity() {
@@ -139,6 +141,45 @@ fn active_scope_mutation_uses_a_bounded_writer_gate() {
     assert!(mutation.contains("scope.with_active_mut_pinned"));
     assert!(!mutation.contains("force_read_decrement"));
     assert!(!mutation.contains("mem::forget"));
+}
+
+#[test]
+fn console_output_ownership_uses_a_success_typed_two_phase_handover() {
+    let prepare = function_body(SERIAL_TTY, "pub fn prepare_console_handover(");
+    let commit = function_body(SERIAL_TTY, "pub fn commit(mut self)");
+    let rollback = function_body(SERIAL_TTY, "fn abort_failed_start(");
+    let init = function_body(ENTRY, "pub fn init(");
+
+    assert!(SERIAL_TTY.contains("-> AxResult<PreparedConsoleHandover>"));
+    assert!(prepare.contains("backend.prepare_console_handover"));
+    assert!(!prepare.contains("start_port"));
+    assert!(!prepare.contains("ensure_started"));
+    assert!(!prepare.contains("claim_runtime_output"));
+    assert!(commit.contains("commit_console_handover"));
+    assert!(commit.contains("prepare_runtime_output_handover"));
+    assert!(commit.contains("platform_handover.commit"));
+    assert!(commit.contains("PortStartError::RecoveryFailed"));
+    assert!(commit.contains("restoring boot polling here could create two register owners"));
+    assert!(rollback.contains("quiesce_to_polling"));
+    assert!(rollback.contains(".is_ok()"));
+    assert!(!rollback.contains("let _ = ax_serial::run_on_owner"));
+    assert!(init.contains("prepare_console_handover"));
+    assert!(init.contains("console_handover"));
+    assert!(init.contains(".commit()"));
+    assert!(!init.contains("map(Some)"));
+
+    let prepare = init
+        .find("prepare_console_handover")
+        .expect("the handover must be prepared before opening stdio");
+    let stdio = init.find("add_stdio").expect("stdio must be installed");
+    let claim = init
+        .find("console_handover\n        .commit()")
+        .expect("the prepared console must be committed");
+    let publish = init
+        .find("add_task_to_table")
+        .expect("the user task must be published");
+    assert!(prepare < stdio && stdio < claim && claim < publish);
+    assert!(!init.contains("PreemptIrqGuard"));
 }
 
 #[test]

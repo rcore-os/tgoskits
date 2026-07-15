@@ -9,9 +9,6 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
-ax-plat.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true
-axvm.workspace = true
 axvm-types.workspace = true
-irq-framework.workspace = true
