@@ -1,7 +1,7 @@
 //! x86_64 implementations of AxVM platform capability hooks.
 
 use super::X86_64Arch;
-use crate::architecture::{GuestBootPlatform, HostTimePlatform, VmTimerIntegration};
+use crate::architecture::{GuestBootPlatform, HostTimePlatform, capabilities::VmTimerIntegration};
 
 impl HostTimePlatform for X86_64Arch {
     // ArceOS also programs the LAPIC one-shot timer for scheduler deadlines. Sharing its timer

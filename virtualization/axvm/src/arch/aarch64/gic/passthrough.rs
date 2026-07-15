@@ -18,9 +18,39 @@ use rdrive::DeviceId;
 
 use super::AxvmGicV3Backend;
 
-static PHYSICAL_IRQ_OWNERS: SpinNoIrq<BTreeMap<IrqId, usize>> = SpinNoIrq::new(BTreeMap::new());
+static PHYSICAL_IRQ_OWNERS: SpinNoIrq<BTreeMap<IrqId, PhysicalIrqOwner>> =
+    SpinNoIrq::new(BTreeMap::new());
 static PHYSICAL_MSI_OWNERS: SpinNoIrq<BTreeMap<PhysicalMsiKey, PhysicalMsiOwner>> =
     SpinNoIrq::new(BTreeMap::new());
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PhysicalIrqOwner {
+    vm_id: usize,
+    state: PhysicalIrqOwnershipState,
+}
+
+impl PhysicalIrqOwner {
+    const fn reserved(vm_id: usize) -> Self {
+        Self {
+            vm_id,
+            state: PhysicalIrqOwnershipState::Reserved,
+        }
+    }
+
+    const fn guest_owns_hardware(self) -> bool {
+        matches!(self.state, PhysicalIrqOwnershipState::GuestOwned)
+    }
+
+    fn claim_for_guest(&mut self) {
+        self.state = PhysicalIrqOwnershipState::GuestOwned;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalIrqOwnershipState {
+    Reserved,
+    GuestOwned,
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PhysicalMsiKey {
@@ -67,12 +97,6 @@ pub(super) fn bind_interrupt(
         ));
     }
     reserve_irq(irq, backend.vm_id)?;
-    let result = host_irq::set_enable(irq, false)
-        .and_then(|()| host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(route.host_cpu))));
-    if let Err(error) = result {
-        release_irq(irq, backend.vm_id);
-        return Err(platform_error("bind physical interrupt", irq, error));
-    }
     Ok(())
 }
 
@@ -82,7 +106,14 @@ pub(super) fn set_interrupt_enabled(
     enabled: bool,
 ) -> Result<(), GicV3BackendError> {
     let irq = decode_irq(binding.host())?;
-    require_owner(irq, backend.vm_id, "set physical interrupt enable state")?;
+    let target_cpu = enabled
+        .then(|| backend.route(binding.target()).map(|route| route.host_cpu))
+        .transpose()?;
+    claim_irq_for_guest(irq, backend.vm_id, "set physical interrupt enable state")?;
+    if let Some(target_cpu) = target_cpu {
+        host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))
+            .map_err(|error| platform_error("route physical interrupt", irq, error))?;
+    }
     host_irq::set_enable(irq, enabled)
         .map_err(|error| platform_error("set physical interrupt enable state", irq, error))
 }
@@ -92,9 +123,11 @@ pub(super) fn unbind_interrupt(
     binding: PhysicalInterruptBinding,
 ) -> Result<(), GicV3BackendError> {
     let irq = decode_irq(binding.host())?;
-    require_owner(irq, backend.vm_id, "unbind physical interrupt")?;
-    host_irq::set_enable(irq, false)
-        .map_err(|error| platform_error("unbind physical interrupt", irq, error))?;
+    let owner = require_owner(irq, backend.vm_id, "unbind physical interrupt")?;
+    if owner.guest_owns_hardware() {
+        host_irq::set_enable(irq, false)
+            .map_err(|error| platform_error("unbind physical interrupt", irq, error))?;
+    }
     release_irq(irq, backend.vm_id);
     Ok(())
 }
@@ -385,16 +418,41 @@ fn reserve_irq(irq: IrqId, vm_id: usize) -> Result<(), GicV3BackendError> {
     let mut owners = PHYSICAL_IRQ_OWNERS.lock();
     match owners.get(&irq).copied() {
         None => {
-            owners.insert(irq, vm_id);
+            owners.insert(irq, PhysicalIrqOwner::reserved(vm_id));
             Ok(())
         }
-        Some(owner) if owner == vm_id => Err(GicV3BackendError::new(
+        Some(owner) if owner.vm_id == vm_id => Err(GicV3BackendError::new(
             "bind physical interrupt",
             alloc::format!("host IRQ {irq:?} is already bound by VM {vm_id}"),
         )),
         Some(owner) => Err(GicV3BackendError::new(
             "bind physical interrupt",
-            alloc::format!("host IRQ {irq:?} is owned by VM {owner}"),
+            alloc::format!("host IRQ {irq:?} is owned by VM {}", owner.vm_id),
+        )),
+    }
+}
+
+fn claim_irq_for_guest(
+    irq: IrqId,
+    vm_id: usize,
+    operation: &'static str,
+) -> Result<(), GicV3BackendError> {
+    let mut owners = PHYSICAL_IRQ_OWNERS.lock();
+    match owners.get_mut(&irq) {
+        Some(owner) if owner.vm_id == vm_id => {
+            owner.claim_for_guest();
+            Ok(())
+        }
+        Some(owner) => Err(GicV3BackendError::new(
+            operation,
+            alloc::format!(
+                "host IRQ {irq:?} is owned by VM {}, not VM {vm_id}",
+                owner.vm_id
+            ),
+        )),
+        None => Err(GicV3BackendError::new(
+            operation,
+            alloc::format!("host IRQ {irq:?} is not bound"),
         )),
     }
 }
@@ -403,12 +461,15 @@ fn require_owner(
     irq: IrqId,
     vm_id: usize,
     operation: &'static str,
-) -> Result<(), GicV3BackendError> {
+) -> Result<PhysicalIrqOwner, GicV3BackendError> {
     match PHYSICAL_IRQ_OWNERS.lock().get(&irq).copied() {
-        Some(owner) if owner == vm_id => Ok(()),
+        Some(owner) if owner.vm_id == vm_id => Ok(owner),
         Some(owner) => Err(GicV3BackendError::new(
             operation,
-            alloc::format!("host IRQ {irq:?} is owned by VM {owner}, not VM {vm_id}"),
+            alloc::format!(
+                "host IRQ {irq:?} is owned by VM {}, not VM {vm_id}",
+                owner.vm_id
+            ),
         )),
         None => Err(GicV3BackendError::new(
             operation,
@@ -419,7 +480,7 @@ fn require_owner(
 
 fn release_irq(irq: IrqId, vm_id: usize) {
     let mut owners = PHYSICAL_IRQ_OWNERS.lock();
-    if owners.get(&irq) == Some(&vm_id) {
+    if owners.get(&irq).is_some_and(|owner| owner.vm_id == vm_id) {
         owners.remove(&irq);
     }
 }

@@ -415,6 +415,37 @@ fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
     }
 }
 
+#[test]
+fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
+    let source = include_str!("../src/arch/aarch64/gic/passthrough.rs");
+    let bind = source
+        .split_once("pub(super) fn bind_interrupt(")
+        .expect("AArch64 passthrough must define physical IRQ binding")
+        .1
+        .split_once("pub(super) fn set_interrupt_enabled(")
+        .expect("physical IRQ binding must precede activation")
+        .0;
+
+    assert!(bind.contains("reserve_irq("));
+    for premature_handoff in ["host_irq::set_enable", "host_irq::set_affinity"] {
+        assert!(
+            !bind.contains(premature_handoff),
+            "binding must preserve host IRQ delivery until guest activation: {premature_handoff}"
+        );
+    }
+
+    let activation = source
+        .split_once("pub(super) fn set_interrupt_enabled(")
+        .expect("AArch64 passthrough must define physical IRQ activation")
+        .1
+        .split_once("pub(super) fn unbind_interrupt(")
+        .expect("physical IRQ activation must precede unbinding")
+        .0;
+    assert!(activation.contains("claim_irq_for_guest("));
+    assert!(activation.contains("host_irq::set_affinity"));
+    assert!(activation.contains("host_irq::set_enable"));
+}
+
 fn find_target_arch_cfg_outside_arch(
     source_root: &std::path::Path,
     directory: &std::path::Path,

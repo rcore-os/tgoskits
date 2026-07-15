@@ -1,7 +1,7 @@
 //! LoongArch64 implementations of AxVM platform capability hooks.
 
 use super::LoongArch64Arch;
-use crate::architecture::{GuestBootPlatform, HostTimePlatform, VmTimerIntegration};
+use crate::architecture::{GuestBootPlatform, HostTimePlatform, capabilities::VmTimerIntegration};
 
 impl GuestBootPlatform for LoongArch64Arch {
     fn init_guest_boot_resources() {
