@@ -473,6 +473,20 @@ impl PhysCpuList {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "Hybrid guest IRQ authorization is consumed only by AArch64 builds"
+)]
+pub(crate) fn hybrid_guest_intids<'a>(
+    routes: &'a [Aarch64ForwardedIrq],
+    console_intid: Option<u32>,
+) -> impl Iterator<Item = u32> + 'a {
+    routes
+        .iter()
+        .map(|route| route.guest_intid())
+        .chain(console_intid)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -528,5 +542,23 @@ mod tests {
 
         assert_eq!(config.aarch64_hybrid_forwarded_irqs(), &[route]);
         assert_eq!(config.pass_through_irqs(), &[9]);
+    }
+    #[test]
+    fn hybrid_guest_authorization_adds_console_without_changing_routes() {
+        let routes = [Aarch64ForwardedIrq::identity(
+            Aarch64GicSpi::new(16).unwrap(),
+        )];
+
+        assert_eq!(
+            super::hybrid_guest_intids(&routes, Some(80)).collect::<Vec<_>>(),
+            [48, 80]
+        );
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| route.host_intid())
+                .collect::<Vec<_>>(),
+            [48]
+        );
     }
 }

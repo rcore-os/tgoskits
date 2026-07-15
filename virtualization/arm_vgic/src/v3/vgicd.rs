@@ -57,6 +57,18 @@ impl VGicD {
         Ok(())
     }
 
+    /// Allows guest distributor access to an IRQ without changing host routing.
+    pub fn allow_guest_irq(&self, irq: u32) -> VgicResult {
+        let mut assigned_irqs = self.assigned_irqs.lock();
+        Self::allow_guest_irq_in(&mut assigned_irqs, irq)
+    }
+
+    fn allow_guest_irq_in(assigned_irqs: &mut Bitmap<{ MAX_IRQ_V3 }>, irq: u32) -> VgicResult {
+        Self::validate_irq(irq)?;
+        assigned_irqs.set(irq as usize, true);
+        Ok(())
+    }
+
     /// Creates a new VGicD instance.
     pub fn new(addr: GuestPhysAddr, size: Option<usize>) -> Self {
         let size = size.unwrap_or(DEFAULT_GICD_SIZE);
@@ -81,8 +93,7 @@ impl VGicD {
              {target_cpu_affinity:?}"
         );
 
-        Self::validate_irq(irq)?;
-        self.assigned_irqs.lock().set(irq as usize, true);
+        self.allow_guest_irq(irq)?;
 
         // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
         let gicd_itargetsr_paddr = self.host_gicd_addr + GICD_ITARGETSR + irq as usize;
@@ -293,22 +304,26 @@ impl VGicD {
                 bits_per_irq_shift
             );
         }
+        let assigned_irqs = self.assigned_irqs.lock();
+        Self::irq_access_mask_in(&assigned_irqs, reg_offset, bits_per_irq_shift, width)
+    }
 
-        // How many IRQs there are in the mmio region the access width covers?
+    fn irq_access_mask_in(
+        assigned_irqs: &Bitmap<{ MAX_IRQ_V3 }>,
+        reg_offset: usize,
+        bits_per_irq_shift: usize,
+        width: AccessWidth,
+    ) -> usize {
         let irqs_in_access_width = width.size() << (3 - bits_per_irq_shift);
-        // The first IRQ at the given register offset.
         let first_irq = reg_offset << (3 - bits_per_irq_shift);
-        // The mask of a single IRQ in the bit-field register.
         let single_irq_mask = (1 << (bits_per_irq_shift + 1)) - 1;
 
         let mut mask = 0;
         for irq in 0..irqs_in_access_width {
-            if self.is_irq_assigned((first_irq + irq) as _) {
-                // If the IRQ is assigned, set the corresponding bits in the mask.
+            if assigned_irqs.get(first_irq + irq) {
                 mask |= single_irq_mask << (irq << bits_per_irq_shift);
             }
         }
-
         mask
     }
 
@@ -352,3 +367,23 @@ impl VGicD {
 
 // Todo: move this lock to arceos or axvisor
 static GICD_LOCK: ax_kspin::SpinNoIrq<()> = ax_kspin::SpinNoIrq::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_spi_is_writable_without_authorizing_neighbors() {
+        let mut assigned_irqs = Bitmap::new();
+
+        assert_eq!(
+            VGicD::irq_access_mask_in(&assigned_irqs, 0x0c, 1, AccessWidth::Dword),
+            0
+        );
+        VGicD::allow_guest_irq_in(&mut assigned_irqs, 48).unwrap();
+        assert_eq!(
+            VGicD::irq_access_mask_in(&assigned_irqs, 0x0c, 1, AccessWidth::Dword),
+            0b11
+        );
+    }
+}

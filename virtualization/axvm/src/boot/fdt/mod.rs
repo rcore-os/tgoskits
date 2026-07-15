@@ -29,6 +29,7 @@ impl GuestDtbImage {
 #[cfg(test)]
 fn guest_fdt_policy() -> test_core::GuestFdtPolicy {
     test_core::GuestFdtPolicy {
+        describe_aarch64_consoles: true,
         patch_runtime: test_runtime_patch,
         patch_provided: test_provided_patch,
         decode_interrupt: |specifier| specifier.first().copied(),

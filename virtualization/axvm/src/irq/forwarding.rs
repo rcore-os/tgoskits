@@ -182,6 +182,18 @@ pub(crate) struct LrRouteRequest {
     pub physical_intid: Option<usize>,
 }
 
+/// Returns the current-CPU hardware route for the AArch64 virtual timer PPI.
+#[allow(
+    dead_code,
+    reason = "the AArch64 virtual-timer route has a production consumer only on AArch64"
+)]
+pub(crate) fn aarch64_virtual_timer_route(intid: usize) -> Option<LrRouteRequest> {
+    (intid == 27).then_some(LrRouteRequest {
+        virtual_intid: 27,
+        physical_intid: Some(27),
+    })
+}
+
 /// Returns whether a live list register already represents the exact request.
 #[allow(
     dead_code,
@@ -209,7 +221,9 @@ mod tests {
         thread,
     };
 
-    use super::{LrRouteRequest, LrSnapshot, LrState, lr_matches_route};
+    use super::{
+        LrRouteRequest, LrSnapshot, LrState, aarch64_virtual_timer_route, lr_matches_route,
+    };
     use crate::AxVmError;
 
     #[test]
@@ -361,5 +375,18 @@ mod tests {
             },
             software,
         ));
+    }
+
+    #[test]
+    fn aarch64_virtual_timer_uses_a_current_cpu_hardware_route() {
+        assert_eq!(
+            aarch64_virtual_timer_route(27),
+            Some(LrRouteRequest {
+                virtual_intid: 27,
+                physical_intid: Some(27),
+            })
+        );
+        assert_eq!(aarch64_virtual_timer_route(26), None);
+        assert_eq!(aarch64_virtual_timer_route(30), None);
     }
 }

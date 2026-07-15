@@ -16,6 +16,8 @@ mod base;
 mod history;
 mod vm;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 pub use base::*;
 pub use history::*;
 pub use vm::*;
@@ -30,6 +32,37 @@ use std::{
 use std::{print, println};
 
 use spin::LazyLock;
+
+const NO_CONNECT_REQUEST: usize = usize::MAX;
+static CONNECT_REQUEST: AtomicUsize = AtomicUsize::new(NO_CONNECT_REQUEST);
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectRequestError {
+    AlreadyPending,
+    VmIdOutOfRange,
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn request_connect(vm_id: usize) -> Result<(), ConnectRequestError> {
+    if vm_id == NO_CONNECT_REQUEST {
+        return Err(ConnectRequestError::VmIdOutOfRange);
+    }
+    CONNECT_REQUEST
+        .compare_exchange(
+            NO_CONNECT_REQUEST,
+            vm_id,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map(|_| ())
+        .map_err(|_| ConnectRequestError::AlreadyPending)
+}
+
+pub fn take_connect_request() -> Option<usize> {
+    let vm_id = CONNECT_REQUEST.swap(NO_CONNECT_REQUEST, Ordering::AcqRel);
+    (vm_id != NO_CONNECT_REQUEST).then_some(vm_id)
+}
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);

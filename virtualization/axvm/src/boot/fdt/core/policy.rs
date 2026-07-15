@@ -14,6 +14,7 @@ pub type EnrichGuestInterrupts = fn(&mut crate::config::AxVMConfig, &[u8]) -> Ax
 /// Architecture operations required by common guest FDT processing.
 #[derive(Clone, Copy)]
 pub struct GuestFdtPolicy {
+    pub describe_aarch64_consoles: bool,
     pub patch_runtime: RuntimeFdtPatch,
     pub patch_provided: ProvidedFdtPatch,
     pub decode_interrupt: fn(&[u32]) -> Option<u32>,

@@ -5,14 +5,14 @@ use alloc::vec::Vec;
 use axvm_types::Aarch64GicSpi;
 
 use crate::{
-    AxVmError, AxVmResult, config::Aarch64ForwardedIrq, irq::forwarding::GenerationOwnerTable,
+    AxVmError, AxVmResult,
+    config::Aarch64ForwardedIrq,
+    irq::forwarding::{GenerationOwnerTable, aarch64_virtual_timer_route},
 };
 
 const SPI_BASE: usize = 32;
 const SPI_LIMIT: usize = 1020;
 const SPI_COUNT: usize = SPI_LIMIT - SPI_BASE;
-const VIRTUAL_TIMER_PPI: usize = 27;
-
 static SPI_OWNERS: GenerationOwnerTable<SPI_COUNT> = GenerationOwnerTable::new();
 
 pub(crate) fn register_platform_irq_injector() {
@@ -100,6 +100,14 @@ fn spi_index(intid: usize) -> usize {
 }
 
 fn inject_virtual_irq(intid: usize) -> bool {
+    if let Some(route) = aarch64_virtual_timer_route(intid) {
+        return super::gic::inject_interrupt_hw1(
+            route.virtual_intid,
+            route
+                .physical_intid
+                .expect("the virtual-timer route is hardware mapped"),
+        );
+    }
     let Some(vm_id) = crate::current_vm_id() else {
         trace!("skip AArch64 physical IRQ {intid}: no current VM context");
         return false;
@@ -107,25 +115,21 @@ fn inject_virtual_irq(intid: usize) -> bool {
     let Some(vm) = crate::get_vm_by_id(vm_id) else {
         return false;
     };
-    let guest_intid = if intid == VIRTUAL_TIMER_PPI {
-        (vm.interrupt_mode() == axvm_types::VMInterruptMode::Hybrid).then_some(VIRTUAL_TIMER_PPI)
-    } else {
-        let Some(index) = checked_spi_index(intid) else {
-            return false;
-        };
-        let Some(owner) = vm_id.checked_add(1) else {
-            return false;
-        };
-        if !SPI_OWNERS.is_owned_by(index, owner) {
-            return false;
-        }
-        vm.with_config(|config| {
-            config
-                .aarch64_hybrid_forwarded_irqs()
-                .iter()
-                .find(|route| route.host_intid() as usize == intid)
-                .map(|route| route.guest_intid() as usize)
-        })
+    let Some(index) = checked_spi_index(intid) else {
+        return false;
     };
+    let Some(owner) = vm_id.checked_add(1) else {
+        return false;
+    };
+    if !SPI_OWNERS.is_owned_by(index, owner) {
+        return false;
+    }
+    let guest_intid = vm.with_config(|config| {
+        config
+            .aarch64_hybrid_forwarded_irqs()
+            .iter()
+            .find(|route| route.host_intid() as usize == intid)
+            .map(|route| route.guest_intid() as usize)
+    });
     guest_intid.is_some_and(|guest| super::gic::inject_interrupt_hw1(guest, intid))
 }

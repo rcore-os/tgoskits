@@ -34,8 +34,12 @@ mod factory;
 mod fw_cfg;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch_pch_pic;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod pl011;
 mod range_alloc;
 mod registration;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod uart_16550;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -59,7 +63,11 @@ pub use fw_cfg::{
 };
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
+#[cfg(target_arch = "aarch64")]
+pub use pl011::EmulatedPl011;
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+#[cfg(target_arch = "aarch64")]
+pub use uart_16550::EmulatedUart16550;
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
     X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,

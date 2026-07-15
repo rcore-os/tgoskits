@@ -112,6 +112,51 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmRes
     )
 }
 
+#[allow(
+    dead_code,
+    reason = "the host test target cannot compile the AArch64 console consumer"
+)]
+pub struct ConsoleIoPolicy;
+
+#[allow(
+    dead_code,
+    reason = "the host test target cannot compile the AArch64 console consumer"
+)]
+impl ConsoleIoPolicy {
+    pub fn ensure_running(status: VmStatus) -> AxVmResult {
+        if status != VmStatus::Running {
+            return ax_err!(
+                BadState,
+                format!("console I/O requires a running VM, found {status:?}")
+            );
+        }
+        Ok(())
+    }
+
+    pub fn require_console<T>(console: Option<T>) -> AxVmResult<T> {
+        console.ok_or_else(|| ax_err_type!(NotFound, "VM has no connectable AArch64 console"))
+    }
+
+    pub fn deliver_pending_irq<P, I>(
+        pending_irq: Option<usize>,
+        fabric_has_backend: bool,
+        mut pulse: P,
+        mut inject_vcpu0: I,
+    ) -> AxVmResult
+    where
+        P: FnMut(usize) -> AxVmResult,
+        I: FnMut(usize) -> AxVmResult,
+    {
+        let Some(irq) = pending_irq else {
+            return Ok(());
+        };
+        if fabric_has_backend && pulse(irq).is_ok() {
+            return Ok(());
+        }
+        inject_vcpu0(irq)
+    }
+}
+
 pub(crate) struct AxVMResources {
     // Todo: use more efficient lock.
     pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
@@ -329,7 +374,7 @@ impl AxVMResources {
             .ok_or_else(|| ax_err_type!(BadState, "VM devices are not prepared"))
     }
 
-    fn interrupt_fabric(&self) -> AxVmResult<&InterruptFabric> {
+    pub(crate) fn interrupt_fabric(&self) -> AxVmResult<&InterruptFabric> {
         self.interrupt_fabric
             .as_ref()
             .ok_or_else(|| ax_err_type!(BadState, "VM interrupt fabric is not prepared"))
@@ -411,7 +456,7 @@ impl VMMemoryRegion {
     }
 }
 
-const TEMP_MAX_VCPU_NUM: usize = 64;
+pub(crate) const TEMP_MAX_VCPU_NUM: usize = 64;
 
 /// A Virtual Machine.
 pub struct AxVM {
@@ -468,7 +513,7 @@ impl AxVM {
             .unwrap_or(VMInterruptMode::NoIrq)
     }
 
-    fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
+    pub(crate) fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&AxVMResources) -> AxVmResult<R>,
     {
@@ -1386,5 +1431,96 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    #[test]
+    fn console_io_rejects_non_running_states() {
+        for status in [VmStatus::Ready, VmStatus::Paused, VmStatus::Stopped] {
+            let error = ConsoleIoPolicy::ensure_running(status).unwrap_err();
+            assert!(matches!(error, AxVmError::InvalidState { .. }));
+        }
+    }
+
+    #[test]
+    fn console_io_requires_registered_console() {
+        let error = ConsoleIoPolicy::require_console::<usize>(None).unwrap_err();
+        assert!(matches!(error, AxVmError::ResourceUnavailable { .. }));
+    }
+
+    #[test]
+    fn console_io_prefers_interrupt_fabric() {
+        let mut pulsed = Vec::new();
+        let mut injected = Vec::new();
+
+        ConsoleIoPolicy::deliver_pending_irq(
+            Some(33),
+            true,
+            |irq| {
+                pulsed.push(irq);
+                Ok(())
+            },
+            |irq| {
+                injected.push(irq);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(pulsed, [33]);
+        assert!(injected.is_empty());
+    }
+
+    #[test]
+    fn console_io_falls_back_to_vcpu_zero_without_interrupt_backend() {
+        let mut pulsed = Vec::new();
+        let mut injected = Vec::new();
+
+        ConsoleIoPolicy::deliver_pending_irq(
+            Some(34),
+            false,
+            |irq| {
+                pulsed.push(irq);
+                Ok(())
+            },
+            |irq| {
+                injected.push(irq);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(pulsed.is_empty());
+        assert_eq!(injected, [34]);
+    }
+
+    #[test]
+    fn console_io_falls_back_when_interrupt_fabric_pulse_fails() {
+        let mut injected = Vec::new();
+
+        ConsoleIoPolicy::deliver_pending_irq(
+            Some(35),
+            true,
+            |_| ax_err!(Io, "pulse failed"),
+            |irq| {
+                injected.push(irq);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(injected, [35]);
+    }
+
+    #[test]
+    fn console_io_returns_fallback_injection_error() {
+        let error = ConsoleIoPolicy::deliver_pending_irq(
+            Some(36),
+            false,
+            |_| Ok(()),
+            |_| ax_err!(Io, "injection failed"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AxVmError::Host { .. }));
     }
 }
