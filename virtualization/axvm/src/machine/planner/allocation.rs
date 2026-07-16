@@ -360,12 +360,29 @@ fn reserve_mmio(
 }
 
 fn reserve_interrupt(allocator: &mut AddressAllocator, interrupt: u32) -> MachinePlanResult<()> {
-    allocator
-        .allocate(1, 1, AllocPolicy::ExactMatch(u64::from(interrupt)))
-        .map(|_| ())
-        .map_err(|source| MachinePlanError::ResourceAllocation {
+    let address = u64::from(interrupt);
+    // vm-allocator 0.1.4 cannot ExactMatch the final inclusive address because
+    // its candidate lookup probes `start + 1`. LastMatch is equivalent while
+    // that final slot is free; verify the result so an occupied slot cannot
+    // silently reserve a different interrupt.
+    let policy = if address == allocator.end() {
+        AllocPolicy::LastMatch
+    } else {
+        AllocPolicy::ExactMatch(address)
+    };
+    let reservation = allocator.allocate(1, 1, policy).map_err(|source| {
+        MachinePlanError::ResourceAllocation {
             resource: "reserved interrupt",
             owner: interrupt.to_string(),
             source,
-        })
+        }
+    })?;
+    if reservation.start() != address {
+        return Err(MachinePlanError::ResourceAllocation {
+            resource: "reserved interrupt",
+            owner: interrupt.to_string(),
+            source: vm_allocator::Error::ResourceNotAvailable,
+        });
+    }
+    Ok(())
 }

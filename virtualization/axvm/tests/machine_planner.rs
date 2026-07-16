@@ -101,6 +101,27 @@ fn x86_standard_profile_allocates_com1_ports_and_irq() {
 }
 
 #[test]
+fn passthrough_reserves_interrupt_at_inclusive_pool_end() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 4..=23).unwrap();
+    let snapshot = HostPlatformSnapshot::new(1).with_device(
+        HostDeviceDescriptor::new(
+            HostDeviceId::new("acpi:last-gsi").unwrap(),
+            HostDeviceOwnership::HostExclusive,
+        )
+        .with_interrupt(HostInterruptResource::controller_input(
+            23,
+            InterruptTriggerMode::LevelTriggered,
+        )),
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi);
+
+    VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+}
+
+#[test]
 fn aarch64_controller_plan_sizes_redistributors_from_vcpu_count() {
     let controller = Aarch64GicV3Profile::new(
         AddressRange::new(0x0800_0000, 0x1_0000).unwrap(),
