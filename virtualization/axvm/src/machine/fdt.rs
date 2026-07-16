@@ -7,8 +7,8 @@ use fdt_edit::{Fdt, NodeType, PciSpace};
 
 use super::{
     AddressRange, HostDeviceDependency, HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership,
-    HostInterruptResource, HostPlatformSnapshot, MachinePlanError, MachinePlanResult,
-    host_fdt::dependencies::FdtDependencyIndex,
+    HostFirmwareActivation, HostInterruptResource, HostPlatformSnapshot, MachinePlanError,
+    MachinePlanResult, host_fdt::dependencies::FdtDependencyIndex,
 };
 
 /// Interrupt-cell encoding used by a host device tree.
@@ -24,10 +24,11 @@ impl HostPlatformSnapshot {
     /// Normalizes a host device tree into stable planning descriptors.
     ///
     /// The built-in ownership classifier is deliberately conservative for
-    /// CPUs, memory, interrupt controllers, timers, and host consoles. A
-    /// platform claim provider still performs the authoritative live
-    /// ownership transition before any `Assignable` or `Transferable` device
-    /// is exposed to a VM.
+    /// CPUs, memory, architectural interrupt infrastructure, timers, and host
+    /// consoles. Cascaded device controllers remain assignable with their
+    /// parent devices. A platform claim provider still performs the
+    /// authoritative live ownership transition before any `Assignable` or
+    /// `Transferable` device is exposed to a VM.
     pub fn from_fdt(
         generation: u64,
         bytes: &[u8],
@@ -50,7 +51,8 @@ impl HostPlatformSnapshot {
             let mut descriptor = HostDeviceDescriptor::new(
                 HostDeviceId::new(path.clone())?,
                 classify_ownership(&path, node, &compatibles, console_path.as_deref()),
-            );
+            )
+            .with_firmware_activation(HostFirmwareActivation::Preserve);
             for compatible in compatibles {
                 descriptor = descriptor.with_compatible(compatible);
             }
@@ -215,6 +217,7 @@ fn classify_ownership(
         || matches!(path, "/aliases" | "/chosen" | "/cpus")
         || path.starts_with("/cpus/")
         || (!node.children().is_empty() && node.get_property("reg").is_none())
+        || is_embedded_interrupt_controller(node)
         || path.ends_with("-clock")
         || compatibles.iter().any(|compatible| {
             compatible.contains("fixed-clock")
@@ -225,10 +228,10 @@ fn classify_ownership(
     }
     if path.starts_with("/memory")
         || path.starts_with("/reserved-memory")
-        || node.get_property("interrupt-controller").is_some()
-        || compatibles
-            .iter()
-            .any(|compatible| compatible.contains("armv8-timer") || compatible.contains("gic-v3"))
+        || compatibles.iter().any(|compatible| {
+            compatible.contains("armv8-timer")
+                || is_architectural_interrupt_infrastructure(compatible)
+        })
         || console_path == Some(path)
         || (is_pl011(compatibles) && console_path.is_none())
     {
@@ -242,6 +245,18 @@ fn classify_ownership(
         return HostDeviceOwnership::Transferable;
     }
     HostDeviceOwnership::Assignable
+}
+
+fn is_embedded_interrupt_controller(node: &fdt_edit::Node) -> bool {
+    node.get_property("interrupt-controller").is_some() && node.get_property("reg").is_none()
+}
+
+fn is_architectural_interrupt_infrastructure(compatible: &str) -> bool {
+    matches!(
+        compatible,
+        "arm,gic-v3" | "arm,gic-v3-its" | "arm,cortex-a15-gic" | "arm,gic-400"
+    ) || compatible.starts_with("riscv,plic")
+        || compatible.starts_with("sifive,plic")
 }
 
 fn is_pl011(compatibles: &[String]) -> bool {
@@ -402,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_console_grant_overrides_disabled_firmware_status() {
+    fn authoritative_console_grant_authorizes_disabled_console_resources() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
         let chosen = fdt.add_node(root, Node::new("chosen"));
@@ -460,6 +475,15 @@ mod tests {
                 .ownership(),
             HostDeviceOwnership::Transferable
         );
+        assert_eq!(
+            snapshot
+                .devices()
+                .iter()
+                .find(|device| device.id() == &console)
+                .unwrap()
+                .firmware_activation(),
+            HostFirmwareActivation::Preserve
+        );
     }
 
     #[test]
@@ -512,6 +536,27 @@ mod tests {
             .find(|device| device.id().as_str() == "/gpio@9030000")
             .unwrap();
         assert_eq!(gpio.ownership(), HostDeviceOwnership::Assignable);
+    }
+
+    #[test]
+    fn physical_its_is_host_exclusive_without_an_isolated_backend() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let its = fdt.add_node(root, Node::new("its@8080000"));
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(string_property("compatible", "arm,gic-v3-its"));
+
+        let snapshot =
+            HostPlatformSnapshot::from_fdt(8, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let its = snapshot
+            .devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/its@8080000")
+            .unwrap();
+
+        assert_eq!(its.ownership(), HostDeviceOwnership::HostExclusive);
     }
 
     #[test]

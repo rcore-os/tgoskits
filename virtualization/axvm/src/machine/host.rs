@@ -22,6 +22,16 @@ pub enum HostDeviceOwnership {
     Unrepresentable,
 }
 
+/// How assigning a host device affects its source firmware activation state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HostFirmwareActivation {
+    /// Keep the status represented by the captured host firmware.
+    Preserve,
+    /// Mark the device available when materializing guest firmware.
+    #[default]
+    Enable,
+}
+
 /// Trusted evidence used to transfer the active host console into a VM plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostConsoleEvidence {
@@ -280,6 +290,7 @@ impl HostDeviceSelector {
 pub struct HostDeviceDescriptor {
     id: HostDeviceId,
     ownership: HostDeviceOwnership,
+    firmware_activation: HostFirmwareActivation,
     compatibles: Vec<String>,
     mmio: Vec<AddressRange>,
     pio: Vec<IoPortRange>,
@@ -293,12 +304,19 @@ impl HostDeviceDescriptor {
         Self {
             id,
             ownership,
+            firmware_activation: HostFirmwareActivation::Enable,
             compatibles: Vec::new(),
             mmio: Vec::new(),
             pio: Vec::new(),
             interrupts: Vec::new(),
             dependencies: Vec::new(),
         }
+    }
+
+    /// Selects how guest firmware materialization treats the source status.
+    pub fn with_firmware_activation(mut self, activation: HostFirmwareActivation) -> Self {
+        self.firmware_activation = activation;
+        self
     }
 
     /// Adds a firmware compatible identifier.
@@ -339,6 +357,11 @@ impl HostDeviceDescriptor {
     /// Returns the current ownership policy.
     pub const fn ownership(&self) -> HostDeviceOwnership {
         self.ownership
+    }
+
+    /// Returns how guest firmware materialization treats the source status.
+    pub const fn firmware_activation(&self) -> HostFirmwareActivation {
+        self.firmware_activation
     }
 
     /// Returns firmware compatible identifiers in source order.
@@ -472,9 +495,11 @@ impl HostPlatformSnapshot {
 
     /// Grants transfer of the active host console using trusted evidence.
     ///
-    /// Live platform evidence intentionally supersedes conservative firmware
-    /// classification, including a stale `status = "disabled"`. Structural
-    /// nodes remain non-transferable with either evidence source.
+    /// Live platform evidence intentionally supersedes conservative ownership
+    /// classification, including a stale `status = "disabled"`. It does not
+    /// change the source firmware activation state: a wrapper such as an
+    /// AArch64 FIQ debugger may own an intentionally disabled UART aperture.
+    /// Structural nodes remain non-transferable with either evidence source.
     ///
     /// # Errors
     ///

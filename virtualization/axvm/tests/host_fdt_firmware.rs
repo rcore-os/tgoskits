@@ -6,7 +6,7 @@ use axvm::machine::{
     VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
     generate_host_fdt,
 };
-use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
 
@@ -56,7 +56,7 @@ fn host_fdt_is_filtered_and_rebuilt_from_the_machine_plan() {
 }
 
 #[test]
-fn live_authorized_passthrough_console_is_enabled_in_guest_fdt() {
+fn live_authorized_passthrough_console_preserves_source_fdt_activation() {
     let host = host_fdt();
     let mut host = Fdt::from_bytes(&host).unwrap();
     let chosen = host.get_by_path_id("/chosen").unwrap();
@@ -82,6 +82,14 @@ fn live_authorized_passthrough_console_is_enabled_in_guest_fdt() {
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
         .unwrap();
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/serial@9000000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::Passthrough
+    );
 
     let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
     let guest = Fdt::from_bytes(&guest).unwrap();
@@ -89,8 +97,89 @@ fn live_authorized_passthrough_console_is_enabled_in_guest_fdt() {
 
     assert_eq!(
         uart.get_property("status").and_then(Property::as_str),
-        Some("okay")
+        Some("disabled")
     );
+}
+
+#[test]
+fn passthrough_pcie_retains_its_embedded_legacy_interrupt_controller() {
+    let host = host_fdt_with_pcie_legacy_interrupt_controller();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(guest.get_by_path_id("/soc/pcie@fe180000").is_some());
+    assert!(
+        guest
+            .get_by_path_id("/soc/pcie@fe180000/legacy-interrupt-controller")
+            .is_some()
+    );
+}
+
+#[test]
+fn passthrough_retains_a_memory_mapped_interrupt_controller_cascade() {
+    let host = host_fdt_with_gpio_interrupt_controller();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/gpio@b000000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::Passthrough
+    );
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/interrupt-controller@8000000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::HostExclusive
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(guest.get_by_path_id("/soc/gpio@b000000").is_some());
+}
+
+#[test]
+fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
+    let host = host_fdt_with_physical_its();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_interrupt_delivery(InterruptDelivery::Direct);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let its = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/gic-its@8080000")
+        .unwrap();
+    assert_eq!(its.disposition(), DeviceDisposition::HostExclusive);
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|mapping| mapping.contains(0x0808_0000))
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(guest.get_by_path_id("/soc/gic-its@8080000").is_none());
 }
 
 #[test]
@@ -458,6 +547,70 @@ fn host_fdt_with_non_identity_cpu_unit_addresses() -> Vec<u8> {
     fdt.view_typed_mut(cpu1)
         .unwrap()
         .set_regs(&[RegInfo::new(0, None)]);
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_pcie_legacy_interrupt_controller() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let pcie = fdt.add_node(soc, Node::new("pcie@fe180000"));
+    fdt.node_mut(pcie)
+        .unwrap()
+        .set_property(string_property("compatible", "rockchip,rk3588-pcie"));
+    fdt.view_typed_mut(pcie)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfe18_0000, Some(0x10_0000))]);
+
+    let legacy = fdt.add_node(pcie, Node::new("legacy-interrupt-controller"));
+    let legacy = fdt.node_mut(legacy).unwrap();
+    legacy.set_property(Property::new("interrupt-controller", Vec::new()));
+    legacy.set_property(u32_property("#address-cells", &[0]));
+    legacy.set_property(u32_property("#interrupt-cells", &[1]));
+    legacy.set_property(u32_property("phandle", &[42]));
+
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_gpio_interrupt_controller() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let gpio = fdt.add_node(soc, Node::new("gpio@b000000"));
+    fdt.node_mut(gpio)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,gpio-controller"));
+    fdt.node_mut(gpio)
+        .unwrap()
+        .set_property(Property::new("interrupt-controller", Vec::new()));
+    fdt.node_mut(gpio)
+        .unwrap()
+        .set_property(u32_property("#interrupt-cells", &[2]));
+    fdt.node_mut(gpio)
+        .unwrap()
+        .set_property(u32_property("interrupts", &[0, 80, 4]));
+    fdt.view_typed_mut(gpio)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0b00_0000, Some(0x1000))]);
+
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_physical_its() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let its = fdt.add_node(soc, Node::new("gic-its@8080000"));
+    fdt.node_mut(its)
+        .unwrap()
+        .set_property(string_property("compatible", "arm,gic-v3-its"));
+    fdt.node_mut(its)
+        .unwrap()
+        .set_property(Property::new("msi-controller", Vec::new()));
+    fdt.view_typed_mut(its)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0808_0000, Some(0x2_0000))]);
+
     fdt.encode().as_ref().to_vec()
 }
 

@@ -7,8 +7,8 @@ use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmM
 
 use super::super::{
     AddressRange, DeviceDisposition, DeviceInstanceId, HostDeviceDependency, HostDeviceDescriptor,
-    HostDeviceId, HostInterruptResource, InterruptControllerPlan, IoPortRange,
-    LoongArchPlatformPlan,
+    HostDeviceId, HostFirmwareActivation, HostInterruptResource, InterruptControllerPlan,
+    IoPortRange, LoongArchPlatformPlan,
 };
 
 /// A guest interrupt assigned to one named virtual-device resource slot.
@@ -191,6 +191,11 @@ impl PlannedHostDevice {
     /// Returns the selected physical-device disposition.
     pub const fn disposition(&self) -> DeviceDisposition {
         self.disposition
+    }
+
+    /// Returns how assignment affects the source firmware activation state.
+    pub const fn firmware_activation(&self) -> HostFirmwareActivation {
+        self.descriptor.firmware_activation()
     }
 
     /// Returns the final host MMIO resources associated with this device.

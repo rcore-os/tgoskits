@@ -18,8 +18,8 @@ use self::{
     virtual_devices::{materialize_virtual_devices, sanitize_virtual_device_templates},
 };
 use super::{
-    DeviceDisposition, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, VmMachinePlan,
-    is_guest_firmware_infrastructure,
+    DeviceDisposition, HostFirmwareActivation, HostPlatformSnapshot, InterruptControllerPlan,
+    MachinePlanError, MachinePlanResult, VmMachinePlan, is_guest_firmware_infrastructure,
 };
 
 /// Guest-specific data used while filtering a host FDT snapshot.
@@ -100,7 +100,7 @@ fn selected_paths(
         if matches!(
             device.disposition(),
             DeviceDisposition::Passthrough | DeviceDisposition::Structural
-        ) || is_guest_firmware_infrastructure(device.compatibles())
+        ) || selected_guest_firmware_infrastructure(plan, device.compatibles())
         {
             selected.insert(path.into());
         }
@@ -141,6 +141,19 @@ fn selected_paths(
     selected = resolve_dependencies(source, selected, &protected)?;
     add_ancestors(&mut selected);
     Ok(selected)
+}
+
+fn selected_guest_firmware_infrastructure(plan: &VmMachinePlan, compatibles: &[String]) -> bool {
+    if compatibles
+        .iter()
+        .any(|compatible| compatible == "arm,gic-v3-its")
+    {
+        return matches!(
+            plan.interrupt_controller(),
+            Some(InterruptControllerPlan::Aarch64GicV3(gic)) if gic.its().is_some()
+        );
+    }
+    is_guest_firmware_infrastructure(compatibles)
 }
 
 fn add_ancestors(paths: &mut BTreeSet<String>) {
@@ -193,11 +206,10 @@ fn mark_passthrough_devices_available(
     guest: &mut Fdt,
     plan: &VmMachinePlan,
 ) -> MachinePlanResult<()> {
-    for device in plan
-        .host_devices()
-        .iter()
-        .filter(|device| device.disposition() == DeviceDisposition::Passthrough)
-    {
+    for device in plan.host_devices().iter().filter(|device| {
+        device.disposition() == DeviceDisposition::Passthrough
+            && device.firmware_activation() == HostFirmwareActivation::Enable
+    }) {
         let path = device.id().as_str();
         let Some(node_id) = guest.get_by_path_id(path) else {
             continue;
