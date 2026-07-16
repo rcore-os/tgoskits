@@ -152,8 +152,8 @@ pub struct Thread {
     /// can observe newly-pending signals even when the signal is blocked.
     pub signalfd_waker: PollSet,
 
-    /// Indicates whether the thread is currently accessing user memory.
-    accessing_user_memory: AtomicBool,
+    /// Number of nested faultable user-memory access scopes owned by this thread.
+    user_memory_access_depth: AtomicU32,
 
     /// Skips one signal check after returning from a user-space signal handler.
     block_next_signal_check: NextSignalCheckBlock,
@@ -245,7 +245,7 @@ impl Thread {
             exit: Arc::new(AtomicBool::new(false)),
             interrupted: AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(200),
-            accessing_user_memory: AtomicBool::new(false),
+            user_memory_access_depth: AtomicU32::new(0),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
@@ -405,15 +405,27 @@ impl Thread {
         self.exit_request.store(true, Ordering::Release);
     }
 
-    /// Check if the thread is accessing user memory.
-    pub fn is_accessing_user_memory(&self) -> bool {
-        self.accessing_user_memory.load(Ordering::Acquire)
+    /// Enters one nested faultable user-memory access scope.
+    pub(crate) fn enter_user_memory_access(&self) {
+        self.user_memory_access_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .expect("user-memory access nesting overflow");
     }
 
-    /// Set the accessing user memory flag.
-    pub fn set_accessing_user_memory(&self, accessing: bool) {
-        self.accessing_user_memory
-            .store(accessing, Ordering::Release);
+    /// Leaves one nested faultable user-memory access scope.
+    pub(crate) fn leave_user_memory_access(&self) {
+        self.user_memory_access_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            })
+            .expect("unbalanced user-memory access scope");
+    }
+
+    /// Returns whether this thread owns a faultable user-memory access scope.
+    pub(crate) fn has_active_user_memory_access(&self) -> bool {
+        self.user_memory_access_depth.load(Ordering::Acquire) != 0
     }
 
     /// Get the pdeathsig value (signal sent to this thread when parent exits).

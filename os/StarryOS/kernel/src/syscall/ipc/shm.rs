@@ -21,7 +21,7 @@ use super::{
     SHM_STAT, has_ipc_permission, next_ipc_id,
 };
 use crate::{
-    mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
+    mm::{AddrSpace, Backend, SharedPages, UserPtr},
     task::current_user_task,
 };
 
@@ -40,7 +40,7 @@ bitflags::bitflags! {
 
 /// Data structure describing a shared memory segment.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct ShmidDs {
     /// operation permission struct
     shm_perm: IpcPerm,
@@ -95,6 +95,7 @@ impl ShmidDs {
                 mode,
                 seq: 0,
                 pad: 0,
+                alignment_pad: 0,
                 unused0: 0,
                 unused1: 0,
             },
@@ -113,7 +114,7 @@ impl ShmidDs {
 
 /// System-wide shared memory info returned by IPC_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo64 {
     shmmax: u64,
     shmmin: u64,
@@ -124,7 +125,7 @@ struct ShmInfo64 {
 
 /// Shared memory usage info returned by SHM_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo {
     used_ids: i32,
     _pad: i32,
@@ -755,6 +756,10 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         return Ok(0);
     }
 
+    // Copy IPC_SET input before taking shared-memory metadata locks. A user
+    // fault may sleep and must not retain those locks across the copy.
+    let requested = (cmd == IPC_SET).then(|| buf.read()).transpose()?;
+
     // IPC_SET and IPC_STAT only need shm_inner.
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
@@ -764,17 +769,20 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
     };
     let mut shm_inner = shm_inner_arc.lock();
 
-    if cmd == IPC_SET {
-        shm_inner.shmid_ds = *buf.get_as_mut()?;
+    let output = if cmd == IPC_SET {
+        shm_inner.shmid_ds = requested.expect("IPC_SET input was copied before locking");
+        None
     } else if cmd == IPC_STAT {
-        if let Some(shmid_ds) = nullable!(buf.get_as_mut())? {
-            *shmid_ds = shm_inner.shmid_ds;
-        }
+        (!buf.is_null()).then_some(shm_inner.shmid_ds)
     } else {
         return Err(AxError::InvalidInput);
-    }
+    };
 
     shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+    drop(shm_inner);
+    if let Some(output) = output {
+        buf.write(output)?;
+    }
     Ok(0)
 }
 

@@ -2418,6 +2418,13 @@ mod tests {
             extension_data
         );
         system.mark_exited(handle.id()).unwrap();
+        assert!(
+            system
+                .service_deferred_task_work(1)
+                .unwrap()
+                .made_progress(),
+            "the exit callback must finish before the test isolates extension-lease ownership"
+        );
         system.reap_thread_handle(handle).unwrap();
         assert_eq!(extension_drops.load(Ordering::Acquire), 1);
     }

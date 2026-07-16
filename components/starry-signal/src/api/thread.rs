@@ -20,7 +20,7 @@ struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
     uctx: UserContext,
-    used_sigaltstack: bool,
+    used_sigaltstack: u8,
 }
 
 enum PreparedSignal {
@@ -187,15 +187,18 @@ impl ThreadSignalManager {
         };
         let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
         let frame_ptr = aligned_sp as *mut SignalFrame;
-        if frame_ptr
-            .vm_write(SignalFrame {
-                ucontext: UContext::new(uctx, prepared.restore_blocked),
-                siginfo: prepared.siginfo,
-                uctx: *uctx,
-                used_sigaltstack: uses_sigaltstack,
-            })
-            .is_err()
-        {
+        // Start from zeroed storage so the private frame's architecture-sized
+        // alignment padding is deterministic. Its fields are integer/byte ABI
+        // records; `u8` is used for the flag so arbitrary user edits remain a
+        // valid value when sigreturn copies the frame back.
+        let mut frame: SignalFrame = unsafe { core::mem::zeroed() };
+        frame.ucontext = UContext::new(uctx, prepared.restore_blocked);
+        frame.siginfo = prepared.siginfo;
+        frame.uctx = *uctx;
+        frame.used_sigaltstack = u8::from(uses_sigaltstack);
+        // SAFETY: the zero initialization covers every padding byte and every
+        // field assignment above installs a fully initialized ABI record.
+        if unsafe { frame_ptr.vm_write_abi(&frame) }.is_err() {
             return SignalOSAction::CoreDump;
         }
 
@@ -306,7 +309,7 @@ impl ThreadSignalManager {
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
-        if frame.used_sigaltstack {
+        if frame.used_sigaltstack != 0 {
             self.leave_stack();
         }
         self.possibly_has_signal.store(true, Ordering::Release);
@@ -374,7 +377,7 @@ impl ThreadSignalManager {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        let stack = self.stack.lock().clone();
+        let stack = *self.stack.lock();
         if self.stack_active() {
             stack.on_stack()
         } else {

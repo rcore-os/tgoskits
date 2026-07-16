@@ -475,7 +475,7 @@ fn write_user_string(user_ptr: u64, user_cap: usize, src: &str) -> VfsResult<usi
 
 /// Write up to `cap` `T`s from `src` into `user_ptr`; returns the total
 /// source length.
-fn report_user_array<T: Copy>(user_ptr: u64, cap: u32, src: &[T]) -> VfsResult<u32> {
+fn report_user_array<T: bytemuck::NoUninit>(user_ptr: u64, cap: u32, src: &[T]) -> VfsResult<u32> {
     if user_ptr != 0 {
         let to_write = (cap as usize).min(src.len());
         vm_write_slice(user_ptr as *mut T, &src[..to_write]).map_err(|_| VfsError::BadAddress)?;

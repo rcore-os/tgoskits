@@ -71,7 +71,9 @@ pub mod cmd {
 
 /// One wire request record (`mppReqV1` / `struct mpp_request`), 24 bytes.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit,
+)]
 pub struct MppRequest {
     /// Command id (see [`cmd`]).
     pub cmd: u32,
@@ -87,7 +89,9 @@ pub struct MppRequest {
 
 /// One `SET_REG_ADDR_OFFSET` element (`struct reg_offset_elem`).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit,
+)]
 pub struct RegOffset {
     /// Register index to fix up.
     pub index: u32,

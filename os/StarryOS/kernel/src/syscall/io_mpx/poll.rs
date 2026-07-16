@@ -15,7 +15,7 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 use super::FdPollSet;
 use crate::{
     file::get_file_like,
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::{UserConstPtr, UserPtr},
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
@@ -185,14 +185,23 @@ pub fn sys_ppoll(
     }
     let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
-    let res = do_poll(
-        &mut poll_fds,
-        timeout,
-        nullable!(sigmask.get_as_ref())?.copied(),
-    )?;
+    let timeout = (if timeout.is_null() {
+        None
+    } else {
+        // SAFETY: timespec contains only signed integer fields; semantic
+        // range validation is performed by try_into_time_value below.
+        Some(unsafe { timeout.read_abi()? })
+    })
+    .map(|ts| ts.try_into_time_value())
+    .transpose()?;
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        // SAFETY: SignalSet is a transparent signal-bit mask; every bit
+        // pattern is valid and unsupported bits are handled by signal logic.
+        Some(unsafe { sigmask.read_abi()? })
+    };
+    let res = do_poll(&mut poll_fds, timeout, sigmask)?;
     if nfds > 0 {
         write_poll_revents(fds, &poll_fds)?;
     }

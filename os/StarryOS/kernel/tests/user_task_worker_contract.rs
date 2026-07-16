@@ -6,6 +6,16 @@ const EBPF: &str = include_str!("../src/ebpf/mod.rs");
 const FUTURE: &str = include_str!("../src/task/future.rs");
 const KPROBE: &str = include_str!("../src/kprobe.rs");
 const MM_ACCESS: &str = include_str!("../src/mm/access.rs");
+const MPP_SERVICE: &str = include_str!("../src/pseudofs/dev/mpp_service.rs");
+const RKNPU: &str = include_str!("../src/pseudofs/dev/card1.rs");
+const KPU: &str = include_str!("../src/pseudofs/dev/kpu.rs");
+const DMAHEAP: &str = include_str!("../src/pseudofs/dev/dmaheap.rs");
+const TPU: &str = include_str!("../src/pseudofs/dev/tpu/device.rs");
+const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
+const NET_OPT: &str = include_str!("../src/syscall/net/opt.rs");
+const NET_CMSG: &str = include_str!("../src/syscall/net/cmsg.rs");
+const STARRY_VM_LIB: &str = include_str!("../../../../components/starry-vm/src/lib.rs");
+const STARRY_VM_THIN: &str = include_str!("../../../../components/starry-vm/src/thin.rs");
 const PIDFD: &str = include_str!("../src/syscall/fs/pidfd.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
 const SERIAL_TTY: &str = include_str!("../src/pseudofs/dev/tty/serial.rs");
@@ -314,6 +324,181 @@ fn kernel_page_fault_rejects_non_user_addresses_before_identity_or_sleep() {
 
     assert!(address_check < identity_lookup);
     assert!(address_check < sleep);
+}
+
+#[test]
+fn user_memory_access_is_scoped_and_never_returns_borrowed_user_memory() {
+    assert!(
+        MM_ACCESS.contains("struct UserAccessScope"),
+        "user access must be represented by an RAII scope"
+    );
+    assert!(
+        MM_ACCESS.contains("PhantomData<Rc<()>>"),
+        "the user-access scope must not cross scheduler threads"
+    );
+    assert!(
+        MM_ACCESS.contains("impl Drop for UserAccessScope"),
+        "nested user-access state must be released on every return path"
+    );
+    assert!(
+        TASK.contains("user_memory_access_depth: AtomicU32"),
+        "nested user access must use a depth counter rather than a boolean"
+    );
+    assert!(
+        !MM_ACCESS.contains("AxResult<&'static"),
+        "safe user-pointer APIs must not return references into user mappings"
+    );
+
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pending = std::vec![source_root];
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(&path).expect("Starry source directory must be readable") {
+            let entry = entry.expect("Starry source entry must be readable");
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("Rust source must be readable");
+            assert!(
+                !source.contains("get_as_ref")
+                    && !source.contains("get_as_mut")
+                    && !source.contains("get_as_slice")
+                    && !source.contains("get_as_mut_slice"),
+                "{} still uses an escaping user-memory reference API",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn all_starry_user_copy_uses_the_faultable_vm_boundary() {
+    for (path, source) in [
+        ("pseudofs/dev/mpp_service.rs", MPP_SERVICE),
+        ("pseudofs/dev/card1.rs", RKNPU),
+        ("pseudofs/dev/kpu.rs", KPU),
+        ("pseudofs/dev/dmaheap.rs", DMAHEAP),
+    ] {
+        assert!(
+            !source.contains("user_copy("),
+            "{path} bypasses the scoped Starry VM copy boundary"
+        );
+    }
+}
+
+#[test]
+fn starry_device_ioctls_never_borrow_user_memory_directly() {
+    for pattern in ["unsafe { &*(arg as *const", "unsafe { &mut *(arg as *mut"] {
+        assert!(
+            !TPU.contains(pattern),
+            "TPU ioctl still constructs a direct user reference: {pattern}"
+        );
+    }
+}
+
+#[test]
+fn safe_vm_copyout_requires_initialized_object_bytes() {
+    assert!(
+        STARRY_VM_LIB.contains("pub fn vm_write_slice<T: NoUninit>"),
+        "vm_write_slice must reject values with potentially uninitialized padding"
+    );
+    assert!(
+        STARRY_VM_THIN.contains("Self::Target: NoUninit"),
+        "VmMutPtr::vm_write must require an initialized object representation"
+    );
+    assert!(
+        MM_ACCESS.contains(
+            "pub fn write(self, value: T) -> AxResult<()>\n    where\n        T: NoUninit"
+        )
+    );
+    assert!(MM_ACCESS.contains(
+        "pub fn write_slice(self, values: &[T]) -> AxResult<()>\n    where\n        T: NoUninit"
+    ));
+    assert!(MM_ACCESS.contains(
+        "pub fn write_field<U>(self, offset: usize, value: U) -> AxResult<()>\n    where\n        \
+         U: NoUninit"
+    ));
+    let user_field = function_body(MM_ACCESS, "pub fn write_field<U>(");
+    assert!(user_field.contains("checked_add"));
+}
+
+#[test]
+fn user_pointer_capability_is_copy_independent_of_the_pointee() {
+    assert!(MM_ACCESS.contains("impl<T> Copy for UserPtr<T>"));
+    assert!(MM_ACCESS.contains("impl<T> Copy for UserConstPtr<T>"));
+    assert!(!MM_ACCESS.contains("#[derive(PartialEq, Clone, Copy)]\npub struct UserPtr"));
+}
+
+#[test]
+fn socket_copyout_updates_only_linux_output_fields() {
+    assert!(
+        !NET_IO.contains("msg.write(msg_value)"),
+        "recvmsg must not overwrite the input pointer fields in msghdr"
+    );
+    assert!(
+        !NET_IO.contains("msgvec_ptr.write_slice(&msgvec)"),
+        "mmsg must copy out only per-message output fields"
+    );
+}
+
+#[test]
+fn variable_length_abi_copies_are_bounded_before_allocation() {
+    let bind_to_device = function_body(NET_OPT, "fn read_bind_to_device(");
+    assert!(bind_to_device.contains("IFNAMSIZ"));
+    let parse_cmsg = function_body(NET_CMSG, "pub fn parse(");
+    assert!(parse_cmsg.contains("SCM_MAX_FD"));
+}
+
+#[test]
+fn kernel_user_page_fault_requires_an_active_user_access_scope() {
+    let handler = function_body(MM_ACCESS, "fn handle_page_fault(");
+    let identity_lookup = handler
+        .find("resolve_page_fault_user_task(try_current_user_task())")
+        .expect("kernel page faults must resolve optional Starry identity");
+    let active_scope = handler
+        .find("if !thr.has_active_user_memory_access()")
+        .expect("kernel user-address faults must require an active user-access scope");
+    let hard_irq = handler
+        .find("in_irq_context()")
+        .expect("kernel user faults must fail closed in hard IRQ context");
+    let sleep = handler
+        .find("might_sleep()")
+        .expect("validated scoped faults may enter the sleeping MM path");
+
+    assert!(hard_irq < identity_lookup && identity_lookup < active_scope && active_scope < sleep);
+    assert!(!handler.contains("debug!("));
+    assert!(!handler.contains("warn!("));
+}
+
+#[test]
+fn proactive_user_copy_fails_closed_before_sleepable_mm_work_in_hard_irq() {
+    let prepare = function_body(MM_ACCESS, "fn prepare_user_memory(");
+    let hard_irq = prepare
+        .find("in_irq_context()")
+        .expect("user-copy preparation must reject hard IRQ context");
+    let identity = prepare
+        .find("user_task_for_memory_access")
+        .expect("task identity must be resolved only after the IRQ check");
+    let aspace_lock = prepare
+        .find("aspace_arc.lock()")
+        .expect("faultable copy preparation must populate through the address space");
+    let populate = prepare
+        .find("populate_area")
+        .expect("faultable copy preparation must populate user pages");
+
+    assert!(hard_irq < identity && hard_irq < aspace_lock && hard_irq < populate);
+}
+
+#[test]
+fn user_access_scope_underflow_cannot_publish_wrapped_depth() {
+    let leave = function_body(TASK, "pub(crate) fn leave_user_memory_access(");
+    assert!(leave.contains("fetch_update"));
+    assert!(leave.contains("checked_sub"));
+    assert!(!leave.contains("fetch_sub"));
 }
 
 #[test]

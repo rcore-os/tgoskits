@@ -12,6 +12,7 @@ license = "Apache-2.0"
 ax-cpu = { workspace = true, features = ["uspace"] }
 ax-errno = { workspace = true }
 bitflags = "2.6"
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }
 event-listener = { version = "5.4", default-features = false }

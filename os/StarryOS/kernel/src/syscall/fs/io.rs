@@ -578,7 +578,7 @@ fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
-    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+    UserConstPtr::<u8>::from(buf).read_slice(len)
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
@@ -586,7 +586,7 @@ fn validate_user_read_buf(buf: *const u8, len: usize) -> AxResult<()> {
     if len == 0 {
         return Ok(());
     }
-    UserConstPtr::<u8>::from(buf).get_as_slice(len)?;
+    UserConstPtr::<u8>::from(buf).validate_slice(len)?;
     Ok(())
 }
 
@@ -602,7 +602,7 @@ fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> AxResult<u
             return Err(AxError::InvalidInput);
         }
         let seg = iov.iov_len as usize;
-        UserConstPtr::<u8>::from(iov.iov_base.cast_const()).get_as_slice(seg)?;
+        UserConstPtr::<u8>::from(iov.iov_base.cast_const()).validate_slice(seg)?;
         total = total.checked_add(seg).ok_or(AxError::InvalidInput)?;
     }
     Ok(total)

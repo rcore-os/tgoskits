@@ -39,7 +39,7 @@ const OTHER_WRITE: u32 = 0o002;
 
 /// Data structure used to pass permission information to IPC operations.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct IpcPerm {
     /// Key supplied to msgget(2)
     pub key: __kernel_key_t,
@@ -57,6 +57,8 @@ pub struct IpcPerm {
     pub seq: c_ushort,
     /// Padding
     pub pad: c_ushort,
+    /// Explicitly initialized ABI alignment bytes before the 64-bit fields.
+    pub alignment_pad: u32,
     /// Unused field
     pub unused0: c_long,
     /// Unused field

@@ -16,7 +16,7 @@ use crate::task::{WaitQueue as MsgWaitQueue, current_user_task};
 
 /// Data structure describing a message queue.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 #[allow(non_camel_case_types)]
 pub struct msqid_ds {
     /// operation permission struct
@@ -51,6 +51,7 @@ impl msqid_ds {
                 mode,
                 seq: 0,
                 pad: 0,
+                alignment_pad: 0,
                 unused0: 0,
                 unused1: 0,
             },
@@ -747,6 +748,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
         // IPC_INFO uses msqid=0, no actual queue needed
         // Return system-level information
         #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
         struct MsgInfo {
             msgpool: i32,
             msgmap: i32,
@@ -756,6 +758,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             msgssz: i32,
             msgtql: i32,
             msgseg: u16,
+            _padding: u16,
         }
 
         let info = MsgInfo {
@@ -767,6 +770,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             msgssz: 0,
             msgtql: 0,
             msgseg: 0,
+            _padding: 0,
         };
 
         // Copy to user space
@@ -797,6 +801,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             mode: 0o600,
             pad: 0,
             seq: 0,
+            alignment_pad: 0,
             unused0: 0,
             unused1: 0,
         };

@@ -11,6 +11,7 @@ use crate::pseudofs::DeviceOps;
 pub const RTC0_DEVICE_ID: DeviceId = DeviceId::new(250, 0);
 
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 #[allow(non_camel_case_types, dead_code)]
 struct rtc_time {
     tm_sec: c_int,

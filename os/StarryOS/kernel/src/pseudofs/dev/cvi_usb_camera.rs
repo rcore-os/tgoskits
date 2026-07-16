@@ -62,7 +62,7 @@ pub const CVI_CAMERA_IOCTL_GET_FRAME: u32 = 3;
 pub const CVI_CAMERA_IOCTL_GET_YUV_FRAME: u32 = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraInfo {
     pub width: u16,
     pub height: u16,

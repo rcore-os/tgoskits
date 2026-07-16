@@ -6,6 +6,7 @@
 use core::{mem::MaybeUninit, slice};
 
 use ax_errno::AxError;
+use bytemuck::NoUninit;
 use extern_trait::extern_trait;
 
 /// Errors that can occur during virtual memory operations.
@@ -79,9 +80,9 @@ pub fn vm_read_slice<T>(ptr: *const T, buf: &mut [MaybeUninit<T>]) -> VmResult {
 /// 4-byte-aligned (`data [8]byte`) while `struct epoll_event` is 8-aligned
 /// (`u64 data`) on non-x86, so the events buffer failed the check and crashed
 /// the Go netpoller (`netpoll failed`).
-pub fn vm_write_slice<T>(ptr: *mut T, buf: &[T]) -> VmResult {
-    // SAFETY: we don't care about validity, since these bytes are only used for
-    // writing to the virtual memory.
+pub fn vm_write_slice<T: NoUninit>(ptr: *mut T, buf: &[T]) -> VmResult {
+    // SAFETY: `NoUninit` guarantees that the full object representation,
+    // including every byte covered by the slice, is initialized.
     let bytes = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<u8>(), size_of_val(buf)) };
     VmImpl::new().write(ptr.addr(), bytes)
 }

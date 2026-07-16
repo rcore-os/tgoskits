@@ -17,7 +17,10 @@ use super::schedule_abi::{
     check_reset_on_fork_permission, linux_policy_number, linux_sched_priority, parse_sched_attr,
     parse_setscheduler, sched_attr_from_policy, scheduler_priority_max, scheduler_priority_min,
 };
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+use crate::syscall::time::write_kernel_timespec;
 use crate::{
+    syscall::time::write_timespec,
     task::{
         Cred, ProcessData, UserTaskRef, current_user_task,
         future::{block_on_user, interruptible_for, sleep},
@@ -49,7 +52,7 @@ pub fn sys_sched_get_priority_max(policy: i32) -> AxResult<isize> {
 
 pub fn sys_sched_rr_get_interval(pid: i32, user_interval: *mut timespec) -> AxResult<isize> {
     let interval = TimeValue::from_nanos(scheduler_interval_ns(pid)?);
-    user_interval.vm_write(timespec::from_time_value(interval))?;
+    write_timespec(user_interval, timespec::from_time_value(interval))?;
     Ok(0)
 }
 
@@ -59,7 +62,7 @@ pub fn sys_sched_rr_get_interval_time64(
     user_interval: *mut __kernel_timespec,
 ) -> AxResult<isize> {
     let interval = TimeValue::from_nanos(scheduler_interval_ns(pid)?);
-    user_interval.vm_write(__kernel_timespec::from_time_value(interval))?;
+    write_kernel_timespec(user_interval, __kernel_timespec::from_time_value(interval))?;
     Ok(0)
 }
 
@@ -89,7 +92,7 @@ pub fn sys_nanosleep(req: *const timespec, rem: *mut timespec) -> AxResult<isize
             let diff = req.saturating_sub(actual);
             debug!("sys_nanosleep => rem: {diff:?}");
             if let Some(rem) = rem.nullable() {
-                rem.vm_write(timespec::from_time_value(diff))?;
+                write_timespec(rem, timespec::from_time_value(diff))?;
             }
             Err(err)
         }
@@ -130,7 +133,7 @@ pub fn sys_clock_nanosleep(
                 let diff = dur.saturating_sub(actual);
                 debug!("sys_clock_nanosleep => rem: {diff:?}");
                 if let Some(rem) = rem.nullable() {
-                    rem.vm_write(timespec::from_time_value(diff))?;
+                    write_timespec(rem, timespec::from_time_value(diff))?;
                 }
             }
             Err(err)

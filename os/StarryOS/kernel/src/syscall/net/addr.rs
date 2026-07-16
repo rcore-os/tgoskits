@@ -11,6 +11,8 @@ use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockAddr;
 use ax_net::{SocketAddrEx, unix::UnixSocketAddr};
+#[cfg(feature = "vsock")]
+use bytemuck::AnyBitPattern;
 use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::mm::{UserConstPtr, UserPtr};
@@ -84,17 +86,14 @@ fn read_family(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> AxResult<u16
     if size_of::<__kernel_sa_family_t>() > addrlen as usize {
         return Err(AxError::InvalidInput);
     }
-    let family = *addr.cast::<__kernel_sa_family_t>().get_as_ref()?;
-    Ok(family)
+    addr.cast::<__kernel_sa_family_t>().read()
 }
 unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
 }
 fn fill_addr(addr: UserPtr<sockaddr>, addrlen: &mut socklen_t, data: &[u8]) -> AxResult<()> {
     let len = (*addrlen as usize).min(data.len());
-    addr.cast::<u8>()
-        .get_as_mut_slice(len)?
-        .copy_from_slice(&data[..len]);
+    addr.cast::<u8>().write_slice(&data[..len])?;
     *addrlen = data.len() as _;
     Ok(())
 }
@@ -110,11 +109,13 @@ pub fn read_netlink_addr(
     if (addrlen as usize) < size_of::<sockaddr_nl>() {
         return Err(AxError::InvalidInput);
     }
-    let addr_nl = addr.cast::<sockaddr_nl>().get_as_ref()?;
+    // SAFETY: sockaddr_nl is an integer-only C ABI record. Every copied bit
+    // pattern is valid; the family and semantic fields are checked below.
+    let addr_nl = unsafe { addr.cast::<sockaddr_nl>().read_abi()? };
     if addr_nl.nl_family as u32 != AF_NETLINK {
         return Err(AxError::from(LinuxError::EAFNOSUPPORT));
     }
-    Ok(*addr_nl)
+    Ok(addr_nl)
 }
 
 pub fn write_netlink_addr(
@@ -154,7 +155,9 @@ impl SocketAddrExt for SocketAddrV4 {
         if addrlen < size_of::<sockaddr_in>() as socklen_t {
             return Err(AxError::InvalidInput);
         }
-        let addr_in = addr.cast::<sockaddr_in>().get_as_ref()?;
+        // SAFETY: sockaddr_in contains only integer and byte-array fields.
+        // Family and address semantics are validated after the copy.
+        let addr_in = unsafe { addr.cast::<sockaddr_in>().read_abi()? };
         if addr_in.sin_family as u32 != AF_INET {
             return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
@@ -187,7 +190,9 @@ impl SocketAddrExt for SocketAddrV6 {
         if addrlen < size_of::<sockaddr_in6>() as socklen_t {
             return Err(AxError::InvalidInput);
         }
-        let addr_in6 = addr.cast::<sockaddr_in6>().get_as_ref()?;
+        // SAFETY: sockaddr_in6 contains only integer and byte-array fields.
+        // Family and address semantics are validated after the copy.
+        let addr_in6 = unsafe { addr.cast::<sockaddr_in6>().read_abi()? };
         if addr_in6.sin6_family as u32 != AF_INET6 {
             return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }
@@ -227,7 +232,7 @@ impl SocketAddrExt for UnixSocketAddr {
         }
         let offset = size_of::<__kernel_sa_family_t>();
         let ptr = UserConstPtr::<u8>::from(addr.address().as_usize() + offset);
-        let data = ptr.get_as_slice(addrlen as usize - offset)?;
+        let data = ptr.read_slice(addrlen as usize - offset)?;
         Ok(if data.is_empty() {
             Self::Unnamed
         } else if data[0] == 0 {
@@ -275,7 +280,7 @@ impl SocketAddrExt for UnixSocketAddr {
 #[cfg(feature = "vsock")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, AnyBitPattern)]
 pub struct sockaddr_vm {
     pub svm_family: __kernel_sa_family_t,
     pub svm_reserved1: u16,
@@ -291,7 +296,7 @@ impl SocketAddrExt for VsockAddr {
             return Err(AxError::InvalidInput);
         }
 
-        let addr_vsock = addr.cast::<sockaddr_vm>().get_as_ref()?;
+        let addr_vsock = addr.cast::<sockaddr_vm>().read()?;
         if addr_vsock.svm_family as u32 != AF_VSOCK {
             return Err(AxError::from(LinuxError::EAFNOSUPPORT));
         }

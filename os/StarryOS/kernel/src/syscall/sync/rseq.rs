@@ -7,7 +7,7 @@ use crate::task::current_user_task;
 
 /// Linux rseq area layout used for ABI validation.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct RseqArea {
     cpu_id_start: u32,
     cpu_id: u32,

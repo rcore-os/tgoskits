@@ -1,18 +1,88 @@
+use core::mem::offset_of;
+
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{
     NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
 };
 use linux_raw_sys::general::{
-    __kernel_clockid_t, CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
-    CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
-    CLOCK_THREAD_CPUTIME_ID, itimerval, timespec, timeval,
+    __kernel_clockid_t, __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, CLOCK_BOOTTIME,
+    CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID,
+    CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID, SIGEV_SIGNAL, itimerval,
+    sigevent, timespec, timeval,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
+    mm::UserPtr,
     task::{ITimerType, current_user_task, posix_timer::TimerSpec},
     time::TimeValueLike,
 };
+
+pub(crate) fn write_timespec(user: *mut timespec, value: timespec) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(timespec, tv_sec), value.tv_sec)?;
+    user.write_field(offset_of!(timespec, tv_nsec), value.tv_nsec)
+}
+
+fn write_timeval(user: *mut timeval, value: timeval) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(timeval, tv_sec), value.tv_sec)?;
+    user.write_field(offset_of!(timeval, tv_usec), value.tv_usec)
+}
+
+fn write_itimerval(user: *mut itimerval, value: itimerval) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    let interval = offset_of!(itimerval, it_interval);
+    user.write_field(
+        interval + offset_of!(timeval, tv_sec),
+        value.it_interval.tv_sec,
+    )?;
+    user.write_field(
+        interval + offset_of!(timeval, tv_usec),
+        value.it_interval.tv_usec,
+    )?;
+    let current = offset_of!(itimerval, it_value);
+    user.write_field(current + offset_of!(timeval, tv_sec), value.it_value.tv_sec)?;
+    user.write_field(
+        current + offset_of!(timeval, tv_usec),
+        value.it_value.tv_usec,
+    )
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) fn write_kernel_timespec(
+    user: *mut __kernel_timespec,
+    value: __kernel_timespec,
+) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(__kernel_timespec, tv_sec), value.tv_sec)?;
+    user.write_field(offset_of!(__kernel_timespec, tv_nsec), value.tv_nsec)
+}
+
+pub(crate) fn write_kernel_itimerspec(
+    user: *mut __kernel_itimerspec,
+    value: __kernel_itimerspec,
+) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    let interval = offset_of!(__kernel_itimerspec, it_interval);
+    user.write_field(
+        interval + offset_of!(__kernel_timespec, tv_sec),
+        value.it_interval.tv_sec,
+    )?;
+    user.write_field(
+        interval + offset_of!(__kernel_timespec, tv_nsec),
+        value.it_interval.tv_nsec,
+    )?;
+    let current = offset_of!(__kernel_itimerspec, it_value);
+    user.write_field(
+        current + offset_of!(__kernel_timespec, tv_sec),
+        value.it_value.tv_sec,
+    )?;
+    user.write_field(
+        current + offset_of!(__kernel_timespec, tv_nsec),
+        value.it_value.tv_nsec,
+    )
+}
 
 pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxResult<isize> {
     let now = match clock_id as u32 {
@@ -28,12 +98,12 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             return Err(AxError::InvalidInput);
         }
     };
-    ts.vm_write(timespec::from_time_value(now))?;
+    write_timespec(ts, timespec::from_time_value(now))?;
     Ok(0)
 }
 
 pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
-    ts.vm_write(timeval::from_time_value(wall_time()))?;
+    write_timeval(ts, timeval::from_time_value(wall_time()))?;
     Ok(0)
 }
 
@@ -58,12 +128,13 @@ pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxR
         _ => return Err(AxError::InvalidInput),
     };
     if let Some(res) = res.nullable() {
-        res.vm_write(timespec::from_time_value(resolution))?;
+        write_timespec(res, timespec::from_time_value(resolution))?;
     }
     Ok(0)
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct Tms {
     /// user time
     tms_utime: usize,
@@ -94,10 +165,13 @@ pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
     let (it_interval, it_value) = current_user_task().as_thread().time.lock().get_itimer(ty);
 
-    value.vm_write(itimerval {
-        it_interval: timeval::from_time_value(it_interval),
-        it_value: timeval::from_time_value(it_value),
-    })?;
+    write_itimerval(
+        value,
+        itimerval {
+            it_interval: timeval::from_time_value(it_interval),
+            it_value: timeval::from_time_value(it_value),
+        },
+    )?;
     Ok(0)
 }
 
@@ -130,19 +204,18 @@ pub fn sys_setitimer(
         .set_itimer(ty, interval, remained);
 
     if let Some(old_value) = old_value.nullable() {
-        old_value.vm_write(itimerval {
-            it_interval: timeval::from_time_value(old.0),
-            it_value: timeval::from_time_value(old.1),
-        })?;
+        write_itimerval(
+            old_value,
+            itimerval {
+                it_interval: timeval::from_time_value(old.0),
+                it_value: timeval::from_time_value(old.1),
+            },
+        )?;
     }
     Ok(0)
 }
 
 // ---- POSIX timer syscalls ----
-
-use linux_raw_sys::general::{
-    __kernel_itimerspec, __kernel_timer_t, __kernel_timespec, SIGEV_SIGNAL, sigevent,
-};
 
 pub fn sys_timer_create(
     clock_id: u32,
@@ -208,16 +281,19 @@ pub fn sys_timer_settime(
         let old_iv_nsec = (old_interval % NANOS_PER_SEC) as i64;
         let old_rem_sec = (old_remaining / NANOS_PER_SEC) as i64;
         let old_rem_nsec = (old_remaining % NANOS_PER_SEC) as i64;
-        old_value.vm_write(__kernel_itimerspec {
-            it_interval: __kernel_timespec {
-                tv_sec: old_iv_sec,
-                tv_nsec: old_iv_nsec,
+        write_kernel_itimerspec(
+            old_value,
+            __kernel_itimerspec {
+                it_interval: __kernel_timespec {
+                    tv_sec: old_iv_sec,
+                    tv_nsec: old_iv_nsec,
+                },
+                it_value: __kernel_timespec {
+                    tv_sec: old_rem_sec,
+                    tv_nsec: old_rem_nsec,
+                },
             },
-            it_value: __kernel_timespec {
-                tv_sec: old_rem_sec,
-                tv_nsec: old_rem_nsec,
-            },
-        })?;
+        )?;
     }
 
     Ok(0)
@@ -241,16 +317,19 @@ pub fn sys_timer_gettime(
     let rem_sec = (remaining / NANOS_PER_SEC) as i64;
     let rem_nsec = (remaining % NANOS_PER_SEC) as i64;
 
-    curr_value.vm_write(__kernel_itimerspec {
-        it_interval: __kernel_timespec {
-            tv_sec: iv_sec,
-            tv_nsec: iv_nsec,
+    write_kernel_itimerspec(
+        curr_value,
+        __kernel_itimerspec {
+            it_interval: __kernel_timespec {
+                tv_sec: iv_sec,
+                tv_nsec: iv_nsec,
+            },
+            it_value: __kernel_timespec {
+                tv_sec: rem_sec,
+                tv_nsec: rem_nsec,
+            },
         },
-        it_value: __kernel_timespec {
-            tv_sec: rem_sec,
-            tv_nsec: rem_nsec,
-        },
-    })?;
+    )?;
 
     Ok(0)
 }

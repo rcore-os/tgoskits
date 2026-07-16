@@ -1,6 +1,7 @@
 mod descriptor;
 mod irq;
 mod manager;
+mod refresh;
 mod sysfs;
 mod tree;
 
@@ -73,7 +74,6 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
         move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
-    manager.notify_refresh();
 
     Ok(Some(create_filesystem(manager)))
 }

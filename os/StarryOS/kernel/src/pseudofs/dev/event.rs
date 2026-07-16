@@ -3,6 +3,7 @@ use alloc::{
 };
 use core::{
     any::Any,
+    mem::offset_of,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::Context,
@@ -233,8 +234,7 @@ impl EventDev {
 
     fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> AxResult<usize> {
         if ty == 0 {
-            let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-            Ok(copy_bytes(self.ev_bits.as_bytes(), bits))
+            write_user_bytes(arg, size, self.ev_bits.as_bytes())
         } else {
             let ty = EventType::from_repr(ty).ok_or(AxError::InvalidInput)?;
             let mut kernel_bits = vec![0; size];
@@ -251,8 +251,7 @@ impl EventDev {
                 }
             }
             let bytes = size.min(ty.bits_count().div_ceil(8));
-            let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-            bits[..bytes].copy_from_slice(&kernel_bits[..bytes]);
+            UserPtr::<u8>::from(arg).write_slice(&kernel_bits[..bytes])?;
             Ok(bytes)
         }
     }
@@ -480,15 +479,14 @@ unsafe fn wake_irq_service(data: usize) {
     let _result = wake.wake();
 }
 
-fn copy_bytes(src: &[u8], dst: &mut [u8]) -> usize {
-    let len = src.len().min(dst.len());
-    dst[..len].copy_from_slice(&src[..len]);
-    len
+fn write_user_bytes(arg: usize, capacity: usize, source: &[u8]) -> AxResult<usize> {
+    let len = source.len().min(capacity);
+    UserPtr::<u8>::from(arg).write_slice(&source[..len])?;
+    Ok(len)
 }
 
 fn return_str(arg: usize, size: usize, s: &str) -> AxResult<usize> {
-    let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-    Ok(copy_bytes(s.as_bytes(), slice))
+    write_user_bytes(arg, size, s.as_bytes())
 }
 
 fn input_error_to_ax_error(err: InputError) -> AxError {
@@ -504,9 +502,8 @@ fn input_error_to_ax_error(err: InputError) -> AxError {
 }
 
 fn return_zero_bits(arg: usize, size: usize, bits: usize) -> AxResult<usize> {
-    let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-    let len = bits.div_ceil(8).min(slice.len());
-    slice[..len].fill(0);
+    let len = bits.div_ceil(8).min(size);
+    UserPtr::<u8>::from(arg).write_slice(&vec![0; len])?;
     Ok(len)
 }
 
@@ -588,12 +585,16 @@ impl DeviceOps for EventDev {
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             EVIOCGVERSION => {
-                *UserPtr::<u32>::from(arg).get_as_mut()? = 0x10001;
+                UserPtr::<u32>::from(arg).write(0x10001)?;
                 Ok(0)
             }
             EVIOCGID => {
                 let device_id = self.inner.lock().device.device_id();
-                *UserPtr::<InputDeviceId>::from(arg).get_as_mut()? = device_id;
+                let user = UserPtr::<InputDeviceId>::from(arg);
+                user.write_field(offset_of!(InputDeviceId, bus_type), device_id.bus_type)?;
+                user.write_field(offset_of!(InputDeviceId, vendor), device_id.vendor)?;
+                user.write_field(offset_of!(InputDeviceId, product), device_id.product)?;
+                user.write_field(offset_of!(InputDeviceId, version), device_id.version)?;
                 Ok(0)
             }
             EVIOCGRAB => Ok(0),
@@ -642,8 +643,7 @@ impl DeviceOps for EventDev {
                             // virtio-tablet; we synthesize the bit at probe
                             // for any non-touchscreen with REL/ABS axes.
                             0x09 => {
-                                let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-                                return Ok(copy_bytes(&self.prop_bits, slice));
+                                return write_user_bytes(arg, size, &self.prop_bits);
                             }
                             // EVIOCGKEY
                             0x18 => {
@@ -654,8 +654,7 @@ impl DeviceOps for EventDev {
                                     key_state.extend_from_slice(bytes);
                                     key_state
                                 };
-                                let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-                                return Ok(copy_bytes(&key_state, bits));
+                                return write_user_bytes(arg, size, &key_state);
                             }
                             // EVIOCGLED
                             0x19 => {
@@ -706,8 +705,7 @@ impl DeviceOps for EventDev {
                                 resolution: info.res,
                             };
                             let bytes = abs.as_bytes();
-                            let slice = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-                            slice[..bytes.len()].copy_from_slice(bytes);
+                            UserPtr::<u8>::from(arg).write_slice(bytes)?;
                             return Ok(bytes.len());
                         }
                         return Err(AxError::InvalidInput);

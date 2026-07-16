@@ -76,7 +76,7 @@ const IOCB_FLAG_IOPRIO: u32 = 1 << 1;
 const AIO_MAX_WORKERS: usize = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct IoEvent {
     data: u64,
     obj: u64,

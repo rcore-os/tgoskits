@@ -55,6 +55,7 @@ use sg2002_tpu::{
 
 use crate::{
     file::{get_file_like, ion::IonBufferFile},
+    mm::{UserConstPtr, UserPtr},
     pseudofs::{
         DeviceOps,
         dev::{IrqRegistration, request_shared_disabled},
@@ -395,8 +396,10 @@ impl TpuDevice {
 
     /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
     fn submit_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
-        // 从用户空间读取参数
-        let submit_arg = unsafe { &*(arg as *const CviSubmitDmaArg) };
+        // SAFETY: the ioctl record contains only integer fields. Copy it into
+        // kernel storage so no user reference survives validation or blocking.
+        let submit_arg = unsafe { UserConstPtr::<CviSubmitDmaArg>::from(arg).read_abi() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
 
         debug!(
             "[TPU] submit dmabuf: fd={}, seq_no={}",
@@ -449,7 +452,10 @@ impl TpuDevice {
     /// 取结果。用调用线程 tid 与用户 seq_no 组成复合键，隔离跨进程/线程的相同
     /// seq_no——否则两个进程都从 seq 0 开始会互相取走对方的完成项。
     fn wait_dmabuf(&self, arg: usize) -> Result<usize, TpuError> {
-        let wait_arg = unsafe { &mut *(arg as *mut CviWaitDmaArg) };
+        // SAFETY: the ioctl record contains only integer fields. In particular,
+        // do not retain a mutable user reference while the wait queue sleeps.
+        let wait_arg = unsafe { UserConstPtr::<CviWaitDmaArg>::from(arg).read_abi() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         let seq_no = wait_arg.seq_no;
         let tid = crate::task::current_user_task().id().as_u64();
 
@@ -470,35 +476,42 @@ impl TpuDevice {
                 .map(|idx| done.remove(idx).unwrap())
         };
 
-        match found {
+        let (ret, result) = match found {
             Some(task) => {
-                wait_arg.ret = task.ret;
                 if task.ret != 0 {
-                    return Err(TpuError::Timeout);
+                    (task.ret, Err(TpuError::Timeout))
+                } else {
+                    (task.ret, Ok(0))
                 }
-                Ok(0)
             }
             None => {
-                wait_arg.ret = -1;
                 warn!(
                     "[TPU] wait dmabuf: (tid={}, seq_no={}) not found (timed_out={})",
                     tid, seq_no, timed_out
                 );
-                Err(TpuError::Timeout)
+                (-1, Err(TpuError::Timeout))
             }
-        }
+        };
+        UserPtr::<i32>::from(arg + core::mem::offset_of!(CviWaitDmaArg, ret))
+            .write(ret)
+            .map_err(|_| TpuError::InvalidDmabuf)?;
+        result
     }
 
     /// 刷新 DMA buffer 缓存 (通过物理地址)
     fn cache_flush(&self, arg: usize) -> Result<usize, TpuError> {
-        let flush_arg = unsafe { &*(arg as *const CviCacheOpArg) };
+        // SAFETY: the ioctl record contains only integer fields.
+        let flush_arg = unsafe { UserConstPtr::<CviCacheOpArg>::from(arg).read_abi() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         self.hw.cache_flush_paddr(flush_arg.paddr, flush_arg.size)?;
         Ok(0)
     }
 
     /// 无效化 DMA buffer 缓存 (通过物理地址)
     fn cache_invalidate(&self, arg: usize) -> Result<usize, TpuError> {
-        let invalidate_arg = unsafe { &*(arg as *const CviCacheOpArg) };
+        // SAFETY: the ioctl record contains only integer fields.
+        let invalidate_arg = unsafe { UserConstPtr::<CviCacheOpArg>::from(arg).read_abi() }
+            .map_err(|_| TpuError::InvalidDmabuf)?;
         self.hw
             .cache_invalidate_paddr(invalidate_arg.paddr, invalidate_arg.size)?;
         Ok(0)

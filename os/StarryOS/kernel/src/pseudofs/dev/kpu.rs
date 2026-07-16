@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::{
     any::Any,
     hint::spin_loop,
-    mem::{MaybeUninit, size_of},
+    mem::size_of,
     pin::Pin,
     sync::atomic::{AtomicU8, AtomicU64, Ordering},
     time::Duration,
@@ -10,12 +10,12 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_runtime::hal::cpu::asm::user_copy;
 use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
     ThreadId, ThreadWakeHandle, WaitQueue,
 };
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+use bytemuck::{AnyBitPattern, NoUninit};
 use k230_kpu::{
     CommandRange, KPU_CFG_PADDR, KPU_CFG_SIZE, KPU_INFO_F_FAKE_OUTPUT, KPU_INFO_F_FDT,
     KPU_INFO_F_IRQ_WAIT, KPU_INFO_F_RUNTIME_SCRATCH, KPU_IOC_CLEAR, KPU_IOC_GET_INFO,
@@ -26,9 +26,12 @@ use k230_kpu::{
     Kpu, KpuInfo,
 };
 
-use crate::pseudofs::{
-    DeviceMmap, DeviceOps,
-    dev::{IrqRegistration, request_shared_disabled},
+use crate::{
+    mm::{UserConstPtr, UserPtr},
+    pseudofs::{
+        DeviceMmap, DeviceOps,
+        dev::{IrqRegistration, request_shared_disabled},
+    },
 };
 
 pub const KPU_DEVICE_ID: DeviceId = DeviceId::new(240, 1);
@@ -625,39 +628,22 @@ fn decode_named_region(
     .flatten()
 }
 
-fn copy_from_user<T: Copy>(arg: usize) -> VfsResult<T> {
+fn copy_from_user<T: AnyBitPattern>(arg: usize) -> VfsResult<T> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let mut value = MaybeUninit::<T>::uninit();
-    let ret = unsafe {
-        user_copy(
-            value.as_mut_ptr().cast::<u8>(),
-            arg as *const u8,
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(unsafe { value.assume_init() })
+    UserConstPtr::<T>::from(arg)
+        .read()
+        .map_err(|_| VfsError::InvalidData)
 }
 
-fn copy_to_user<T: Copy>(arg: usize, value: &T) -> VfsResult<()> {
+fn copy_to_user<T: NoUninit>(arg: usize, value: &T) -> VfsResult<()> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let ret = unsafe {
-        user_copy(
-            arg as *mut u8,
-            (value as *const T).cast::<u8>(),
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+    UserPtr::<T>::from(arg)
+        .write(*value)
+        .map_err(|_| VfsError::InvalidData)
 }
 
 #[cfg(test)]

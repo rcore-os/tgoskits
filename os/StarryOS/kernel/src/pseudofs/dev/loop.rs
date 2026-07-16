@@ -1,5 +1,6 @@
 use core::{
     any::Any,
+    mem::offset_of,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
@@ -24,6 +25,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use super::loop_block::BlockCache;
 use crate::{
     file::{FileLike, get_file_like},
+    mm::UserPtr,
     pseudofs::{DeviceMmap, DeviceOps},
 };
 
@@ -198,7 +200,7 @@ impl DeviceOps for LoopDevice {
                 self.flags.store(0, Ordering::Relaxed);
             }
             LOOP_GET_STATUS => {
-                (arg as *mut loop_info).vm_write(self.get_info()?)?;
+                write_loop_info(arg as *mut loop_info, self.get_info()?)?;
             }
             LOOP_SET_STATUS => {
                 // `loop_info` is a C ioctl payload copied from the guest ABI.
@@ -216,7 +218,7 @@ impl DeviceOps for LoopDevice {
                 self.set_lo_flags(info.lo_flags as u32);
             }
             LOOP_GET_STATUS64 => {
-                (arg as *mut loop_info64).vm_write(self.get_info64()?)?;
+                write_loop_info64(arg as *mut loop_info64, self.get_info64()?)?;
             }
             LOOP_SET_STATUS64 => {
                 // `loop_info64` is a C ioctl payload copied from the guest ABI.
@@ -332,16 +334,19 @@ impl DeviceOps for LoopDevice {
                     0
                 };
                 #[repr(C)]
+                #[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
                 struct HdGeometry {
                     heads: u8,
                     sectors: u8,
                     cylinders: u16,
+                    _padding: u32,
                     start: u64,
                 }
                 let geo = HdGeometry {
                     heads,
                     sectors,
                     cylinders: cyl,
+                    _padding: 0,
                     start: 0,
                 };
                 (arg as *mut HdGeometry).vm_write(geo)?;
@@ -369,4 +374,46 @@ impl DeviceOps for LoopDevice {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE
     }
+}
+
+fn write_loop_info(user: *mut loop_info, info: loop_info) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(loop_info, lo_number), info.lo_number)?;
+    user.write_field(offset_of!(loop_info, lo_device), info.lo_device)?;
+    user.write_field(offset_of!(loop_info, lo_inode), info.lo_inode)?;
+    user.write_field(offset_of!(loop_info, lo_rdevice), info.lo_rdevice)?;
+    user.write_field(offset_of!(loop_info, lo_offset), info.lo_offset)?;
+    user.write_field(offset_of!(loop_info, lo_encrypt_type), info.lo_encrypt_type)?;
+    user.write_field(
+        offset_of!(loop_info, lo_encrypt_key_size),
+        info.lo_encrypt_key_size,
+    )?;
+    user.write_field(offset_of!(loop_info, lo_flags), info.lo_flags)?;
+    user.write_field(offset_of!(loop_info, lo_name), info.lo_name)?;
+    user.write_field(offset_of!(loop_info, lo_encrypt_key), info.lo_encrypt_key)?;
+    user.write_field(offset_of!(loop_info, lo_init), info.lo_init)?;
+    user.write_field(offset_of!(loop_info, reserved), info.reserved)
+}
+
+fn write_loop_info64(user: *mut loop_info64, info: loop_info64) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(loop_info64, lo_device), info.lo_device)?;
+    user.write_field(offset_of!(loop_info64, lo_inode), info.lo_inode)?;
+    user.write_field(offset_of!(loop_info64, lo_rdevice), info.lo_rdevice)?;
+    user.write_field(offset_of!(loop_info64, lo_offset), info.lo_offset)?;
+    user.write_field(offset_of!(loop_info64, lo_sizelimit), info.lo_sizelimit)?;
+    user.write_field(offset_of!(loop_info64, lo_number), info.lo_number)?;
+    user.write_field(
+        offset_of!(loop_info64, lo_encrypt_type),
+        info.lo_encrypt_type,
+    )?;
+    user.write_field(
+        offset_of!(loop_info64, lo_encrypt_key_size),
+        info.lo_encrypt_key_size,
+    )?;
+    user.write_field(offset_of!(loop_info64, lo_flags), info.lo_flags)?;
+    user.write_field(offset_of!(loop_info64, lo_file_name), info.lo_file_name)?;
+    user.write_field(offset_of!(loop_info64, lo_crypt_name), info.lo_crypt_name)?;
+    user.write_field(offset_of!(loop_info64, lo_encrypt_key), info.lo_encrypt_key)?;
+    user.write_field(offset_of!(loop_info64, lo_init), info.lo_init)
 }

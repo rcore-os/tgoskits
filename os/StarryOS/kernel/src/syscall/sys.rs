@@ -1,5 +1,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{ffi::c_char, mem::MaybeUninit};
+use core::{
+    ffi::c_char,
+    mem::{MaybeUninit, offset_of},
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::current_fs_context;
@@ -14,9 +17,10 @@ use ringbuf::{
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
-#[cfg(target_arch = "riscv64")]
-use crate::mm::UserPtr;
-use crate::task::{SockFilter, SockFprog, current_user_task, get_task, processes};
+use crate::{
+    mm::UserPtr,
+    task::{SockFilter, SockFprog, current_user_task, get_task, processes},
+};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -668,8 +672,18 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
         let ns = nsproxy.uts_ns.lock();
         axnsproxy::build_utsname(&ns)
     };
-    name.vm_write(uts)?;
+    write_utsname(name, uts)?;
     Ok(0)
+}
+
+fn write_utsname(user: *mut new_utsname, value: new_utsname) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field_slice(offset_of!(new_utsname, sysname), &value.sysname)?;
+    user.write_field_slice(offset_of!(new_utsname, nodename), &value.nodename)?;
+    user.write_field_slice(offset_of!(new_utsname, release), &value.release)?;
+    user.write_field_slice(offset_of!(new_utsname, version), &value.version)?;
+    user.write_field_slice(offset_of!(new_utsname, machine), &value.machine)?;
+    user.write_field_slice(offset_of!(new_utsname, domainname), &value.domainname)
 }
 
 pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
@@ -736,8 +750,25 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     kinfo.procs = processes().len() as _;
     kinfo.mem_unit = 1;
 
-    info.vm_write(kinfo)?;
+    write_sysinfo(info, kinfo)?;
     Ok(0)
+}
+
+fn write_sysinfo(user: *mut sysinfo, value: sysinfo) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(sysinfo, uptime), value.uptime)?;
+    user.write_field(offset_of!(sysinfo, loads), value.loads)?;
+    user.write_field(offset_of!(sysinfo, totalram), value.totalram)?;
+    user.write_field(offset_of!(sysinfo, freeram), value.freeram)?;
+    user.write_field(offset_of!(sysinfo, sharedram), value.sharedram)?;
+    user.write_field(offset_of!(sysinfo, bufferram), value.bufferram)?;
+    user.write_field(offset_of!(sysinfo, totalswap), value.totalswap)?;
+    user.write_field(offset_of!(sysinfo, freeswap), value.freeswap)?;
+    user.write_field(offset_of!(sysinfo, procs), value.procs)?;
+    user.write_field(offset_of!(sysinfo, pad), value.pad)?;
+    user.write_field(offset_of!(sysinfo, totalhigh), value.totalhigh)?;
+    user.write_field(offset_of!(sysinfo, freehigh), value.freehigh)?;
+    user.write_field(offset_of!(sysinfo, mem_unit), value.mem_unit)
 }
 
 fn require_syslog_privilege() -> AxResult<()> {
@@ -968,7 +999,7 @@ pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResul
 
 #[cfg(target_arch = "riscv64")]
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern)]
 struct RiscvHwprobe {
     key: i64,
     value: u64,
@@ -992,8 +1023,9 @@ pub fn sys_riscv_hwprobe(
         return Err(AxError::InvalidInput);
     }
 
-    let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
-    for pair in pairs {
+    let pairs_ptr = UserPtr::<RiscvHwprobe>::from(pairs.cast());
+    let mut pairs = pairs_ptr.read_slice(pair_count)?;
+    for pair in &mut pairs {
         if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
             pair.value = value;
         } else {
@@ -1001,6 +1033,7 @@ pub fn sys_riscv_hwprobe(
             pair.value = 0;
         }
     }
+    pairs_ptr.write_slice(&pairs)?;
 
     Ok(0)
 }

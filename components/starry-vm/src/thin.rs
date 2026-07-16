@@ -1,8 +1,12 @@
-use core::{mem::MaybeUninit, ptr::NonNull, slice};
+use core::{
+    mem::{MaybeUninit, size_of},
+    ptr::NonNull,
+    slice,
+};
 
-use bytemuck::AnyBitPattern;
+use bytemuck::{AnyBitPattern, NoUninit};
 
-use crate::{VmResult, vm_read_slice, vm_write_slice};
+use crate::{VmIo, VmResult, vm_read_slice, vm_write_slice};
 
 /// A virtual memory pointer.
 pub trait VmPtr: Copy {
@@ -68,8 +72,35 @@ impl<T> VmPtr for NonNull<T> {
 /// A mutable virtual memory pointer.
 pub trait VmMutPtr: VmPtr {
     /// Overwrites a virtual memory location with the given value.
-    fn vm_write(self, value: Self::Target) -> VmResult {
+    fn vm_write(self, value: Self::Target) -> VmResult
+    where
+        Self::Target: NoUninit,
+    {
         vm_write_slice(self.as_ptr().cast_mut(), slice::from_ref(&value))
+    }
+
+    /// Overwrites a virtual-memory location from an ABI value whose object
+    /// representation is guaranteed by the caller.
+    ///
+    /// Prefer [`VmMutPtr::vm_write`]. This escape hatch exists for private ABI
+    /// frames that cannot implement [`NoUninit`] because they contain foreign
+    /// types, while still making the padding-initialization proof explicit.
+    ///
+    /// # Safety
+    ///
+    /// Every byte in `value`, including padding, must be initialized. The
+    /// pointed-to virtual range must accept a `size_of::<Self::Target>()`
+    /// write.
+    unsafe fn vm_write_abi(self, value: &Self::Target) -> VmResult {
+        // SAFETY: the caller guarantees the complete object representation is
+        // initialized and `value` remains borrowed for the duration of `write`.
+        let bytes = unsafe {
+            slice::from_raw_parts(
+                (value as *const Self::Target).cast::<u8>(),
+                size_of::<Self::Target>(),
+            )
+        };
+        crate::VmImpl::new().write(self.as_ptr().addr(), bytes)
     }
 }
 

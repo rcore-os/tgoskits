@@ -66,14 +66,14 @@ pub enum Error {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct CommandRange {
     pub start_paddr: u64,
     pub end_paddr: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct KpuInfo {
     pub cfg_paddr: u64,
     pub cfg_size: u64,

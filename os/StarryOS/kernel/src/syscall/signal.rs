@@ -338,7 +338,10 @@ pub fn sys_rt_sigtimedwait(
     *signal.sigwait_set.lock() = None;
 
     if let Some(info) = info.nullable() {
-        info.vm_write(sig.0)?;
+        // SAFETY: SignalInfo constructors zero the complete siginfo storage,
+        // while ptrace-originated values were copied byte-for-byte from user
+        // memory. Both paths initialize the entire object representation.
+        unsafe { info.vm_write_abi(&sig.0)? };
     }
 
     Ok(sig.signo() as _)

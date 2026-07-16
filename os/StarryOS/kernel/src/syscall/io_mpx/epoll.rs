@@ -18,7 +18,7 @@ use crate::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::{UserConstPtr, UserPtr, check_access},
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
@@ -203,26 +203,32 @@ fn do_epoll_wait(
     }
     check_epoll_events_access(events, maxevents)?;
 
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        // SAFETY: SignalSet is a transparent signal-bit mask; every bit
+        // pattern is valid and unsupported bits are handled by signal logic.
+        Some(unsafe { sigmask.read_abi()? })
+    };
+
     let task = current_user_task();
-    let count =
-        with_blocked_signals(
-            nullable!(sigmask.get_as_ref())?.copied(),
-            || match block_on_user(
-                &task,
-                future::timeout(
-                    timeout,
-                    poll_io_for(&task, epoll.as_ref(), IoEvents::IN, false, || {
-                        epoll.poll_events_with(maxevents, |index, event| {
-                            write_epoll_event(events, index, &event)?;
-                            Ok(())
-                        })
-                    }),
-                ),
-            ) {
-                Ok(r) => r.map(|n| n as _),
-                Err(_) => Ok(0),
-            },
-        )?;
+    let count = with_blocked_signals(sigmask, || {
+        match block_on_user(
+            &task,
+            future::timeout(
+                timeout,
+                poll_io_for(&task, epoll.as_ref(), IoEvents::IN, false, || {
+                    epoll.poll_events_with(maxevents, |index, event| {
+                        write_epoll_event(events, index, &event)?;
+                        Ok(())
+                    })
+                }),
+            ),
+        ) {
+            Ok(r) => r.map(|n| n as _),
+            Err(_) => Ok(0),
+        }
+    })?;
 
     Ok(count)
 }
@@ -262,8 +268,14 @@ pub fn sys_epoll_pwait2(
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
 ) -> AxResult<isize> {
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
+    let timeout = (if timeout.is_null() {
+        None
+    } else {
+        // SAFETY: timespec contains only signed integer fields; semantic
+        // range validation is performed by try_into_time_value below.
+        Some(unsafe { timeout.read_abi()? })
+    })
+    .map(|ts| ts.try_into_time_value())
+    .transpose()?;
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
 }

@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::{fmt, time::Duration};
+use core::{fmt, mem::offset_of, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use axpoll::IoEvents;
@@ -13,7 +13,7 @@ use starry_signal::SignalSet;
 use super::FdPollSet;
 use crate::{
     file::current_fd_table,
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::{UserConstPtr, UserPtr},
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
@@ -65,21 +65,44 @@ fn do_select(
     if nfds > __FD_SETSIZE {
         return Err(AxError::InvalidInput);
     }
-    let sigmask = if let Some(sigmask) = nullable!(sigmask.get_as_ref())? {
-        check_sigset_size(sigmask.sigsetsize)?;
-        let set = sigmask.set;
-        nullable!(set.get_as_ref())?
-    } else {
+    let sigmask = if sigmask.is_null() {
         None
+    } else {
+        // SAFETY: pselect6's argument record contains only a pointer-sized
+        // address and a byte count, so every bit pattern is a valid record.
+        let sigmask = unsafe { sigmask.read_abi()? };
+        check_sigset_size(sigmask.sigsetsize)?;
+        let set = UserConstPtr::<SignalSet>::from(sigmask.set);
+        if set.is_null() {
+            None
+        } else {
+            // SAFETY: SignalSet is a transparent signal-bit mask; all bit
+            // patterns are valid and unsupported bits are validated later.
+            Some(unsafe { set.read_abi()? })
+        }
     };
 
-    let mut readfds = nullable!(readfds.get_as_mut())?;
-    let mut writefds = nullable!(writefds.get_as_mut())?;
-    let mut exceptfds = nullable!(exceptfds.get_as_mut())?;
+    // SAFETY: __kernel_fd_set is a C bitset made exclusively of integer
+    // words, so every copied byte pattern is a valid value.
+    let mut readfds_value = if readfds.is_null() {
+        None
+    } else {
+        Some(unsafe { readfds.read_abi()? })
+    };
+    let mut writefds_value = if writefds.is_null() {
+        None
+    } else {
+        Some(unsafe { writefds.read_abi()? })
+    };
+    let mut exceptfds_value = if exceptfds.is_null() {
+        None
+    } else {
+        Some(unsafe { exceptfds.read_abi()? })
+    };
 
-    let read_set = FdSet::new(nfds as _, readfds.as_deref());
-    let write_set = FdSet::new(nfds as _, writefds.as_deref());
-    let except_set = FdSet::new(nfds as _, exceptfds.as_deref());
+    let read_set = FdSet::new(nfds as _, readfds_value.as_ref());
+    let write_set = FdSet::new(nfds as _, writefds_value.as_ref());
+    let except_set = FdSet::new(nfds as _, exceptfds_value.as_ref());
 
     debug!(
         "sys_select <= nfds: {nfds} sets: [read: {read_set:?}, write: {write_set:?}, except: \
@@ -112,7 +135,7 @@ fn do_select(
     let fds = FdPollSet(fds);
 
     let task = current_user_task();
-    with_blocked_signals(sigmask.copied(), || {
+    let result = with_blocked_signals(sigmask, || {
         let result = block_on_user(
             &task,
             future::timeout(
@@ -147,9 +170,9 @@ fn do_select(
                         }
                     }
                     if res > 0 {
-                        write_fd_set(readfds.as_deref_mut(), &selected_readfds, nfds as _);
-                        write_fd_set(writefds.as_deref_mut(), &selected_writefds, nfds as _);
-                        write_fd_set(exceptfds.as_deref_mut(), &selected_exceptfds, nfds as _);
+                        write_fd_set(readfds_value.as_mut(), &selected_readfds, nfds as _);
+                        write_fd_set(writefds_value.as_mut(), &selected_writefds, nfds as _);
+                        write_fd_set(exceptfds_value.as_mut(), &selected_exceptfds, nfds as _);
                         return Ok(res as _);
                     }
 
@@ -161,13 +184,23 @@ fn do_select(
             Ok(r) => r,
             Err(_) => {
                 let empty = FdSet(Bitmap::new());
-                write_fd_set(readfds, &empty, nfds as _);
-                write_fd_set(writefds, &empty, nfds as _);
-                write_fd_set(exceptfds, &empty, nfds as _);
+                write_fd_set(readfds_value.as_mut(), &empty, nfds as _);
+                write_fd_set(writefds_value.as_mut(), &empty, nfds as _);
+                write_fd_set(exceptfds_value.as_mut(), &empty, nfds as _);
                 Ok(0)
             }
         }
-    })
+    });
+    if let Some(value) = readfds_value {
+        readfds.write_field(offset_of!(__kernel_fd_set, fds_bits), value.fds_bits)?;
+    }
+    if let Some(value) = writefds_value {
+        writefds.write_field(offset_of!(__kernel_fd_set, fds_bits), value.fds_bits)?;
+    }
+    if let Some(value) = exceptfds_value {
+        exceptfds.write_field(offset_of!(__kernel_fd_set, fds_bits), value.fds_bits)?;
+    }
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -183,17 +216,23 @@ pub fn sys_select(
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?
-            .map(|it| it.try_into_time_value())
-            .transpose()?,
+        (if timeout.is_null() {
+            None
+        } else {
+            // SAFETY: timeval contains only signed integer fields; semantic
+            // range validation is performed by try_into_time_value below.
+            Some(unsafe { timeout.read_abi()? })
+        })
+        .map(|it| it.try_into_time_value())
+        .transpose()?,
         0.into(),
     )
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct SignalSetWithSize {
-    set: UserConstPtr<SignalSet>,
+    set: usize,
     sigsetsize: usize,
 }
 
@@ -210,9 +249,15 @@ pub fn sys_pselect6(
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?
-            .map(|ts| ts.try_into_time_value())
-            .transpose()?,
+        (if timeout.is_null() {
+            None
+        } else {
+            // SAFETY: timespec contains only signed integer fields; semantic
+            // range validation is performed by try_into_time_value below.
+            Some(unsafe { timeout.read_abi()? })
+        })
+        .map(|ts| ts.try_into_time_value())
+        .transpose()?,
         sigmask,
     )
 }

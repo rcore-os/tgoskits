@@ -1,11 +1,14 @@
+use core::mem::offset_of;
+
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
 use starry_process::Pid;
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::VmPtr;
 
 use crate::{
+    mm::UserPtr,
     task::{Thread, current_user_task, get_process_data, get_task},
     time::TimeValueLike,
 };
@@ -25,10 +28,9 @@ pub fn sys_prlimit64(
 
     if let Some(old_limit) = old_limit.nullable() {
         let limit = &proc_data.rlim.read()[resource];
-        old_limit.vm_write(rlimit64 {
-            rlim_cur: limit.current,
-            rlim_max: limit.max,
-        })?;
+        let old_limit = UserPtr::<rlimit64>::from(old_limit);
+        old_limit.write_field(offset_of!(rlimit64, rlim_cur), limit.current)?;
+        old_limit.write_field(offset_of!(rlimit64, rlim_max), limit.max)?;
     }
 
     if let Some(new_limit) = new_limit.nullable() {
@@ -93,6 +95,42 @@ impl From<Rusage> for rusage {
     }
 }
 
+fn write_rusage(user: *mut rusage, usage: rusage) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    let utime = offset_of!(rusage, ru_utime);
+    user.write_field(
+        utime + offset_of!(__kernel_old_timeval, tv_sec),
+        usage.ru_utime.tv_sec,
+    )?;
+    user.write_field(
+        utime + offset_of!(__kernel_old_timeval, tv_usec),
+        usage.ru_utime.tv_usec,
+    )?;
+    let stime = offset_of!(rusage, ru_stime);
+    user.write_field(
+        stime + offset_of!(__kernel_old_timeval, tv_sec),
+        usage.ru_stime.tv_sec,
+    )?;
+    user.write_field(
+        stime + offset_of!(__kernel_old_timeval, tv_usec),
+        usage.ru_stime.tv_usec,
+    )?;
+    user.write_field(offset_of!(rusage, ru_maxrss), usage.ru_maxrss)?;
+    user.write_field(offset_of!(rusage, ru_ixrss), usage.ru_ixrss)?;
+    user.write_field(offset_of!(rusage, ru_idrss), usage.ru_idrss)?;
+    user.write_field(offset_of!(rusage, ru_isrss), usage.ru_isrss)?;
+    user.write_field(offset_of!(rusage, ru_minflt), usage.ru_minflt)?;
+    user.write_field(offset_of!(rusage, ru_majflt), usage.ru_majflt)?;
+    user.write_field(offset_of!(rusage, ru_nswap), usage.ru_nswap)?;
+    user.write_field(offset_of!(rusage, ru_inblock), usage.ru_inblock)?;
+    user.write_field(offset_of!(rusage, ru_oublock), usage.ru_oublock)?;
+    user.write_field(offset_of!(rusage, ru_msgsnd), usage.ru_msgsnd)?;
+    user.write_field(offset_of!(rusage, ru_msgrcv), usage.ru_msgrcv)?;
+    user.write_field(offset_of!(rusage, ru_nsignals), usage.ru_nsignals)?;
+    user.write_field(offset_of!(rusage, ru_nvcsw), usage.ru_nvcsw)?;
+    user.write_field(offset_of!(rusage, ru_nivcsw), usage.ru_nivcsw)
+}
+
 pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
@@ -133,7 +171,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
         RUSAGE_THREAD => Rusage::from_thread(thr),
         _ => return Err(AxError::InvalidInput),
     };
-    usage.vm_write(result.into())?;
+    write_rusage(usage, result.into())?;
 
     Ok(0)
 }

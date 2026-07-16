@@ -5,14 +5,17 @@
 //! translate between userspace's split `u32` capability arrays and StarryOS's
 //! internal `Cred` bitmap fields.
 
-use core::ffi::c_char;
+use core::{
+    ffi::c_char,
+    mem::{offset_of, size_of},
+};
 
 use ax_errno::{AxError, AxResult};
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
-    mm::vm_load_string,
+    mm::{UserPtr, vm_load_string},
     task::{Cred, current_user_task, get_process_data, get_task},
 };
 
@@ -70,7 +73,10 @@ fn validate_cap_header(header_ptr: *mut __user_cap_header_struct) -> AxResult<u3
     let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
         header.version = CAPABILITY_VERSION_3;
-        header_ptr.vm_write(header)?;
+        UserPtr::<__user_cap_header_struct>::from(header_ptr).write_field(
+            offset_of!(__user_cap_header_struct, version),
+            header.version,
+        )?;
         return Err(AxError::InvalidInput);
     }
     let pid = header.pid as u32;
@@ -123,6 +129,24 @@ fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
     ]
 }
 
+fn write_cap_data(
+    user: UserPtr<__user_cap_data_struct>,
+    value: __user_cap_data_struct,
+) -> AxResult<()> {
+    user.write_field(
+        offset_of!(__user_cap_data_struct, effective),
+        value.effective,
+    )?;
+    user.write_field(
+        offset_of!(__user_cap_data_struct, permitted),
+        value.permitted,
+    )?;
+    user.write_field(
+        offset_of!(__user_cap_data_struct, inheritable),
+        value.inheritable,
+    )
+}
+
 /// Implement `capget(2)`.
 ///
 /// StarryOS supports the Linux V3 capability ABI.  When `data` is null, the
@@ -141,10 +165,13 @@ pub fn sys_capget(
 
     let cred = cred_for_pid(pid)?;
     let cap_data = cap_data_from_cred(&cred);
-    unsafe {
-        data.vm_write(cap_data[0])?;
-        data.add(1).vm_write(cap_data[1])?;
-    }
+    let first = UserPtr::from(data);
+    let second_address = data
+        .addr()
+        .checked_add(size_of::<__user_cap_data_struct>())
+        .ok_or(AxError::BadAddress)?;
+    write_cap_data(first, cap_data[0])?;
+    write_cap_data(UserPtr::from(second_address), cap_data[1])?;
     Ok(0)
 }
 

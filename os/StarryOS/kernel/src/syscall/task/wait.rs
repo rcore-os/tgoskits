@@ -426,7 +426,9 @@ pub fn sys_waitid(
                     linux_raw_sys::general::CLD_TRAPPED as i32,
                     stopped_wait_signo(&data, signo),
                 );
-                infop.vm_write(siginfo.0)?;
+                // SAFETY: new_sigchld zeroes the complete siginfo storage
+                // before setting the active union fields.
+                unsafe { infop.vm_write_abi(&siginfo.0)? };
             }
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 data.mark_ptrace_stop_reported_for(stop_tid);
@@ -444,7 +446,9 @@ pub fn sys_waitid(
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
-                infop.vm_write(siginfo.0)?;
+                // SAFETY: new_sigchld zeroes the complete siginfo storage
+                // before setting the active union fields.
+                unsafe { infop.vm_write_abi(&siginfo.0)? };
             }
 
             if !options.contains(WaitIdOptions::WNOWAIT) {
@@ -465,7 +469,9 @@ pub fn sys_waitid(
         if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
                 let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
-                infop.vm_write(zeroed)?;
+                // SAFETY: zeroed initializes all bytes of the siginfo union and
+                // is the Linux waitid WNOHANG sentinel representation.
+                unsafe { infop.vm_write_abi(&zeroed)? };
             }
             Ok(Some(0))
         } else {

@@ -230,7 +230,9 @@ pub fn sys_accept4(
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
     if !addr.is_null() {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+        let mut addrlen_value = addrlen.read()?;
+        remote_addr.write_to_user(addr, &mut addrlen_value)?;
+        addrlen.write(addrlen_value)?;
     }
 
     Ok(fd)
@@ -286,9 +288,9 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    *fds.get_as_mut()? = [
+    fds.write([
         sock1.add_to_fd_table(cloexec)?,
         sock2.add_to_fd_table(cloexec)?,
-    ];
+    ])?;
     Ok(0)
 }
