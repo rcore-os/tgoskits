@@ -1,9 +1,5 @@
 # AGENTS.md
 
-<!-- SPECKIT START -->
-**Active Plan**: `specs/003-starryos-nixpkgs/plan.md` — Resume Nixpkgs diagnosis with Linux-semantic kernel regressions
-<!-- SPECKIT END -->
-
 ## Project Skills
 
 - `update-std-tests`: project-local skill at `.claude/skills/update-std-tests/SKILL.md`
