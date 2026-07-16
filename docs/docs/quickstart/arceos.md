@@ -6,30 +6,31 @@ title: "ArceOS 快速上手"
 
 # ArceOS 快速上手
 
-ArceOS 通过板卡配置确定目标架构、平台参数和默认应用。`cargo arceos config ls` 列出配置名称，`cargo arceos defconfig BOARD_NAME` 写入默认构建配置，后续 `cargo arceos qemu` 沿用该配置。
+ArceOS 的最短路径是直接运行 `cargo xtask arceos qemu`。该 QEMU 子命令会选择对应架构的 board 模板，默认启动 Hello World。
 
 ```mermaid
 flowchart LR
-  A[cargo arceos config ls] --> B[cargo arceos defconfig board]
-  B --> C[cargo arceos qemu]
-  C --> D{验证通过?}
-  D -- 是 --> E[测试套件]
-  D -- 否 --> F[检查环境]
-  F --> B
+  A[选择架构] --> B[cargo xtask arceos qemu]
+  B --> C{需要其他应用?}
+  C -- 否 --> D[Hello World]
+  C -- 是 --> E[--package 指定应用]
+  D --> F{验证通过?}
+  E --> F
+  F -- 是 --> G[测试套件]
+  F -- 否 --> H[检查环境]
+  H --> A
 ```
 
 ## 1. QEMU 快速启动
 
-四种架构使用相同的三步流程：查看配置、选择 QEMU 板卡配置、构建并启动。各 QEMU 配置默认使用 `arceos-helloworld`。
+不带 `--package` 时，QEMU 子命令从 `os/arceos/configs/board/qemu-<arch>.toml` 读取默认应用与 feature；当前模板使用最小的 `arceos-helloworld`。需要运行其他应用时，再通过 `--package` 显式覆盖。
 
 ### 1.1 RISC-V 64
 
 `qemu-riscv64` 使用 `riscv64gc-unknown-none-elf` target 和 QEMU virt 平台。
 
 ```bash
-cargo arceos config ls
-cargo arceos defconfig qemu-riscv64
-cargo arceos qemu
+cargo xtask arceos qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 1.2 AArch64
@@ -37,9 +38,7 @@ cargo arceos qemu
 `qemu-aarch64` 使用 `aarch64-unknown-none-softfloat` target 和 QEMU virt 平台。
 
 ```bash
-cargo arceos config ls
-cargo arceos defconfig qemu-aarch64
-cargo arceos qemu
+cargo xtask arceos qemu --target aarch64-unknown-none-softfloat
 ```
 
 ### 1.3 x86_64
@@ -47,9 +46,7 @@ cargo arceos qemu
 `qemu-x86_64` 使用 `x86_64-unknown-none` target 和 PC 类 QEMU 平台配置。
 
 ```bash
-cargo arceos config ls
-cargo arceos defconfig qemu-x86_64
-cargo arceos qemu
+cargo xtask arceos qemu --target x86_64-unknown-none
 ```
 
 ### 1.4 LoongArch64
@@ -57,9 +54,7 @@ cargo arceos qemu
 `qemu-loongarch64` 使用 `loongarch64-unknown-none-softfloat` target，运行环境需要提供 `qemu-system-loongarch64`。
 
 ```bash
-cargo arceos config ls
-cargo arceos defconfig qemu-loongarch64
-cargo arceos qemu
+cargo xtask arceos qemu --target loongarch64-unknown-none-softfloat
 ```
 
 完成 `defconfig` 后，后续命令通常不需要重复传入 `--package`、`--target` 或 `--arch`。切换架构时重新执行以上三步即可。

@@ -92,32 +92,25 @@ fn c_compiler_features_keep_case_defines_for_cflags() {
 
 #[test]
 fn map_c_app_features_preserves_driver_features() {
-    let removed_static_driver_feature = concat!("ax-driver/", "plat", "-static");
-    let features = map_c_app_features(
-        &strings(&["net", removed_static_driver_feature, "ax-driver/virtio-net"]),
-        &[],
-    );
+    let features = map_c_app_features(&strings(&["net", "ax-driver/virtio-net"]), &[]).unwrap();
 
     assert!(features.contains(&"net".to_string()));
-    assert!(features.contains(&"fd".to_string()));
-    assert!(!features.contains(&removed_static_driver_feature.to_string()));
     assert!(features.contains(&"ax-driver/virtio-net".to_string()));
 }
 
 #[test]
 fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
-    let features = map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]);
+    let features =
+        map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]).unwrap();
 
     assert_eq!(features, vec!["alloc".to_string()]);
 }
 
 #[test]
-fn map_c_app_features_ignores_removed_dynamic_platform_feature() {
-    let features = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"]));
+fn map_c_app_features_rejects_removed_platform_feature() {
+    let err = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"])).unwrap_err();
 
-    assert!(features.contains(&"alloc".to_string()));
-    assert!(!features.contains(&"plat-dyn".to_string()));
-    assert!(!features.contains(&"smp".to_string()));
+    assert!(err.to_string().contains("no longer supported"));
 }
 
 #[test]
@@ -160,16 +153,23 @@ fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
 
 #[test]
 fn map_c_app_features_forwards_multitask_to_runtime_features() {
-    let features = map_c_app_features(&strings(&["multitask"]), &[]);
+    let features = map_c_app_features(&strings(&["multitask"]), &[]).unwrap();
 
     assert!(features.contains(&"multitask".to_string()));
 }
 
 #[test]
 fn map_c_app_features_preserves_paging_facade_feature() {
-    let features = map_c_app_features(&strings(&["paging"]), &[]);
+    let features = map_c_app_features(&strings(&["paging"]), &[]).unwrap();
 
     assert_eq!(features, vec!["paging".to_string()]);
+}
+
+#[test]
+fn map_c_app_features_does_not_add_fd_for_higher_level_features() {
+    let features = map_c_app_features(&strings(&["fs"]), &[]).unwrap();
+
+    assert_eq!(features, strings(&["fs"]));
 }
 
 #[test]

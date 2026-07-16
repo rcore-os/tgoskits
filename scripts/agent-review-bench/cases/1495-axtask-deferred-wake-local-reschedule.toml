@@ -1,0 +1,15 @@
+id = "1495-axtask-deferred-wake-local-reschedule"
+pr = 1495
+title = "修复 axtask：延迟跨核唤醒，避免在远端 on_cpu 上自旋"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "baf4aa42e883b78156011636d189f348409ff4c1"
+head = "c74237d2c10754b1341e03f495caafd261cf8b7e"
+source = "https://github.com/rcore-os/tgoskits/pull/1495#discussion_r3518853256"
+fixed_by = "bf3b71dd4622be7436431ed6138fade0b06955fa"
+
+[[expected]]
+id = "axtask-owner-drain-needs-local-reschedule"
+path = "os/arceos/modules/axtask/src/run_queue.rs"
+line = 1125
+severity = "major"
+description = "owner CPU 清空 deferred wake 时总是调用 kick_remote_cpu(target)。select_wake_run_queue 可能再次选择同一个 owner CPU 作为 target，而这种 self-kick 不会产生作用。因此，可运行任务会丢失原始远端唤醒者提供的 reschedule 通知，并可能在 owner 进入 idle 后一直留在队列中，直到后续 tick 才得到调度。"

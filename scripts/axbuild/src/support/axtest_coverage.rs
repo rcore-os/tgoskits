@@ -26,6 +26,8 @@ pub(crate) fn enabled(cargo: &Cargo) -> bool {
 }
 
 pub(crate) fn prepare_cargo(cargo: &mut Cargo) {
+    // Coverage is enabled only after the caller explicitly selected coverage
+    // mode; do not alter ordinary test builds.
     if !cargo
         .features
         .iter()

@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
+mod agent_review_bench;
 pub mod arceos;
 pub mod axloader;
 pub mod axvisor;
@@ -13,7 +14,6 @@ mod board;
 mod build;
 mod clippy;
 pub mod context;
-mod firmware;
 pub mod image;
 mod ktest;
 mod rootfs;
@@ -51,6 +51,11 @@ pub(crate) struct SyncLintArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run offline Codex review benchmarks from historical PR snapshots
+    AgentReviewBench {
+        #[command(subcommand)]
+        command: agent_review_bench::Command,
+    },
     /// Run std tests for the configured workspace package whitelist
     Test,
     /// Run kernel axtest targets through QEMU or a remote board
@@ -102,12 +107,10 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
         Commands::Test => test::std::run_std_test_command(),
         Commands::Ktest(args) => ktest::run(args).await,
-        Commands::Clippy(args) => {
-            ensure_aic8800_firmware().await?;
-            clippy::run_workspace_clippy_command(&args)
-        }
+        Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::SpinLint => spin_lint::run_spin_lint_command(),
         Commands::Board { command } => board::execute(command).await,
@@ -116,10 +119,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
-        Commands::Starry { command } => {
-            ensure_aic8800_firmware().await?;
-            Starry::new()?.execute(command).await
-        }
+        Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
 }
 
@@ -325,11 +325,4 @@ mod tests {
             _ => panic!("expected ktest command"),
         }
     }
-}
-
-/// Provisions the AIC8800 Wi-Fi firmware blobs (fetched + integrity-checked,
-/// never committed) before any command that may compile the `aic8800` crate.
-async fn ensure_aic8800_firmware() -> anyhow::Result<()> {
-    let workspace_root = context::workspace_root_path()?;
-    firmware::ensure_aic8800_firmware(&workspace_root).await
 }

@@ -8,8 +8,8 @@ use anyhow::{Context, bail};
 use toml::Value;
 use walkdir::{DirEntry, WalkDir};
 
-const SPIN_VERSION_REQ: &str = "=0.12.0";
-const SPIN_LOCKFILE_VERSION: &str = "0.12.0";
+const SPIN_VERSION_REQ: &str = "=0.12.2";
+const SPIN_LOCKFILE_VERSION: &str = "0.12.2";
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const ALLOWED_SPIN_FEATURES: &[&str] = &["lock_api", "once", "lazylock"];
 const FORBIDDEN_SPIN_RWLOCK_PATTERNS: &[&str] =
@@ -647,7 +647,7 @@ mod tests {
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
 "#,
         );
         write_file(
@@ -669,11 +669,17 @@ spin = { workspace = true }
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abc"
 "#,
         );
+    }
+
+    #[test]
+    fn pins_spin_to_the_dev_baseline() {
+        assert_eq!(SPIN_VERSION_REQ, "=0.12.2");
+        assert_eq!(SPIN_LOCKFILE_VERSION, "0.12.2");
     }
 
     #[test]
@@ -698,7 +704,7 @@ checksum = "abc"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
 
 [patch.crates-io]
 spin = { path = "components/spin" }
@@ -724,7 +730,7 @@ spin = { path = "components/spin" }
             r#"
 [package]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 "#,
         );
 
@@ -749,7 +755,7 @@ version = "0.12.0"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", path = "components/spin", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", path = "components/spin", default-features = false, features = ["lock_api", "once", "lazylock"] }
 "#,
         );
 
@@ -774,7 +780,7 @@ spin = { version = "=0.12.0", path = "components/spin", default-features = false
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = true, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = true, features = ["lock_api", "once", "lazylock"] }
 "#,
         );
 
@@ -799,7 +805,7 @@ spin = { version = "=0.12.0", default-features = true, features = ["lock_api", "
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock", "rwlock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock", "rwlock"] }
 "#,
         );
 
@@ -826,7 +832,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["once"] }
+spin = { version = "=0.12.2", default-features = false, features = ["once"] }
 "#,
         );
 
@@ -876,7 +882,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", features = ["once"] }
+spin = { version = "=0.12.2", features = ["once"] }
 "#,
         );
 
@@ -903,7 +909,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.0", default-features = false, features = ["once", "rwlock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["once", "rwlock"] }
 "#,
         );
 
@@ -930,7 +936,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin_compat = { package = "spin", version = "=0.12.0", default-features = false, features = ["once"] }
+spin_compat = { package = "spin", version = "=0.12.2", default-features = false, features = ["once"] }
 "#,
         );
 
@@ -980,7 +986,7 @@ spin = { workspace = true, features = ["rwlock"] }
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 "#,
         );
 
@@ -1003,7 +1009,7 @@ version = "0.12.0"
             r#"
 [[package]]
 name = "spin"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#,
         );
@@ -1038,7 +1044,7 @@ checksum = "abc"
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.message.contains("must stay at 0.12.0"))
+                .any(|finding| finding.message.contains("must stay at 0.12.2"))
         );
     }
 

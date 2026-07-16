@@ -1,8 +1,6 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::Context;
-use cargo_metadata::Metadata;
-use log::warn;
 
 use super::ArceosBuildConfig;
 #[cfg(test)]
@@ -32,38 +30,12 @@ fn load_build_info_with_makefile_features(
     request: &ResolvedBuildRequest,
     makefile_features: &[String],
 ) -> anyhow::Result<ArceosBuildInfo> {
-    let metadata = if makefile_features.is_empty() {
-        None
-    } else {
-        Some(build::workspace_metadata().context("failed to load workspace metadata")?)
-    };
-    load_build_info_with_makefile_features_and_metadata(
-        request,
-        makefile_features,
-        metadata.as_ref(),
-    )
+    Ok(load_build_config_with_makefile_features(request, makefile_features)?.build_info)
 }
 
-#[cfg(test)]
-fn load_build_info_with_makefile_features_and_metadata(
+pub(super) fn load_build_config_with_makefile_features(
     request: &ResolvedBuildRequest,
     makefile_features: &[String],
-    metadata: Option<&Metadata>,
-) -> anyhow::Result<ArceosBuildInfo> {
-    Ok(
-        load_build_config_with_makefile_features_and_metadata(
-            request,
-            makefile_features,
-            metadata,
-        )?
-        .build_info,
-    )
-}
-
-pub(super) fn load_build_config_with_makefile_features_and_metadata(
-    request: &ResolvedBuildRequest,
-    makefile_features: &[String],
-    metadata: Option<&Metadata>,
 ) -> anyhow::Result<ArceosBuildConfig> {
     build::ensure_build_info(&request.build_info_path, ArceosBuildConfig::default_config)?;
     let content = fs::read_to_string(&request.build_info_path)?;
@@ -74,38 +46,14 @@ pub(super) fn load_build_config_with_makefile_features_and_metadata(
             request.build_info_path.display()
         )
     })?;
-    if config.build_info.normalize_legacy_feature_aliases() {
-        warn!(
-            "normalizing legacy feature aliases in build config {}",
-            request.build_info_path.display()
-        );
-        fs::write(&request.build_info_path, toml::to_string_pretty(&config)?).with_context(
-            || {
-                format!(
-                    "failed to rewrite normalized build info {}",
-                    request.build_info_path.display()
-                )
-            },
-        )?;
-    }
+    config.build_info.validate_features()?;
 
-    match metadata {
-        Some(metadata) => build::apply_makefile_features_with_metadata(
-            &mut config.build_info,
-            &request.package,
-            makefile_features,
-            metadata,
-        ),
-        None => build::apply_makefile_features(
-            &mut config.build_info,
-            &request.package,
-            makefile_features,
-        ),
-    }
+    build::apply_makefile_features(&mut config.build_info, makefile_features)?;
 
     if let Some(smp) = request.smp {
         config.build_info.max_cpu_num = Some(smp);
     }
+    config.build_info.validate_features()?;
 
     Ok(config)
 }

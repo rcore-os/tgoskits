@@ -226,7 +226,6 @@ impl Starry {
                     ("phase", "prepare-qemu-config".to_string()),
                 ],
             );
-            qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
             Self::rewrite_qemu_case_managed_rootfs_paths(self.app.workspace_root(), &mut qemu)?;
             let rootfs_path =
                 Self::qemu_case_rootfs_path(self.app.workspace_root(), &qemu, default_rootfs_path)?;
@@ -499,6 +498,12 @@ impl Starry {
         );
         timing_stage.finish();
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        // UEFI uses a writable ESP for the kernel image. A global `-snapshot`
+        // makes QEMU treat the VVFAT drive as read-only, so keep snapshot
+        // isolation on each ordinary disk instead.
+        if qemu.uefi {
+            qemu_test::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+        }
         let timing_stage = timing::TimingStage::new(
             "qemu-case",
             [
@@ -506,7 +511,6 @@ impl Starry {
                 ("phase", "apply-dynamic-boot".to_string()),
             ],
         );
-        qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
         timing_stage.finish();
         let timing_stage = timing::TimingStage::new(
             "qemu-case",

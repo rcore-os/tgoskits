@@ -13,7 +13,6 @@ use crate::{
     test::case::{HostHttpServerConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
 };
 
-const DYNAMIC_X86_64_QEMU_DEBUG_ENV: &str = "AXBUILD_X86_64_DYN_QEMU_DEBUG";
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
 
 mod boot;
@@ -26,8 +25,8 @@ mod tree;
 mod types;
 
 pub(crate) use boot::{
-    apply_drive_snapshot_without_global_snapshot, apply_dynamic_platform_qemu_boot,
-    apply_smp_qemu_arg, apply_timeout_scale, qemu_timeout_summary, smp_from_qemu_arg,
+    apply_drive_snapshot_without_global_snapshot, apply_smp_qemu_arg, apply_timeout_scale,
+    qemu_timeout_summary, smp_from_qemu_arg,
 };
 pub(crate) use config::{
     load_qemu_case_extra_config, load_qemu_case_host_http_server, load_test_qemu_case_fields,

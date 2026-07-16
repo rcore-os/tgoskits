@@ -199,3 +199,24 @@ fn std_target_specs_embed_final_link_policy() {
         assert!(!link_args.contains(&"-no-pie"));
     }
 }
+
+#[test]
+fn riscv_target_specs_disable_global_pointer_relaxation() {
+    let workspace = crate::context::workspace_root_path().unwrap();
+
+    for relative_path in [
+        "scripts/targets/std/riscv64gc-unknown-linux-musl.json",
+        "scripts/targets/std/pie/riscv64gc-unknown-linux-musl.json",
+    ] {
+        let path = workspace.join(relative_path);
+        let spec: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let link_args = gnu_lld_pre_link_args(&spec);
+
+        assert!(
+            link_args.contains(&"--no-relax"),
+            "RISC-V target spec must disable GP relaxation: {}",
+            path.display()
+        );
+    }
+}
