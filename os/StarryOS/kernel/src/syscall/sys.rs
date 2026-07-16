@@ -999,7 +999,7 @@ pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResul
 
 #[cfg(target_arch = "riscv64")]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern)]
+#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct RiscvHwprobe {
     key: i64,
     value: u64,
@@ -1023,8 +1023,9 @@ pub fn sys_riscv_hwprobe(
         return Err(AxError::InvalidInput);
     }
 
-    let pairs_ptr = UserPtr::<RiscvHwprobe>::from(pairs.cast());
-    let mut pairs = pairs_ptr.read_slice(pair_count)?;
+    let input_pairs = crate::mm::UserConstPtr::<RiscvHwprobe>::from(pairs.cast_const().cast());
+    let output_pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast());
+    let mut pairs = input_pairs.read_slice(pair_count)?;
     for pair in &mut pairs {
         if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
             pair.value = value;
@@ -1033,7 +1034,7 @@ pub fn sys_riscv_hwprobe(
             pair.value = 0;
         }
     }
-    pairs_ptr.write_slice(&pairs)?;
+    output_pairs.write_slice(&pairs)?;
 
     Ok(0)
 }
