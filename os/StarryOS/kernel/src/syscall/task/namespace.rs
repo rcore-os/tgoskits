@@ -38,6 +38,10 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
     let want_ns = flags & CLONE_NEWNS != 0;
     let want_fs = flags & CLONE_FS != 0;
 
+    if want_ns && !curr.as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
     if flags & CLONE_FILES != 0 {
         let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
         curr.as_thread().with_current_scope_mut(|scope| {
