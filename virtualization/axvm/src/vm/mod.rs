@@ -1046,29 +1046,38 @@ impl AxVM {
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
     ) -> AxVmResult<&[u8]> {
-        self.alloc_memory_region_with_flags(
+        self.alloc_owned_memory_region_with_flags(
             layout,
             gpa,
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+            VmMemoryBacking::Allocated,
         )
     }
 
-    fn alloc_memory_region_with_flags(
+    fn alloc_owned_memory_region_with_flags(
         &self,
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
         flags: MappingFlags,
+        backing: VmMemoryBacking,
     ) -> AxVmResult<&[u8]> {
-        if layout.size() == 0 {
-            return ax_err!(InvalidInput, "guest memory region must not be empty");
+        let valid_backing = match backing {
+            VmMemoryBacking::Allocated => true,
+            VmMemoryBacking::IdentityAllocated => gpa.is_none(),
+            _ => false,
+        };
+        if layout.size() == 0 || !valid_backing {
+            return ax_err!(InvalidInput, "invalid VM-owned memory allocation");
         }
 
+        // SAFETY: `layout` was checked above and the returned allocation is tracked until VM drop.
         let hva = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if hva.is_null() {
             return Err(AxVmError::OutOfMemory {
-                operation: "allocate IVC channel",
+                operation: "allocate VM memory region",
             });
         }
+        // SAFETY: `hva` points to `layout.size()` initialized bytes owned by this VM.
         let s = unsafe { core::slice::from_raw_parts_mut(hva, layout.size()) };
         let hva = HostVirtAddr::from_mut_ptr_of(hva);
 
@@ -1087,11 +1096,12 @@ impl AxVM {
                 hpa,
                 layout,
                 flags,
-                backing: VmMemoryBacking::Allocated,
+                backing,
                 needs_dealloc: true, // This region was allocated and needs to be freed
             });
             Ok(())
         }) {
+            // SAFETY: the mapping failed, so this function still exclusively owns the allocation.
             unsafe {
                 alloc::alloc::dealloc(hva.as_mut_ptr(), layout);
             }

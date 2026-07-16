@@ -51,7 +51,7 @@ impl ResourceAllocators {
         reserve_occupied_mmio(profile, request, snapshot, mmio_pool, &mut mmio)?;
         reserve_occupied_interrupts(profile, request, snapshot, &mut interrupts)?;
 
-        let pio = profile
+        let mut pio = profile
             .pio_pool()
             .map(|pool| AddressAllocator::new(u64::from(pool.base()), u64::from(pool.size())))
             .transpose()
@@ -60,6 +60,9 @@ impl ResourceAllocators {
                 owner: "machine profile".into(),
                 source,
             })?;
+        if let (Some(pool), Some(allocator)) = (profile.pio_pool(), pio.as_mut()) {
+            reserve_occupied_pio(request, snapshot, pool, allocator)?;
+        }
 
         Ok(Self {
             mmio,
@@ -275,6 +278,34 @@ fn reserve_occupied_interrupts(
     Ok(())
 }
 
+fn reserve_occupied_pio(
+    request: &VmMachineRequest,
+    snapshot: &HostPlatformSnapshot,
+    pool: IoPortRange,
+    allocator: &mut AddressAllocator,
+) -> MachinePlanResult<()> {
+    if request.mode() != VmMachineMode::Passthrough {
+        return Ok(());
+    }
+    let pool = AddressRange::new(u64::from(pool.base()), u64::from(pool.size()))?;
+    let reservations = snapshot
+        .devices()
+        .iter()
+        .flat_map(|device| device.pio())
+        .map(|range| AddressRange::new(u64::from(range.base()), u64::from(range.size())))
+        .collect::<MachinePlanResult<Vec<_>>>()?;
+    for reservation in super::mapping::merge_ranges(reservations) {
+        reserve_pool_range(
+            allocator,
+            pool,
+            reservation,
+            "reserved PIO",
+            "host platform",
+        )?;
+    }
+    Ok(())
+}
+
 fn resolve_template_pio(
     template: &HostDeviceDescriptor,
     index: usize,
@@ -342,21 +373,48 @@ fn reserve_mmio(
     pool: AddressRange,
     reservation: AddressRange,
 ) -> MachinePlanResult<()> {
+    reserve_pool_range(
+        allocator,
+        pool,
+        reservation,
+        "reserved MMIO",
+        "machine profile",
+    )
+}
+
+fn reserve_pool_range(
+    allocator: &mut AddressAllocator,
+    pool: AddressRange,
+    reservation: AddressRange,
+    resource: &'static str,
+    owner: &'static str,
+) -> MachinePlanResult<()> {
     let Some(reservation) = pool.intersection(reservation) else {
         return Ok(());
     };
-    allocator
-        .allocate(
-            reservation.size(),
-            1,
-            AllocPolicy::ExactMatch(reservation.base()),
-        )
-        .map(|_| ())
+    // vm-allocator's ExactMatch lookup probes `[start, start + 1]`, so the final byte of a
+    // pool cannot be found that way. LastMatch is exact for this one-byte boundary case; the
+    // returned range is still checked below before it is accepted.
+    let policy = if reservation.base() == allocator.end() && reservation.size() == 1 {
+        AllocPolicy::LastMatch
+    } else {
+        AllocPolicy::ExactMatch(reservation.base())
+    };
+    let allocated = allocator
+        .allocate(reservation.size(), 1, policy)
         .map_err(|source| MachinePlanError::ResourceAllocation {
-            resource: "reserved MMIO",
-            owner: "machine profile".into(),
+            resource,
+            owner: owner.into(),
             source,
-        })
+        })?;
+    if allocated.start() != reservation.base() || allocated.len() != reservation.size() {
+        return Err(MachinePlanError::ResourceAllocation {
+            resource,
+            owner: owner.into(),
+            source: vm_allocator::Error::ResourceNotAvailable,
+        });
+    }
+    Ok(())
 }
 
 fn reserve_interrupt(allocator: &mut AddressAllocator, interrupt: u32) -> MachinePlanResult<()> {

@@ -469,24 +469,95 @@ impl AxVMCrateConfig {
                 });
             }
         }
-        for region in &self.memory.regions {
-            if region.size == 0 || region.guest_base.checked_add(region.size).is_none() {
-                return Err(AxVmConfigError::InvalidMemoryRegion {
-                    guest_base: region.guest_base,
-                    size: region.size,
-                });
-            }
-            if let MemoryBackingConfig::Host { host_base }
-            | MemoryBackingConfig::Shared { host_base } = region.backing
-                && host_base.checked_add(region.size).is_none()
-            {
-                return Err(AxVmConfigError::InvalidMemoryBacking {
-                    host_base,
-                    size: region.size,
+        validate_memory_regions(&self.memory.regions, self.machine.mode(), BUILD_TARGET_ARCH)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ValidatedGuestMemoryRange {
+    guest_base: u64,
+    size: u64,
+    end: u64,
+}
+
+fn validate_memory_regions(
+    regions: &[MemoryRegionConfig],
+    mode: VmMachineMode,
+    arch: &str,
+) -> AxVmConfigResult {
+    let ranges = regions
+        .iter()
+        .map(|region| validate_memory_region(region, mode, arch))
+        .collect::<AxVmConfigResult<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    for (index, first) in ranges.iter().enumerate() {
+        for second in &ranges[index + 1..] {
+            if first.overlaps(*second) {
+                return Err(AxVmConfigError::OverlappingMemoryRegions {
+                    first_guest_base: first.guest_base,
+                    first_size: first.size,
+                    second_guest_base: second.guest_base,
+                    second_size: second.size,
                 });
             }
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+fn validate_memory_region(
+    region: &MemoryRegionConfig,
+    mode: VmMachineMode,
+    arch: &str,
+) -> AxVmConfigResult<Option<ValidatedGuestMemoryRange>> {
+    let Some(end) = region.guest_base.checked_add(region.size) else {
+        return Err(AxVmConfigError::InvalidMemoryRegion {
+            guest_base: region.guest_base,
+            size: region.size,
+        });
+    };
+    if region.size == 0 {
+        return Err(AxVmConfigError::InvalidMemoryRegion {
+            guest_base: region.guest_base,
+            size: region.size,
+        });
+    }
+    if matches!(region.backing, MemoryBackingConfig::IdentityAllocate) {
+        if region.guest_base != 0 {
+            return Err(AxVmConfigError::InvalidIdentityAllocatedMemoryBase {
+                guest_base: region.guest_base,
+            });
+        }
+        if arch != "x86_64" || mode != VmMachineMode::Passthrough {
+            return Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory {
+                arch: String::from(arch),
+                mode,
+            });
+        }
+        return Ok(None);
+    }
+    if let MemoryBackingConfig::Host { host_base } | MemoryBackingConfig::Shared { host_base } =
+        region.backing
+        && host_base.checked_add(region.size).is_none()
+    {
+        return Err(AxVmConfigError::InvalidMemoryBacking {
+            host_base,
+            size: region.size,
+        });
+    }
+    Ok(Some(ValidatedGuestMemoryRange {
+        guest_base: region.guest_base,
+        size: region.size,
+        end,
+    }))
+}
+
+impl ValidatedGuestMemoryRange {
+    fn overlaps(self, other: Self) -> bool {
+        self.guest_base < other.end && other.guest_base < self.end
     }
 }
 

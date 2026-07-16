@@ -23,18 +23,6 @@ size = 0x100000000
 permissions = "rwx"
 backing = { kind = "host", host_base = 0x2040000000 }
 
-[[memory.regions]]
-guest_base = 0x2040000000
-size = 0x100000000
-permissions = "rwx"
-backing = { kind = "host", host_base = 0x2040000000 }
-
-[[memory.regions]]
-guest_base = 0x2040000000
-size = 0x80000000
-permissions = "rwx"
-backing = { kind = "host", host_base = 0x2040000000 }
-
 [devices]
 disable_defaults = []
 deny = []

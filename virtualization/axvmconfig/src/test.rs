@@ -87,6 +87,82 @@ fn rejects_overflowing_explicit_host_backing() {
 }
 
 #[test]
+fn rejects_overlapping_guest_memory_regions() {
+    let invalid = MINIMAL_CONFIG.replace(
+        "[devices]\n",
+        r#"[[memory.regions]]
+guest_base = 0x8fff_f000
+size = 0x2000
+permissions = "rw"
+backing = { kind = "allocate" }
+
+[devices]
+"#,
+    );
+
+    assert!(matches!(
+        AxVMCrateConfig::from_toml(&invalid),
+        Err(AxVmConfigError::OverlappingMemoryRegions { .. })
+    ));
+}
+
+#[test]
+fn identity_allocated_passthrough_memory_may_overlap_a_fixed_low_scratch_range() {
+    let regions = [
+        MemoryRegionConfig {
+            guest_base: 0,
+            size: 0x800_0000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::IdentityAllocate,
+        },
+        MemoryRegionConfig {
+            guest_base: 0,
+            size: 0x10_0000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::Allocate,
+        },
+    ];
+
+    validate_memory_regions(&regions, VmMachineMode::Passthrough, "x86_64").unwrap();
+}
+
+#[test]
+fn identity_allocated_memory_rejects_a_fixed_guest_base() {
+    let region = MemoryRegionConfig {
+        guest_base: 0x10_0000,
+        size: 0x800_0000,
+        permissions: MemoryPermissions::default(),
+        backing: MemoryBackingConfig::IdentityAllocate,
+    };
+
+    assert!(matches!(
+        validate_memory_regions(&[region], VmMachineMode::Passthrough, "x86_64"),
+        Err(AxVmConfigError::InvalidIdentityAllocatedMemoryBase {
+            guest_base: 0x10_0000
+        })
+    ));
+}
+
+#[test]
+fn identity_allocated_memory_is_x86_passthrough_only() {
+    let region = MemoryRegionConfig {
+        guest_base: 0,
+        size: 0x800_0000,
+        permissions: MemoryPermissions::default(),
+        backing: MemoryBackingConfig::IdentityAllocate,
+    };
+
+    assert!(matches!(
+        validate_memory_regions(&[region.clone()], VmMachineMode::Virtual, "x86_64"),
+        Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
+    ));
+    assert!(matches!(
+        validate_memory_regions(&[region], VmMachineMode::Passthrough, "aarch64"),
+        Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
+    ));
+}
+
+#[test]
 fn only_the_optional_console_default_can_be_disabled() {
     let invalid = MINIMAL_CONFIG.replace(
         "disable_defaults = []",

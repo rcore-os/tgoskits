@@ -60,9 +60,14 @@ backing = { kind = "host", host_base = 0x8000_0000 }
 `MemoryBackingConfig` variant 为：
 
 - `allocate`：分配 VM-owned、清零内存；
+- `identity-allocate`：仅用于 x86_64 Passthrough VM，动态分配 VM-owned 内存并令
+  GPA 等于 HPA，以支持无 IOMMU 的设备 DMA；配置中的 `guest_base` 必须为零占位符；
 - `host`：显式映射并交接 host physical backing；
 - `shared`：显式共享 backing，不取得设备 ownership；
 - `reserved`：保留由平台策略拥有的 identity range。
+
+所有固定 GPA 区域必须互不重叠；`identity-allocate` 的最终 GPA 由运行时分配结果决定，
+因此不参与静态区间重叠判断，运行时映射仍会检查冲突并事务回滚。
 
 ## DevicesConfig
 

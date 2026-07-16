@@ -33,5 +33,5 @@ deny = []
 [[devices.virtual]]
 id = "x86-com1"
 model = "x86-com1"
-source = { kind = "allocate" }
+source = { kind = "auto" }
 backend = { kind = "host-console", rx = "exclusive", tx = "shared" }

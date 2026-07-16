@@ -517,7 +517,7 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
         configured.push(axvmconfig::VirtualDeviceConfig {
             id: "console0".into(),
             model: "x86-com1".into(),
-            source: axvmconfig::VirtualDeviceSourceConfig::Allocate,
+            source: axvmconfig::VirtualDeviceSourceConfig::Auto,
             backend: axvmconfig::VirtualDeviceBackendConfig::HostConsole {
                 rx: axvmconfig::ConsoleRxMode::Exclusive,
                 tx: axvmconfig::ConsoleTxMode::Shared,
@@ -536,6 +536,7 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
                 DeviceModelId::new(device.model)?,
                 axvm::x86_com1_device_requirements()?,
             )
+            .with_compatible("PNP0501")
             .with_source(machine_device_source(device.source)?)
             .with_backend(machine_device_backend(device.backend)))
         })
@@ -638,6 +639,7 @@ fn runtime_memory_region(region: &MemoryRegionConfig) -> Result<VmMemoryConfig> 
     }
     let backing = match region.backing {
         MemoryBackingConfig::Allocate => VmMemoryBacking::Allocated,
+        MemoryBackingConfig::IdentityAllocate => VmMemoryBacking::IdentityAllocated,
         MemoryBackingConfig::Host { host_base } => VmMemoryBacking::Host {
             host_base: usize::try_from(host_base)
                 .context("host memory base exceeds usize")?
@@ -851,5 +853,66 @@ mod tests {
             runtime.backing().host_base(),
             Some(axvm_types::HostPhysAddr::from(0xa000_0000))
         );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn default_x86_console_replaces_the_host_com1_template() {
+        use axvm::machine::{
+            HostDeviceDescriptor, HostDeviceOwnership, HostInterruptResource, IoPortRange,
+        };
+        use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
+
+        let config = AxVMCrateConfig::from_toml(
+            r#"
+[machine]
+mode = "passthrough"
+firmware = "acpi"
+
+[base]
+id = 1
+name = "x86-default-console"
+cpu_num = 1
+
+[kernel]
+entry_point = 0x20_0000
+kernel_path = "/guest/kernel"
+kernel_load_addr = 0x20_0000
+image_location = "fs"
+
+[[memory.regions]]
+guest_base = 0
+size = 0x10_0000
+permissions = "rwx"
+backing = { kind = "allocate" }
+
+[devices]
+disable_defaults = []
+deny = []
+"#,
+        )
+        .unwrap();
+        let host_com1 = HostDeviceId::new("\\_SB.COM1").unwrap();
+        let snapshot = HostPlatformSnapshot::new(1).with_device(
+            HostDeviceDescriptor::new(host_com1.clone(), HostDeviceOwnership::Assignable)
+                .with_compatible("PNP0501")
+                .with_pio(IoPortRange::new(0x3f8, 8).unwrap())
+                .with_interrupt(HostInterruptResource::controller_input(
+                    4,
+                    InterruptTriggerMode::EdgeTriggered,
+                )),
+        );
+        let mut request =
+            VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi);
+        for device in configured_virtual_devices(&config).unwrap() {
+            request = request.with_virtual_device(device);
+        }
+
+        let plan = VmMachinePlanner::new(axvm::standard_machine_profile().unwrap())
+            .plan(&request, &snapshot)
+            .unwrap();
+
+        assert_eq!(plan.virtual_devices()[0].host_template(), Some(&host_com1));
+        assert!(plan.assigned_host_pio().next().is_none());
     }
 }

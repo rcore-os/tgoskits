@@ -22,7 +22,7 @@ cmdline = "console=ttyS0 root=/dev/vda ro rootflags=noload devtmpfs.mount=1 init
 guest_base = 0x0
 size = 0x8000000
 permissions = "rwx"
-backing = { kind = "host", host_base = 0x0 }
+backing = { kind = "identity-allocate" }
 
 [[memory.regions]]
 guest_base = 0x0
@@ -37,5 +37,5 @@ deny = []
 [[devices.virtual]]
 id = "x86-com1"
 model = "x86-com1"
-source = { kind = "allocate" }
+source = { kind = "auto" }
 backend = { kind = "host-console", rx = "exclusive", tx = "shared" }

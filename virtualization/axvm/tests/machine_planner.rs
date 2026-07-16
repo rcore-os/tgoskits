@@ -100,6 +100,97 @@ fn x86_standard_profile_allocates_com1_ports_and_irq() {
     assert_eq!(console.interrupts()[0].id(), 4);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn passthrough_auto_com1_replaces_host_serial_resources() {
+    let host_com1 = HostDeviceId::new("\\_SB.COM1").unwrap();
+    let snapshot = HostPlatformSnapshot::new(1).with_device(
+        HostDeviceDescriptor::new(host_com1.clone(), HostDeviceOwnership::Assignable)
+            .with_compatible("PNP0501")
+            .with_pio(IoPortRange::new(0x3f8, 8).unwrap())
+            .with_interrupt(HostInterruptResource::controller_input(
+                4,
+                InterruptTriggerMode::EdgeTriggered,
+            )),
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi)
+        .with_virtual_device(
+            VirtualDeviceDescriptor::new(
+                DeviceInstanceId::new("console0").unwrap(),
+                DeviceModelId::new("x86-com1").unwrap(),
+                axvm::x86_com1_device_requirements().unwrap(),
+            )
+            .with_compatible("PNP0501"),
+        );
+
+    let plan = VmMachinePlanner::new(axvm::standard_machine_profile().unwrap())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(plan.virtual_devices()[0].host_template(), Some(&host_com1));
+    assert_eq!(
+        plan.host_devices()[0].disposition(),
+        axvm::machine::DeviceDisposition::VirtualReplacement
+    );
+    assert!(plan.assigned_host_pio().next().is_none());
+}
+
+#[test]
+fn passthrough_dynamic_pio_allocation_avoids_host_ports() {
+    let profile = MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 4..=23)
+        .unwrap()
+        .with_pio_pool(IoPortRange::new(0x3f8, 8).unwrap());
+    let snapshot = HostPlatformSnapshot::new(1).with_device(
+        HostDeviceDescriptor::new(
+            HostDeviceId::new("acpi:host-com1").unwrap(),
+            HostDeviceOwnership::Assignable,
+        )
+        .with_pio(IoPortRange::new(0x3f8, 8).unwrap()),
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi)
+        .with_virtual_device(
+            VirtualDeviceDescriptor::new(
+                DeviceInstanceId::new("allocated-console").unwrap(),
+                DeviceModelId::new("test-pio-device").unwrap(),
+                DeviceRequirements::new()
+                    .with_pio(ResourceSlot::new("registers").unwrap(), 8, 8)
+                    .unwrap(),
+            )
+            .with_source(VirtualDeviceSource::Allocate),
+        );
+
+    let error = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        MachinePlanError::ResourceAllocation {
+            resource: "PIO",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn passthrough_reserves_host_pio_at_the_inclusive_pool_end() {
+    let profile = MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 4..=23)
+        .unwrap()
+        .with_pio_pool(IoPortRange::new(0x3f8, 8).unwrap());
+    let snapshot = HostPlatformSnapshot::new(1).with_device(
+        HostDeviceDescriptor::new(
+            HostDeviceId::new("acpi:last-pio").unwrap(),
+            HostDeviceOwnership::HostExclusive,
+        )
+        .with_pio(IoPortRange::new(0x3ff, 1).unwrap()),
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi);
+
+    VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+}
+
 #[test]
 fn passthrough_reserves_interrupt_at_inclusive_pool_end() {
     let profile =

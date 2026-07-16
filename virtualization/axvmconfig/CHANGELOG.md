@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[[memory.regions]]`, `[devices]`, and `[[devices.virtual]]` tables.
 - Normalize optional passthrough-only `interrupts_passthrough` into the typed
   mediated/direct delivery policy immediately after parsing.
+- Validate fixed guest-memory ranges for overlap and preserve x86 DMA-capable
+  VM-owned RAM through the explicit passthrough-only `identity-allocate`
+  backing policy.
 
 ### Removed
 

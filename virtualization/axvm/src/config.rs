@@ -76,6 +76,8 @@ pub struct VMImageConfig {
 pub enum VmMemoryBacking {
     /// Zeroed memory allocated and owned by this VM.
     Allocated,
+    /// VM-owned memory whose guest and host physical addresses are identical.
+    IdentityAllocated,
     /// A host physical range exclusively assigned to this VM.
     Host { host_base: HostPhysAddr },
     /// A host physical range intentionally shared with another owner.
@@ -103,6 +105,7 @@ impl VmMemoryConfig {
     ) -> AxVmResult<Self> {
         if size == 0
             || guest_base.as_usize().checked_add(size).is_none()
+            || matches!(backing, VmMemoryBacking::IdentityAllocated) && guest_base.as_usize() != 0
             || backing
                 .host_base()
                 .is_some_and(|base| base.as_usize().checked_add(size).is_none())
@@ -148,7 +151,7 @@ impl VmMemoryBacking {
     /// Returns the first host physical address for externally backed memory.
     pub const fn host_base(self) -> Option<HostPhysAddr> {
         match self {
-            Self::Allocated => None,
+            Self::Allocated | Self::IdentityAllocated => None,
             Self::Host { host_base }
             | Self::Shared { host_base }
             | Self::Reserved { host_base } => Some(host_base),
@@ -157,7 +160,7 @@ impl VmMemoryBacking {
 
     /// Returns whether AxVM must release the backing allocation on drop.
     pub const fn is_allocated(self) -> bool {
-        matches!(self, Self::Allocated)
+        matches!(self, Self::Allocated | Self::IdentityAllocated)
     }
 }
 

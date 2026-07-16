@@ -1,7 +1,11 @@
 //! AxVM-facing adapters for OS-neutral x86 virtual interrupt-controller devices.
 
-use alloc::{boxed::Box, string::String, sync::Arc};
-use core::{any::Any, marker::PhantomData};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use core::{
+    any::Any,
+    marker::PhantomData,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, IrqLine, IrqResult, Resource,
@@ -46,7 +50,7 @@ pub trait X86PitDeviceOps: Send + Sync {
 
 /// Type-specific COM1 capability used by the x86 interrupt runtime.
 pub trait X86SerialDeviceOps: Send + Sync {
-    /// Polls host input and updates the COM1 level interrupt line.
+    /// Polls host input and updates the configured COM1 interrupt line.
     fn service_irq(&self) -> IrqResult<bool>;
 }
 
@@ -137,7 +141,7 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
     /// Creates a PIT adapter.
     pub fn new() -> Self {
         let inner = EmulatedPit::<H>::new();
-        let resources = port_resources(inner.address_range());
+        let resources = port_resources(inner.port_ranges());
         Self {
             inner,
             irq: None,
@@ -220,6 +224,7 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
 pub struct X86SerialPortDevice {
     inner: EmulatedSerialPort,
     irq: Option<IrqLine>,
+    edge_asserted: AtomicBool,
     name: String,
     resources: Box<[Resource]>,
 }
@@ -232,10 +237,11 @@ impl X86SerialPortDevice {
     }
 
     fn from_inner(inner: EmulatedSerialPort) -> Self {
-        let resources = port_resources(inner.address_range());
+        let resources = port_resources([inner.address_range()]);
         Self {
             inner,
             irq: None,
+            edge_asserted: AtomicBool::new(false),
             name: String::from("x86-serial-com1"),
             resources,
         }
@@ -258,13 +264,41 @@ impl X86SerialDeviceOps for X86SerialPortDevice {
     fn service_irq(&self) -> IrqResult<bool> {
         let asserted = self.inner.poll_irq();
         if let Some(irq) = &self.irq {
-            if asserted {
-                irq.raise()?;
-            } else {
-                irq.lower()?;
+            match irq.trigger() {
+                axvm_types::InterruptTriggerMode::LevelTriggered => {
+                    if asserted {
+                        irq.raise()?;
+                    } else {
+                        irq.lower()?;
+                    }
+                }
+                axvm_types::InterruptTriggerMode::EdgeTriggered => {
+                    self.update_edge_irq(irq, asserted)?;
+                }
             }
         }
         Ok(asserted)
+    }
+}
+
+impl X86SerialPortDevice {
+    fn update_edge_irq(&self, irq: &IrqLine, asserted: bool) -> IrqResult {
+        if !asserted {
+            self.edge_asserted.store(false, Ordering::Release);
+            return Ok(());
+        }
+        if self
+            .edge_asserted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Err(error) = irq.pulse() {
+            self.edge_asserted.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
@@ -286,7 +320,7 @@ impl Device for X86SerialPortDevice {
                 .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?,
         );
         let width = x86_access_width(access.width);
-        if access.is_read {
+        let response = if access.is_read {
             self.inner
                 .handle_read(port, width)
                 .map(|value| BusResponse::Read {
@@ -298,7 +332,9 @@ impl Device for X86SerialPortDevice {
                 .handle_write(port, width, access.data as usize)
                 .map(|_| BusResponse::Write)
                 .map_err(|_| DeviceError::Internal)
-        }
+        }?;
+        self.service_irq().map_err(|_| DeviceError::Internal)?;
+        Ok(response)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -321,12 +357,18 @@ fn mmio_resources(range: X86GuestPhysAddrRange) -> Box<[Resource]> {
     alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice()
 }
 
-fn port_resources(range: X86PortRange) -> Box<[Resource]> {
-    let base = range.start.number();
-    let size = range
-        .end
-        .number()
-        .saturating_sub(range.start.number())
-        .saturating_add(1);
-    alloc::vec![Resource::PortRange { base, size }].into_boxed_slice()
+fn port_resources<const N: usize>(ranges: [X86PortRange; N]) -> Box<[Resource]> {
+    ranges
+        .into_iter()
+        .map(|range| {
+            let base = range.start.number();
+            let size = range
+                .end
+                .number()
+                .saturating_sub(range.start.number())
+                .saturating_add(1);
+            Resource::PortRange { base, size }
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
 }

@@ -25,7 +25,7 @@ pub fn x86_com1_device_requirements() -> DeviceManagerResult<DeviceRequirements>
         .with_pio(ResourceSlot::new(REGISTERS_SLOT)?, COM1_SIZE, COM1_SIZE)?
         .with_wired_irq(
             ResourceSlot::new(IRQ_SLOT)?,
-            InterruptTriggerMode::LevelTriggered,
+            InterruptTriggerMode::EdgeTriggered,
             InterruptSourceKind::Software,
         )
 }

@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add two-phase `VirtualDeviceModel` construction with named resolved resources
   and optional `std` support for host-side tests.
 
+### Fixed
+
+- Model COM1 as an edge-triggered ISA interrupt, rearm it after guest register
+  accesses, and expose only the PIT's discrete I/O-port ranges.
+
 ### Removed
 
 - Remove the configuration-driven `DeviceFactory`, `IrqResolver`, manual vector

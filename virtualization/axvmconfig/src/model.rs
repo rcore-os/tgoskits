@@ -97,6 +97,11 @@ pub enum MemoryBackingConfig {
     /// Allocate zeroed VM-owned memory.
     #[default]
     Allocate,
+    /// Allocate zeroed VM-owned memory and expose it at an identical guest address.
+    ///
+    /// This placement supports DMA from assigned x86 devices without an IOMMU.
+    /// `guest_base` must be zero because the allocator determines the final address.
+    IdentityAllocate,
     /// Map an explicitly assigned host physical range.
     Host {
         /// First host physical address backing the region.

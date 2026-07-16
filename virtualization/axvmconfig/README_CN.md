@@ -15,7 +15,9 @@
 
 # 介绍
 
-`axvmconfig` 提供了 A simple VM configuration tool for ArceOS-Hypervisor。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`axvmconfig` 严格解析 Axvisor 的 VM 机型请求。公开配置使用 `[machine]`、
+`[[memory.regions]]`、`[devices]` 和 `[[devices.virtual]]`；未知字段和已删除的旧字段会
+直接报错。
 
 ## 快速开始
 
@@ -51,13 +53,26 @@ cargo doc --no-deps
 
 ### 示例
 
-```rust
-use axvmconfig as _;
+```toml
+[machine]
+mode = "virtual"
+firmware = "auto"
 
-fn main() {
-    // 在这里将 `axvmconfig` 集成到你的项目中。
-}
+[[memory.regions]]
+guest_base = 0x80000000
+size = 0x40000000
+permissions = "rwx"
+backing = { kind = "allocate" }
+
+[devices]
+disable_defaults = []
+deny = []
 ```
+
+内存 backing 支持 `allocate`、`identity-allocate`、`host`、`shared` 和 `reserved`。
+`identity-allocate` 仅允许用于 x86_64 Passthrough VM：它分配清零的 VM-owned RAM，
+并以分配所得 HPA 作为 GPA，供无 IOMMU 的透传设备 DMA；因此配置里的 `guest_base`
+必须写成零占位符。所有固定 GPA 内存区域都必须互不重叠。
 
 ### 文档
 
