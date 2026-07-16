@@ -197,19 +197,20 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
 }
 
 fn lower_forwarded_level_for_vector(devices: &axdevice::AxVmDevices, vector: u8) {
-    for (gsi, forwarding_line) in IOAPIC_FORWARD_LINES.iter().enumerate() {
-        let line = forwarding_line.lock().clone();
-        let Some(line) = line else {
-            continue;
-        };
-        if line.trigger() != InterruptTriggerMode::LevelTriggered
-            || devices.x86_ioapic_vector_for_gsi(gsi) != Some(vector)
-        {
-            continue;
-        }
-        if let Err(error) = line.lower() {
-            warn!("failed to lower forwarded x86 GSI {gsi} after EOI {vector:#x}: {error}");
-        }
+    let Some(gsi) = devices.x86_ioapic_in_service_gsi_for_vector(vector) else {
+        return;
+    };
+    let Some(line) = IOAPIC_FORWARD_LINES
+        .get(gsi)
+        .and_then(|forwarding_line| forwarding_line.lock().clone())
+    else {
+        return;
+    };
+    if line.trigger() != InterruptTriggerMode::LevelTriggered {
+        return;
+    }
+    if let Err(error) = line.lower() {
+        warn!("failed to lower forwarded x86 GSI {gsi} after EOI {vector:#x}: {error}");
     }
 }
 

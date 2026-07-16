@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Model COM1 as an edge-triggered ISA interrupt, rearm it after guest register
   accesses, and expose only the PIT's discrete I/O-port ranges.
+- Expose the IOAPIC's stable in-service GSI identity to interrupt-topology
+  adapters even when the guest temporarily masks the redirection entry.
 
 ### Removed
 

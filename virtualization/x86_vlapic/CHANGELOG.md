@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the PIT timer and speaker-control ports as separate resource ranges so
   unrelated host PIO is not claimed by the virtual PIT.
 
+### Fixed
+
+- Preserve a level interrupt's in-service vector and remote-IRR state while
+  the guest masks or reroutes its IOAPIC entry, so the matching EOI can still
+  complete the original delivery.
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.4.19...x86_vlapic-v0.5.0) - 2026-07-10
 
 ### Other

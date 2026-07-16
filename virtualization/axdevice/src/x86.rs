@@ -23,6 +23,9 @@ pub trait X86IoApicDeviceOps: Send + Sync {
     /// Return the guest interrupt vector programmed for a GSI.
     fn vector_for_gsi(&self, gsi: usize) -> Option<u8>;
 
+    /// Return the level-triggered GSI currently awaiting this vector's EOI.
+    fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize>;
+
     /// Assert an IOAPIC GSI and return an interrupt to inject if one is unmasked.
     fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt>;
 
@@ -34,6 +37,9 @@ pub trait X86IoApicDeviceOps: Send + Sync {
 pub trait X86IoApicRuntimeOps: Send + Sync {
     /// Returns the guest vector programmed for a GSI when it is deliverable.
     fn vector_for_gsi(&self, gsi: usize) -> Option<u8>;
+
+    /// Returns the level-triggered GSI currently awaiting this vector's EOI.
+    fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize>;
 
     /// Signals one GSI and queues any resulting local-APIC message.
     fn signal_gsi(&self, gsi: usize) -> DeviceManagerResult<bool>;
@@ -82,6 +88,10 @@ impl X86IoApicDevice {
 impl X86IoApicDeviceOps for X86IoApicDevice {
     fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
         self.inner.vector_for_gsi(gsi)
+    }
+
+    fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize> {
+        self.inner.in_service_gsi_for_vector(vector)
     }
 
     fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {

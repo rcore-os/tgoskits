@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   UARTs, prefer it for virtual-console replacement, and require a reversible
   host capability lease before assigning it as a physical device.
 
+### Fixed
+
+- Deassert a forwarded x86 level source by its in-service IOAPIC identity
+  before processing EOI, allowing physical INTx delivery to rearm after the
+  guest masks or reroutes the entry.
+
 ### Removed
 
 - Remove mutable FDT-driven `AxVMConfig` expansion, legacy device factories,

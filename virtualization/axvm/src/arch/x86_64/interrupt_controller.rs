@@ -169,6 +169,10 @@ impl X86IoApicRuntimeOps for X86InterruptController {
         self.ioapic.vector_for_gsi(gsi)
     }
 
+    fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize> {
+        self.ioapic.in_service_gsi_for_vector(vector)
+    }
+
     fn signal_gsi(&self, gsi: usize) -> DeviceManagerResult<bool> {
         self.signal_input(ControllerInputId::new(gsi))
     }

@@ -641,6 +641,14 @@ impl AxVmDevices {
             .and_then(|ioapic| ioapic.vector_for_gsi(gsi))
     }
 
+    /// Returns the level-triggered GSI currently awaiting this vector's EOI.
+    #[cfg(target_arch = "x86_64")]
+    pub fn x86_ioapic_in_service_gsi_for_vector(&self, vector: u8) -> Option<usize> {
+        self.x86_ioapic
+            .as_ref()
+            .and_then(|ioapic| ioapic.in_service_gsi_for_vector(vector))
+    }
+
     /// Signals an x86 IOAPIC GSI through its registered local-APIC output.
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_signal_gsi(&self, gsi: usize) -> DeviceManagerResult<bool> {
