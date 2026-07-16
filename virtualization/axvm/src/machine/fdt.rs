@@ -398,6 +398,52 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_console_grant_overrides_disabled_firmware_status() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let chosen = fdt.add_node(root, Node::new("chosen"));
+        fdt.node_mut(chosen)
+            .unwrap()
+            .set_property(string_property("stdout-path", "/serial@feb50000:1500000"));
+        let uart = fdt.add_node(root, Node::new("serial@feb50000"));
+        let uart = fdt.node_mut(uart).unwrap();
+        uart.set_property(string_list(
+            "compatible",
+            &["rockchip,rk3588-uart", "snps,dw-apb-uart"],
+        ));
+        uart.set_property(string_property("status", "disabled"));
+
+        let mut snapshot =
+            HostPlatformSnapshot::from_fdt(6, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let console = HostDeviceId::new("/serial@feb50000").unwrap();
+        assert_eq!(
+            snapshot
+                .devices()
+                .iter()
+                .find(|device| device.id() == &console)
+                .unwrap()
+                .ownership(),
+            HostDeviceOwnership::Unrepresentable
+        );
+
+        assert!(snapshot.grant_console_transfer(console.clone()).is_err());
+        snapshot
+            .grant_live_console_transfer(console.clone())
+            .unwrap();
+
+        assert_eq!(
+            snapshot
+                .devices()
+                .iter()
+                .find(|device| device.id() == &console)
+                .unwrap()
+                .ownership(),
+            HostDeviceOwnership::Transferable
+        );
+    }
+
+    #[test]
     fn generic_primecell_device_is_not_treated_as_the_host_console() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();

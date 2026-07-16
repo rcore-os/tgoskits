@@ -33,7 +33,7 @@ pub fn current_host_platform_snapshot()
         bytes,
         crate::machine::FdtInterruptEncoding::ArmGic,
     )?;
-    let console = ax_std::os::arceos::modules::ax_hal::console::device_id()
+    let live_console = ax_std::os::arceos::modules::ax_hal::console::device_id()
         .ok()
         .and_then(|console| {
             snapshot
@@ -41,9 +41,10 @@ pub fn current_host_platform_snapshot()
                 .iter()
                 .find(|device| rdrive::fdt_path_to_device_id(device.id().as_str()) == Some(console))
                 .map(|device| device.id().clone())
-        })
-        .or_else(|| snapshot.console_device().cloned());
-    if let Some(console) = console {
+        });
+    if let Some(console) = live_console {
+        snapshot.grant_live_console_transfer(console)?;
+    } else if let Some(console) = snapshot.console_device().cloned() {
         snapshot.grant_console_transfer(console)?;
     }
     Ok(snapshot)

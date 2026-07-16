@@ -22,6 +22,26 @@ pub enum HostDeviceOwnership {
     Unrepresentable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConsoleTransferAuthority {
+    Firmware,
+    #[cfg(any(target_arch = "aarch64", test))]
+    LivePlatform,
+}
+
+impl ConsoleTransferAuthority {
+    fn accepts(self, ownership: HostDeviceOwnership) -> bool {
+        match self {
+            Self::Firmware => !matches!(
+                ownership,
+                HostDeviceOwnership::Structural | HostDeviceOwnership::Unrepresentable
+            ),
+            #[cfg(any(target_arch = "aarch64", test))]
+            Self::LivePlatform => ownership != HostDeviceOwnership::Structural,
+        }
+    }
+}
+
 /// Whether a firmware dependency is necessary to expose a physical device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostDeviceDependencyKind {
@@ -440,7 +460,29 @@ impl HostPlatformSnapshot {
         Ok(())
     }
 
+    /// Grants transfer of a representable firmware-selected console.
     pub(crate) fn grant_console_transfer(&mut self, device: HostDeviceId) -> MachinePlanResult<()> {
+        self.grant_console_transfer_with_authority(device, ConsoleTransferAuthority::Firmware)
+    }
+
+    /// Applies an authoritative live capability for the active host console.
+    ///
+    /// The live capability intentionally supersedes conservative firmware
+    /// classification, including a stale `status = "disabled"`. A structural
+    /// node is never a transferable device even when firmware references it.
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn grant_live_console_transfer(
+        &mut self,
+        device: HostDeviceId,
+    ) -> MachinePlanResult<()> {
+        self.grant_console_transfer_with_authority(device, ConsoleTransferAuthority::LivePlatform)
+    }
+
+    fn grant_console_transfer_with_authority(
+        &mut self,
+        device: HostDeviceId,
+        authority: ConsoleTransferAuthority,
+    ) -> MachinePlanResult<()> {
         let descriptor = self
             .devices
             .iter_mut()
@@ -450,10 +492,7 @@ impl HostPlatformSnapshot {
                     "transferable host console '{device}' is absent from the platform snapshot"
                 ),
             })?;
-        if matches!(
-            descriptor.ownership(),
-            HostDeviceOwnership::Structural | HostDeviceOwnership::Unrepresentable
-        ) {
+        if !authority.accepts(descriptor.ownership()) {
             return Err(super::MachinePlanError::InvalidFirmware {
                 detail: alloc::format!(
                     "host console '{device}' cannot be transferred from ownership state {:?}",
