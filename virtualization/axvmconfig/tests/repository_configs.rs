@@ -19,6 +19,35 @@ fn every_repository_axvisor_vm_config_uses_the_typed_schema() {
 
 #[cfg(feature = "std")]
 #[test]
+fn direct_interrupt_configs_do_not_request_software_irq_consoles() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let config_root = workspace.join("os/axvisor/configs/vms");
+    let mut configs = Vec::new();
+    collect_toml_files(&config_root, &mut configs);
+
+    for path in configs {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+        if config.machine.interrupt_delivery() != axvm_types::InterruptDelivery::Direct {
+            continue;
+        }
+
+        for device in &config.devices.virtual_devices {
+            assert_ne!(
+                device.model,
+                "x86-com1",
+                "{} requests a software-IRQ console with direct interrupt delivery",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
 fn every_architecture_template_uses_the_typed_schema() {
     let template_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
     let mut templates = Vec::new();
