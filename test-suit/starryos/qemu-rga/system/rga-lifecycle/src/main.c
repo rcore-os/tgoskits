@@ -8,19 +8,25 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /*
- * /dev/rga open-file-description handle-lifetime regressions (no RGA2 hardware needed).
+ * /dev/rga open-file-description (OFD) handle-lifetime regressions (no RGA2 hardware needed).
  *
- * Handles are keyed by process id (tgid), and the shared node reclaims a process's handle
- * table only when its LAST open-file-description closes. These two cases lock that in:
+ * Each open("/dev/rga") gets its own per-open session holding that open's handle table;
+ * dup/fork share the session (same underlying file object) and it is freed only when the
+ * last reference closes. Three cases lock that in:
  *
  *   A. same fd, cross-thread: a handle imported by one thread must resolve (and release)
- *      from a sibling thread sharing the same fd.
- *   B. two independent opens: importing on fd_b then closing fd_a must leave fd_b's handle
- *      valid (before the open-description refcount fix, close(fd_a) wiped the whole
- *      process's handles and fd_b's handle came back EBADF).
+ *      from a sibling thread sharing the same fd (they share one session).
+ *   B. two independent opens: each open is its own session, so importing on fd_b then
+ *      closing fd_a must leave fd_b's handle valid.
+ *   C. fork: a child sharing the inherited fd sees the parent's handle (shared session), and
+ *      the parent's handle stays valid after the child exits (freed only at last close).
+ *      This is the case the process-id (tgid) model got wrong: the child's tgid differs, so
+ *      it could not see the parent's handle.
  *
  * With no RGA2 core on QEMU virt, a resolved handle makes RGA_BLIT_SYNC reach the device
  * check and fail with ENODEV; an unresolved handle short-circuits to EBADF at lookup. So
@@ -198,13 +204,40 @@ int main(void)
 
     close(fd_a); /* close ONE of two open descriptions */
 
-    /* The fix: fd_b's handle must STILL resolve. The buggy version reclaimed the whole
-       process's handles here, so this came back EBADF. */
+    /* fd_a and fd_b are independent opens, hence independent sessions, so closing fd_a
+       cannot touch fd_b's handle. (The earlier process-wide model reclaimed all of a
+       process's handles on any close, which returned EBADF here.) */
     CHECK(blit_with_handle(fd_b, hb) == ENODEV,
           "B: fd_b handle still resolves after closing fd_a (ENODEV, not EBADF)");
 
     close(db);
     close(fd_b);
+
+    /* ---- Regression C: fork shares the per-open session; child exit doesn't free it. ---- */
+    int dc = alloc_dmabuf(heap, 64 * 1024);
+    CHECK(dc >= 0, "C: dma_heap alloc for the fork buffer");
+    uint32_t hc = import_dmabuf(fd, dc);
+    CHECK(hc != 0, "C: parent imported a handle");
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "C: fork");
+    if (pid == 0) {
+        /* Child shares the inherited fd's session, so the parent's handle must resolve.
+           Use _exit so the inherited stdio buffer is not flushed (no duplicate output). */
+        int child_errno = blit_with_handle(fd, hc);
+        _exit(child_errno == ENODEV ? 0 : 1);
+    }
+    int wstatus = 0;
+    CHECK(waitpid(pid, &wstatus, 0) == pid, "C: waitpid child");
+    CHECK(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0,
+          "C: child resolved the parent's handle over fork (shared session)");
+    /* The child closed its inherited fd on exit, but the parent still holds fd, so the
+       session and its handle must survive (freed only at last close). */
+    CHECK(blit_with_handle(fd, hc) == ENODEV,
+          "C: parent handle still valid after child exit (session freed only at last close)");
+    CHECK(release_handle(fd, hc) == 0, "C: parent released the handle");
+    close(dc);
+
     close(heap);
     close(fd);
     TEST_DONE();
