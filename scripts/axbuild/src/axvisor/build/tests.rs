@@ -235,7 +235,7 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_temporarily_defaults_x86_to_vmx_backend() {
+fn load_cargo_config_does_not_select_an_x86_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");
     fs::write(
@@ -249,12 +249,12 @@ log = "Info"
 
     let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
 
-    assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"svm".to_string()));
 }
 
 #[test]
-fn load_cargo_config_preserves_explicit_x86_svm_backend() {
+fn load_cargo_config_forwards_explicit_x86_svm_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64-svm.toml");
     fs::write(

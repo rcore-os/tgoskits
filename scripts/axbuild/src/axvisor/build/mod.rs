@@ -9,7 +9,7 @@ mod tests;
 pub type AxvisorBuildInfo = config::AxvisorBuildInfo;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 pub(crate) use config::AxvisorBoardFile;
 pub use config::{AXVISOR_PACKAGE, AxvisorBoardConfig};
 pub(crate) use load::{
@@ -86,26 +86,6 @@ fn patch_axvisor_cargo_config(
         );
     }
 
-    if request.arch == "x86_64" {
-        let has_vmx = cargo
-            .features
-            .iter()
-            .any(|feature| matches!(feature.as_str(), "vmx" | "axvm/vmx"));
-        let has_svm = cargo
-            .features
-            .iter()
-            .any(|feature| matches!(feature.as_str(), "svm" | "axvm/svm"));
-        match (has_vmx, has_svm) {
-            (true, true) => bail!("x86_64 Axvisor features `vmx` and `svm` are mutually exclusive"),
-            (false, false) => {
-                // Temporary compatibility for the generic x86 QEMU board. The
-                // backend feature will disappear once Axvisor selects the host
-                // virtualization implementation without Cargo feature gates.
-                cargo.features.push("vmx".to_string());
-            }
-            _ => {}
-        }
-    }
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
