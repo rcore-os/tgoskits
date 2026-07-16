@@ -8,8 +8,8 @@
 //!
 //! Resolution order for each blob (first hit wins):
 //!   1. `$AIC8800_FIRMWARE_DIR/<name>` — explicit local cache / offline mirror.
-//!   2. `components/aic8800/firmware/<name>` — the in-tree dir that
-//!      `cargo xtask` populates; used by normal in-repo (incl. offline) builds.
+//!   2. `components/aic8800/firmware/<name>` — optional in-tree cache for
+//!      offline builds.
 //!   3. download from the pinned upstream commit over HTTPS.
 //!
 //! Every blob is verified byte-for-byte against its pinned SHA-256 before being
@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 
 /// Upstream firmware source: the repo referenced by the LicheeRV Nano
 /// buildroot package `aic8800-sdio-firmware`, pinned to a fixed commit.
-/// Keep this manifest in sync with `scripts/axbuild/src/firmware.rs`.
 const FIRMWARE_REPO: &str = "lxowalle/aic8800-sdio-firmware";
 const FIRMWARE_COMMIT: &str = "c56f910044cc854d6c553bcb9a644f3bca5a4c38";
 
@@ -165,7 +164,7 @@ fn main() {
     let env_dir = std::env::var("AIC8800_FIRMWARE_DIR")
         .ok()
         .map(PathBuf::from);
-    // In-tree dir that `cargo xtask` populates (present for in-repo builds).
+    // Optional in-tree cache for offline builds.
     let in_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("firmware");
 
     for file in FIRMWARE_FILES {

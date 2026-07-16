@@ -17,7 +17,8 @@ mod types;
 use compile::{archive_static_lib, compile_dir_c_sources};
 use features::{c_compiler_features, dynamic_pie_for_c_app, map_c_app_features};
 use flags::{CFlagsInput, cflags, write_pthread_mutex_header};
-use libc::{AX_LIBC_PACKAGE, build_axlibc_staticlib};
+pub(crate) use libc::AX_LIBC_PACKAGE;
+use libc::build_axlibc_staticlib;
 use link::{find_link_scripts, libgcc, link_c_app, platform_name};
 use types::sanitize_name;
 pub(crate) use types::{ArceosCBuildInput, ArceosCBuildOutput};
@@ -40,7 +41,7 @@ pub(crate) fn build_c_app(
     cargo.package = AX_LIBC_PACKAGE.to_string();
     cargo.target = request.target.clone();
     cargo.to_bin = false;
-    cargo.features = map_c_app_features(&input.features, &cargo.features);
+    cargo.features = map_c_app_features(&input.features, &cargo.features)?;
     let c_features = c_compiler_features(&cargo.features, &input.features);
     let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
 

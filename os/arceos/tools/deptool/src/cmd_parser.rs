@@ -57,14 +57,13 @@ pub fn parse_cmd() -> Result<Config, &'static str> {
         return Err("target not exist, should be valid arceos crate, module or app");
     }
 
-    let loc;
-    if check_crate_name(&target) {
-        loc = CRATE_ROOT.to_string() + &target;
+    let loc = if check_crate_name(&target) {
+        CRATE_ROOT.to_string() + &target
     } else if check_module_name(&target) {
-        loc = MODULE_ROOT.to_string() + &target;
+        MODULE_ROOT.to_string() + &target
     } else {
-        loc = APP_ROOT.to_string() + &target;
-    }
+        APP_ROOT.to_string() + &target
+    };
     let output_loc = matches.get_one::<String>("save-path").unwrap().to_string();
     Ok(gen_config(is_default, features, format, loc, output_loc))
 }

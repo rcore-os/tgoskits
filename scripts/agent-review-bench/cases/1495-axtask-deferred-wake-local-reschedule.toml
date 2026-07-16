@@ -13,4 +13,3 @@ path = "os/arceos/modules/axtask/src/run_queue.rs"
 line = 1125
 severity = "major"
 description = "owner CPU 清空 deferred wake 时总是调用 kick_remote_cpu(target)。select_wake_run_queue 可能再次选择同一个 owner CPU 作为 target，而这种 self-kick 不会产生作用。因此，可运行任务会丢失原始远端唤醒者提供的 reschedule 通知，并可能在 owner 进入 idle 后一直留在队列中，直到后续 tick 才得到调度。"
-match_if = "评审必须指出：deferred-wake drain 在 target 为当前或 owner CPU 时会丢失必要的调度通知，因为 kick_remote_cpu 对 self-target 无效；并要求显式触发本地 reschedule，或用等价机制保留 handoff 状态。"

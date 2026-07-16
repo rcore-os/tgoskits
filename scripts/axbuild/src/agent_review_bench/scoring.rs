@@ -32,7 +32,7 @@ pub(super) struct GradeOutput {
 #[serde(deny_unknown_fields)]
 pub(super) struct FindingMatch {
     pub(super) expected_id: String,
-    pub(super) finding_index: Option<usize>,
+    pub(super) finding_indices: Vec<usize>,
     pub(super) reason: String,
 }
 
@@ -76,7 +76,14 @@ pub(super) fn score_review(
                 finding_match.expected_id
             );
         }
-        if let Some(index) = finding_match.finding_index {
+        let mut unique_indices = BTreeSet::new();
+        for &index in &finding_match.finding_indices {
+            if !unique_indices.insert(index) {
+                bail!(
+                    "grader returned duplicate review finding index {index} for `{}`",
+                    finding_match.expected_id
+                );
+            }
             review.findings.get(index).with_context(|| {
                 format!(
                     "grader referenced review finding index {index}, but only {} findings exist",
@@ -95,12 +102,12 @@ pub(super) fn score_review(
 
     let matched_indices = matches
         .values()
-        .filter_map(|finding_match| finding_match.finding_index)
+        .flat_map(|finding_match| finding_match.finding_indices.iter().copied())
         .collect::<BTreeSet<_>>();
     Ok(CaseScore {
         caught: matches
             .values()
-            .filter(|finding_match| finding_match.finding_index.is_some())
+            .filter(|finding_match| !finding_match.finding_indices.is_empty())
             .count(),
         expected: case.expected.len(),
         extra_findings: review.findings.len() - matched_indices.len(),
@@ -113,23 +120,27 @@ mod tests {
     use crate::agent_review_bench::cases::{ExpectedFinding, Severity};
 
     #[test]
-    fn scores_caught_missed_and_extra_findings() {
+    fn scores_joint_matches_shared_findings_and_extras() {
         let case = sample_case();
         let review = ReviewOutput {
             summary: "summary".into(),
-            findings: vec![finding("caught"), finding("extra")],
+            findings: vec![
+                finding("first part"),
+                finding("shared part"),
+                finding("extra"),
+            ],
         };
         let grade = GradeOutput {
             matches: vec![
-                finding_match("first", Some(0)),
-                finding_match("second", None),
+                finding_match("first", &[0, 1]),
+                finding_match("second", &[1]),
             ],
         };
 
         assert_eq!(
             score_review(&case, &review, &grade).unwrap(),
             CaseScore {
-                caught: 1,
+                caught: 2,
                 expected: 2,
                 extra_findings: 1,
             }
@@ -137,24 +148,88 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_and_out_of_range_matches() {
+    fn scores_all_missed_and_zero_candidate_reviews() {
+        let case = sample_case();
+        let missed_review = ReviewOutput {
+            summary: "summary".into(),
+            findings: vec![finding("unmatched")],
+        };
+        let missed_grade = GradeOutput {
+            matches: vec![finding_match("first", &[]), finding_match("second", &[])],
+        };
+        assert_eq!(
+            score_review(&case, &missed_review, &missed_grade).unwrap(),
+            CaseScore {
+                caught: 0,
+                expected: 2,
+                extra_findings: 1,
+            }
+        );
+
+        let empty_review = ReviewOutput {
+            summary: "summary".into(),
+            findings: Vec::new(),
+        };
+        assert_eq!(
+            score_review(&case, &empty_review, &missed_grade).unwrap(),
+            CaseScore {
+                caught: 0,
+                expected: 2,
+                extra_findings: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_missing_duplicate_and_invalid_matches() {
         let case = sample_case();
         let review = ReviewOutput {
             summary: "summary".into(),
             findings: vec![finding("caught")],
         };
         let unknown = GradeOutput {
-            matches: vec![finding_match("unknown", Some(0))],
+            matches: vec![finding_match("unknown", &[0])],
         };
         assert!(score_review(&case, &review, &unknown).is_err());
 
-        let out_of_range = GradeOutput {
+        let missing = GradeOutput {
+            matches: vec![finding_match("first", &[0])],
+        };
+        assert!(score_review(&case, &review, &missing).is_err());
+
+        let duplicate_expected = GradeOutput {
             matches: vec![
-                finding_match("first", Some(2)),
-                finding_match("second", None),
+                finding_match("first", &[0]),
+                finding_match("first", &[0]),
+                finding_match("second", &[]),
             ],
         };
+        assert!(score_review(&case, &review, &duplicate_expected).is_err());
+
+        let out_of_range = GradeOutput {
+            matches: vec![finding_match("first", &[2]), finding_match("second", &[])],
+        };
         assert!(score_review(&case, &review, &out_of_range).is_err());
+
+        let duplicate_index = GradeOutput {
+            matches: vec![
+                finding_match("first", &[0, 0]),
+                finding_match("second", &[]),
+            ],
+        };
+        assert!(score_review(&case, &review, &duplicate_index).is_err());
+
+        let empty_reason = GradeOutput {
+            matches: vec![
+                FindingMatch {
+                    expected_id: "first".into(),
+                    finding_indices: vec![0],
+                    reason: " ".into(),
+                },
+                finding_match("second", &[]),
+            ],
+        };
+        assert!(score_review(&case, &review, &empty_reason).is_err());
     }
 
     fn sample_case() -> BenchCase {
@@ -178,7 +253,6 @@ mod tests {
             line: 1,
             severity: Severity::Major,
             description: "description".into(),
-            match_if: "criterion".into(),
         }
     }
 
@@ -192,10 +266,10 @@ mod tests {
         }
     }
 
-    fn finding_match(expected_id: &str, finding_index: Option<usize>) -> FindingMatch {
+    fn finding_match(expected_id: &str, finding_indices: &[usize]) -> FindingMatch {
         FindingMatch {
             expected_id: expected_id.into(),
-            finding_index,
+            finding_indices: finding_indices.to_vec(),
             reason: "reason".into(),
         }
     }

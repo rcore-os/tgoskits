@@ -21,7 +21,8 @@ args = [
     "-device",
     "virtio-tablet-pci",
 ]
-uefi = false
+# This dynamic LoongArch test uses the same UEFI handoff as the Starry kernel test image.
+uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/tty-input-burst.sh"

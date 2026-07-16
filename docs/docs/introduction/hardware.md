@@ -24,7 +24,7 @@ sidebar_label: "环境与平台"
 
 | 属性 | 值 |
 |------|-----|
-| 频道 | `nightly-2026-04-27` |
+| 频道 | `nightly-2026-07-15` |
 | Profile | `minimal` |
 | 组件 | `rust-src`, `llvm-tools`, `rustfmt`, `clippy` |
 

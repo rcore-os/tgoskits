@@ -6,7 +6,7 @@ repo_root="$(cd "$script_dir/../../.." && pwd)"
 
 output_dir="${STARRY_TOOLCHAIN_OVERLAY_DIR:-$repo_root/target/starry-macos-selfbuild/rootfs-build/toolchain-overlay}"
 source_dir="$repo_root"
-rust_toolchain="${RUST_TOOLCHAIN:-nightly-2026-05-28}"
+rust_toolchain="${RUST_TOOLCHAIN:-nightly-2026-07-15}"
 alpine_branch="${ALPINE_BRANCH:-v3.23}"
 alpine_arch="${ALPINE_ARCH:-aarch64}"
 alpine_mirror="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
@@ -32,7 +32,7 @@ Environment:
   RUST_DIST_SERVER     Rust dist server URL (default: https://static.rust-lang.org)
   STARRY_CARGO_REGISTRY_INDEX
                        Optional Cargo registry index URL, e.g. sparse+https://rsproxy.cn/index/
-  RUST_TOOLCHAIN       Rust toolchain date/name (default: nightly-2026-05-28)
+  RUST_TOOLCHAIN       Rust toolchain date/name (default: nightly-2026-07-15)
   BUILD_TARGET         Guest Cargo target to prefetch (default: aarch64-unknown-none-softfloat)
 USAGE
 }

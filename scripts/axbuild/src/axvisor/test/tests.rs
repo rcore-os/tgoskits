@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ostool::run::qemu::QemuConfig;
 use tempfile::tempdir;
 
 use super::*;
@@ -159,6 +160,71 @@ fn checked_in_test_build_vmconfigs_exist() {
     }
 
     assert!(checked > 0);
+}
+
+#[test]
+fn nimbos_uefi_case_uses_uefi_host_boot() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
+    let config: QemuConfig = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+
+    assert!(config.uefi);
+    assert!(config.to_bin);
+}
+
+#[test]
+fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (backend, cpu_features) in [
+        (
+            "vmx",
+            &["+vmx-ept", "+vmx-unrestricted-guest", "+vmx-flexpriority"],
+        ),
+        ("svm", &["+svm", "+npt", "+nrip-save"]),
+    ] {
+        let path = workspace_root.join(format!(
+            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-{backend}.toml"
+        ));
+        let config: QemuConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert!(
+            config.uefi,
+            "{backend} smoke must boot the dynamic x86 host through UEFI"
+        );
+        assert!(
+            config.to_bin,
+            "{backend} smoke must provide a raw BIN for the UEFI ESP"
+        );
+        assert!(
+            !config.args.iter().any(|arg| arg == "-nodefaults"),
+            "{backend} UEFI smoke needs QEMU's default firmware devices"
+        );
+
+        let machine = qemu_argument_value(&config.args, "-machine");
+        assert!(
+            !machine.contains("sata=off") && !machine.contains("i8042=off"),
+            "{backend} UEFI smoke must keep the firmware boot bus available"
+        );
+
+        let cpu = qemu_argument_value(&config.args, "-cpu");
+        assert!(cpu.contains("-la57"));
+        for feature in cpu_features {
+            assert!(
+                cpu.contains(feature),
+                "{backend} smoke must enable the required CPU feature {feature}"
+            );
+        }
+    }
+}
+
+fn qemu_argument_value<'a>(args: &'a [String], option: &str) -> &'a str {
+    let index = args
+        .iter()
+        .position(|arg| arg == option)
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
+    args.get(index + 1)
+        .unwrap_or_else(|| panic!("missing value for QEMU option {option}"))
 }
 
 #[test]

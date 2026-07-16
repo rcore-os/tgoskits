@@ -31,8 +31,9 @@ args = [
     "-device",
     "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
 ]
-uefi = false
-to_bin = false
+# The std/PIC test image must use the x86_64 UEFI handoff instead of direct -kernel loading.
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
     '''

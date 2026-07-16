@@ -4,11 +4,9 @@ use ostool::build::config::Cargo;
 use super::super::{ArgsPerf, PerfCallchain, PerfFormat};
 
 pub(super) fn apply_perf_cargo_features(cargo: &mut Cargo, args: &ArgsPerf) {
-    cargo.features.extend([
-        "ax-driver/virtio-blk".to_string(),
-        "ax-driver/virtio-net".to_string(),
-        "ax-driver/virtio-socket".to_string(),
-    ]);
+    // `starry perf` is an explicit command selection. The package owns the complete feature
+    // preset so axbuild only selects that declared command capability.
+    cargo.features.push("qperf".to_string());
     if args.qperf_metrics {
         cargo.features.push("qperf-metrics".to_string());
     }

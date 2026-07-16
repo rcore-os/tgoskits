@@ -10,7 +10,8 @@ args = [
 ]
 
 timeout = 60
-uefi = false
+# The LoongArch std/PIC axtest image requires the dynamic UEFI handoff.
+uefi = true
 to_bin = true
 success_regex = ["AXTEST_SUITE_OK"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]

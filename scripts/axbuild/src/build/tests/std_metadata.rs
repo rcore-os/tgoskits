@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
+fn std_build_only_propagates_selected_features() {
     let workspace = temp_workspace("std-app", "").unwrap();
     let app_manifest = workspace.join("app/Cargo.toml");
     fs::write(
@@ -12,16 +12,13 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
     )
     .unwrap();
 
-    let metadata = metadata_for_manifest(&workspace.join("Cargo.toml"));
     let mut info = BuildInfo {
         features: vec!["dns".to_string()],
         ..BuildInfo::default()
     };
 
-    info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", &metadata);
-    let mut envs = HashMap::new();
+    info.resolve_std_features();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &[],
         &[
@@ -32,20 +29,11 @@ fn std_build_uses_package_axstd_metadata_for_ax_std_features() {
         ],
     );
 
-    assert_eq!(
-        info.features,
-        vec![
-            "ax-std/dns".to_string(),
-            "ax-std/multitask".to_string(),
-            "ax-std/net".to_string(),
-            "ax-std/std-compat".to_string(),
-        ]
-    );
-    assert!(envs.is_empty());
+    assert_eq!(info.features, vec!["ax-std/dns".to_string()]);
 }
 
 #[test]
-fn std_build_auto_enables_app_arceos_feature_when_declared() {
+fn std_build_does_not_auto_enable_app_arceos_feature() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {
         features: Vec::new(),
@@ -58,16 +46,20 @@ fn std_build_auto_enables_app_arceos_feature_when_declared() {
     )
     .unwrap();
 
-    assert!(cargo.features.contains(&"arceos".to_string()));
+    assert!(!cargo.features.contains(&"arceos".to_string()));
 }
 
 #[test]
-fn std_build_does_not_inject_arceos_feature_when_app_lacks_it() {
-    let mut features = vec!["dns".to_string()];
+fn arceos_test_suite_declares_its_arceos_baseline() {
+    let metadata = repo_metadata();
+    let package = workspace_package(&metadata, "arceos-test-suit").unwrap();
+    let ax_std = package.features.get("ax-std").unwrap();
 
-    inject_arceos_feature_for_std_build(&mut features, &["dns".to_string()]);
-
-    assert_eq!(features, vec!["dns".to_string()]);
+    assert!(
+        ax_std.iter().any(|feature| feature == "ax-std/arceos"),
+        "arceos-test-suit must enable the ax-std/arceos baseline itself instead of relying on \
+         axbuild"
+    );
 }
 
 #[test]
@@ -94,11 +86,11 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
             .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
     );
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
     assert!(cargo.features.contains(&"ax-std/net".to_string()));
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert_eq!(
         cargo.env.get("AX_TARGET"),
         Some(&"aarch64-unknown-none-softfloat".to_string())
@@ -131,8 +123,8 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     );
     assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(
         cargo
             .features

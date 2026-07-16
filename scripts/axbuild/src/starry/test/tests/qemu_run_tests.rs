@@ -26,6 +26,27 @@ fn qemu_case_requirements_default_to_single_cpu() {
 }
 
 #[test]
+fn uefi_qemu_snapshot_keeps_esp_writable() {
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-snapshot".to_string(),
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
+        ],
+        uefi: true,
+        ..Default::default()
+    };
+
+    qemu_test::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+
+    assert!(!qemu.args.iter().any(|arg| arg == "-snapshot"));
+    assert_eq!(
+        qemu.args[1],
+        "id=disk0,if=none,format=raw,file=/tmp/rootfs.img,snapshot=on"
+    );
+}
+
+#[test]
 fn qemu_case_rootfs_uses_drive_file_arg() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
@@ -244,7 +265,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         max_cpu_num: Some(1),
-        ..crate::starry::build::default_starry_build_info_for_target("x86_64-unknown-none")
+        ..crate::starry::build::default_starry_build_info()
     });
 
     let (_group_request, cargo) =
@@ -274,9 +295,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         features: vec!["qemu".to_string()],
-        ..crate::starry::build::default_starry_build_info_for_target(
-            "aarch64-unknown-none-softfloat",
-        )
+        ..crate::starry::build::default_starry_build_info()
     });
 
     let (_group_request, cargo) =

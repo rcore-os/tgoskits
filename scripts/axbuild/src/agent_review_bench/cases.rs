@@ -32,7 +32,6 @@ pub(super) struct ExpectedFinding {
     pub(super) line: usize,
     pub(super) severity: Severity,
     pub(super) description: String,
-    pub(super) match_if: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -226,11 +225,8 @@ fn validate_case_schema(case: &BenchCase) -> anyhow::Result<()> {
         if expected.line == 0 {
             bail!("finding `{}` line must be greater than zero", expected.id);
         }
-        if expected.description.trim().is_empty() || expected.match_if.trim().is_empty() {
-            bail!(
-                "finding `{}` description and match_if must not be empty",
-                expected.id
-            );
+        if expected.description.trim().is_empty() {
+            bail!("finding `{}` description must not be empty", expected.id);
         }
     }
     Ok(())
@@ -410,7 +406,6 @@ mod tests {
                 line: 1,
                 severity: Severity::Major,
                 description: "sample defect".into(),
-                match_if: "reviewer identifies sample defect".into(),
             }],
         }
     }

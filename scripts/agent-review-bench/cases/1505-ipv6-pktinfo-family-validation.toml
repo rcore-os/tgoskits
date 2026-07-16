@@ -13,4 +13,3 @@ path = "os/StarryOS/kernel/src/syscall/net/opt.rs"
 line = 521
 severity = "major"
 description = "新的 IPV6_RECVPKTINFO/IPV6_PKTINFO 快速路径在调用 ensure_ipv6_socket 前直接返回成功。因此，AF_INET 套接字可以成功使用 IPPROTO_IPV6 选项；这与 Linux 以及现有 IPv6 选项路径不一致，后者会对地址族不匹配返回 ENOPROTOOPT。getsockopt 路径存在同样问题。"
-match_if = "评审必须指出：新接受的 IPv6 pktinfo 选项在 set 和/或 get 路径中绕过 IPv6 套接字地址族校验，导致 AF_INET 套接字被错误接受；并要求在成功返回前调用 ensure_ipv6_socket 或执行等价校验。"

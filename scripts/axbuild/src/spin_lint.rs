@@ -677,6 +677,12 @@ checksum = "abc"
     }
 
     #[test]
+    fn pins_spin_to_the_dev_baseline() {
+        assert_eq!(SPIN_VERSION_REQ, "=0.12.2");
+        assert_eq!(SPIN_LOCKFILE_VERSION, "0.12.2");
+    }
+
+    #[test]
     fn accepts_workspace_registry_spin_dependency_without_crates_io_patch() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
