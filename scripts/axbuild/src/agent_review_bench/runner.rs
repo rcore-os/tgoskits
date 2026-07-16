@@ -10,17 +10,20 @@ use clap::ValueEnum;
 use tempfile::tempdir;
 use tokio::{process::Command, time::timeout};
 
-use super::{cases::BenchCase, sandbox::ReviewSandbox};
+use super::{cases::BenchCase, sandbox::ReviewSandbox, scoring::ReviewFinding};
 
 const CODEX_REVIEW_PROMPT: &str = "$review-single-pr offline-benchmark";
 const CLAUDE_REVIEW_PROMPT: &str = "/review-single-pr offline-benchmark";
-const GRADE_PROMPT: &str = "You are grading an offline code review. Read `expected.json` and \
-                            `review.json` in the current directory. For every expected item, \
-                            decide whether one review finding satisfies its `match_if` criterion \
-                            at the stated code location. Return exactly one match object per \
-                            expected ID. Use the zero-based index in `review.findings` when \
-                            caught, or null when missed. Wording may differ, but nearby or \
-                            generic comments do not count. Do not inspect any other paths.";
+const GRADE_PROMPT: &str =
+    "You are grading one offline code-review case. Read only `known_findings.json` and \
+     `candidate_findings.json` in the current directory. For every known finding, decide whether \
+     one or more candidate findings identify the same underlying defect or material risk. \
+     Different wording, anchors, omitted consequences, and different or absent remediation are \
+     acceptable; exact numbers, PR references, and historical context are not required. Candidate \
+     findings may jointly cover one known finding. Generic advice, mere proximity, or a different \
+     issue does not match. Return exactly one match object per known finding ID. \
+     `finding_indices` are zero-based indices in `candidate_findings.json` and must contain every \
+     candidate used to support the match, or be empty when missed. Do not inspect any other paths.";
 const GRADE_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/grade.schema.json");
 
 const CLAUDE_COMMON_ARGS: &[&str] = &[
@@ -149,14 +152,21 @@ impl AgentRunner {
     pub(super) async fn grade(
         &self,
         case: &BenchCase,
-        review_path: &Path,
+        findings: &[ReviewFinding],
         artifact_path: &Path,
         options: &AgentOptions,
     ) -> anyhow::Result<()> {
         let grader_dir = tempdir().context("failed to create isolated grader directory")?;
-        fs::copy(review_path, grader_dir.path().join("review.json"))?;
-        let expected = serde_json::to_string_pretty(&case.expected)?;
-        fs::write(grader_dir.path().join("expected.json"), expected)?;
+        let known_findings = serde_json::to_string_pretty(&case.expected)?;
+        fs::write(
+            grader_dir.path().join("known_findings.json"),
+            known_findings,
+        )?;
+        let candidate_findings = serde_json::to_string_pretty(findings)?;
+        fs::write(
+            grader_dir.path().join("candidate_findings.json"),
+            candidate_findings,
+        )?;
         let schema_path = grader_dir.path().join("grade.schema.json");
         fs::write(&schema_path, GRADE_SCHEMA)?;
         let temporary_output = grader_dir.path().join("grade.json");
@@ -472,6 +482,16 @@ mod tests {
             assert!(!prompt.contains("GitHub"));
             assert!(!prompt.contains("bench-base"));
         }
+    }
+
+    #[test]
+    fn grader_prompt_limits_context_and_matches_underlying_issues() {
+        assert!(GRADE_PROMPT.contains("known_findings.json"));
+        assert!(GRADE_PROMPT.contains("candidate_findings.json"));
+        assert!(GRADE_PROMPT.contains("same underlying defect or material risk"));
+        assert!(GRADE_PROMPT.contains("jointly cover one known finding"));
+        assert!(!GRADE_PROMPT.contains("review.json"));
+        assert!(!GRADE_PROMPT.contains("match_if"));
     }
 
     #[test]
