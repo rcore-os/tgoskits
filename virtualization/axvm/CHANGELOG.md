@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   firmware, and boot-state order with complete rollback on failure.
 - Derive AArch64 private interrupt roles from platform/FDT capabilities and
   preserve host-owned GIC state across passthrough vCPU load/save.
+- Resolve every direct AArch64 vCPU's hardware affinity to one available host
+  CPU mask before creating the vCPU task and GIC binding, so both consume the
+  same fixed placement without scheduler fallback.
 - Preserve x86 passthrough DMA semantics with VM-owned identity-allocated RAM,
   reserve host PIO before virtual-device allocation, and replace host COM1
   resources through the planned virtual console template.

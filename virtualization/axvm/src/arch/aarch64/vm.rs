@@ -23,7 +23,8 @@ use crate::{
 };
 
 impl Aarch64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(mut config: AxVMConfig) -> AxVmResult<AxVMResources> {
+        super::placement::normalize_direct_vcpu_cpu_sets(&mut config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;

@@ -515,18 +515,30 @@ fn aarch64_mediated_host_irq_preserves_level_line_lifetime() {
 
 #[test]
 fn aarch64_passthrough_routes_separate_mpidr_from_host_cpu_index() {
-    let source = include_str!("../src/arch/aarch64/gic/registration.rs");
+    let registration = include_str!("../src/arch/aarch64/gic/registration.rs");
+    let placement = include_str!("../src/arch/aarch64/placement.rs");
+    let vm = include_str!("../src/arch/aarch64/vm.rs");
 
     assert!(
-        !source.contains("VcpuRoute::new(placement.id, placement.phys_cpu_id, affinity)"),
+        !registration.contains("VcpuRoute::new(placement.id, placement.phys_cpu_id, affinity)"),
         "the guest MPIDR affinity must not be reused as an AxVM logical CPU index"
     );
     assert!(
-        source.contains("fixed_host_cpu(placement)?"),
-        "passthrough routing must derive its logical pCPU from the fixed CPU mask"
+        registration.contains("placement.fixed_host_cpu()?"),
+        "passthrough routing must consume the normalized fixed CPU mask"
     );
-    assert!(source.contains("mask.count_ones() == 1"));
-    assert!(source.contains("mask.trailing_zeros() as usize"));
+    assert!(placement.contains("super::capabilities::logical_cpu_id"));
+    assert!(placement.contains("config.phys_cpu_ls.set_guest_cpu_sets(cpu_sets)"));
+    assert!(placement.contains("mask & available_cpu_mask != mask"));
+    assert!(placement.contains("mask.count_ones() != 1"));
+    assert!(placement.contains("mask.trailing_zeros() as usize"));
+    let normalize = vm
+        .find("normalize_direct_vcpu_cpu_sets(&mut config)?")
+        .expect("direct vCPU placement must be normalized during VM resource creation");
+    let consume = vm
+        .find("let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids()")
+        .expect("VM resource creation must consume normalized vCPU placements");
+    assert!(normalize < consume);
 }
 
 fn find_target_arch_cfg_outside_arch(

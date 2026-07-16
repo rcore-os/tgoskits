@@ -31,6 +31,7 @@ mod images;
 mod ipi;
 mod npt;
 mod pl011;
+mod placement;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod timer;

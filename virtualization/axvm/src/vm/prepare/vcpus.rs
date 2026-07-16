@@ -134,8 +134,13 @@ impl VcpuInterruptWake for RuntimeVcpuWake {
 }
 
 pub(crate) fn vcpu_placements(resources: &AxVMResources) -> Vec<VcpuPlacement> {
-    resources
-        .config
+    vcpu_placements_from_config(&resources.config)
+}
+
+pub(crate) fn vcpu_placements_from_config(
+    config: &crate::config::AxVMConfig,
+) -> Vec<VcpuPlacement> {
+    config
         .phys_cpu_ls
         .get_vcpu_affinities_pcpu_ids()
         .into_iter()

@@ -97,7 +97,7 @@ impl PreparedGicV3 {
             .iter()
             .map(|placement| {
                 let host_cpu = if passthrough {
-                    fixed_host_cpu(placement)?
+                    placement.fixed_host_cpu()?
                 } else {
                     placement
                         .phys_cpu_set
@@ -216,26 +216,6 @@ fn mmio_region(
 ) -> AxVmResult<GicV3MmioRegion> {
     GicV3MmioRegion::new(range.base(), range.size()).map_err(|error| {
         AxVmError::invalid_config(alloc::format!("GICv3 {frame} range is invalid: {error}"))
-    })
-}
-
-fn fixed_host_cpu(placement: &VcpuPlacement) -> AxVmResult<usize> {
-    if let Some(mask) = placement.phys_cpu_set {
-        return single_host_cpu(mask).ok_or_else(|| {
-            AxVmError::invalid_config(alloc::format!(
-                "AArch64 passthrough vCPU {} requires one fixed physical CPU, but mask {mask:#x} \
-                 does not select exactly one CPU",
-                placement.id
-            ))
-        });
-    }
-
-    super::super::capabilities::logical_cpu_id(placement.phys_cpu_id).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
-            "AArch64 passthrough vCPU {} hardware ID {:#x} is not present in the host CPU topology",
-            placement.id,
-            placement.phys_cpu_id
-        ))
     })
 }
 
