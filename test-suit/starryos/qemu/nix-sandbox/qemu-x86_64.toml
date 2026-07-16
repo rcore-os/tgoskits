@@ -10,6 +10,8 @@
 # Memory: 2G minimum for nix + sandbox builder overhead.
 
 args = [
+    "-machine",
+    "q35",
     "-nographic",
     "-cpu",
     "Haswell,+avx",
