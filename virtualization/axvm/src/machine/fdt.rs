@@ -303,6 +303,7 @@ mod tests {
     use fdt_raw::RegInfo;
 
     use super::*;
+    use crate::machine::HostConsoleEvidence;
 
     #[test]
     fn host_console_is_protected_but_remains_a_virtual_template() {
@@ -384,7 +385,10 @@ mod tests {
         }
 
         snapshot
-            .grant_console_transfer(HostDeviceId::new("/serial@2800d000").unwrap())
+            .grant_console_transfer(
+                HostDeviceId::new("/serial@2800d000").unwrap(),
+                HostConsoleEvidence::Firmware,
+            )
             .unwrap();
         assert_eq!(
             snapshot
@@ -427,9 +431,13 @@ mod tests {
             HostDeviceOwnership::Unrepresentable
         );
 
-        assert!(snapshot.grant_console_transfer(console.clone()).is_err());
+        assert!(
+            snapshot
+                .grant_console_transfer(console.clone(), HostConsoleEvidence::Firmware)
+                .is_err()
+        );
         snapshot
-            .grant_live_console_transfer(console.clone())
+            .grant_console_transfer(console.clone(), HostConsoleEvidence::LivePlatform)
             .unwrap();
 
         assert_eq!(

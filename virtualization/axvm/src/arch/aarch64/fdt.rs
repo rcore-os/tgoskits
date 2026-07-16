@@ -43,9 +43,10 @@ pub fn current_host_platform_snapshot()
                 .map(|device| device.id().clone())
         });
     if let Some(console) = live_console {
-        snapshot.grant_live_console_transfer(console)?;
+        snapshot
+            .grant_console_transfer(console, crate::machine::HostConsoleEvidence::LivePlatform)?;
     } else if let Some(console) = snapshot.console_device().cloned() {
-        snapshot.grant_console_transfer(console)?;
+        snapshot.grant_console_transfer(console, crate::machine::HostConsoleEvidence::Firmware)?;
     }
     Ok(snapshot)
 }
