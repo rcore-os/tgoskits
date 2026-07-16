@@ -58,6 +58,9 @@ use sysreg::{SysRegReadExit, SysRegWriteExit};
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
+/// AMD FCH fixed system-management register aperture.
+const AMD_FCH_MMIO_BASE: u64 = 0xfed8_0000;
+const AMD_FCH_MMIO_SIZE: u64 = 0x1_0000;
 
 pub fn current_host_platform_snapshot()
 -> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
@@ -70,6 +73,10 @@ pub fn standard_machine_profile()
         crate::machine::AddressRange::new(0x1000_0000, 0x1000_0000)?,
         4..=23,
     )?
+    .with_reserved_mmio(crate::machine::AddressRange::new(
+        AMD_FCH_MMIO_BASE,
+        AMD_FCH_MMIO_SIZE,
+    )?)
     .with_pio_pool(crate::machine::IoPortRange::new(0x3f8, 8)?)
     .with_interrupt_controller(crate::machine::InterruptControllerProfile::X86Apic(
         crate::machine::X86ApicProfile::new(
@@ -761,5 +768,26 @@ mod tests {
             X86AccessWidth::Dword,
             QEMU_EXIT_MAGIC
         ));
+    }
+
+    #[test]
+    fn standard_profile_protects_amd_fch_mmio_from_identity_mapping() {
+        let snapshot = crate::machine::HostPlatformSnapshot::new(1)
+            .with_io_aperture(crate::machine::AddressRange::new(0xfed0_0000, 0x10_0000).unwrap());
+        let request = crate::machine::VmMachineRequest::new(
+            axvm_types::VmMachineMode::Passthrough,
+            axvm_types::GuestFirmwareKind::Auto,
+        );
+        let plan = crate::machine::VmMachinePlanner::new(standard_machine_profile().unwrap())
+            .plan(&request, &snapshot)
+            .unwrap();
+
+        assert!(
+            !plan
+                .identity_mappings()
+                .iter()
+                .any(|range| range.contains(0xfed8_03c0)),
+            "AMD FCH system-management MMIO must stay protected from guest identity mappings"
+        );
     }
 }

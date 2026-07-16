@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 #[cfg(feature = "vmx")]
 use ax_memory_addr::PAGE_SIZE_4K;
-use axdevice_base::{DeviceRegistry as _, PortDeviceAdapter};
+use axdevice_base::{DeviceRegistry as _, PortDeviceAdapter, Resource};
 #[cfg(feature = "vmx")]
 use axvm_types::MappingFlags;
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
@@ -15,7 +15,10 @@ use x86_vcpu::{
 
 #[cfg(feature = "vmx")]
 use super::x86_apic_access_page_addr;
-use super::{X86_64Arch, interrupt_controller::X86InterruptController, npt, x86_result};
+use super::{
+    AMD_FCH_MMIO_BASE, AMD_FCH_MMIO_SIZE, X86_64Arch, interrupt_controller::X86InterruptController,
+    npt, x86_result,
+};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
@@ -78,6 +81,7 @@ fn init_vm_with(
             &mut devices.devices,
             interrupt_topology,
         )?;
+        register_protected_platform_mmio(&mut devices.devices)?;
         interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
         register_pit(&mut devices.devices, interrupt_topology)?;
         devices.register_planned(
@@ -93,7 +97,12 @@ fn init_vm_with(
         append_arch_owned_regions(&mut owned_regions);
         map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
         map_arch_address_space(resources)?;
-        vcpus.setup(resources, build_vcpu_setup_config)?;
+        let setup_config = build_vcpu_setup_config(
+            resources.config(),
+            &resources.memory_regions,
+            devices.devices(),
+        )?;
+        vcpus.setup(resources, |_, _| Ok(setup_config.clone()))?;
         super::irq::register_planned_ioapic_forwarding_routes(resources.config().machine_plan())?;
 
         Ok(PreparedVm::new(vcpus, devices))
@@ -103,28 +112,59 @@ fn init_vm_with(
 fn build_vcpu_setup_config(
     config: &AxVMConfig,
     memory_regions: &[crate::vm::VMMemoryRegion],
+    devices: &axdevice::AxVmDevices,
 ) -> AxVmResult<<super::AxvmX86Vcpu as VmArchVcpuOps>::SetupConfig> {
-    let mut setup_config = X86VCpuSetupConfig {
-        emulate_com1: config
+    let mut setup_config = X86VCpuSetupConfig::default();
+    setup_config.set_com1_emulation(
+        config
             .machine_plan()
             .virtual_devices()
             .iter()
             .any(|device| device.model_id().as_str() == "x86-com1"),
-        guest_memory_regions: memory_regions
-            .iter()
-            .map(|region| X86GuestMemoryRegion {
-                gpa: X86GuestPhysAddr::from_usize(region.gpa.as_usize()),
-                hva: X86HostVirtAddr::from_usize(region.hva.as_usize()),
-                size: region.size(),
-            })
-            .collect(),
-        ..Default::default()
-    };
+    );
+    x86_result(
+        setup_config.set_guest_memory_regions(
+            memory_regions
+                .iter()
+                .map(|region| X86GuestMemoryRegion {
+                    gpa: X86GuestPhysAddr::from_usize(region.gpa.as_usize()),
+                    hva: X86HostVirtAddr::from_usize(region.hva.as_usize()),
+                    size: region.size(),
+                })
+                .collect(),
+        ),
+    )
+    .map_err(|error| AxVmError::vcpu("configure guest memory regions", error))?;
+    for resource in devices
+        .devices()
+        .flat_map(|device| device.resources().iter())
+    {
+        let Resource::MmioRange { base, size } = resource else {
+            continue;
+        };
+        let base = usize::try_from(*base)
+            .map_err(|_| AxVmError::invalid_config("emulated MMIO base exceeds usize"))?;
+        let size = usize::try_from(*size)
+            .map_err(|_| AxVmError::invalid_config("emulated MMIO size exceeds usize"))?;
+        x86_result(setup_config.add_emulated_mmio_region(X86GuestPhysAddr::from_usize(base), size))
+            .map_err(|error| AxVmError::vcpu("configure emulated MMIO range", error))?;
+    }
     for port in config.machine_plan().assigned_host_pio() {
         x86_result(setup_config.add_passthrough_port_range(port.base(), port.size()))
             .map_err(|error| AxVmError::vcpu("configure passthrough port range", error))?;
     }
     Ok(setup_config)
+}
+
+fn register_protected_platform_mmio(devices: &mut axdevice::AxVmDevices) -> AxVmResult {
+    let device = Arc::new(
+        axdevice::X86UnassignedMmioDevice::new(AMD_FCH_MMIO_BASE, AMD_FCH_MMIO_SIZE)
+            .map_err(|error| AxVmError::device("create protected AMD FCH MMIO window", error))?,
+    );
+    devices
+        .register(device)
+        .map_err(|error| AxVmError::device("register protected AMD FCH MMIO window", error))?;
+    Ok(())
 }
 
 fn register_interrupt_controller(

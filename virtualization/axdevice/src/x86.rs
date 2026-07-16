@@ -16,7 +16,7 @@ use x86_vlapic::{
     X86VlapicHostOps,
 };
 
-use crate::DeviceManagerResult;
+use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// Type-specific IOAPIC capability used by the x86 interrupt runtime.
 pub trait X86IoApicDeviceOps: Send + Sync {
@@ -58,6 +58,73 @@ pub trait X86PitDeviceOps: Send + Sync {
 pub trait X86SerialDeviceOps: Send + Sync {
     /// Polls host input and updates the configured COM1 interrupt line.
     fn service_irq(&self) -> IrqResult<bool>;
+}
+
+/// Protected or physically absent x86 platform MMIO window.
+///
+/// Reads return the conventional all-ones value for their access width and
+/// writes are ignored. The window is always handled in software and never
+/// forwards an access to host physical MMIO.
+pub struct X86UnassignedMmioDevice {
+    base: u64,
+    end: u64,
+    resources: Box<[Resource]>,
+}
+
+impl X86UnassignedMmioDevice {
+    /// Creates a checked, non-empty unassigned MMIO window.
+    pub fn new(base: u64, size: u64) -> DeviceManagerResult<Self> {
+        let end = base
+            .checked_add(size)
+            .filter(|_| size != 0)
+            .ok_or_else(|| DeviceManagerError::InvalidInput {
+                operation: "create x86 unassigned MMIO window",
+                detail: String::from("range must be non-empty and must not overflow"),
+            })?;
+        Ok(Self {
+            base,
+            end,
+            resources: alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice(),
+        })
+    }
+
+    fn contains_access(&self, access: &BusAccess) -> bool {
+        access.addr >= self.base
+            && access
+                .addr
+                .checked_add(access.width.size() as u64)
+                .is_some_and(|end| end <= self.end)
+    }
+}
+
+impl Device for X86UnassignedMmioDevice {
+    fn name(&self) -> &str {
+        "x86-unassigned-mmio"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio || !self.contains_access(access) {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if !access.is_read {
+            return Ok(BusResponse::Write);
+        }
+        let value = match access.width {
+            AccessWidth::Byte => u8::MAX as u64,
+            AccessWidth::Word => u16::MAX as u64,
+            AccessWidth::Dword => u32::MAX as u64,
+            AccessWidth::Qword => u64::MAX,
+        };
+        Ok(BusResponse::Read { value })
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Unified-device adapter for [`EmulatedIoApic`].
@@ -381,4 +448,62 @@ fn port_resources<const N: usize>(ranges: [X86PortRange; N]) -> Box<[Resource]> 
         })
         .collect::<Vec<_>>()
         .into_boxed_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unassigned_mmio_reads_as_all_ones_and_ignores_writes() {
+        let device = X86UnassignedMmioDevice::new(0xfed8_0000, 0x1_0000).unwrap();
+        for (width, expected) in [
+            (AccessWidth::Byte, u8::MAX as u64),
+            (AccessWidth::Word, u16::MAX as u64),
+            (AccessWidth::Dword, u32::MAX as u64),
+            (AccessWidth::Qword, u64::MAX),
+        ] {
+            let response = device
+                .handle(&BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: true,
+                    addr: 0xfed8_03c0,
+                    width,
+                    data: 0,
+                })
+                .unwrap();
+            assert!(matches!(response, BusResponse::Read { value } if value == expected));
+        }
+
+        assert!(matches!(
+            device
+                .handle(&BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: false,
+                    addr: 0xfed8_03c0,
+                    width: AccessWidth::Dword,
+                    data: 0,
+                })
+                .unwrap(),
+            BusResponse::Write
+        ));
+    }
+
+    #[test]
+    fn unassigned_mmio_rejects_invalid_ranges_and_out_of_range_accesses() {
+        assert!(X86UnassignedMmioDevice::new(0, 0).is_err());
+        assert!(X86UnassignedMmioDevice::new(u64::MAX, 2).is_err());
+
+        let device = X86UnassignedMmioDevice::new(0x1000, 4).unwrap();
+        assert!(matches!(
+            device.handle(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x1002,
+                width: AccessWidth::Dword,
+                data: 0,
+            }),
+            Err(DeviceError::OutOfRange { .. })
+        ));
+    }
 }

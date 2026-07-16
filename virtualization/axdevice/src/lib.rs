@@ -62,7 +62,7 @@ pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
     X86IoApicDevice, X86IoApicDeviceOps, X86IoApicRuntimeOps, X86PitDevice, X86PitDeviceOps,
-    X86SerialDeviceOps, X86SerialPortDevice,
+    X86SerialDeviceOps, X86SerialPortDevice, X86UnassignedMmioDevice,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
