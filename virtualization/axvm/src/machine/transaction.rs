@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec::Vec};
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 use super::{HostDeviceId, MachinePlanError, MachinePlanResult, VmMachinePlan};
 
