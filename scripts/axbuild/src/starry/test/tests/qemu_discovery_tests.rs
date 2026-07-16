@@ -386,6 +386,28 @@ fn starry_system_grouped_cases_use_root_cmake_layout() {
 }
 
 #[test]
+fn nix_sandbox_debug_x86_64_uses_explicit_uefi_boot() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_path =
+        workspace_root.join("test-suit/starryos/qemu/nix-sandbox-debug/qemu-x86_64.toml");
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(
+        config.get("uefi").and_then(toml::Value::as_bool),
+        Some(true),
+        "{} must explicitly use UEFI because CI tests the PR merge ref where x86_64 dynamic boot \
+         is no longer inferred",
+        config_path.display()
+    );
+    assert_eq!(
+        config.get("to_bin").and_then(toml::Value::as_bool),
+        Some(true),
+        "{} must explicitly boot the raw binary artifact under UEFI",
+        config_path.display()
+    );
+}
+
+#[test]
 fn grouped_case_skips_arch_specific_subcases_for_other_arches() {
     let root = tempdir().unwrap();
     write_qemu_build_config(

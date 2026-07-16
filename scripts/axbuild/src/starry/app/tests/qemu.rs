@@ -680,6 +680,12 @@ fn nix_app_installs_nix_before_guest_boot() {
         "{} must copy the full Alpine Nix dependency closure, not only newly installed packages",
         prebuild_path.display()
     );
+    assert!(
+        prebuild.contains("relativize_staging_absolute_symlinks")
+            && prebuild.contains("realpath --relative-to="),
+        "{} must make staging-root absolute symlinks qemu-user safe before running guest apk",
+        prebuild_path.display()
+    );
 
     let guest_script_path = repo.join("apps/starry/nix/test_nix.sh");
     let guest_script = fs::read_to_string(&guest_script_path).unwrap();
@@ -703,6 +709,26 @@ fn nix_app_installs_nix_before_guest_boot() {
             script_path.display()
         );
     }
+}
+
+#[test]
+fn app_qemu_applies_shared_timeout_scale() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let source_path = repo.join("scripts/axbuild/src/starry/mod.rs");
+    let source = fs::read_to_string(&source_path).unwrap();
+
+    assert!(
+        source
+            .matches("qemu::apply_timeout_scale(&mut qemu);")
+            .count()
+            >= 2,
+        "{} must apply shared QEMU timeout scaling on both app qemu paths",
+        source_path.display()
+    );
 }
 
 #[test]

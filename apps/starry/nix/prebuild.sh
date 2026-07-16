@@ -67,6 +67,7 @@ ensure_host_packages() {
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v e2fsck >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v resize2fs >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v realpath >/dev/null 2>&1 || missing+=(coreutils)
     command -v sha256sum >/dev/null 2>&1 || missing+=(coreutils)
     command -v tar >/dev/null 2>&1 || missing+=(tar)
 
@@ -103,6 +104,31 @@ extract_base_rootfs() {
         echo "error: staging root is missing guest apk: $staging_root/sbin/apk" >&2
         exit 1
     fi
+}
+
+relativize_staging_absolute_symlinks() {
+    local link
+    local target
+    local absolute_target
+    local relative_target
+
+    while IFS= read -r -d '' link; do
+        target="$(readlink "$link")"
+        case "$target" in
+            /*) ;;
+            *) continue ;;
+        esac
+
+        absolute_target="$staging_root${target}"
+        if [[ ! -e "$absolute_target" && ! -L "$absolute_target" ]]; then
+            continue
+        fi
+
+        relative_target="$(
+            realpath --relative-to="$(dirname "$link")" --canonicalize-missing "$absolute_target"
+        )"
+        ln -sfn "$relative_target" "$link"
+    done < <(find "$staging_root" -type l -print0)
 }
 
 run_guest_apk_with_retry() {
@@ -289,6 +315,7 @@ require_env STARRY_OVERLAY_DIR "$overlay_dir"
 ensure_host_packages
 find_qemu_runner
 extract_base_rootfs
+relativize_staging_absolute_symlinks
 install_nix_package
 prepare_nix_conf
 if [[ "${STARRY_NIX_SKIP_NIXPKGS:-0}" == "1" ]]; then
