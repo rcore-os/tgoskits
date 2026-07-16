@@ -3,12 +3,9 @@ use ax_plat::console::ConsoleIrqEvent;
 use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
 
 #[cfg(all(feature = "irq", target_arch = "x86_64"))]
-fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
-    if let Some(gsi) = raw.checked_sub(rdrive::probe::acpi::PCI_INTX_VECTOR_BASE) {
-        ax_plat::irq::resolve_irq_source(ax_plat::irq::IrqSource::AcpiGsi(gsi as u32)).ok()
-    } else {
-        Some(ax_plat::irq::IrqNumber(raw).expect("console IRQ exceeds legacy IRQ width"))
-    }
+fn console_irq(gsi: usize) -> Option<ax_plat::irq::IrqId> {
+    let gsi = u32::try_from(gsi).ok()?;
+    ax_plat::irq::resolve_irq_source(ax_plat::irq::IrqSource::AcpiGsi(gsi)).ok()
 }
 
 #[cfg(all(feature = "irq", not(target_arch = "x86_64")))]
@@ -105,8 +102,6 @@ impl ConsoleIf for ConsoleIfImpl {
 mod tests {
     #[test]
     fn x86_console_irq_without_acpi_route_falls_back_to_polling() {
-        let raw = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 4;
-
-        assert!(super::console_irq(raw).is_none());
+        assert!(super::console_irq(4).is_none());
     }
 }

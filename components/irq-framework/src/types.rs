@@ -74,13 +74,14 @@ pub enum AcpiGsiController {
     PchPic,
 }
 
-/// Fully described ACPI GSI routing metadata.
+/// Fully described firmware-owned ACPI GSI routing metadata.
+///
+/// CPU vector allocation belongs to the target interrupt controller and is
+/// deliberately not represented here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AcpiGsiRoute {
     /// Global System Interrupt number.
     pub gsi: u32,
-    /// CPU trap vector programmed by the platform controller, if known.
-    pub vector: usize,
     /// Controller kind.
     pub controller: AcpiGsiController,
     /// ACPI controller id.

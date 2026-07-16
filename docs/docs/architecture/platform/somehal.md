@@ -223,9 +223,13 @@ pub trait PlatOp {
 - 子模块：`lapic`、`vector`。
 - 通过 `module_driver!` 注册 ACPI IOAPIC 驱动，`AcpiId { hid: "ACPIIOAP", ... }`。
 - `struct X86IoApicIntc` 实现 `rdif_intc::Interface::{translate_acpi, supports_acpi_gsi, configure_acpi}`。
-- 维护 `routes: Vec<AcpiGsiRoute>`、`vector_routes: Vec<(usize, IrqId)>`、`destinations: Vec<(usize, u8)>`。
+- `AcpiGsiRoute` 只携带固件 GSI、controller identity、controller-local input、trigger 和 polarity，不携带 CPU vector；rdrive 不从 GSI 推导 vector。
+- control plane 为每条有效路由独立分配 external vector，并保存预分配的 `ProgrammedIoApicRoute`；低 GSI 的 `0x30 + gsi` 仅作为 IOAPIC 内部可选偏好，冲突或越界时扫描合法空闲 vector。
+- CPU/IRQ fast path 使用固定容量 endpoint slot，以完整 `u32` GSI 为 key，并用独立的 vector reverse map 从 trap vector 恢复 `IrqId`。查找有固定上界，不访问 rdrive，也不分配。
+- 配置顺序固定为“验证并预留 endpoint/vector → 在全局 IRQ-safe MMIO lock 下写 masked redirection entry → 依次 Release 发布 vector 和 endpoint”；预留 token 在提交前失败时自动回滚。
 - 每个 IOAPIC 的 redirection 表初始化为全部 MASKED；`MASKED_IOAPIC_PLACEHOLDER_VECTOR = 0x21`。
-- 公开：`lapic_ipi_irq_id`、`lapic_timer_irq_id`、`local_vector_irq_id`、`validate_external_vector`、`SPURIOUS_VECTOR`，以及测试用 `APIC_IPI_VECTOR`、`APIC_TIMER_VECTOR`、`ioapic_gsi_irq_id`。
+- IOREGSEL/IOWIN 的 probe、配置、affinity 和 hard-IRQ mask/unmask 访问共享同一把 `SpinIrqSave`，避免多个 IOAPIC 对象或 CPU 交错破坏间接 MMIO transaction。
+- x86 early console 向上报告 COM1 GSI 4；只有 IOAPIC control plane 可以把它分配为 CPU vector。
 
 ## build.rs
 

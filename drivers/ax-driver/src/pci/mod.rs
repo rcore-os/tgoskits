@@ -710,7 +710,6 @@ mod tests {
         let controller = rdrive::DeviceId::new();
         let route = irq_framework::AcpiGsiRoute {
             gsi: 10,
-            vector: 0x3a,
             controller: irq_framework::AcpiGsiController::IoApic,
             controller_id: 0,
             controller_address: 0xfec0_0000,

@@ -126,7 +126,6 @@ fn resolve_acpi_route(route: AcpiGsiRoute) -> Result<IrqId, IrqError> {
 fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: route.gsi,
-        vector: route.vector,
         controller: match route.controller {
             irq_framework::AcpiGsiController::IoApic => rdif_intc::AcpiGsiController::IoApic,
             irq_framework::AcpiGsiController::PchPic => rdif_intc::AcpiGsiController::PchPic,

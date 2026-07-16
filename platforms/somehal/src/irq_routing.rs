@@ -445,10 +445,11 @@ mod tests {
     use super::*;
     use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId, IrqSource};
 
+    const FABRICATED_GSI_82_VECTOR: usize = 0x82;
+
     fn acpi_route(gsi: u32, input: u8) -> AcpiGsiRoute {
         AcpiGsiRoute {
             gsi,
-            vector: rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + gsi as usize,
             controller: AcpiGsiController::PchPic,
             controller_id: 1,
             controller_address: 0x1000_0000,
@@ -459,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn acpi_controller_reverse_route_uses_controller_input_not_acpi_vector() {
+    fn acpi_controller_reverse_route_uses_controller_input_not_gsi_arithmetic() {
         let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
         let route = acpi_route(82, 18);
         let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
@@ -467,7 +468,10 @@ mod tests {
         routes.remember_route(&route, irq).unwrap();
 
         assert_eq!(routes.irq_for_external_vector(18), Some(irq));
-        assert_eq!(routes.irq_for_external_vector(route.vector), None);
+        assert_eq!(
+            routes.irq_for_external_vector(FABRICATED_GSI_82_VECTOR),
+            None
+        );
         assert_ne!(
             routes.irq_for_external_vector(18),
             Some(IrqId::new(IrqDomainId(42), HwIrq(82)))
@@ -493,7 +497,10 @@ mod tests {
             cpu_if.irq_for_external_vector(19),
             Some(IrqId::new(IrqDomainId(42), HwIrq(19)))
         );
-        assert_eq!(cpu_if.irq_for_external_vector(route.vector), None);
+        assert_eq!(
+            cpu_if.irq_for_external_vector(FABRICATED_GSI_82_VECTOR),
+            None
+        );
     }
 
     #[test]
@@ -519,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn pch_pic_cpu_interface_does_not_store_acpi_vector_as_external_vector() {
+    fn pch_pic_cpu_interface_does_not_derive_external_vector_from_gsi() {
         let domain = IrqId::new(IrqDomainId(42), HwIrq(0)).domain;
         let cpu_if =
             PchPicCpuInterface::new(domain, AcpiGsiController::PchPic, 0x1000_0000, 16, 64);
@@ -529,11 +536,12 @@ mod tests {
         cpu_if.remember_route(&route, irq).unwrap();
 
         assert_eq!(cpu_if.irq_for_external_vector(16 + 18), Some(irq));
+        let fabricated_vector = 0x38;
         assert_eq!(
-            cpu_if.irq_for_external_vector(route.vector),
-            Some(IrqId::new(domain, HwIrq((route.vector - 16) as u32)))
+            cpu_if.irq_for_external_vector(fabricated_vector),
+            Some(IrqId::new(domain, HwIrq((fabricated_vector - 16) as u32)))
         );
-        assert_ne!(cpu_if.irq_for_external_vector(route.vector), Some(irq));
+        assert_ne!(cpu_if.irq_for_external_vector(fabricated_vector), Some(irq));
     }
 
     #[test]
@@ -619,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn acpi_controller_acpi_route_keeps_hardware_vector_as_base_plus_input() {
+    fn acpi_controller_keeps_hardware_vector_as_base_plus_input() {
         let mut routes = AcpiControllerRoutes::new(AcpiGsiController::PchPic, 0x1000_0000, 0, 64);
         let route = acpi_route(82, 18);
         let irq = IrqId::new(IrqDomainId(42), HwIrq(18));
@@ -629,7 +637,7 @@ mod tests {
         assert_eq!(routes.vector_count(), 64);
         assert_eq!(routes.vector_for_input(18), Some(18));
         assert_eq!(routes.input_for_vector(18), Some(18));
-        assert_ne!(routes.vector_for_input(18), Some(route.vector));
+        assert_ne!(routes.vector_for_input(18), Some(FABRICATED_GSI_82_VECTOR));
     }
 
     #[test]

@@ -5,6 +5,9 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate ax_kspin_test_runtime as _;
+
 use core::ptr::NonNull;
 
 // The registry is not hard-IRQ safe, but it is also used by runtime discovery

@@ -6435,6 +6435,7 @@ version = "0.23.6"
 dependencies = [
  "acpi",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "fdt-edit",
  "fdt-raw",
  "log",
