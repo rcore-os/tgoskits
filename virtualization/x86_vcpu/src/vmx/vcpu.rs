@@ -16,7 +16,7 @@ use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     arch::naked_asm,
     fmt::{Debug, Formatter, Result},
-    mem::size_of,
+    mem::{align_of, offset_of, size_of},
 };
 
 use ax_cpu_local::CpuPin;
@@ -24,7 +24,7 @@ use bit_field::BitField;
 use raw_cpuid::CpuId;
 use x86::{
     bits64::vmx,
-    controlregs::{Xcr0, cr2, cr2_write},
+    controlregs::{cr2, cr2_write},
     dtables::{self, DescriptorTablePointer},
     segmentation::SegmentSelector,
 };
@@ -44,8 +44,17 @@ use crate::{
     X86AccessFlags, X86AccessWidth, X86GuestMemoryRegion, X86GuestPhysAddr, X86GuestVirtAddr,
     X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig,
     X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit,
-    ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag,
-    x86_real_mode_entry_state, xstate::XState,
+    capture_and_disable_host_interrupts,
+    ept::GuestPageWalkInfo,
+    host,
+    msr::Msr,
+    regs::GeneralRegisters,
+    restore_host_interrupt_flag, x86_real_mode_entry_state,
+    xstate::{
+        IA32_XSS_MSR, XSTATE_GUEST_AREA_OFFSET, XSTATE_GUEST_XCR0_OFFSET, XSTATE_GUEST_XSS_OFFSET,
+        XSTATE_HOST_AREA_OFFSET, XSTATE_HOST_XCR0_OFFSET, XSTATE_HOST_XSS_OFFSET,
+        XSTATE_XSAVE_AVAILABLE_OFFSET, XSTATE_XSAVES_AVAILABLE_OFFSET, XState, XsetbvFault,
+    },
 };
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
@@ -64,6 +73,8 @@ const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
+const INVALID_OPCODE_VECTOR: u8 = 6;
+const GENERAL_PROTECTION_VECTOR: u8 = 13;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -90,8 +101,8 @@ struct PendingEvent {
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu<H: X86HostOps> {
-    // The order of `guest_regs`, `host_stack_top`, and `host_rflags` is
-    // mandatory. They must be the first three fields. If you want to change
+    // The order of `guest_regs`, `host_stack_top`, `host_rflags`, and `xstate`
+    // is mandatory. They must be the first four fields. If you want to change
     // the order or the type of these fields, you must also change the assembly
     // in this file.
     /// Guest general-purpose registers.
@@ -100,6 +111,8 @@ pub struct VmxVcpu<H: X86HostOps> {
     host_stack_top: u64,
     /// Host RFLAGS captured immediately before VM entry.
     host_rflags: u64,
+    /// Host/guest xstate control values owned by the assembly world switch.
+    xstate: XState,
 
     // The order of the following fields is not mandatory.
 
@@ -131,10 +144,6 @@ pub struct VmxVcpu<H: X86HostOps> {
     /// Guest RAM regions used to read guest instructions and page tables.
     guest_memory_regions: Vec<X86GuestMemoryRegion>,
 
-    // Extra states
-    /// The XState of the VCpu. Both host and guest.
-    xstate: XState,
-
     // Tracing-related fields
     #[cfg(feature = "tracing")]
     /// The guest registers when the VM-exit happens.
@@ -142,8 +151,16 @@ pub struct VmxVcpu<H: X86HostOps> {
 }
 
 impl<H: X86HostOps> VmxVcpu<H> {
+    const WORLD_SWITCH_LAYOUT: () = {
+        assert!(offset_of!(Self, guest_regs) == 0);
+        assert!(offset_of!(Self, host_stack_top) == size_of::<GeneralRegisters>());
+        assert!(offset_of!(Self, host_rflags) == size_of::<GeneralRegisters>() + size_of::<u64>());
+        assert!(offset_of!(Self, xstate).is_multiple_of(align_of::<XState>()));
+    };
+
     /// Create a new [`VmxVcpu`].
     pub fn new(vm_id: usize, vcpu_id: usize) -> X86VcpuResult<Self> {
+        let () = Self::WORLD_SWITCH_LAYOUT;
         let vmcs_revision_id = super::read_vmcs_revision_id();
         let vcpu = Self {
             guest_regs: GeneralRegisters::default(),
@@ -160,7 +177,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
             guest_memory_regions: Vec::new(),
-            xstate: XState::new(),
+            xstate: XState::new()?,
             #[cfg(feature = "tracing")]
             guest_regs_exiting: GeneralRegisters::default(),
         };
@@ -184,7 +201,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
     // }
 
     /// Bind this [`VmxVcpu`] to current logical processor.
-    pub fn bind_to_current_processor(&self) -> X86VcpuResult {
+    fn bind_to_current_processor(&self) -> X86VcpuResult {
         debug!(
             "VmxVcpu bind to current processor vmcs @ {:#x}",
             self.vmcs.phys_addr()
@@ -229,11 +246,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
     }
 
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
-    pub fn inner_run(&mut self) -> X86VcpuResult<Option<VmxExitInfo>> {
+    fn inner_run(&mut self) -> X86VcpuResult<Option<VmxExitInfo>> {
         self.inject_pending_events()?;
-
-        // Run guest
-        self.load_guest_xstate();
 
         #[cfg(feature = "tracing")]
         {
@@ -247,22 +261,28 @@ impl<H: X86HostOps> VmxVcpu<H> {
             }
         }
 
+        let resume = self.launched;
+        if !resume {
+            VmcsHostNW::RSP.write(&self.host_stack_top as *const _ as usize)?;
+            self.launched = true;
+        }
+
+        // From this point until the assembly restores host xstate, neither a
+        // host interrupt nor Rust may observe guest-owned XCR0/XSS.
+        let host_rflags = capture_and_disable_host_interrupts();
+        self.host_rflags = host_rflags;
+        self.xstate.capture_host();
+
         unsafe {
             cr2_write(self.guest_cr2 as u64);
-            if self.launched {
+            if resume {
                 self.vmx_resume();
             } else {
-                self.launched = true;
-                VmcsHostNW::RSP
-                    .write(&self.host_stack_top as *const _ as usize)
-                    .unwrap();
-
                 self.vmx_launch();
             }
             self.guest_cr2 = cr2();
         }
-        self.load_host_xstate();
-        restore_host_interrupt_flag(self.host_rflags);
+        restore_host_interrupt_flag(host_rflags);
 
         #[cfg(feature = "tracing")]
         {
@@ -501,6 +521,11 @@ impl<H: X86HostOps> VmxVcpu<H> {
         self.msr_bitmap.set_read_intercept(IA32_APIC_BASE, true);
         self.msr_bitmap.set_write_intercept(IA32_APIC_BASE, true);
 
+        // IA32_XSS is a host-owned supervisor-xstate selector. The guest sees
+        // a fixed zero value and may not enable supervisor components.
+        self.msr_bitmap.set_read_intercept(IA32_XSS_MSR, true);
+        self.msr_bitmap.set_write_intercept(IA32_XSS_MSR, true);
+
         // This is strange, guest Linux's access to `IA32_UMWAIT_CONTROL` will cause an exception.
         // But if we intercept it, it seems okay.
         const IA32_UMWAIT_CONTROL: u32 = 0xe1;
@@ -694,12 +719,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         {
             val |= CpuCtrl2::ENABLE_INVPCID;
         }
-        if let Some(features) = raw_cpuid.get_extended_state_info()
-            && features.has_xsaves_xrstors()
-            && secondary_control_bits_allowed(CpuCtrl2::ENABLE_XSAVES_XRSTORS.bits())
-        {
-            val |= CpuCtrl2::ENABLE_XSAVES_XRSTORS;
-        }
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
@@ -858,16 +877,30 @@ impl<H: X86HostOps> VmxVcpu<H> {
 macro_rules! vmx_entry_with {
     ($instr:literal) => {
         naked_asm!(
-            "pushfq",                                  // save host RFLAGS, including IF
-            "pop    qword ptr [rdi + {host_rflags}]",
             save_regs_to_stack!(),                      // save host status
             "mov    [rdi + {host_stack_size}], rsp",    // save current RSP to Vcpu::host_stack_top
+            install_guest_xstate_from_rdi!(),            // guest xstate starts in the final assembly window
             "mov    rsp, rdi",                          // set RSP to guest regs area
             restore_regs_from_stack!(),                 // restore guest status
             $instr,                                     // let's go!
+            save_regs_to_stack!(),                      // VM entry failed; preserve guest GPR image
+            "mov    rdi, rsp",                          // recover the VmxVcpu base
+            restore_host_xstate_from_rdi!(),             // host xstate before Rust failure handling
+            "mov    rsp, [rdi + {host_stack_size}]",
+            restore_regs_from_stack!(),
             "jmp    {failed}",
-            host_stack_size = const size_of::<GeneralRegisters>(),
-            host_rflags = const size_of::<GeneralRegisters>() + size_of::<u64>(),
+            host_stack_size = const offset_of!(VmxVcpu<H>, host_stack_top),
+            guest_xcr0 = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_XCR0_OFFSET,
+            host_xcr0 = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_XCR0_OFFSET,
+            host_area = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_AREA_OFFSET,
+            guest_area = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_AREA_OFFSET,
+            host_xss = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_XSS_OFFSET,
+            guest_xss = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_XSS_OFFSET,
+            xsave_available = const offset_of!(VmxVcpu<H>, xstate)
+                + XSTATE_XSAVE_AVAILABLE_OFFSET,
+            xsaves_available = const offset_of!(VmxVcpu<H>, xstate)
+                + XSTATE_XSAVES_AVAILABLE_OFFSET,
+            ia32_xss = const IA32_XSS_MSR,
             failed = sym Self::vmx_entry_failed,
             // options(noreturn),
         )
@@ -904,16 +937,30 @@ impl<H: X86HostOps> VmxVcpu<H> {
     unsafe extern "C" fn vmx_exit(&mut self) -> usize {
         // it's not necessary to use another `unsafe` here, as Rust now do not require it in naked functions.
         naked_asm!(
-            "cli",                                  // keep host IRQs off until host xstate is restored
+            "cli",                                  // VM exit must never expose guest xstate to a host IRQ
             save_regs_to_stack!(),                  // save guest status, after this, rsp points to the `VmxVcpu`
-            "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
+            "mov    rdi, rsp",                      // recover the VmxVcpu base
+            restore_host_xstate_from_rdi!(),         // host xstate before restoring host GPRs or Rust
+            "mov    rsp, [rdi + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
             restore_regs_from_stack!(),             // restore host status
             "ret",
-            host_stack_top = const size_of::<GeneralRegisters>(),
+            host_stack_top = const offset_of!(VmxVcpu<H>, host_stack_top),
+            guest_xcr0 = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_XCR0_OFFSET,
+            host_xcr0 = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_XCR0_OFFSET,
+            host_area = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_AREA_OFFSET,
+            guest_area = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_AREA_OFFSET,
+            host_xss = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_HOST_XSS_OFFSET,
+            guest_xss = const offset_of!(VmxVcpu<H>, xstate) + XSTATE_GUEST_XSS_OFFSET,
+            xsave_available = const offset_of!(VmxVcpu<H>, xstate)
+                + XSTATE_XSAVE_AVAILABLE_OFFSET,
+            xsaves_available = const offset_of!(VmxVcpu<H>, xstate)
+                + XSTATE_XSAVES_AVAILABLE_OFFSET,
+            ia32_xss = const IA32_XSS_MSR,
         );
     }
 
-    fn vmx_entry_failed() -> ! {
+    fn vmx_entry_failed(&mut self) -> ! {
+        restore_host_interrupt_flag(self.host_rflags);
         panic!("{}", vmcs::instruction_error().as_str())
     }
 
@@ -978,6 +1025,11 @@ impl<H: X86HostOps> VmxVcpu<H> {
                 if self.regs().rcx as u32 == AMD64_DE_CFG =>
             {
                 Some(self.handle_amd64_de_cfg_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
+            }
+            msr_rw @ (VmxExitReason::MSR_READ | VmxExitReason::MSR_WRITE)
+                if self.regs().rcx as u32 == IA32_XSS_MSR =>
+            {
+                Some(self.handle_xss_msr_access(msr_rw == VmxExitReason::MSR_WRITE))
             }
             _ => None,
         }
@@ -1061,6 +1113,13 @@ impl<H: X86HostOps> VmxVcpu<H> {
         if !write {
             self.write_edx_eax(0);
         }
+        Ok(())
+    }
+
+    fn handle_xss_msr_access(&mut self, _write: bool) -> X86VcpuResult {
+        // CPUID hides XSAVES/XRSTORS, so IA32_XSS is architecturally absent
+        // from the guest capability model. Neither reads nor writes retire.
+        self.queue_event(GENERAL_PROTECTION_VECTOR, Some(0));
         Ok(())
     }
 
@@ -1455,6 +1514,13 @@ impl<H: X86HostOps> VmxVcpu<H> {
         );
     }
 
+    fn guest_osxsave_enabled(&self) -> X86VcpuResult<bool> {
+        let host_mask = VmcsControlNW::CR4_GUEST_HOST_MASK.read()?;
+        let guest_cr4 = (VmcsControlNW::CR4_READ_SHADOW.read()? & host_mask)
+            | (VmcsGuestNW::CR4.read()? & !host_mask);
+        Ok(guest_cr4 & Cr4Flags::OSXSAVE.bits() as usize != 0)
+    }
+
     fn handle_cpuid(&mut self) -> X86VcpuResult {
         use raw_cpuid::{CpuIdResult, cpuid};
 
@@ -1510,11 +1576,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
                 res
             }
             LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION => {
-                self.load_guest_xstate();
-                let res = cpuid!(regs_clone.rax, regs_clone.rcx);
-                self.load_host_xstate();
-
-                res
+                cpuid!(regs_clone.rax, regs_clone.rcx)
             }
             LEAF_HYPERVISOR_INFO => CpuIdResult {
                 eax: LEAF_HYPERVISOR_FEATURE,
@@ -1544,6 +1606,10 @@ impl<H: X86HostOps> VmxVcpu<H> {
             }
             _ => cpuid!(regs_clone.rax, regs_clone.rcx),
         };
+        let guest_osxsave = self.guest_osxsave_enabled()?;
+        let res =
+            self.xstate
+                .filter_guest_cpuid(function, regs_clone.rcx as u32, res, guest_osxsave);
 
         trace!(
             "VM exit: CPUID({:#x}, {:#x}): {:?}",
@@ -1561,61 +1627,29 @@ impl<H: X86HostOps> VmxVcpu<H> {
     }
 
     fn handle_xsetbv(&mut self) -> X86VcpuResult {
-        const XCR_XCR0: u64 = 0;
         const VM_EXIT_INSTR_LEN_XSETBV: u8 = 3;
 
         let index = self.guest_regs.rcx.get_bits(0..32);
         let value = self.guest_regs.rdx.get_bits(0..32) << 32 | self.guest_regs.rax.get_bits(0..32);
 
-        // TODO: get host-supported xcr0 mask by cpuid and reject any guest-xsetbv violating that
-        if index == XCR_XCR0 {
-            Xcr0::from_bits(value)
-                .and_then(|x| {
-                    if !x.contains(Xcr0::XCR0_FPU_MMX_STATE) {
-                        return None;
-                    }
+        let guest_osxsave = self.guest_osxsave_enabled()?;
+        let xcr0 = match self
+            .xstate
+            .validate_guest_xsetbv(index, value, guest_osxsave)
+        {
+            Ok(xcr0) => xcr0,
+            Err(XsetbvFault::InvalidOpcode) => {
+                self.queue_event(INVALID_OPCODE_VECTOR, None);
+                return Ok(());
+            }
+            Err(XsetbvFault::GeneralProtection) => {
+                self.queue_event(GENERAL_PROTECTION_VECTOR, Some(0));
+                return Ok(());
+            }
+        };
 
-                    if x.contains(Xcr0::XCR0_AVX_STATE) && !x.contains(Xcr0::XCR0_SSE_STATE) {
-                        return None;
-                    }
-
-                    if x.contains(Xcr0::XCR0_BNDCSR_STATE) ^ x.contains(Xcr0::XCR0_BNDREG_STATE) {
-                        return None;
-                    }
-
-                    let avx512_state = x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        || x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
-                    let avx512_state_complete = x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        && x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        && x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
-                    if avx512_state
-                        && (!avx512_state_complete
-                            || !x.contains(Xcr0::XCR0_AVX_STATE)
-                            || !x.contains(Xcr0::XCR0_SSE_STATE))
-                    {
-                        return None;
-                    }
-
-                    Some(x)
-                })
-                .ok_or(x86_err_type!(InvalidInput))
-                .and_then(|x| {
-                    self.xstate.guest_xcr0 = x.bits();
-                    self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
-                })
-        } else {
-            // xcr0 only
-            x86_err!(Unsupported, "only xcr0 is supported")
-        }
-    }
-
-    fn load_guest_xstate(&mut self) {
-        self.xstate.switch_to_guest();
-    }
-
-    fn load_host_xstate(&mut self) {
-        self.xstate.switch_to_host();
+        self.xstate.set_guest_xcr0(xcr0);
+        self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
     }
 }
 
@@ -1691,7 +1725,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         )
     }
 
-    pub fn run(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
+    pub fn run(&mut self, cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
+        self.xstate.validate_current_cpu(cpu_pin)?;
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
                 X86VmExit::FailEntry {
@@ -1832,7 +1867,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         }
     }
 
-    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
+    pub fn bind(&mut self, cpu_pin: &CpuPin) -> X86VcpuResult {
+        self.xstate.validate_current_cpu(cpu_pin)?;
         self.bind_to_current_processor()
     }
 

@@ -153,6 +153,7 @@ mod ept;
 #[cfg(not(feature = "vmx"))]
 pub(crate) mod regs;
 #[cfg(any(feature = "vmx", feature = "svm"))]
+#[macro_use]
 pub(crate) mod xstate;
 
 #[cfg(any(feature = "vmx", feature = "svm", test))]
@@ -223,6 +224,13 @@ pub use vendor::has_hardware_support;
 #[cfg(not(any(feature = "vmx", feature = "svm")))]
 pub fn has_hardware_support() -> bool {
     false
+}
+
+#[cfg(any(feature = "vmx", feature = "svm"))]
+pub(crate) fn capture_and_disable_host_interrupts() -> u64 {
+    let host_rflags = x86_64::registers::rflags::read().bits();
+    x86_64::instructions::interrupts::disable();
+    host_rflags
 }
 
 #[cfg(any(feature = "vmx", feature = "svm"))]

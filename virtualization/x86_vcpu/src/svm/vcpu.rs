@@ -2,13 +2,12 @@ use alloc::collections::VecDeque;
 use core::{
     arch::naked_asm,
     fmt::{Debug, Formatter, Result as FmtResult},
-    mem::{offset_of, size_of},
+    mem::{align_of, offset_of, size_of},
 };
 
 use ax_cpu_local::CpuPin;
 use bit_field::BitField;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
-use x86::controlregs::Xcr0;
 use x86_64::registers::{
     control::{Cr0Flags, Cr4Flags, EferFlags},
     rflags::RFlags,
@@ -24,9 +23,16 @@ use super::{
 use crate::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps,
     X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
-    X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit, host,
-    msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
+    X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit,
+    capture_and_disable_host_interrupts, host,
+    msr::Msr,
+    regs::GeneralRegisters,
+    restore_host_interrupt_flag, x86_real_mode_entry_state,
+    xstate::{
+        IA32_XSS_MSR, XSTATE_GUEST_AREA_OFFSET, XSTATE_GUEST_XCR0_OFFSET, XSTATE_GUEST_XSS_OFFSET,
+        XSTATE_HOST_AREA_OFFSET, XSTATE_HOST_XCR0_OFFSET, XSTATE_HOST_XSS_OFFSET,
+        XSTATE_XSAVE_AVAILABLE_OFFSET, XSTATE_XSAVES_AVAILABLE_OFFSET, XState, XsetbvFault,
+    },
 };
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -40,6 +46,8 @@ const X86_IOAPIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_BASE: usize = 0xfee0_0000;
 const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
+const INVALID_OPCODE_VECTOR: u8 = 6;
+const GENERAL_PROTECTION_VECTOR: u8 = 13;
 
 const APIC_BASE_MSR: u32 = 0x1b;
 const IA32_UMWAIT_CONTROL: u32 = 0xe1;
@@ -155,16 +163,18 @@ struct SvmWorldSwitchFrame {
     host_stack_top: u64,
     host_rflags: u64,
     host_vmcb_pa: u64,
+    xstate: XState,
 }
 
 impl SvmWorldSwitchFrame {
-    fn new(host_vmcb_pa: u64) -> Self {
-        Self {
+    fn new(host_vmcb_pa: u64) -> X86VcpuResult<Self> {
+        Ok(Self {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
             host_rflags: 0,
             host_vmcb_pa,
-        }
+            xstate: XState::new()?,
+        })
     }
 }
 
@@ -180,6 +190,7 @@ const _: () = {
         offset_of!(SvmWorldSwitchFrame, host_vmcb_pa)
             == size_of::<GeneralRegisters>() + 2 * size_of::<u64>()
     );
+    assert!(offset_of!(SvmWorldSwitchFrame, xstate).is_multiple_of(align_of::<XState>()));
 };
 
 /// Switches from host state to an SVM guest and restores host state on exit.
@@ -194,15 +205,13 @@ const _: () = {
 #[unsafe(naked)]
 unsafe extern "C" fn svm_world_switch(_frame: *mut SvmWorldSwitchFrame, _guest_vmcb_pa: u64) {
     naked_asm!(
-        "pushfq",
-        "pop qword ptr [rdi + {host_rflags}]",
         save_regs_no_rax!(),
         "mov [rdi + {host_stack_top}], rsp",
+        install_guest_xstate_from_rdi!(),
         "mov rax, rsi",
         // Guest FS/GS becomes live here. Nothing may call or return to Rust
         // until the second VMLOAD restores the host save area.
         "vmload rax",
-        "sti",
         "mov rsp, rdi",
         restore_regs_no_rax!(),
         "vmrun rax",
@@ -212,13 +221,24 @@ unsafe extern "C" fn svm_world_switch(_frame: *mut SvmWorldSwitchFrame, _guest_v
         "vmload rax",
         save_regs_no_rax!(),
         "mov rdi, rsp",
+        restore_host_xstate_from_rdi!(),
         "mov rsp, [rdi + {host_stack_top}]",
         restore_regs_no_rax!(),
         "ret",
         host_stack_top = const offset_of!(SvmWorldSwitchFrame, host_stack_top),
-        host_rflags = const offset_of!(SvmWorldSwitchFrame, host_rflags),
         host_vmcb_from_guest_rsp = const offset_of!(SvmWorldSwitchFrame, host_vmcb_pa)
             - size_of::<GeneralRegisters>(),
+        guest_xcr0 = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_GUEST_XCR0_OFFSET,
+        host_xcr0 = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_HOST_XCR0_OFFSET,
+        host_area = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_HOST_AREA_OFFSET,
+        guest_area = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_GUEST_AREA_OFFSET,
+        host_xss = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_HOST_XSS_OFFSET,
+        guest_xss = const offset_of!(SvmWorldSwitchFrame, xstate) + XSTATE_GUEST_XSS_OFFSET,
+        xsave_available = const offset_of!(SvmWorldSwitchFrame, xstate)
+            + XSTATE_XSAVE_AVAILABLE_OFFSET,
+        xsaves_available = const offset_of!(SvmWorldSwitchFrame, xstate)
+            + XSTATE_XSAVES_AVAILABLE_OFFSET,
+        ia32_xss = const IA32_XSS_MSR,
     );
 }
 
@@ -273,15 +293,13 @@ pub struct SvmVcpu<H: X86HostOps> {
     injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic<H>,
-    /// The XState of the VCpu. Both host and guest.
-    xstate: XState,
 }
 
 impl<H: X86HostOps> SvmVcpu<H> {
     fn create(vm_id: usize, vcpu_id: usize) -> X86VcpuResult<Self> {
         let load_save_states = VmLoadSaveStates::<H>::new()?;
         let vcpu = Self {
-            world_switch: SvmWorldSwitchFrame::new(load_save_states.phys_addr()),
+            world_switch: SvmWorldSwitchFrame::new(load_save_states.phys_addr())?,
             launched: false,
             entry: None,
             npt_root: None,
@@ -292,7 +310,6 @@ impl<H: X86HostOps> SvmVcpu<H> {
             pending_events: VecDeque::with_capacity(8),
             injecting_event: None,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
-            xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
         Ok(vcpu)
@@ -417,6 +434,10 @@ impl<H: X86HostOps> SvmVcpu<H> {
         // clears the host-required SVME bit stored in the VMCB.
         self.msrpm.set_read_intercept(Msr::IA32_EFER as u32, true);
         self.msrpm.set_write_intercept(Msr::IA32_EFER as u32, true);
+        // IA32_XSS remains host-owned. The guest receives a fixed zero view
+        // and cannot enable supervisor xstate behind the CPUID policy.
+        self.msrpm.set_read_intercept(IA32_XSS_MSR, true);
+        self.msrpm.set_write_intercept(IA32_XSS_MSR, true);
         // Match VMX's Linux direct-boot path: UMWAIT and AMD64_DE_CFG are
         // handled in software so guest probes do not leak host-specific state.
         self.msrpm.set_read_intercept(IA32_UMWAIT_CONTROL, true);
@@ -602,14 +623,6 @@ impl<H: X86HostOps> SvmVcpu<H> {
         }
     }
 
-    fn load_guest_xstate(&mut self) {
-        self.xstate.switch_to_guest();
-    }
-
-    fn load_host_xstate(&mut self) {
-        self.xstate.switch_to_host();
-    }
-
     fn inner_run(&mut self) -> X86VcpuResult<super::vmcb::SvmExitInfo> {
         loop {
             self.inject_pending_events()?;
@@ -649,6 +662,9 @@ impl<H: X86HostOps> SvmVcpu<H> {
             }
             Ok(SvmExitCode::MSR) if self.regs().rcx as u32 == Msr::IA32_EFER as u32 => {
                 Some(self.handle_efer_msr(exit_info))
+            }
+            Ok(SvmExitCode::MSR) if self.regs().rcx as u32 == IA32_XSS_MSR => {
+                Some(self.handle_xss_msr_access(exit_info))
             }
             Ok(SvmExitCode::MSR)
                 if matches!(self.regs().rcx as u32, IA32_UMWAIT_CONTROL | AMD64_DE_CFG) =>
@@ -767,6 +783,13 @@ impl<H: X86HostOps> SvmVcpu<H> {
         self.advance_rip(VM_EXIT_INSTR_LEN_MSR)
     }
 
+    fn handle_xss_msr_access(&mut self, _exit_info: &super::vmcb::SvmExitInfo) -> X86VcpuResult {
+        // CPUID hides XSAVES/XRSTORS, so IA32_XSS is architecturally absent
+        // from the guest capability model. Neither reads nor writes retire.
+        self.queue_event(GENERAL_PROTECTION_VECTOR, Some(0));
+        Ok(())
+    }
+
     fn guest_visible_efer(&self) -> u64 {
         unsafe { self.vmcb.as_vmcb_ref().state.efer.get() & !EFER_SVME }
     }
@@ -789,6 +812,10 @@ impl<H: X86HostOps> SvmVcpu<H> {
             efer &= !EFER_LMA;
         }
         vmcb.state.efer.set(efer);
+    }
+
+    fn guest_osxsave_enabled(&self) -> bool {
+        unsafe { self.vmcb.as_vmcb_ref().state.cr4.get() & Cr4Flags::OSXSAVE.bits() != 0 }
     }
 
     fn handle_cpuid(&mut self) -> X86VcpuResult {
@@ -873,10 +900,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
                 res
             }
             LEAF_PROCESSOR_EXTENDED_STATE_ENUMERATION => {
-                self.load_guest_xstate();
-                let res = cpuid!(regs_clone.rax, regs_clone.rcx);
-                self.load_host_xstate();
-                res
+                cpuid!(regs_clone.rax, regs_clone.rcx)
             }
             LEAF_EXTENDED_FEATURE_INFO => {
                 const FEATURE_SVM: u32 = 1 << 2;
@@ -919,6 +943,13 @@ impl<H: X86HostOps> SvmVcpu<H> {
             }
             _ => cpuid!(regs_clone.rax, regs_clone.rcx),
         };
+        let guest_osxsave = self.guest_osxsave_enabled();
+        let res = self.world_switch.xstate.filter_guest_cpuid(
+            function,
+            regs_clone.rcx as u32,
+            res,
+            guest_osxsave,
+        );
 
         let regs = self.regs_mut();
         regs.rax = res.eax as _;
@@ -929,50 +960,31 @@ impl<H: X86HostOps> SvmVcpu<H> {
     }
 
     fn handle_xsetbv(&mut self) -> X86VcpuResult {
-        const XCR_XCR0: u64 = 0;
         const VM_EXIT_INSTR_LEN_XSETBV: u8 = 3;
 
         let index = self.world_switch.guest_regs.rcx.get_bits(0..32);
         let value = self.world_switch.guest_regs.rdx.get_bits(0..32) << 32
             | self.world_switch.guest_regs.rax.get_bits(0..32);
 
-        if index == XCR_XCR0 {
-            Xcr0::from_bits(value)
-                .and_then(|x| {
-                    if !x.contains(Xcr0::XCR0_FPU_MMX_STATE) {
-                        return None;
-                    }
-                    if x.contains(Xcr0::XCR0_AVX_STATE) && !x.contains(Xcr0::XCR0_SSE_STATE) {
-                        return None;
-                    }
-                    if x.contains(Xcr0::XCR0_BNDCSR_STATE) ^ x.contains(Xcr0::XCR0_BNDREG_STATE) {
-                        return None;
-                    }
+        let guest_osxsave = self.guest_osxsave_enabled();
+        let xcr0 = match self
+            .world_switch
+            .xstate
+            .validate_guest_xsetbv(index, value, guest_osxsave)
+        {
+            Ok(xcr0) => xcr0,
+            Err(XsetbvFault::InvalidOpcode) => {
+                self.queue_event(INVALID_OPCODE_VECTOR, None);
+                return Ok(());
+            }
+            Err(XsetbvFault::GeneralProtection) => {
+                self.queue_event(GENERAL_PROTECTION_VECTOR, Some(0));
+                return Ok(());
+            }
+        };
 
-                    let avx512_state = x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        || x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        || x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
-                    let avx512_state_complete = x.contains(Xcr0::XCR0_OPMASK_STATE)
-                        && x.contains(Xcr0::XCR0_ZMM_HI256_STATE)
-                        && x.contains(Xcr0::XCR0_HI16_ZMM_STATE);
-                    if avx512_state
-                        && (!avx512_state_complete
-                            || !x.contains(Xcr0::XCR0_AVX_STATE)
-                            || !x.contains(Xcr0::XCR0_SSE_STATE))
-                    {
-                        return None;
-                    }
-
-                    Some(x)
-                })
-                .ok_or(x86_err_type!(InvalidInput))
-                .and_then(|x| {
-                    self.xstate.guest_xcr0 = x.bits();
-                    self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
-                })
-        } else {
-            x86_err!(Unsupported, "only xcr0 is supported")
-        }
+        self.world_switch.xstate.set_guest_xcr0(xcr0);
+        self.advance_rip(VM_EXIT_INSTR_LEN_XSETBV)
     }
 
     fn svm_io_exit_info(
@@ -1365,25 +1377,38 @@ impl<H: X86HostOps> SvmVcpu<H> {
     /// The caller must ensure SVM is enabled, this vCPU remains bound to the
     /// non-migrating current CPU, and its VMCB and nested page table are valid.
     /// This method restores host VMLOAD/VMSAVE state before it returns.
-    pub unsafe fn svm_run(&mut self) {
+    unsafe fn svm_run(&mut self) {
         let guest_vmcb_pa = self.vmcb.phys_addr().as_usize() as u64;
 
-        self.load_guest_xstate();
+        let host_rflags = capture_and_disable_host_interrupts();
+        self.world_switch.host_rflags = host_rflags;
         self.prepare_world_switch();
+        self.world_switch.xstate.capture_host();
+
+        // V_INTR_MASKING makes VMRUN sample the host IF bit to decide whether
+        // physical IRQs may interrupt the guest. GIF is already clear, so
+        // setting IF here cannot enter a host handler. Do it before the naked
+        // switch instead of using STI next to VMRUN; AMD CPUs can otherwise
+        // leak the STI shadow into guest state on an immediate VM exit.
+        x86_64::instructions::interrupts::enable();
 
         // SAFETY: `prepare_world_switch` saved the host VMLOAD/VMSAVE state,
-        // CLGI keeps host interrupts from entering the no-Rust window, and
-        // the exclusive borrow keeps the frame and both VMCBs live for the call.
+        // GIF remains clear while IF advertises interruptibility to VMRUN, the
+        // assembly owns XCR0/XSS until it restores the host values, and the
+        // exclusive borrow keeps the frame and both VMCBs live for the call.
         unsafe {
             svm_world_switch(&mut self.world_switch, guest_vmcb_pa);
         }
+
+        // GIF remains clear after VM exit. Clear IF before restoring GIF so
+        // the caller's original interrupt state is restored in one place.
+        x86_64::instructions::interrupts::disable();
 
         self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
         unsafe {
             super::instructions::stgi();
         }
-        self.load_host_xstate();
-        restore_host_interrupt_flag(self.world_switch.host_rflags);
+        restore_host_interrupt_flag(host_rflags);
     }
 }
 
@@ -1529,7 +1554,8 @@ impl<H: X86HostOps> SvmVcpu<H> {
         self.setup_vmcb(entry, npt_root, config)
     }
 
-    pub fn run(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
+    pub fn run(&mut self, cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
+        self.world_switch.xstate.validate_current_cpu(cpu_pin)?;
         {
             let exit_info = self.inner_run()?;
             let exit_code = match exit_info.exit_code {
@@ -1647,7 +1673,8 @@ impl<H: X86HostOps> SvmVcpu<H> {
         }
     }
 
-    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
+    pub fn bind(&mut self, cpu_pin: &CpuPin) -> X86VcpuResult {
+        self.world_switch.xstate.validate_current_cpu(cpu_pin)?;
         self.bind_to_current_processor()
     }
 
