@@ -217,7 +217,7 @@ function staggerClass(index) {
 function HeroBanner() {
   const heroStats = [
     { label: '核心系统', value: '3' },
-    { label: '共享组件', value: '190+' },
+    { label: '工作区包', value: '184' },
     { label: '主流架构', value: '4' },
     { label: '统一命令入口', value: 'xtask' },
   ];
@@ -250,7 +250,7 @@ function HeroBanner() {
           <p className="eyebrow">Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
-            ArceOS、StarryOS、Axvisor 三条系统路径共享 190+ Rust crate，
+            ArceOS、StarryOS、Axvisor 三条系统路径汇聚 184 个 workspace package，
             通过 cargo xtask 统一构建、QEMU 运行和分层验证，在同一仓库内完成从组件开发到系统集成的完整闭环。
           </p>
           <div className="hero-actions">
@@ -404,11 +404,103 @@ function HeroTerminal() {
 }
 
 /* ── Capability Section ──────────────────────────────────── */
+function CapabilityIllustration() {
+  const domains = [
+    { name: 'components/', detail: 'scheduler · fs · process', y: 140 },
+    { name: 'memory/', detail: 'allocator · page table · DMA/MMIO', y: 245 },
+    { name: 'drivers/', detail: 'blk · net · USB · NPU · PCI', y: 350 },
+    { name: 'virtualization/', detail: 'vCPU · VM · address space', y: 455 },
+  ];
+
+  const systems = [
+    { className: 'arceos', name: 'ArceOS', detail: 'Modular OS', y: 140 },
+    { className: 'starry', name: 'StarryOS', detail: 'Linux-compatible OS', y: 275 },
+    { className: 'axvisor', name: 'Axvisor', detail: 'Type-I hypervisor', y: 410 },
+  ];
+
+  const architectures = ['aarch64', 'riscv64', 'x86_64', 'loongarch64'];
+
+  return (
+    <figure className="capability-illustration card-reveal stagger-1">
+      <svg
+        aria-labelledby="capability-art-title capability-art-description"
+        className="capability-art"
+        role="img"
+        viewBox="0 0 1200 620"
+      >
+        <title id="capability-art-title">TGOSKits workspace capability map</title>
+        <desc id="capability-art-description">
+          Cargo xtask orchestrates reusable component, memory, driver and virtualization crates for ArceOS, StarryOS and Axvisor across four CPU architectures.
+        </desc>
+
+        <rect className="capability-art__frame" height="618" rx="28" width="1198" x="1" y="1" />
+
+        <g className="capability-art__connections">
+          <path d="M600 100 V165" />
+          {domains.map((domain) => (
+            <path d={`M290 ${domain.y + 37.5} H350 Q390 ${domain.y + 37.5} 410 285`} key={domain.name} />
+          ))}
+          {systems.map((system) => (
+            <path d={`M770 315 Q820 315 900 ${system.y + 45}`} key={system.name} />
+          ))}
+          <path d="M590 465 V505 H865" />
+          <path d="M415 505 H590" />
+          {[405, 555, 705, 855].map((x) => (<path d={`M${x} 505 V535`} key={x} />))}
+        </g>
+
+        <g className="capability-art__xtask">
+          <rect height="70" rx="18" width="280" x="460" y="30" />
+          <text className="capability-art__overline" textAnchor="middle" x="600" y="56">UNIFIED ORCHESTRATION</text>
+          <text className="capability-art__title" textAnchor="middle" x="600" y="83">cargo xtask</text>
+        </g>
+
+        {domains.map((domain) => (
+          <g className="capability-art__domain" key={domain.name}>
+            <rect height="75" rx="16" width="250" x="40" y={domain.y} />
+            <path d={`M68 ${domain.y + 23} h18 l7 8 h31 v25 h-56 z`} />
+            <text className="capability-art__node-title" x="138" y={domain.y + 32}>{domain.name}</text>
+            <text className="capability-art__node-copy" x="138" y={domain.y + 55}>{domain.detail}</text>
+          </g>
+        ))}
+
+        <g className="capability-art__workspace">
+          <rect height="300" rx="28" width="360" x="410" y="165" />
+          <text className="capability-art__overline" textAnchor="middle" x="590" y="207">TGOSKITS CARGO WORKSPACE</text>
+          <text className="capability-art__metric" textAnchor="middle" x="590" y="292">184</text>
+          <text className="capability-art__metric-label" textAnchor="middle" x="590" y="326">workspace packages</text>
+          <line x1="465" x2="715" y1="350" y2="350" />
+          <text className="capability-art__workspace-copy" textAnchor="middle" x="590" y="385">build · run · test · image · board</text>
+          <text className="capability-art__workspace-copy" textAnchor="middle" x="590" y="418">shared crates, explicit OS boundaries</text>
+        </g>
+
+        {systems.map((system) => (
+          <g className={`capability-art__system capability-art__system--${system.className}`} key={system.name}>
+            <rect height="90" rx="18" width="250" x="900" y={system.y} />
+            <text className="capability-art__system-title" x="930" y={system.y + 39}>{system.name}</text>
+            <text className="capability-art__node-copy" x="930" y={system.y + 65}>{system.detail}</text>
+          </g>
+        ))}
+
+        <text className="capability-art__overline" textAnchor="middle" x="630" y="526">ARCHITECTURE TARGETS</text>
+        {architectures.map((architecture, index) => (
+          <g className="capability-art__arch" key={architecture}>
+            <rect height="48" rx="14" width="130" x={340 + index * 150} y="535" />
+            <text textAnchor="middle" x={405 + index * 150} y="566">{architecture}</text>
+          </g>
+        ))}
+      </svg>
+      <figcaption>
+        基于当前仓库结构：<code>components/</code>、<code>memory/</code>、<code>drivers/</code>、<code>virtualization/</code> 通过统一 workspace 服务三条系统路径。
+      </figcaption>
+    </figure>
+  );
+}
+
 function CapabilitySection() {
   const features = [
     { icon: 'orbit', title: '统一构建入口', desc: 'cargo xtask 子命令覆盖构建、运行、测试与发布，单条命令切换系统路径与目标架构。', to: '/docs/build/overview' },
     { icon: 'layers', title: '组件化架构', desc: '内存分配、调度器、文件系统、网络栈等以独立 crate 提取，系统通过组合 crate 而非 fork 衍生。', to: '/docs/development/components' },
-    { icon: 'shield', title: 'Rust 内存安全', desc: '内核、驱动与虚拟化路径均基于 Rust 实现，在编译期消除缓冲区溢出与数据竞争等常见系统漏洞。', to: '/docs/architecture/overview' },
+    { icon: 'shield', title: 'Rust 内存安全', desc: '内核、驱动与虚拟化路径以 Rust 为主，通过所有权、类型系统与受控 unsafe 边界降低内存安全风险。', to: '/docs/architecture/overview' },
     { icon: 'pulse', title: '四架构支持', desc: 'riscv64、aarch64、x86_64、loongarch64 均可通过 xtask 一键构建与 QEMU 运行，接口统一而适配独立。', to: '/docs/introduction/platform' },
     { icon: 'chip', title: '镜像与快照闭环', desc: '从配置生成、交叉编译、镜像打包到 QEMU 启动与快照管理，构建产物可追溯、可复现。', to: '/docs/build/overview' },
     { icon: 'server', title: '分层验证策略', desc: 'Host 侧 cargo test 与 clippy 先行，系统级 QEMU 运行验证跟进，板级回归兜底，验证粒度逐层放大。', to: '/docs/build/overview' },
@@ -422,26 +514,36 @@ function CapabilitySection() {
       title="面向系统软件工程的核心工程能力"
       description="构建自动化、组件化架构、内存安全、多架构支持、镜像闭环与分层验证——覆盖从开发到发布的完整链路。"
     >
-      <div className="capability-board">
-        <Link className={`capability-spotlight ${staggerClass(0)}`} to={features[0].to}>
-          <div className="capability-spotlight__icon">{iconLibrary[features[0].icon]}</div>
-          <span className="capability-kicker">Primary Flow</span>
-          <h3>{features[0].title}</h3>
-          <p>{features[0].desc}</p>
-          <span className="capability-spotlight__link">查看构建系统</span>
-        </Link>
-        <div className="capability-lanes">
-          {features.slice(1).map((feature, i) => (
-            <Link className={`capability-lane ${staggerClass(i + 1)}`} key={feature.title} to={feature.to}>
-              <span className="capability-lane__index">0{i + 2}</span>
-              <div className="feature-icon">{iconLibrary[feature.icon]}</div>
-              <div className="capability-lane__body">
-                <h3>{feature.title}</h3>
-                <p>{feature.desc}</p>
-              </div>
-            </Link>
-          ))}
+      <div className="capability-showcase">
+        <CapabilityIllustration />
+        <div className="capability-narrative card-reveal stagger-2">
+          <span className="capability-narrative__eyebrow">Repository-backed view</span>
+          <h3>共享能力进入工作区，系统差异留在边界</h3>
+          <p>
+            TGOSKits 不是三套系统的简单集合。可复用能力以 crate 进入统一 workspace，
+            OS glue、平台适配和运行时策略则保留在各自边界，由 xtask 编排完整工程链路。
+          </p>
+          <dl className="capability-facts">
+            <div><dt>184</dt><dd>workspace packages</dd></div>
+            <div><dt>3</dt><dd>system paths</dd></div>
+            <div><dt>4</dt><dd>CPU architectures</dd></div>
+          </dl>
+          <Link className="capability-narrative__link" to="/docs/development/components">查看组件与边界</Link>
         </div>
+      </div>
+
+      <div className="capability-grid">
+        {features.map((feature, index) => (
+          <Link className={`capability-card ${staggerClass(index)}`} key={feature.title} to={feature.to}>
+            <div className="feature-icon">{iconLibrary[feature.icon]}</div>
+            <span className="capability-card__index">0{index + 1}</span>
+            <div className="capability-card__body">
+              <h3>{feature.title}</h3>
+              <p>{feature.desc}</p>
+            </div>
+            <span aria-hidden="true" className="capability-card__arrow">→</span>
+          </Link>
+        ))}
       </div>
     </SectionShell>
   );
