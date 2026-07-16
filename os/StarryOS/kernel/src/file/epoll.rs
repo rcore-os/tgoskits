@@ -419,6 +419,36 @@ impl Epoll {
         Self::default()
     }
 
+    /// Return whether this epoll instance can reach `target` through nested
+    /// epoll interests. Linux rejects a new edge that would make this graph
+    /// cyclic with ELOOP.
+    fn reaches_epoll(
+        &self,
+        target: &Arc<EpollInner>,
+        visited: &mut Vec<*const EpollInner>,
+    ) -> bool {
+        let current = Arc::as_ptr(&self.inner);
+        if !visited.contains(&current) {
+            visited.push(current);
+        } else {
+            return false;
+        }
+        if Arc::ptr_eq(&self.inner, target) {
+            return true;
+        }
+        let nested: Vec<Arc<Epoll>> = self
+            .inner
+            .interests
+            .lock()
+            .values()
+            .filter_map(|interest| interest.key.get_file())
+            .filter_map(|file| file.downcast_arc::<Epoll>().ok())
+            .collect();
+        nested
+            .iter()
+            .any(|epoll| epoll.reaches_epoll(target, visited))
+    }
+
     // only register waker, not add to ready queue
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
         let Some(file) = interest.key.get_file() else {
@@ -470,6 +500,17 @@ impl Epoll {
 
     pub fn add(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
+        if let Some(file) = key.get_file()
+            && let Ok(epoll) = file.downcast_arc::<Epoll>()
+        {
+            if Arc::ptr_eq(&epoll.inner, &self.inner) {
+                return Err(AxError::InvalidInput);
+            }
+            if epoll.reaches_epoll(&self.inner, &mut Vec::new()) {
+                return Err(AxError::FilesystemLoop);
+            }
+        }
+
         let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
         let target_capacity = {
             let guard = self.inner.interests.lock();
