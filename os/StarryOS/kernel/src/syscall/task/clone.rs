@@ -7,6 +7,7 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
+use scope_local::Scope;
 use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::VmMutPtr;
@@ -329,34 +330,32 @@ impl CloneArgs {
 
             *proc_data.nsproxy.lock() = new_nsproxy;
 
-            {
-                let mut scope = proc_data.scope.write();
-                if flags.contains(CloneFlags::FILES) {
-                    // Synchronize with close_all_fds: holding a read lock
-                    // ensures close_all_fds either observes our strong_count
-                    // increment or blocks on write lock until we release.
-                    let _guard = FD_TABLE.read();
-                    FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
-                } else {
-                    FD_TABLE
-                        .scope_mut(&mut scope)
-                        .write()
-                        .clone_from(&FD_TABLE.read());
-                }
-
-                if flags.contains(CloneFlags::FS) {
-                    FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
-                } else {
-                    let mut fs_context = FS_CONTEXT.lock().clone();
-                    if flags.contains(CloneFlags::NEWNS) {
-                        fs_context.unshare_mount_namespace()?;
-                    }
-                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
-                }
-            }
-
             proc_data
         };
+
+        let mut scope = Scope::new();
+        if flags.contains(CloneFlags::FILES) {
+            // Synchronize with close_all_fds: holding a read lock ensures
+            // close_all_fds either observes our strong-count increment or
+            // blocks until the new thread has installed the shared Arc.
+            let _guard = FD_TABLE.read();
+            FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
+        } else {
+            FD_TABLE
+                .scope_mut(&mut scope)
+                .write()
+                .clone_from(&FD_TABLE.read());
+        }
+
+        if flags.contains(CloneFlags::FS) {
+            FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
+        } else {
+            let mut fs_context = FS_CONTEXT.lock().clone();
+            if flags.contains(CloneFlags::NEWNS) {
+                fs_context.unshare_mount_namespace()?;
+            }
+            *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
+        }
 
         new_proc_data.proc.add_thread(tid);
 
@@ -366,6 +365,7 @@ impl CloneArgs {
             new_proc_data.clone(),
             parent_cred,
             curr_thread.signal.blocked(),
+            scope,
         );
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();

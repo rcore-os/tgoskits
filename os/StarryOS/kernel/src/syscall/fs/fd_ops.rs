@@ -20,7 +20,7 @@ use crate::{
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
-    task::AsThread,
+    task::{AsThread, get_task},
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -265,7 +265,11 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
     };
 
     let mnt_fs_ns = if ns_type_str == "mnt" {
-        let scope = proc_data.scope.read();
+        let task = match get_task(pid) {
+            Ok(task) => task,
+            Err(_) => return Some(Err(AxError::NotFound)),
+        };
+        let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())
@@ -494,9 +498,8 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
         let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
-        proc_data.with_current_scope_mut(|scope| {
+        curr.as_thread().with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });
     }

@@ -1,16 +1,18 @@
 use alloc::sync::Arc;
+use core::ops::DerefMut;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::general::{
-    CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_FILES, CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
+    CLONE_NEWUTS,
 };
 
 use crate::{
-    file::{NsFd, PidFd, get_file_like},
-    task::AsThread,
+    file::{FD_TABLE, NsFd, PidFd, get_file_like},
+    task::{AsThread, get_task},
 };
 
 const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
@@ -19,7 +21,10 @@ const SUPPORTED_NS_FLAGS: u32 = CLONE_NEWUTS
     | CLONE_NEWNET
     | CLONE_NEWIPC
     | CLONE_NEWUSER
-    | CLONE_FS;
+    | CLONE_FS
+    | CLONE_FILES;
+
+const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
 /// unshare(2) — disassociate parts of the process execution context.
 pub fn sys_unshare(flags: u32) -> AxResult<isize> {
@@ -32,6 +37,13 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
     let proc_data = &curr.as_thread().proc_data;
     let want_ns = flags & CLONE_NEWNS != 0;
     let want_fs = flags & CLONE_FS != 0;
+
+    if flags & CLONE_FILES != 0 {
+        let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
+        curr.as_thread().with_current_scope_mut(|scope| {
+            *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
+        });
+    }
 
     // Phase 1: spinlock-protected nsproxy ops (SpinNoIrq — no sleeping).
     {
@@ -68,7 +80,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         // scope.write() would self-deadlock because on_enter holds a
         // leaked scope.read() guard for the task's lifetime.  Temporarily
         // release it, do the rebind, then re-acquire.
-        proc_data.with_current_scope_mut(|scope| {
+        curr.as_thread().with_current_scope_mut(|scope| {
             *FS_CONTEXT.scope_mut(scope) = new_fs;
         });
     }
@@ -93,7 +105,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 ///   process attempts to change PID namespace
 /// * `EPERM` — insufficient privileges (e.g. user namespace restrictions)
 pub fn sys_setns(fd: u32, nstype: u32) -> AxResult<isize> {
-    if nstype != 0 && nstype & !SUPPORTED_NS_FLAGS != 0 {
+    if nstype != 0 && nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype {:#x}", nstype);
         return Err(AxError::InvalidInput);
     }
@@ -190,14 +202,15 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
         warn!("sys_setns: nstype must be non-zero for pidfd");
         return Err(AxError::InvalidInput);
     }
-    if nstype & !SUPPORTED_NS_FLAGS != 0 {
+    if nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype flags {:#x}", nstype);
         return Err(AxError::InvalidInput);
     }
 
     let target_proc = pidfd.process_data()?;
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
-        let scope = target_proc.scope.read();
+        let task = get_task(target_proc.proc.pid())?;
+        let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())

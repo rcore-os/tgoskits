@@ -6,9 +6,10 @@
  *
  * Scenarios:
  *   1. unshare(CLONE_FS) on independent task → returns 0.
- *   2. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
+ *   2. unshare(CLONE_FILES) in one thread leaves sibling fd tables unchanged.
+ *   3. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
  *      isolation: child chdir must not affect parent cwd.
- *   3. unshare(0xDEAD) → EINVAL.
+ *   4. unshare(0xDEAD) → EINVAL.
  *
  * Note: uses clone(CLONE_FS | SIGCHLD), NOT fork().  In this kernel
  * fork() does NOT share FS_CONTEXT, so a fork-based test would pass
@@ -17,6 +18,8 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +49,52 @@ struct clone_arg {
     int *shared;
     int barrier;
 };
+
+struct files_unshare_arg {
+    int fd;
+    int unshare_rc;
+    int unshare_errno;
+    int close_rc;
+};
+
+static void *unshare_files_thread(void *opaque) {
+    struct files_unshare_arg *arg = opaque;
+
+    errno = 0;
+    arg->unshare_rc = unshare(CLONE_FILES);
+    arg->unshare_errno = errno;
+    arg->close_rc = arg->unshare_rc == 0 ? close(arg->fd) : -1;
+    return NULL;
+}
+
+static void test_thread_unshare_files_isolation(void) {
+    int fd = open("/dev/null", O_RDONLY);
+    check(fd >= 0, "open fd shared by pthreads");
+
+    struct files_unshare_arg arg = {
+        .fd = fd,
+        .unshare_rc = -1,
+        .unshare_errno = 0,
+        .close_rc = -1,
+    };
+    pthread_t thread;
+    int rc = pthread_create(&thread, NULL, unshare_files_thread, &arg);
+    check(rc == 0, "create CLONE_FILES-sharing pthread (rc=%d)", rc);
+    if (rc == 0)
+        check(pthread_join(thread, NULL) == 0, "join CLONE_FILES pthread");
+
+    check(arg.unshare_rc == 0,
+          "pthread unshare(CLONE_FILES) succeeds (rc=%d, errno=%d)",
+          arg.unshare_rc, arg.unshare_errno);
+    check(arg.close_rc == 0, "pthread closes fd in its private table");
+
+    errno = 0;
+    check(fcntl(fd, F_GETFD) >= 0,
+          "calling thread retains fd after sibling unshare+close (errno=%d)", errno);
+    close(fd);
+
+    printf("UNSHARE_FILES_THREAD_ISOLATION_PASSED\n");
+}
 
 static int clone_child(void *arg) {
     struct clone_arg *a = (struct clone_arg *)arg;
@@ -86,6 +135,10 @@ static int clone_child(void *arg) {
 static void test_unshare_fs_basic(void) {
     int rc = unshare(CLONE_FS);
     check(rc == 0, "unshare(CLONE_FS) on independent task (rc=%d, errno=%d)",
+          rc, errno);
+
+    rc = unshare(CLONE_FILES);
+    check(rc == 0, "unshare(CLONE_FILES) on independent task (rc=%d, errno=%d)",
           rc, errno);
 
     char cwd[256];
@@ -155,6 +208,7 @@ static void test_unshare_invalid_flags(void) {
 }
 
 int main(void) {
+    test_thread_unshare_files_isolation();
     test_unshare_fs_basic();
     test_clone_fs_unshare_isolation();
     test_unshare_invalid_flags();

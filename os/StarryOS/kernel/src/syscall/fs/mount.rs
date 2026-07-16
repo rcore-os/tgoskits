@@ -93,7 +93,7 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
         let Some(thread) = task.try_as_thread() else {
             continue;
         };
-        let scope = thread.proc_data.scope.read();
+        let scope = thread.scope.read();
         let fd_table = FD_TABLE.scope(&scope).clone();
         drop(scope);
         let table = fd_table.read();

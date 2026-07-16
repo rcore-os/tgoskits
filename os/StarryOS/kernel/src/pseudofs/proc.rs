@@ -900,7 +900,7 @@ impl SimpleDirOps for ThreadFdDir {
             return Box::new(iter::empty());
         };
         let ids = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+            .scope(&task.as_thread().scope.read())
             .read()
             .ids()
             .map(|id| Cow::Owned(id.to_string()))
@@ -913,7 +913,7 @@ impl SimpleDirOps for ThreadFdDir {
         let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let path = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+            .scope(&task.as_thread().scope.read())
             .read()
             .get(fd as _)
             .ok_or(VfsError::NotFound)?
