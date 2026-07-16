@@ -486,8 +486,8 @@ bitflags! {
     }
 }
 
-pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
-    if first < 0 || last < first {
+pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
+    if last < first {
         return Err(AxError::InvalidInput);
     }
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
@@ -511,7 +511,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
     let mut closing = alloc::vec::Vec::new();
     if let Some(max_index) = fd_table.ids().next_back() {
-        for fd in first..=last.min(max_index as i32) {
+        for fd in first..=last.min(max_index as u32) {
             if cloexec {
                 if let Some(f) = fd_table.get_mut(fd as _) {
                     f.cloexec = true;
