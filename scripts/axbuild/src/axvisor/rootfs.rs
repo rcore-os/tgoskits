@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
@@ -55,13 +55,21 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
     let mut cargo = build::load_cargo_config(&request)?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
-    // Artifact conversion is a QEMU configuration choice. Propagate only the
-    // explicit `uefi`/`to_bin` request instead of guessing from the host arch.
-    cargo.to_bin = qemu.uefi || qemu.to_bin;
+    cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app
         .qemu(cargo, request.build_info_path, Some(qemu))
         .await
+}
+
+fn qemu_to_bin_requested(qemu: &QemuConfig) -> anyhow::Result<bool> {
+    if qemu.uefi && !qemu.to_bin {
+        bail!(
+            "QEMU config enables UEFI but does not request `to_bin = true`; set `to_bin = true` \
+             explicitly"
+        );
+    }
+    Ok(qemu.to_bin)
 }
 
 pub(super) async fn load_patched_qemu_config(
@@ -434,5 +442,16 @@ kernel_path = "{}"
             .unwrap(),
             Some(explicit)
         );
+    }
+
+    #[test]
+    fn qemu_uefi_without_to_bin_is_rejected() {
+        let qemu = QemuConfig {
+            uefi: true,
+            to_bin: false,
+            ..Default::default()
+        };
+
+        assert!(qemu_to_bin_requested(&qemu).is_err());
     }
 }

@@ -307,13 +307,13 @@ fn patch_starry_cargo_config_preserves_request_package() {
 }
 
 #[test]
-fn patch_starry_cargo_config_keeps_dynamic_platform_without_qemu() {
-    let request = request(
+fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
+    let mut request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    let build_info = StarryBuildInfo {
+    request.build_info_override = Some(StarryBuildInfo {
         env: HashMap::new(),
         features: vec![
             "common".to_string(),
@@ -323,31 +323,14 @@ fn patch_starry_cargo_config_keeps_dynamic_platform_without_qemu() {
         ],
         log: LogLevel::Info,
         max_cpu_num: Some(8),
-    };
-    let mut cargo = build_info.into_base_cargo_config_with_log(
-        STARRY_PACKAGE.to_string(),
-        "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
-        Vec::new(),
-    );
+    });
 
-    let metadata = crate::build::workspace_metadata().unwrap();
-    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
+    let err = load_cargo_config(&request).unwrap_err();
 
     assert!(
-        cargo
-            .features
-            .contains(&"ax-driver/rockchip-soc".to_string())
-    );
-    assert!(
-        cargo
-            .features
-            .contains(&"ax-driver/rockchip-sdhci".to_string())
-    );
-    assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert!(!cargo.env.contains_key("AX_PLATFORM"));
-    assert_eq!(
-        cargo.target,
-        "scripts/targets/std/pie/aarch64-unknown-linux-musl.json"
+        err.to_string()
+            .contains("feature `plat-dyn` is no longer supported"),
+        "{err:#}"
     );
 }
 
