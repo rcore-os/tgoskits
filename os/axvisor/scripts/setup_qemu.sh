@@ -211,6 +211,10 @@ EOF
   exit 1
 }
 
+# Only execute main logic when run directly (not sourced).
+# When sourced (e.g. by test scripts), only function/variable definitions are loaded.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+
 GUEST=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -443,3 +447,5 @@ if [[ "$GUEST" == "linux-x86_64-uefi" ]]; then
   echo "*** Linux x86_64 UEFI mode requires VT-x/VMX, KVM, and an OVMF-compatible firmware image."
   echo ""
 fi
+
+fi  # end of sourced-guard: [[ "${BASH_SOURCE[0]}" == "${0}" ]]
