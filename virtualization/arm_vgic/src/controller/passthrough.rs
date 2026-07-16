@@ -15,6 +15,22 @@ struct PhysicalInterruptState {
     configuration: PhysicalInterruptConfiguration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalConfigurationWrite {
+    IfChanged,
+    Required,
+}
+
+impl PhysicalConfigurationWrite {
+    fn is_required(
+        self,
+        previous: PhysicalInterruptConfiguration,
+        current: PhysicalInterruptConfiguration,
+    ) -> bool {
+        self == Self::Required || previous != current
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PhysicalInterruptSnapshot {
     spi: SpiId,
@@ -28,6 +44,7 @@ pub(super) struct PhysicalInterruptStateChange {
     binding: PhysicalInterruptBinding,
     previous: PhysicalInterruptState,
     current: PhysicalInterruptState,
+    configuration_write: PhysicalConfigurationWrite,
 }
 
 impl GicV3Controller {
@@ -293,6 +310,7 @@ impl GicV3Controller {
                             binding: completed.binding,
                             previous: completed.current,
                             current: completed.previous,
+                            configuration_write: PhysicalConfigurationWrite::IfChanged,
                         })
                     {
                         log::warn!(
@@ -323,13 +341,15 @@ impl GicV3Controller {
         &self,
         change: &PhysicalInterruptStateChange,
     ) -> Result<(), crate::GicV3BackendError> {
-        let configuration_changed = change.previous.configuration != change.current.configuration;
-        if configuration_changed && change.previous.enabled {
+        let configuration_write = change
+            .configuration_write
+            .is_required(change.previous.configuration, change.current.configuration);
+        if configuration_write && change.previous.enabled {
             self.inner
                 .backend
                 .set_physical_interrupt_enabled(change.binding, false)?;
         }
-        if configuration_changed
+        if configuration_write
             && let Err(error) = self
                 .inner
                 .backend
@@ -343,14 +363,14 @@ impl GicV3Controller {
             }
             return Err(error);
         }
-        let physical_enabled = change.previous.enabled && !configuration_changed;
+        let physical_enabled = change.previous.enabled && !configuration_write;
         if physical_enabled != change.current.enabled
             && let Err(error) = self
                 .inner
                 .backend
                 .set_physical_interrupt_enabled(change.binding, change.current.enabled)
         {
-            if configuration_changed {
+            if configuration_write {
                 let _ = self
                     .inner
                     .backend
@@ -493,16 +513,26 @@ impl ControllerState {
     pub(super) fn active_physical_interrupt_state_changes(
         &self,
         snapshots: &[PhysicalInterruptSnapshot],
+        physical_configuration_requests: &[SpiId],
     ) -> VgicResult<Vec<PhysicalInterruptStateChange>> {
         let mut changes = Vec::new();
         for snapshot in snapshots {
             let current = self.physical_interrupt_state(snapshot.spi)?;
-            if current != snapshot.state && self.active_vcpus.contains(&snapshot.binding.target()) {
+            let configuration_write = if physical_configuration_requests.contains(&snapshot.spi) {
+                PhysicalConfigurationWrite::Required
+            } else {
+                PhysicalConfigurationWrite::IfChanged
+            };
+            if (current != snapshot.state
+                || configuration_write == PhysicalConfigurationWrite::Required)
+                && self.active_vcpus.contains(&snapshot.binding.target())
+            {
                 changes.push(PhysicalInterruptStateChange {
                     spi: snapshot.spi,
                     binding: snapshot.binding,
                     previous: snapshot.state,
                     current,
+                    configuration_write,
                 });
             }
         }

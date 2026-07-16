@@ -31,9 +31,10 @@ impl GicV3Controller {
             let physical_snapshot = passthrough
                 .then(|| state.physical_interrupt_snapshot())
                 .transpose()?;
-            let candidates = state
+            let write = state
                 .distributor
                 .write(offset, width, value, &self.inner.config)?;
+            let (candidates, physical_configuration_requests) = write.into_parts();
             let mut wakes = Vec::new();
             if !passthrough {
                 for spi in candidates {
@@ -43,7 +44,10 @@ impl GicV3Controller {
                 }
             }
             let physical_state_changes = match physical_snapshot {
-                Some(snapshot) => state.active_physical_interrupt_state_changes(&snapshot)?,
+                Some(snapshot) => state.active_physical_interrupt_state_changes(
+                    &snapshot,
+                    &physical_configuration_requests,
+                )?,
                 None => Vec::new(),
             };
             (wakes, physical_state_changes)

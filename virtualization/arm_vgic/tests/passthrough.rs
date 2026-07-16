@@ -395,6 +395,43 @@ fn passthrough_updates_only_assigned_physical_spi_configuration() {
     );
 }
 
+#[test]
+fn passthrough_repeated_set_pending_writes_retrigger_physical_spi() {
+    const GICD_ISPENDR1: u64 = 0x204;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    controller
+        .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
+        .unwrap();
+    binding.load().unwrap();
+    backend
+        .records
+        .lock()
+        .unwrap()
+        .configured_interrupts
+        .clear();
+
+    let pending_bit = 1 << (spi.raw() - 32);
+    controller
+        .write_distributor(GICD_ISPENDR1, AccessWidth::Dword, pending_bit)
+        .unwrap();
+    controller
+        .write_distributor(GICD_ISPENDR1, AccessWidth::Dword, pending_bit)
+        .unwrap();
+
+    let configured = backend
+        .records
+        .lock()
+        .unwrap()
+        .configured_interrupts
+        .clone();
+    assert_eq!(configured.len(), 2);
+    assert!(configured.iter().all(|(_, state)| state.pending()));
+}
+
 fn config() -> GicV3Config {
     let guest_timer = PrivateInterruptMask::SGIS
         .with(IntId::Ppi(PpiId::new(27).unwrap()))
