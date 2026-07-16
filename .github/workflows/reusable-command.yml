@@ -235,12 +235,15 @@ jobs:
       - name: Upload coverage artifacts
         id: coverage_artifact
         if: always() && inputs.upload_coverage_artifacts
-        uses: mmkal/artifact.ci/upload@main
+        # Pinned from mmkal/artifact.ci main on 2026-07-16.
+        uses: mmkal/artifact.ci/upload@b8aba3046b03968e80bb65c1f5550817328a7bfa
         with:
           name: ${{ inputs.coverage_artifact_name != '' && inputs.coverage_artifact_name || format('coverage-{0}', github.job) }}
           path: |
             coverage/*.profdata
-            coverage/*-html/**
+            coverage/*-html/index.html
+            coverage/*-html/style.css
+            coverage/*-html/control.js
           if-no-files-found: warn
           retention-days: 7
           artifactci-visibility: public
@@ -401,12 +404,15 @@ jobs:
       - name: Upload coverage artifacts
         id: coverage_artifact
         if: always() && inputs.upload_coverage_artifacts
-        uses: mmkal/artifact.ci/upload@main
+        # Pinned from mmkal/artifact.ci main on 2026-07-16.
+        uses: mmkal/artifact.ci/upload@b8aba3046b03968e80bb65c1f5550817328a7bfa
         with:
           name: ${{ inputs.coverage_artifact_name != '' && inputs.coverage_artifact_name || format('coverage-{0}', github.job) }}
           path: |
             coverage/*.profdata
-            coverage/*-html/**
+            coverage/*-html/index.html
+            coverage/*-html/style.css
+            coverage/*-html/control.js
           if-no-files-found: warn
           retention-days: 7
           artifactci-visibility: public
