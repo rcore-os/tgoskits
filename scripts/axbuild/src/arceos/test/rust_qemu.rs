@@ -456,6 +456,19 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
+    fn arceos_rust_aarch64_qemu_config_converts_high_half_kernel_to_bin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
+        let qemu_path = root.join("qemu-aarch64.toml");
+        let config: QemuConfig =
+            toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
+
+        assert!(
+            config.to_bin,
+            "the AArch64 kernel is linked at a high-half address and QEMU must load its raw BIN"
+        );
+    }
+
+    #[test]
     fn arceos_rust_panic_path_qemu_uses_panic_backtrace_result_regex() {
         let mut cargo = rust_test_cargo_for_target("x86_64-unknown-none");
         let mut qemu = QemuConfig {
