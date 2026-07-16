@@ -1,9 +1,10 @@
 use axdevice::{DeviceModelId, DeviceRequirements, InterruptSourceKind, ResourceSlot};
 use axvm::machine::{
     Aarch64GicV3Profile, AddressRange, DeviceDisposition, DeviceInstanceId, FdtInterruptEncoding,
-    GuestMemoryRegion, HostDeviceId, HostDeviceSelector, HostFdtConfig, HostPlatformSnapshot,
-    InterruptControllerProfile, MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource,
-    VmMachinePlanner, VmMachineRequest, generate_host_fdt,
+    GuestMemoryRegion, HostConsoleEvidence, HostConsoleLocation, HostDeviceId, HostDeviceSelector,
+    HostFdtConfig, HostPlatformSnapshot, InterruptControllerProfile, MachineProfile,
+    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
+    generate_host_fdt,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
 use fdt_edit::{Fdt, Node, Property};
@@ -51,6 +52,44 @@ fn host_fdt_is_filtered_and_rebuilt_from_the_machine_plan() {
             .unwrap()
             .as_str(),
         Some("console=ttyAMA0")
+    );
+}
+
+#[test]
+fn live_authorized_passthrough_console_is_enabled_in_guest_fdt() {
+    let host = host_fdt();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let chosen = host.get_by_path_id("/chosen").unwrap();
+    host.node_mut(chosen).unwrap().set_property(string_property(
+        "stdout-path",
+        "/soc/serial@9000000:115200n8",
+    ));
+    let uart = host.get_by_path_id("/soc/serial@9000000").unwrap();
+    host.node_mut(uart)
+        .unwrap()
+        .set_property(string_property("status", "disabled"));
+    let host = host.encode().as_ref().to_vec();
+
+    let mut snapshot =
+        HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    snapshot
+        .grant_console_transfer(
+            HostConsoleLocation::MmioBase(0x0900_0000),
+            HostConsoleEvidence::LivePlatform,
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let uart = guest.get_by_path("/soc/serial@9000000").unwrap().as_node();
+
+    assert_eq!(
+        uart.get_property("status").and_then(Property::as_str),
+        Some("okay")
     );
 }
 

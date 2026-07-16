@@ -73,6 +73,7 @@ pub fn generate_host_fdt(
     sanitize_virtual_device_templates(&mut source, plan)?;
     let selected = selected_paths(plan, &mut source, config)?;
     let mut guest = clone_selected_tree(&source, &selected, config)?;
+    mark_passthrough_devices_available(&mut guest, plan)?;
     sanitize_path_tables(&mut guest)?;
     rebuild_memory(&mut guest, plan)?;
     patch_chosen(&mut guest, config)?;
@@ -186,6 +187,39 @@ fn clone_selected_tree(
         config,
     )?;
     Ok(guest)
+}
+
+fn mark_passthrough_devices_available(
+    guest: &mut Fdt,
+    plan: &VmMachinePlan,
+) -> MachinePlanResult<()> {
+    for device in plan
+        .host_devices()
+        .iter()
+        .filter(|device| device.disposition() == DeviceDisposition::Passthrough)
+    {
+        let path = device.id().as_str();
+        let Some(node_id) = guest.get_by_path_id(path) else {
+            continue;
+        };
+        let disabled = guest
+            .node(node_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("guest FDT passthrough device '{path}' disappeared"),
+            })?
+            .get_property("status")
+            .and_then(Property::as_str)
+            == Some("disabled");
+        if disabled {
+            guest
+                .node_mut(node_id)
+                .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                    detail: format!("guest FDT passthrough device '{path}' cannot be updated"),
+                })?
+                .set_property(string_property("status", "okay"));
+        }
+    }
+    Ok(())
 }
 
 fn copy_children(
