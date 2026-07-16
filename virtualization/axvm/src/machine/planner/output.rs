@@ -237,6 +237,7 @@ pub struct VmMachinePlan {
     identity_mappings: Vec<AddressRange>,
     virtual_devices: Vec<ResolvedVirtualDevice>,
     host_devices: Vec<PlannedHostDevice>,
+    assigned_host_interrupts: Vec<HostInterruptResource>,
     claims: Vec<HostDeviceId>,
     generated_firmware: Option<GeneratedFirmware>,
 }
@@ -253,6 +254,7 @@ pub(super) struct VmMachinePlanParts {
     pub(super) identity_mappings: Vec<AddressRange>,
     pub(super) virtual_devices: Vec<ResolvedVirtualDevice>,
     pub(super) host_devices: Vec<PlannedHostDevice>,
+    pub(super) assigned_host_interrupts: Vec<HostInterruptResource>,
     pub(super) claims: Vec<HostDeviceId>,
 }
 
@@ -291,6 +293,7 @@ impl VmMachinePlan {
             identity_mappings: parts.identity_mappings,
             virtual_devices: parts.virtual_devices,
             host_devices: parts.host_devices,
+            assigned_host_interrupts: parts.assigned_host_interrupts,
             claims: parts.claims,
             generated_firmware: None,
         }
@@ -314,6 +317,7 @@ impl VmMachinePlan {
             identity_mappings: Vec::new(),
             virtual_devices: Vec::new(),
             host_devices: Vec::new(),
+            assigned_host_interrupts: Vec::new(),
             claims: Vec::new(),
             generated_firmware: None,
         }
@@ -374,12 +378,9 @@ impl VmMachinePlan {
         &self.host_devices
     }
 
-    /// Iterates complete host interrupt identifiers owned by passthrough devices.
-    pub fn assigned_host_interrupts(&self) -> impl Iterator<Item = &HostInterruptResource> + '_ {
-        self.host_devices
-            .iter()
-            .filter(|device| device.disposition == DeviceDisposition::Passthrough)
-            .flat_map(PlannedHostDevice::interrupts)
+    /// Returns unique physical interrupt routes owned by passthrough devices.
+    pub fn assigned_host_interrupts(&self) -> &[HostInterruptResource] {
+        &self.assigned_host_interrupts
     }
 
     /// Iterates port-I/O ranges owned by passthrough devices.

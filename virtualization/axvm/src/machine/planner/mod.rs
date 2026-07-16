@@ -4,7 +4,11 @@ mod allocation;
 mod mapping;
 mod output;
 
-use alloc::{collections::BTreeSet, string::ToString, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::ToString,
+    vec::Vec,
+};
 
 use axdevice::{DeviceBackend, DeviceRequirement, InterruptSourceKind, MsiDeviceId};
 use axvm_types::VmMachineMode;
@@ -15,7 +19,8 @@ use self::{
     mapping::{plan_host_devices, plan_identity_mappings},
 };
 use super::{
-    HostDeviceSelector, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, MachineProfile,
+    DeviceDisposition, HostDeviceId, HostDeviceSelector, HostInterruptResource,
+    HostPlatformSnapshot, MachinePlanError, MachinePlanResult, MachineProfile,
     VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest, resolve_interrupt_controller,
 };
 
@@ -72,6 +77,7 @@ impl VmMachinePlanner {
             &denied_devices,
             &consumed_templates,
         )?;
+        let assigned_host_interrupts = resolve_assigned_host_interrupts(&host_devices)?;
         let claims = host_devices
             .iter()
             .filter(|device| device.disposition() == super::DeviceDisposition::Passthrough)
@@ -106,9 +112,41 @@ impl VmMachinePlanner {
             identity_mappings,
             virtual_devices: resolved_devices,
             host_devices,
+            assigned_host_interrupts,
             claims,
         }))
     }
+}
+
+fn resolve_assigned_host_interrupts(
+    host_devices: &[PlannedHostDevice],
+) -> MachinePlanResult<Vec<HostInterruptResource>> {
+    let mut routes_by_input = BTreeMap::<u32, (HostDeviceId, HostInterruptResource)>::new();
+    let mut assigned_host_interrupts = Vec::new();
+
+    for device in host_devices
+        .iter()
+        .filter(|device| device.disposition() == DeviceDisposition::Passthrough)
+    {
+        for interrupt in device.interrupts() {
+            let input = interrupt.input_u32();
+            if let Some((first_device, first_interrupt)) = routes_by_input.get(&input) {
+                if first_interrupt != interrupt {
+                    return Err(MachinePlanError::ConflictingHostInterrupt {
+                        input,
+                        first_device: first_device.to_string(),
+                        second_device: device.id().to_string(),
+                    });
+                }
+                continue;
+            }
+
+            routes_by_input.insert(input, (device.id().clone(), interrupt.clone()));
+            assigned_host_interrupts.push(interrupt.clone());
+        }
+    }
+
+    Ok(assigned_host_interrupts)
 }
 
 fn validate_request(request: &VmMachineRequest) -> MachinePlanResult<()> {

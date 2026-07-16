@@ -103,6 +103,19 @@ pub enum MachinePlanError {
         /// Trigger described by host firmware.
         actual: axvm_types::InterruptTriggerMode,
     },
+    /// Two passthrough devices described one controller input inconsistently.
+    #[error(
+        "passthrough devices '{first_device}' and '{second_device}' describe controller input \
+         {input} differently"
+    )]
+    ConflictingHostInterrupt {
+        /// Shared controller input whose route metadata disagreed.
+        input: u32,
+        /// First device that described the input.
+        first_device: String,
+        /// Later device whose description conflicted.
+        second_device: String,
+    },
     /// An architecture profile omitted a pool required by a configured model.
     #[error("machine profile has no {resource} pool required by virtual device '{device}'")]
     MissingResourcePool {

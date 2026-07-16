@@ -37,6 +37,7 @@ impl GuestBootPlatform for Aarch64Arch {
             let assigned_interrupts = vm_config
                 .machine_plan()
                 .assigned_host_interrupts()
+                .iter()
                 .map(crate::machine::HostInterruptResource::input_u32)
                 .collect::<alloc::vec::Vec<_>>();
             let roles = super::gic::Aarch64InterruptRoles::discover(

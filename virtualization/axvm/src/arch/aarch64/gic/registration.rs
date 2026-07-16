@@ -125,6 +125,7 @@ impl PreparedGicV3 {
         let assigned_interrupts = config
             .machine_plan()
             .assigned_host_interrupts()
+            .iter()
             .filter(|interrupt| interrupt.input_u32() >= 32)
             .cloned()
             .collect();

@@ -137,6 +137,7 @@ impl ArchOps for Riscv64Arch {
             config
                 .machine_plan()
                 .assigned_host_interrupts()
+                .iter()
                 .map(crate::machine::HostInterruptResource::input_u32)
                 .collect::<Vec<_>>()
         });

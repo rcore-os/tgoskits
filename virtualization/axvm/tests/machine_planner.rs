@@ -342,6 +342,77 @@ fn interrupt_deny_excludes_the_owning_passthrough_device() {
 }
 
 #[test]
+fn shared_passthrough_interrupt_is_planned_as_one_physical_route() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x8000, 0x1000).unwrap(), 32..=479).unwrap();
+    let shared_interrupt =
+        HostInterruptResource::controller_input(376, InterruptTriggerMode::LevelTriggered);
+    let snapshot = HostPlatformSnapshot::new(1)
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/soc/device-a").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_interrupt(shared_interrupt.clone()),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/soc/device-b").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_interrupt(shared_interrupt.clone()),
+        );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(plan.assigned_host_interrupts(), [shared_interrupt]);
+}
+
+#[test]
+fn shared_passthrough_interrupt_rejects_conflicting_trigger_modes() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x8000, 0x1000).unwrap(), 32..=479).unwrap();
+    let snapshot = HostPlatformSnapshot::new(1)
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/soc/device-a").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_interrupt(HostInterruptResource::controller_input(
+                376,
+                InterruptTriggerMode::LevelTriggered,
+            )),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/soc/device-b").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_interrupt(HostInterruptResource::controller_input(
+                376,
+                InterruptTriggerMode::EdgeTriggered,
+            )),
+        );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+
+    let error = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        MachinePlanError::ConflictingHostInterrupt {
+            input: 376,
+            first_device,
+            second_device,
+        } if first_device == "/soc/device-a" && second_device == "/soc/device-b"
+    ));
+}
+
+#[test]
 fn passthrough_punches_profile_owned_mmio_windows() {
     let profile = MachineProfile::new(AddressRange::new(0x8000, 0x1000).unwrap(), 64..=95)
         .unwrap()

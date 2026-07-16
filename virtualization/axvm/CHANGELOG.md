@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Coalesce identical passthrough-device references to a shared physical
+  interrupt input before controller registration, and reject inconsistent
+  route metadata during machine planning.
 - Select host-derived AArch64 CPU nodes by their `reg` hardware affinity and
   preserve the platform PSCI conduit while completing its calls inside the VM.
 - Let an authoritative live console capability identify an unprobed boot UART

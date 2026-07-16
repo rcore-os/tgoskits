@@ -231,6 +231,7 @@ fn guest_platform_from_plan(
         config
             .machine_plan()
             .assigned_host_interrupts()
+            .iter()
             .map(|interrupt| LoongArchGuestIrqRoute {
                 physical_irq: interrupt.input().value(),
                 guest_vector: interrupt.input().value(),

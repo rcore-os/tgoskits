@@ -227,6 +227,7 @@ fn planned_plic_sources(plan: &VmMachinePlan, source_count: u32) -> AxVmResult<B
     let mut sources = BTreeSet::new();
     for source in plan
         .assigned_host_interrupts()
+        .iter()
         .map(HostInterruptResource::input_u32)
         .chain(
             plan.virtual_devices()

@@ -78,8 +78,7 @@ fn init_vm_with(
             .config()
             .machine_plan()
             .assigned_host_interrupts()
-            .cloned()
-            .collect::<alloc::vec::Vec<_>>();
+            .to_vec();
         resources
             .arch_state_mut()
             .connect_external_irq_lines(interrupt_topology, &external_irq_sources)?;

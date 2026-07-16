@@ -1049,7 +1049,7 @@ fn show_vm_full_details(vm_id: usize) {
                 }
             }
 
-            let host_interrupts = plan.assigned_host_interrupts().collect::<Vec<_>>();
+            let host_interrupts = plan.assigned_host_interrupts();
             if !host_interrupts.is_empty() {
                 println!();
                 println!("  Assigned Host IRQs: {:?}", host_interrupts);
