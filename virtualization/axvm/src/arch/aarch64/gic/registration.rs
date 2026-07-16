@@ -1,4 +1,4 @@
-//! Unified construction of one VM's GICv3 controller and legacy config views.
+//! Construction of one VM's GICv3 controller from its immutable machine plan.
 
 use alloc::{sync::Arc, vec::Vec};
 
@@ -9,61 +9,90 @@ use arm_vgic::{
 use axdevice::{
     AxVmDevices, ControllerRole, GicV3DeviceSet, InterruptControllerId, InterruptTopology,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, VMInterruptMode};
+use axvm_types::{GuestPhysAddr, InterruptDelivery, VmMachineMode};
 
 use super::{
     HostSpiForwarding, VcpuRoute, backend, list_register_count, physical_spi_count,
     resolve_physical_irq,
 };
-use crate::{AxVmError, AxVmResult, config::AxVMConfig, vm::prepare::vcpus::VcpuPlacement};
+use crate::{
+    AxVmError, AxVmResult,
+    config::AxVMConfig,
+    machine::{Aarch64GicV3Plan, HostInterruptResource, InterruptControllerPlan},
+    vm::prepare::vcpus::VcpuPlacement,
+};
 
 const PRIMARY_GIC: InterruptControllerId = InterruptControllerId::new(0);
-const GICR_FRAME_SIZE: usize = 0x2_0000;
 
-/// GICv3 resources prepared before ordinary interrupt-producing devices.
+/// GICv3 resources prepared before interrupt-producing devices.
 pub(crate) struct PreparedGicV3 {
     controller: Arc<GicV3Controller>,
     backend: Arc<super::AxvmGicV3Backend>,
     device_set: GicV3DeviceSet,
-    ordinary_devices: Vec<EmulatedDeviceConfig>,
+    assigned_interrupts: Vec<HostInterruptResource>,
 }
 
 impl PreparedGicV3 {
-    /// Parses legacy GIC frame rows into one validated controller configuration.
+    /// Creates the mandatory controller from the architecture profile selected
+    /// by [`crate::machine::VmMachinePlanner`].
     pub(crate) fn from_vm_config(
         vm_id: usize,
         config: &AxVMConfig,
         placements: &[VcpuPlacement],
-    ) -> AxVmResult<Option<Self>> {
-        let frames = LegacyGicFrames::parse(config.emu_devices())?;
-        let Some(mut parsed) = frames.into_config(config.interrupt_mode(), placements)? else {
-            return Ok(None);
-        };
-        if parsed.config.mode() == GicV3Mode::Passthrough {
+    ) -> AxVmResult<Self> {
+        let layout = aarch64_layout(config)?;
+        let mode = gic_mode(config.interrupt_delivery());
+        let mut gic_config = GicV3Config::new(
+            mode,
+            mmio_region(layout.distributor(), "Distributor")?,
+            mmio_region(layout.redistributors(), "Redistributor")?,
+            layout.redistributor_stride(),
+            placements.len(),
+        )
+        .and_then(|config| config.with_list_register_count(list_register_count()))
+        .and_then(|config| config.with_spi_count(layout.spi_count() as usize))
+        .map_err(|error| AxVmError::interrupt("validate GICv3 configuration", error))?;
+
+        if let Some(its) = layout.its() {
+            if mode == GicV3Mode::Passthrough {
+                return Err(AxVmError::unsupported(
+                    "configure passthrough GICv3 ITS",
+                    "no isolated physical ITS command capability is registered",
+                ));
+            }
+            gic_config = gic_config
+                .with_its(mmio_region(its, "ITS")?)
+                .map_err(|error| AxVmError::interrupt("validate GICv3 ITS", error))?;
+        }
+
+        if config.machine_mode() == VmMachineMode::Passthrough {
+            let spi_count = physical_spi_count()
+                .map_err(|error| AxVmError::interrupt("inspect physical GICv3", error))?;
+            gic_config = gic_config.with_spi_count(spi_count).map_err(|error| {
+                AxVmError::interrupt("apply physical GICv3 SPI capability", error)
+            })?;
+        }
+        if mode == GicV3Mode::Passthrough {
             let roles = config.arch().interrupt_roles().ok_or_else(|| {
                 AxVmError::invalid_config(
                     "AArch64 passthrough interrupt roles were not prepared before GIC creation",
                 )
             })?;
-            let spi_count = physical_spi_count()
-                .map_err(|error| AxVmError::interrupt("inspect physical GICv3", error))?;
-            parsed.config = parsed
-                .config
-                .with_spi_count(spi_count)
-                .and_then(|config| {
-                    config.with_passthrough_private_interrupts(roles.guest_private_interrupts())
-                })
+            gic_config = gic_config
+                .with_passthrough_private_interrupts(roles.guest_private_interrupts())
                 .map_err(|error| {
-                    AxVmError::interrupt("apply physical GICv3 capabilities", error)
+                    AxVmError::interrupt("apply physical GICv3 private IRQ ownership", error)
                 })?;
             debug!(
                 "VM[{vm_id}] GICv3 passthrough roles: host-reserved={:?}, guest-timers={:?}, \
-                 SPIs={spi_count}",
+                 SPIs={}",
                 roles.host_reserved(),
-                roles.guest_timers()
+                roles.guest_timers(),
+                gic_config.spi_count()
             );
         }
-        let passthrough = parsed.config.mode() == GicV3Mode::Passthrough;
+
+        let passthrough = mode == GicV3Mode::Passthrough;
         let routes = placements
             .iter()
             .map(|placement| {
@@ -73,32 +102,41 @@ impl PreparedGicV3 {
                     placement
                         .phys_cpu_set
                         .and_then(single_host_cpu)
-                        .unwrap_or(placement.phys_cpu_id)
+                        .or_else(|| {
+                            super::super::capabilities::logical_cpu_id(placement.phys_cpu_id)
+                        })
+                        .unwrap_or(placement.id)
                 };
                 let affinity = GicAffinity::from_mpidr(placement.phys_cpu_id as u64);
                 Ok(VcpuRoute::new(placement.id, host_cpu, affinity))
             })
             .collect::<AxVmResult<Vec<_>>>()?;
         let backend = backend(vm_id, routes);
-        let controller = match parsed.config.mode() {
+        let controller = match mode {
             GicV3Mode::Emulated => GicV3Controller::new_with_guest_memory(
-                parsed.config,
+                gic_config,
                 backend.clone(),
                 Some(Arc::new(VmGuestMemory { vm_id })),
             ),
-            GicV3Mode::Passthrough => GicV3Controller::new(parsed.config, backend.clone()),
+            GicV3Mode::Passthrough => GicV3Controller::new(gic_config, backend.clone()),
         }
         .map_err(|error| AxVmError::interrupt("create GICv3 controller", error))?;
         let controller = Arc::new(controller);
-        Ok(Some(Self {
+        let assigned_interrupts = config
+            .machine_plan()
+            .assigned_host_interrupts()
+            .filter(|interrupt| interrupt.input_u32() >= 32)
+            .cloned()
+            .collect();
+        Ok(Self {
             device_set: GicV3DeviceSet::new(controller.clone(), PRIMARY_GIC),
             controller,
             backend,
-            ordinary_devices: parsed.ordinary_devices,
-        }))
+            assigned_interrupts,
+        })
     }
 
-    /// Registers controller capabilities and all configured MMIO frames atomically.
+    /// Registers controller capabilities and all MMIO frames atomically.
     pub(crate) fn register(
         &self,
         devices: &mut AxVmDevices,
@@ -112,33 +150,30 @@ impl PreparedGicV3 {
             .map_err(Into::into)
     }
 
-    /// Connects every discovered physical SPI according to the controller mode.
+    /// Connects every assigned physical SPI according to the controller mode.
     pub(crate) fn connect_physical_spis(
         &self,
-        config: &AxVMConfig,
         topology: &InterruptTopology,
     ) -> AxVmResult<Option<HostSpiForwarding>> {
         match self.controller.config().mode() {
             GicV3Mode::Emulated => HostSpiForwarding::connect(
                 topology,
                 PRIMARY_GIC,
-                config.pass_through_spis(),
+                &self.assigned_interrupts,
                 self.backend.clone(),
             )
             .map(Some),
             GicV3Mode::Passthrough => {
-                self.bind_passthrough_spis(config)?;
+                self.bind_passthrough_spis()?;
                 Ok(None)
             }
         }
     }
 
-    fn bind_passthrough_spis(&self, config: &AxVMConfig) -> AxVmResult {
+    fn bind_passthrough_spis(&self) -> AxVmResult {
         let target = GicVcpuId::new(0);
-        for spi in config.pass_through_spis() {
-            let intid = spi
-                .checked_add(32)
-                .ok_or_else(|| AxVmError::invalid_config("passthrough SPI INTID overflows u32"))?;
+        for interrupt in &self.assigned_interrupts {
+            let intid = interrupt.input_u32();
             let spi = SpiId::new(intid)
                 .map_err(|error| AxVmError::interrupt("validate passthrough SPI", error))?;
             let host = resolve_physical_irq(intid)
@@ -161,189 +196,45 @@ impl PreparedGicV3 {
     pub(crate) fn emulates_interrupts(&self) -> bool {
         self.controller.config().mode() == GicV3Mode::Emulated
     }
+}
 
-    pub(crate) fn ordinary_devices(&self) -> &[EmulatedDeviceConfig] {
-        &self.ordinary_devices
+fn aarch64_layout(config: &AxVMConfig) -> AxVmResult<&Aarch64GicV3Plan> {
+    match config.machine_plan().interrupt_controller() {
+        Some(InterruptControllerPlan::Aarch64GicV3(layout)) => Ok(layout),
+        Some(_) => Err(AxVmError::invalid_config(
+            "AArch64 VM machine plan contains a controller for another architecture",
+        )),
+        None => Err(AxVmError::invalid_config(
+            "AArch64 VM machine plan has no mandatory GICv3 controller",
+        )),
     }
 }
 
-struct ParsedGicV3Config {
-    config: GicV3Config,
-    ordinary_devices: Vec<EmulatedDeviceConfig>,
-}
-
-#[derive(Default)]
-struct LegacyGicFrames {
-    distributor: Option<EmulatedDeviceConfig>,
-    redistributors: Option<EmulatedDeviceConfig>,
-    its: Option<EmulatedDeviceConfig>,
-    ordinary_devices: Vec<EmulatedDeviceConfig>,
-}
-
-impl LegacyGicFrames {
-    fn parse(configs: &[EmulatedDeviceConfig]) -> AxVmResult<Self> {
-        let mut frames = Self::default();
-        for config in configs {
-            match config.emu_type {
-                EmulatedDeviceType::InterruptController => {
-                    return Err(AxVmError::unsupported(
-                        "configure AArch64 interrupt controller",
-                        alloc::format!(
-                            "device '{}' requests the removed GICv2 interface",
-                            config.name
-                        ),
-                    ));
-                }
-                EmulatedDeviceType::GPPTDistributor => {
-                    set_unique_frame(&mut frames.distributor, config, "Distributor")?;
-                }
-                EmulatedDeviceType::GPPTRedistributor => {
-                    set_unique_frame(&mut frames.redistributors, config, "Redistributor")?;
-                }
-                EmulatedDeviceType::GPPTITS => {
-                    set_unique_frame(&mut frames.its, config, "ITS")?;
-                }
-                _ => frames.ordinary_devices.push(config.clone()),
-            }
-        }
-        Ok(frames)
-    }
-
-    fn into_config(
-        self,
-        mode: VMInterruptMode,
-        placements: &[VcpuPlacement],
-    ) -> AxVmResult<Option<ParsedGicV3Config>> {
-        let has_any_frame =
-            self.distributor.is_some() || self.redistributors.is_some() || self.its.is_some();
-        if !has_any_frame {
-            if mode == VMInterruptMode::Emulated {
-                return Err(AxVmError::invalid_config(
-                    "an emulated AArch64 VM requires GICv3 Distributor and Redistributor rows",
-                ));
-            }
-            return Ok(None);
-        }
-        if mode == VMInterruptMode::NoIrq {
-            return Err(AxVmError::unsupported(
-                "configure GICv3",
-                "interrupt_mode=no_irq cannot register an interrupt controller",
-            ));
-        }
-        let distributor = required_frame(self.distributor, "Distributor")?;
-        let redistributors = required_frame(self.redistributors, "Redistributor")?;
-        let (redistributor_region, stride) = redistributor_region(&redistributors, placements)?;
-        let mut config = GicV3Config::new(
-            gic_mode(mode)?,
-            mmio_region(&distributor, "Distributor")?,
-            redistributor_region,
-            stride,
-            placements.len(),
-        )
-        .and_then(|config| config.with_list_register_count(list_register_count()))
-        .map_err(|error| AxVmError::interrupt("validate GICv3 configuration", error))?;
-        if let Some(its) = &self.its {
-            validate_legacy_its_arguments(its)?;
-            if mode == VMInterruptMode::Passthrough {
-                return Err(AxVmError::unsupported(
-                    "configure passthrough GICv3 ITS",
-                    "no isolated physical ITS command capability is registered; the guest must \
-                     not access the host GITS frame",
-                ));
-            }
-            config = config
-                .with_its(mmio_region(its, "ITS")?)
-                .map_err(|error| AxVmError::interrupt("validate GICv3 ITS", error))?;
-        }
-        Ok(Some(ParsedGicV3Config {
-            config,
-            ordinary_devices: self.ordinary_devices,
-        }))
-    }
-}
-
-fn set_unique_frame(
-    slot: &mut Option<EmulatedDeviceConfig>,
-    config: &EmulatedDeviceConfig,
+fn mmio_region(
+    range: crate::machine::AddressRange,
     frame: &'static str,
-) -> AxVmResult {
-    if slot.is_some() {
-        return Err(AxVmError::invalid_config(alloc::format!(
-            "multiple GICv3 {frame} rows are configured"
-        )));
-    }
-    *slot = Some(config.clone());
-    Ok(())
-}
-
-fn required_frame(
-    frame: Option<EmulatedDeviceConfig>,
-    name: &'static str,
-) -> AxVmResult<EmulatedDeviceConfig> {
-    frame.ok_or_else(|| AxVmError::invalid_config(alloc::format!("GICv3 {name} row is missing")))
-}
-
-fn mmio_region(config: &EmulatedDeviceConfig, frame: &'static str) -> AxVmResult<GicV3MmioRegion> {
-    GicV3MmioRegion::new(config.base_gpa as u64, config.length as u64).map_err(|error| {
-        AxVmError::invalid_config(alloc::format!(
-            "GICv3 {frame} device '{}': {error}",
-            config.name
-        ))
+) -> AxVmResult<GicV3MmioRegion> {
+    GicV3MmioRegion::new(range.base(), range.size()).map_err(|error| {
+        AxVmError::invalid_config(alloc::format!("GICv3 {frame} range is invalid: {error}"))
     })
 }
 
-fn redistributor_region(
-    config: &EmulatedDeviceConfig,
-    placements: &[VcpuPlacement],
-) -> AxVmResult<(GicV3MmioRegion, u64)> {
-    let configured_vcpus = required_argument(config, 0, "vCPU count")?;
-    let stride = required_argument(config, 1, "Redistributor stride")?;
-    let first_host_cpu = required_argument(config, 2, "first physical CPU")?;
-    if configured_vcpus != placements.len() {
-        return Err(AxVmError::invalid_config(alloc::format!(
-            "GICv3 Redistributor row describes {configured_vcpus} vCPUs, but the VM has {}",
-            placements.len()
-        )));
-    }
-    if config.length < GICR_FRAME_SIZE || config.length > stride {
-        return Err(AxVmError::invalid_config(alloc::format!(
-            "GICv3 Redistributor frame length {:#x} must be in {GICR_FRAME_SIZE:#x}..={stride:#x}",
-            config.length
-        )));
-    }
-    for (index, placement) in placements.iter().enumerate() {
-        let expected = first_host_cpu.checked_add(index).ok_or_else(|| {
-            AxVmError::invalid_config("GICv3 Redistributor physical CPU range overflows")
-        })?;
-        if placement.phys_cpu_id != expected {
-            return Err(AxVmError::invalid_config(alloc::format!(
-                "GICv3 Redistributor vCPU {} expects physical CPU {expected}, but placement uses \
-                 {}",
-                placement.id,
-                placement.phys_cpu_id
-            )));
-        }
-    }
-    let region_size = stride
-        .checked_mul(placements.len())
-        .ok_or_else(|| AxVmError::invalid_config("GICv3 Redistributor region size overflows"))?;
-    let region = GicV3MmioRegion::new(config.base_gpa as u64, region_size as u64)
-        .map_err(AxVmError::invalid_config)?;
-    Ok((region, stride as u64))
-}
-
 fn fixed_host_cpu(placement: &VcpuPlacement) -> AxVmResult<usize> {
-    let mask = placement.phys_cpu_set.ok_or_else(|| {
+    if let Some(mask) = placement.phys_cpu_set {
+        return single_host_cpu(mask).ok_or_else(|| {
+            AxVmError::invalid_config(alloc::format!(
+                "AArch64 passthrough vCPU {} requires one fixed physical CPU, but mask {mask:#x} \
+                 does not select exactly one CPU",
+                placement.id
+            ))
+        });
+    }
+
+    super::super::capabilities::logical_cpu_id(placement.phys_cpu_id).ok_or_else(|| {
         AxVmError::invalid_config(alloc::format!(
-            "AArch64 passthrough vCPU {} has no fixed physical CPU mask",
-            placement.id
-        ))
-    })?;
-    single_host_cpu(mask).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
-            "AArch64 passthrough vCPU {} requires one fixed physical CPU, but mask {mask:#x} does \
-             not select exactly one CPU",
-            placement.id
+            "AArch64 passthrough vCPU {} hardware ID {:#x} is not present in the host CPU topology",
+            placement.id,
+            placement.phys_cpu_id
         ))
     })
 }
@@ -352,37 +243,10 @@ fn single_host_cpu(mask: usize) -> Option<usize> {
     (mask.count_ones() == 1).then(|| mask.trailing_zeros() as usize)
 }
 
-fn required_argument(
-    config: &EmulatedDeviceConfig,
-    index: usize,
-    name: &'static str,
-) -> AxVmResult<usize> {
-    config.cfg_list.get(index).copied().ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
-            "GICv3 device '{}' requires {name} in cfg_list[{index}]",
-            config.name
-        ))
-    })
-}
-
-fn validate_legacy_its_arguments(config: &EmulatedDeviceConfig) -> AxVmResult {
-    if config.cfg_list.len() > 1 {
-        return Err(AxVmError::invalid_config(alloc::format!(
-            "GICv3 ITS device '{}' accepts at most the legacy host base argument",
-            config.name
-        )));
-    }
-    Ok(())
-}
-
-fn gic_mode(mode: VMInterruptMode) -> AxVmResult<GicV3Mode> {
+fn gic_mode(mode: InterruptDelivery) -> GicV3Mode {
     match mode {
-        VMInterruptMode::Emulated => Ok(GicV3Mode::Emulated),
-        VMInterruptMode::Passthrough => Ok(GicV3Mode::Passthrough),
-        VMInterruptMode::NoIrq => Err(AxVmError::unsupported(
-            "configure GICv3",
-            "interrupt_mode=no_irq has no GICv3 mode",
-        )),
+        InterruptDelivery::Mediated => GicV3Mode::Emulated,
+        InterruptDelivery::Direct => GicV3Mode::Passthrough,
     }
 }
 

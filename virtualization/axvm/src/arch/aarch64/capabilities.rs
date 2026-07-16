@@ -1,9 +1,7 @@
 //! AArch64 implementations of AxVM platform capability hooks.
 
-use alloc::format;
-
 use ax_std::os::arceos::modules::ax_hal;
-use axvm_types::VMInterruptMode;
+use axvm_types::InterruptDelivery;
 
 use super::Aarch64Arch;
 use crate::{
@@ -33,16 +31,22 @@ impl GuestBootPlatform for Aarch64Arch {
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
         let guest_dtb = super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)?;
-        if vm_config.interrupt_mode() == VMInterruptMode::Passthrough {
+        if vm_config.interrupt_delivery() == InterruptDelivery::Direct {
             let host_ipi = ax_hal::irq::ipi_irq().hwirq.0;
             let host_timer = ax_hal::time::irq_num().hwirq.0;
+            let assigned_interrupts = vm_config
+                .machine_plan()
+                .assigned_host_interrupts()
+                .map(crate::machine::HostInterruptResource::input_u32)
+                .collect::<alloc::vec::Vec<_>>();
             let roles = super::gic::Aarch64InterruptRoles::discover(
-                host_ipi,
-                host_timer,
-                super::fdt::try_get_host_fdt(),
-                guest_dtb.as_ref().map(|dtb| dtb.as_bytes()),
-                vm_config.host_reserved_intids(),
-                vm_config.pass_through_spis(),
+                super::gic::Aarch64InterruptDiscovery {
+                    host_ipi_intid: host_ipi,
+                    host_timer_intid: host_timer,
+                    host_fdt_bytes: super::fdt::try_get_host_fdt(),
+                    guest_fdt_bytes: guest_dtb.as_ref().map(|dtb| dtb.as_bytes()),
+                    passthrough_intids: &assigned_interrupts,
+                },
             )?;
             vm_config.arch_mut().set_interrupt_roles(roles);
         }
@@ -58,10 +62,13 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<u32> {
-    (specifier.first().copied() == Some(0))
-        .then(|| specifier.get(1).copied())
-        .flatten()
+pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
+    ax_hal::dtb::get_fdt().map(|fdt| fdt.as_slice())
+}
+
+pub(super) fn logical_cpu_id(hardware_cpu_id: usize) -> Option<usize> {
+    (0..ax_hal::cpu_num())
+        .find(|logical_cpu_id| ax_hal::cpu_hardware_id(*logical_cpu_id) == Some(hardware_cpu_id))
 }
 
 pub(super) fn patch_runtime_fdt(
@@ -79,29 +86,5 @@ pub(super) fn patch_runtime_fdt(
         initrd,
         true,
     )?;
-    super::fdt::patch_emulated_timer_interrupts(&patched, crate_config.devices.interrupt_mode)
-}
-
-pub(super) fn patch_provided_fdt(
-    provided_dtb: &[u8],
-    host_dtb: Option<&[u8]>,
-    crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
-    let provided_fdt = fdt_edit::Fdt::from_bytes(provided_dtb).map_err(|err| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse provided DTB image: {err:#?}")
-        )
-    })?;
-    let host_fdt = host_dtb
-        .map(fdt_edit::Fdt::from_bytes)
-        .transpose()
-        .map_err(|err| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse host DTB image: {err:#?}")
-            )
-        })?;
-    let patched = super::fdt::update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)?;
-    super::fdt::patch_emulated_timer_interrupts(&patched, crate_config.devices.interrupt_mode)
+    super::fdt::patch_emulated_timer_interrupts(&patched, crate_config.machine.interrupt_delivery())
 }

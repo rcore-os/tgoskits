@@ -52,27 +52,12 @@ cargo xtask axvisor defconfig qemu-aarch64
 ```
 os/axvisor/
 ├── src/                    # Hypervisor 运行时
-│   ├── main.rs             # 入口：打印 logo → 检查硬件虚拟化 → vmm::init() → vmm::start()
-│   ├── hal/                # 硬件抽象层
-│   │   ├── mod.rs          # AxMmHalImpl（地址空间内存分配），架构分发
-│   │   └── arch/           # 架构相关虚拟化原语
-│   │       ├── aarch64/
-│   │       ├── loongarch64/
-│   │       ├── riscv64/
-│   │       └── x86_64/
-│   ├── vmm/                # 虚拟机管理器
-│   │   ├── mod.rs          # VMM init/start，VM 启动，VM 列表管理
-│   │   ├── config.rs       # VM 配置加载（文件系统或静态）
-│   │   ├── vcpus.rs        # vCPU 设置和管理
-│   │   ├── vm_list.rs      # 全局 VM 列表
-│   │   ├── images/         # Guest 镜像加载
-│   │   ├── fdt/            # 为 Guest 生成设备树
-│   │   ├── timer.rs        # 虚拟定时器管理
-│   │   ├── hvc.rs          # Hypervisor Call 处理
-│   │   └── ivc.rs          # 跨 VM 通信
-│   ├── shell/              # 交互式控制台（VM 管理）
-│   ├── task.rs             # vCPU 任务扩展 trait
-│   └── logo.rs             # ASCII art logo
+│   ├── main.rs             # 入口与 AxVM runtime 启动
+│   ├── config.rs           # VM TOML、镜像、machine plan 与创建事务
+│   ├── manager.rs          # VM manager 初始化与启动
+│   ├── platform_irq.rs     # 平台 IRQ adapter 注册
+│   ├── shell/              # 交互式 VM 管理
+│   └── banner.rs           # 启动 banner
 ├── configs/
 │   ├── board/              # 板级配置（10 个）
 │   │   ├── qemu-aarch64.toml
@@ -95,13 +80,13 @@ os/axvisor/
     └── setup_qemu.sh       # QEMU Guest 镜像准备脚本
 ```
 
-核心组件（位于 `components/`）：
+核心组件（位于 `virtualization/`）：
 
 | 组件 | 职责 |
 |------|------|
 | `axvm` | VM 抽象：`AxVM`, `AxVMRef`, `VMMemoryRegion`, `VMStatus` |
 | `axvm-types` + `axvm/src/vcpu.rs` | vCPU 协议与 wrapper：`VmArchVcpuOps`, `VmExit` / `VmExit`，状态机管理 |
-| `axdevice` | 虚拟设备框架：passthrough / emulated / excluded |
+| `axdevice` | 两阶段虚拟设备、bus registry 与 interrupt topology |
 | `axvisor_api` | Hypervisor API 接口 |
 | `axaddrspace` | 地址空间管理 |
 
@@ -117,15 +102,15 @@ Axvisor 的启动流程（`src/main.rs`）：
 main()
   → 打印 logo
   → 检查硬件虚拟化支持 (has_hardware_support)
-  → 启用虚拟化
-  → vmm::init()
-    → 加载 VM 配置
-    → 创建 AxVM 实例
+  → 初始化 AxVM runtime 与平台 IRQ adapter
+  → manager::init()
+    → 严格解析 VM 配置
+    → 捕获 host platform snapshot
+    → 生成 VmMachinePlan 和 FDT/ACPI
     → 加载 Guest 镜像
-    → 初始化 vCPU
-    → 生成设备树（如需要）
-  → vmm::start()
-    → 启动所有 VM
+    → claim 物理设备并事务创建 AxVM
+  → manager::start()
+    → 启动已提交 VM
     → 进入控制台 shell
 ```
 
@@ -133,23 +118,21 @@ main()
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置加载 | `vmm/config.rs` | 从文件系统或静态配置加载 VM 定义 |
-| vCPU 管理 | `vmm/vcpus.rs` | vCPU 创建、初始化和调度 |
-| VM 列表 | `vmm/vm_list.rs` | 全局 VM 注册表 |
-| 镜像加载 | `vmm/images/` | 将 Guest kernel/initramfs/DTB 加载到 VM 内存 |
-| 设备树 | `vmm/fdt/` | 为 Guest 生成设备树（描述内存、设备等） |
-| 定时器 | `vmm/timer.rs` | 虚拟定时器，为 Guest 提供时间服务 |
-| HVC | `vmm/hvc.rs` | 处理 Guest 的 Hypervisor Call |
-| IVC | `vmm/ivc.rs` | 跨 VM 通信机制 |
+| 配置编排 | `os/axvisor/src/config.rs` | 严格解析请求、加载镜像并启动 VM 创建事务 |
+| 机型规划 | `virtualization/axvm/src/machine/` | snapshot、ownership、资源分配和固件生成 |
+| VM 生命周期 | `virtualization/axvm/src/vm/` | RAM、vCPU、设备、mapping 与 boot state |
+| vCPU 运行时 | `virtualization/axvm/src/runtime/` | vCPU task、VM exit 和调度动作 |
+| 设备与拓扑 | `virtualization/axdevice/` | 两阶段设备模型、bus 和 interrupt topology |
+| 架构适配 | `virtualization/axvm/src/arch/<arch>/` | controller、firmware 与硬件 backend |
 
 ### 3.3 修改运行时
 
 | 改动类型 | 位置 | 第一步验证 |
 |----------|------|-----------|
 | 启动流程 | `src/main.rs` | `cargo xtask axvisor build --config os/axvisor/.build.toml` |
-| VMM 逻辑 | `src/vmm/` | 先 build-only，准备好 Guest 后再 QEMU |
-| HAL | `src/hal/` | build + 对应架构 QEMU 测试 |
-| 架构相关 | `src/hal/arch/` | 只影响对应架构，需单独验证 |
+| VMM 逻辑 | `src/config.rs`、`src/manager.rs` | 先 build-only，准备好 Guest 后再 QEMU |
+| VM 领域 | `virtualization/axvm/src/` | `cargo test -p axvm --lib --tests` |
+| 架构相关 | `virtualization/axvm/src/arch/` | 对应架构 build 与 QEMU 单独验证 |
 | Shell | `src/shell/` | 启动后交互测试 |
 
 ---
@@ -158,35 +141,42 @@ main()
 
 ### 4.1 设备模型
 
-Axvisor 的虚拟设备框架（`virtualization/axdevice/`）支持三种设备模式：
-
-| 模式 | 配置字段 | 说明 |
-|------|---------|------|
-| **Passthrough** | `passthrough_devices` | Guest 直接访问物理硬件 |
-| **Emulated** | `emu_devices` | Hypervisor 软件模拟设备 |
-| **Excluded** | `excluded_devices` | 从 passthrough 中排除的设备 |
+设备声明与设备创建分成两个阶段。`VirtualDeviceModel::requirements()` 先声明具名 MMIO、
+PIO、IRQ、MSI 和 DMA 需求；`VmMachinePlanner` 分配资源后，`build()` 只消费
+`ResolvedDeviceResources`。设备不能自己挑选 Guest 地址或中断号。
 
 ### 4.2 设备配置
 
 在 VM 配置文件中的设备配置示例：
 
 ```toml
+[machine]
+mode = "passthrough"
+firmware = "auto"
+interrupts_passthrough = false
+
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]           # 直通所有设备
-# 或精细控制：
-# passthrough_devices = [["/dev/uart@fe201000"]]
-# excluded_devices = [["/dev/gpio"]]
+disable_defaults = []
+deny = [
+  { kind = "fdt-path", value = "/soc/gpio@fe740000" },
+]
+
+[[devices.virtual]]
+id = "console0"
+model = "arm-pl011"
+source = { kind = "auto" }
+backend = { kind = "host-console", rx = "exclusive", tx = "shared" }
 ```
 
 ### 4.3 添加模拟设备
 
 要添加一个新的虚拟设备（如虚拟串口、虚拟块设备），需要：
 
-1. 在 `virtualization/axdevice/` 中实现设备模拟逻辑
-2. 在 VM 配置的 `emu_devices` 中注册
-3. 在 `vmm` 中处理对应的 VM Exit 事件
-4. 通过 Guest 驱动验证
+1. 在可复用 `no_std` crate 中实现设备 core。
+2. 在 `axdevice` 中实现 `VirtualDeviceModel`，声明稳定的资源 slot。
+3. 在架构 profile/adapter 注册模型和固件描述。
+4. 设备通过 `DeviceBuildContext::irq(slot)` 或 `msi(slot)` 获取 endpoint，不接触 vCPU。
+5. 添加资源分配、bus、firmware 和 Guest 驱动回归测试。
 
 ---
 
@@ -240,10 +230,13 @@ match exit_reason {
 VM 配置文件位于 `os/axvisor/configs/vms/`，TOML 格式：
 
 ```toml
+[machine]
+mode = "virtual"          # 或 "passthrough"
+firmware = "auto"
+
 [base]
 id = 1                    # VM ID
 name = "linux-qemu"       # VM 名称
-vm_type = 1               # VM 类型
 cpu_num = 1               # vCPU 数量
 phys_cpu_ids = [0]        # 绑定的物理 CPU
 
@@ -254,14 +247,15 @@ kernel_path = "/guest/linux/linux-qemu"  # 内核路径
 kernel_load_addr = 0x8020_0000      # 内核加载地址
 dtb_load_addr = 0x8000_0000         # DTB 加载地址（aarch64）
 
-memory_regions = [
-  # [base_addr, size, flags, map_type]
-  [0x8000_0000, 0x1000_0000, 0x7, 1],
-]
+[[memory.regions]]
+guest_base = 0x8000_0000
+size = 0x1000_0000
+permissions = "rwx"
+backing = { kind = "allocate" }
 
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]
+disable_defaults = []
+deny = []
 ```
 
 ### 6.2 关键字段说明
@@ -274,7 +268,9 @@ passthrough_devices = [["/"]]
 | `entry_point` | Guest 入口地址 | 架构相关 |
 | `image_location` | 镜像加载方式 | `"fs"` 或 `"memory"` |
 | `kernel_path` | 内核文件路径 | Guest 类型相关 |
-| `memory_regions` | 内存区域 | `[[base, size, flags, map_type]]` |
+| `machine.mode` | Guest 平台来源 | `"virtual"` 或 `"passthrough"` |
+| `interrupts_passthrough` | 透传 VM 是否直投物理 IRQ | `false`（默认）或 `true` |
+| `memory.regions` | 显式 Guest memory 与 backing | `[[memory.regions]]` |
 
 ### 6.3 支持的 Guest 类型
 

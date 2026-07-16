@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
@@ -31,6 +31,7 @@ mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
+pub mod machine;
 mod manager;
 mod npt;
 mod percpu;

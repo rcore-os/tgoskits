@@ -3,9 +3,10 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ax_kspin::SpinRaw as Mutex;
 
 use crate::{
-    InterruptTriggerMode,
+    AxVmError, AxVmResult, InterruptTriggerMode,
     arch::x86_64::host_irq::{self as irq, IrqSource},
-    config::VMInterruptMode,
+    config::InterruptDelivery,
+    machine::{HostInterruptSource, VmMachinePlan},
     runtime::{VCpuRef, VMRef},
 };
 
@@ -39,8 +40,10 @@ fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
     gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI
 }
 
+#[cfg(test)]
 fn should_register_automatic_ioapic_gsi_hook(gsi: usize) -> bool {
-    should_register_ioapic_gsi_hook(gsi) && gsi != COM1_GSI
+    let _ = gsi;
+    false
 }
 
 fn has_explicit_ioapic_forwarding_route(gsi: usize) -> bool {
@@ -48,10 +51,7 @@ fn has_explicit_ioapic_forwarding_route(gsi: usize) -> bool {
 }
 
 fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
-    (0..IOAPIC_GSI_COUNT).filter(|gsi| {
-        should_register_automatic_ioapic_gsi_hook(*gsi)
-            || has_explicit_ioapic_forwarding_route(*gsi)
-    })
+    (0..IOAPIC_GSI_COUNT).filter(|gsi| has_explicit_ioapic_forwarding_route(*gsi))
 }
 
 pub fn register_ioapic_irq_forwarding_route(guest_gsi: usize, host_irq: irq_framework::IrqId) {
@@ -89,6 +89,52 @@ pub fn register_ioapic_irq_forwarding_route_with_trigger(
     );
 }
 
+pub(crate) fn register_planned_ioapic_forwarding_routes(plan: &VmMachinePlan) -> AxVmResult {
+    if plan.interrupt_delivery() != InterruptDelivery::Mediated {
+        return Ok(());
+    }
+
+    let mut routes: alloc::vec::Vec<(usize, irq_framework::IrqId, InterruptTriggerMode)> =
+        alloc::vec::Vec::new();
+    for interrupt in plan.assigned_host_interrupts() {
+        let guest_gsi = interrupt.input().value();
+        if !should_register_ioapic_gsi_hook(guest_gsi) {
+            return Err(AxVmError::invalid_config(alloc::format!(
+                "planned host interrupt uses unsupported guest IOAPIC GSI {guest_gsi}"
+            )));
+        }
+        if routes
+            .iter()
+            .any(|(registered_gsi, ..)| *registered_gsi == guest_gsi)
+        {
+            return Err(AxVmError::invalid_config(alloc::format!(
+                "multiple host interrupts are assigned to guest IOAPIC GSI {guest_gsi}"
+            )));
+        }
+        let source = match interrupt.source() {
+            HostInterruptSource::ControllerInput => IrqSource::AcpiGsi(interrupt.input_u32()),
+            HostInterruptSource::AcpiGsiRoute(route) => IrqSource::AcpiGsiRoute(*route),
+            HostInterruptSource::Fdt { .. } => {
+                return Err(AxVmError::invalid_config(alloc::format!(
+                    "x86 host interrupt for guest GSI {guest_gsi} has an FDT-only route"
+                )));
+            }
+        };
+        let host_irq = irq::resolve_irq_source(source).map_err(|error| {
+            AxVmError::interrupt(
+                "resolve planned x86 host interrupt",
+                alloc::format!("guest GSI {guest_gsi}: {error:?}"),
+            )
+        })?;
+        routes.push((guest_gsi, host_irq, interrupt.trigger()));
+    }
+
+    for (guest_gsi, host_irq, trigger) in routes {
+        register_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger);
+    }
+    Ok(())
+}
+
 pub fn register_ioapic_irq_forwarding_activator(
     guest_gsi: usize,
     activator: IoApicForwardingActivator,
@@ -102,10 +148,6 @@ pub fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_due_pit_irq0(vm: &VMRef, _vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
-    }
-
     let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
     let Ok(devices) = vm.get_devices() else {
         return;
@@ -116,20 +158,26 @@ pub fn inject_due_pit_irq0(vm: &VMRef, _vcpu: &VCpuRef) {
 }
 
 pub fn inject_pending_serial_irq(vm: &VMRef, _vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
-    }
-
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    if let Err(error) = devices.x86_serial_service_irq() {
+    use axdevice::X86SerialDeviceOps as _;
+
+    let serial = devices.devices().find_map(|device| {
+        device
+            .as_any()
+            .downcast_ref::<axdevice::X86SerialPortDevice>()
+    });
+    let Some(serial) = serial else {
+        return;
+    };
+    if let Err(error) = serial.service_irq() {
         warn!("failed to update x86 COM1 IRQ4 through the APIC topology: {error}");
     }
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
         return;
     }
 
@@ -210,7 +258,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
         return;
     }
 
@@ -280,7 +328,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
         return;
     }
 
@@ -405,7 +453,7 @@ fn forward_passthrough_gsi(
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
         return true;
     }
 
@@ -674,6 +722,13 @@ mod tests {
         assert!(should_register_ioapic_gsi_hook(18));
         assert!(should_register_ioapic_gsi_hook(IOAPIC_GSI_COUNT - 1));
         assert!(!should_register_ioapic_gsi_hook(IOAPIC_GSI_COUNT));
+    }
+
+    #[test]
+    fn unassigned_gsi_is_not_implicitly_owned_by_the_vm() {
+        with_clean_forwarding_routes(|| {
+            assert!(!ioapic_irq_hook_gsis().any(|gsi| gsi == 18));
+        });
     }
 
     #[test]

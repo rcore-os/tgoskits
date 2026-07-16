@@ -23,9 +23,7 @@
 //! The crate contains the following key components:
 //!
 //! - [`BaseDeviceOps`]: The core trait that all emulated devices must implement.
-//! - [`EmuDeviceType`]: Enumeration representing the type of emulator devices
-//!   (re-exported from `axvmconfig` crate).
-//! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
+//! - [`EmuDeviceType`]: Runtime classification for emulator devices.
 //! - Trait aliases for specific device types:
 //!   - [`BaseMmioDeviceOps`]: For MMIO (Memory-Mapped I/O) devices.
 //!   - [`BaseSysRegDeviceOps`]: For system register devices.
@@ -86,7 +84,7 @@ extern crate alloc;
 
 mod device;
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc};
 use core::any::Any;
 
 pub use axvm_types::{
@@ -98,79 +96,6 @@ pub use crate::device::{
     AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError,
     DeviceResult, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
-
-/// Represents the configuration of an emulated device for a virtual machine.
-///
-/// This structure holds all the necessary information to initialize and configure
-/// an emulated device, including its memory mapping, interrupt configuration, and
-/// device-specific parameters.
-///
-/// # Fields
-///
-/// - `name`: A human-readable identifier for the device.
-/// - `base_ipa`: The starting address in guest physical address space.
-/// - `length`: The size of the device's address space in bytes.
-/// - `irq_id`: The interrupt line number for device interrupts.
-/// - `emu_type`: Numeric identifier for the device type.
-/// - `cfg_list`: Device-specific configuration parameters.
-///
-/// # Example
-///
-/// ```rust
-/// use axdevice_base::EmulatedDeviceConfig;
-///
-/// let config = EmulatedDeviceConfig {
-///     name: "uart0".into(),
-///     base_ipa: 0x0900_0000,
-///     length: 0x1000,
-///     irq_id: 33,
-///     emu_type: 1,
-///     cfg_list: vec![115200], // baud rate
-/// };
-/// ```
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct EmulatedDeviceConfig {
-    /// The name of the device.
-    ///
-    /// This is a human-readable identifier used for logging, debugging, and
-    /// device tree generation. It should be unique within a virtual machine.
-    pub name: String,
-
-    /// The base IPA (Intermediate Physical Address) of the device.
-    ///
-    /// This is the starting address in the guest's physical address space
-    /// where the device's registers are mapped. The guest OS will use this
-    /// address to access the device.
-    pub base_ipa: usize,
-
-    /// The length of the device's address space in bytes.
-    ///
-    /// This defines the size of the memory region that the device occupies.
-    /// Any access within `[base_ipa, base_ipa + length)` will be routed to
-    /// this device.
-    pub length: usize,
-
-    /// The IRQ (Interrupt Request) ID of the device.
-    ///
-    /// This is the interrupt line number that the device uses to signal
-    /// events to the guest. The value should correspond to a valid interrupt
-    /// ID in the virtual interrupt controller.
-    pub irq_id: usize,
-
-    /// The type of emulated device.
-    ///
-    /// This numeric value identifies the device type and is used by the
-    /// device manager to instantiate the correct device implementation.
-    /// See [`EmuDeviceType`] for predefined device types.
-    pub emu_type: usize,
-
-    /// Device-specific configuration parameters.
-    ///
-    /// This is a list of configuration values whose meaning depends on the
-    /// specific device type. For example, a UART device might use this to
-    /// specify baud rate, while a virtio device might use it for queue sizes.
-    pub cfg_list: Vec<usize>,
-}
 
 /// The core trait that all emulated devices must implement.
 ///
@@ -347,7 +272,7 @@ pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
 // ---------------------------------------------------------------------------
 
 /// Opaque identifier assigned to a device when it is registered into a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId(u32);
 
@@ -486,7 +411,7 @@ pub enum RegistryError {
 ///
 /// # Downcasting
 ///
-/// `Device` extends [`Any`](core::any::Any) so callers can downcast to a
+/// `Device` extends [`Any`] so callers can downcast to a
 /// concrete device type via [`as_any`](Device::as_any). Downcasting is only
 /// intended for device-specific data-plane operations; interrupt-controller
 /// capabilities are registered separately and devices connect through owned
@@ -538,7 +463,7 @@ pub trait Device: Send + Sync + Any {
 }
 
 /// Device registration interface — the build-time / management-path half of a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 ///
 /// Used when constructing or reconfiguring a VM; not on the vCPU hot path.
 pub trait DeviceRegistry {
@@ -551,7 +476,7 @@ pub trait DeviceRegistry {
 }
 
 /// Bus dispatch interface — the runtime hot-path half of a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 ///
 /// Called on every vCPU exit that targets an emulated device (MMIO / Port /
 /// SysReg).

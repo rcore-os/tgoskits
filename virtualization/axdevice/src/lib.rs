@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! This module is designed for an environment where the standard library is not available (`no_std`).
 //!
@@ -20,7 +20,8 @@
 //!
 //! The `log` crate is included for logging purposes, with macros being imported globally.
 //!
-//! The module is structured into two main parts: `config` and `device`, which manage the configuration and handling of AxVm devices respectively.
+//! Runtime devices are constructed from named resources resolved by AxVM's
+//! machine planner and registered in one VM-local device registry.
 
 extern crate alloc;
 #[macro_use]
@@ -28,14 +29,13 @@ extern crate log;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64_gic;
-mod config;
 mod device;
 mod error;
-mod factory;
 mod fw_cfg;
 mod interrupt;
 #[cfg(any(target_arch = "loongarch64", test))]
 mod loongarch_pch_pic;
+mod model;
 mod range_alloc;
 mod registration;
 #[cfg(target_arch = "x86_64")]
@@ -51,19 +51,13 @@ pub use axdevice_base::{
     SysRegDeviceAdapter, WiredIrqInput, WiredIrqSink,
 };
 pub use axvm_types::GuestPhysAddr;
-pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;
 pub use error::{DeviceManagerError, DeviceManagerResult};
-pub use factory::{
-    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, register_builtin_factories,
-};
-pub use fw_cfg::{
-    FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
-    FwCfgSerialConfig,
-};
+pub use fw_cfg::{FwCfg, FwCfgAcpiFiles, FwCfgConfig, FwCfgMemoryConfig, FwCfgRamRegion};
 pub use interrupt::*;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, LoongArchPchPicRuntimeOps, PchPicOutputEvent};
+pub use model::*;
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
@@ -72,4 +66,6 @@ pub use x86::{
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;
+#[cfg(target_arch = "x86_64")]
+pub use x86_vlapic::X86SerialBackend;
 // pub use virtio_dev::*;

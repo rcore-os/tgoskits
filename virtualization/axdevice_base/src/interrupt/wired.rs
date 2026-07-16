@@ -122,7 +122,7 @@ impl WiredIrqInput {
         let source = self
             .0
             .next_source
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map(InterruptSourceId::new)

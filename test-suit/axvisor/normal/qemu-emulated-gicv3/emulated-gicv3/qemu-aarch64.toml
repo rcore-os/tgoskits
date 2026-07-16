@@ -11,7 +11,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
   "-append",
-  "root=/dev/vda rw init=/bin/sh",
+  "console=ttyAMA0 rdinit=/init",
   "-m",
   "8g",
 ]
@@ -24,11 +24,14 @@ fail_regex = [
   "Unhandled (?:synchronous )?exception",
   "Failed to initialize guest VM",
   "invalid VM configuration",
+  "CPU[0-9]+: failed to come online",
   "VM\\[1\\].*VCpu\\[[0-9]+\\].*(?:error|failed)",
 ]
 success_regex = [
-  "(?s)EXT4-fs \\(vda\\): mounted.*Run /bin/sh as init process",
+  "(?m)^AXVM_GICV3_PL011_SMP_OK\\s*$",
 ]
+shell_prefix = "AXVM> "
+shell_init_cmd = "test \"$(/bin/busybox grep -c '^processor' /proc/cpuinfo)\" = 2 && /bin/busybox echo 'AXVM_GICV3_PL011_SMP_OK'"
 timeout = 120
 to_bin = true
 uefi = false

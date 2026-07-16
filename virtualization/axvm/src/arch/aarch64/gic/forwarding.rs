@@ -3,16 +3,16 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use arm_vgic::SpiId;
+use arm_vgic::{GicV3BackendError, SpiId};
 use ax_kspin::SpinRaw;
 use ax_std::os::arceos::modules::ax_hal::irq::{self as host_irq, IrqHandle, IrqReturn};
 use axdevice::{
-    ControllerInputId, InterruptControllerId, InterruptTopology, InterruptTriggerMode, IrqLine,
-    WiredIrqRequest,
+    ControllerInputId, InterruptControllerId, InterruptTopology, IrqLine, WiredIrqRequest,
 };
+use axvm_types::InterruptTriggerMode;
 
 use super::{AxvmGicV3Backend, physical_spi::resolve_host_irq};
-use crate::{AxVmError, AxVmResult};
+use crate::{AxVmError, AxVmResult, machine::HostInterruptResource};
 
 /// VM-owned registrations that forward physical SPIs through topology lines.
 pub(crate) struct HostSpiForwarding {
@@ -25,15 +25,15 @@ impl HostSpiForwarding {
     pub(crate) fn connect(
         topology: &InterruptTopology,
         controller: InterruptControllerId,
-        spis: &[u32],
+        interrupts: &[HostInterruptResource],
         backend: Arc<AxvmGicV3Backend>,
     ) -> AxVmResult<Self> {
         let mut forwarding = Self {
             backend,
-            spis: Vec::with_capacity(spis.len()),
+            spis: Vec::with_capacity(interrupts.len()),
         };
-        for spi in spis {
-            forwarding.connect_spi(topology, controller, *spi)?;
+        for interrupt in interrupts {
+            forwarding.connect_spi(topology, controller, interrupt)?;
         }
         Ok(forwarding)
     }
@@ -42,11 +42,9 @@ impl HostSpiForwarding {
         &mut self,
         topology: &InterruptTopology,
         controller: InterruptControllerId,
-        spi: u32,
+        interrupt: &HostInterruptResource,
     ) -> AxVmResult {
-        let intid = spi.checked_add(32).ok_or_else(|| {
-            AxVmError::invalid_config("emulated GICv3 host SPI INTID overflows u32")
-        })?;
+        let intid = interrupt.input_u32();
         let spi = SpiId::new(intid)
             .map_err(|error| AxVmError::interrupt("validate emulated GICv3 SPI", error))?;
         let input = usize::try_from(intid).map_err(|_| {
@@ -55,7 +53,7 @@ impl HostSpiForwarding {
         let line = topology.connect_irq(WiredIrqRequest::for_controller(
             controller,
             ControllerInputId::new(input),
-            InterruptTriggerMode::EdgeTriggered,
+            interrupt.trigger(),
         ))?;
         let irq = resolve_host_irq(intid)
             .map_err(|error| AxVmError::interrupt("resolve emulated GICv3 host SPI", error))?;
@@ -163,7 +161,11 @@ impl ForwardedSpi {
             );
             return IrqReturn::Unhandled;
         }
-        match self.line.pulse() {
+        let signal_result = match self.line.trigger() {
+            InterruptTriggerMode::LevelTriggered => self.line.raise(),
+            InterruptTriggerMode::EdgeTriggered => self.line.pulse(),
+        };
+        match signal_result {
             Ok(()) => IrqReturn::Handled,
             Err(error) => {
                 self.host_masked.store(false, Ordering::Release);
@@ -183,6 +185,23 @@ impl ForwardedSpi {
                 IrqReturn::Unhandled
             }
         }
+    }
+
+    pub(super) fn retire_guest_interrupt(&self) -> Result<(), GicV3BackendError> {
+        if self.line.trigger() == InterruptTriggerMode::LevelTriggered {
+            self.line.lower().map_err(|error| {
+                GicV3BackendError::new(
+                    "deassert retired emulated SPI",
+                    alloc::format!("guest SPI {}: {error}", self.spi.raw()),
+                )
+            })?;
+        }
+        self.unmask_host_irq().map_err(|error| {
+            GicV3BackendError::new(
+                "unmask retired emulated SPI",
+                alloc::format!("guest SPI {}: {error:?}", self.spi.raw()),
+            )
+        })
     }
 
     pub(super) fn unmask_host_irq(&self) -> Result<(), host_irq::IrqError> {

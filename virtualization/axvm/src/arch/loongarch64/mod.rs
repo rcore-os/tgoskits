@@ -23,18 +23,80 @@ use crate::{
 pub(crate) mod boot;
 mod capabilities;
 pub(crate) mod fdt;
+#[path = "../../machine/host_acpi.rs"]
+mod host_acpi;
 mod idle;
 mod interrupt_controller;
 pub(crate) mod irq;
 #[path = "../../architecture/nested_page_fault.rs"]
 mod nested_page_fault;
 mod npt;
+#[path = "../../machine/ns16550_model.rs"]
+mod ns16550_model;
 mod vm;
 #[path = "../../architecture/timer_scheduler.rs"]
 mod vm_timer_scheduler;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 pub(crate) use irq::VmArchState;
+
+pub fn current_host_platform_snapshot()
+-> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
+    host_acpi::current_host_platform_snapshot()
+}
+
+pub fn standard_machine_profile()
+-> crate::machine::MachinePlanResult<crate::machine::MachineProfile> {
+    Ok(crate::machine::MachineProfile::new(
+        crate::machine::AddressRange::new(0x1fe0_0000, 0x0010_0000)?,
+        1..=255,
+    )?
+    .with_interrupt_controller(crate::machine::InterruptControllerProfile::LoongArch(
+        crate::machine::LoongArchInterruptProfile::new(
+            crate::machine::AddressRange::new(0x1000_0000, 0x1000)?,
+            crate::machine::AddressRange::new(0x2ff0_0000, 0x1_0000)?,
+            crate::machine::LoongArchInterruptRouting::new(
+                3,
+                0,
+                0x20,
+                0xe0,
+                crate::machine::LoongArchAcpiInterruptRouting::new(0x40, 0x40, 0xc0),
+            ),
+        ),
+    ))
+    .with_loongarch_platform(crate::machine::LoongArchPlatformProfile::new(
+        crate::machine::AddressRange::new(0x1e02_0000, 0x18)?,
+        crate::machine::LoongArchPciProfile::new(
+            crate::machine::AddressRange::new(0x2000_0000, 0x0800_0000)?,
+            crate::machine::AddressRange::new(0x4000_0000, 0x4000_0000)?,
+            crate::machine::AddressRange::new(0x1800_0000, 0x1_0000)?,
+            16,
+        ),
+        crate::machine::LoongArchPowerProfile::new(
+            0x100e_001e,
+            0x42,
+            0x100e_001c,
+            0x34,
+            0x100e_001c,
+            0x100e_001d,
+        ),
+        crate::machine::LoongArchFirmwareDevicesProfile::new(
+            crate::machine::AddressRange::new(0x100d_0100, 0x100)?,
+            6,
+            [
+                crate::machine::AddressRange::new(0x1c00_0000, 0x0100_0000)?,
+                crate::machine::AddressRange::new(0x1d00_0000, 0x0100_0000)?,
+            ],
+            4,
+        ),
+    )))
+}
+
+/// Returns named resources for the standard LoongArch 16550 console.
+pub fn ns16550_device_requirements() -> axdevice::DeviceManagerResult<axdevice::DeviceRequirements>
+{
+    ns16550_model::ns16550_device_requirements(0x1000)
+}
 
 pub(crate) struct LoongArch64Arch;
 
@@ -50,7 +112,7 @@ impl VmArchConfig {
 
     pub(crate) const fn validate_prepared_boot_state(
         &self,
-        _interrupt_mode: axvm_types::VMInterruptMode,
+        _interrupt_delivery: axvm_types::InterruptDelivery,
     ) -> AxVmResult {
         Ok(())
     }
@@ -180,15 +242,9 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::wait_for_event()))
             }
-            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            })),
+            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::resume())),
             _ => Err(AxVmError::unsupported(
                 "handle LoongArch VM exit",
                 "unsupported VM exit reason",
@@ -207,10 +263,7 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchDeferredRunWork::Idle => idle::wait(vcpu),
         }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        })
+        Ok(VcpuRunAction::resume())
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
@@ -236,10 +289,7 @@ fn handle_loongarch_nested_page_fault(
                 vcpu.id(),
                 ax_addr.as_usize()
             );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            }));
+            return Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()));
         };
         return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
     }
@@ -255,10 +305,7 @@ fn handle_loongarch_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        }))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()))
     }
 }
 

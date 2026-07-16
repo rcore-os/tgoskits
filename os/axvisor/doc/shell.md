@@ -264,7 +264,7 @@ ID    NAME           STATE      VCPU   MEMORY
       "state": "running",
       "vcpu": 2,
       "memory": "512MB",
-      "interrupt_mode": "Emulated"
+      "interrupt_delivery": "Mediated"
     }
   ]
 }
@@ -559,7 +559,7 @@ VM Running
 #### 关键实现代码片段
 
 ```rust
-// src/vmm/vcpus.rs:241-260
+// vCPU task cleanup is owned by the AxVM runtime manager.
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     if let Some(vm_vcpus) = VM_VCPU_TASK_WAIT_QUEUE.remove(&vm_id) {
         let task_count = vm_vcpus.vcpu_task_list.len();

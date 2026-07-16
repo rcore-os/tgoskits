@@ -1,6 +1,6 @@
-use alloc::format;
 #[cfg(virtio_dev)]
 use alloc::sync::Arc;
+use alloc::{format, vec::Vec};
 
 use ax_kspin::SpinRaw as Mutex;
 use heapless::Vec as ArrayVec;
@@ -41,6 +41,65 @@ const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]
 const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
 const PCI_INTX_LINES: usize = 4;
+
+/// One address resource captured before a host PCI driver hands its endpoint
+/// to a transport implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PciEndpointBar {
+    /// A memory BAR with the address and size assigned by the host PCI root.
+    Memory {
+        /// BAR slot in PCI configuration space.
+        slot: u8,
+        /// Host physical base address.
+        address: u64,
+        /// Implemented BAR size.
+        size: u64,
+    },
+    /// An x86 port-I/O BAR with its hardware-reported size.
+    Io {
+        /// BAR slot in PCI configuration space.
+        slot: u8,
+        /// First I/O port.
+        port: u32,
+        /// Implemented BAR size in ports.
+        size: u32,
+    },
+}
+
+/// Immutable resources retained for a PCI endpoint already owned by a host
+/// driver.
+///
+/// Consumers use this snapshot instead of re-enumerating the PCI hierarchy,
+/// which could renumber buses or reprogram BARs while a driver is active.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PciEndpointResourceSnapshot {
+    address: PciAddress,
+    vendor_id: u16,
+    device_id: u16,
+    bars: Vec<PciEndpointBar>,
+}
+
+impl PciEndpointResourceSnapshot {
+    /// Returns the endpoint BDF captured by the host driver.
+    pub const fn address(&self) -> PciAddress {
+        self.address
+    }
+
+    /// Returns the PCI vendor identifier.
+    pub const fn vendor_id(&self) -> u16 {
+        self.vendor_id
+    }
+
+    /// Returns the PCI device identifier.
+    pub const fn device_id(&self) -> u16 {
+        self.device_id
+    }
+
+    /// Returns BAR resources in configuration-space order.
+    pub fn bars(&self) -> &[PciEndpointBar] {
+        &self.bars
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LegacyIrq {
@@ -321,6 +380,34 @@ pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
     }
 }
 
+/// Returns the immutable BAR snapshot retained for a host-driver-owned PCI
+/// endpoint.
+///
+/// The endpoint must already have been claimed by an `ax-driver` PCI transport.
+/// This function never walks the PCI hierarchy or touches live BAR registers.
+pub fn taken_endpoint_resources(
+    address: PciAddress,
+) -> Result<PciEndpointResourceSnapshot, OnProbeError> {
+    #[cfg(virtio_dev)]
+    {
+        let bdf = as_device_function(address);
+        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        configs
+            .iter()
+            .find(|config| config.bdf == bdf)
+            .map(|config| config.resources.clone())
+            .ok_or(OnProbeError::NotMatch)
+    }
+
+    #[cfg(not(virtio_dev))]
+    {
+        let _ = address;
+        Err(OnProbeError::Unsupported(
+            "PCI endpoint resources require captured host-driver config access",
+        ))
+    }
+}
+
 pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
     #[cfg(virtio_dev)]
     {
@@ -369,6 +456,71 @@ fn prepare_intx_passthrough_command(mut command: CommandRegister) -> CommandRegi
 fn unmask_intx_passthrough_command(mut command: CommandRegister) -> CommandRegister {
     command.remove(CommandRegister::INTERRUPT_DISABLE);
     command
+}
+
+#[cfg(any(test, virtio_dev))]
+fn capture_endpoint_resources(endpoint: &mut Endpoint) -> PciEndpointResourceSnapshot {
+    let original_command = endpoint.command();
+    endpoint.update_command(|mut command| {
+        command.remove(CommandRegister::IO_ENABLE | CommandRegister::MEMORY_ENABLE);
+        command
+    });
+
+    let bars = endpoint
+        .bars()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, bar)| match bar? {
+            pcie::Bar::Memory32 { address, size, .. } if size != 0 => {
+                Some(PciEndpointBar::Memory {
+                    slot: slot as u8,
+                    address: u64::from(address),
+                    size: u64::from(size),
+                })
+            }
+            pcie::Bar::Memory64 { address, size, .. } if size != 0 => {
+                Some(PciEndpointBar::Memory {
+                    slot: slot as u8,
+                    address,
+                    size,
+                })
+            }
+            pcie::Bar::Io { port } => {
+                let offset = 0x10 + (slot as u16) * 4;
+                let original = endpoint.read(offset);
+                endpoint.write(offset, u32::MAX);
+                let mask = endpoint.read(offset);
+                endpoint.write(offset, original);
+                io_bar_size_from_mask(mask).map(|size| PciEndpointBar::Io {
+                    slot: slot as u8,
+                    port,
+                    size,
+                })
+            }
+            pcie::Bar::Memory32 { .. } | pcie::Bar::Memory64 { .. } => None,
+        })
+        .collect();
+
+    endpoint.update_command(|_| original_command);
+    PciEndpointResourceSnapshot {
+        address: endpoint.address(),
+        vendor_id: endpoint.vendor_id(),
+        device_id: endpoint.device_id(),
+        bars,
+    }
+}
+
+#[cfg(any(test, virtio_dev))]
+const fn io_bar_size_from_mask(mask: u32) -> Option<u32> {
+    if mask & 1 == 0 {
+        return None;
+    }
+    let size = (!(mask & !0b11)).wrapping_add(1);
+    if size == 0 || !size.is_power_of_two() {
+        None
+    } else {
+        Some(size)
+    }
 }
 
 #[cfg(test)]
@@ -516,10 +668,10 @@ mod tests {
     };
 
     use super::{
-        DynamicPciIrqSource, LegacyIrqRoute, legacy_line_to_irq_for_platform,
-        prepare_intx_passthrough_command, resolve_intx_binding_with_resolvers,
-        resolve_intx_irq_with_resolvers, select_dynamic_pci_irq_source,
-        unmask_intx_passthrough_command,
+        DynamicPciIrqSource, LegacyIrqRoute, io_bar_size_from_mask,
+        legacy_line_to_irq_for_platform, prepare_intx_passthrough_command,
+        resolve_intx_binding_with_resolvers, resolve_intx_irq_with_resolvers,
+        select_dynamic_pci_irq_source, unmask_intx_passthrough_command,
     };
     use crate::{BindingIrq, BindingIrqSource};
     struct KlibImpl;
@@ -1018,6 +1170,14 @@ mod tests {
         assert!(!command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
     }
 
+    #[test]
+    fn io_bar_size_is_derived_from_the_hardware_mask() {
+        assert_eq!(io_bar_size_from_mask(0xffff_ff81), Some(0x80));
+        assert_eq!(io_bar_size_from_mask(0xffff_ffe1), Some(0x20));
+        assert_eq!(io_bar_size_from_mask(0), None);
+        assert_eq!(io_bar_size_from_mask(0xffff_ff80), None);
+    }
+
     fn endpoint_with_intx_route() -> PciInfo {
         PciInfo {
             address: PciAddress::new(0, 2, 7, 0),
@@ -1133,9 +1293,11 @@ fn take_virtio_transport_with_intx_policy(
 
 #[cfg(virtio_dev)]
 fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
+    let resources = access.resource_snapshot();
     let mut configs = TAKEN_ENDPOINT_CONFIGS.lock();
     if let Some(config) = configs.iter_mut().find(|config| config.bdf == access.bdf) {
         config.access = access.clone_for_handoff();
+        config.resources = resources;
         return;
     }
 
@@ -1143,6 +1305,7 @@ fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
         .push(TakenEndpointConfig {
             bdf: access.bdf,
             access: access.clone_for_handoff(),
+            resources,
         })
         .is_err()
     {
@@ -1201,6 +1364,7 @@ fn as_device_function_info(endpoint: &Endpoint) -> DeviceFunctionInfo {
 struct TakenEndpointConfig {
     bdf: DeviceFunction,
     access: EndpointConfigAccess,
+    resources: PciEndpointResourceSnapshot,
 }
 
 #[cfg(virtio_dev)]
@@ -1226,6 +1390,10 @@ impl EndpointConfigAccess {
         // SAFETY: EndpointConfigAccess serializes all shared config-space
         // accesses through the same internal mutex.
         unsafe { self.unsafe_clone() }
+    }
+
+    fn resource_snapshot(&self) -> PciEndpointResourceSnapshot {
+        capture_endpoint_resources(&mut self.endpoint.lock())
     }
 
     fn update_command<F>(&self, f: F)

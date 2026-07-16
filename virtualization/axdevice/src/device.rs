@@ -22,9 +22,7 @@ use axdevice_base::{
     DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError, Resource,
     SysRegAddr,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
-#[cfg(target_arch = "riscv64")]
-use riscv_vplic::VPlicGlobal;
+use axvm_types::GuestPhysAddr;
 #[cfg(target_arch = "x86_64")]
 use x86_vlapic::IoApicEoi;
 
@@ -33,8 +31,8 @@ use crate::DeviceRegistration;
 #[cfg(target_arch = "loongarch64")]
 use crate::LoongArchPchPicRuntimeOps;
 use crate::{
-    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, FwCfg, InterruptTopology, PollableDeviceOps, range_alloc::RangeAllocator,
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, FwCfg, InterruptTopology,
+    PollableDeviceOps, range_alloc::RangeAllocator,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{X86IoApicRuntimeOps, X86PitDeviceOps, X86SerialDeviceOps};
@@ -50,17 +48,6 @@ fn log_device_io(
 ) {
     let rw = if read { "read" } else { "write" };
     trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
-}
-
-#[cfg(target_arch = "aarch64")]
-fn unified_gic_registration_required(config: &EmulatedDeviceConfig) -> DeviceManagerError {
-    DeviceManagerError::InvalidConfig {
-        operation: "initialize AArch64 GICv3",
-        detail: format!(
-            "device '{}' must be consumed by the unified GICv3 platform registration",
-            config.name
-        ),
-    }
 }
 
 /// Internal range entry cached in the index maps.
@@ -122,274 +109,34 @@ impl AxVmDevices {
         }
     }
 
-    /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-
-        Self::init(&mut this, &config.emu_configs)?;
-        Ok(this)
-    }
-
-    /// Builds devices with registered factories and explicit legacy fallbacks.
-    pub fn build_with_factories(
-        config: AxVmDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-        this.register_configured_devices(&config, factories, context)?;
-        Ok(this)
-    }
-
-    /// Builds and registers all devices described by `config` into this registry.
-    ///
-    /// This staged entry point lets an architecture register its interrupt
-    /// controller and attach vCPUs before interrupt-producing devices are built.
-    pub fn register_configured_devices(
-        &mut self,
-        config: &AxVmDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult {
-        for config in &config.emu_configs {
-            if factories.get(config.emu_type).is_some() {
-                self.register_factory_device(config, factories, context)?;
-            } else if Self::is_legacy_fallback(config.emu_type) {
-                Self::init(self, core::slice::from_ref(config))?;
-            } else {
-                return Err(DeviceManagerError::Unsupported {
-                    operation: "build emulated device",
-                    detail: format!(
-                        "no factory is registered for emulated device '{}' of type {}",
-                        config.name, config.emu_type
-                    ),
-                });
-            }
+    /// Configures the guest-address pool used for inter-VM communication.
+    pub fn configure_ivc_range(&mut self, base: GuestPhysAddr, size: usize) -> DeviceManagerResult {
+        if size == 0 || !is_aligned_4k(base.as_usize()) || !is_aligned_4k(size) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "configure IVC address range",
+                detail: format!(
+                    "range [{:#x}, +{size:#x}) must be non-empty and 4 KiB aligned",
+                    base.as_usize()
+                ),
+            });
         }
-        Ok(())
-    }
-
-    /// Builds and atomically registers one factory-managed device.
-    pub fn register_factory_device(
-        &mut self,
-        config: &EmulatedDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult {
-        let bundle = factories.build(config, context)?;
-        self.register_bundle_with_topology(bundle, context.interrupt_topology())
-    }
-
-    fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
-        matches!(
-            device_type,
-            EmulatedDeviceType::InterruptController
-                | EmulatedDeviceType::Console
-                | EmulatedDeviceType::IVCChannel
-                | EmulatedDeviceType::GPPTRedistributor
-                | EmulatedDeviceType::GPPTDistributor
-                | EmulatedDeviceType::GPPTITS
-                | EmulatedDeviceType::FwCfg
-                | EmulatedDeviceType::LoongArchPchPic
-                | EmulatedDeviceType::X86IoApic
-                | EmulatedDeviceType::X86Pit
-                | EmulatedDeviceType::PPPTGlobal
-        )
-    }
-
-    #[cfg(target_arch = "riscv64")]
-    fn config_argument(
-        config: &EmulatedDeviceConfig,
-        index: usize,
-        expected: &'static str,
-    ) -> DeviceManagerResult<usize> {
-        config
-            .cfg_list
-            .get(index)
-            .copied()
-            .ok_or_else(|| DeviceManagerError::InvalidConfig {
-                operation: "initialize emulated device",
-                detail: format!("device '{}' requires {expected}", config.name),
-            })
-    }
-
-    /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> DeviceManagerResult {
-        for config in emu_configs {
-            match config.emu_type {
-                EmulatedDeviceType::InterruptController => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return Err(DeviceManagerError::Unsupported {
-                            operation: "initialize AArch64 interrupt controller",
-                            detail: format!(
-                                "device '{}' requests the removed GICv2 interface; configure a \
-                                 unified GICv3 Distributor and Redistributor instead",
-                                config.name
-                            ),
-                        });
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTRedistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return Err(unified_gic_registration_required(config));
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTDistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return Err(unified_gic_registration_required(config));
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTITS => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return Err(unified_gic_registration_required(config));
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::PPPTGlobal => {
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        let context_num =
-                            Self::config_argument(config, 0, "one argument (context_num)")?;
-                        let vplic = VPlicGlobal::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                            context_num,
-                        )
-                        .map_err(|error| {
-                            DeviceManagerError::InvalidConfig {
-                                operation: "initialize virtual PLIC",
-                                detail: format!("device '{}': {error}", config.name),
-                            }
-                        })?;
-                        this.register(
-                            MmioDeviceAdapter::from_arc(Arc::new(vplic)) as Arc<dyn Device>
-                        )?;
-                        // PLIC Partial Passthrough Global.
-                        info!(
-                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
-                             length {:#x}",
-                            config.base_gpa, config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "riscv64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::Console => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 console device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86IoApic => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 IOAPIC device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86Pit => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 PIT device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::LoongArchPchPic => {
-                    #[cfg(target_arch = "loongarch64")]
-                    {
-                        debug!("LoongArch PCH-PIC registration is owned by the AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "loongarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::FwCfg => {
-                    debug!("fw_cfg device is initialized when runtime image payloads are added");
-                }
-                EmulatedDeviceType::IVCChannel => {
-                    if this.ivc_channel.is_none() {
-                        // Initialize the IVC channel range allocator
-                        this.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {
-                            start: config.base_gpa,
-                            end: config.base_gpa + config.length,
-                        })));
-                        info!(
-                            "IVCChannel initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    } else {
-                        warn!("IVCChannel already initialized, ignoring additional config");
-                    }
-                }
-                _ => {
-                    warn!(
-                        "Emulated device {}'s type {:?} is not supported yet",
-                        config.name, config.emu_type
-                    );
-                }
-            }
+        let end =
+            base.as_usize()
+                .checked_add(size)
+                .ok_or_else(|| DeviceManagerError::InvalidInput {
+                    operation: "configure IVC address range",
+                    detail: "address range overflows usize".into(),
+                })?;
+        if self.ivc_channel.is_some() {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "configure IVC address range",
+                detail: "an IVC address range is already configured".into(),
+            });
         }
+        self.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {
+            start: base.as_usize(),
+            end,
+        })));
         Ok(())
     }
 
@@ -616,22 +363,10 @@ impl AxVmDevices {
         idx: usize,
         resources: &[Resource],
     ) -> Result<(), RegistryError> {
+        validate_resources(resources)?;
         for (i, r) in resources.iter().enumerate() {
             match *r {
                 Resource::MmioRange { base, size } => {
-                    if size == 0 {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::MmioRange { base, size },
-                            reason: InvalidResourceReason::ZeroSized,
-                        });
-                    }
-                    if base.checked_add(size).is_none() {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::MmioRange { base, size },
-                            reason: InvalidResourceReason::AddressOverflow,
-                        });
-                    }
-
                     // Key collision.
                     if let Some(existing) = self.mmio_index.get(&base) {
                         let existing_size = existing.size;
@@ -701,19 +436,7 @@ impl AxVmDevices {
                     }
                 }
                 Resource::PortRange { base, size } => {
-                    if size == 0 {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::PortRange { base, size },
-                            reason: InvalidResourceReason::ZeroSized,
-                        });
-                    }
-                    let end = (base as u32).wrapping_add(size as u32);
-                    if end > (u16::MAX as u32 + 1) {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::PortRange { base, size },
-                            reason: InvalidResourceReason::AddressOverflow,
-                        });
-                    }
+                    let end = base as u32 + size as u32;
 
                     // Key collision.
                     if let Some(existing) = self.port_index.get(&base) {
@@ -789,19 +512,6 @@ impl AxVmDevices {
                     }
                 }
                 Resource::SysReg { addr, count } => {
-                    if count == 0 {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::SysReg { addr, count },
-                            reason: InvalidResourceReason::ZeroSized,
-                        });
-                    }
-                    if addr.checked_add(count.saturating_sub(1)).is_none() {
-                        return Err(RegistryError::InvalidResource {
-                            resource: Resource::SysReg { addr, count },
-                            reason: InvalidResourceReason::AddressOverflow,
-                        });
-                    }
-
                     // Key collision.
                     if let Some(existing) = self.sysreg_index.get(&addr) {
                         let existing_count = existing.size as u32;
@@ -1266,6 +976,40 @@ impl AxVmDevices {
     }
 }
 
+fn validate_resources(resources: &[Resource]) -> Result<(), RegistryError> {
+    for resource in resources {
+        let invalid_reason = match *resource {
+            Resource::MmioRange { base, size } => (size == 0)
+                .then_some(InvalidResourceReason::ZeroSized)
+                .or_else(|| {
+                    base.checked_add(size)
+                        .is_none()
+                        .then_some(InvalidResourceReason::AddressOverflow)
+                }),
+            Resource::PortRange { base, size } => (size == 0)
+                .then_some(InvalidResourceReason::ZeroSized)
+                .or_else(|| {
+                    ((base as u32 + size as u32) > u16::MAX as u32 + 1)
+                        .then_some(InvalidResourceReason::AddressOverflow)
+                }),
+            Resource::SysReg { addr, count } => (count == 0)
+                .then_some(InvalidResourceReason::ZeroSized)
+                .or_else(|| {
+                    addr.checked_add(count.saturating_sub(1))
+                        .is_none()
+                        .then_some(InvalidResourceReason::AddressOverflow)
+                }),
+        };
+        if let Some(reason) = invalid_reason {
+            return Err(RegistryError::InvalidResource {
+                resource: resource.clone(),
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Default for AxVmDevices {
     fn default() -> Self {
         Self::empty()
@@ -1714,6 +1458,37 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn invalid_late_resource_rolls_back_all_earlier_indices() {
+        for invalid in [
+            Resource::MmioRange {
+                base: 0x2000,
+                size: 0,
+            },
+            Resource::MmioRange {
+                base: u64::MAX - 1,
+                size: 4,
+            },
+        ] {
+            let mut devices = AxVmDevices::empty();
+            let result = devices.register(Arc::new(D {
+                resources: alloc::vec![
+                    Resource::MmioRange {
+                        base: 0x1000,
+                        size: 0x100,
+                    },
+                    invalid,
+                ],
+                n: "invalid-late-resource",
+            }));
+            assert!(matches!(result, Err(RegistryError::InvalidResource { .. })));
+
+            devices
+                .register(Arc::new(D::new_mmio(0x1000, 0x100, "replacement")))
+                .expect("the valid prefix of a rejected device must be rolled back");
+        }
     }
 
     #[test]

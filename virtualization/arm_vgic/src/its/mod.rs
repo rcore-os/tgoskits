@@ -251,10 +251,8 @@ fn queue_distance(reader: u64, writer: u64, size: u64) -> u64 {
 
 fn decode_words(bytes: &[u8; COMMAND_SIZE as usize]) -> [u64; 4] {
     let mut words = [0; 4];
-    for (word, chunk) in words.iter_mut().zip(bytes.chunks_exact(8)) {
-        let mut encoded = [0; 8];
-        encoded.copy_from_slice(chunk);
-        *word = u64::from_le_bytes(encoded);
+    for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*chunk);
     }
     words
 }

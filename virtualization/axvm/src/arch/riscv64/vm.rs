@@ -12,9 +12,9 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
+            complete_vm_init,
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -32,26 +32,23 @@ impl Riscv64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let mut factories = default_device_factories()?;
-                let mode = vm.interrupt_mode();
-                let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_topology = irq::configure(&mut factories, mode, &emulated_devices)?;
-                init_vm_with(vm, &factories, interrupt_topology)
-            }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_topology,
-            } => init_vm_with(vm, factories, interrupt_topology),
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        let models = default_virtual_device_models()?;
+        let interrupt_topology =
+            Arc::new(axdevice::InterruptTopology::new(vm.interrupt_delivery()));
+        init_vm_with(vm, &models, interrupt_topology)
     }
+}
+
+fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
+    let mut registry = axdevice::VirtualDeviceModelRegistry::new();
+    super::ns16550_model::register_ns16550_model(&mut registry, 0x1000)?;
+    Ok(registry)
 }
 
 fn init_vm_with(
     vm: &AxVM,
-    factories: &axdevice::DeviceFactoryRegistry,
+    models: &axdevice::VirtualDeviceModelRegistry,
     interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
@@ -68,17 +65,24 @@ fn init_vm_with(
             })
         })?;
         let mut devices = PreparedDevices::empty();
-        devices.register_configured(
-            resources.config().emu_devices(),
-            factories,
+        let plic = irq::PreparedPlic::from_machine_plan(resources.config().machine_plan())?;
+        plic.register(&mut devices.devices, interrupt_topology)?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
+        devices.register_planned(
+            resources.config().machine_plan(),
+            models,
             interrupt_topology,
         )?;
         devices.register_special_devices(vm)?;
-        let external_irq_sources = resources.config().pass_through_irqs().to_vec();
+        let external_irq_sources = resources
+            .config()
+            .machine_plan()
+            .assigned_host_interrupts()
+            .cloned()
+            .collect::<alloc::vec::Vec<_>>();
         resources
             .arch_state_mut()
             .connect_external_irq_lines(interrupt_topology, &external_irq_sources)?;
-        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

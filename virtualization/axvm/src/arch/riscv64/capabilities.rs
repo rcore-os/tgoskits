@@ -1,6 +1,6 @@
 //! RISC-V implementations of AxVM platform capability hooks.
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 
 use super::Riscv64Arch;
 use crate::{
@@ -41,8 +41,8 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-pub(super) fn decode_plic_source(specifier: &[u32]) -> Option<u32> {
-    specifier.first().copied().filter(|source| *source != 0)
+pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
+    ax_std::os::arceos::modules::ax_hal::dtb::get_fdt().map(|fdt| fdt.as_slice())
 }
 
 pub(super) fn patch_runtime_fdt(
@@ -50,39 +50,11 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::AxVMCrateConfig,
 ) -> AxVmResult<Vec<u8>> {
-    let host_fdt = super::fdt::core::try_get_host_fdt()
-        .map(fdt_edit::Fdt::from_bytes)
-        .transpose()
-        .map_err(|err| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
-            )
-        })?;
-    let guest_fdt = super::fdt::core::patch_guest_fdt_for_runtime(
+    super::fdt::core::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
         crate_config,
         None,
-        false,
-    )?;
-    super::fdt::ensure_chosen_from_host(guest_fdt, host_fdt.as_ref())
-}
-
-pub(super) fn patch_provided_fdt(
-    provided_dtb: &[u8],
-    _host_dtb: Option<&[u8]>,
-    _crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxVmResult<Vec<u8>> {
-    Ok(provided_dtb.to_vec())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn plic_interrupt_uses_first_nonzero_fdt_cell() {
-        assert_eq!(super::decode_plic_source(&[8]), Some(8));
-        assert_eq!(super::decode_plic_source(&[0]), None);
-        assert_eq!(super::decode_plic_source(&[]), None);
-    }
+        true,
+    )
 }

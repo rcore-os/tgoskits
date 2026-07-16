@@ -15,16 +15,15 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole,
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, InterruptControllerId, InterruptTopology,
-    InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter, WiredInterruptInputs,
-    WiredIrqInput, WiredIrqRequest, WiredIrqSink,
+    AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBuildContext,
+    DeviceBundle, DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements,
+    InterruptControllerId, InterruptSourceKind, InterruptTopology, InterruptTriggerMode, IrqError,
+    IrqLine, IrqResult, MmioDeviceAdapter, ResolvedDeviceResources, ResourceSlot,
+    VirtualDeviceModel, VirtualDeviceModelRegistry, WiredInterruptInputs, WiredIrqInput,
+    WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
-use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
-};
+use axvm_types::{EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptDelivery};
 
 const TEST_CONTROLLER: InterruptControllerId = InterruptControllerId::new(1);
 
@@ -107,31 +106,37 @@ impl BaseDeviceOps<GuestPhysAddrRange> for IrqMmioDevice {
     }
 }
 
-struct IrqMmioFactory;
+struct IrqMmioModel;
 
-impl DeviceFactory for IrqMmioFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::VirtioNet
+impl VirtualDeviceModel for IrqMmioModel {
+    fn model_id(&self) -> DeviceModelId {
+        DeviceModelId::new("test-irq-mmio").unwrap()
+    }
+
+    fn requirements(
+        &self,
+        _template: Option<&axdevice::DeviceTemplate>,
+    ) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new()
+            .with_mmio(ResourceSlot::new("registers")?, 0x1000, 0x1000)?
+            .with_wired_irq(
+                ResourceSlot::new("irq")?,
+                InterruptTriggerMode::EdgeTriggered,
+                InterruptSourceKind::Software,
+            )
     }
 
     fn build(
         &self,
-        config: &EmulatedDeviceConfig,
+        resources: &ResolvedDeviceResources,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build IRQ MMIO test device",
-                detail: "device address range overflows".into(),
-            });
-        };
-        let line = context.connect_irq(WiredIrqRequest::new(
-            ControllerInputId::new(config.irq_id),
-            InterruptTriggerMode::EdgeTriggered,
-        ))?;
+        let (base, size) = resources.mmio(&ResourceSlot::new("registers")?)?;
+        let end = base + size;
+        let line = context.irq(&ResourceSlot::new("irq")?)?;
         Ok(
             DeviceRegistration::Device(MmioDeviceAdapter::from_arc(Arc::new(IrqMmioDevice {
-                range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
+                range: GuestPhysAddrRange::new((base as usize).into(), (end as usize).into()),
                 line,
             })))
             .into(),
@@ -139,27 +144,39 @@ impl DeviceFactory for IrqMmioFactory {
     }
 }
 
-fn irq_device_config(base_gpa: usize, irq_id: usize) -> EmulatedDeviceConfig {
-    EmulatedDeviceConfig {
-        name: String::from("irq-mmio"),
-        base_gpa,
-        length: 0x1000,
-        irq_id,
-        emu_type: EmulatedDeviceType::VirtioNet,
-        cfg_list: vec![],
-    }
-}
-
-fn irq_factory_registry() -> DeviceFactoryRegistry {
-    let mut factories = DeviceFactoryRegistry::new();
-    factories.register(Arc::new(IrqMmioFactory)).unwrap();
-    factories
+fn build_irq_device(topology: &InterruptTopology, base_gpa: usize, irq_id: usize) -> AxVmDevices {
+    let resources = ResolvedDeviceResources::new()
+        .with_mmio(
+            ResourceSlot::new("registers").unwrap(),
+            base_gpa as u64,
+            0x1000,
+        )
+        .unwrap()
+        .with_wired_irq(
+            ResourceSlot::new("irq").unwrap(),
+            ControllerInputId::new(irq_id),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap();
+    let context = DeviceBuildContext::new(topology, &resources);
+    let mut models = VirtualDeviceModelRegistry::new();
+    models.register(Arc::new(IrqMmioModel)).unwrap();
+    let bundle = models
+        .build(
+            &DeviceModelId::new("test-irq-mmio").unwrap(),
+            &resources,
+            &context,
+        )
+        .unwrap();
+    let mut devices = AxVmDevices::empty();
+    devices.register_bundle(bundle).unwrap();
+    devices
 }
 
 fn recording_topology() -> (InterruptTopology, Weak<RecordingIrqSink>) {
     let sink = Arc::new(RecordingIrqSink::default());
     let weak = Arc::downgrade(&sink);
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     topology
         .register_controller(
             ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)
@@ -167,29 +184,6 @@ fn recording_topology() -> (InterruptTopology, Weak<RecordingIrqSink>) {
         )
         .unwrap();
     (topology, weak)
-}
-
-#[test]
-fn test_no_irq_topology_rejects_controller_and_line_connection() {
-    let topology = InterruptTopology::new(VMInterruptMode::NoIrq);
-    let sink = Arc::new(RecordingIrqSink::default());
-    assert!(matches!(
-        topology.register_controller(
-            ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)
-                .with_wired_inputs(Arc::new(RecordingControllerInputs { sink }))
-        ),
-        Err(DeviceManagerError::Unsupported { .. })
-    ));
-
-    let context = DeviceBuildContext::new(&topology);
-    assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x6_0000, 12)]),
-            &irq_factory_registry(),
-            &context,
-        ),
-        Err(DeviceManagerError::Unsupported { .. })
-    ));
 }
 
 #[test]
@@ -231,17 +225,9 @@ fn test_interrupt_topology_preserves_event_order() {
 }
 
 #[test]
-fn test_factory_device_emits_irq_through_connected_input() {
+fn test_planned_device_emits_irq_through_connected_input() {
     let (topology, sink) = recording_topology();
-    let devices = {
-        let context = DeviceBuildContext::new(&topology);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x7_0000, 15)]),
-            &irq_factory_registry(),
-            &context,
-        )
-        .unwrap()
-    };
+    let devices = build_irq_device(&topology, 0x7_0000, 15);
 
     devices
         .handle_mmio_write(GuestPhysAddr::from(0x7_0000), AccessWidth::Dword, 1)
@@ -256,15 +242,7 @@ fn test_factory_device_emits_irq_through_connected_input() {
 #[test]
 fn test_dropping_devices_and_topology_releases_irq_backend() {
     let (topology, sink) = recording_topology();
-    let devices = {
-        let context = DeviceBuildContext::new(&topology);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x8_0000, 16)]),
-            &irq_factory_registry(),
-            &context,
-        )
-        .unwrap()
-    };
+    let devices = build_irq_device(&topology, 0x8_0000, 16);
 
     drop(topology);
     assert!(sink.upgrade().is_some());
@@ -276,24 +254,8 @@ fn test_dropping_devices_and_topology_releases_irq_backend() {
 fn test_equal_input_numbers_are_isolated_between_topologies() {
     let (topology_a, sink_a) = recording_topology();
     let (topology_b, sink_b) = recording_topology();
-    let devices_a = {
-        let context = DeviceBuildContext::new(&topology_a);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x9_0000, 17)]),
-            &irq_factory_registry(),
-            &context,
-        )
-        .unwrap()
-    };
-    let devices_b = {
-        let context = DeviceBuildContext::new(&topology_b);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0xa_0000, 17)]),
-            &irq_factory_registry(),
-            &context,
-        )
-        .unwrap()
-    };
+    let devices_a = build_irq_device(&topology_a, 0x9_0000, 17);
+    let devices_b = build_irq_device(&topology_b, 0xa_0000, 17);
 
     devices_a
         .handle_mmio_write(GuestPhysAddr::from(0x9_0000), AccessWidth::Dword, 1)

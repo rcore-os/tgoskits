@@ -15,7 +15,16 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axvm` provides Virtual Machine resource management crate for ArceOS's hypervisor variant. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axvm` owns VM machine planning and transactional resource lifecycle. A strict
+`VmMachineRequest` plus a host FDT/ACPI snapshot becomes an immutable
+`VmMachinePlan` containing memory, mappings, devices, interrupt topology, and
+guest firmware resources. VM preparation commits the whole plan or rolls it
+back.
+
+Passthrough machines derive authorized hardware from the host snapshot;
+Virtual machines map no host I/O and allocate a new virtual platform. The crate
+uses rust-vmm `vm-allocator`, `vm-fdt`, and `acpi_tables`, and keeps a
+`no_std + alloc` runtime with an optional `std` test feature.
 
 ## Quick Start
 
@@ -51,13 +60,16 @@ cargo doc --no-deps
 
 ### Example
 
-```rust
-use axvm as _;
+```rust,ignore
+use axvm::machine::{HostPlatformSnapshot, VmMachinePlanner};
 
-fn main() {
-    // Integrate `axvm` into your project here.
-}
+let plan = VmMachinePlanner::new(architecture_profile)
+    .plan(&machine_request, &HostPlatformSnapshot::new(0))?;
 ```
+
+The build order is RAM, vCPUs, interrupt controllers and bindings, devices and
+topology, bus mappings, firmware, boot state, and commit. Physical-device
+leases restore ownership on every failure path.
 
 ### Documentation
 

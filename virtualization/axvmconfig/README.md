@@ -15,7 +15,13 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axvmconfig` provides A simple VM configuration tool for ArceOS-Hypervisor. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axvmconfig` strictly parses Axvisor guest machine requests. The public schema
+uses `[machine]`, `[[memory.regions]]`, `[devices]`, and
+`[[devices.virtual]]`; unknown and removed legacy fields are rejected.
+
+`interrupts_passthrough` is an optional passthrough-machine boolean that is
+immediately normalized into typed mediated/direct interrupt delivery. It is not
+accepted for Virtual machines, even when set to `false`.
 
 ## Quick Start
 
@@ -51,12 +57,20 @@ cargo doc --no-deps
 
 ### Example
 
-```rust
-use axvmconfig as _;
+```toml
+[machine]
+mode = "virtual"
+firmware = "auto"
 
-fn main() {
-    // Integrate `axvmconfig` into your project here.
-}
+[[memory.regions]]
+guest_base = 0x80000000
+size = 0x40000000
+permissions = "rwx"
+backing = { kind = "allocate" }
+
+[devices]
+disable_defaults = []
+deny = []
 ```
 
 ### Documentation

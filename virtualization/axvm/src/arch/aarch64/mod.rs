@@ -16,7 +16,10 @@ use axvm_types::{
     VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{
+    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction,
+    VcpuScheduling,
+};
 use crate::{AxVmResult, ax_err};
 
 mod capabilities;
@@ -27,6 +30,7 @@ mod gic;
 mod images;
 mod ipi;
 mod npt;
+mod pl011;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod timer;
@@ -36,9 +40,30 @@ mod vm_timer_scheduler;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
+pub use fdt::current_host_platform_snapshot;
 pub use images::ImageLoader;
 use ipi::SendIpiExit;
+pub use pl011::{Aarch64Pl011Model, pl011_device_requirements};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+
+/// Returns the deterministic resource pools for an AArch64 virtual machine.
+pub fn standard_machine_profile()
+-> crate::machine::MachinePlanResult<crate::machine::MachineProfile> {
+    let controller = crate::machine::Aarch64GicV3Profile::new(
+        crate::machine::AddressRange::new(0x0800_0000, 0x0001_0000)?,
+        0x080a_0000,
+        0x0002_0000,
+        Some(crate::machine::AddressRange::new(0x0808_0000, 0x0002_0000)?),
+        480,
+    )?;
+    Ok(crate::machine::MachineProfile::new(
+        crate::machine::AddressRange::new(0x0900_0000, 0x0100_0000)?,
+        32..=511,
+    )?
+    .with_interrupt_controller(crate::machine::InterruptControllerProfile::Aarch64GicV3(
+        controller,
+    )))
+}
 
 pub(crate) struct Aarch64Arch;
 
@@ -60,9 +85,9 @@ impl VmArchConfig {
 
     pub(crate) fn validate_prepared_boot_state(
         &self,
-        interrupt_mode: axvm_types::VMInterruptMode,
+        interrupt_delivery: axvm_types::InterruptDelivery,
     ) -> AxVmResult {
-        if interrupt_mode == axvm_types::VMInterruptMode::Passthrough
+        if interrupt_delivery == axvm_types::InterruptDelivery::Direct
             && self.interrupt_roles.is_none()
         {
             return ax_err!(
@@ -145,7 +170,7 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn with_vcpu_interrupt_context<T>(vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
-        if vm.interrupt_mode() != axvm_types::VMInterruptMode::Passthrough {
+        if vm.interrupt_delivery() != axvm_types::InterruptDelivery::Direct {
             return run();
         }
         let _host_irq_guard = ax_kernel_guard::IrqSave::new();
@@ -222,10 +247,7 @@ impl ArchOps for Aarch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::wait_for_event()))
             }
             ArmVmExit::CpuUp {
                 target_cpu,
@@ -242,18 +264,15 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: Some(crate::StopReason::SystemDown),
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::new(
+                    VcpuScheduling::Resume,
+                    Some(crate::StopReason::SystemDown),
+                )))
             }
             ArmVmExit::SendIPI { value } => {
                 ipi::handle(vm, vcpu.id(), SendIpiExit { sgi1r: value })
             }
-            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            })),
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::resume())),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
     }
@@ -268,10 +287,7 @@ impl ArchOps for Aarch64Arch {
                 Self::after_external_interrupt(vm, vcpu, 0);
             }
         }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        })
+        Ok(VcpuRunAction::resume())
     }
 }
 

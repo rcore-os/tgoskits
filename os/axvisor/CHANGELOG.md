@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Create guests from an immutable machine plan derived from strict VM policy
+  and a host FDT/ACPI snapshot.
+- Load boot images before claiming passthrough devices, then rely on VM-owned
+  leases to roll back all claims when preparation fails.
+- Migrate every repository VM configuration to the unified machine, memory,
+  deny, and virtual-device schema.
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.20...axvisor-v0.5.21) - 2026-07-10
 
 ### Other

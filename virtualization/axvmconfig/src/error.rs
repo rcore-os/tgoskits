@@ -44,6 +44,28 @@ pub enum AxVmConfigError {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
     },
+    /// One configured guest memory range was empty or overflowed.
+    #[error("invalid guest memory range at {guest_base:#x} with size {size:#x}")]
+    InvalidMemoryRegion {
+        /// First guest physical address.
+        guest_base: u64,
+        /// Region length.
+        size: u64,
+    },
+    /// One explicit host backing range overflowed.
+    #[error("invalid host memory backing at {host_base:#x} with size {size:#x}")]
+    InvalidMemoryBacking {
+        /// First host physical address.
+        host_base: u64,
+        /// Region length.
+        size: u64,
+    },
+    /// A mandatory architecture-profile device was listed as disableable.
+    #[error("default device '{device}' cannot be disabled; only 'console' is optional")]
+    UnsupportedDefaultDevice {
+        /// Unsupported profile device name supplied by the configuration.
+        device: String,
+    },
 }
 
 impl From<toml::de::Error> for AxVmConfigError {

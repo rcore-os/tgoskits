@@ -20,31 +20,40 @@ pub(crate) struct Aarch64InterruptRoles {
     guest_private: PrivateInterruptMask,
 }
 
+/// Platform and firmware capabilities used to derive one VM's interrupt roles.
+pub(crate) struct Aarch64InterruptDiscovery<'a> {
+    pub(crate) host_ipi_intid: u32,
+    pub(crate) host_timer_intid: u32,
+    pub(crate) host_fdt_bytes: Option<&'a [u8]>,
+    pub(crate) guest_fdt_bytes: Option<&'a [u8]>,
+    pub(crate) passthrough_intids: &'a [u32],
+}
+
+struct DiscoveredInterruptIds<'a> {
+    host_ipi: u32,
+    host_timer: u32,
+    maintenance: u32,
+    guest_timers: Vec<PpiId>,
+    passthrough: &'a [u32],
+}
+
 impl Aarch64InterruptRoles {
-    pub(crate) fn discover(
-        host_ipi_intid: u32,
-        host_timer_intid: u32,
-        host_fdt_bytes: Option<&[u8]>,
-        guest_fdt_bytes: Option<&[u8]>,
-        configured_host_reserved: &[u32],
-        passthrough_spis: &[u32],
-    ) -> AxVmResult<Self> {
-        let maintenance = match host_fdt_bytes {
+    pub(crate) fn discover(discovery: Aarch64InterruptDiscovery<'_>) -> AxVmResult<Self> {
+        let maintenance = match discovery.host_fdt_bytes {
             Some(bytes) => discover_maintenance_intid(bytes)?,
             None => DEFAULT_GIC_MAINTENANCE_INTID,
         };
-        let guest_timers = match guest_fdt_bytes {
+        let guest_timers = match discovery.guest_fdt_bytes {
             Some(bytes) => discover_guest_timer_ppis(bytes)?,
             None => default_guest_timer_ppis()?,
         };
-        Self::from_discovered_intids(
-            host_ipi_intid,
-            host_timer_intid,
+        Self::from_discovered_intids(DiscoveredInterruptIds {
+            host_ipi: discovery.host_ipi_intid,
+            host_timer: discovery.host_timer_intid,
             maintenance,
             guest_timers,
-            configured_host_reserved,
-            passthrough_spis,
-        )
+            passthrough: discovery.passthrough_intids,
+        })
     }
 
     pub(crate) const fn guest_private_interrupts(&self) -> PrivateInterruptMask {
@@ -59,19 +68,19 @@ impl Aarch64InterruptRoles {
         &self.guest_timers
     }
 
-    fn from_discovered_intids(
-        host_ipi_intid: u32,
-        host_timer_intid: u32,
-        maintenance_intid: u32,
-        guest_timers: Vec<PpiId>,
-        configured_host_reserved: &[u32],
-        passthrough_spis: &[u32],
-    ) -> AxVmResult<Self> {
+    fn from_discovered_intids(discovered: DiscoveredInterruptIds<'_>) -> AxVmResult<Self> {
+        let DiscoveredInterruptIds {
+            host_ipi,
+            host_timer,
+            maintenance,
+            guest_timers,
+            passthrough,
+        } = discovered;
         let mut host_reserved = BTreeSet::new();
         for (role, raw) in [
-            ("host IPI", host_ipi_intid),
-            ("host timer", host_timer_intid),
-            ("GIC maintenance", maintenance_intid),
+            ("host IPI", host_ipi),
+            ("host timer", host_timer),
+            ("GIC maintenance", maintenance),
         ] {
             let intid = checked_core_intid(role, raw)?;
             if !host_reserved.insert(intid) {
@@ -91,44 +100,26 @@ impl Aarch64InterruptRoles {
             }
         }
 
-        let passthrough_intids = passthrough_spis
-            .iter()
-            .map(|spi| {
-                spi.checked_add(32)
-                    .ok_or_else(|| AxVmError::invalid_config("passthrough SPI INTID overflows u32"))
-            })
-            .collect::<AxVmResult<BTreeSet<_>>>()?;
-        let mut configured = BTreeSet::new();
-        for raw in configured_host_reserved {
-            let intid = IntId::new(*raw).map_err(|error| {
+        for raw in passthrough.iter().copied().collect::<BTreeSet<_>>() {
+            let intid = IntId::new(raw).map_err(|error| {
                 AxVmError::invalid_config(format!(
-                    "configured host-reserved INTID {raw} is invalid: {error}"
+                    "passthrough device INTID {raw} is invalid: {error}"
                 ))
             })?;
-            if !configured.insert(intid) {
-                return Err(AxVmError::invalid_config(format!(
-                    "host_reserved_intids repeats INTID {raw}"
-                )));
-            }
             if host_reserved.contains(&intid) {
                 return Err(AxVmError::invalid_config(format!(
-                    "host_reserved_intids repeats internally managed INTID {raw}"
+                    "passthrough device INTID {raw} conflicts with an internally reserved host \
+                     interrupt"
                 )));
             }
             if guest_timers
                 .iter()
-                .any(|timer| u32::from(timer.raw()) == *raw)
+                .any(|timer| u32::from(timer.raw()) == raw)
             {
                 return Err(AxVmError::invalid_config(format!(
-                    "host-reserved INTID {raw} conflicts with a guest timer"
+                    "passthrough device INTID {raw} conflicts with a guest timer"
                 )));
             }
-            if passthrough_intids.contains(raw) {
-                return Err(AxVmError::invalid_config(format!(
-                    "host-reserved INTID {raw} conflicts with a passthrough device"
-                )));
-            }
-            host_reserved.insert(intid);
         }
 
         let mut guest_private = PrivateInterruptMask::SGIS;
@@ -271,18 +262,19 @@ fn parse_fdt(bytes: &[u8], owner: &'static str) -> AxVmResult<Fdt> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     #[test]
     fn standard_roles_need_no_board_irq_configuration() {
-        let roles = Aarch64InterruptRoles::from_discovered_intids(
-            0,
-            26,
-            25,
-            vec![PpiId::new(30).unwrap(), PpiId::new(27).unwrap()],
-            &[],
-            &[205],
-        )
+        let roles = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
+            host_ipi: 0,
+            host_timer: 26,
+            maintenance: 25,
+            guest_timers: vec![PpiId::new(30).unwrap(), PpiId::new(27).unwrap()],
+            passthrough: &[237],
+        })
         .unwrap();
 
         assert!(roles.host_reserved().contains(&IntId::new(0).unwrap()));
@@ -300,48 +292,45 @@ mod tests {
     }
 
     #[test]
-    fn configured_core_irq_duplicates_are_rejected() {
-        let error = Aarch64InterruptRoles::from_discovered_intids(
-            0,
-            26,
-            25,
-            default_guest_timer_ppis().unwrap(),
-            &[26],
-            &[],
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("internally managed INTID 26"));
-    }
-
-    #[test]
     fn internally_discovered_core_irq_conflicts_are_rejected() {
-        let error = Aarch64InterruptRoles::from_discovered_intids(
-            0,
-            25,
-            25,
-            default_guest_timer_ppis().unwrap(),
-            &[],
-            &[],
-        )
+        let error = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
+            host_ipi: 0,
+            host_timer: 25,
+            maintenance: 25,
+            guest_timers: default_guest_timer_ppis().unwrap(),
+            passthrough: &[],
+        })
         .unwrap_err();
 
         assert!(error.to_string().contains("reuses core INTID 25"));
     }
 
     #[test]
-    fn configured_host_irq_cannot_overlap_a_passthrough_device() {
-        let error = Aarch64InterruptRoles::from_discovered_intids(
-            0,
-            26,
-            25,
-            default_guest_timer_ppis().unwrap(),
-            &[237],
-            &[205],
-        )
+    fn passthrough_device_cannot_claim_an_internally_reserved_interrupt() {
+        let error = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
+            host_ipi: 0,
+            host_timer: 26,
+            maintenance: 25,
+            guest_timers: default_guest_timer_ppis().unwrap(),
+            passthrough: &[26],
+        })
         .unwrap_err();
 
-        assert!(error.to_string().contains("passthrough device"));
+        assert!(error.to_string().contains("passthrough device INTID 26"));
+    }
+
+    #[test]
+    fn passthrough_device_cannot_claim_a_guest_timer_interrupt() {
+        let error = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
+            host_ipi: 0,
+            host_timer: 26,
+            maintenance: 25,
+            guest_timers: default_guest_timer_ppis().unwrap(),
+            passthrough: &[27],
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("guest timer"));
     }
 
     #[test]

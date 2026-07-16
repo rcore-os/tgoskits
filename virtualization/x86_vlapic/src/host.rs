@@ -33,12 +33,6 @@ pub trait X86VlapicHostOps {
     /// Cancel a timer callback.
     fn cancel_timer(token: usize);
 
-    /// Write bytes to the host console.
-    fn write_bytes(bytes: &[u8]);
-
-    /// Read bytes from the host console.
-    fn read_bytes(bytes: &mut [u8]) -> usize;
-
     /// Return the current VM ID.
     fn current_vm_id() -> X86VmId;
 
@@ -121,14 +115,6 @@ pub(crate) fn register_timer<H: X86VlapicHostOps>(
 
 pub(crate) fn cancel_timer<H: X86VlapicHostOps>(token: usize) {
     H::cancel_timer(token);
-}
-
-pub(crate) fn write_bytes<H: X86VlapicHostOps>(bytes: &[u8]) {
-    H::write_bytes(bytes);
-}
-
-pub(crate) fn read_bytes<H: X86VlapicHostOps>(bytes: &mut [u8]) -> usize {
-    H::read_bytes(bytes)
 }
 
 pub(crate) fn current_vm_vcpu_num<H: X86VlapicHostOps>() -> usize {

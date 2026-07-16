@@ -3,7 +3,7 @@ use alloc::{vec, vec::Vec};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::{MemoryReservation, RegInfo};
 
-use super::tree::{FdtTree, GuestMemorySpec, host_fdt_bytes_from_ptr};
+use super::tree::{FdtTree, GuestMemorySpec};
 
 fn prop_u32(name: &str, value: u32) -> Property {
     let mut prop = Property::new(name, vec![]);
@@ -115,52 +115,6 @@ fn tree_removes_stale_initrd_when_no_ramdisk_is_present() {
 }
 
 #[test]
-fn host_fdt_pointer_rejects_null() {
-    assert!(host_fdt_bytes_from_ptr(core::ptr::null()).is_none());
-}
-
-#[test]
-fn tree_copies_subtree_and_updates_the_copied_node() {
-    let mut source = Fdt::new();
-    let source_root = source.root_id();
-    let bus = source.add_node(source_root, Node::new("soc"));
-    source
-        .node_mut(bus)
-        .unwrap()
-        .set_property(prop_str("compatible", "simple-bus"));
-    let uart = source.add_node(bus, Node::new("serial@1000"));
-    source
-        .node_mut(uart)
-        .unwrap()
-        .set_property(prop_str("status", "okay"));
-
-    let mut dest = FdtTree::new();
-    let copied = dest
-        .copy_subtree_from(&source, bus, dest.inner().root_id(), false)
-        .unwrap();
-    dest.set_property(copied, prop_str("dma-coherent", "true"))
-        .unwrap();
-
-    let bytes = dest.finish();
-    let reparsed = Fdt::from_bytes(&bytes).unwrap();
-    let copied_bus = reparsed.get_by_path("/soc").unwrap().as_node();
-    let copied_uart = reparsed.get_by_path("/soc/serial@1000").unwrap().as_node();
-
-    assert_eq!(
-        copied_bus.get_property("compatible").unwrap().as_str(),
-        Some("simple-bus")
-    );
-    assert_eq!(
-        copied_bus.get_property("dma-coherent").unwrap().as_str(),
-        Some("true")
-    );
-    assert_eq!(
-        copied_uart.get_property("status").unwrap().as_str(),
-        Some("okay")
-    );
-}
-
-#[test]
 fn finish_drops_host_header_state_from_guest_dtb() {
     let mut source = Fdt::new();
     source.boot_cpuid_phys = 0x100;
@@ -169,34 +123,10 @@ fn finish_drops_host_header_state_from_guest_dtb() {
         size: 0x1000,
     });
 
-    let tree = FdtTree::clone_filtered(&source, |_, _, _| true).unwrap();
+    let tree = FdtTree::from_fdt(source);
     let bytes = tree.finish();
     let reparsed = Fdt::from_bytes(&bytes).unwrap();
 
     assert_eq!(reparsed.boot_cpuid_phys, 0);
     assert!(reparsed.memory_reservations.is_empty());
-}
-
-#[test]
-fn clone_filtered_preserves_root_sibling_order() {
-    let mut source = Fdt::new();
-    let root = source.root_id();
-    source.add_node(root, Node::new("timer"));
-    source.add_node(root, Node::new("timer@feae0000"));
-    source.add_node(root, Node::new("interrupt-controller@fe600000"));
-
-    let tree = FdtTree::clone_filtered(&source, |_, _, _| true).unwrap();
-    let bytes = tree.finish();
-    let reparsed = Fdt::from_bytes(&bytes).unwrap();
-    let root_node = reparsed.node(reparsed.root_id()).unwrap();
-    let child_names = root_node
-        .children()
-        .iter()
-        .map(|id| reparsed.node(*id).unwrap().name())
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        child_names,
-        ["timer", "timer@feae0000", "interrupt-controller@fe600000"]
-    );
 }

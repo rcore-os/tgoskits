@@ -1,7 +1,5 @@
 //! RISC-V compatibility facade and target-specific guest FDT policy.
 
-use alloc::vec::Vec;
-
 use crate::{
     AxVmResult,
     boot::{BootImageProvider, fdt::GuestDtbImage},
@@ -11,44 +9,32 @@ use crate::{
 #[path = "../../boot/fdt/core/mod.rs"]
 pub(crate) mod core;
 
-pub use core::{
-    parse_passthrough_devices_address, parse_reserved_memory_regions, parse_vm_interrupt,
-    reserve_excluded_device_ranges, set_phys_cpu_sets, setup_guest_fdt_from_vmm, try_get_host_fdt,
-    update_fdt, update_provided_fdt,
-};
+pub use core::{require_host_fdt, try_get_host_fdt, update_fdt};
 
 pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
-        patch_provided: super::capabilities::patch_provided_fdt,
-        decode_interrupt: super::capabilities::decode_plic_source,
     }
 }
 
-pub(crate) fn host_fdt_bootarg() -> usize {
-    super::capabilities::host_fdt_bootarg()
+pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
+    super::capabilities::host_fdt_bytes()
 }
 
-pub(crate) fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    super::capabilities::host_phys_to_virt(paddr)
+pub fn current_host_platform_snapshot()
+-> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
+    let bytes = require_host_fdt()?;
+    crate::machine::HostPlatformSnapshot::from_fdt(
+        fdt_generation(bytes),
+        bytes,
+        crate::machine::FdtInterruptEncoding::FirstCell,
+    )
 }
 
-pub(super) fn ensure_chosen_from_host(
-    guest_dtb: Vec<u8>,
-    host_fdt: Option<&fdt_edit::Fdt>,
-) -> AxVmResult<Vec<u8>> {
-    let Some(host_fdt) = host_fdt else {
-        return Ok(guest_dtb);
-    };
-    let mut guest = core::tree::FdtTree::from_bytes(&guest_dtb)?;
-    if guest.inner().get_by_path_id("/chosen").is_some() {
-        return Ok(guest.finish());
-    }
-    let Some(host_chosen) = host_fdt.get_by_path_id("/chosen") else {
-        return Ok(guest.finish());
-    };
-    guest.copy_subtree_from(host_fdt, host_chosen, guest.inner().root_id(), false)?;
-    Ok(guest.finish())
+fn fdt_generation(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+    })
 }
 
 pub fn handle_fdt_operations(

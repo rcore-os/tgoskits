@@ -6,7 +6,7 @@ use axvm_types::{GuestPhysAddr, VmArchVcpuOps, VmVcpuState};
 
 use crate::{
     AxVmResult,
-    architecture::{ArchOps, BoundVcpuExit, VcpuRunAction},
+    architecture::{ArchOps, BoundVcpuExit, VcpuRunAction, VcpuScheduling},
     ax_err_type,
 };
 
@@ -54,23 +54,21 @@ where
             exit.target_cpu
         );
         vcpu.set_return_value(usize::MAX);
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        }));
+        return Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()));
     };
 
-    match start_vcpu::<A>(vm, target_vcpu_id, exit.entry_point, exit.arg as _) {
-        Ok(()) => A::set_cpu_up_success(vcpu),
+    let action = match start_vcpu::<A>(vm, target_vcpu_id, exit.entry_point, exit.arg as _) {
+        Ok(()) => {
+            A::set_cpu_up_success(vcpu);
+            VcpuRunAction::new(VcpuScheduling::YIELD, None)
+        }
         Err(err) => {
             warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
             vcpu.set_return_value(usize::MAX);
+            VcpuRunAction::resume()
         }
-    }
-    Ok(BoundVcpuExit::Complete(VcpuRunAction {
-        waits_for_event: false,
-        stop_reason: None,
-    }))
+    };
+    Ok(BoundVcpuExit::Complete(action))
 }
 
 fn start_vcpu<A>(

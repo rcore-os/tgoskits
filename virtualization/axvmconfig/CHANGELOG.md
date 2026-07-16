@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace legacy numeric VM/device configuration with strict `[machine]`,
+  `[[memory.regions]]`, `[devices]`, and `[[devices.virtual]]` tables.
+- Normalize optional passthrough-only `interrupts_passthrough` into the typed
+  mediated/direct delivery policy immediately after parsing.
+
+### Removed
+
+- Remove `vm_type`, raw emulated/passthrough/excluded device arrays, raw
+  addresses, IRQ/type numbers, `host_reserved_intids`, and `cfg_list` without
+  compatibility parsing.
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.0...axvmconfig-v0.8.1) - 2026-07-07
 
 ### Other

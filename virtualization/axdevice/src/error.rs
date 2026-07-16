@@ -64,6 +64,14 @@ pub enum DeviceManagerError {
         /// Diagnostic detail describing the response.
         detail: String,
     },
+    /// An external device backend failed while servicing the guest model.
+    #[error("device backend failed during {operation}: {detail}")]
+    Backend {
+        /// Backend operation that failed.
+        operation: &'static str,
+        /// Stable diagnostic detail supplied by the adapter.
+        detail: String,
+    },
     /// A bus access failed with address and width context.
     #[error("device {operation} failed on {bus:?} bus at {addr:#x} with width {width:?}: {source}")]
     Access {
@@ -117,6 +125,9 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::UnexpectedResponse { operation, detail } => {
                 Self::InvalidState { operation, detail }
+            }
+            DeviceManagerError::Backend { operation, detail } => {
+                Self::Backend { operation, detail }
             }
             DeviceManagerError::Access { source, .. } => source,
             DeviceManagerError::Registry(error) => Self::InvalidInput {

@@ -1,7 +1,5 @@
 //! Typed errors reported by the virtual platform-level interrupt controller.
 
-use alloc::string::String;
-
 use axdevice_base::{AccessWidth, DeviceError};
 
 /// Result type returned by virtual PLIC operations.
@@ -58,6 +56,12 @@ pub enum VplicError {
         /// The requested register access width.
         actual: AccessWidth,
     },
+    /// A register access is not aligned to its 32-bit register boundary.
+    #[error("unaligned vPLIC register offset {offset:#x}")]
+    UnalignedRegister {
+        /// Byte offset relative to the vPLIC aperture.
+        offset: usize,
+    },
     /// A register operation is unsupported.
     #[error("unsupported vPLIC {operation} at register offset {offset:#x}")]
     UnsupportedRegister {
@@ -65,14 +69,6 @@ pub enum VplicError {
         operation: &'static str,
         /// The unsupported register offset.
         offset: usize,
-    },
-    /// A host PLIC or MMIO backend operation failed.
-    #[error("vPLIC backend operation {operation} failed: {detail}")]
-    Backend {
-        /// The backend operation that failed.
-        operation: &'static str,
-        /// Diagnostic detail from the backend.
-        detail: String,
     },
 }
 
@@ -83,6 +79,7 @@ impl From<VplicError> for DeviceError {
             | VplicError::SourceNotAssigned { .. }
             | VplicError::InvalidContext { .. }
             | VplicError::InvalidAccessWidth { .. }
+            | VplicError::UnalignedRegister { .. }
             | VplicError::MissingRegionSize
             | VplicError::AddressOverflow
             | VplicError::InsufficientRegion { .. } => Self::InvalidInput {
@@ -90,10 +87,6 @@ impl From<VplicError> for DeviceError {
                 detail: alloc::format!("{error}"),
             },
             VplicError::UnsupportedRegister { .. } => Self::Unsupported {
-                operation: "access RISC-V vPLIC",
-                detail: alloc::format!("{error}"),
-            },
-            VplicError::Backend { .. } => Self::Backend {
                 operation: "access RISC-V vPLIC",
                 detail: alloc::format!("{error}"),
             },

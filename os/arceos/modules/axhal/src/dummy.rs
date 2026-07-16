@@ -152,6 +152,10 @@ impl PowerIf for DummyPower {
     fn cpu_num() -> usize {
         1
     }
+
+    fn cpu_hardware_id(cpu_id: usize) -> Option<usize> {
+        (cpu_id == 0).then_some(0)
+    }
 }
 
 #[cfg(feature = "irq")]

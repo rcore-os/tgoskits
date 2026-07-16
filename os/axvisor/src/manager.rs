@@ -207,7 +207,11 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
     let routes = axvm::boot::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
     if routes.is_empty() {
         if let Some(vm) = axvm::get_vm_by_id(vm_id) {
-            let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
+            let passthrough = vm.with_config(|config| {
+                config.machine_plan().host_devices().iter().any(|device| {
+                    device.disposition() == axvm::machine::DeviceDisposition::Passthrough
+                })
+            });
             if passthrough {
                 warn!(
                     "VM[{vm_id}] has passthrough devices but no LoongArch guest IRQ route parsed"

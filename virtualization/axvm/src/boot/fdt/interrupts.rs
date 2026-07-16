@@ -12,22 +12,22 @@ struct InterruptEntries {
     names: Option<Vec<String>>,
 }
 
-/// Retains the first `retained_count` interrupt entries on compatible nodes.
+/// Retains the EL1 non-secure physical and virtual timer entries on compatible nodes.
 ///
 /// The entry width is read from each node's effective interrupt parent. When
-/// `interrupt-names` is present, it is truncated to the same number of entries.
+/// `interrupt-names` is present, entries are selected by their architectural
+/// roles. Otherwise the standard Arm timer binding order is used.
 /// Nodes and properties unrelated to the selected compatibility string are
 /// preserved.
 ///
 /// # Errors
 ///
 /// Returns an error when the DTB cannot be parsed, a selected node has no valid
-/// interrupt parent, its interrupt properties are malformed, or fewer than
-/// `retained_count` complete entries are available.
-pub fn retain_compatible_interrupt_entries(
+/// interrupt parent, its interrupt properties are malformed, or the physical
+/// and virtual entries are absent.
+pub fn retain_guest_timer_interrupt_entries(
     fdt_bytes: &[u8],
     compatible: &str,
-    retained_count: usize,
 ) -> AxVmResult<Vec<u8>> {
     let mut fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|err| ax_err_type!(InvalidData, format!("Failed to parse FDT: {err:#?}")))?;
@@ -38,27 +38,24 @@ pub fn retain_compatible_interrupt_entries(
         .collect::<Vec<_>>();
 
     for node_id in matching_nodes {
-        retain_node_interrupt_entries(&mut fdt, node_id, retained_count)?;
+        retain_node_timer_interrupt_entries(&mut fdt, node_id)?;
     }
 
     Ok(fdt.encode().as_ref().to_vec())
 }
 
-fn retain_node_interrupt_entries(
-    fdt: &mut Fdt,
-    node_id: NodeId,
-    retained_count: usize,
-) -> AxVmResult {
+fn retain_node_timer_interrupt_entries(fdt: &mut Fdt, node_id: NodeId) -> AxVmResult {
     let node_path = fdt.path_of(node_id);
     let entries = read_interrupt_entries(fdt, node_id, &node_path)?;
-    let retained_cells = entries.retained_cells(retained_count, &node_path)?;
-    let retained_names = entries.retained_names(retained_count, &node_path)?;
+    let selected_indices = entries.guest_timer_indices(&node_path)?;
+    let retained_cells = entries.selected_cells(selected_indices, &node_path)?;
+    let retained_names = entries.selected_names(selected_indices, &node_path)?;
     let node = fdt
         .node_mut(node_id)
         .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?;
 
     let mut interrupts = Property::new("interrupts", Vec::new());
-    interrupts.set_u32_ls(retained_cells);
+    interrupts.set_u32_ls(&retained_cells);
     node.set_property(interrupts);
 
     if let Some(names) = retained_names {
@@ -140,45 +137,84 @@ fn read_interrupt_entries(
 }
 
 impl InterruptEntries {
-    fn retained_cells(&self, retained_count: usize, node_path: &str) -> AxVmResult<&[u32]> {
-        let retained_cell_count = retained_count
-            .checked_mul(self.cells_per_entry)
-            .ok_or_else(|| {
-                ax_err_type!(
-                    InvalidData,
-                    format!("FDT node {node_path} interrupt entry count overflows")
-                )
-            })?;
-        self.specifiers.get(..retained_cell_count).ok_or_else(|| {
-            ax_err_type!(
+    fn guest_timer_indices(&self, node_path: &str) -> AxVmResult<[usize; 2]> {
+        if let Some(names) = &self.names {
+            let physical = names
+                .iter()
+                .position(|name| matches!(name.as_str(), "phys" | "non-secure-phys"))
+                .ok_or_else(|| {
+                    ax_err_type!(
+                        InvalidData,
+                        format!("FDT node {node_path} has no non-secure physical timer interrupt")
+                    )
+                })?;
+            let virtual_timer = names
+                .iter()
+                .position(|name| matches!(name.as_str(), "virt" | "virtual"))
+                .ok_or_else(|| {
+                    ax_err_type!(
+                        InvalidData,
+                        format!("FDT node {node_path} has no virtual timer interrupt")
+                    )
+                })?;
+            return Ok([physical, virtual_timer]);
+        }
+
+        let entry_count = self.specifiers.len() / self.cells_per_entry;
+        match entry_count {
+            0 | 1 => Err(ax_err_type!(
                 InvalidData,
-                format!(
-                    "FDT node {node_path} contains only {} interrupt entries, cannot retain \
-                     {retained_count}",
-                    self.specifiers.len() / self.cells_per_entry
-                )
-            )
-        })
+                format!("FDT node {node_path} has fewer than two Arm timer interrupts")
+            )),
+            2 => Ok([0, 1]),
+            _ => Ok([1, 2]),
+        }
     }
 
-    fn retained_names(
+    fn selected_cells(&self, indices: [usize; 2], node_path: &str) -> AxVmResult<Vec<u32>> {
+        let mut selected = Vec::with_capacity(2 * self.cells_per_entry);
+        for index in indices {
+            let start = index.checked_mul(self.cells_per_entry).ok_or_else(|| {
+                ax_err_type!(
+                    InvalidData,
+                    format!("FDT node {node_path} interrupt entry index overflows")
+                )
+            })?;
+            let end = start.checked_add(self.cells_per_entry).ok_or_else(|| {
+                ax_err_type!(
+                    InvalidData,
+                    format!("FDT node {node_path} interrupt entry end overflows")
+                )
+            })?;
+            selected.extend_from_slice(self.specifiers.get(start..end).ok_or_else(|| {
+                ax_err_type!(
+                    InvalidData,
+                    format!("FDT node {node_path} has no complete interrupt entry {index}")
+                )
+            })?);
+        }
+        Ok(selected)
+    }
+
+    fn selected_names(
         &self,
-        retained_count: usize,
+        indices: [usize; 2],
         node_path: &str,
-    ) -> AxVmResult<Option<&[String]>> {
+    ) -> AxVmResult<Option<Vec<String>>> {
         self.names
             .as_ref()
             .map(|names| {
-                names.get(..retained_count).ok_or_else(|| {
-                    ax_err_type!(
-                        InvalidData,
-                        format!(
-                            "FDT node {node_path} contains only {} interrupt names, cannot retain \
-                             {retained_count}",
-                            names.len()
-                        )
-                    )
-                })
+                indices
+                    .into_iter()
+                    .map(|index| {
+                        names.get(index).cloned().ok_or_else(|| {
+                            ax_err_type!(
+                                InvalidData,
+                                format!("FDT node {node_path} has no interrupt name {index}")
+                            )
+                        })
+                    })
+                    .collect()
             })
             .transpose()
     }
@@ -212,10 +248,10 @@ mod tests {
 
     use fdt_edit::{Fdt, Node, Property};
 
-    use super::retain_compatible_interrupt_entries;
+    use super::retain_guest_timer_interrupt_entries;
 
     #[test]
-    fn retains_complete_interrupt_entries_and_names() {
+    fn retains_physical_and_virtual_timer_entries_by_role() {
         let dtb = timer_dtb(&[
             1, 13, 4, // secure physical timer
             1, 14, 4, // non-secure physical timer
@@ -223,7 +259,7 @@ mod tests {
             1, 10, 4, // hypervisor timer
         ]);
 
-        let bytes = retain_compatible_interrupt_entries(&dtb, "arm,armv8-timer", 2).unwrap();
+        let bytes = retain_guest_timer_interrupt_entries(&dtb, "arm,armv8-timer").unwrap();
 
         let reparsed = Fdt::from_bytes(&bytes).unwrap();
         let timer = reparsed.get_by_path("/timer").unwrap().as_node();
@@ -238,8 +274,8 @@ mod tests {
             .as_str_iter()
             .collect::<Vec<_>>();
 
-        assert_eq!(interrupts, [1, 13, 4, 1, 14, 4]);
-        assert_eq!(interrupt_names, ["sec-phys", "phys"]);
+        assert_eq!(interrupts, [1, 14, 4, 1, 11, 4]);
+        assert_eq!(interrupt_names, ["phys", "virt"]);
     }
 
     #[test]
@@ -250,7 +286,7 @@ mod tests {
             1, 11, // incomplete virtual timer specifier
         ]);
 
-        assert!(retain_compatible_interrupt_entries(&dtb, "arm,armv8-timer", 2).is_err());
+        assert!(retain_guest_timer_interrupt_entries(&dtb, "arm,armv8-timer").is_err());
     }
 
     fn timer_dtb(interrupts: &[u32]) -> Vec<u8> {

@@ -28,4 +28,8 @@ impl PowerIf for PowerImpl {
     fn cpu_num() -> usize {
         somehal::smp::cpu_meta_list().count()
     }
+
+    fn cpu_hardware_id(cpu_id: usize) -> Option<usize> {
+        somehal::smp::cpu_idx_to_id(cpu_id)
+    }
 }

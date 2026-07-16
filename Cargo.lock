@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "acpi_tables"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce821f856a3eb1d033287f2dcfcdf94276d7895dd5bdd8ca45ae17e7d33d4dd9"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,6 +435,16 @@ dependencies = [
  "ax-kspin",
  "axvm-types",
  "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "arm_vpl011"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "axdevice_base",
+ "bitflags 2.13.0",
  "thiserror 2.0.18",
 ]
 
@@ -1254,7 +1273,6 @@ dependencies = [
  "ax-memory-addr",
  "axvm-types",
  "log",
- "serde",
  "thiserror 2.0.18",
 ]
 
@@ -1444,6 +1462,7 @@ dependencies = [
  "axplat-dyn",
  "axtest",
  "axvm",
+ "axvm-types",
  "axvmconfig",
  "clap",
  "log",
@@ -1463,9 +1482,11 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
  "aarch64_sysreg",
+ "acpi_tables",
  "arm-gic-driver",
  "arm_vcpu",
  "arm_vgic",
+ "arm_vpl011",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
@@ -1505,6 +1526,9 @@ dependencies = [
  "riscv_vplic",
  "spin",
  "thiserror 2.0.18",
+ "virtual_ns16550",
+ "vm-allocator",
+ "vm-fdt",
  "x86",
  "x86_vcpu",
  "x86_vlapic",
@@ -6641,9 +6665,7 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.20"
 dependencies = [
- "ax-crate-interface",
  "ax-kspin",
- "ax-memory-addr",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
@@ -8961,6 +8983,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtual_ns16550"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "axdevice_base",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "virtualization-tests"
 version = "0.1.0"
 dependencies = [
@@ -8979,10 +9010,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
+name = "vm-allocator"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2feb549d049009150155ab6e1b0c8c0db9ea6805ba5bdc57a27a3b7466e80f5"
+dependencies = [
+ "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "vm-fdt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
+dependencies = [
+ "hashbrown 0.14.5",
+]
 
 [[package]]
 name = "volatile"

@@ -15,7 +15,13 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axdevice` provides A reusable, OS-agnostic device abstraction layer designed for virtual machines. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axdevice` provides VM-local device registration, bus dispatch, two-phase
+virtual-device models, and validated interrupt-controller topology. Device
+models consume named resources allocated by the VM planner and receive owned
+`IrqLine` or `MsiEndpoint` objects; they never inject a vCPU interrupt by vector.
+
+The crate is `no_std + alloc` by default. Its optional `std` feature is intended
+for host fixtures and domain tests.
 
 ## Quick Start
 
@@ -51,13 +57,17 @@ cargo doc --no-deps
 
 ### Example
 
-```rust
-use axdevice as _;
+```rust,ignore
+use axdevice::{DeviceBuildContext, ResourceSlot};
 
-fn main() {
-    // Integrate `axdevice` into your project here.
-}
+let irq_slot = ResourceSlot::new("irq")?;
+let irq = build_context.irq(&irq_slot)?;
+let device = MyVirtualDevice::new(irq);
 ```
+
+Controllers register wired/MSI input capabilities and vCPU bindings in one
+`InterruptTopology`. Topology finalization validates controller IDs, default
+selection, cascades, trigger modes, cycles, and vCPU ports before the VM runs.
 
 ### Documentation
 

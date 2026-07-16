@@ -18,16 +18,16 @@ use std::{
 };
 
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, ControllerCascade, ControllerInputId, ControllerRegistration,
-    ControllerRole, Device, DeviceBundle, DeviceManagerError, DeviceManagerResult,
-    DeviceRegistration, InterruptControllerId, InterruptControllerOutput, InterruptTopology,
-    InterruptTriggerMode, IrqLine, IrqResult, MessageInterruptInputs, MessageInterruptSink,
-    MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage, VcpuInterruptAffinity, VcpuInterruptBinding,
-    VcpuInterruptController, VcpuInterruptId, VcpuInterruptPort, VcpuInterruptWake,
-    WiredInterruptInputs, WiredIrqInput, WiredIrqRequest, WiredIrqSink,
+    AxVmDevices, ControllerCascade, ControllerInputId, ControllerRegistration, ControllerRole,
+    Device, DeviceBundle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    InterruptControllerId, InterruptControllerOutput, InterruptTopology, InterruptTriggerMode,
+    IrqLine, IrqResult, MessageInterruptInputs, MessageInterruptSink, MsiDeviceId, MsiEndpoint,
+    MsiEventId, MsiMessage, VcpuInterruptAffinity, VcpuInterruptBinding, VcpuInterruptController,
+    VcpuInterruptId, VcpuInterruptPort, VcpuInterruptWake, WiredInterruptInputs, WiredIrqInput,
+    WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{BusAccess, BusResponse, DeviceError, Resource};
-use axvm_types::VMInterruptMode;
+use axvm_types::InterruptDelivery;
 
 const ROOT: InterruptControllerId = InterruptControllerId::new(1);
 const CHILD: InterruptControllerId = InterruptControllerId::new(2);
@@ -267,7 +267,7 @@ impl Device for StaticMmioDevice {
 
 #[test]
 fn resolves_default_and_explicit_controllers_and_caches_inputs() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let (root, inputs, sink) = wired_registration(ROOT, ControllerRole::Default);
     topology.register_controller(root).unwrap();
 
@@ -305,8 +305,8 @@ fn resolves_default_and_explicit_controllers_and_caches_inputs() {
 }
 
 #[test]
-fn rejects_duplicate_ids_defaults_and_no_irq_topologies() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+fn rejects_duplicate_ids_and_default_controllers() {
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     topology.register_controller(root.clone()).unwrap();
     assert!(matches!(
@@ -319,25 +319,11 @@ fn rejects_duplicate_ids_defaults_and_no_irq_topologies() {
         topology.register_controller(second_default),
         Err(DeviceManagerError::ResourceConflict { .. })
     ));
-
-    let no_irq = InterruptTopology::new(VMInterruptMode::NoIrq);
-    let (controller, ..) = wired_registration(ROOT, ControllerRole::Default);
-    assert!(matches!(
-        no_irq.register_controller(controller),
-        Err(DeviceManagerError::Unsupported { .. })
-    ));
-    assert!(matches!(
-        no_irq.connect_irq(WiredIrqRequest::new(
-            ControllerInputId::new(1),
-            InterruptTriggerMode::EdgeTriggered,
-        )),
-        Err(DeviceManagerError::Unsupported { .. })
-    ));
 }
 
 #[test]
 fn connects_controller_cascade_after_validating_parent_graph() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let (root, _, sink) = wired_registration(ROOT, ControllerRole::Default);
     let output = Arc::new(CapturingOutput::default());
     let child = ControllerRegistration::new(CHILD, ControllerRole::Secondary)
@@ -364,7 +350,7 @@ fn connects_controller_cascade_after_validating_parent_graph() {
 
 #[test]
 fn rejects_missing_parents_and_cascade_cycles() {
-    let missing_parent = InterruptTopology::new(VMInterruptMode::Emulated);
+    let missing_parent = InterruptTopology::new(InterruptDelivery::Mediated);
     let child_output = Arc::new(CapturingOutput::default());
     let (child, ..) = wired_registration(CHILD, ControllerRole::Default);
     missing_parent
@@ -383,7 +369,7 @@ fn rejects_missing_parents_and_cascade_cycles() {
     ));
     assert!(!missing_parent.is_finalized());
 
-    let cycle = InterruptTopology::new(VMInterruptMode::Emulated);
+    let cycle = InterruptTopology::new(InterruptDelivery::Mediated);
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
     cycle
@@ -414,7 +400,7 @@ fn rejects_missing_parents_and_cascade_cycles() {
 
 #[test]
 fn attaches_vcpu_bindings_and_synchronizes_their_lifecycle() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let controller = Arc::new(RecordingVcpuController::default());
     topology
         .register_controller(
@@ -450,7 +436,7 @@ fn attaches_vcpu_bindings_and_synchronizes_their_lifecycle() {
 
 #[test]
 fn connects_and_signals_msi_endpoints() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let sink = Arc::new(RecordingMessageSink::default());
     topology
         .register_controller(
@@ -478,8 +464,8 @@ fn connects_and_signals_msi_endpoints() {
 
 #[test]
 fn rolls_back_controller_when_a_device_resource_conflicts() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
-    let mut devices = AxVmDevices::new(AxVmDeviceConfig::new(Vec::new())).unwrap();
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
+    let mut devices = AxVmDevices::empty();
     let (controller, ..) = wired_registration(ROOT, ControllerRole::Default);
     let mut bundle = DeviceBundle::new();
     bundle.push(DeviceRegistration::InterruptController(controller.clone()));
@@ -500,7 +486,7 @@ fn rolls_back_controller_when_a_device_resource_conflicts() {
 
 #[test]
 fn resets_finalized_topology_after_vm_preparation_fails() {
-    let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     let output = Arc::new(CapturingOutput::default());
     let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
@@ -530,7 +516,7 @@ fn resets_finalized_topology_after_vm_preparation_fails() {
 fn dropping_a_finalized_topology_disconnects_controller_cascades() {
     let output = Arc::new(CapturingOutput::default());
     {
-        let topology = InterruptTopology::new(VMInterruptMode::Emulated);
+        let topology = InterruptTopology::new(InterruptDelivery::Mediated);
         let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
         let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
         topology.register_controller(root).unwrap();

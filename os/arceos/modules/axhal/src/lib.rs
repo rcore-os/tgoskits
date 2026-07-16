@@ -159,6 +159,11 @@ pub fn cpu_num() -> usize {
     }
 }
 
+/// Returns the firmware or architecture hardware ID of one logical host CPU.
+pub fn cpu_hardware_id(cpu_id: usize) -> Option<usize> {
+    ax_plat::power::cpu_hardware_id(cpu_id)
+}
+
 #[allow(unused_macros)]
 macro_rules! addr_of_sym {
     ($e:ident) => {

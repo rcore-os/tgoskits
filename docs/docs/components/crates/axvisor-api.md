@@ -192,8 +192,8 @@ flowchart TD
 
 类似地：
 
-- `riscv_vcpu`、`riscv_vplic` 使用 `memory::phys_to_virt()` 做宿主侧 MMIO 访问
-- `arm_vcpu` 使用 `arch::hardware_inject_virtual_interrupt()` 走 AArch64 快速注入路径
+- `riscv_vcpu` 使用 `memory::phys_to_virt()` 访问其仍需宿主映射的架构资源；`riscv_vplic` 已改为每 VM 独立的软件状态，不访问宿主 PLIC MMIO
+- AArch64 设备中断通过 `InterruptTopology` 连接 GIC 输入，再由已注册的 vCPU binding 完成投递
 - `axvm` 和其它组件通过 `vmm::current_vm_id()` / `current_vcpu_id()` 获取上下文
 
 ### 2.3 适用场景

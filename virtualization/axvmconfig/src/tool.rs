@@ -80,9 +80,6 @@ pub struct TemplateArgs {
     /// The name of the VM.
     #[arg(short = 'n', long, default_value_t = String::from("GuestVM"))]
     name: String,
-    /// The type of the VM, 0 for HostVM, 1 for RTOS, 2 for Linux.
-    #[arg(short = 't', long, default_value_t = 1)]
-    vm_type: usize,
     /// The number of CPUs of the VM.
     #[arg(short = 'c', long, default_value_t = 1)]
     cpu_num: usize,
@@ -190,7 +187,6 @@ pub fn run() {
             let template = get_vm_config_template(VmTemplateParams {
                 id: args.id,
                 name: args.name + "-" + args.arch.as_str(),
-                vm_type: args.vm_type,
                 cpu_num: args.cpu_num,
                 entry_point: args.entry_point,
                 kernel_path,

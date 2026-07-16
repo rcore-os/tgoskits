@@ -1,8 +1,7 @@
-use core::marker::PhantomData;
+use alloc::sync::Arc;
 
 use crate::{
     X86AccessWidth, X86Port, X86PortRange, X86VlapicError, X86VlapicResult,
-    host::{self, X86VlapicHostOps},
     lock::SpinMutex as Mutex,
 };
 
@@ -115,24 +114,34 @@ impl SerialState {
     }
 }
 
-/// Minimal 16550-compatible COM1 UART backed by the host console.
-pub struct EmulatedSerialPort<H: X86VlapicHostOps> {
-    state: Mutex<SerialState>,
-    _host: PhantomData<fn() -> H>,
+/// Byte-stream capability used by one emulated COM1 instance.
+pub trait X86SerialBackend: Send + Sync {
+    /// Consumes bytes written by the guest transmitter.
+    fn transmit(&self, bytes: &[u8]);
+
+    /// Supplies up to `bytes.len()` pending receive bytes.
+    fn receive(&self, bytes: &mut [u8]) -> usize;
 }
 
-impl<H: X86VlapicHostOps> EmulatedSerialPort<H> {
-    /// Create a new COM1 UART.
-    pub const fn new() -> Self {
+/// Minimal 16550-compatible COM1 UART with a per-instance backend.
+pub struct EmulatedSerialPort {
+    state: Mutex<SerialState>,
+    backend: Arc<dyn X86SerialBackend>,
+}
+
+impl EmulatedSerialPort {
+    /// Creates a COM1 UART using a device-instance byte-stream capability.
+    pub fn new(backend: Arc<dyn X86SerialBackend>) -> Self {
         Self {
             state: Mutex::new(SerialState::new()),
-            _host: PhantomData,
+            backend,
         }
     }
 
-    fn poll_host_input(state: &mut SerialState) {
+    fn poll_backend_input(&self) {
         let mut buf = [0u8; 32];
-        let read = host::read_bytes::<H>(&mut buf);
+        let read = self.backend.receive(&mut buf).min(buf.len());
+        let mut state = self.state.lock();
         for &byte in &buf[..read] {
             state.push_rx(byte);
         }
@@ -140,19 +149,13 @@ impl<H: X86VlapicHostOps> EmulatedSerialPort<H> {
 
     /// Poll host console input and return whether the UART should assert IRQ4.
     pub fn poll_irq(&self) -> bool {
-        let mut state = self.state.lock();
-        Self::poll_host_input(&mut state);
+        self.poll_backend_input();
+        let state = self.state.lock();
         state.ier & IER_RX_AVAILABLE != 0 && state.rx_len != 0
     }
 }
 
-impl<H: X86VlapicHostOps> Default for EmulatedSerialPort<H> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> EmulatedSerialPort<H> {
+impl EmulatedSerialPort {
     /// Returns the COM1 port range.
     pub fn address_range(&self) -> X86PortRange {
         X86PortRange::new(X86Port::new(COM1_BASE), X86Port::new(COM1_END))
@@ -164,8 +167,8 @@ impl<H: X86VlapicHostOps> EmulatedSerialPort<H> {
             return Err(X86VlapicError::Unsupported);
         }
 
+        self.poll_backend_input();
         let mut state = self.state.lock();
-        Self::poll_host_input(&mut state);
         let offset = port.number() - COM1_BASE;
         let value = match offset {
             REG_RBR_THR_DLL if state.dlab() => state.dll,
@@ -194,26 +197,105 @@ impl<H: X86VlapicHostOps> EmulatedSerialPort<H> {
             return Err(X86VlapicError::Unsupported);
         }
 
-        let mut state = self.state.lock();
-        let offset = port.number() - COM1_BASE;
         let value = val as u8;
-        match offset {
-            REG_RBR_THR_DLL if state.dlab() => state.dll = value,
-            REG_RBR_THR_DLL => host::write_bytes::<H>(&[value]),
-            REG_IER_DLM if state.dlab() => state.dlm = value,
-            REG_IER_DLM => state.ier = value & 0x0f,
-            REG_IIR_FCR => {
-                state.fcr = value;
-                if value & (1 << 1) != 0 {
-                    state.clear_rx();
+        let transmit = {
+            let mut state = self.state.lock();
+            let offset = port.number() - COM1_BASE;
+            match offset {
+                REG_RBR_THR_DLL if state.dlab() => {
+                    state.dll = value;
+                    None
                 }
+                REG_RBR_THR_DLL => Some(value),
+                REG_IER_DLM if state.dlab() => {
+                    state.dlm = value;
+                    None
+                }
+                REG_IER_DLM => {
+                    state.ier = value & 0x0f;
+                    None
+                }
+                REG_IIR_FCR => {
+                    state.fcr = value;
+                    if value & (1 << 1) != 0 {
+                        state.clear_rx();
+                    }
+                    None
+                }
+                REG_LCR => {
+                    state.lcr = value;
+                    None
+                }
+                REG_MCR => {
+                    state.mcr = value;
+                    None
+                }
+                REG_LSR | REG_MSR => None,
+                REG_SCR => {
+                    state.scr = value;
+                    None
+                }
+                _ => return Err(X86VlapicError::Unsupported),
             }
-            REG_LCR => state.lcr = value,
-            REG_MCR => state.mcr = value,
-            REG_LSR | REG_MSR => {}
-            REG_SCR => state.scr = value,
-            _ => return Err(X86VlapicError::Unsupported),
+        };
+        if let Some(byte) = transmit {
+            self.backend.transmit(&[byte]);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, vec::Vec};
+
+    use super::*;
+    #[test]
+    fn per_instance_backend_replaces_static_host_console_callbacks() {
+        let backend = Arc::new(TestSerialBackend::new(b"input"));
+        let serial = EmulatedSerialPort::new(backend.clone());
+
+        serial
+            .handle_write(X86Port::new(COM1_BASE), X86AccessWidth::Byte, b'X' as usize)
+            .unwrap();
+        assert_eq!(backend.transmitted(), b"X");
+        assert_eq!(
+            serial
+                .handle_read(X86Port::new(COM1_BASE), X86AccessWidth::Byte)
+                .unwrap(),
+            b'i' as usize
+        );
+    }
+
+    struct TestSerialBackend {
+        rx: Mutex<Vec<u8>>,
+        tx: Mutex<Vec<u8>>,
+    }
+
+    impl TestSerialBackend {
+        fn new(rx: &[u8]) -> Self {
+            Self {
+                rx: Mutex::new(rx.into()),
+                tx: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn transmitted(&self) -> Vec<u8> {
+            self.tx.lock().clone()
+        }
+    }
+
+    impl X86SerialBackend for TestSerialBackend {
+        fn transmit(&self, bytes: &[u8]) {
+            self.tx.lock().extend_from_slice(bytes);
+        }
+
+        fn receive(&self, bytes: &mut [u8]) -> usize {
+            let mut pending = self.rx.lock();
+            let count = pending.len().min(bytes.len());
+            bytes[..count].copy_from_slice(&pending[..count]);
+            pending.drain(..count);
+            count
+        }
     }
 }

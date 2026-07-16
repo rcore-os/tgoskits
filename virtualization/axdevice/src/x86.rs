@@ -1,6 +1,6 @@
 //! AxVM-facing adapters for OS-neutral x86 virtual interrupt-controller devices.
 
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{any::Any, marker::PhantomData};
 
 use axdevice_base::{
@@ -8,7 +8,8 @@ use axdevice_base::{
 };
 use x86_vlapic::{
     EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicEoi, IoApicInterrupt, X86AccessWidth,
-    X86GuestPhysAddr, X86GuestPhysAddrRange, X86Port, X86PortRange, X86VlapicHostOps,
+    X86GuestPhysAddr, X86GuestPhysAddrRange, X86Port, X86PortRange, X86SerialBackend,
+    X86VlapicHostOps,
 };
 
 use crate::DeviceManagerResult;
@@ -216,48 +217,44 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
 }
 
 /// Unified-device adapter for [`EmulatedSerialPort`].
-pub struct X86SerialPortDevice<H: X86VlapicHostOps> {
-    inner: EmulatedSerialPort<H>,
+pub struct X86SerialPortDevice {
+    inner: EmulatedSerialPort,
     irq: Option<IrqLine>,
     name: String,
     resources: Box<[Resource]>,
-    _host: PhantomData<fn() -> H>,
 }
 
-impl<H: X86VlapicHostOps> X86SerialPortDevice<H> {
-    /// Creates a COM1 adapter.
-    pub fn new() -> Self {
-        let inner = EmulatedSerialPort::<H>::new();
+impl X86SerialPortDevice {
+    /// Creates a COM1 adapter with a per-instance byte-stream backend.
+    pub fn new_with_backend(backend: Arc<dyn X86SerialBackend>) -> Self {
+        let inner = EmulatedSerialPort::new(backend);
+        Self::from_inner(inner)
+    }
+
+    fn from_inner(inner: EmulatedSerialPort) -> Self {
         let resources = port_resources(inner.address_range());
         Self {
             inner,
             irq: None,
             name: String::from("x86-serial-com1"),
             resources,
-            _host: PhantomData,
         }
     }
 
     /// Returns the wrapped OS-neutral COM1 core.
-    pub const fn inner(&self) -> &EmulatedSerialPort<H> {
+    pub const fn inner(&self) -> &EmulatedSerialPort {
         &self.inner
     }
 
-    /// Creates a COM1 adapter connected to its IOAPIC input line.
-    pub fn new_with_irq(irq: IrqLine) -> Self {
-        let mut device = Self::new();
+    /// Creates a COM1 adapter connected to an IRQ and a per-instance backend.
+    pub fn new_with_irq_and_backend(irq: IrqLine, backend: Arc<dyn X86SerialBackend>) -> Self {
+        let mut device = Self::new_with_backend(backend);
         device.irq = Some(irq);
         device
     }
 }
 
-impl<H: X86VlapicHostOps> Default for X86SerialPortDevice<H> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> X86SerialDeviceOps for X86SerialPortDevice<H> {
+impl X86SerialDeviceOps for X86SerialPortDevice {
     fn service_irq(&self) -> IrqResult<bool> {
         let asserted = self.inner.poll_irq();
         if let Some(irq) = &self.irq {
@@ -271,7 +268,7 @@ impl<H: X86VlapicHostOps> X86SerialDeviceOps for X86SerialPortDevice<H> {
     }
 }
 
-impl<H: X86VlapicHostOps + 'static> Device for X86SerialPortDevice<H> {
+impl Device for X86SerialPortDevice {
     fn name(&self) -> &str {
         &self.name
     }

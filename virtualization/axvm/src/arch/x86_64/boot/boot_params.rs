@@ -26,6 +26,7 @@ const SETUP_HEADER_END: usize = 0x290;
 const EXT_RAMDISK_IMAGE_OFFSET: usize = 0x0c0;
 const EXT_RAMDISK_SIZE_OFFSET: usize = 0x0c4;
 const EXT_CMD_LINE_PTR_OFFSET: usize = 0x0c8;
+const ACPI_RSDP_ADDR_OFFSET: usize = 0x070;
 const E820_ENTRIES_OFFSET: usize = 0x1e8;
 const SENTINEL_OFFSET: usize = 0x1ef;
 const TYPE_OF_LOADER_OFFSET: usize = 0x210;
@@ -59,6 +60,7 @@ pub struct BootParamsBuilder<'a> {
     ram_ranges: Vec<X86LinuxRange>,
     reserved_ranges: Vec<X86LinuxRange>,
     command_line: Option<&'a str>,
+    acpi_rsdp_address: Option<u64>,
 }
 
 impl<'a> BootParamsBuilder<'a> {
@@ -79,6 +81,7 @@ impl<'a> BootParamsBuilder<'a> {
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
             command_line: None,
+            acpi_rsdp_address: None,
         }
     }
 
@@ -98,6 +101,11 @@ impl<'a> BootParamsBuilder<'a> {
         if range.size != 0 {
             self.reserved_ranges.push(range);
         }
+    }
+
+    /// Publishes the generated ACPI RSDP through Linux `boot_params`.
+    pub fn set_acpi_rsdp_address(&mut self, address: u64) {
+        self.acpi_rsdp_address = Some(address);
     }
 
     pub fn build(mut self) -> Result<[u8; BOOT_PARAMS_SIZE], BootParamsError> {
@@ -139,6 +147,9 @@ impl<'a> BootParamsBuilder<'a> {
             self.layout.kernel.start as u32,
         );
         write_u64(boot_params, SETUP_DATA_OFFSET, 0);
+        if let Some(address) = self.acpi_rsdp_address {
+            write_u64(boot_params, ACPI_RSDP_ADDR_OFFSET, address);
+        }
 
         let cmdline_ptr = self
             .layout
@@ -430,6 +441,7 @@ mod tests {
         builder
             .set_command_line("console=ttyS0 rdinit=/init")
             .unwrap();
+        builder.set_acpi_rsdp_address(0x000e_0000);
         let params = builder.build().unwrap();
 
         assert_eq!(read_u8(&params, SENTINEL_OFFSET), 0xff);
@@ -453,6 +465,14 @@ mod tests {
             b"console=ttyS0 rdinit=/init"
         );
         assert_eq!(read_u8(&params, COMMAND_LINE_OFFSET + 26), 0);
+        assert_eq!(
+            u64::from_le_bytes(
+                params[ACPI_RSDP_ADDR_OFFSET..ACPI_RSDP_ADDR_OFFSET + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x000e_0000
+        );
     }
 
     #[test]

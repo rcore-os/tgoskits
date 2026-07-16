@@ -9,7 +9,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::axvisor_case_asset_config,
+    assets::{axvisor_case_asset_config, inject_busybox_initramfs_if_requested},
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -253,7 +253,7 @@ impl Axvisor {
         test_qemu::apply_timeout_scale(&mut qemu);
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -262,6 +262,18 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        inject_busybox_initramfs_if_requested(
+            self.app.workspace_root(),
+            request,
+            case,
+            &mut prepared_assets,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare BusyBox initramfs for Axvisor qemu case `{}`",
+                case.case.case.name
+            )
+        })?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         // UEFI needs a writable ESP for firmware variables. Keep the explicit

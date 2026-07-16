@@ -56,8 +56,5 @@ pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
             warn!("Hypercall [{:#x}] failed: {err:?}", exit.nr);
         }
     }
-    Ok(BoundVcpuExit::Complete(VcpuRunAction {
-        waits_for_event: false,
-        stop_reason: None,
-    }))
+    Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()))
 }

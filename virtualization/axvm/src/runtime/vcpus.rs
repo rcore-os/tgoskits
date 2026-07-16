@@ -16,7 +16,7 @@ use alloc::format;
 
 use crate::{
     AsVCpuTask, AxVmResult, StopReason, VCpuTask, VmStatus,
-    arch::{ArchOps, CurrentArch, VcpuRunAction},
+    arch::{ArchOps, CurrentArch},
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
@@ -226,23 +226,27 @@ fn vcpu_run() {
     mark_vcpu_running(&vm);
 
     loop {
+        poll_vm_devices(&vm);
         CurrentArch::before_vcpu_run(&vm, &vcpu);
 
         match CurrentArch::run_vcpu(&vm, &vcpu) {
-            Ok(VcpuRunAction {
-                stop_reason: Some(reason),
-                ..
-            }) => {
-                if let Err(err) = vm.stop(reason) {
-                    warn!("VM[{vm_id}] shutdown failed: {err:?}");
+            Ok(action) => {
+                let scheduling = action.scheduling();
+                if let Some(reason) = action.into_stop_reason() {
+                    if let Err(err) = vm.stop(reason) {
+                        warn!("VM[{vm_id}] shutdown failed: {err:?}");
+                    }
+                    notify_all_vcpus(vm_id);
+                } else {
+                    match scheduling {
+                        crate::architecture::VcpuScheduling::Resume => {}
+                        crate::architecture::VcpuScheduling::WaitForEvent => wait(&runtime),
+                        crate::architecture::VcpuScheduling::YIELD => {
+                            crate::host::task::yield_now();
+                        }
+                    }
                 }
-                notify_all_vcpus(vm_id);
             }
-            Ok(VcpuRunAction {
-                waits_for_event: true,
-                ..
-            }) => wait(&runtime),
-            Ok(VcpuRunAction { .. }) => {}
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
@@ -290,6 +294,18 @@ fn vcpu_run() {
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+fn poll_vm_devices(vm: &VMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
+    for device in devices.iter_pollable_dev() {
+        if let Err(error) = device.poll(now_ns) {
+            warn!("VM[{}] failed to poll a virtual device: {error}", vm.id());
+        }
+    }
 }
 
 #[cfg(test)]

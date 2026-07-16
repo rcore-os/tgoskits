@@ -27,9 +27,6 @@ pub(crate) fn handle(
         .write_sgi1r(arm_vgic::GicVcpuId::new(vcpu_id), exit.sgi1r)
         .map_err(|error| crate::AxVmError::interrupt("send GICv3 SGI", error))?;
     Ok(BoundVcpuExit::Complete(
-        crate::architecture::VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        },
+        crate::architecture::VcpuRunAction::resume(),
     ))
 }

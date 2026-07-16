@@ -1,9 +1,6 @@
 //! Device construction for VM preparation.
 
-use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry, InterruptTopology,
-};
-use axvm_types::EmulatedDeviceConfig;
+use axdevice::{AxVmDevices, DeviceBuildContext, InterruptTopology, VirtualDeviceModelRegistry};
 
 use super::super::AxVM;
 use crate::AxVmResult;
@@ -19,21 +16,23 @@ impl PreparedDevices {
         }
     }
 
-    pub(crate) fn register_configured(
+    pub(crate) fn register_planned(
         &mut self,
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
+        plan: &crate::machine::VmMachinePlan,
+        models: &VirtualDeviceModelRegistry,
         interrupt_topology: &InterruptTopology,
     ) -> AxVmResult {
-        self.devices
-            .register_configured_devices(
-                &AxVmDeviceConfig {
-                    emu_configs: configs.to_vec(),
-                },
-                factories,
-                &DeviceBuildContext::new(interrupt_topology),
-            )
-            .map_err(Into::into)
+        for device in plan.virtual_devices() {
+            let context = DeviceBuildContext::with_backend(
+                interrupt_topology,
+                device.resources(),
+                device.backend(),
+            );
+            let bundle = models.build(device.model_id(), device.resources(), &context)?;
+            self.devices
+                .register_bundle_with_topology(bundle, interrupt_topology)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn register_special_devices(&mut self, vm: &AxVM) -> AxVmResult {

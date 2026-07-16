@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
+use axvm_types::{InterruptDelivery, NestedPagingConfig, VmArchVcpuOps};
 
 use super::{Aarch64Arch, gic::PreparedGicV3, npt, timer};
 use crate::{
@@ -12,9 +12,9 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
+            complete_vm_init,
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -32,25 +32,23 @@ impl Aarch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_topology =
-                    Arc::new(axdevice::InterruptTopology::new(vm.interrupt_mode()));
-                init_vm_with(vm, &factories, interrupt_topology)
-            }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_topology,
-            } => init_vm_with(vm, factories, interrupt_topology),
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        let models = default_virtual_device_models()?;
+        let interrupt_topology =
+            Arc::new(axdevice::InterruptTopology::new(vm.interrupt_delivery()));
+        init_vm_with(vm, &models, interrupt_topology)
     }
+}
+
+fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
+    let mut registry = axdevice::VirtualDeviceModelRegistry::new();
+    super::pl011::register_standard_model(&mut registry)?;
+    Ok(registry)
 }
 
 fn init_vm_with(
     vm: &AxVM,
-    factories: &axdevice::DeviceFactoryRegistry,
+    models: &axdevice::VirtualDeviceModelRegistry,
     interrupt_topology: Arc<axdevice::InterruptTopology>,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
@@ -68,44 +66,32 @@ fn init_vm_with(
         })?;
         let prepared_gic = PreparedGicV3::from_vm_config(vm.id(), resources.config(), &placements)?;
         let mut devices = PreparedDevices::empty();
-        if let Some(gic) = &prepared_gic {
-            gic.register(&mut devices.devices, interrupt_topology)?;
-        }
+        prepared_gic.register(&mut devices.devices, interrupt_topology)?;
         let ports = vcpus.interrupt_ports(vm.id(), &placements)?;
         interrupt_topology.finalize(&ports)?;
-        let host_spi_forwarding = if let Some(gic) = &prepared_gic {
-            gic.connect_physical_spis(resources.config(), interrupt_topology)?
-        } else {
-            None
-        };
-        if let Some(gic) = &prepared_gic {
-            if gic.emulates_interrupts() {
-                timer::register_emulated_timers(
-                    &mut devices,
-                    gic.device_set(),
-                    &placements,
-                    interrupt_topology,
-                )?;
-            }
-            devices.register_configured(gic.ordinary_devices(), factories, interrupt_topology)?;
-        } else {
-            devices.register_configured(
-                resources.config().emu_devices(),
-                factories,
+        let host_spi_forwarding = prepared_gic.connect_physical_spis(interrupt_topology)?;
+        if prepared_gic.emulates_interrupts() {
+            timer::register_emulated_timers(
+                &mut devices,
+                prepared_gic.device_set(),
+                &placements,
                 interrupt_topology,
             )?;
         }
+        devices.register_planned(
+            resources.config().machine_plan(),
+            models,
+            interrupt_topology,
+        )?;
         devices.register_special_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
         map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
         vcpus.setup(resources, build_vcpu_setup_config)?;
-        if let Some(gic) = prepared_gic {
-            resources
-                .arch_state_mut()
-                .set_gic_controller(gic.controller(), host_spi_forwarding);
-        }
+        resources
+            .arch_state_mut()
+            .set_gic_controller(prepared_gic.controller(), host_spi_forwarding);
 
         Ok(PreparedVm::new(vcpus, devices))
     })
@@ -115,7 +101,7 @@ fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmArmVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.interrupt_mode() == VMInterruptMode::Passthrough;
+    let passthrough = config.interrupt_delivery() == InterruptDelivery::Direct;
     Ok(ArmVcpuSetupConfig {
         passthrough_interrupt: passthrough,
         passthrough_timer: passthrough,

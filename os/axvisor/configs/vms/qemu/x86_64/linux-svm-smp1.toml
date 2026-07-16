@@ -1,99 +1,41 @@
-# Vm base info configs
-#
-[base]
-# Guest vm id.
-id = 1
-# Guest vm name.
-name = "linux-x86_64-qemu-svm"
-# Virtualization type.
-vm_type = 1
-# The number of virtual CPUs.
-cpu_num = 1
-# Guest vm physical cpu sets.
-phys_cpu_sets = [1]
+# AxVM machine policy.
+[machine]
+mode = "passthrough"
+firmware = "auto"
+interrupts_passthrough = false
 
-#
-# Vm kernel configs
-#
+[base]
+id = 1
+name = "linux-x86_64-qemu-svm"
+cpu_num = 1
+phys_cpu_sets = [0x1]
+
 [kernel]
-# The entry point of the kernel image.
-# Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
-# The location of image: "memory" | "fs".
 image_location = "fs"
-# The file path of the kernel image.
 kernel_path = "/guest/linux/linux-qemu"
-# The load address of the kernel image.
-kernel_load_addr = 0x20_0000
-# Whether to enable BIOS boot flow.
+kernel_load_addr = 0x200000
 enable_bios = false
-# Linux direct boot needs an explicit cmdline; keep no_timer_check from the old
-# default to avoid PIT/HPET calibration stalls when Linux marks the TSC unstable.
-# The smoke guest only needs to reach a shell, so mount the snapshot rootfs
-# read-only and skip ext4 journal replay writes on nested SVM hosts.
 cmdline = "console=ttyS0 root=/dev/vda ro rootwait rootflags=noload devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi irqpoll no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
 
-## The path of the disk image.
-# disk_path = ""
+[[memory.regions]]
+guest_base = 0x0
+size = 0x8000000
+permissions = "rwx"
+backing = { kind = "host", host_base = 0x0 }
 
-# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
-# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
-memory_regions = [
-  [0x0000_0000, 0x0800_0000, 0x7, 1], # System RAM 128M MAP_IDENTICAL for DMA-capable passthrough
-  [0x0000_0000, 0x0010_0000, 0x7, 0], # Low boot scratch for real-mode stub and boot_params
-]
+[[memory.regions]]
+guest_base = 0x0
+size = 0x100000
+permissions = "rwx"
+backing = { kind = "allocate" }
 
-#
-# Device specifications
-#
 [devices]
-# The interrupt mode.
-interrupt_mode = "passthrough"
+disable_defaults = []
+deny = []
 
-# Emu_devices.
-# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
-emu_devices = [
-  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
-  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
-  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
-]
-
-# Pass-through devices.
-# Name Base-Ipa Base-Pa Length Alloc-Irq.
-passthrough_devices = [
-  [
-    "HPET",
-    0xfed0_0000,
-    0xfed0_0000,
-    0x1000,
-    0x1,
-  ],
-]
-
-# Passthrough addresses.
-# Base-GPA  Length.
-passthrough_addresses = [
-  # QEMU q35 may place 32-bit PCI MMIO BARs here. Linux can touch the
-  # AHCI/virtio BARs even when we boot mainly from the emulated virtio disk.
-  [0x8000_0000, 0x20_0000],
-  # Some q35/KVM hosts assign a PCI MMIO BAR in the high 64-bit window.
-  # Linux may touch it during virtio/AHCI probing before the shell starts.
-  [0x8_0000_0000, 0x20_0000],
-  # QEMU q35 low MMIO window needed by PCI/virtio-blk probing.
-  [0xfe00_0000, 0x00c0_0000],
-  # Linux probes a q35/ICH system MMIO page at 0xfed8_03c0 after the PIT/HLT path is fixed.
-  [0xfed8_0000, 0x1000],
-  # QEMU q35 may assign the virtio PCI 64-bit MMIO BAR differently across hosts.
-  [0x70_0000_0000, 0x10_0000],
-  [0x3800_0000_0000, 0x10_0000],
-]
-
-# Passthrough x86 I/O ports.
-# Base-port Length.
-passthrough_ports = [
-  # QEMU q35 exposes the legacy virtio-blk PCI I/O BAR here.
-  [0x6000, 0x80],
-]
-
-# Devices that are not desired to be passed through to the guest
-excluded_devices = []
+[[devices.virtual]]
+id = "x86-com1"
+model = "x86-com1"
+source = { kind = "allocate" }
+backend = { kind = "host-console", rx = "exclusive", tx = "shared" }

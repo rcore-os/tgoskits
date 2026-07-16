@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add per-VM `InterruptTopology`, typed wired/MSI endpoints, controller
+  capabilities, cascades, and vCPU bindings.
+- Add two-phase `VirtualDeviceModel` construction with named resolved resources
+  and optional `std` support for host-side tests.
+
+### Removed
+
+- Remove the configuration-driven `DeviceFactory`, `IrqResolver`, manual vector
+  injection surface, and legacy raw emulated-device configuration.
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.3...axdevice-v0.5.4) - 2026-07-10
 
 ### Other

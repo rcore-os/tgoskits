@@ -134,6 +134,8 @@ arm-scmi-rs = { version = "0.1.7", path = "drivers/firmware/arm-scmi-rs" }
 arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5.16", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.3", path = "virtualization/arm_vgic" }
+arm_vpl011 = { version = "0.1.0", path = "virtualization/arm_vpl011" }
+virtual_ns16550 = { version = "0.1.0", path = "virtualization/ns16550" }
 ax-alloc = { version = "0.8.12", path = "os/arceos/modules/axalloc", default-features = false }
 ax-allocator = { version = "0.5.5", path = "memory/axallocator" }
 ax-api = { version = "0.7.4", path = "os/arceos/api/arceos_api" }
@@ -312,7 +314,7 @@ mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock", "mutex", "spin_mutex"] }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.24.0" }
 riscv = { version = "0.16.1", default-features = false }
@@ -321,6 +323,9 @@ uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
+vm-allocator = { version = "0.1.4", default-features = false }
+vm-fdt = { version = "0.3.0", default-features = false, features = ["alloc"] }
+acpi_tables = { version = "0.2.1" }
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }

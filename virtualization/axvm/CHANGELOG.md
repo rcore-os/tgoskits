@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add immutable host platform snapshots, deterministic machine planning,
+  transactional physical-device claims, and FDT/ACPI generation from one
+  resolved resource plan.
+- Add Virtual and Passthrough machine profiles, mediated/direct interrupt
+  delivery, AArch64 PL011, RISC-V/LoongArch NS16550, and per-instance console
+  backends.
+- Add optional `std` support for domain tests while keeping the runtime
+  `no_std + alloc` compatible.
+
+### Changed
+
+- Build VMs in RAM, vCPU, controller/binding, device/topology, mapping,
+  firmware, and boot-state order with complete rollback on failure.
+- Derive AArch64 private interrupt roles from platform/FDT capabilities and
+  preserve host-owned GIC state across passthrough vCPU load/save.
+
+### Removed
+
+- Remove mutable FDT-driven `AxVMConfig` expansion, legacy device factories,
+  the VM pending-vector queue, and shared manual interrupt-injection APIs.
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.22...axvm-v0.5.23) - 2026-07-10
 
 ### Other

@@ -24,445 +24,130 @@ extern crate log;
 
 use alloc::{string::String, vec::Vec};
 
-pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
-    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
-    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
-};
+pub use axvm_types::VMBootProtocol;
+use axvm_types::{GuestFirmwareKind, InterruptDelivery, VmMachineMode};
 
 mod error;
+mod model;
 
 pub use error::*;
-
-mod emu_device_type_serde {
-    use serde::{Deserialize, Deserializer, Serializer, de};
-
-    use super::*;
-
-    pub fn serialize<S>(emu_type: &EmulatedDeviceType, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u8(*emu_type as u8)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<EmulatedDeviceType, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = usize::from(u8::deserialize(deserializer)?);
-        match EmulatedDeviceType::from_usize(value) {
-            Some(emu_type) => Ok(emu_type),
-            None => Err(de::Error::custom(alloc::format!(
-                "unknown emulated device type value: {value}"
-            ))),
-        }
-    }
-}
+pub use model::*;
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum AddressSpacePolicySerde {
-    #[serde(rename = "virtualized", alias = "virtual")]
+#[serde(rename_all = "lowercase")]
+enum GuestFirmwareKindSerde {
     #[default]
-    Virtualized,
-    #[serde(rename = "passthrough", alias = "pt")]
-    Passthrough,
+    Auto,
+    Fdt,
+    Acpi,
 }
 
-impl From<AddressSpacePolicySerde> for AddressSpacePolicy {
-    fn from(value: AddressSpacePolicySerde) -> Self {
+impl From<GuestFirmwareKindSerde> for GuestFirmwareKind {
+    fn from(value: GuestFirmwareKindSerde) -> Self {
         match value {
-            AddressSpacePolicySerde::Virtualized => Self::Virtualized,
-            AddressSpacePolicySerde::Passthrough => Self::Passthrough,
+            GuestFirmwareKindSerde::Auto => Self::Auto,
+            GuestFirmwareKindSerde::Fdt => Self::Fdt,
+            GuestFirmwareKindSerde::Acpi => Self::Acpi,
         }
     }
 }
 
-impl From<&AddressSpacePolicy> for AddressSpacePolicySerde {
-    fn from(value: &AddressSpacePolicy) -> Self {
+impl From<GuestFirmwareKind> for GuestFirmwareKindSerde {
+    fn from(value: GuestFirmwareKind) -> Self {
         match value {
-            AddressSpacePolicy::Virtualized => Self::Virtualized,
-            AddressSpacePolicy::Passthrough => Self::Passthrough,
+            GuestFirmwareKind::Auto => Self::Auto,
+            GuestFirmwareKind::Fdt => Self::Fdt,
+            GuestFirmwareKind::Acpi => Self::Acpi,
         }
     }
 }
 
-mod address_space_policy_serde {
+mod guest_firmware_kind_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use super::*;
 
-    pub fn serialize<S>(value: &AddressSpacePolicy, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &GuestFirmwareKind, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        AddressSpacePolicySerde::from(value).serialize(serializer)
+        GuestFirmwareKindSerde::from(*value).serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<AddressSpacePolicy, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<GuestFirmwareKind, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(AddressSpacePolicySerde::deserialize(deserializer)?.into())
+        Ok(GuestFirmwareKindSerde::deserialize(deserializer)?.into())
     }
 }
 
-fn is_passthrough_discovery_device(device: &PassThroughDeviceConfig) -> bool {
-    device.name.starts_with('/')
-        && device.base_gpa == 0
-        && device.base_hpa == 0
-        && device.length == 0
-        && device.irq_id == 0
-}
-
+/// Machine-level VM policy parsed from the `[machine]` TOML table.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
-#[repr(u8)]
-enum VmMemMappingTypeSerde {
-    Alloc     = 0,
-    Identical = 1,
-    Reserved  = 2,
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+pub enum MachineConfig {
+    /// A platform composed entirely from virtual devices.
+    Virtual {
+        /// Firmware description selected for the guest.
+        #[serde(default)]
+        #[cfg_attr(
+            all(feature = "std", any(windows, unix)),
+            schemars(with = "GuestFirmwareKindSerde")
+        )]
+        #[serde(with = "guest_firmware_kind_serde")]
+        firmware: GuestFirmwareKind,
+    },
+    /// A platform derived from assignable host resources.
+    Passthrough {
+        /// Firmware description selected for the guest.
+        #[serde(default)]
+        #[cfg_attr(
+            all(feature = "std", any(windows, unix)),
+            schemars(with = "GuestFirmwareKindSerde")
+        )]
+        #[serde(with = "guest_firmware_kind_serde")]
+        firmware: GuestFirmwareKind,
+        /// Whether assigned physical interrupts bypass the mediated controller.
+        #[serde(default)]
+        interrupts_passthrough: bool,
+    },
 }
 
-impl From<VmMemMappingTypeSerde> for VmMemMappingType {
-    fn from(value: VmMemMappingTypeSerde) -> Self {
-        match value {
-            VmMemMappingTypeSerde::Alloc => Self::MapAlloc,
-            VmMemMappingTypeSerde::Identical => Self::MapIdentical,
-            VmMemMappingTypeSerde::Reserved => Self::MapReserved,
+impl MachineConfig {
+    /// Returns the selected machine construction policy.
+    pub const fn mode(&self) -> VmMachineMode {
+        match self {
+            Self::Virtual { .. } => VmMachineMode::Virtual,
+            Self::Passthrough { .. } => VmMachineMode::Passthrough,
+        }
+    }
+
+    /// Returns the selected guest firmware description.
+    pub const fn firmware(&self) -> GuestFirmwareKind {
+        match self {
+            Self::Virtual { firmware } | Self::Passthrough { firmware, .. } => *firmware,
+        }
+    }
+
+    /// Returns the normalized interrupt-delivery policy.
+    pub const fn interrupt_delivery(&self) -> InterruptDelivery {
+        match self {
+            Self::Virtual { .. } => InterruptDelivery::Mediated,
+            Self::Passthrough {
+                interrupts_passthrough,
+                ..
+            } => InterruptDelivery::from_passthrough_flag(*interrupts_passthrough),
         }
     }
 }
 
-impl From<&VmMemMappingType> for VmMemMappingTypeSerde {
-    fn from(value: &VmMemMappingType) -> Self {
-        match value {
-            VmMemMappingType::MapAlloc => Self::Alloc,
-            VmMemMappingType::MapIdentical => Self::Identical,
-            VmMemMappingType::MapReserved => Self::Reserved,
+impl Default for MachineConfig {
+    fn default() -> Self {
+        Self::Virtual {
+            firmware: GuestFirmwareKind::Auto,
         }
-    }
-}
-
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct VmMemConfigSerde {
-    gpa: usize,
-    size: usize,
-    flags: usize,
-    map_type: VmMemMappingTypeSerde,
-}
-
-impl From<VmMemConfigSerde> for VmMemConfig {
-    fn from(value: VmMemConfigSerde) -> Self {
-        Self {
-            gpa: value.gpa,
-            size: value.size,
-            flags: value.flags,
-            map_type: value.map_type.into(),
-        }
-    }
-}
-
-impl From<&VmMemConfig> for VmMemConfigSerde {
-    fn from(value: &VmMemConfig) -> Self {
-        Self {
-            gpa: value.gpa,
-            size: value.size,
-            flags: value.flags,
-            map_type: (&value.map_type).into(),
-        }
-    }
-}
-
-mod vm_mem_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::*;
-
-    pub fn serialize<S>(value: &[VmMemConfig], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let value = value.iter().map(VmMemConfigSerde::from).collect::<Vec<_>>();
-        value.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<VmMemConfig>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(Vec::<VmMemConfigSerde>::deserialize(deserializer)?
-            .into_iter()
-            .map(Into::into)
-            .collect())
-    }
-}
-
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct EmulatedDeviceConfigSerde {
-    name: String,
-    base_gpa: usize,
-    length: usize,
-    irq_id: usize,
-    #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "u8"))]
-    #[serde(with = "emu_device_type_serde")]
-    emu_type: EmulatedDeviceType,
-    cfg_list: Vec<usize>,
-}
-
-impl From<EmulatedDeviceConfigSerde> for EmulatedDeviceConfig {
-    fn from(value: EmulatedDeviceConfigSerde) -> Self {
-        Self {
-            name: value.name,
-            base_gpa: value.base_gpa,
-            length: value.length,
-            irq_id: value.irq_id,
-            emu_type: value.emu_type,
-            cfg_list: value.cfg_list,
-        }
-    }
-}
-
-impl From<&EmulatedDeviceConfig> for EmulatedDeviceConfigSerde {
-    fn from(value: &EmulatedDeviceConfig) -> Self {
-        Self {
-            name: value.name.clone(),
-            base_gpa: value.base_gpa,
-            length: value.length,
-            irq_id: value.irq_id,
-            emu_type: value.emu_type,
-            cfg_list: value.cfg_list.clone(),
-        }
-    }
-}
-
-mod emulated_device_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::*;
-
-    pub fn serialize<S>(value: &[EmulatedDeviceConfig], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let value = value
-            .iter()
-            .map(EmulatedDeviceConfigSerde::from)
-            .collect::<Vec<_>>();
-        value.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<EmulatedDeviceConfig>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(Vec::<EmulatedDeviceConfigSerde>::deserialize(deserializer)?
-            .into_iter()
-            .map(Into::into)
-            .collect())
-    }
-}
-
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-struct PassThroughDeviceConfigSerde {
-    name: String,
-    #[serde(default)]
-    base_gpa: usize,
-    #[serde(default)]
-    base_hpa: usize,
-    #[serde(default)]
-    length: usize,
-    #[serde(default)]
-    irq_id: usize,
-}
-
-impl From<PassThroughDeviceConfigSerde> for PassThroughDeviceConfig {
-    fn from(value: PassThroughDeviceConfigSerde) -> Self {
-        Self {
-            name: value.name,
-            base_gpa: value.base_gpa,
-            base_hpa: value.base_hpa,
-            length: value.length,
-            irq_id: value.irq_id,
-        }
-    }
-}
-
-impl From<&PassThroughDeviceConfig> for PassThroughDeviceConfigSerde {
-    fn from(value: &PassThroughDeviceConfig) -> Self {
-        Self {
-            name: value.name.clone(),
-            base_gpa: value.base_gpa,
-            base_hpa: value.base_hpa,
-            length: value.length,
-            irq_id: value.irq_id,
-        }
-    }
-}
-
-mod passthrough_device_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-
-    use super::*;
-
-    pub fn serialize<S>(value: &[PassThroughDeviceConfig], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let value = value
-            .iter()
-            .map(PassThroughDeviceConfigSerde::from)
-            .collect::<Vec<_>>();
-        value.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PassThroughDeviceConfig>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<PassThroughDeviceConfigSerde>::deserialize(deserializer)?
-            .into_iter()
-            .map(|value| {
-                let device = PassThroughDeviceConfig::from(value);
-                if !is_passthrough_discovery_device(&device) && device.length == 0 {
-                    return Err(de::Error::custom(alloc::format!(
-                        "passthrough device {} has zero length",
-                        device.name
-                    )));
-                }
-                Ok(device)
-            })
-            .collect()
-    }
-}
-
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-struct PassThroughAddressConfigSerde {
-    #[serde(default)]
-    base_gpa: usize,
-    #[serde(default)]
-    length: usize,
-}
-
-impl From<PassThroughAddressConfigSerde> for PassThroughAddressConfig {
-    fn from(value: PassThroughAddressConfigSerde) -> Self {
-        Self {
-            base_gpa: value.base_gpa,
-            length: value.length,
-        }
-    }
-}
-
-impl From<&PassThroughAddressConfig> for PassThroughAddressConfigSerde {
-    fn from(value: &PassThroughAddressConfig) -> Self {
-        Self {
-            base_gpa: value.base_gpa,
-            length: value.length,
-        }
-    }
-}
-
-mod passthrough_address_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::*;
-
-    pub fn serialize<S>(
-        value: &[PassThroughAddressConfig],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let value = value
-            .iter()
-            .map(PassThroughAddressConfigSerde::from)
-            .collect::<Vec<_>>();
-        value.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PassThroughAddressConfig>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(
-            Vec::<PassThroughAddressConfigSerde>::deserialize(deserializer)?
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )
-    }
-}
-
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct PassThroughPortConfigSerde {
-    #[serde(default)]
-    base: u16,
-    #[serde(default)]
-    length: u16,
-}
-
-impl From<PassThroughPortConfigSerde> for PassThroughPortConfig {
-    fn from(value: PassThroughPortConfigSerde) -> Self {
-        Self {
-            base: value.base,
-            length: value.length,
-        }
-    }
-}
-
-impl From<&PassThroughPortConfig> for PassThroughPortConfigSerde {
-    fn from(value: &PassThroughPortConfig) -> Self {
-        Self {
-            base: value.base,
-            length: value.length,
-        }
-    }
-}
-
-mod passthrough_port_config_vec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-
-    use super::*;
-
-    pub fn serialize<S>(value: &[PassThroughPortConfig], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let value = value
-            .iter()
-            .map(PassThroughPortConfigSerde::from)
-            .collect::<Vec<_>>();
-        value.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PassThroughPortConfig>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<PassThroughPortConfigSerde>::deserialize(deserializer)?
-            .into_iter()
-            .map(|value| {
-                let port = PassThroughPortConfig::from(value);
-                if port.length == 0 {
-                    return Err(de::Error::custom("passthrough port range has zero length"));
-                }
-                if port.base.checked_add(port.length - 1).is_none() {
-                    return Err(de::Error::custom(alloc::format!(
-                        "passthrough port range overflows: base={:#x}, length={:#x}",
-                        port.base,
-                        port.length
-                    )));
-                }
-                Ok(port)
-            })
-            .collect()
     }
 }
 
@@ -521,58 +206,6 @@ mod vm_boot_protocol_option_serde {
     }
 }
 
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum VMInterruptModeSerde {
-    #[serde(rename = "no_irq", alias = "no", alias = "none")]
-    #[default]
-    NoIrq,
-    #[serde(rename = "emu", alias = "emulated")]
-    Emulated,
-    #[serde(rename = "passthrough", alias = "pt")]
-    Passthrough,
-}
-
-impl From<VMInterruptModeSerde> for VMInterruptMode {
-    fn from(value: VMInterruptModeSerde) -> Self {
-        match value {
-            VMInterruptModeSerde::NoIrq => Self::NoIrq,
-            VMInterruptModeSerde::Emulated => Self::Emulated,
-            VMInterruptModeSerde::Passthrough => Self::Passthrough,
-        }
-    }
-}
-
-impl From<&VMInterruptMode> for VMInterruptModeSerde {
-    fn from(value: &VMInterruptMode) -> Self {
-        match value {
-            VMInterruptMode::NoIrq => Self::NoIrq,
-            VMInterruptMode::Emulated => Self::Emulated,
-            VMInterruptMode::Passthrough => Self::Passthrough,
-        }
-    }
-}
-
-mod vm_interrupt_mode_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::*;
-
-    pub fn serialize<S>(value: &VMInterruptMode, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        VMInterruptModeSerde::from(value).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<VMInterruptMode, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(VMInterruptModeSerde::deserialize(deserializer)?.into())
-    }
-}
-
 struct BootProtocolSupport {
     protocol: VMBootProtocol,
     supported_arches: &'static [&'static str],
@@ -623,13 +256,12 @@ fn boot_protocol_name(protocol: VMBootProtocol) -> &'static str {
 /// The configuration structure for the guest VM base info.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VMBaseConfig {
     /// VM ID.
     pub id: usize,
     /// VM name.
     pub name: String,
-    /// VM type.
-    pub vm_type: usize,
     // Resources.
     /// The number of virtual CPUs.
     pub cpu_num: usize,
@@ -656,6 +288,7 @@ pub struct VMBaseConfig {
 /// The configuration structure for the guest VM kernel.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VMKernelConfig {
     /// The entry point of the kernel image.
     pub entry_point: usize,
@@ -697,16 +330,6 @@ pub struct VMKernelConfig {
     pub cmdline: Option<String>,
     /// The path of the disk image.
     pub disk_path: Option<String>,
-    /// Memory Information
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "Vec<VmMemConfigSerde>")
-    )]
-    #[serde(with = "vm_mem_config_vec_serde")]
-    pub memory_regions: Vec<VmMemConfig>,
-    /// Number of memory_regions that came directly from the user-provided config.
-    #[serde(skip)]
-    pub configured_memory_region_count: usize,
 }
 
 impl VMKernelConfig {
@@ -811,76 +434,20 @@ const BUILD_TARGET_ARCH: &str = "loongarch64";
 )))]
 const BUILD_TARGET_ARCH: &str = "unknown";
 
-/// The configuration structure for the guest VM devices.
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VMDevicesConfig {
-    /// Guest physical address space population policy.
-    #[serde(default)]
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "AddressSpacePolicySerde")
-    )]
-    #[serde(with = "address_space_policy_serde")]
-    pub address_space_policy: AddressSpacePolicy,
-    /// Emu device Information
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "Vec<EmulatedDeviceConfigSerde>")
-    )]
-    #[serde(with = "emulated_device_config_vec_serde")]
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
-    /// Passthrough device Information
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "Vec<PassThroughDeviceConfigSerde>")
-    )]
-    #[serde(with = "passthrough_device_config_vec_serde")]
-    pub passthrough_devices: Vec<PassThroughDeviceConfig>,
-    /// How the VM should handle interrupts and interrupt controllers.
-    #[serde(default)]
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "VMInterruptModeSerde")
-    )]
-    #[serde(with = "vm_interrupt_mode_serde")]
-    pub interrupt_mode: VMInterruptMode,
-    /// Additional host-owned architectural INTIDs that platform discovery cannot infer.
-    ///
-    /// AArch64 timer, IPI, and GIC maintenance interrupts are discovered
-    /// internally and must not be repeated here.
-    #[serde(default)]
-    pub host_reserved_intids: Vec<u32>,
-    /// we would not like to pass through devices
-    #[serde(default)]
-    pub excluded_devices: Vec<Vec<String>>,
-    /// we would like to pass through address
-    #[serde(default)]
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "Vec<PassThroughAddressConfigSerde>")
-    )]
-    #[serde(with = "passthrough_address_config_vec_serde")]
-    pub passthrough_addresses: Vec<PassThroughAddressConfig>,
-    /// Host I/O port ranges passed through to the VM.
-    #[serde(default)]
-    #[cfg_attr(
-        all(feature = "std", any(windows, unix)),
-        schemars(with = "Vec<PassThroughPortConfigSerde>")
-    )]
-    #[serde(with = "passthrough_port_config_vec_serde")]
-    pub passthrough_ports: Vec<PassThroughPortConfig>,
-}
-
 /// The configuration structure for the guest VM serialized from a toml file provided by user,
 /// and then converted to `AxVMConfig` for the VM creation.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AxVMCrateConfig {
+    /// Machine construction, firmware, and external interrupt policy.
+    pub machine: MachineConfig,
     /// The base configuration for the VM.
     pub base: VMBaseConfig,
     /// The kernel configuration for the VM.
     pub kernel: VMKernelConfig,
+    /// Explicit guest memory layout.
+    pub memory: MemoryConfig,
     /// The devices configuration for the VM.
     pub devices: VMDevicesConfig,
 }
@@ -888,10 +455,38 @@ pub struct AxVMCrateConfig {
 impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
-        let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str)?;
+        let config: AxVMCrateConfig = toml::from_str(raw_cfg_str)?;
         config.kernel.validate_boot_config()?;
-        config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
+        config.validate()?;
         Ok(config)
+    }
+
+    fn validate(&self) -> AxVmConfigResult {
+        for device in &self.devices.disable_defaults {
+            if device != "console" {
+                return Err(AxVmConfigError::UnsupportedDefaultDevice {
+                    device: device.clone(),
+                });
+            }
+        }
+        for region in &self.memory.regions {
+            if region.size == 0 || region.guest_base.checked_add(region.size).is_none() {
+                return Err(AxVmConfigError::InvalidMemoryRegion {
+                    guest_base: region.guest_base,
+                    size: region.size,
+                });
+            }
+            if let MemoryBackingConfig::Host { host_base }
+            | MemoryBackingConfig::Shared { host_base } = region.backing
+                && host_base.checked_add(region.size).is_none()
+            {
+                return Err(AxVmConfigError::InvalidMemoryBacking {
+                    host_base,
+                    size: region.size,
+                });
+            }
+        }
+        Ok(())
     }
 }
 

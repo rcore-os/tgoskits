@@ -86,11 +86,11 @@ fn every_architecture_owns_vm_resource_creation_and_initialization() {
 }
 
 #[test]
-fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
+fn machine_plan_owns_interrupt_topology_construction() {
     let preparation = include_str!("../src/vm/prepare.rs");
-    assert!(preparation.contains("VmInitRequest::Provided"));
-    assert!(preparation.contains("factories,"));
-    assert!(preparation.contains("interrupt_topology,"));
+    assert!(!preparation.contains("prepare_with_topology"));
+    assert!(!preparation.contains("VmInitRequest::Provided"));
+    assert!(!preparation.contains("DeviceFactory"));
 
     for source in [
         include_str!("../src/arch/aarch64/vm.rs"),
@@ -98,9 +98,25 @@ fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
         include_str!("../src/arch/riscv64/vm.rs"),
         include_str!("../src/arch/x86_64/vm.rs"),
     ] {
-        assert!(source.contains("VmInitRequest::Provided"));
-        assert!(source.contains("init_vm_with(vm, factories, interrupt_topology)"));
+        assert!(!source.contains("VmInitRequest::Provided"));
+        assert!(source.contains("InterruptTopology::new(vm.interrupt_delivery())"));
+        assert!(source.contains("init_vm_with(vm, &models, interrupt_topology)"));
     }
+}
+
+#[test]
+fn riscv_host_plic_notifications_are_edge_adapted_before_topology() {
+    let source = include_str!("../src/arch/riscv64/irq.rs");
+    let connection = source
+        .split_once("fn connect_external_irq_line(")
+        .expect("RISC-V must connect planned host IRQ sources")
+        .1
+        .split_once("fn signal_external_interrupt")
+        .expect("RISC-V host IRQ connection must precede signaling")
+        .0;
+
+    assert!(connection.contains("InterruptTriggerMode::EdgeTriggered"));
+    assert!(!connection.contains("interrupt.trigger()"));
 }
 
 #[test]
@@ -477,6 +493,24 @@ fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
     assert!(activation.contains("claim_irq_for_guest("));
     assert!(activation.contains("host_irq::set_affinity"));
     assert!(activation.contains("host_irq::set_enable"));
+}
+
+#[test]
+fn aarch64_mediated_host_irq_preserves_level_line_lifetime() {
+    let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
+
+    assert!(forwarding.contains("InterruptTriggerMode::LevelTriggered => self.line.raise()"));
+    assert!(forwarding.contains("InterruptTriggerMode::EdgeTriggered => self.line.pulse()"));
+    let lower = forwarding
+        .find("self.line.lower()")
+        .expect("level forwarding must deassert the VM-local line on guest retirement");
+    let unmask = forwarding
+        .find("self.unmask_host_irq()")
+        .expect("guest retirement must re-enable the physical host IRQ");
+    assert!(
+        lower < unmask,
+        "the VM-local level must clear before the host IRQ is unmasked"
+    );
 }
 
 #[test]

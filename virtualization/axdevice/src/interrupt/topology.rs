@@ -7,7 +7,7 @@ use ax_kspin::SpinRaw;
 use axdevice_base::{
     InterruptControllerId, InterruptEndpoint, IrqError, IrqLine, MsiEndpoint, WiredIrqInput,
 };
-use axvm_types::VMInterruptMode;
+use axvm_types::InterruptDelivery;
 
 use super::{
     ControllerRef, ControllerRegistration, ControllerRole, MsiRequest, VcpuInterruptBinding,
@@ -18,7 +18,7 @@ use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// One VM's validated interrupt-controller graph.
 pub struct InterruptTopology {
-    mode: VMInterruptMode,
+    delivery: InterruptDelivery,
     controllers: SpinRaw<Vec<ControllerEntry>>,
     bindings: SpinRaw<Vec<RegisteredBinding>>,
     connected_cascades: SpinRaw<Vec<InterruptControllerId>>,
@@ -31,10 +31,10 @@ struct RegisteredBinding {
 }
 
 impl InterruptTopology {
-    /// Creates an empty topology for one VM interrupt mode.
-    pub const fn new(mode: VMInterruptMode) -> Self {
+    /// Creates an empty topology for one normalized delivery policy.
+    pub const fn new(delivery: InterruptDelivery) -> Self {
         Self {
-            mode,
+            delivery,
             controllers: SpinRaw::new(Vec::new()),
             bindings: SpinRaw::new(Vec::new()),
             connected_cascades: SpinRaw::new(Vec::new()),
@@ -42,9 +42,9 @@ impl InterruptTopology {
         }
     }
 
-    /// Returns the configured VM interrupt mode.
-    pub const fn mode(&self) -> VMInterruptMode {
-        self.mode
+    /// Returns the configured external interrupt-delivery policy.
+    pub const fn delivery(&self) -> InterruptDelivery {
+        self.delivery
     }
 
     /// Registers one controller before topology finalization.
@@ -58,12 +58,6 @@ impl InterruptTopology {
             return Err(DeviceManagerError::InvalidInput {
                 operation: "register interrupt controller",
                 detail: "the interrupt topology is already finalized".into(),
-            });
-        }
-        if self.mode == VMInterruptMode::NoIrq {
-            return Err(DeviceManagerError::Unsupported {
-                operation: "register interrupt controller",
-                detail: "the VM is configured with interrupt_mode=no_irq".into(),
             });
         }
         if registration.wired_inputs().is_none()
@@ -105,7 +99,6 @@ impl InterruptTopology {
 
     /// Connects one device source to a wired controller input.
     pub fn connect_irq(&self, request: WiredIrqRequest) -> DeviceManagerResult<IrqLine> {
-        self.require_irq_mode("connect wired interrupt")?;
         let controller_id = self.resolve_controller(request.controller())?;
         let input = self.open_wired_input(controller_id, request)?;
         input.connect().map_err(Into::into)
@@ -113,7 +106,6 @@ impl InterruptTopology {
 
     /// Connects one MSI-producing device event to a controller.
     pub fn connect_msi(&self, request: MsiRequest) -> DeviceManagerResult<MsiEndpoint> {
-        self.require_irq_mode("connect message interrupt")?;
         let controller_id = self.resolve_controller(request.controller())?;
         let capability = {
             let controllers = self.controllers.lock();
@@ -352,16 +344,6 @@ impl InterruptTopology {
         super::registry::resolve_controller(&controllers, reference)
     }
 
-    fn require_irq_mode(&self, operation: &'static str) -> DeviceManagerResult {
-        if self.mode == VMInterruptMode::NoIrq {
-            return Err(DeviceManagerError::Unsupported {
-                operation,
-                detail: "the VM is configured with interrupt_mode=no_irq".into(),
-            });
-        }
-        Ok(())
-    }
-
     fn bindings_for(&self, vcpu: VcpuInterruptId) -> Vec<Arc<dyn VcpuInterruptBinding>> {
         self.bindings
             .lock()
@@ -414,7 +396,7 @@ impl core::fmt::Debug for InterruptTopology {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("InterruptTopology")
-            .field("mode", &self.mode)
+            .field("delivery", &self.delivery)
             .field("controller_count", &self.controllers.lock().len())
             .field("binding_count", &self.bindings.lock().len())
             .field("cascade_count", &self.connected_cascades.lock().len())

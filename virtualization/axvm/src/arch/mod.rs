@@ -56,21 +56,34 @@ pub(crate) use x86_64::{VmArchConfig, VmArchState, VmRuntimeArchState, X86_64Arc
 /// Architecture-specific public compatibility exports.
 pub mod platform {
     #[cfg(target_arch = "aarch64")]
-    pub use super::aarch64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::aarch64::{
+        Aarch64Pl011Model, current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
+        pl011_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::irq::{
         register_guest_irq_route as register_loongarch_guest_irq_route,
         unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
     };
     #[cfg(target_arch = "loongarch64")]
-    pub use super::loongarch64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::loongarch64::{
+        current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "riscv64")]
-    pub use super::riscv64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::riscv64::{
+        current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "x86_64")]
     pub use super::x86_64::irq::{
         register_ioapic_irq_forwarding_activator as register_x86_ioapic_irq_forwarding_activator,
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
+    };
+    #[cfg(target_arch = "x86_64")]
+    pub use super::x86_64::{
+        current_host_platform_snapshot, standard_machine_profile, x86_com1_device_requirements,
     };
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub use crate::host::arceos::shutdown_host_filesystems;
@@ -99,10 +112,10 @@ pub(crate) fn prepare_guest_boot(
 ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
     vm_config.arch_mut().reset_prepared_boot_state();
     let guest_dtb = CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)?;
-    let interrupt_mode = vm_config.interrupt_mode();
+    let interrupt_delivery = vm_config.interrupt_delivery();
     vm_config
         .arch()
-        .validate_prepared_boot_state(interrupt_mode)?;
+        .validate_prepared_boot_state(interrupt_delivery)?;
     Ok(guest_dtb)
 }
 

@@ -26,12 +26,18 @@ use axvm::{
     },
     config::{
         AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
-        VMImageConfig,
+        VMImageConfig, VmMemoryBacking, VmMemoryConfig,
+    },
+    machine::{
+        AddressRange, ControllerInputId, DeviceInstanceId, DeviceModelId, GuestMemoryRegion,
+        HostDeviceId, HostDeviceSelector, HostPlatformSnapshot, VirtualDeviceDescriptor,
+        VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
     },
 };
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{AxVMCrateConfig, VMType};
+use axvm_types::MappingFlags;
+use axvmconfig::{AxVMCrateConfig, DeviceSelectorConfig, MemoryBackingConfig, MemoryRegionConfig};
 
 #[cfg(feature = "fs")]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
@@ -115,14 +121,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         );
     }
 
-    let mut vm_config = build_axvm_config(&vm_create_config);
+    let boot_policy = guest_boot_policy(&vm_create_config, &image_provider);
+    let mut vm_config = build_axvm_config(&vm_create_config, boot_policy)?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
-    let prepared_config = prepared_boot.config();
-
-    sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
-
-    vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
     // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
@@ -130,7 +132,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     // Create VM.
     let vm = AxVM::new(vm_config).with_context(|| format!("create VM[{configured_vm_id}]"))?;
     let vm_id = vm.id();
-
     let memory_layout = vm
         .prepare_memory_layout()
         .with_context(|| format!("prepare memory layout for VM[{vm_id}]"))?;
@@ -142,6 +143,17 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     prepared_boot
         .load_images(main_mem, vm.clone(), &image_provider)
         .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
+
+    let claims_required = vm.with_config(|config| !config.machine_plan().claims().is_empty());
+    if claims_required {
+        let live_generation = axvm::current_host_platform_snapshot()
+            .context("refresh host platform snapshot before claiming devices")?
+            .generation();
+        let claim_provider =
+            axvm::machine::RegisteredHostDeviceClaimProvider::new(live_generation, vm_id);
+        vm.claim_host_devices(&claim_provider)
+            .with_context(|| format!("claim passthrough devices for VM[{vm_id}]"))?;
+    }
 
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
@@ -162,11 +174,22 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
-    AxVMConfig::new(AxVMConfigParams {
+pub(crate) fn build_axvm_config(
+    cfg: &AxVMCrateConfig,
+    boot_policy: GuestBootPolicy,
+) -> Result<AxVMConfig> {
+    let machine_plan = build_machine_plan(cfg)?;
+    let memory_regions = cfg
+        .memory
+        .regions
+        .iter()
+        .map(runtime_memory_region)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(AxVMConfig::new(AxVMConfigParams {
         id: cfg.base.id,
         name: cfg.base.name.clone(),
-        vm_type: VMType::from(cfg.base.vm_type),
+        machine_plan,
         phys_cpu_ls: PhysCpuList::new(
             cfg.base.cpu_num,
             cfg.base.phys_cpu_ids.clone(),
@@ -186,30 +209,456 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
                 size: None,
             }),
         },
-        emu_devices: cfg.devices.emu_devices.clone(),
-        pass_through_devices: cfg.devices.passthrough_devices.clone(),
-        excluded_devices: cfg.devices.excluded_devices.clone(),
-        pass_through_addresses: cfg.devices.passthrough_addresses.clone(),
-        reserved_address_ranges: Vec::new(),
-        pass_through_ports: cfg.devices.passthrough_ports.clone(),
-        address_space_policy: cfg.devices.address_space_policy,
-        memory_regions: cfg.kernel.memory_regions.clone(),
-        boot_policy: GuestBootPolicy::KeepConfigured,
-        host_reserved_intids: cfg.devices.host_reserved_intids.clone(),
-        interrupt_mode: cfg.devices.interrupt_mode,
+        memory_regions,
+        boot_policy,
+    }))
+}
+
+fn build_machine_plan(cfg: &AxVMCrateConfig) -> Result<axvm::machine::VmMachinePlan> {
+    let mut request = VmMachineRequest::new(cfg.machine.mode(), cfg.machine.firmware())
+        .with_interrupt_delivery(cfg.machine.interrupt_delivery())
+        .with_vcpu_count(cfg.base.cpu_num);
+    for region in &cfg.memory.regions {
+        request = request.with_memory(GuestMemoryRegion::new(AddressRange::new(
+            region.guest_base,
+            region.size,
+        )?));
+    }
+    for selector in &cfg.devices.deny {
+        request = request.deny(machine_selector(selector)?);
+    }
+    for device in configured_virtual_devices(cfg)? {
+        request = request.with_virtual_device(device);
+    }
+
+    let snapshot = if cfg.machine.mode() == axvm_types::VmMachineMode::Virtual {
+        HostPlatformSnapshot::new(0)
+    } else {
+        axvm::current_host_platform_snapshot()?
+    };
+    #[cfg(all(feature = "fs", target_arch = "x86_64"))]
+    let snapshot = add_x86_host_filesystem_endpoint(cfg, snapshot)?;
+    let plan = VmMachinePlanner::new(axvm::standard_machine_profile()?)
+        .plan(&request, &snapshot)
+        .map_err(anyhow::Error::from)?;
+    finalize_machine_firmware(cfg, plan, &snapshot)
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn add_x86_host_filesystem_endpoint(
+    cfg: &AxVMCrateConfig,
+    mut snapshot: HostPlatformSnapshot,
+) -> Result<HostPlatformSnapshot> {
+    use ax_driver::pci::PciEndpointBar;
+    use axvm::machine::{
+        HostDeviceDescriptor, HostDeviceOwnership, HostInterruptResource, IoPortRange,
+    };
+
+    if !vm_config_needs_host_filesystem_release(cfg) {
+        return Ok(snapshot);
+    }
+
+    let info = x86_host_fs_passthrough_pci_info();
+    let resources = ax_driver::pci::taken_endpoint_resources(info.address).map_err(|error| {
+        anyhow::anyhow!(
+            "host filesystem PCI endpoint {} has no retained resource snapshot: {error:?}",
+            info.address
+        )
+    })?;
+    let binding = ax_driver::pci::resolve_intx_binding(info)
+        .map_err(|error| anyhow::anyhow!("resolve host filesystem PCI INTx: {error:?}"))?
+        .context("host filesystem PCI endpoint has no resolvable INTx route")?;
+    let trigger = x86_intx_forwarding_trigger(&binding);
+    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
+    let guest_gsi = u32::try_from(guest_gsi).context("guest PCI INTx GSI exceeds u32")?;
+    let interrupt = match &binding {
+        ax_driver::BindingIrq::Source(ax_driver::BindingIrqSource::AcpiGsiRoute(route)) => {
+            HostInterruptResource::routed_acpi(guest_gsi, *route)
+        }
+        _ => HostInterruptResource::controller_input(guest_gsi, trigger),
+    };
+    let mut descriptor = HostDeviceDescriptor::new(
+        HostDeviceId::new(format!("pci:{}", resources.address()))?,
+        HostDeviceOwnership::Transferable,
+    )
+    .with_compatible(format!(
+        "pci{:04x},{:04x}",
+        resources.vendor_id(),
+        resources.device_id()
+    ))
+    .with_interrupt(interrupt);
+
+    for bar in resources.bars() {
+        match *bar {
+            PciEndpointBar::Memory { address, size, .. } => {
+                let range = AddressRange::new(address, size)?;
+                snapshot = snapshot.with_io_aperture(range);
+                descriptor = descriptor.with_mmio(range);
+            }
+            PciEndpointBar::Io { port, size, .. } => {
+                let port = u16::try_from(port).context("PCI I/O BAR base exceeds u16")?;
+                let size = u16::try_from(size).context("PCI I/O BAR size exceeds u16")?;
+                descriptor = descriptor.with_pio(IoPortRange::new(port, size)?);
+            }
+        }
+    }
+    if descriptor.mmio().is_empty() && descriptor.pio().is_empty() {
+        bail!(
+            "host filesystem PCI endpoint {} exposes no assignable BAR resources",
+            resources.address()
+        );
+    }
+
+    Ok(snapshot.with_device(descriptor))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn finalize_machine_firmware(
+    cfg: &AxVMCrateConfig,
+    plan: axvm::machine::VmMachinePlan,
+    snapshot: &HostPlatformSnapshot,
+) -> Result<axvm::machine::VmMachinePlan> {
+    use axvm_types::GuestFirmwareKind;
+
+    match cfg.machine.firmware() {
+        GuestFirmwareKind::Auto | GuestFirmwareKind::Fdt => {
+            let bytes = if cfg.machine.mode() == axvm_types::VmMachineMode::Virtual {
+                let mut firmware = axvm::machine::Aarch64FdtConfig::new(cfg.base.cpu_num)?;
+                if let Some(cmdline) = cfg.kernel.cmdline.as_deref() {
+                    firmware = firmware.with_bootargs(cmdline);
+                }
+                axvm::machine::generate_aarch64_fdt(&plan, &firmware)?
+            } else {
+                let physical_cpus =
+                    cfg.base.phys_cpu_ids.as_deref().context(
+                        "AArch64 passthrough machine requires explicit physical CPU IDs",
+                    )?;
+                let mut firmware = axvm::machine::HostFdtConfig::new(physical_cpus.iter().copied());
+                if let Some(cmdline) = cfg.kernel.cmdline.as_deref() {
+                    firmware = firmware.with_bootargs(cmdline);
+                }
+                axvm::machine::generate_host_fdt(&plan, snapshot, &firmware)?
+            };
+            Ok(plan.with_device_tree_firmware(bytes))
+        }
+        GuestFirmwareKind::Acpi => {
+            bail!("AArch64 virtual machines do not support ACPI firmware yet")
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn finalize_machine_firmware(
+    cfg: &AxVMCrateConfig,
+    plan: axvm::machine::VmMachinePlan,
+    snapshot: &HostPlatformSnapshot,
+) -> Result<axvm::machine::VmMachinePlan> {
+    use axvm_types::GuestFirmwareKind;
+
+    match cfg.machine.firmware() {
+        GuestFirmwareKind::Auto | GuestFirmwareKind::Fdt => {
+            let bytes = if cfg.machine.mode() == axvm_types::VmMachineMode::Virtual {
+                let mut firmware = axvm::machine::RiscvFdtConfig::new(cfg.base.cpu_num)?;
+                if let Some(cmdline) = cfg.kernel.cmdline.as_deref() {
+                    firmware = firmware.with_bootargs(cmdline);
+                }
+                axvm::machine::generate_riscv_fdt(&plan, &firmware)?
+            } else {
+                let physical_cpus = cfg
+                    .base
+                    .phys_cpu_ids
+                    .as_deref()
+                    .context("RISC-V passthrough machine requires explicit physical CPU IDs")?;
+                let mut firmware = axvm::machine::HostFdtConfig::new(physical_cpus.iter().copied());
+                if let Some(cmdline) = cfg.kernel.cmdline.as_deref() {
+                    firmware = firmware.with_bootargs(cmdline);
+                }
+                axvm::machine::generate_host_fdt(&plan, snapshot, &firmware)?
+            };
+            Ok(plan.with_device_tree_firmware(bytes))
+        }
+        GuestFirmwareKind::Acpi => {
+            bail!("RISC-V virtual machines do not support ACPI firmware")
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn finalize_machine_firmware(
+    cfg: &AxVMCrateConfig,
+    plan: axvm::machine::VmMachinePlan,
+    _snapshot: &HostPlatformSnapshot,
+) -> Result<axvm::machine::VmMachinePlan> {
+    use axvm_types::GuestFirmwareKind;
+
+    match cfg.machine.firmware() {
+        GuestFirmwareKind::Auto | GuestFirmwareKind::Acpi => {
+            const ACPI_LOAD_ADDRESS: u64 = 0x000e_0000;
+
+            let image = axvm::machine::generate_x86_acpi(
+                &plan,
+                &axvm::machine::X86AcpiConfig::new(cfg.base.cpu_num, ACPI_LOAD_ADDRESS)?,
+            )?;
+            let image_end = image
+                .load_address()
+                .checked_add(image.len() as u64)
+                .context("generated x86 ACPI image address overflows")?;
+            if !plan
+                .guest_memory()
+                .iter()
+                .any(|memory| memory.base() <= image.load_address() && image_end <= memory.end())
+            {
+                bail!(
+                    "generated x86 ACPI image [{:#x}, {image_end:#x}) is outside guest RAM",
+                    image.load_address()
+                );
+            }
+            Ok(plan.with_acpi_firmware(image))
+        }
+        GuestFirmwareKind::Fdt => bail!("x86 virtual machines do not support FDT firmware"),
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn finalize_machine_firmware(
+    cfg: &AxVMCrateConfig,
+    plan: axvm::machine::VmMachinePlan,
+    _snapshot: &HostPlatformSnapshot,
+) -> Result<axvm::machine::VmMachinePlan> {
+    use axvm_types::GuestFirmwareKind;
+
+    match cfg.machine.firmware() {
+        GuestFirmwareKind::Auto | GuestFirmwareKind::Acpi => {
+            let files = axvm::machine::generate_loongarch_fw_cfg_acpi(&plan, cfg.base.cpu_num)?;
+            Ok(plan.with_fw_cfg_acpi_firmware(files))
+        }
+        GuestFirmwareKind::Fdt => {
+            bail!("LoongArch virtual machines require ACPI firmware")
+        }
+    }
+}
+
+fn machine_selector(selector: &DeviceSelectorConfig) -> Result<HostDeviceSelector> {
+    Ok(match selector {
+        DeviceSelectorConfig::FdtPath { value } | DeviceSelectorConfig::AcpiPath { value } => {
+            HostDeviceSelector::PathSubtree(HostDeviceId::new(value.clone())?)
+        }
+        DeviceSelectorConfig::Compatible { value } => {
+            HostDeviceSelector::compatible(value.clone())?
+        }
+        DeviceSelectorConfig::Mmio { base, size } => {
+            HostDeviceSelector::Mmio(AddressRange::new(*base, *size)?)
+        }
+        DeviceSelectorConfig::Interrupt { intid } => {
+            HostDeviceSelector::Interrupt(ControllerInputId::new(*intid as usize))
+        }
     })
 }
 
-fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
-    vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
+#[cfg(target_arch = "aarch64")]
+fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+    let mut configured = cfg.devices.virtual_devices.clone();
+    let console_disabled = cfg
+        .devices
+        .disable_defaults
+        .iter()
+        .any(|model| model == "console");
+    let has_console = configured.iter().any(|device| device.model == "arm-pl011");
+    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
+        && !console_disabled
+        && !has_console
+    {
+        configured.push(axvmconfig::VirtualDeviceConfig {
+            id: "console0".into(),
+            model: "arm-pl011".into(),
+            source: axvmconfig::VirtualDeviceSourceConfig::Auto,
+            backend: axvmconfig::VirtualDeviceBackendConfig::HostConsole {
+                rx: axvmconfig::ConsoleRxMode::Exclusive,
+                tx: axvmconfig::ConsoleTxMode::Shared,
+            },
+        });
+    }
+
+    configured
+        .into_iter()
+        .map(|device| {
+            if device.model != "arm-pl011" {
+                bail!(
+                    "unsupported AArch64 virtual device model '{}'",
+                    device.model
+                );
+            }
+            let descriptor = VirtualDeviceDescriptor::new(
+                DeviceInstanceId::new(device.id)?,
+                DeviceModelId::new(device.model)?,
+                axvm::pl011_device_requirements()?,
+            )
+            .with_compatible("arm,pl011")
+            .with_source(machine_device_source(device.source)?)
+            .with_backend(machine_device_backend(device.backend));
+            Ok(descriptor)
+        })
+        .collect()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+    let mut configured = cfg.devices.virtual_devices.clone();
+    let console_disabled = cfg
+        .devices
+        .disable_defaults
+        .iter()
+        .any(|model| model == "console");
+    let has_console = configured.iter().any(|device| device.model == "x86-com1");
+    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
+        && !console_disabled
+        && !has_console
+    {
+        configured.push(axvmconfig::VirtualDeviceConfig {
+            id: "console0".into(),
+            model: "x86-com1".into(),
+            source: axvmconfig::VirtualDeviceSourceConfig::Allocate,
+            backend: axvmconfig::VirtualDeviceBackendConfig::HostConsole {
+                rx: axvmconfig::ConsoleRxMode::Exclusive,
+                tx: axvmconfig::ConsoleTxMode::Shared,
+            },
+        });
+    }
+
+    configured
+        .into_iter()
+        .map(|device| {
+            if device.model != "x86-com1" {
+                bail!("unsupported x86 virtual device model '{}'", device.model);
+            }
+            Ok(VirtualDeviceDescriptor::new(
+                DeviceInstanceId::new(device.id)?,
+                DeviceModelId::new(device.model)?,
+                axvm::x86_com1_device_requirements()?,
+            )
+            .with_source(machine_device_source(device.source)?)
+            .with_backend(machine_device_backend(device.backend)))
+        })
+        .collect()
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+    let mut configured = cfg.devices.virtual_devices.clone();
+    let console_disabled = cfg
+        .devices
+        .disable_defaults
+        .iter()
+        .any(|model| model == "console");
+    let has_console = configured.iter().any(|device| device.model == "ns16550a");
+    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
+        && !console_disabled
+        && !has_console
+    {
+        configured.push(axvmconfig::VirtualDeviceConfig {
+            id: "console0".into(),
+            model: "ns16550a".into(),
+            source: axvmconfig::VirtualDeviceSourceConfig::Auto,
+            backend: axvmconfig::VirtualDeviceBackendConfig::HostConsole {
+                rx: axvmconfig::ConsoleRxMode::Exclusive,
+                tx: axvmconfig::ConsoleTxMode::Shared,
+            },
+        });
+    }
+
+    configured
+        .into_iter()
+        .map(|device| {
+            if device.model != "ns16550a" {
+                bail!("unsupported virtual device model '{}'", device.model);
+            }
+            Ok(VirtualDeviceDescriptor::new(
+                DeviceInstanceId::new(device.id)?,
+                DeviceModelId::new(device.model)?,
+                axvm::ns16550_device_requirements()?,
+            )
+            .with_compatible("ns16550a")
+            .with_compatible("ns16550")
+            .with_source(machine_device_source(device.source)?)
+            .with_backend(machine_device_backend(device.backend)))
+        })
+        .collect()
+}
+
+fn machine_device_source(
+    source: axvmconfig::VirtualDeviceSourceConfig,
+) -> Result<VirtualDeviceSource> {
+    Ok(match source {
+        axvmconfig::VirtualDeviceSourceConfig::Auto => VirtualDeviceSource::Auto,
+        axvmconfig::VirtualDeviceSourceConfig::Allocate => VirtualDeviceSource::Allocate,
+        axvmconfig::VirtualDeviceSourceConfig::FdtPath { value }
+        | axvmconfig::VirtualDeviceSourceConfig::AcpiPath { value } => {
+            VirtualDeviceSource::Host(HostDeviceSelector::Id(HostDeviceId::new(value)?))
+        }
+        axvmconfig::VirtualDeviceSourceConfig::Compatible { value } => {
+            VirtualDeviceSource::Host(HostDeviceSelector::compatible(value)?)
+        }
+    })
+}
+
+fn machine_device_backend(
+    backend: axvmconfig::VirtualDeviceBackendConfig,
+) -> axvm::machine::DeviceBackend {
+    use axvm::machine::{ConsoleRxPolicy, ConsoleTxPolicy, DeviceBackend, HostConsoleBackend};
+
+    match backend {
+        axvmconfig::VirtualDeviceBackendConfig::None => DeviceBackend::None,
+        axvmconfig::VirtualDeviceBackendConfig::HostConsole { rx, tx } => {
+            let rx = match rx {
+                axvmconfig::ConsoleRxMode::Exclusive => ConsoleRxPolicy::Exclusive,
+                axvmconfig::ConsoleRxMode::Disabled => ConsoleRxPolicy::Disabled,
+            };
+            let tx = match tx {
+                axvmconfig::ConsoleTxMode::Shared => ConsoleTxPolicy::Shared,
+                axvmconfig::ConsoleTxMode::Exclusive => ConsoleTxPolicy::Exclusive,
+                axvmconfig::ConsoleTxMode::Disabled => ConsoleTxPolicy::Disabled,
+            };
+            DeviceBackend::HostConsole(HostConsoleBackend::new(rx, tx))
+        }
+    }
+}
+
+fn runtime_memory_region(region: &MemoryRegionConfig) -> Result<VmMemoryConfig> {
+    let gpa = usize::try_from(region.guest_base).context("guest memory base exceeds usize")?;
+    let size = usize::try_from(region.size).context("guest memory size exceeds usize")?;
+    let mut flags = MappingFlags::USER;
+    if region.permissions.readable() {
+        flags |= MappingFlags::READ;
+    }
+    if region.permissions.writable() {
+        flags |= MappingFlags::WRITE;
+    }
+    if region.permissions.executable() {
+        flags |= MappingFlags::EXECUTE;
+    }
+    let backing = match region.backing {
+        MemoryBackingConfig::Allocate => VmMemoryBacking::Allocated,
+        MemoryBackingConfig::Host { host_base } => VmMemoryBacking::Host {
+            host_base: usize::try_from(host_base)
+                .context("host memory base exceeds usize")?
+                .into(),
+        },
+        MemoryBackingConfig::Shared { host_base } => VmMemoryBacking::Shared {
+            host_base: usize::try_from(host_base)
+                .context("shared memory base exceeds usize")?
+                .into(),
+        },
+        MemoryBackingConfig::Reserved => VmMemoryBacking::Reserved {
+            host_base: gpa.into(),
+        },
+    };
+    VmMemoryConfig::new(GuestPhysAddr::from(gpa), size, flags, backing).map_err(anyhow::Error::from)
 }
 
 #[cfg(feature = "fs")]
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
-        && (!config.devices.passthrough_devices.is_empty()
-            || !config.devices.passthrough_addresses.is_empty()
-            || !config.devices.passthrough_ports.is_empty())
+        && config.machine.mode() == axvm_types::VmMachineMode::Passthrough
 }
 
 #[cfg(feature = "fs")]
@@ -382,40 +831,25 @@ fn boot_file_error(operation: &'static str, file_name: &str, error: anyhow::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axvmconfig::{VmMemConfig, VmMemMappingType};
-
-    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
-        VmMemConfig {
-            gpa,
-            size,
-            flags: 0x7,
-            map_type,
-        }
-    }
+    use axvmconfig::MemoryPermissions;
 
     #[test]
-    fn sync_axvm_config_keeps_fdt_reserved_memory_regions() {
-        let mut crate_config = AxVMCrateConfig::default();
-        crate_config.kernel.memory_regions.push(memory_region(
-            0x8000_0000,
-            0x200000,
-            VmMemMappingType::MapIdentical,
-        ));
-        let mut vm_config = build_axvm_config(&crate_config);
+    fn runtime_memory_region_preserves_non_identity_host_backing() {
+        let region = MemoryRegionConfig {
+            guest_base: 0x8000_0000,
+            size: 0x20_0000,
+            permissions: MemoryPermissions::try_from("rwx").unwrap(),
+            backing: MemoryBackingConfig::Host {
+                host_base: 0xa000_0000,
+            },
+        };
 
-        crate_config.kernel.memory_regions.push(memory_region(
-            0x110000,
-            0x10000,
-            VmMemMappingType::MapReserved,
-        ));
-        assert_eq!(vm_config.memory_regions().len(), 1);
+        let runtime = runtime_memory_region(&region).unwrap();
 
-        sync_axvm_config_from_crate_config(&mut vm_config, &crate_config);
-
-        let regions = vm_config.memory_regions();
-        assert_eq!(regions.len(), 2);
-        assert_eq!(regions[1].gpa, 0x110000);
-        assert_eq!(regions[1].size, 0x10000);
-        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+        assert_eq!(runtime.guest_base(), GuestPhysAddr::from(0x8000_0000));
+        assert_eq!(
+            runtime.backing().host_base(),
+            Some(axvm_types::HostPhysAddr::from(0xa000_0000))
+        );
     }
 }

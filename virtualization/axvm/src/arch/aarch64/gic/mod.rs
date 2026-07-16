@@ -23,7 +23,7 @@ mod roles;
 
 pub(crate) use forwarding::HostSpiForwarding;
 pub(crate) use registration::PreparedGicV3;
-pub(crate) use roles::Aarch64InterruptRoles;
+pub(crate) use roles::{Aarch64InterruptDiscovery, Aarch64InterruptRoles};
 
 /// Fixed host placement of one VM-local vCPU.
 #[derive(Clone, Copy, Debug)]
@@ -159,12 +159,7 @@ impl GicV3Backend for AxvmGicV3Backend {
             spis.get(&spi).and_then(Weak::upgrade)
         };
         if let Some(forwarding) = forwarding {
-            forwarding.unmask_host_irq().map_err(|error| {
-                GicV3BackendError::new(
-                    "unmask retired emulated SPI",
-                    alloc::format!("guest SPI {}: {error:?}", spi.raw()),
-                )
-            })?;
+            forwarding.retire_guest_interrupt()?;
         }
         Ok(())
     }

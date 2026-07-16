@@ -22,12 +22,13 @@
 extern crate alloc;
 
 mod error;
+mod machine;
 
-use alloc::{string::String, vec::Vec};
 use core::fmt::{Debug, Display, Formatter, LowerHex, UpperHex};
 
 use ax_memory_addr::{AddrRange, PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
 pub use error::{VmBackendError, VmBackendResult};
+pub use machine::*;
 
 bitflags::bitflags! {
     /// Generic memory mapping permissions and attributes exchanged between
@@ -493,135 +494,6 @@ pub enum VmVcpuState {
     Blocked = 5,
 }
 
-/// A part of `AxVMConfig`, which represents guest VM type.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VMType {
-    /// Host VM, used for boot from Linux like Jailhouse do, named "type1.5".
-    VMTHostVM = 0,
-    /// Guest RTOS, generally a simple guest OS with most of the resource passthrough.
-    #[default]
-    VMTRTOS   = 1,
-    /// Guest Linux, generally a full-featured guest OS with complicated device emulation requirements.
-    VMTLinux  = 2,
-}
-
-impl From<usize> for VMType {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => Self::VMTHostVM,
-            1 => Self::VMTRTOS,
-            2 => Self::VMTLinux,
-            _ => Self::default(),
-        }
-    }
-}
-
-impl From<VMType> for usize {
-    fn from(value: VMType) -> Self {
-        value as usize
-    }
-}
-
-/// Guest physical address space population policy.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum AddressSpacePolicy {
-    /// Start from an empty guest physical address space and map only explicit
-    /// guest memory, boot-description regions, and explicitly configured
-    /// passthrough resources.
-    #[default]
-    Virtualized,
-    /// Start from a host-physical identity passthrough address space, then
-    /// punch holes for guest memory, boot-description regions, emulated
-    /// devices, and reserved ranges.
-    Passthrough,
-}
-
-/// The type of memory mapping used for VM memory regions.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub enum VmMemMappingType {
-    /// The memory region is allocated by the VM monitor.
-    #[default]
-    MapAlloc     = 0,
-    /// The memory region is identical to the host physical memory region.
-    MapIdentical = 1,
-    /// The memory region is reserved memory for the guest OS.
-    MapReserved  = 2,
-}
-
-/// Configuration for a virtual machine memory region.
-#[derive(Debug, Default, Clone)]
-pub struct VmMemConfig {
-    /// The start address of the memory region in GPA (Guest Physical Address).
-    pub gpa: usize,
-    /// The size of the memory region in bytes.
-    pub size: usize,
-    /// The mappings flags of the memory region.
-    pub flags: usize,
-    /// The type of memory mapping.
-    pub map_type: VmMemMappingType,
-}
-
-/// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
-#[derive(Debug, Default, Clone)]
-pub struct EmulatedDeviceConfig {
-    /// The name of the device.
-    pub name: String,
-    /// The base GPA (Guest Physical Address) of the device.
-    pub base_gpa: usize,
-    /// The address length of the device.
-    pub length: usize,
-    /// The IRQ (Interrupt Request) ID of the device.
-    pub irq_id: usize,
-    /// The type of emulated device.
-    pub emu_type: EmulatedDeviceType,
-    /// The config list of the device.
-    pub cfg_list: Vec<usize>,
-}
-
-/// A part of `AxVMConfig`, which represents the configuration of a pass-through device for a virtual machine.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct PassThroughDeviceConfig {
-    /// The name of the device.
-    pub name: String,
-    /// The base GPA (Guest Physical Address) of the device.
-    pub base_gpa: usize,
-    /// The base HPA (Host Physical Address) of the device.
-    pub base_hpa: usize,
-    /// The address length of the device.
-    pub length: usize,
-    /// The IRQ (Interrupt Request) ID of the device.
-    pub irq_id: usize,
-}
-
-/// A part of `AxVMConfig`, which represents the configuration of a pass-through address for a virtual machine.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct PassThroughAddressConfig {
-    /// The base GPA (Guest Physical Address).
-    pub base_gpa: usize,
-    /// The address length.
-    pub length: usize,
-}
-
-/// A guest physical address range reserved from default passthrough mapping.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ReservedAddressConfig {
-    /// The base GPA (Guest Physical Address).
-    pub base_gpa: usize,
-    /// The address length.
-    pub length: usize,
-}
-
-/// A part of `AxVMConfig`, which represents a host I/O port range passed through
-/// to a virtual machine.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PassThroughPortConfig {
-    /// The first host I/O port number.
-    pub base: u16,
-    /// The number of ports in this range.
-    pub length: u16,
-}
-
 /// Describes how a guest VM should enter its boot image.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum VMBootProtocol {
@@ -632,18 +504,6 @@ pub enum VMBootProtocol {
     Multiboot,
     /// Load an external UEFI firmware image and enter it without multiboot patching.
     Uefi,
-}
-
-/// Specifies how the VM should handle interrupts and interrupt controllers.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum VMInterruptMode {
-    /// The VM will not handle interrupts, and the guest OS should not use interrupts.
-    #[default]
-    NoIrq,
-    /// The VM will use the emulated interrupt controller to handle interrupts.
-    Emulated,
-    /// The VM will use the passthrough interrupt controller (including GPPT) to handle interrupts.
-    Passthrough,
 }
 
 /// The type of emulated device.

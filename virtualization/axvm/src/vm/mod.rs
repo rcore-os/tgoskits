@@ -23,7 +23,10 @@ use core::{
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
-use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, InterruptTopology};
+use axdevice::{
+    AxVmDevices, DeviceManagerError, FwCfg, FwCfgAcpiFiles, FwCfgConfig, FwCfgMemoryConfig,
+    InterruptTopology,
+};
 use axdevice_base::AccessWidth;
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -33,15 +36,17 @@ use crate::{
     AxVmError, AxVmResult,
     arch::{ArchNestedPageTable, VmArchState, VmRuntimeArchState},
     ax_err, ax_err_type,
-    boot::{GuestBootDescription, GuestFdtBuilder},
-    config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    host::paging::virt_to_phys,
+    boot::{GuestAcpiTables, GuestBootDescription, GuestFdtBuilder},
+    config::{AxVMConfig, InterruptDelivery, PhysCpuList, VmMemoryBacking},
+    host::paging::{PagingHandler, virt_to_phys},
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
+    machine::{HostDeviceClaimProvider, HostDeviceLeases, VmMachineTransaction},
     vcpu::AxVCpu,
 };
 
 pub(crate) mod boot;
+pub(crate) mod host_console;
 pub(crate) mod memory;
 pub(crate) mod prepare;
 pub use memory::PreparedMemoryLayout;
@@ -123,6 +128,13 @@ pub(crate) struct AxVMResources {
     arch_state: VmArchState,
     address_layout: Option<VmAddressLayout>,
     boot_description: GuestBootDescription,
+    host_device_claims: HostDeviceClaimState,
+}
+
+enum HostDeviceClaimState {
+    Unclaimed,
+    Pending(VmMachineTransaction),
+    Committed(HostDeviceLeases),
 }
 
 unsafe impl Send for AxVMResources {}
@@ -242,6 +254,7 @@ impl AxVMResources {
             arch_state: VmArchState::new(),
             address_layout: None,
             boot_description: GuestBootDescription::none(),
+            host_device_claims: HostDeviceClaimState::Unclaimed,
         })
     }
 
@@ -271,20 +284,69 @@ impl AxVMResources {
         &mut self.arch_state
     }
 
+    fn begin_host_device_claims(&mut self, provider: &dyn HostDeviceClaimProvider) -> AxVmResult {
+        if !matches!(self.host_device_claims, HostDeviceClaimState::Unclaimed) {
+            return Err(AxVmError::invalid_state(
+                "claim planned host devices",
+                "host-device ownership was already claimed for this VM",
+            ));
+        }
+        let transaction = VmMachineTransaction::claim(self.config.machine_plan(), provider)
+            .map_err(|error| AxVmError::host("claim planned host devices", error))?;
+        self.host_device_claims = HostDeviceClaimState::Pending(transaction);
+        Ok(())
+    }
+
+    fn require_host_device_claims(&self) -> AxVmResult {
+        if self.config.machine_plan().claims().is_empty()
+            || matches!(
+                self.host_device_claims,
+                HostDeviceClaimState::Pending(_) | HostDeviceClaimState::Committed(_)
+            )
+        {
+            return Ok(());
+        }
+        Err(AxVmError::invalid_state(
+            "prepare VM devices",
+            "planned passthrough devices must be claimed before VM preparation",
+        ))
+    }
+
+    fn commit_host_device_claims(&mut self) -> AxVmResult {
+        let state = core::mem::replace(
+            &mut self.host_device_claims,
+            HostDeviceClaimState::Unclaimed,
+        );
+        self.host_device_claims = match state {
+            HostDeviceClaimState::Pending(transaction) => {
+                HostDeviceClaimState::Committed(transaction.commit())
+            }
+            HostDeviceClaimState::Committed(leases) => HostDeviceClaimState::Committed(leases),
+            HostDeviceClaimState::Unclaimed if self.config.machine_plan().claims().is_empty() => {
+                HostDeviceClaimState::Unclaimed
+            }
+            HostDeviceClaimState::Unclaimed => {
+                return Err(AxVmError::invalid_state(
+                    "commit planned host devices",
+                    "host-device claim transaction is missing",
+                ));
+            }
+        };
+        Ok(())
+    }
+
+    fn rollback_pending_host_device_claims(&mut self) {
+        if matches!(self.host_device_claims, HostDeviceClaimState::Pending(_)) {
+            self.host_device_claims = HostDeviceClaimState::Unclaimed;
+        }
+    }
+
     fn reset_transient_resources(&mut self) -> AxVmResult {
         let memory_regions = self.memory_regions.clone();
         self.address_space.clear();
         for region in &memory_regions {
             self.address_space
-                .map_linear(
-                    region.gpa,
-                    region.host_paddr(),
-                    region.size(),
-                    MappingFlags::READ
-                        | MappingFlags::WRITE
-                        | MappingFlags::EXECUTE
-                        | MappingFlags::USER,
-                )
+                .map_linear(region.gpa, region.host_paddr(), region.size(), region.flags)
                 .map_err(|error| {
                     AxVmError::from_addrspace("restore guest memory mapping", error)
                 })?;
@@ -305,7 +367,8 @@ struct PendingFwCfg {
     initrd: Option<&'static [u8]>,
     cmdline: Option<String>,
     cpu_num: u16,
-    platform: FwCfgPlatformConfig,
+    memory: FwCfgMemoryConfig,
+    acpi: FwCfgAcpiFiles,
 }
 
 pub struct FwCfgDeviceConfig {
@@ -315,7 +378,8 @@ pub struct FwCfgDeviceConfig {
     pub initrd: Option<&'static [u8]>,
     pub cmdline: Option<String>,
     pub cpu_num: u16,
-    pub platform: FwCfgPlatformConfig,
+    pub memory: FwCfgMemoryConfig,
+    pub acpi: FwCfgAcpiFiles,
 }
 
 /// Represents a memory region in a virtual machine.
@@ -325,8 +389,14 @@ pub struct VMMemoryRegion {
     pub gpa: GuestPhysAddr,
     /// Host virtual address.
     pub hva: HostVirtAddr,
+    /// Host physical address backing this region.
+    pub hpa: HostPhysAddr,
     /// Memory layout of the region.
     pub layout: Layout,
+    /// Stage-2 access permissions used when restoring this mapping.
+    pub flags: MappingFlags,
+    /// Physical ownership of the backing range.
+    pub backing: VmMemoryBacking,
     /// Whether this region was allocated by the allocator and needs to be deallocated
     pub needs_dealloc: bool,
 }
@@ -339,7 +409,7 @@ impl VMMemoryRegion {
 
     /// Returns the host physical address backing this guest memory region.
     pub fn host_paddr(&self) -> HostPhysAddr {
-        virt_to_phys(self.hva)
+        self.hpa
     }
 
     /// Returns `true` if the guest physical address is identical to the host physical address.
@@ -381,6 +451,15 @@ impl AxVM {
         Ok(result)
     }
 
+    /// Starts the all-or-nothing ownership transaction for planned host devices.
+    ///
+    /// The claims remain pending until [`Self::prepare`] completes. Any image
+    /// load or preparation failure drops the VM or rolls the pending leases
+    /// back without exposing a partially constructed machine.
+    pub fn claim_host_devices(&self, provider: &dyn HostDeviceClaimProvider) -> AxVmResult {
+        self.with_resources_mut(|resources| resources.begin_host_device_claims(provider))
+    }
+
     /// Returns the VM id.
     #[inline]
     pub fn id(&self) -> usize {
@@ -397,10 +476,10 @@ impl AxVM {
         self.machine.lock().status()
     }
 
-    /// Returns the configured VM interrupt mode.
-    pub fn interrupt_mode(&self) -> VMInterruptMode {
-        self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
-            .unwrap_or(VMInterruptMode::NoIrq)
+    /// Returns the normalized external interrupt-delivery policy.
+    pub fn interrupt_delivery(&self) -> InterruptDelivery {
+        self.with_resources(|resources| Ok(resources.config.interrupt_delivery()))
+            .unwrap_or_default()
     }
 
     pub(crate) fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
@@ -482,25 +561,46 @@ impl AxVM {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
     }
 
-    /// Returns to the VM's configuration.
+    /// Reads the immutable VM construction configuration.
     pub fn with_config<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&AxVMConfig) -> R,
+    {
+        let machine = self.machine.lock();
+        let resources = machine
+            .resources()
+            .expect("VM resources are not available for config access");
+        f(&resources.config)
+    }
+
+    pub(crate) fn with_config_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut AxVMConfig) -> R,
     {
         let mut machine = self.machine.lock();
         let resources = machine
             .resources_mut()
-            .expect("VM resources are not available for config access");
+            .expect("VM resources are not available for internal boot-state update");
         f(&mut resources.config)
     }
 
     /// Stores a guest DTB as VM-owned boot-description state.
     pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
         self.with_resources_mut(|resources| {
-            resources.config.set_dtb_load_gpa(load_gpa);
+            resources.config.update_dtb_load_gpa(Some(load_gpa));
             resources
                 .boot_description
                 .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(load_gpa));
+            Ok(())
+        })
+    }
+
+    /// Stores generated ACPI tables as VM-owned boot-description state.
+    pub fn set_guest_acpi_tables(&self, rsdp_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
+        self.with_resources_mut(|resources| {
+            resources
+                .boot_description
+                .set_acpi_tables(GuestAcpiTables::generated(rsdp_gpa, bytes));
             Ok(())
         })
     }
@@ -699,7 +799,8 @@ impl AxVM {
             initrd: config.initrd,
             cmdline: config.cmdline,
             cpu_num: config.cpu_num,
-            platform: config.platform,
+            memory: config.memory,
+            acpi: config.acpi,
         });
         debug!(
             "VM[{}] queued fw_cfg device: base={:#x}, size={:#x}, kernel={} bytes, initrd={:?}",
@@ -720,15 +821,16 @@ impl AxVM {
                 pending.base.as_usize(),
                 pending.base.as_usize() + pending.size
             );
-            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(
-                pending.base,
-                pending.size,
-                pending.kernel,
-                pending.initrd,
-                pending.cmdline.as_deref(),
-                pending.cpu_num,
-                pending.platform,
-            )))?;
+            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(FwCfgConfig {
+                base: pending.base,
+                size: pending.size,
+                kernel: pending.kernel,
+                initrd: pending.initrd,
+                cmdline: pending.cmdline,
+                cpu_num: pending.cpu_num,
+                memory: pending.memory,
+                acpi: pending.acpi,
+            })))?;
         }
         Ok(())
     }
@@ -944,10 +1046,22 @@ impl AxVM {
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
     ) -> AxVmResult<&[u8]> {
-        assert!(
-            layout.size() > 0,
-            "Cannot allocate zero-sized memory region"
-        );
+        self.alloc_memory_region_with_flags(
+            layout,
+            gpa,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+        )
+    }
+
+    fn alloc_memory_region_with_flags(
+        &self,
+        layout: Layout,
+        gpa: Option<GuestPhysAddr>,
+        flags: MappingFlags,
+    ) -> AxVmResult<&[u8]> {
+        if layout.size() == 0 {
+            return ax_err!(InvalidInput, "guest memory region must not be empty");
+        }
 
         let hva = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if hva.is_null() {
@@ -965,20 +1079,15 @@ impl AxVM {
         if let Err(err) = self.with_resources_mut(|resources| {
             resources
                 .address_space
-                .map_linear(
-                    gpa,
-                    hpa,
-                    layout.size(),
-                    MappingFlags::READ
-                        | MappingFlags::WRITE
-                        | MappingFlags::EXECUTE
-                        | MappingFlags::USER,
-                )
+                .map_linear(gpa, hpa, layout.size(), flags)
                 .map_err(|error| AxVmError::from_addrspace("map allocated guest memory", error))?;
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
                 hva,
+                hpa,
                 layout,
+                flags,
+                backing: VmMemoryBacking::Allocated,
                 needs_dealloc: true, // This region was allocated and needs to be freed
             });
             Ok(())
@@ -1005,7 +1114,7 @@ impl AxVM {
         let layout = memory::MemoryLayoutBuilder::new(self, &memory_regions).prepare()?;
         let main_memory = layout.main_memory();
         let boot_plan = boot::BootImagePlan::new(main_memory.gpa, main_memory.is_identical());
-        self.with_config(|config| boot_plan.apply_to_config(config));
+        self.with_config_mut(|config| boot_plan.apply_to_config(config));
         Ok(layout)
     }
 
@@ -1015,30 +1124,42 @@ impl AxVM {
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
     ) -> AxVmResult {
-        assert!(
-            layout.size() > 0,
-            "Cannot allocate zero-sized memory region"
-        );
         let gpa =
             gpa.ok_or_else(|| ax_err_type!(InvalidInput, "Reserved memory GPA is required"))?;
+        let hpa = HostPhysAddr::from(gpa.as_usize());
+        self.map_backed_memory_region(
+            layout,
+            gpa,
+            hpa,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER,
+            VmMemoryBacking::Reserved { host_base: hpa },
+        )
+    }
+
+    fn map_backed_memory_region(
+        &self,
+        layout: Layout,
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        flags: MappingFlags,
+        backing: VmMemoryBacking,
+    ) -> AxVmResult {
+        if layout.size() == 0 {
+            return ax_err!(InvalidInput, "guest memory region must not be empty");
+        }
         self.with_resources_mut(|resources| {
             resources
                 .address_space
-                .map_linear(
-                    gpa,
-                    gpa.as_usize().into(),
-                    layout.size(),
-                    MappingFlags::READ
-                        | MappingFlags::WRITE
-                        | MappingFlags::EXECUTE
-                        | MappingFlags::USER,
-                )
-                .map_err(|error| AxVmError::from_addrspace("map reserved guest memory", error))?;
-            let hva = gpa.as_usize().into();
+                .map_linear(gpa, hpa, layout.size(), flags)
+                .map_err(|error| AxVmError::from_addrspace("map backed guest memory", error))?;
+            let hva = crate::HostPagingHandler::phys_to_virt(hpa);
             resources.memory_regions.push(VMMemoryRegion {
                 gpa,
                 hva,
+                hpa,
                 layout,
+                flags,
+                backing,
                 needs_dealloc: false, // This is a reserved region, not allocated
             });
             Ok(())
