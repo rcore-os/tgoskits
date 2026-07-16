@@ -75,7 +75,7 @@ pub struct ArgsPerf {
     pub freq: u32,
     #[arg(long = "out", hide = true)]
     pub out: Option<PathBuf>,
-    /// Output root. Final reports go under <DIR>/perf/<arch>/latest.
+    /// Output root. Final reports go under `<DIR>/perf/<arch>/latest`.
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = PerfFormat::All)]

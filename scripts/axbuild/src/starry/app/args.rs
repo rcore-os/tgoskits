@@ -32,7 +32,7 @@ pub struct ArgsAppQemu {
     #[arg(long)]
     pub all: bool,
 
-    /// Select apps/starry/<CASE>
+    /// Select `apps/starry/<CASE>`.
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: Option<String>,
 
@@ -52,7 +52,7 @@ pub struct ArgsAppQemu {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsAppBoard {
-    /// Select apps/starry/<CASE>
+    /// Select `apps/starry/<CASE>`.
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: String,
 
