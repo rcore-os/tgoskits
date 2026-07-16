@@ -7,8 +7,9 @@ use rdrive::probe::acpi::{
 };
 
 use crate::machine::{
-    AddressRange, HostConsoleEvidence, HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership,
-    HostInterruptResource, HostPlatformSnapshot, IoPortRange, MachinePlanError, MachinePlanResult,
+    AddressRange, HostConsoleEvidence, HostConsoleLocation, HostDeviceDescriptor, HostDeviceId,
+    HostDeviceOwnership, HostInterruptResource, HostPlatformSnapshot, IoPortRange,
+    MachinePlanError, MachinePlanResult,
 };
 
 /// Captures the live ACPI namespace and fixed controller tables as one snapshot.
@@ -20,7 +21,10 @@ pub(crate) fn current_host_platform_snapshot() -> MachinePlanResult<HostPlatform
     })??;
     let mut snapshot = build_snapshot(&inventory)?;
     if let Some(console) = snapshot.console_device().cloned() {
-        snapshot.grant_console_transfer(console, HostConsoleEvidence::LivePlatform)?;
+        snapshot.grant_console_transfer(
+            HostConsoleLocation::Device(console),
+            HostConsoleEvidence::LivePlatform,
+        )?;
     }
     Ok(snapshot)
 }

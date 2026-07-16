@@ -2,6 +2,7 @@
 
 use core::fmt::{Arguments, Result, Write};
 
+use ax_memory_addr::PhysAddr;
 use bitflags::bitflags;
 pub use rdrive::DeviceId as ConsoleDeviceId;
 
@@ -48,6 +49,12 @@ pub trait ConsoleIf {
     /// Static platforms that do not have a runtime device manager should return
     /// [`ConsoleDeviceIdError::NotSpecified`].
     fn device_id() -> ConsoleDeviceIdResult;
+
+    /// Returns the physical MMIO base used by the active boot console.
+    ///
+    /// Port-I/O consoles and platforms without an initialized hardware console
+    /// return `None`.
+    fn physical_mmio_base() -> Option<PhysAddr>;
 
     /// Hands platform console output ownership to a higher-level runtime driver.
     ///

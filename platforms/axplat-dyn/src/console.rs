@@ -1,6 +1,9 @@
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+use ax_plat::{
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
+    mem::PhysAddr,
+};
 
 #[cfg(all(feature = "irq", target_arch = "x86_64"))]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
@@ -57,6 +60,10 @@ impl ConsoleIf for ConsoleIfImpl {
             }
             somehal::ConsoleDeviceIdError::DeviceNotFound => ConsoleDeviceIdError::DeviceNotFound,
         })
+    }
+
+    fn physical_mmio_base() -> Option<PhysAddr> {
+        somehal::console::physical_mmio_base().map(PhysAddr::from_usize)
     }
 
     fn claim_runtime_output() {

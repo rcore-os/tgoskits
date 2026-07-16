@@ -2,7 +2,7 @@
 
 pub use ax_plat::console::{
     ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output, device_id,
-    read_bytes, write_bytes, write_text_bytes,
+    physical_mmio_base, read_bytes, write_bytes, write_text_bytes,
 };
 #[cfg(feature = "irq")]
 pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};

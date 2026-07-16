@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
+    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -44,6 +44,10 @@ impl ConsoleIf for DummyConsole {
 
     fn device_id() -> ConsoleDeviceIdResult {
         Err(ConsoleDeviceIdError::NotSpecified)
+    }
+
+    fn physical_mmio_base() -> Option<PhysAddr> {
+        None
     }
 
     fn claim_runtime_output() {}

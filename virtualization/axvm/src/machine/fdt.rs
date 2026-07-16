@@ -303,7 +303,7 @@ mod tests {
     use fdt_raw::RegInfo;
 
     use super::*;
-    use crate::machine::HostConsoleEvidence;
+    use crate::machine::{HostConsoleEvidence, HostConsoleLocation};
 
     #[test]
     fn host_console_is_protected_but_remains_a_virtual_template() {
@@ -386,7 +386,7 @@ mod tests {
 
         snapshot
             .grant_console_transfer(
-                HostDeviceId::new("/serial@2800d000").unwrap(),
+                HostConsoleLocation::Device(HostDeviceId::new("/serial@2800d000").unwrap()),
                 HostConsoleEvidence::Firmware,
             )
             .unwrap();
@@ -410,12 +410,17 @@ mod tests {
             .unwrap()
             .set_property(string_property("stdout-path", "/serial@feb50000:1500000"));
         let uart = fdt.add_node(root, Node::new("serial@feb50000"));
-        let uart = fdt.node_mut(uart).unwrap();
-        uart.set_property(string_list(
-            "compatible",
-            &["rockchip,rk3588-uart", "snps,dw-apb-uart"],
-        ));
-        uart.set_property(string_property("status", "disabled"));
+        {
+            let node = fdt.node_mut(uart).unwrap();
+            node.set_property(string_list(
+                "compatible",
+                &["rockchip,rk3588-uart", "snps,dw-apb-uart"],
+            ));
+            node.set_property(string_property("status", "disabled"));
+        }
+        fdt.view_typed_mut(uart)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0xfeb5_0000, Some(0x1000))]);
 
         let mut snapshot =
             HostPlatformSnapshot::from_fdt(6, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
@@ -433,11 +438,17 @@ mod tests {
 
         assert!(
             snapshot
-                .grant_console_transfer(console.clone(), HostConsoleEvidence::Firmware)
+                .grant_console_transfer(
+                    HostConsoleLocation::Device(console.clone()),
+                    HostConsoleEvidence::Firmware,
+                )
                 .is_err()
         );
         snapshot
-            .grant_console_transfer(console.clone(), HostConsoleEvidence::LivePlatform)
+            .grant_console_transfer(
+                HostConsoleLocation::MmioBase(0xfeb5_0000),
+                HostConsoleEvidence::LivePlatform,
+            )
             .unwrap();
 
         assert_eq!(
@@ -449,6 +460,34 @@ mod tests {
                 .ownership(),
             HostDeviceOwnership::Transferable
         );
+    }
+
+    #[test]
+    fn authoritative_console_grant_rejects_ambiguous_mmio_base() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        for name in ["serial@feb50000", "debug-uart@feb50000"] {
+            let uart = fdt.add_node(root, Node::new(name));
+            fdt.node_mut(uart)
+                .unwrap()
+                .set_property(string_list("compatible", &["snps,dw-apb-uart"]));
+            fdt.view_typed_mut(uart)
+                .unwrap()
+                .set_regs(&[RegInfo::new(0xfeb5_0000, Some(0x1000))]);
+        }
+        let mut snapshot =
+            HostPlatformSnapshot::from_fdt(7, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+
+        let result = snapshot.grant_console_transfer(
+            HostConsoleLocation::MmioBase(0xfeb5_0000),
+            HostConsoleEvidence::LivePlatform,
+        );
+
+        assert!(matches!(
+            result,
+            Err(MachinePlanError::InvalidFirmware { .. })
+        ));
     }
 
     #[test]

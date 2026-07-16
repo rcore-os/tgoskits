@@ -31,6 +31,15 @@ pub enum HostConsoleEvidence {
     LivePlatform,
 }
 
+/// Stable location used to identify a host console in a platform snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostConsoleLocation {
+    /// Exact firmware identity of a probed console device.
+    Device(HostDeviceId),
+    /// Physical base of the active boot-console MMIO aperture.
+    MmioBase(u64),
+}
+
 impl HostConsoleEvidence {
     fn accepts(self, ownership: HostDeviceOwnership) -> bool {
         match self {
@@ -473,9 +482,10 @@ impl HostPlatformSnapshot {
     /// be transferred using the supplied evidence.
     pub fn grant_console_transfer(
         &mut self,
-        device: HostDeviceId,
+        location: HostConsoleLocation,
         evidence: HostConsoleEvidence,
     ) -> MachinePlanResult<()> {
+        let device = self.resolve_console_location(location)?;
         let descriptor = self
             .devices
             .iter_mut()
@@ -496,5 +506,37 @@ impl HostPlatformSnapshot {
         descriptor.set_ownership(HostDeviceOwnership::Transferable);
         self.console_device = Some(device);
         Ok(())
+    }
+
+    fn resolve_console_location(
+        &self,
+        location: HostConsoleLocation,
+    ) -> MachinePlanResult<HostDeviceId> {
+        let base = match location {
+            HostConsoleLocation::Device(device) => return Ok(device),
+            HostConsoleLocation::MmioBase(base) => base,
+        };
+        let mut matches = self
+            .devices
+            .iter()
+            .filter(|device| device.mmio().iter().any(|range| range.base() == base));
+        let first = matches
+            .next()
+            .ok_or_else(|| super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "active host console at MMIO base {base:#x} is absent from the platform \
+                     snapshot"
+                ),
+            })?;
+        if let Some(second) = matches.next() {
+            return Err(super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "active host console MMIO base {base:#x} is shared by '{}' and '{}'",
+                    first.id(),
+                    second.id()
+                ),
+            });
+        }
+        Ok(first.id().clone())
     }
 }

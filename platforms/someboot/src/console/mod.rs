@@ -47,12 +47,20 @@ pub const CONSOLE_IRQ_RX_READY: u32 = 1 << 0;
 pub const CONSOLE_IRQ_RX_ERROR: u32 = 1 << 1;
 pub const CONSOLE_IRQ_OVERRUN: u32 = 1 << 2;
 
+/// Returns the physical MMIO base used by the active boot console.
+///
+/// Port-I/O consoles and platforms without an initialized hardware console
+/// return `None`.
+pub fn physical_mmio_base() -> Option<usize> {
+    // SAFETY: early-console discovery initializes both values on the boot CPU
+    // before platform drivers or secondary CPUs can query this capability.
+    // The values are immutable after early-console initialization completes.
+    let (base, is_mmio) = unsafe { (DEBUG_BASE, DEBUG_IS_MMIO) };
+    (base != 0 && is_mmio).then_some(base)
+}
+
 pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
-    let debug_base = unsafe { DEBUG_BASE };
-    let debug_is_mmio = unsafe { DEBUG_IS_MMIO };
-    if debug_base == 0 || !debug_is_mmio {
-        return None;
-    }
+    let debug_base = physical_mmio_base()?;
 
     Some(MemoryDescriptor::new_aligned(
         debug_base,

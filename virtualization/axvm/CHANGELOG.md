@@ -38,8 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Select host-derived AArch64 CPU nodes by their `reg` hardware affinity and
   preserve the platform PSCI conduit while completing its calls inside the VM.
-- Let an authoritative live console capability supersede stale disabled FDT
-  status while continuing to reject structural nodes as transferable devices.
+- Let an authoritative live console capability identify an unprobed boot UART
+  by its physical MMIO base and supersede stale disabled FDT status, while
+  continuing to reject structural nodes as transferable devices.
 - Keep nested FDT interrupt specifiers out of the root-controller topology,
   reject devices with unavailable required providers during planning, and
   remove optional or stale references without exposing host-owned providers;
