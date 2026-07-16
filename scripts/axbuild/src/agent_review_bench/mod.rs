@@ -48,15 +48,6 @@ pub(crate) struct RunArgs {
     /// Reasoning effort passed unchanged to the reviewer CLI
     #[arg(long, default_value = "high")]
     reasoning_effort: String,
-    /// CLI used for grading; defaults to the reviewer CLI
-    #[arg(long, value_enum)]
-    grader_agent: Option<AgentKind>,
-    /// Model passed unchanged to the grader CLI; defaults to --model
-    #[arg(long)]
-    grader_model: Option<String>,
-    /// Reasoning effort passed unchanged to the grader CLI; defaults to reviewer effort
-    #[arg(long)]
-    grader_reasoning_effort: Option<String>,
     /// Timeout for each reviewer or grader invocation
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
     timeout_secs: u64,
@@ -82,7 +73,7 @@ struct RunSummary {
     cases: Vec<CaseResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct AgentConfiguration {
     agent: String,
     version: String,
@@ -144,18 +135,15 @@ async fn run_cases(
     if args.timeout_secs == 0 {
         bail!("--timeout-secs must be greater than zero");
     }
-    let grader_kind = args.grader_agent.unwrap_or(args.agent);
-    let reviewer = AgentRunner::discover(args.agent)?;
-    let grader = AgentRunner::discover(grader_kind)?;
-    run_cases_with_runners(workspace_root, all_cases, args, &reviewer, &grader).await
+    let agent = AgentRunner::discover(args.agent)?;
+    run_cases_with_runner(workspace_root, all_cases, args, &agent).await
 }
 
-async fn run_cases_with_runners(
+async fn run_cases_with_runner(
     workspace_root: &std::path::Path,
     all_cases: &[BenchCase],
     args: RunArgs,
-    reviewer: &AgentRunner,
-    grader: &AgentRunner,
+    agent: &AgentRunner,
 ) -> anyhow::Result<()> {
     if args.timeout_secs == 0 {
         bail!("--timeout-secs must be greater than zero");
@@ -170,9 +158,8 @@ async fn run_cases_with_runners(
         )
     })?;
 
-    let (reviewer_options, grader_options) = resolve_agent_options(&args);
-    let reviewer_version = reviewer.version()?;
-    let grader_version = grader.version()?;
+    let options = resolve_agent_options(&args);
+    let version = agent.version()?;
 
     let mut results = Vec::with_capacity(selected.len());
     for case in selected {
@@ -184,8 +171,8 @@ async fn run_cases_with_runners(
         let sandbox = ReviewSandbox::create(workspace_root, case)?;
         let review_path = case_dir.join("review.json");
         let review_started = Instant::now();
-        reviewer
-            .review(&sandbox, &review_path, &reviewer_options)
+        agent
+            .review(&sandbox, &review_path, &options)
             .await
             .with_context(|| format!("reviewer failed for `{}`", case.id))?;
         let review_seconds = review_started.elapsed().as_secs_f64();
@@ -193,8 +180,8 @@ async fn run_cases_with_runners(
 
         let grade_path = case_dir.join("grade.json");
         let grade_started = Instant::now();
-        grader
-            .grade(case, &review_path, &grade_path, &grader_options)
+        agent
+            .grade(case, &review.findings, &grade_path, &options)
             .await
             .with_context(|| format!("grader failed for `{}`", case.id))?;
         let grade_seconds = grade_started.elapsed().as_secs_f64();
@@ -209,9 +196,8 @@ async fn run_cases_with_runners(
         results.push(result);
     }
 
-    let reviewer_configuration =
-        agent_configuration(reviewer, &reviewer_version, &reviewer_options);
-    let grader_configuration = agent_configuration(grader, &grader_version, &grader_options);
+    let reviewer_configuration = agent_configuration(agent, &version, &options);
+    let grader_configuration = reviewer_configuration.clone();
     let summary = summarize(
         reviewer_configuration,
         grader_configuration,
@@ -242,21 +228,12 @@ async fn run_cases_with_runners(
     Ok(())
 }
 
-fn resolve_agent_options(args: &RunArgs) -> (AgentOptions, AgentOptions) {
-    let reviewer = AgentOptions {
+fn resolve_agent_options(args: &RunArgs) -> AgentOptions {
+    AgentOptions {
         model: args.model.clone(),
         reasoning_effort: args.reasoning_effort.clone(),
         timeout_secs: args.timeout_secs,
-    };
-    let grader = AgentOptions {
-        model: args.grader_model.clone().or_else(|| args.model.clone()),
-        reasoning_effort: args
-            .grader_reasoning_effort
-            .clone()
-            .unwrap_or_else(|| args.reasoning_effort.clone()),
-        timeout_secs: args.timeout_secs,
-    };
-    (reviewer, grader)
+    }
 }
 
 fn resolve_output_dir(
@@ -391,12 +368,6 @@ mod tests {
             "model with spaces",
             "--reasoning-effort",
             "vendor effort",
-            "--grader-agent",
-            "codex",
-            "--grader-model",
-            "grader \"model\"",
-            "--grader-reasoning-effort",
-            "grader effort",
         ])
         .unwrap();
 
@@ -409,12 +380,17 @@ mod tests {
         assert_eq!(args.agent, AgentKind::Claude);
         assert_eq!(args.model.as_deref(), Some("model with spaces"));
         assert_eq!(args.reasoning_effort, "vendor effort");
-        assert_eq!(args.grader_agent, Some(AgentKind::Codex));
-        assert_eq!(args.grader_model.as_deref(), Some("grader \"model\""));
-        assert_eq!(
-            args.grader_reasoning_effort.as_deref(),
-            Some("grader effort")
-        );
+    }
+
+    #[test]
+    fn rejects_removed_grader_overrides() {
+        for option in [
+            "--grader-agent",
+            "--grader-model",
+            "--grader-reasoning-effort",
+        ] {
+            assert!(TestCli::try_parse_from(["bench", "run", option, "value"]).is_err());
+        }
     }
 
     #[test]
@@ -427,9 +403,6 @@ mod tests {
         assert_eq!(args.agent, AgentKind::Codex);
         assert_eq!(args.model, None);
         assert_eq!(args.reasoning_effort, "high");
-        assert_eq!(args.grader_agent, None);
-        assert_eq!(args.grader_model, None);
-        assert_eq!(args.grader_reasoning_effort, None);
     }
 
     #[test]
@@ -446,25 +419,22 @@ mod tests {
     }
 
     #[test]
-    fn grader_options_inherit_reviewer_values() {
+    fn agent_options_apply_to_review_and_grade() {
         let args = RunArgs {
             cases: Vec::new(),
             prs: Vec::new(),
             agent: AgentKind::Claude,
             model: Some(String::new()),
             reasoning_effort: "effort with spaces".into(),
-            grader_agent: None,
-            grader_model: None,
-            grader_reasoning_effort: None,
             timeout_secs: 7,
             min_recall: None,
             output: None,
         };
 
-        let (reviewer, grader) = resolve_agent_options(&args);
-        assert_eq!(reviewer, grader);
-        assert_eq!(grader.model.as_deref(), Some(""));
-        assert_eq!(grader.reasoning_effort, "effort with spaces");
+        let options = resolve_agent_options(&args);
+        assert_eq!(options.model.as_deref(), Some(""));
+        assert_eq!(options.reasoning_effort, "effort with spaces");
+        assert_eq!(options.timeout_secs, 7);
     }
 
     #[cfg(unix)]
@@ -477,13 +447,12 @@ mod tests {
         write_mock_agent(
             &program,
             r#"{"summary":"found one issue","findings":[{"title":"caught","body":"body","path":"src/lib.rs","line":1,"severity":"major"},{"title":"extra","body":"body","path":"src/lib.rs","line":1,"severity":"minor"}]}"#,
-            r#"{"matches":[{"expected_id":"sample-finding","finding_index":0,"reason":"same defect"}]}"#,
+            r#"{"matches":[{"expected_id":"sample-finding","finding_indices":[0],"reason":"same defect"}]}"#,
         );
-        let reviewer = AgentRunner::from_program(AgentKind::Claude, program.clone());
-        let grader = AgentRunner::from_program(AgentKind::Codex, program.clone());
+        let claude = AgentRunner::from_program(AgentKind::Claude, program.clone());
         let args = test_run_args(output.clone());
 
-        run_cases_with_runners(workspace.path(), &[case.clone()], args, &reviewer, &grader)
+        run_cases_with_runner(workspace.path(), &[case.clone()], args, &claude)
             .await
             .unwrap();
 
@@ -508,30 +477,32 @@ mod tests {
         assert_eq!(summary["reviewer"]["agent"], "claude");
         assert_eq!(summary["reviewer"]["model"], "mock model");
         assert_eq!(summary["reviewer"]["reasoning_effort"], "custom effort");
-        assert_eq!(summary["grader"]["agent"], "codex");
-        assert_eq!(summary["grader"]["model"], "grader model");
-        assert_eq!(summary["grader"]["reasoning_effort"], "grader effort");
+        assert_eq!(summary["grader"], summary["reviewer"]);
         let captured_args = fs::read_to_string(format!("{}.args", program.display())).unwrap();
         assert!(captured_args.contains("/review-single-pr offline-benchmark"));
-        assert!(!captured_args.contains("You are performing an offline code review benchmark"));
+        assert_eq!(
+            captured_args
+                .matches("You are grading one offline code-review case")
+                .count(),
+            1
+        );
+        let grader_files = fs::read_to_string(format!("{}.files", program.display())).unwrap();
+        assert!(grader_files.contains("known_findings.json"));
+        assert!(grader_files.contains("candidate_findings.json"));
+        assert!(!grader_files.contains("review.json"));
+        assert!(!grader_files.contains("expected.json"));
 
         let reverse_output = workspace.path().join("reverse-artifacts");
         let mut reverse_args = test_run_args(reverse_output.clone());
         reverse_args.agent = AgentKind::Codex;
-        reverse_args.grader_agent = Some(AgentKind::Claude);
-        run_cases_with_runners(
-            workspace.path(),
-            &[case.clone()],
-            reverse_args,
-            &grader,
-            &reviewer,
-        )
-        .await
-        .unwrap();
+        let codex = AgentRunner::from_program(AgentKind::Codex, program.clone());
+        run_cases_with_runner(workspace.path(), &[case.clone()], reverse_args, &codex)
+            .await
+            .unwrap();
         let reverse_summary =
             read_json::<serde_json::Value>(&reverse_output.join("summary.json")).unwrap();
         assert_eq!(reverse_summary["reviewer"]["agent"], "codex");
-        assert_eq!(reverse_summary["grader"]["agent"], "claude");
+        assert_eq!(reverse_summary["grader"], reverse_summary["reviewer"]);
         assert_eq!(reverse_summary["caught"], 1);
         let captured_args = fs::read_to_string(format!("{}.args", program.display())).unwrap();
         assert!(captured_args.contains("$review-single-pr offline-benchmark"));
@@ -539,15 +510,14 @@ mod tests {
         write_mock_agent(
             &program,
             "not JSON",
-            r#"{"matches":[{"expected_id":"sample-finding","finding_index":null,"reason":"missed"}]}"#,
+            r#"{"matches":[{"expected_id":"sample-finding","finding_indices":[],"reason":"missed"}]}"#,
         );
         let invalid_output = workspace.path().join("invalid-artifacts");
-        let error = run_cases_with_runners(
+        let error = run_cases_with_runner(
             workspace.path(),
             &[case],
             test_run_args(invalid_output),
-            &reviewer,
-            &grader,
+            &claude,
         )
         .await
         .unwrap_err()
@@ -605,7 +575,6 @@ mod tests {
                 line: 1,
                 severity: Severity::Major,
                 description: "secret answer".into(),
-                match_if: "same defect".into(),
             }],
         }
     }
@@ -618,9 +587,6 @@ mod tests {
             agent: AgentKind::Claude,
             model: Some("mock model".into()),
             reasoning_effort: "custom effort".into(),
-            grader_agent: Some(AgentKind::Codex),
-            grader_model: Some("grader model".into()),
-            grader_reasoning_effort: Some("grader effort".into()),
             timeout_secs: 30,
             min_recall: None,
             output: Some(output),
@@ -631,12 +597,12 @@ mod tests {
     fn write_mock_agent(program: &Path, review: &str, grade: &str) {
         let script = format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli mock'; exit 0; \
-             fi\nprintf '%s\\n' \"$@\" >> \"$0.args\"\nmode=review\nif [ -f expected.json ]; then \
-             mode=grade; fi\noutput=\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--cd) shift; \
-             mode=grade ;;\n--output-last-message|-o) shift; output=$1 ;;\nesac\nshift\ndone\nif \
-             [ \"$mode\" = review ]; then payload='{review}'; else payload='{grade}'; fi\nif [ -n \
-             \"$output\" ]; then printf '%s\\n' \"$payload\" > \"$output\"; else printf '%s\\n' \
-             \"$payload\"; fi\n"
+             fi\nprintf '%s\\n' \"$@\" >> \"$0.args\"\nmode=review\nif [ -f known_findings.json \
+             ]; then mode=grade; fi\noutput=\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--cd) \
+             shift; mode=grade ;;\n--output-last-message|-o) shift; output=$1 \
+             ;;\nesac\nshift\ndone\nif [ \"$mode\" = review ]; then payload='{review}'; else ls \
+             -1 > \"$0.files\"; payload='{grade}'; fi\nif [ -n \"$output\" ]; then printf '%s\\n' \
+             \"$payload\" > \"$output\"; else printf '%s\\n' \"$payload\"; fi\n"
         );
         fs::write(program, script).unwrap();
         fs::set_permissions(program, fs::Permissions::from_mode(0o755)).unwrap();

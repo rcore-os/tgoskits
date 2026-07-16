@@ -9,14 +9,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["expected_id", "finding_index", "reason"],
+        "required": ["expected_id", "finding_indices", "reason"],
         "properties": {
           "expected_id": { "type": "string" },
-          "finding_index": {
-            "anyOf": [
-              { "type": "integer", "minimum": 0 },
-              { "type": "null" }
-            ]
+          "finding_indices": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 }
           },
           "reason": { "type": "string" }
         }

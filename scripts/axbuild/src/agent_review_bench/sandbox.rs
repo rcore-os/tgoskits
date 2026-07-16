@@ -299,7 +299,6 @@ mod tests {
                 line: 1,
                 severity: Severity::Major,
                 description: "secret answer".into(),
-                match_if: "secret criterion".into(),
             }],
         };
 
