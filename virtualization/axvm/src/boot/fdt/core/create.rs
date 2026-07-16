@@ -28,16 +28,11 @@ fn guest_memory_specs(
     new_memory: &[VMMemoryRegion],
     crate_config: &AxVMCrateConfig,
 ) -> Vec<GuestMemorySpec> {
-    let configured_region_count = crate_config
-        .memory
-        .regions
-        .iter()
-        .filter(|region| !matches!(region.backing, axvmconfig::MemoryBackingConfig::Reserved))
-        .count();
+    let configured_region_count = crate_config.memory.regions.len();
 
-    if new_memory.len() < configured_region_count {
+    if new_memory.len() != configured_region_count {
         warn!(
-            "VM memory region count {} is smaller than configured guest RAM count {}; filtering \
+            "VM memory region count {} does not match configured guest memory count {}; filtering \
              /memory by runtime order",
             new_memory.len(),
             configured_region_count
@@ -169,13 +164,20 @@ fn default_dtb_load_addr(
 
 #[cfg(test)]
 mod tests {
+    use core::alloc::Layout;
+
+    use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
     use axvmconfig::AxVMCrateConfig;
     use fdt_edit::Fdt;
 
     use super::{
-        super::tree::sanitize_bootargs, default_dtb_load_addr, initrd_range_from_image_config,
+        super::tree::{GuestMemorySpec, sanitize_bootargs},
+        default_dtb_load_addr, guest_memory_specs, initrd_range_from_image_config,
     };
-    use crate::{GuestPhysAddr, config::RamdiskInfo};
+    use crate::{
+        VMMemoryRegion,
+        config::{RamdiskInfo, VmMemoryBacking},
+    };
 
     #[test]
     fn initrd_range_requires_both_address_and_size() {
@@ -208,6 +210,72 @@ mod tests {
             default_dtb_load_addr(GuestPhysAddr::from(0x8000_0000), 0x1000_0000, 0x12_345).unwrap();
 
         assert_eq!(address, GuestPhysAddr::from(0x8fe0_0000));
+    }
+
+    #[test]
+    fn guest_memory_specs_preserve_reserved_regions_before_primary_ram() {
+        let reserved_base = 0xb000_0000;
+        let guest_ram_base = 0x2_4000_0000;
+        let reserved_size = 0x1000_0000;
+        let guest_ram_size = 0x8000_0000;
+        let config = AxVMCrateConfig::from_toml(&format!(
+            r#"
+[machine]
+mode = "passthrough"
+firmware = "auto"
+
+[base]
+id = 1
+name = "reserved-before-ram"
+cpu_num = 1
+
+[kernel]
+entry_point = {guest_ram_base}
+kernel_load_addr = {guest_ram_base}
+kernel_path = "/guest/kernel"
+
+[[memory.regions]]
+guest_base = {reserved_base}
+size = {reserved_size}
+permissions = "rwx"
+backing = {{ kind = "reserved" }}
+
+[[memory.regions]]
+guest_base = {guest_ram_base}
+size = {guest_ram_size}
+permissions = "rwx"
+backing = {{ kind = "host", host_base = {guest_ram_base} }}
+
+[devices]
+disable_defaults = ["console"]
+deny = []
+"#
+        ))
+        .unwrap();
+        let runtime_memory = vec![
+            runtime_memory(
+                reserved_base,
+                reserved_size,
+                VmMemoryBacking::Reserved {
+                    host_base: HostPhysAddr::from(reserved_base),
+                },
+            ),
+            runtime_memory(
+                guest_ram_base,
+                guest_ram_size,
+                VmMemoryBacking::Host {
+                    host_base: HostPhysAddr::from(guest_ram_base),
+                },
+            ),
+        ];
+
+        assert_eq!(
+            guest_memory_specs(&runtime_memory, &config),
+            vec![
+                GuestMemorySpec::new(reserved_base as u64, reserved_size as u64),
+                GuestMemorySpec::new(guest_ram_base as u64, guest_ram_size as u64),
+            ]
+        );
     }
 
     #[test]
@@ -246,5 +314,17 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
+    }
+
+    fn runtime_memory(base: usize, size: usize, backing: VmMemoryBacking) -> VMMemoryRegion {
+        VMMemoryRegion {
+            gpa: GuestPhysAddr::from(base),
+            hva: HostVirtAddr::from(base),
+            hpa: HostPhysAddr::from(base),
+            layout: Layout::from_size_align(size, 0x20_0000).unwrap(),
+            flags: MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+            backing,
+            needs_dealloc: false,
+        }
     }
 }
