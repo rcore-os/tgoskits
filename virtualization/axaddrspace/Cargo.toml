@@ -26,5 +26,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 lazy_static = "1.5"
 assert_matches = "1.5.0"
-axin = "0.1.0"
 page-table-generic = { workspace = true }

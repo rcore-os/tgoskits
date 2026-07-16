@@ -120,7 +120,7 @@ impl Write for VecDeque<u8> {
     }
 }
 
-impl Write for BorrowedCursor<'_> {
+impl Write for BorrowedCursor<'_, u8> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let amt = cmp::min(buf.len(), self.capacity());

@@ -730,8 +730,10 @@ pub fn decode_string_descriptor(data: &[u8]) -> Result<String, &'static str> {
 
     Ok(char::decode_utf16(
         data[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap())),
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c)),
     )
     .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
     .collect::<String>()

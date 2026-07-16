@@ -278,7 +278,7 @@ fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> us
         return initialized_requested_mask;
     }
 
-    let fallback_mask = enabled_mask & enabled_mask.wrapping_neg();
+    let fallback_mask = enabled_mask.isolate_lowest_one();
     warn!(
         "VM[{vm_id}] VCpu[{vcpu_id}] requested host CPU mask {requested_mask:#x}, but none of \
          those CPUs initialized AxVM; using initialized host CPU mask {fallback_mask:#x}"

@@ -242,8 +242,9 @@ fn recv_impl(
                         let body_len = fds.len() * size_of::<i32>();
                         builder.push_sized(SOL_SOCKET, SCM_RIGHTS, body_len, |data| {
                             let mut written = 0;
-                            for (f, chunk) in
-                                fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>()))
+                            for (f, chunk) in fds
+                                .into_iter()
+                                .zip(data.as_chunks_mut::<{ size_of::<i32>() }>().0)
                             {
                                 let fd = add_file_like(f, false)?;
                                 chunk.copy_from_slice(&fd.to_ne_bytes());

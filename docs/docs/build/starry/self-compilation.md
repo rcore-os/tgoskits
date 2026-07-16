@@ -34,7 +34,7 @@ cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 QEMU 通过 user-mode networking 联网。来宾 runner 会：
 
 1. 用 `apk` 安装构建依赖、`libudev-zero-dev`、git 和 curl；
-2. 将预处理的 `nightly-2026-05-28-x86_64-unknown-linux-musl` Rust toolchain 解包到 rootfs，
+2. 将预处理的 `nightly-2026-07-15-x86_64-unknown-linux-musl` Rust toolchain 解包到 rootfs，
    并在 MemoryFs 中安装 rustup；
 3. 在线安装固定版本的 `cargo-binutils 0.4.0` 和 `ksym 0.6.0`；
 4. 将源码解包到 `/tmp`，但把 canonical `target/` 链接到持久化的

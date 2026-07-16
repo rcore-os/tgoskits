@@ -40,8 +40,8 @@ impl CMsg {
                     return Err(AxError::InvalidInput);
                 }
                 let mut fds = Vec::new();
-                for fd in data.chunks_exact(size_of::<i32>()) {
-                    let fd = i32::from_ne_bytes(fd.try_into().unwrap());
+                for fd in data.as_chunks::<{ size_of::<i32>() }>().0 {
+                    let fd = i32::from_ne_bytes(*fd);
                     if fd < 0 {
                         return Err(AxError::BadFileDescriptor);
                     }
