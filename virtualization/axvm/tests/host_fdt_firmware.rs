@@ -183,6 +183,29 @@ fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
 }
 
 #[test]
+fn direct_interrupt_passthrough_filters_devices_requiring_the_physical_its() {
+    let host = host_fdt_with_pcie_using_physical_its();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_interrupt_delivery(InterruptDelivery::Direct);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let pcie = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/pcie@40000000")
+        .unwrap();
+    assert_eq!(pcie.disposition(), DeviceDisposition::Unrepresentable);
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/soc/pcie@40000000").is_none());
+    assert!(guest.get_by_path_id("/soc/gic-its@8080000").is_none());
+}
+
+#[test]
 fn host_cpu_selection_uses_the_hardware_affinity_from_reg() {
     let host = host_fdt_with_non_identity_cpu_unit_addresses();
     let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
@@ -610,6 +633,29 @@ fn host_fdt_with_physical_its() -> Vec<u8> {
     fdt.view_typed_mut(its)
         .unwrap()
         .set_regs(&[RegInfo::new(0x0808_0000, Some(0x2_0000))]);
+
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_pcie_using_physical_its() -> Vec<u8> {
+    let bytes = host_fdt_with_physical_its();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let its = fdt.get_by_path_id("/soc/gic-its@8080000").unwrap();
+    fdt.node_mut(its)
+        .unwrap()
+        .set_property(u32_property("phandle", &[44]));
+
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let pcie = fdt.add_node(soc, Node::new("pcie@40000000"));
+    fdt.node_mut(pcie)
+        .unwrap()
+        .set_property(string_property("compatible", "pci-host-ecam-generic"));
+    fdt.node_mut(pcie)
+        .unwrap()
+        .set_property(u32_property("msi-parent", &[44]));
+    fdt.view_typed_mut(pcie)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x4000_0000, Some(0x1000_0000))]);
 
     fdt.encode().as_ref().to_vec()
 }

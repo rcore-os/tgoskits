@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject devices with unavailable required providers during planning, and
   remove optional or stale references without exposing host-owned providers;
   retain only assigned-hart entries in mixed RISC-V interrupt context tables.
+- Filter direct-passthrough devices that require a physical ITS when no
+  isolated ITS capability is present, while retaining the dependency for the
+  mediated software ITS plan.
 - Deassert a forwarded x86 level source by its in-service IOAPIC identity
   before processing EOI, allowing physical INTx delivery to rearm after the
   guest masks or reroutes the entry.

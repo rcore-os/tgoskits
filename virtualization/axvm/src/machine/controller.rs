@@ -1,5 +1,7 @@
 //! Typed interrupt-controller resources selected during machine planning.
 
+use alloc::string::String;
+
 use axvm_types::{InterruptDelivery, VmMachineMode};
 
 use super::{
@@ -325,6 +327,22 @@ pub enum InterruptControllerPlan {
     X86Apic(X86ApicPlan),
     /// LoongArch interrupt topology.
     LoongArch(LoongArchInterruptPlan),
+}
+
+pub(crate) fn is_planned_guest_firmware_infrastructure(
+    plan: Option<&InterruptControllerPlan>,
+    compatibles: &[String],
+) -> bool {
+    if compatibles
+        .iter()
+        .any(|compatible| compatible == "arm,gic-v3-its")
+    {
+        return matches!(
+            plan,
+            Some(InterruptControllerPlan::Aarch64GicV3(gic)) if gic.its().is_some()
+        );
+    }
+    super::is_guest_firmware_infrastructure(compatibles)
 }
 
 pub(crate) fn resolve_interrupt_controller(

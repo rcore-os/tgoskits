@@ -18,8 +18,8 @@ use self::{
     virtual_devices::{materialize_virtual_devices, sanitize_virtual_device_templates},
 };
 use super::{
-    DeviceDisposition, HostFirmwareActivation, HostPlatformSnapshot, InterruptControllerPlan,
-    MachinePlanError, MachinePlanResult, VmMachinePlan, is_guest_firmware_infrastructure,
+    DeviceDisposition, HostFirmwareActivation, HostPlatformSnapshot, MachinePlanError,
+    MachinePlanResult, VmMachinePlan, is_planned_guest_firmware_infrastructure,
 };
 
 /// Guest-specific data used while filtering a host FDT snapshot.
@@ -144,16 +144,7 @@ fn selected_paths(
 }
 
 fn selected_guest_firmware_infrastructure(plan: &VmMachinePlan, compatibles: &[String]) -> bool {
-    if compatibles
-        .iter()
-        .any(|compatible| compatible == "arm,gic-v3-its")
-    {
-        return matches!(
-            plan.interrupt_controller(),
-            Some(InterruptControllerPlan::Aarch64GicV3(gic)) if gic.its().is_some()
-        );
-    }
-    is_guest_firmware_infrastructure(compatibles)
+    is_planned_guest_firmware_infrastructure(plan.interrupt_controller(), compatibles)
 }
 
 fn add_ancestors(paths: &mut BTreeSet<String>) {

@@ -71,11 +71,14 @@ impl VmMachinePlanner {
             resolved_devices.push(resolved);
         }
 
+        let interrupt_controller =
+            resolve_interrupt_controller(self.profile.interrupt_controller(), request, snapshot)?;
         let host_devices = plan_host_devices(
             request.mode(),
             snapshot,
             &denied_devices,
             &consumed_templates,
+            interrupt_controller.as_ref(),
         )?;
         let assigned_host_interrupts = resolve_assigned_host_interrupts(&host_devices)?;
         let claims = host_devices
@@ -90,9 +93,6 @@ impl VmMachinePlanner {
             &host_devices,
             &virtual_holes,
         );
-        let interrupt_controller =
-            resolve_interrupt_controller(self.profile.interrupt_controller(), request, snapshot)?;
-
         Ok(VmMachinePlan::from_parts(VmMachinePlanParts {
             snapshot_generation: snapshot.generation(),
             host_console: snapshot.console_device().cloned(),
