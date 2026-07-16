@@ -127,7 +127,7 @@ fn load_or_create_missing_build_config(
         return Ok(loaded);
     }
 
-    let default_build_info = super::default_axvisor_build_info();
+    let default_build_info = super::config::default_axvisor_build_info();
     fs::write(
         &request.build_info_path,
         toml::to_string_pretty(&default_build_info)?,

@@ -68,6 +68,29 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
+fn axvisor_ax_std_dependency_declares_std_compat() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == AXVISOR_PACKAGE)
+        .unwrap();
+    let ax_std = package
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name == "ax-std")
+        .unwrap();
+
+    assert!(
+        ax_std
+            .features
+            .iter()
+            .any(|feature| feature == "std-compat"),
+        "Axvisor must declare ax-std/std-compat in its dependency instead of relying on axbuild"
+    );
+}
+
+#[test]
 fn resolve_build_info_path_uses_default_axvisor_location() {
     let root = tempdir().unwrap();
     let path = resolve_build_info_path(
@@ -209,6 +232,44 @@ log = "Info"
             .find_map(|window| (window[0] == "--bin").then_some(window[1].as_str())),
         Some("axvisor")
     );
+}
+
+#[test]
+fn load_cargo_config_does_not_select_an_x86_backend() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("build-x86_64.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+
+    assert!(!cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"svm".to_string()));
+}
+
+#[test]
+fn load_cargo_config_forwards_explicit_x86_svm_backend() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("build-x86_64-svm.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = ["svm"]
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+
+    assert!(cargo.features.contains(&"svm".to_string()));
+    assert!(!cargo.features.contains(&"vmx".to_string()));
 }
 
 #[test]
@@ -518,7 +579,7 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_keeps_loongarch_dynamic_axvisor_as_elf() {
+fn load_cargo_config_prepares_loongarch_dynamic_axvisor_runtime_artifact() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(

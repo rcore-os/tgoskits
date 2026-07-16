@@ -1,26 +1,5 @@
 use anyhow::anyhow;
 
-use super::metadata::platform_feature_names;
-
-pub(super) fn normalize_axvisor_feature_surface(
-    features: &mut Vec<String>,
-    target: &str,
-    metadata: &cargo_metadata::Metadata,
-) -> anyhow::Result<()> {
-    let _ = target;
-    let known_platforms = platform_feature_names(metadata);
-    retain_non_platform_features(features, &known_platforms);
-    Ok(())
-}
-
-fn retain_non_platform_features(features: &mut Vec<String>, known_platforms: &[String]) {
-    features.retain(|feature| {
-        nested_platform_feature_name(feature, known_platforms).is_none()
-            && ax_hal_platform_feature_name(feature, known_platforms).is_none()
-            && !known_platforms.iter().any(|platform| platform == feature)
-    });
-}
-
 pub(super) fn reject_unsupported_nested_platform_features(
     features: &[String],
     known_platforms: &[String],
@@ -46,10 +25,6 @@ pub(super) fn reject_unsupported_nested_platform_features(
     Ok(())
 }
 
-pub(super) fn remove_dynamic_platform_features(features: &mut Vec<String>) {
-    features.retain(|feature| !is_removed_dynamic_platform_feature(feature));
-}
-
 pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     matches!(
         feature,
@@ -70,15 +45,6 @@ fn nested_platform_feature_name<'a>(
     feature
         .strip_prefix("ax-std/")
         .filter(|name| is_platform_control_feature(name, known_platforms))
-}
-
-fn ax_hal_platform_feature_name<'a>(
-    feature: &'a str,
-    known_platforms: &[String],
-) -> Option<&'a str> {
-    feature
-        .strip_prefix("ax-hal/")
-        .filter(|name| known_platforms.iter().any(|platform| platform == name))
 }
 
 fn is_platform_control_feature(name: &str, known_platforms: &[String]) -> bool {

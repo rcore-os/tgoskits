@@ -69,11 +69,12 @@ pub(crate) fn ensure_default_build_config_for_target(
         return Ok(None);
     }
 
-    let Some(board) = board::default_qemu_board_for_target(workspace_root, package, target)? else {
+    let Some(board) = board::default_qemu_board(workspace_root, target, Some(package))? else {
         return Ok(None);
     };
+    // This only materializes a missing build config. The command dispatcher owns
+    // snapshot persistence, so implicit config creation cannot alter it here.
     write_board_to_default_build_config_at(build_config_path, &board)?;
-    update_snapshot_for_board(workspace_root, &board, build_config_path)?;
     Ok(Some(board))
 }
 
@@ -212,7 +213,7 @@ log = "Info"
     }
 
     #[test]
-    fn ensure_default_build_config_uses_matching_qemu_board_and_resets_runtime_config() {
+    fn ensure_default_build_config_uses_matching_qemu_board_without_changing_snapshot() {
         let root = tempdir().unwrap();
         write_workspace(root.path());
         let source = r#"
@@ -248,8 +249,9 @@ log = "Warn"
 
         assert_eq!(board.unwrap().name, "qemu-aarch64");
         assert_eq!(fs::read_to_string(&output).unwrap(), source);
-        let snapshot = ArceosCommandSnapshot::load(root.path()).unwrap();
-        assert_eq!(snapshot.qemu.qemu_config, None);
-        assert_eq!(snapshot.uboot.uboot_config, None);
+        assert_eq!(
+            ArceosCommandSnapshot::load(root.path()).unwrap(),
+            existing_snapshot
+        );
     }
 }

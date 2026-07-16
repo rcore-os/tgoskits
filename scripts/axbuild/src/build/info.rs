@@ -1,3 +1,5 @@
+use anyhow::bail;
+
 use super::*;
 
 pub(crate) fn env_truthy(env: &HashMap<String, String>, key: &str) -> bool {
@@ -95,19 +97,6 @@ pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "linker.x";
 pub(super) const STD_TARGET_DIR: &str = "std";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StdFeaturePrefixFamily {
-    AxStd,
-}
-
-impl StdFeaturePrefixFamily {
-    fn prefix(self) -> &'static str {
-        match self {
-            Self::AxStd => "ax-std/",
-        }
-    }
-}
-
 #[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
 pub struct BuildInfo {
     /// Environment variables to set during the build.
@@ -151,12 +140,9 @@ impl BuildInfo {
         target: String,
         args: Vec<String>,
     ) -> Cargo {
-        self.into_base_cargo_config_with_to_bin(
-            package,
-            target.clone(),
-            args,
-            default_to_bin_for_target(&target),
-        )
+        // Keep the Cargo artifact as ELF by default. BIN conversion is an
+        // explicit runner/config concern and must not be inferred from target.
+        self.into_base_cargo_config_with_to_bin(package, target, args, false)
     }
 
     pub(crate) fn into_base_cargo_config_with_to_bin(
@@ -203,7 +189,15 @@ impl BuildInfo {
         metadata: &Metadata,
     ) -> anyhow::Result<Cargo> {
         self.validated_max_cpu_num()?;
-        self.resolve_std_features_with_metadata(package, target, metadata);
+        self.validate_features()?;
+        self.resolve_std_features();
+        // `max_cpu_num` is an explicit build setting. Propagate SMP only when
+        // the caller requested more than one CPU; package metadata never adds
+        // features implicitly.
+        if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
+            self.features.push("smp".to_string());
+            self.resolve_std_features();
+        }
         let std_target = std_build_target_for(target)?;
         let fake_lib_dir = std_fake_lib_dir(&std_target.target_name)?;
         let wrapper = std_linker_wrapper_path(&std_target.target_name, &fake_lib_dir)?;
@@ -213,22 +207,14 @@ impl BuildInfo {
             std_target.cargo_args,
         );
         cargo.env.extend(std_target.env);
-        prepare_std_build_env_for_package(
-            &mut cargo.env,
-            package,
-            target,
-            &cargo.features,
-            metadata,
-        )?;
+        // The std target wrapper needs the original kernel target. This is
+        // build context, not a Cargo feature or platform selection.
+        cargo
+            .env
+            .insert("AX_TARGET".to_string(), target.to_string());
         let app_features = package_feature_names(package, metadata)?;
         let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
-        inject_arceos_feature_for_std_build(&mut cargo.features, &app_features);
-        pass_std_build_nested_features(
-            &mut cargo.env,
-            &mut cargo.features,
-            &app_features,
-            &axstd_features,
-        );
+        pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
         cargo.pre_build_cmds.push(
             std_fake_lib_prebuild_script_path(&std_target.target_name, &fake_lib_dir, &cargo.env)?
                 .display()
@@ -240,7 +226,6 @@ impl BuildInfo {
                 .display()
                 .to_string(),
         );
-        cargo.to_bin = true;
         Ok(cargo)
     }
 
@@ -249,117 +234,46 @@ impl BuildInfo {
             .features
             .iter()
             .map(|feature| normalize_std_feature(feature))
-            .filter(|feature| !is_removed_dynamic_platform_feature(feature))
             .collect();
         self.features.sort();
         self.features.dedup();
     }
 
-    pub(super) fn resolve_std_features_with_metadata(
-        &mut self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-    ) {
-        let _ = target;
-        self.features
-            .extend(std_package_metadata_features(package, metadata));
-        self.resolve_std_features();
-
+    pub(crate) fn resolve_c_app_features(&mut self) -> anyhow::Result<()> {
+        self.validate_features()?;
+        // `max_cpu_num` is an explicit C build setting; expose the matching ax-std
+        // capability only when the caller requested more than one CPU.
         if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
-            self.features.push("smp".to_string());
+            self.features.push("ax-std/smp".to_string());
         }
-        self.features.push("smp".to_string());
-
-        self.resolve_std_features();
-    }
-
-    pub(crate) fn resolve_features_with_metadata(
-        &mut self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-    ) {
-        self.resolve_features_with_prefix_family(
-            package,
-            target,
-            detect_std_feature_prefix_family(package, metadata),
-            Some(metadata),
-        );
-    }
-
-    pub(super) fn resolve_features_with_prefix_family(
-        &mut self,
-        package: &str,
-        target: &str,
-        prefix_family: anyhow::Result<StdFeaturePrefixFamily>,
-        metadata: Option<&Metadata>,
-    ) {
-        let prefix_family = self.resolve_std_feature_prefix_family(package, prefix_family);
-        let _ = (target, metadata);
-
-        self.features
-            .retain(|feature| !matches!(feature.as_str(), "plat-dyn" | "ax-std/plat-dyn"));
-
-        if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
-            self.features.push(format!("{}smp", prefix_family.prefix()));
-        }
-
         self.features.sort();
         self.features.dedup();
+        Ok(())
     }
 
-    fn resolve_std_feature_prefix_family(
-        &self,
-        package: &str,
-        prefix_family: anyhow::Result<StdFeaturePrefixFamily>,
-    ) -> StdFeaturePrefixFamily {
-        match prefix_family {
-            Ok(prefix_family) => prefix_family,
-            Err(err) => {
-                if let Some(prefix_family) = feature_family_from_existing_features(&self.features) {
-                    return prefix_family;
-                }
-                warn!(
-                    "failed to detect direct ax dependency for package {}: {}, defaulting to \
-                     ax-std feature prefix",
-                    package, err
-                );
-                StdFeaturePrefixFamily::AxStd
-            }
+    /// Reject compatibility aliases and removed platform controls instead of silently changing
+    /// the build contract selected by the caller.
+    pub(crate) fn validate_features(&self) -> anyhow::Result<()> {
+        for feature in &self.features {
+            self.validate_feature(feature)?;
         }
+        Ok(())
     }
 
-    pub(crate) fn normalize_legacy_feature_aliases(&mut self) -> bool {
-        let mut changed = false;
-
-        for feature in &mut self.features {
-            let normalized = normalize_legacy_feature_alias(feature);
-            if *feature != normalized {
-                *feature = normalized;
-                changed = true;
-            }
+    pub(crate) fn validate_feature(&self, feature: &str) -> anyhow::Result<()> {
+        if feature == "axstd" || feature.starts_with("axstd/") {
+            bail!(
+                "feature `{feature}` uses the removed `axstd` alias; use the declared Cargo \
+                 feature name instead"
+            );
         }
-
-        if changed {
-            self.features.sort();
-            self.features.dedup();
+        if is_removed_dynamic_platform_feature(feature) {
+            bail!(
+                "feature `{feature}` is no longer supported; dynamic platform selection is \
+                 automatic, remove the feature from the selected configuration"
+            );
         }
-
-        changed
-    }
-
-    #[cfg(test)]
-    pub(crate) fn resolve_features(&mut self, package: &str, target: &str) {
-        match workspace_metadata() {
-            Ok(metadata) => self.resolve_features_with_metadata(package, target, &metadata),
-            Err(err) => self.resolve_features_with_prefix_family(
-                package,
-                target,
-                Err(err.context("failed to load workspace metadata")),
-                None,
-            ),
-        }
+        Ok(())
     }
 
     pub(crate) fn validated_max_cpu_num(&self) -> anyhow::Result<Option<usize>> {
@@ -398,7 +312,7 @@ impl Default for BuildInfo {
         Self {
             env: HashMap::new(),
             log: LogLevel::Warn,
-            features: vec!["ax-std".to_string()],
+            features: Vec::new(),
             max_cpu_num: None,
         }
     }

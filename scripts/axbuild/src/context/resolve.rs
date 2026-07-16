@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 
 use super::{
     ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
@@ -10,6 +10,7 @@ use super::{
     StarryQemuSnapshot, StarryUbootSnapshot, resolve_arceos_arch_and_target,
     resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
 };
+use crate::arceos::cbuild::AX_LIBC_PACKAGE;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ResolvedCommandPaths {
@@ -62,23 +63,34 @@ impl AppContext {
             resolved_config.filter(|path| path.exists())
         };
 
-        let package = cli
-            .package
-            .clone()
-            .or(config_selectors.package)
-            .or_else(|| {
-                if config_selectors.uses_app_c {
-                    Some("ax-libc".to_string())
-                } else {
-                    snapshot.package.clone()
+        // A C source app is linked against ax-libc, not an arbitrary workspace
+        // package. Reject conflicts here so command execution never rewrites the
+        // request selected by the user or build configuration.
+        let package = if config_selectors.uses_app_c {
+            for package in [&cli.package, &config_selectors.package]
+                .into_iter()
+                .flatten()
+            {
+                if package != AX_LIBC_PACKAGE {
+                    bail!(
+                        "ArceOS build config with `app-c` must use package `{AX_LIBC_PACKAGE}`; \
+                         remove the conflicting package selector `{package}`"
+                    );
                 }
-            })
-            .ok_or_else(|| {
-                anyhow!(
-                    "missing ArceOS package; pass `--package` or set `package` in {}",
-                    ARCEOS_SNAPSHOT_FILE
-                )
-            })?;
+            }
+            AX_LIBC_PACKAGE.to_string()
+        } else {
+            cli.package
+                .clone()
+                .or(config_selectors.package)
+                .or(snapshot.package.clone())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing ArceOS package; pass `--package` or set `package` in {}",
+                        ARCEOS_SNAPSHOT_FILE
+                    )
+                })?
+        };
         let config_target = config_selectors.target;
         let effective_arch = cli.arch.clone().or_else(|| {
             if cli.target.is_some() || config_target.is_some() {

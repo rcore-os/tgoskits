@@ -53,9 +53,9 @@ cargo xtask arceos <subcommand> [options]
 
 ## 特有行为
 
-### `--package` 必需
+### QEMU 默认 Hello World
 
-ArceOS 把每个可运行的应用建模为 workspace 内的独立 crate（如 `apps/arceos/arceos-httpserver`）。与 StarryOS 的"一次编译整个内核"不同，ArceOS 的构建目标必须由 `--package` 显式锁定，否则报错。`--package` 会被写入 Snapshot，后续短命令（如 `cargo arceos qemu`）会自动复用。
+ArceOS 把每个可运行的应用建模为 workspace 内的独立 crate（如 `apps/arceos/arceos-httpserver`）。`build`、`uboot` 和 `board` 仍需通过 `--package` 或已有 Snapshot/配置选择应用；仅 `qemu` 在没有 `--package` 与 `--config` 时读取 `board/qemu-<arch>.toml`，默认运行 `arceos-helloworld`。`--package` 和 `--config` 始终优先于这个 QEMU 默认值。
 
 ### 动态平台固定启用
 

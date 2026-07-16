@@ -212,7 +212,6 @@ async fn build_and_run_c_test(
         None,
         SnapshotPersistence::Discard,
     )?;
-    let cargo = build::load_c_app_cargo_config(&request)?;
     let input = c_test_build_input(
         app_dir,
         app_name,
@@ -222,8 +221,7 @@ async fn build_and_run_c_test(
         build_config.build_info.features.clone(),
     );
     let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
-    let mut qemu = qemu_config;
-    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
+    let qemu = qemu_config;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
     let _host_http_server = qemu_test::load_qemu_case_host_http_server(&test.qemu_config_path)?
         .as_ref()

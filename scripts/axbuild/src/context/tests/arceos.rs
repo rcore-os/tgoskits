@@ -295,6 +295,40 @@ fn prepare_request_requires_package() {
 }
 
 #[test]
+fn prepare_request_rejects_package_override_for_c_app_config() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("configs/c-app.toml");
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        r#"
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+app-c = "c"
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+    let app = test_app_context(root.path());
+
+    let err = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(config_path),
+            package: Some("arceos-helloworld".into()),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("app-c"));
+    assert!(err.to_string().contains("ax-libc"));
+}
+
+#[test]
 fn prepare_request_resolves_arceos_target_from_arch() {
     let root = tempdir().unwrap();
     let app = test_app_context(root.path());

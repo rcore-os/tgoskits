@@ -158,13 +158,10 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        mut qemu: Option<QemuConfig>,
+        qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
-        if let Some(qemu) = qemu.as_mut() {
-            crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, &cargo);
-        }
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
         let stage = StageLog::start(format!(

@@ -101,15 +101,17 @@ pub(crate) fn board_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> 
         .collect())
 }
 
-pub(crate) fn default_qemu_board_for_target(
+pub(crate) fn default_qemu_board(
     workspace_root: &Path,
-    package: &str,
     target: &str,
+    package: Option<&str>,
 ) -> anyhow::Result<Option<Board>> {
     Ok(board_default_list(workspace_root)?
         .into_iter()
         .find(|board| {
-            board.name.starts_with("qemu-") && board.package == package && board.target == target
+            board.name.starts_with("qemu-")
+                && board.target == target
+                && package.is_none_or(|package| board.package == package)
         }))
 }
 
@@ -203,18 +205,25 @@ log = "Info"
 "#,
         );
 
-        let board = default_qemu_board_for_target(
+        let board = default_qemu_board(
             root.path(),
-            "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
+            Some("arceos-helloworld"),
         )
         .unwrap();
         assert_eq!(board.unwrap().name, "qemu-aarch64");
+        assert_eq!(
+            default_qemu_board(root.path(), "aarch64-unknown-none-softfloat", None)
+                .unwrap()
+                .unwrap()
+                .name,
+            "qemu-aarch64"
+        );
         assert!(
-            default_qemu_board_for_target(
+            default_qemu_board(
                 root.path(),
-                "another-package",
                 "aarch64-unknown-none-softfloat",
+                Some("another-package"),
             )
             .unwrap()
             .is_none()

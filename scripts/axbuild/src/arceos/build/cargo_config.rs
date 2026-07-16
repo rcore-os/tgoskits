@@ -1,18 +1,14 @@
 use anyhow::{Context, bail};
 use ostool::build::config::Cargo;
 
-use super::{ArceosBuildInfo, info::load_build_config_with_makefile_features_and_metadata};
+use super::{ArceosBuildInfo, info::load_build_config_with_makefile_features};
 use crate::{build, context::ResolvedBuildRequest};
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let config = load_build_config_with_makefile_features_and_metadata(
-        request,
-        &makefile_features,
-        Some(metadata),
-    )?;
+    let config = load_build_config_with_makefile_features(request, &makefile_features)?;
     if config.app_c.is_some() {
         bail!(
             "ArceOS build config {} uses `app-c`; use the C app build path",
@@ -29,17 +25,11 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
 }
 
 pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    let metadata =
-        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let mut build_info = load_build_config_with_makefile_features_and_metadata(
-        request,
-        &makefile_features,
-        Some(metadata),
-    )?
-    .build_info;
+    let mut build_info =
+        load_build_config_with_makefile_features(request, &makefile_features)?.build_info;
     build_info.validated_max_cpu_num()?;
-    build_info.resolve_features_with_metadata(&request.package, &request.target, metadata);
+    build_info.resolve_c_app_features()?;
     let rustflags = build::toolchain_rustflags_for_features(&build_info.env, &build_info.features);
     let args = ArceosBuildInfo::build_cargo_args(&request.target, &rustflags);
 
