@@ -71,6 +71,13 @@ The build order is RAM, vCPUs, interrupt controllers and bindings, devices and
 topology, bus mappings, firmware, boot state, and commit. Physical-device
 leases restore ownership on every failure path.
 
+`HostPlatformSnapshot` records the firmware-selected console independently
+from its UART model. This identity lets mediated guests replace the correct
+host node even when several compatible UARTs exist. It is not authorization by
+itself: a live platform adapter must classify the device as transferable, and
+the VM host must retain a reversible console-output lease while a direct guest
+owns the physical UART.
+
 ### Documentation
 
 Generate and view API documentation:

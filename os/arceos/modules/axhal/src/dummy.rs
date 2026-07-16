@@ -48,6 +48,12 @@ impl ConsoleIf for DummyConsole {
 
     fn claim_runtime_output() {}
 
+    fn try_suspend_boot_output() -> bool {
+        false
+    }
+
+    fn resume_boot_output() {}
+
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
         None

@@ -28,11 +28,25 @@ pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
 pub fn current_host_platform_snapshot()
 -> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
     let bytes = require_host_fdt()?;
-    crate::machine::HostPlatformSnapshot::from_fdt(
+    let mut snapshot = crate::machine::HostPlatformSnapshot::from_fdt(
         fdt_generation(bytes),
         bytes,
         crate::machine::FdtInterruptEncoding::ArmGic,
-    )
+    )?;
+    let console = ax_std::os::arceos::modules::ax_hal::console::device_id()
+        .ok()
+        .and_then(|console| {
+            snapshot
+                .devices()
+                .iter()
+                .find(|device| rdrive::fdt_path_to_device_id(device.id().as_str()) == Some(console))
+                .map(|device| device.id().clone())
+        })
+        .or_else(|| snapshot.console_device().cloned());
+    if let Some(console) = console {
+        snapshot.grant_console_transfer(console)?;
+    }
+    Ok(snapshot)
 }
 
 fn fdt_generation(bytes: &[u8]) -> u64 {

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leases to roll back all claims when preparation fails.
 - Migrate every repository VM configuration to the unified machine, memory,
   deny, and virtual-device schema.
+- Combine host-device exclusion with a reversible boot-console output lease so
+  a direct-passthrough VM can own the selected physical UART without concurrent
+  host register access.
 
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.20...axvisor-v0.5.21) - 2026-07-10
 

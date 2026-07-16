@@ -18,7 +18,11 @@ pub(crate) fn current_host_platform_snapshot() -> MachinePlanResult<HostPlatform
             detail: "host ACPI inventory is unavailable".into(),
         }
     })??;
-    build_snapshot(&inventory)
+    let mut snapshot = build_snapshot(&inventory)?;
+    if let Some(console) = snapshot.console_device().cloned() {
+        snapshot.grant_console_transfer(console)?;
+    }
+    Ok(snapshot)
 }
 
 fn capture_inventory(system: &rdrive::probe::acpi::System) -> MachinePlanResult<AcpiInventory> {
@@ -57,6 +61,9 @@ fn build_snapshot(inventory: &AcpiInventory) -> MachinePlanResult<HostPlatformSn
     }
     for ecam in &inventory.pci_ecam {
         snapshot = add_pci_ecam(snapshot, *ecam)?;
+    }
+    if let Some(console_path) = &inventory.console_path {
+        snapshot.set_console_device(HostDeviceId::new(console_path.clone())?)?;
     }
     Ok(snapshot)
 }

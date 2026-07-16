@@ -144,13 +144,19 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         .load_images(main_mem, vm.clone(), &image_provider)
         .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
 
-    let claims_required = vm.with_config(|config| !config.machine_plan().claims().is_empty());
+    let (claims_required, host_console) = vm.with_config(|config| {
+        let plan = config.machine_plan();
+        (!plan.claims().is_empty(), plan.host_console().cloned())
+    });
     if claims_required {
         let live_generation = axvm::current_host_platform_snapshot()
             .context("refresh host platform snapshot before claiming devices")?
             .generation();
-        let claim_provider =
-            axvm::machine::RegisteredHostDeviceClaimProvider::new(live_generation, vm_id);
+        let claim_provider = crate::host_devices::AxvisorHostDeviceClaimProvider::new(
+            live_generation,
+            vm_id,
+            host_console,
+        );
         vm.claim_host_devices(&claim_provider)
             .with_context(|| format!("claim passthrough devices for VM[{vm_id}]"))?;
     }

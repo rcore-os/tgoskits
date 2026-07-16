@@ -63,6 +63,14 @@ impl ConsoleIf for ConsoleIfImpl {
         somehal::console::claim_runtime_output();
     }
 
+    fn try_suspend_boot_output() -> bool {
+        somehal::console::try_suspend_boot_output()
+    }
+
+    fn resume_boot_output() {
+        somehal::console::resume_boot_output();
+    }
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.

@@ -24,11 +24,15 @@ pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
 pub fn current_host_platform_snapshot()
 -> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
     let bytes = require_host_fdt()?;
-    crate::machine::HostPlatformSnapshot::from_fdt(
+    let mut snapshot = crate::machine::HostPlatformSnapshot::from_fdt(
         fdt_generation(bytes),
         bytes,
         crate::machine::FdtInterruptEncoding::FirstCell,
-    )
+    )?;
+    if let Some(console) = snapshot.console_device().cloned() {
+        snapshot.grant_console_transfer(console)?;
+    }
+    Ok(snapshot)
 }
 
 fn fdt_generation(bytes: &[u8]) -> u64 {

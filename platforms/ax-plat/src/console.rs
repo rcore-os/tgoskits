@@ -56,6 +56,13 @@ pub trait ConsoleIf {
     /// runtime-owned device.
     fn claim_runtime_output();
 
+    /// Tries to suspend low-level boot-console output for a reversible device
+    /// ownership transfer.
+    fn try_suspend_boot_output() -> bool;
+
+    /// Releases one successful [`ConsoleIf::try_suspend_boot_output`] call.
+    fn resume_boot_output();
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.

@@ -6,7 +6,7 @@ mod output;
 
 use alloc::{collections::BTreeSet, string::ToString, vec::Vec};
 
-use axdevice::{DeviceRequirement, InterruptSourceKind, MsiDeviceId};
+use axdevice::{DeviceBackend, DeviceRequirement, InterruptSourceKind, MsiDeviceId};
 use axvm_types::VmMachineMode;
 pub use output::*;
 
@@ -89,6 +89,7 @@ impl VmMachinePlanner {
 
         Ok(VmMachinePlan::from_parts(VmMachinePlanParts {
             snapshot_generation: snapshot.generation(),
+            host_console: snapshot.console_device().cloned(),
             mode: request.mode(),
             firmware: request.firmware(),
             interrupt_delivery: request.interrupt_delivery(),
@@ -214,20 +215,7 @@ fn select_template(
 
     match device.source() {
         VirtualDeviceSource::Allocate => Ok(None),
-        VirtualDeviceSource::Auto => Ok(snapshot
-            .devices()
-            .iter()
-            .enumerate()
-            .find(|(index, candidate)| {
-                !consumed.contains(index)
-                    && candidate.compatibles().iter().any(|compatible| {
-                        device
-                            .compatible_predicates()
-                            .iter()
-                            .any(|accepted| accepted == compatible)
-                    })
-            })
-            .map(|(index, _)| index)),
+        VirtualDeviceSource::Auto => Ok(select_automatic_template(device, snapshot, consumed)),
         VirtualDeviceSource::Host(selector) => {
             let Some((index, selected)) = snapshot
                 .devices()
@@ -247,4 +235,39 @@ fn select_template(
             Ok(Some(index))
         }
     }
+}
+
+fn select_automatic_template(
+    device: &VirtualDeviceDescriptor,
+    snapshot: &HostPlatformSnapshot,
+    consumed: &BTreeSet<usize>,
+) -> Option<usize> {
+    let matches_device = |index: usize, candidate: &super::HostDeviceDescriptor| {
+        !consumed.contains(&index)
+            && candidate.compatibles().iter().any(|compatible| {
+                device
+                    .compatible_predicates()
+                    .iter()
+                    .any(|accepted| accepted == compatible)
+            })
+    };
+    if matches!(device.backend(), DeviceBackend::HostConsole(_))
+        && let Some(console) = snapshot.console_device()
+        && let Some((index, _)) =
+            snapshot
+                .devices()
+                .iter()
+                .enumerate()
+                .find(|(index, candidate)| {
+                    candidate.id() == console && matches_device(*index, candidate)
+                })
+    {
+        return Some(index);
+    }
+    snapshot
+        .devices()
+        .iter()
+        .enumerate()
+        .find(|(index, candidate)| matches_device(*index, candidate))
+        .map(|(index, _)| index)
 }

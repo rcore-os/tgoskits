@@ -37,6 +37,7 @@ impl HostPlatformSnapshot {
         })?;
         let mut snapshot = Self::new(generation);
         snapshot.set_source_fdt(bytes);
+        let console_path = selected_console_path(&fdt);
 
         for node_id in fdt.iter_node_ids() {
             let Some(node) = fdt.node(node_id) else {
@@ -46,7 +47,7 @@ impl HostPlatformSnapshot {
             let compatibles = node.compatibles().map(String::from).collect::<Vec<_>>();
             let mut descriptor = HostDeviceDescriptor::new(
                 HostDeviceId::new(path.clone())?,
-                classify_ownership(&path, node, &compatibles),
+                classify_ownership(&path, node, &compatibles, console_path.as_deref()),
             );
             for compatible in compatibles {
                 descriptor = descriptor.with_compatible(compatible);
@@ -115,14 +116,44 @@ impl HostPlatformSnapshot {
             }
             snapshot = snapshot.with_device(descriptor);
         }
+        if let Some(path) = console_path {
+            snapshot.set_console_device(HostDeviceId::new(path)?)?;
+        }
         Ok(snapshot)
     }
+}
+
+fn selected_console_path(fdt: &Fdt) -> Option<String> {
+    let chosen = fdt.get_by_path("/chosen")?;
+    ["stdout-path", "linux,stdout-path"]
+        .into_iter()
+        .find_map(|name| {
+            chosen
+                .as_node()
+                .get_property(name)?
+                .as_str()
+                .and_then(|value| resolve_console_path(fdt, value))
+        })
+}
+
+fn resolve_console_path(fdt: &Fdt, value: &str) -> Option<String> {
+    let reference = value.split(':').next().unwrap_or(value);
+    let path = if reference.starts_with('/') {
+        reference
+    } else {
+        fdt.get_by_path("/aliases")?
+            .as_node()
+            .get_property(reference)?
+            .as_str()?
+    };
+    fdt.get_by_path(path).map(|_| String::from(path))
 }
 
 fn classify_ownership(
     path: &str,
     node: &fdt_edit::Node,
     compatibles: &[alloc::string::String],
+    console_path: Option<&str>,
 ) -> HostDeviceOwnership {
     if node
         .get_property("status")
@@ -146,11 +177,11 @@ fn classify_ownership(
     if path.starts_with("/memory")
         || path.starts_with("/reserved-memory")
         || node.get_property("interrupt-controller").is_some()
-        || compatibles.iter().any(|compatible| {
-            compatible.contains("armv8-timer")
-                || compatible.contains("arm,pl011")
-                || compatible.contains("gic-v3")
-        })
+        || compatibles
+            .iter()
+            .any(|compatible| compatible.contains("armv8-timer") || compatible.contains("gic-v3"))
+        || console_path == Some(path)
+        || (is_pl011(compatibles) && console_path.is_none())
     {
         return HostDeviceOwnership::HostExclusive;
     }
@@ -162,6 +193,12 @@ fn classify_ownership(
         return HostDeviceOwnership::Transferable;
     }
     HostDeviceOwnership::Assignable
+}
+
+fn is_pl011(compatibles: &[String]) -> bool {
+    compatibles
+        .iter()
+        .any(|compatible| compatible == "arm,pl011")
 }
 
 fn is_io_aperture(path: &str, node: &fdt_edit::Node) -> bool {
@@ -244,6 +281,74 @@ mod tests {
     }
 
     #[test]
+    fn only_the_firmware_selected_pl011_is_treated_as_the_host_console() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let aliases = fdt.add_node(root, Node::new("aliases"));
+        fdt.node_mut(aliases)
+            .unwrap()
+            .set_property(string_property("serial0", "/serial@2800c000"));
+        fdt.node_mut(aliases)
+            .unwrap()
+            .set_property(string_property("serial1", "/serial@2800d000"));
+        let chosen = fdt.add_node(root, Node::new("chosen"));
+        fdt.node_mut(chosen)
+            .unwrap()
+            .set_property(string_property("stdout-path", "serial1:115200n8"));
+        for (name, base) in [
+            ("serial@2800c000", 0x2800_c000),
+            ("serial@2800d000", 0x2800_d000),
+        ] {
+            let uart = fdt.add_node(root, Node::new(name));
+            fdt.node_mut(uart)
+                .unwrap()
+                .set_property(string_list("compatible", &["arm,pl011", "arm,primecell"]));
+            fdt.view_typed_mut(uart)
+                .unwrap()
+                .set_regs(&[RegInfo::new(base, Some(0x1000))]);
+        }
+
+        let mut snapshot =
+            HostPlatformSnapshot::from_fdt(5, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        assert_eq!(
+            snapshot.console_device().map(HostDeviceId::as_str),
+            Some("/serial@2800d000")
+        );
+        {
+            let ownership = |path: &str| {
+                snapshot
+                    .devices()
+                    .iter()
+                    .find(|device| device.id().as_str() == path)
+                    .unwrap()
+                    .ownership()
+            };
+            assert_eq!(
+                ownership("/serial@2800c000"),
+                HostDeviceOwnership::Assignable
+            );
+            assert_eq!(
+                ownership("/serial@2800d000"),
+                HostDeviceOwnership::HostExclusive
+            );
+        }
+
+        snapshot
+            .grant_console_transfer(HostDeviceId::new("/serial@2800d000").unwrap())
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .devices()
+                .iter()
+                .find(|device| device.id().as_str() == "/serial@2800d000")
+                .unwrap()
+                .ownership(),
+            HostDeviceOwnership::Transferable
+        );
+    }
+
+    #[test]
     fn generic_primecell_device_is_not_treated_as_the_host_console() {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -296,5 +401,11 @@ mod tests {
             bytes.push(0);
         }
         Property::new(name, bytes)
+    }
+
+    fn string_property(name: &str, value: &str) -> Property {
+        let mut property = Property::new(name, vec![]);
+        property.set_string(value);
+        property
     }
 }

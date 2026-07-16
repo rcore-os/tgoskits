@@ -217,6 +217,7 @@ impl PlannedHostDevice {
 #[derive(Clone, Debug)]
 pub struct VmMachinePlan {
     snapshot_generation: u64,
+    host_console: Option<HostDeviceId>,
     mode: VmMachineMode,
     firmware: GuestFirmwareKind,
     interrupt_delivery: InterruptDelivery,
@@ -232,6 +233,7 @@ pub struct VmMachinePlan {
 
 pub(super) struct VmMachinePlanParts {
     pub(super) snapshot_generation: u64,
+    pub(super) host_console: Option<HostDeviceId>,
     pub(super) mode: VmMachineMode,
     pub(super) firmware: GuestFirmwareKind,
     pub(super) interrupt_delivery: InterruptDelivery,
@@ -269,6 +271,7 @@ impl VmMachinePlan {
     pub(super) fn from_parts(parts: VmMachinePlanParts) -> Self {
         Self {
             snapshot_generation: parts.snapshot_generation,
+            host_console: parts.host_console,
             mode: parts.mode,
             firmware: parts.firmware,
             interrupt_delivery: parts.interrupt_delivery,
@@ -291,6 +294,7 @@ impl VmMachinePlan {
     ) -> Self {
         Self {
             snapshot_generation: 0,
+            host_console: None,
             mode,
             firmware,
             interrupt_delivery,
@@ -308,6 +312,11 @@ impl VmMachinePlan {
     /// Returns the host snapshot generation that must be revalidated at commit.
     pub const fn snapshot_generation(&self) -> u64 {
         self.snapshot_generation
+    }
+
+    /// Returns the physical device selected for host console I/O.
+    pub const fn host_console(&self) -> Option<&HostDeviceId> {
+        self.host_console.as_ref()
     }
 
     /// Returns the machine construction mode.

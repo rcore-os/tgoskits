@@ -2,7 +2,7 @@ use core::{
     cell::UnsafeCell,
     fmt::Write,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use byte_unit::{Byte, UnitType};
@@ -182,7 +182,9 @@ impl Con for NoCon {
 }
 
 static mut CON: &dyn Con = &NoCon;
-static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
+const RUNTIME_OUTPUT: u8 = 1 << 0;
+const TRANSIENT_OUTPUT_SUSPENSION: u8 = 1 << 1;
+static OUTPUT_OWNERSHIP: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {
@@ -196,7 +198,31 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
 /// not write the same hardware directly. It still reports bytes as consumed so
 /// generic logging paths cannot spin forever after the handoff.
 pub fn claim_runtime_output() {
-    RUNTIME_OUTPUT_CLAIMED.store(true, Ordering::Release);
+    OUTPUT_OWNERSHIP.fetch_or(RUNTIME_OUTPUT, Ordering::AcqRel);
+}
+
+/// Tries to suspend low-level boot-console register access temporarily.
+///
+/// A successful acquisition must be paired with [`resume_boot_output`]. The
+/// transient state is separate from [`claim_runtime_output`], which is a
+/// permanent handoff to an in-host runtime driver.
+pub fn try_suspend_boot_output() -> bool {
+    OUTPUT_OWNERSHIP
+        .compare_exchange(
+            0,
+            TRANSIENT_OUTPUT_SUSPENSION,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+/// Releases a successful [`try_suspend_boot_output`] acquisition.
+pub fn resume_boot_output() {
+    let _ = OUTPUT_OWNERSHIP.try_update(Ordering::AcqRel, Ordering::Acquire, |ownership| {
+        (ownership & TRANSIENT_OUTPUT_SUSPENSION != 0)
+            .then_some(ownership & !TRANSIENT_OUTPUT_SUSPENSION)
+    });
 }
 
 #[cfg(not(test))]
@@ -204,12 +230,12 @@ fn runtime_output_claimed() -> bool {
     // On AArch64, exclusive atomic instructions such as LDXR/LDAXR are not
     // reliable before the MMU is enabled. Keep the pre-MMU boot console path
     // free of atomic reads and only honor the runtime handoff afterwards.
-    crate::mem::mmu::is_mmu_enabled() && RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+    crate::mem::mmu::is_mmu_enabled() && OUTPUT_OWNERSHIP.load(Ordering::Acquire) != 0
 }
 
 #[cfg(test)]
 fn runtime_output_claimed() -> bool {
-    RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+    OUTPUT_OWNERSHIP.load(Ordering::Acquire) != 0
 }
 
 pub struct EarlySerial {
@@ -452,9 +478,9 @@ mod tests {
     static COUNTING_CON: CountingCon = CountingCon;
 
     #[test]
-    fn runtime_output_claim_consumes_without_touching_boot_console() {
+    fn runtime_and_transient_claims_stop_boot_console_register_access() {
         WRITE_CALLS.store(0, Ordering::Relaxed);
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        OUTPUT_OWNERSHIP.store(0, Ordering::Relaxed);
 
         unsafe { set_out(&COUNTING_CON) };
 
@@ -465,8 +491,19 @@ mod tests {
 
         assert_eq!(_write_bytes(b"after"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+        assert!(!try_suspend_boot_output());
 
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        OUTPUT_OWNERSHIP.store(0, Ordering::Relaxed);
+        WRITE_CALLS.store(0, Ordering::Relaxed);
+
+        assert!(try_suspend_boot_output());
+        assert!(!try_suspend_boot_output());
+        assert_eq!(_write_bytes(b"guest owns UART"), 15);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 0);
+
+        resume_boot_output();
+        assert_eq!(_write_bytes(b"host restored"), 13);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
     }
 }
 

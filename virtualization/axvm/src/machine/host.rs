@@ -269,6 +269,10 @@ impl HostDeviceDescriptor {
     pub fn interrupts(&self) -> &[HostInterruptResource] {
         &self.interrupts
     }
+
+    pub(crate) fn set_ownership(&mut self, ownership: HostDeviceOwnership) {
+        self.ownership = ownership;
+    }
 }
 
 /// Immutable platform snapshot consumed by one planning attempt.
@@ -277,6 +281,7 @@ pub struct HostPlatformSnapshot {
     generation: u64,
     io_apertures: Vec<AddressRange>,
     devices: Vec<HostDeviceDescriptor>,
+    console_device: Option<HostDeviceId>,
     source_fdt: Option<Vec<u8>>,
 }
 
@@ -287,6 +292,7 @@ impl HostPlatformSnapshot {
             generation,
             io_apertures: Vec::new(),
             devices: Vec::new(),
+            console_device: None,
             source_fdt: None,
         }
     }
@@ -301,6 +307,16 @@ impl HostPlatformSnapshot {
     pub fn with_device(mut self, device: HostDeviceDescriptor) -> Self {
         self.devices.push(device);
         self
+    }
+
+    /// Selects the host device used for platform console input and output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device has not been added to this snapshot.
+    pub fn with_console_device(mut self, device: HostDeviceId) -> MachinePlanResult<Self> {
+        self.set_console_device(device)?;
+        Ok(self)
     }
 
     /// Returns the generation used to revalidate a later claim transaction.
@@ -318,6 +334,11 @@ impl HostPlatformSnapshot {
         &self.devices
     }
 
+    /// Returns the physical device selected for host console I/O.
+    pub const fn console_device(&self) -> Option<&HostDeviceId> {
+        self.console_device.as_ref()
+    }
+
     /// Returns the immutable host FDT backing this snapshot, when available.
     pub fn source_fdt(&self) -> Option<&[u8]> {
         self.source_fdt.as_deref()
@@ -325,5 +346,47 @@ impl HostPlatformSnapshot {
 
     pub(crate) fn set_source_fdt(&mut self, bytes: &[u8]) {
         self.source_fdt = Some(bytes.to_vec());
+    }
+
+    pub(crate) fn set_console_device(&mut self, device: HostDeviceId) -> MachinePlanResult<()> {
+        if !self
+            .devices
+            .iter()
+            .any(|candidate| candidate.id() == &device)
+        {
+            return Err(super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "host console device '{device}' is absent from the platform snapshot"
+                ),
+            });
+        }
+        self.console_device = Some(device);
+        Ok(())
+    }
+
+    pub(crate) fn grant_console_transfer(&mut self, device: HostDeviceId) -> MachinePlanResult<()> {
+        let descriptor = self
+            .devices
+            .iter_mut()
+            .find(|candidate| candidate.id() == &device)
+            .ok_or_else(|| super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "transferable host console '{device}' is absent from the platform snapshot"
+                ),
+            })?;
+        if matches!(
+            descriptor.ownership(),
+            HostDeviceOwnership::Structural | HostDeviceOwnership::Unrepresentable
+        ) {
+            return Err(super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "host console '{device}' cannot be transferred from ownership state {:?}",
+                    descriptor.ownership()
+                ),
+            });
+        }
+        descriptor.set_ownership(HostDeviceOwnership::Transferable);
+        self.console_device = Some(device);
+        Ok(())
     }
 }

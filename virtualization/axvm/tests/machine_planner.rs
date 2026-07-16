@@ -389,6 +389,37 @@ fn passthrough_auto_matching_uses_each_host_template_once() {
 }
 
 #[test]
+fn host_console_backend_prefers_the_firmware_selected_template() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x3000_0000, 0x10_0000).unwrap(), 64..=127).unwrap();
+    let first = HostDeviceId::new("/soc/serial@2800c000").unwrap();
+    let console = HostDeviceId::new("/soc/serial@2800d000").unwrap();
+    let snapshot = HostPlatformSnapshot::new(1)
+        .with_device(host_pl011(first.as_str(), 0x2800_c000, 115))
+        .with_device(host_pl011(console.as_str(), 0x2800_d000, 116))
+        .with_console_device(console.clone())
+        .unwrap();
+    let backend = DeviceBackend::HostConsole(HostConsoleBackend::new(
+        ConsoleRxPolicy::Exclusive,
+        ConsoleTxPolicy::Shared,
+    ));
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011("console0").with_backend(backend));
+
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(plan.virtual_devices()[0].host_template(), Some(&console));
+    assert_eq!(
+        plan.virtual_devices()[0].mmio()[0].range().base(),
+        0x2800_d000
+    );
+    assert_eq!(plan.virtual_devices()[0].interrupts()[0].id(), 116);
+    assert_eq!(plan.host_console(), Some(&console));
+}
+
+#[test]
 fn direct_interrupt_delivery_rejects_software_interrupt_devices() {
     let profile =
         MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
