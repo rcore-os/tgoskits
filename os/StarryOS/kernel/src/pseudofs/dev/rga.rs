@@ -36,12 +36,22 @@ struct ImportedBuf {
 /// Handles and staged requests are keyed by (pid, id) — the process id (tgid) — so
 /// Process A cannot touch Process B's buffers/requests, while sibling threads of the
 /// same process share the same fd's handles.
+///
+/// The node object is shared across every `open("/dev/rga")`, so it has no per-fd state
+/// to hang handles off. To still get correct open-file-description lifetime, we track how
+/// many open descriptions each process holds (`open_counts`) and only reclaim a process's
+/// handles/requests when its *last* description closes. That way a process holding two fds
+/// that closes one keeps the other fd's handles valid.
 pub struct RgaDevice {
     handle_table: Mutex<BTreeMap<(u64, u32), ImportedBuf>>,
     next_handle: Mutex<u32>,
     /// Requests staged via RGA_IOC_REQUEST_CONFIG, awaiting RGA_IOC_REQUEST_SUBMIT.
     requests: Mutex<BTreeMap<(u64, u32), Vec<librga_abi::RgaReq>>>,
     next_request_id: Mutex<u32>,
+    /// Live `/dev/rga` open-file-descriptions per process (pid/tgid). Incremented in
+    /// `open`, decremented in `close`; the process's handles and staged requests are
+    /// reclaimed only when the count reaches zero (its last description closes).
+    open_counts: Mutex<BTreeMap<u64, u32>>,
 }
 
 impl RgaDevice {
@@ -51,6 +61,7 @@ impl RgaDevice {
             next_handle: Mutex::new(1),
             requests: Mutex::new(BTreeMap::new()),
             next_request_id: Mutex::new(1),
+            open_counts: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -507,18 +518,47 @@ impl DeviceOps for RgaDevice {
         NodeFlags::NON_CACHEABLE
     }
 
-    /// Release this process's imported-buffer handles and staged requests when it
-    /// closes `/dev/rga`. This is invoked per-open from `Drop for File`, in the
-    /// owning task's context on both explicit `close(2)` and process exit, so
-    /// `current_id()` is the owning process. Without it the `(pid, _)`-keyed entries
-    /// would persist for the kernel's lifetime — a slow leak, and a future process
-    /// reusing the pid could observe the dead process's handles. Because a shared
-    /// `/dev/rga` node has no per-fd state, closing one of several fds in the same
-    /// process reclaims the whole process's handles; librga opens one fd per process,
-    /// so this is not hit in practice.
+    /// Count a new open-file-description for the current process. Paired with `close`
+    /// (one call per `open("/dev/rga")`), it lets `close` distinguish "one of several
+    /// fds closed" from "the last fd closed" so it only reclaims state on the latter.
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        let pid = current_id();
+        *self.open_counts.lock().entry(pid).or_insert(0) += 1;
+        Ok(())
+    }
+
+    /// Release this process's imported-buffer handles and staged requests when its
+    /// *last* `/dev/rga` open-file-description closes. `Drop for File` calls this once
+    /// per open description (an fd shared by `dup`/`fork` counts once), in the owning
+    /// task's context on both explicit `close(2)` and process exit, so `current_id()`
+    /// is the owning process.
+    ///
+    /// Reclaiming only on the last description is what makes the lifetime correct: a
+    /// process that opens `/dev/rga` twice and closes one fd keeps the other fd's
+    /// handles/requests valid. Without the reclaim the `(pid, _)`-keyed entries would
+    /// persist for the kernel's lifetime — a slow leak, and a future process reusing
+    /// the pid could observe the dead process's handles.
     fn close(&self, _exclusive: bool) {
         let pid = current_id();
-        self.handle_table.lock().retain(|&(t, _), _| t != pid);
-        self.requests.lock().retain(|&(t, _), _| t != pid);
+        let is_last = {
+            let mut counts = self.open_counts.lock();
+            match counts.get_mut(&pid) {
+                // Another description of this process is still open — keep its state.
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    false
+                }
+                // Last (or, defensively, an unbalanced) description closing: drop the
+                // per-process counter and reclaim below.
+                _ => {
+                    counts.remove(&pid);
+                    true
+                }
+            }
+        };
+        if is_last {
+            self.handle_table.lock().retain(|&(t, _), _| t != pid);
+            self.requests.lock().retain(|&(t, _), _| t != pid);
+        }
     }
 }
