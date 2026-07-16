@@ -22,7 +22,7 @@ mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
 #[cfg(feature = "rga")]
-mod rga;
+pub(crate) mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]

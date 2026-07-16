@@ -132,6 +132,16 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     }
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
+                // `/dev/rga` is served by a per-open `RgaFile` holding this open's handle/
+                // request session; `dup`/`fork` share its Arc and it is freed at last close.
+                #[cfg(feature = "rga")]
+                if crate::pseudofs::dev::rga::is_rga_device(inner) {
+                    let wrapped = crate::pseudofs::dev::rga::open_rga_file(file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
