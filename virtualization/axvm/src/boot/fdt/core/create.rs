@@ -164,6 +164,7 @@ fn default_dtb_load_addr(
 
 #[cfg(test)]
 mod tests {
+    use alloc::{format, vec};
     use core::alloc::Layout;
 
     use axvm_types::{GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags};
