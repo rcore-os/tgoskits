@@ -406,6 +406,8 @@ fn prepare_ktest_cargo(cargo: &mut Cargo, target: &KtestTarget, coverage: bool) 
     cargo.test = Some(target.name.clone());
     remove_cargo_target_selector_args(&mut cargo.args);
     cargo.env.remove("AXBUILD_STARRY_BIN");
+    // `ktest` is an explicit command: the harness feature and the target's
+    // declared required features are the only additions made here.
     ensure_feature(cargo, AXTEST_FEATURE);
     for feature in &target.required_features {
         ensure_feature(cargo, feature);

@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
-    let mut envs = HashMap::new();
     let mut features = vec![
         "ax-driver/virtio-blk".to_string(),
         "ax-driver/virtio-net".to_string(),
@@ -10,7 +9,6 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
     ];
 
     pass_std_build_nested_features(
-        &mut envs,
         &mut features,
         &["dns".to_string()],
         &[
@@ -31,7 +29,6 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
             "dns".to_string(),
         ]
     );
-    assert!(envs.is_empty());
 }
 
 #[test]
@@ -42,9 +39,7 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
     };
 
     info.resolve_std_features();
-    let mut envs = HashMap::new();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &["dns".to_string()],
         &[
@@ -58,7 +53,6 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
         info.features,
         vec!["ax-std/dns".to_string(), "dns".to_string()]
     );
-    assert!(envs.is_empty());
 }
 
 #[test]
@@ -90,7 +84,7 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
         cargo.features,
         vec!["ax-std/dns".to_string(), "ax-std/fs".to_string(),]
     );
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert_eq!(
         cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
         Some(&"true".to_string())

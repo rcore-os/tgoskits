@@ -25,10 +25,6 @@ use self::{
 pub use crate::build::LogLevel;
 use crate::context::ResolvedAxvisorRequest;
 
-pub(crate) fn default_axvisor_build_info() -> AxvisorBuildInfo {
-    config::default_axvisor_build_info()
-}
-
 pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
     load::workspace_root_from_axvisor_dir(axvisor_dir)
 }
@@ -46,12 +42,7 @@ fn to_cargo_config(
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
     let makefile_features = crate::build::makefile_features_from_env();
-    crate::build::apply_makefile_features_with_metadata(
-        &mut config.build_info,
-        &request.package,
-        &makefile_features,
-        metadata,
-    )?;
+    crate::build::apply_makefile_features(&mut config.build_info, &makefile_features)?;
     let known_platforms = platform_feature_names(metadata);
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let mut cargo = config

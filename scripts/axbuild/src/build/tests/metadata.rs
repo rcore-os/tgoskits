@@ -27,9 +27,7 @@ fn std_build_maps_arceos_features_to_ax_std_dependency() {
     };
 
     info.resolve_std_features();
-    let mut envs = HashMap::new();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &[],
         &[
@@ -43,8 +41,6 @@ fn std_build_maps_arceos_features_to_ax_std_dependency() {
         info.features,
         vec!["ax-std/lockdep".to_string(), "ax-std/smp".to_string()]
     );
-    assert!(envs.is_empty());
-    assert!(!envs.values().any(|value| value.contains("arceos")));
     assert!(!info.features.contains(&"lockdep".to_string()));
 }
 
@@ -55,19 +51,16 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
         ..BuildInfo::default()
     };
 
-    apply_makefile_features(&mut info, "arceos-app", &[String::from("lockdep")]).unwrap();
+    apply_makefile_features(&mut info, &[String::from("lockdep")]).unwrap();
 
     info.resolve_std_features();
-    let mut envs = HashMap::new();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &[],
         &["lockdep".to_string(), "std-compat".to_string()],
     );
 
     assert_eq!(info.features, vec!["ax-std/lockdep".to_string()]);
-    assert!(envs.is_empty());
 }
 
 #[test]

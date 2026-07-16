@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn std_build_does_not_use_package_metadata_to_enable_features() {
+fn std_build_only_propagates_selected_features() {
     let workspace = temp_workspace("std-app", "").unwrap();
     let app_manifest = workspace.join("app/Cargo.toml");
     fs::write(
@@ -12,16 +12,13 @@ fn std_build_does_not_use_package_metadata_to_enable_features() {
     )
     .unwrap();
 
-    let metadata = metadata_for_manifest(&workspace.join("Cargo.toml"));
     let mut info = BuildInfo {
         features: vec!["dns".to_string()],
         ..BuildInfo::default()
     };
 
-    info.resolve_std_features_with_metadata("std-app", "x86_64-unknown-none", &metadata);
-    let mut envs = HashMap::new();
+    info.resolve_std_features();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &[],
         &[
@@ -33,7 +30,6 @@ fn std_build_does_not_use_package_metadata_to_enable_features() {
     );
 
     assert_eq!(info.features, vec!["ax-std/dns".to_string()]);
-    assert!(envs.is_empty());
 }
 
 #[test]
@@ -94,7 +90,7 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
     assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
     assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
     assert!(cargo.features.contains(&"ax-std/net".to_string()));
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert_eq!(
         cargo.env.get("AX_TARGET"),
         Some(&"aarch64-unknown-none-softfloat".to_string())

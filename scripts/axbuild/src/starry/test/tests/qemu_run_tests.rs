@@ -265,7 +265,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         max_cpu_num: Some(1),
-        ..crate::starry::build::default_starry_build_info_for_target("x86_64-unknown-none")
+        ..crate::starry::build::default_starry_build_info()
     });
 
     let (_group_request, cargo) =
@@ -295,9 +295,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         features: vec!["qemu".to_string()],
-        ..crate::starry::build::default_starry_build_info_for_target(
-            "aarch64-unknown-none-softfloat",
-        )
+        ..crate::starry::build::default_starry_build_info()
     });
 
     let (_group_request, cargo) =

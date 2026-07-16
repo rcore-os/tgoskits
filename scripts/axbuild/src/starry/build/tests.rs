@@ -118,30 +118,15 @@ fn load_build_info_writes_default_template_when_missing() {
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert_eq!(
-        build_info,
-        default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
-    );
+    assert_eq!(build_info, default_starry_build_info());
     assert!(path.exists());
     let persisted: StarryBuildInfo = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted, build_info);
 }
 
 #[test]
-fn default_aarch64_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("aarch64-unknown-none-softfloat");
-    assert!(!build_info.features.contains(&"qemu".to_string()));
-}
-
-#[test]
-fn default_riscv64_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("riscv64gc-unknown-none-elf");
-    assert!(!build_info.features.contains(&"qemu".to_string()));
-}
-
-#[test]
-fn default_x86_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
+fn default_starry_build_info_does_not_inject_features() {
+    let build_info = default_starry_build_info();
     assert!(build_info.features.is_empty());
 }
 
@@ -242,7 +227,7 @@ fn load_build_info_prefers_request_override_without_writing_file() {
     request.build_info_override = Some(StarryBuildInfo {
         log: LogLevel::Info,
         features: vec!["net".to_string()],
-        ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        ..default_starry_build_info()
     });
 
     let build_info = load_build_info(&request).unwrap();
@@ -287,7 +272,7 @@ fn patch_starry_cargo_config_injects_required_features_and_env() {
     assert_eq!(cargo.env.get("AX_PLATFORM").map(String::as_str), None);
     assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
     assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert!(cargo.post_build_cmds.is_empty());
 }
 
@@ -304,7 +289,7 @@ fn patch_starry_cargo_config_preserves_request_package() {
         qemu_config: None,
         uboot_config: None,
     };
-    let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
+    let build_info = default_starry_build_info();
     let mut cargo = build_info.into_base_cargo_config_with_log(
         "placeholder".to_string(),
         request.target.clone(),
@@ -517,7 +502,7 @@ fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alia
             "starry-kernel/sg2002".to_string(),
             "axplat-dyn/thead-mae".to_string(),
         ],
-        ..default_starry_build_info_for_target("riscv64gc-unknown-none-elf")
+        ..default_starry_build_info()
     });
 
     let cargo = load_cargo_config(&request).unwrap();
@@ -549,7 +534,7 @@ fn load_cargo_config_keeps_pie_target_for_non_kmod_dynamic_platform_request() {
     );
     request.build_info_override = Some(StarryBuildInfo {
         features: vec!["ax-driver/virtio-blk".to_string()],
-        ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        ..default_starry_build_info()
     });
 
     let cargo = load_cargo_config(&request).unwrap();
@@ -600,7 +585,7 @@ fn patch_starry_cargo_config_preserves_json_target() {
         qemu_config: None,
         uboot_config: None,
     };
-    let build_info = default_starry_build_info_for_target(&request.target);
+    let build_info = default_starry_build_info();
     let mut cargo = build_info.into_base_cargo_config_with_log(
         request.package.clone(),
         "scripts/targets/std/aarch64-unknown-linux-musl.json".to_string(),

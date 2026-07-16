@@ -19,8 +19,9 @@ use crate::{
     support::process::ProcessExt,
 };
 
-pub(crate) fn default_starry_build_info_for_target(target: &str) -> StarryBuildInfo {
-    let _ = target;
+pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
+    // The package and board configuration own feature selection; a generated
+    // default must remain an empty capability set.
     StarryBuildInfo {
         features: Vec::new(),
         ..StarryBuildInfo::default()
@@ -73,9 +74,7 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
-        crate::build::ensure_build_info(&request.build_info_path, || {
-            default_starry_build_info_for_target(&request.target)
-        })?;
+        crate::build::ensure_build_info(&request.build_info_path, default_starry_build_info)?;
         crate::build::load_toml_with_rejector(
             &request.build_info_path,
             "build info",
@@ -83,7 +82,7 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
         )?
     };
 
-    crate::build::apply_makefile_features(&mut build_info, &request.package, &makefile_features)?;
+    crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
 
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
@@ -99,21 +98,14 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     let mut build_info = if let Some(build_info) = &request.build_info_override {
         build_info.clone()
     } else {
-        crate::build::ensure_build_info(&request.build_info_path, || {
-            default_starry_build_info_for_target(&request.target)
-        })?;
+        crate::build::ensure_build_info(&request.build_info_path, default_starry_build_info)?;
         crate::build::load_toml_with_rejector(
             &request.build_info_path,
             "build info",
             crate::build::reject_arceos_app_c_field,
         )?
     };
-    crate::build::apply_makefile_features_with_metadata(
-        &mut build_info,
-        &request.package,
-        &makefile_features,
-        metadata,
-    )?;
+    crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
     build_info.features.sort();
     build_info.features.dedup();
     if let Some(smp) = request.smp {

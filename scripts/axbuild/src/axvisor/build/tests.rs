@@ -605,7 +605,7 @@ log = "Info"
     })
     .unwrap();
 
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));

@@ -169,6 +169,8 @@ fn is_lockdep_detect_feature(feature: &str) -> bool {
 }
 
 fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
+    // The feature comes from the explicitly selected ArceOS test case; the
+    // normal suite path never adds test-specific capabilities.
     if !cargo.features.iter().any(|existing| existing == feature) {
         cargo.features.push(feature.to_string());
         cargo.features.sort();

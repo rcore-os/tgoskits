@@ -233,29 +233,7 @@ pub(super) fn std_target_json_path(target: &str) -> PathBuf {
     path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
 }
 
-pub(crate) fn prepare_std_build_env(
-    envs: &mut HashMap<String, String>,
-    target: &str,
-    metadata: &Metadata,
-) -> anyhow::Result<()> {
-    prepare_std_build_env_for_package(envs, AXSTD_STD_PACKAGE, target, &[], metadata)
-}
-
-pub(super) fn prepare_std_build_env_for_package(
-    envs: &mut HashMap<String, String>,
-    package: &str,
-    target: &str,
-    features: &[String],
-    metadata: &Metadata,
-) -> anyhow::Result<()> {
-    envs.insert("AX_TARGET".to_string(), target.to_string());
-
-    let _ = (package, features, metadata);
-    Ok(())
-}
-
 pub(super) fn pass_std_build_nested_features(
-    _envs: &mut HashMap<String, String>,
     features: &mut Vec<String>,
     app_features: &[String],
     axstd_features: &[String],

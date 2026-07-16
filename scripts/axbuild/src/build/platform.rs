@@ -8,10 +8,6 @@ pub(super) fn supports_platform_dynamic(target: &str) -> bool {
         || target.starts_with("x86_64-")
 }
 
-pub(super) fn default_to_bin_for_target(target: &str) -> bool {
-    !target.starts_with("x86_64-") && !target.starts_with("loongarch64-")
-}
-
 pub(super) fn normalize_std_feature(feature: &str) -> String {
     match feature {
         "ax-std" => feature.to_string(),
@@ -132,26 +128,6 @@ pub(crate) fn makefile_features_from_env() -> Vec<String> {
 }
 
 pub(crate) fn apply_makefile_features(
-    build_info: &mut BuildInfo,
-    _package: &str,
-    makefile_features: &[String],
-) -> anyhow::Result<()> {
-    if makefile_features.is_empty() {
-        return Ok(());
-    }
-    apply_std_makefile_features(build_info, makefile_features)
-}
-
-pub(crate) fn apply_makefile_features_with_metadata(
-    build_info: &mut BuildInfo,
-    _package: &str,
-    makefile_features: &[String],
-    _metadata: &Metadata,
-) -> anyhow::Result<()> {
-    apply_std_makefile_features(build_info, makefile_features)
-}
-
-pub(super) fn apply_std_makefile_features(
     build_info: &mut BuildInfo,
     makefile_features: &[String],
 ) -> anyhow::Result<()> {

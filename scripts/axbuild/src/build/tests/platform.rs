@@ -13,15 +13,11 @@ fn std_build_rejects_removed_platform_feature() {
 #[test]
 fn x86_64_defaults_to_dynamic_platform() {
     assert!(supports_platform_dynamic("x86_64-unknown-none"));
-    assert!(!default_to_bin_for_target("x86_64-unknown-none"));
 }
 
 #[test]
 fn loongarch64_defaults_to_dynamic_platform_when_supported() {
     assert!(supports_platform_dynamic(
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(!default_to_bin_for_target(
         "loongarch64-unknown-none-softfloat"
     ));
 }

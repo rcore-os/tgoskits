@@ -366,19 +366,12 @@ fn parse_makefile_features_splits_commas_whitespace_and_dedups() {
 
 #[test]
 fn apply_makefile_features_uses_ax_std_prefix_for_unified_std_build() {
-    let metadata = repo_metadata();
     let mut build_info = ArceosBuildInfo {
         features: Vec::new(),
         ..ArceosBuildInfo::default()
     };
 
-    build::apply_makefile_features_with_metadata(
-        &mut build_info,
-        "starryos",
-        &[String::from("lockdep")],
-        &metadata,
-    )
-    .unwrap();
+    build::apply_makefile_features(&mut build_info, &[String::from("lockdep")]).unwrap();
 
     assert!(build_info.features.contains(&"lockdep".to_string()));
     assert!(!build_info.features.contains(&"ax-api/lockdep".to_string()));
@@ -467,7 +460,7 @@ fn prepared_cargo_config_defaults_x86_64_to_dynamic_platform() {
         )
         .unwrap();
 
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert!(
         cargo
             .target
