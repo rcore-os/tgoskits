@@ -90,15 +90,11 @@ pub fn entry(args: TokenStream, input: TokenStream, name: &str) -> TokenStream {
 pub fn entry_secondary(_args: TokenStream, input: TokenStream, is_someboot: bool) -> TokenStream {
     let f = parse_macro_input!(input as ItemFn);
 
-    let name;
-    let crate_name;
-    if is_someboot {
-        name = "__someboot_secondary";
-        crate_name = quote!(someboot);
+    let (name, crate_name) = if is_someboot {
+        ("__someboot_secondary", quote!(someboot))
     } else {
-        name = "__somehal_secondary";
-        crate_name = quote!(somehal);
-    }
+        ("__somehal_secondary", quote!(somehal))
+    };
 
     // check the function signature
     let valid_signature = f.sig.constness.is_none()

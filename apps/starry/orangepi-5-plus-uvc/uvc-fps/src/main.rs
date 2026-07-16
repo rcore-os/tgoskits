@@ -930,7 +930,7 @@ fn reserve_saved_id(counters: &FrameCounters, max_saved: Option<u64>) -> Option<
     if let Some(max_saved) = max_saved {
         counters
             .saved
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 (current < max_saved).then_some(current + 1)
             })
             .ok()

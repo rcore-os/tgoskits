@@ -37,7 +37,7 @@ where
     let mut read_buf = [MaybeUninit::uninit(); DEFAULT_BUF_SIZE];
 
     let limit = read_buf.len().min(size_limit);
-    let mut buf: BorrowedBuf<'_> = (&mut read_buf[..limit]).into();
+    let mut buf: BorrowedBuf<'_, u8> = (&mut read_buf[..limit]).into();
 
     reader.read_buf(buf.unfilled())?;
 
@@ -114,7 +114,7 @@ impl IoBufMutSpec for &mut [u8] {
 
 macro_rules! read_from_vec_impl {
     ($buf:ident, $reader:ident) => {{
-        let mut read_buf: BorrowedBuf<'_> = $buf.spare_capacity_mut().into();
+        let mut read_buf: BorrowedBuf<'_, u8> = $buf.spare_capacity_mut().into();
         let result = $reader.read_buf(read_buf.unfilled());
         let bytes_read = read_buf.len();
         unsafe {
@@ -132,7 +132,7 @@ impl IoBufMutSpec for Vec<u8> {
     }
 }
 
-impl IoBufMutSpec for BorrowedCursor<'_> {
+impl IoBufMutSpec for BorrowedCursor<'_, u8> {
     fn read_from<R: Read + ?Sized>(&mut self, reader: &mut R) -> Result<usize> {
         reader.read_buf(self.reborrow())?;
         Ok(self.written())

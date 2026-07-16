@@ -19,12 +19,12 @@ impl<R: Read + ?Sized> Read for &mut R {
     }
 
     #[inline]
-    fn read_buf(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         (**self).read_buf(cursor)
     }
 
     #[inline]
-    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         (**self).read_buf_exact(cursor)
     }
 
@@ -88,12 +88,12 @@ impl<R: Read + ?Sized> Read for Box<R> {
     }
 
     #[inline]
-    fn read_buf(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         (**self).read_buf(cursor)
     }
 
     #[inline]
-    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         (**self).read_buf_exact(cursor)
     }
 
@@ -191,7 +191,7 @@ impl Read for &[u8] {
     }
 
     #[inline]
-    fn read_buf(&mut self, mut cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, mut cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         let amt = cmp::min(cursor.capacity(), self.len());
         let (a, b) = self.split_at(amt);
 
@@ -202,7 +202,7 @@ impl Read for &[u8] {
     }
 
     #[inline]
-    fn read_buf_exact(&mut self, mut cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, mut cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         if cursor.capacity() > self.len() {
             // Append everything we can to the cursor.
             cursor.append(self);
@@ -286,7 +286,7 @@ impl Read for VecDeque<u8> {
     }
 
     #[inline]
-    fn read_buf(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         let (ref mut front, _) = self.as_slices();
         let n = cmp::min(cursor.capacity(), front.len());
         Read::read_buf(front, cursor)?;
@@ -295,7 +295,7 @@ impl Read for VecDeque<u8> {
     }
 
     #[inline]
-    fn read_buf_exact(&mut self, mut cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, mut cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         let len = cursor.capacity();
         let (front, back) = self.as_slices();
 

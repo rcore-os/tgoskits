@@ -16,7 +16,7 @@ TGOSKits 工作区根目录的 `rust-toolchain.toml` 已锁定统一工具链：
 
 | 配置项 | 值 |
 |--------|-----|
-| channel | `nightly-2026-04-27` |
+| channel | `nightly-2026-07-15` |
 | profile | `minimal` |
 | components | `rust-src`, `llvm-tools`, `rustfmt`, `clippy` |
 | targets | `x86_64-unknown-none`, `riscv64gc-unknown-none-elf`, `aarch64-unknown-none-softfloat`, `loongarch64-unknown-none-softfloat` |
@@ -606,7 +606,7 @@ cargo xtask arceos qemu --package arceos-helloworld --arch riscv64  # SMP=4
 
 ### Q: 编译报 `linker 'rust-lld' not found`？
 
-确认工具链已正确安装：`rustup show` 应显示 `nightly-2026-04-27` 且包含 `rust-src` 组件。
+确认工具链已正确安装：`rustup show` 应显示 `nightly-2026-07-15` 且包含 `rust-src` 组件。
 
 ### Q: 网络/块设备示例启动失败？
 

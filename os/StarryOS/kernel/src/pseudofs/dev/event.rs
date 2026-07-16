@@ -414,7 +414,7 @@ impl DeviceOps for EventDev {
         // Drain the driver queue once up front so a single read() syscall
         // can return as many buffered events as the user buffer holds.
         inner.drain_into_queue();
-        for out in buf.chunks_exact_mut(size_of::<InputEvent>()) {
+        for out in buf.as_chunks_mut::<{ size_of::<InputEvent>() }>().0 {
             let Some((time, event)) = inner.read_ahead.pop_front() else {
                 break;
             };

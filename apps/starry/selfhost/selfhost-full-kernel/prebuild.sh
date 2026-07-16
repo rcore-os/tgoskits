@@ -120,10 +120,10 @@ stage_run_state() {
 # into a merged toolchain tree, and inject a single uncompressed tar so the
 # guest only needs `tar xf` (no XZ, no network, no tmpfs pressure).
 stage_rust_toolchain() {
-    local rust_date="2026-05-28"
+    local rust_date="2026-07-15"
     local rust_dl="https://static.rust-lang.org/dist/${rust_date}"
-    local toolchain_name="nightly-2026-05-28-x86_64-unknown-linux-musl"
-    local toolchain_version="2"
+    local toolchain_name="nightly-2026-07-15-x86_64-unknown-linux-musl"
+    local toolchain_version="3"
     local version_file=".starry-selfhost-toolchain-version"
     local stage_dir="$output_dir/toolchain-stage"
     local toolchain_dir="$stage_dir/$toolchain_name"
@@ -133,12 +133,12 @@ stage_rust_toolchain() {
 
     # component → sha256 from channel-rust-nightly.toml
     local pairs=(
-        "rustc:b03dac6f955cf5e8075d4187e2579bad0737cbc96caaa7e76c9a949a47bae0ff"
-        "cargo:4180435487dadf1593925f11e1dd4b02dbd5315d7a4813b8c214b96410957c3d"
-        "rust-std:783e922fb28ff74488db25ef0c62ef8147ba509b7e7d19ac8adfadfc3924bf41"
-        "rust-src:3ef29c6fe273c9c1fc210a53c461a1f984fc8857be508aa7aa3e8f82f23652b2"
-        "llvm-tools:13bdcad985200f19188537e629bb80a7cd104237ad4469deebb53eb32b4a29ec"
-        "rust-std-none:2e67b503d145f68ab474fc7070bac3a1d936d5dd78f96a8bc3a2c5d98baa190d"
+        "rustc:706b319322fe2d737c6c56ac5bf7ec0a4ce2e76c49c12220099c0a3f41aa4c10"
+        "cargo:11af6556a9005044ae157cf1930d976d5075dc53f6a017e18e93c546b5551bd2"
+        "rust-std:778d9ca7f9cfed6accc3174e2f75a7a0d670e62d8e010f5cbff59b8af35eaae1"
+        "rust-src:13ef478e7011204d93d80997299afe27bcaf423dd36de47791e581b9c2cd0471"
+        "llvm-tools:6d0bc4e481e81b71b65d0d15b759d44597cf9d1a9738f35a9d903b414be4f252"
+        "rust-std-none:970fe62ffcbf7a4bb7e22a739ff3b4cf702bbb9fe111370c094ed48f48fa9601"
     )
 
     if [[ -f "$output_tar" ]] \
