@@ -68,6 +68,31 @@ fn x86_dma_passthrough_configs_keep_identity_ram_as_the_primary_region() {
 }
 
 #[cfg(feature = "std")]
+#[test]
+fn orangepi_linux_guest_uses_the_assigned_uart_console() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let path = workspace.join("os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+    let cmdline = config
+        .kernel
+        .cmdline
+        .as_deref()
+        .expect("OrangePi Linux guest must define its guest console command line");
+
+    assert!(cmdline.contains("console=ttyS2,1500000"));
+    assert!(cmdline.contains("earlycon=uart8250,mmio32,0xfeb50000"));
+    assert!(
+        !cmdline
+            .split_ascii_whitespace()
+            .any(|arg| arg == "console=tty1")
+    );
+}
+
+#[cfg(feature = "std")]
 fn collect_toml_files(directory: &std::path::Path, output: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
