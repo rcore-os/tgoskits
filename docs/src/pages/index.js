@@ -232,27 +232,17 @@ function HeroBanner() {
   return (
     <section className="hero-banner" id="hero" aria-label="TGOSKits overview banner">
       <svg className="hero-background-svg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-        <defs>
-          <linearGradient id="heroGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="var(--hero-grad-start-1)" />
-            <stop offset="100%" stopColor="var(--hero-grad-end-1)" />
-          </linearGradient>
-          <linearGradient id="heroGrad2" x1="100%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="var(--hero-grad-start-2)" />
-            <stop offset="100%" stopColor="var(--hero-grad-end-2)" />
-          </linearGradient>
-        </defs>
-        <rect width="1200" height="800" fill="url(#heroGrad1)" opacity="0.28" />
-        <path d="M0,100 Q300,50 600,100 T1200,100" stroke="url(#heroGrad2)" strokeWidth="2" fill="none" opacity="0.4" className="hero-wave-top" />
-        <path d="M0,120 Q300,80 600,120 T1200,120" stroke="url(#heroGrad2)" strokeWidth="1" fill="none" opacity="0.2" className="hero-wave-top" />
-        <circle cx="150" cy="250" r="80" fill="none" stroke="url(#heroGrad2)" strokeWidth="2" opacity="0.2" className="hero-circle-anim" />
-        <circle cx="150" cy="250" r="60" fill="none" stroke="url(#heroGrad2)" strokeWidth="1" opacity="0.1" className="hero-circle-anim-delayed" />
-        <circle cx="1100" cy="600" r="100" fill="none" stroke="url(#heroGrad2)" strokeWidth="2" opacity="0.15" className="hero-circle-anim-reverse" />
-        <line x1="100" y1="650" x2="300" y2="700" stroke="url(#heroGrad2)" strokeWidth="1" opacity="0.3" className="hero-line-anim" />
-        <line x1="950" y1="150" x2="1100" y2="200" stroke="url(#heroGrad2)" strokeWidth="1" opacity="0.3" className="hero-line-anim-reverse" />
-        <circle cx="600" cy="150" r="4" fill="url(#heroGrad2)" opacity="0.6" className="hero-dot-pulse" />
-        <circle cx="200" cy="600" r="3" fill="url(#heroGrad2)" opacity="0.5" className="hero-dot-pulse" />
-        <circle cx="1000" cy="400" r="3" fill="url(#heroGrad2)" opacity="0.5" className="hero-dot-pulse-delayed" />
+        <rect width="1200" height="800" fill="var(--hero-accent)" opacity="0.08" />
+        <path d="M0,100 Q300,50 600,100 T1200,100" stroke="var(--hero-decoration)" strokeWidth="2" fill="none" opacity="0.4" className="hero-wave-top" />
+        <path d="M0,120 Q300,80 600,120 T1200,120" stroke="var(--hero-decoration)" strokeWidth="1" fill="none" opacity="0.2" className="hero-wave-top" />
+        <circle cx="150" cy="250" r="80" fill="none" stroke="var(--hero-decoration)" strokeWidth="2" opacity="0.2" className="hero-circle-anim" />
+        <circle cx="150" cy="250" r="60" fill="none" stroke="var(--hero-decoration)" strokeWidth="1" opacity="0.1" className="hero-circle-anim-delayed" />
+        <circle cx="1100" cy="600" r="100" fill="none" stroke="var(--hero-decoration)" strokeWidth="2" opacity="0.15" className="hero-circle-anim-reverse" />
+        <line x1="100" y1="650" x2="300" y2="700" stroke="var(--hero-decoration)" strokeWidth="1" opacity="0.3" className="hero-line-anim" />
+        <line x1="950" y1="150" x2="1100" y2="200" stroke="var(--hero-decoration)" strokeWidth="1" opacity="0.3" className="hero-line-anim-reverse" />
+        <circle cx="600" cy="150" r="4" fill="var(--hero-decoration)" opacity="0.6" className="hero-dot-pulse" />
+        <circle cx="200" cy="600" r="3" fill="var(--hero-decoration)" opacity="0.5" className="hero-dot-pulse" />
+        <circle cx="1000" cy="400" r="3" fill="var(--hero-decoration)" opacity="0.5" className="hero-dot-pulse-delayed" />
       </svg>
 
       <div className="hero-content">
@@ -288,13 +278,7 @@ function HeroBanner() {
       </div>
 
       <svg className="hero-wave-divider" viewBox="0 0 1200 100" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="waveFill" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="var(--hero-wave-color)" />
-            <stop offset="100%" stopColor="var(--home-base)" />
-          </linearGradient>
-        </defs>
-        <path d="M0,20 Q300,0 600,20 T1200,20 L1200,100 L0,100 Z" fill="url(#waveFill)" />
+        <path d="M0,20 Q300,0 600,20 T1200,20 L1200,100 L0,100 Z" fill="var(--hero-wave-color)" />
         <path d="M0,30 Q300,10 600,30 T1200,30 L1200,100 L0,100 Z" fill="var(--home-base)" opacity="0.68" />
       </svg>
     </section>
@@ -614,25 +598,8 @@ function DocsSection() {
     >
       <div className="docs-constellation" aria-label="Documentation entry map">
         <svg className="docs-constellation__art" viewBox="0 0 1120 560" preserveAspectRatio="none" aria-hidden="true">
-          <defs>
-            <linearGradient id="docsPathGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="var(--ifm-color-primary)" />
-              <stop offset="52%" stopColor="var(--feature-accent-1)" />
-              <stop offset="100%" stopColor="var(--system-accent-axvisor)" />
-            </linearGradient>
-            <radialGradient id="docsNodeGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="var(--feature-accent-1)" stopOpacity="0.28" />
-              <stop offset="100%" stopColor="var(--feature-accent-1)" stopOpacity="0" />
-            </radialGradient>
-          </defs>
           <path className="docs-constellation__path docs-constellation__path--wide" d="M84 306 C220 252 320 254 430 304 S620 354 744 304 S902 250 1036 298" />
           <path className="docs-constellation__path docs-constellation__path--soft" d="M112 330 C252 366 344 226 496 270 S690 358 846 292 S990 238 1050 262" />
-          <g className="docs-constellation__glows">
-            <circle cx="168" cy="336" r="118" fill="url(#docsNodeGlow)" />
-            <circle cx="410" cy="166" r="104" fill="url(#docsNodeGlow)" />
-            <circle cx="684" cy="342" r="118" fill="url(#docsNodeGlow)" />
-            <circle cx="938" cy="206" r="108" fill="url(#docsNodeGlow)" />
-          </g>
         </svg>
         {docs.map((group, i) => (
           <article className={`docs-node docs-node--${i + 1} ${staggerClass(i)}`} key={group.title}>
