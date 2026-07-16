@@ -23,10 +23,9 @@ use x86_vlapic::EmulatedLocalApic;
 
 use self::structs::VmxBasic;
 pub use self::{
-    definitions::VmxExitReason,
-    percpu::VmxPerCpuState as VmxArchPerCpuState,
-    vcpu::{VmxVcpu as VmxArchVCpu, X86_APIC_ACCESS_GPA},
-    vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo},
+    percpu::VmxPerCpuState,
+    vcpu::{VmxVcpu, X86_APIC_ACCESS_GPA},
+    vmcs::VmxExitInfo,
 };
 use crate::{X86HostOps, X86HostPhysAddr, X86VcpuError};
 

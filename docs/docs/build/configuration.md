@@ -218,7 +218,7 @@ pub struct BuildInfo {
 
 ### Axvisor x86 虚拟化后端
 
-Axvisor 的 x86_64 build config 应在 `features` 中选择后端：Intel 使用 `vmx`，AMD 使用 `svm`。当前 axbuild 为兼容未迁移的通用 QEMU 配置，缺少后端时临时补充 `vmx`；显式配置 `svm` 时保持不变，同时配置两个后端仍会报错。待 Axvisor 不再依赖这两个 Cargo feature 后，应删除该兼容逻辑。
+Axvisor 会在 x86_64 运行时通过 CPUID 选择 Intel VMX 或 AMD SVM；build config 不得在 `features` 中声明 `vmx` 或 `svm`。axbuild 发现这两个遗留 feature 时会报错，避免构建配置与实际 CPU 能力不一致。
 
 ### 加载流程
 

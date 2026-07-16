@@ -23,7 +23,7 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::AddrSpace;
+use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{

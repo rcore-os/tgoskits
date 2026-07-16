@@ -9,10 +9,8 @@ mod structs;
 mod vcpu;
 mod vmcb;
 
-pub use definitions::{SvmExitCode, SvmIntercept};
-pub use percpu::SvmPerCpuState as SvmArchPerCpuState;
-pub use vcpu::SvmVcpu as SvmArchVCpu;
-pub use vmcb::SvmExitInfo;
+pub use percpu::SvmPerCpuState;
+pub use vcpu::SvmVcpu;
 
 pub fn has_hardware_support() -> bool {
     raw_cpuid::CpuId::new()

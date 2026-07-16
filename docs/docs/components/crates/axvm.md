@@ -70,7 +70,7 @@ flowchart TD
 ### 1.5 架构相关分层
 `axvm` 自身不把所有架构细节写死，而是通过 `src/vcpu.rs` 做一层统一绑定：
 
-- `x86_64`：主要对接 `x86_vcpu` 与 VMX 路径。
+- `x86_64`：对接 `x86_vcpu`，在运行时选择 VMX 或 SVM 路径。
 - `riscv64`：对接 `riscv_vcpu`。
 - `aarch64`：对接 `arm_vcpu`，并与 `arm_vgic` 协作处理中断控制器与虚拟定时设备。
 
@@ -150,12 +150,7 @@ graph LR
 axvm = { workspace = true }
 ```
 
-常见 feature：
-
-- `vmx`：x86 VMX 相关默认路径。
-- `svm`：x86 SVM 相关路径。
-
-Nested page table 层级由运行时硬件能力探测和 VM 配置共同决定，不再通过编译期 feature 固定。
+`axvm` 不提供 `vmx` 或 `svm` feature。x86 后端在 AxVM 初始化时由 CPU 能力选择，并在所有参与虚拟化的物理 CPU 上验证一致性。Nested page table 层级由运行时硬件能力探测和 VM 配置共同决定。
 
 ### 4.2 初始化顺序
 1. 先从 `axvmconfig` 或其他来源构造 `AxVMConfig`。
