@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+export NIX_REMOTE=local
+
 fail() {
     echo "NIX_SANDBOX_ERROR: $1"
     echo 'NIX_SANDBOX_TEST_FAILED'

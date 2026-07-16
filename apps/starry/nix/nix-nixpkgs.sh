@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+export NIX_REMOTE=local
+
 for cmd in build channel collect-garbage copy-closure env hash \
            instantiate prefetch-url shell store; do
     ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true

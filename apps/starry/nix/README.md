@@ -1,10 +1,11 @@
 # Starry Nix App
 
 This case runs a minimal Nix smoke test inside StarryOS through the app runner.
-Nix is installed from the Alpine community repository (`apk add nix`) inside the
-guest and run in single-user mode. The guest then evaluates a Nix expression and
-verifies a store-path write, covering the install→startup→evaluate→artifact
-chain.
+Nix is installed from the Alpine community repository during the host-side
+prebuild/rootfs injection step and then run in single-user mode inside the
+guest. The guest verifies the prebuilt Nix binary, evaluates a Nix expression,
+and verifies a store-path write, covering the install→startup→evaluate→artifact
+chain without a guest-time apk fetch.
 
 ```bash
 cargo xtask starry app qemu -t nix --arch x86_64
@@ -31,10 +32,11 @@ In the default path, Nix may substitute both `stdenv` and `hello` from
 
 ### Nix version and source
 
-The default path tests the **Alpine-packaged Nix** installed via `apk add nix`.
-Alpine v3.23 community provides `nix 2.31.5-r0`. The Nix package manager itself
-may then evaluate expressions and import nixpkgs at its own version, independent
-of the apk-provided binary. This app path does **not** cover installation via the
+The default path tests the **Alpine-packaged Nix** installed by `prebuild.sh`
+with the target rootfs apk before StarryOS boots. Alpine v3.23 community
+provides `nix 2.31.5-r0`. The Nix package manager itself may then evaluate
+expressions and import nixpkgs at its own version, independent of the
+apk-provided binary. This app path does **not** cover installation via the
 upstream Nix binary installer from `releases.nixos.org`.
 
 ### Local source builds are optional
@@ -47,10 +49,12 @@ an optional capability rather than a required CI assertion.
 
 ### Sandbox configuration
 
-The host prebuild generates `sandbox = false` in `nix.conf`. The `nix-sandbox`
-phase changes that setting to `sandbox = true`, runs `nix-build --no-substitute
---option sandbox true`, and rejects logs that report sandbox auto-disable. The
-later nixpkgs phase passes an explicit `--option sandbox false`.
+The host prebuild generates `sandbox = false` in `nix.conf`. The app scripts set
+`NIX_REMOTE=local` so store operations use the guest rootfs directly instead of
+expecting a daemon socket. The `nix-sandbox` phase changes the sandbox setting
+to `sandbox = true`, runs `nix-build --no-substitute --option sandbox true`, and
+rejects logs that report sandbox auto-disable. The later nixpkgs phase passes an
+explicit `--option sandbox false`.
 
 ## Test Content
 
@@ -60,10 +64,11 @@ later nixpkgs phase passes an explicit `--option sandbox false`.
 | `nix-nixpkgs` | nixpkgs import/evaluation, substitution-allowed realization, and `hello` execution | ✅ CI (003) |
 | `nix-sandbox` | minimal local derivation with `--no-substitute --option sandbox true` | ✅ CI |
 
-`test_nix.sh` installs nix via `apk add nix`, then runs `nix-nosandbox`,
-`nix-sandbox`, then `nix-nixpkgs`. On x86_64 the sandbox script first runs the
-same builder with `sandbox = false` to separate general builder failures from
-sandbox-specific failures.
+`prebuild.sh` installs Nix into the app rootfs before boot. `test_nix.sh` then
+verifies `nix --version`, runs `nix-nosandbox`, `nix-sandbox`, then
+`nix-nixpkgs`. On x86_64 the sandbox script first runs the same builder with
+`sandbox = false` to separate general builder failures from sandbox-specific
+failures.
 
 ### nixpkgs pin
 
@@ -89,7 +94,7 @@ Binary substitution is allowed by default (FR-003). This makes the standard
 test reproducible without requiring a slow local `stdenv` download or source
 build; it does not prove that a local `buildPhase` ran.
 
-- Install Nix via `apk add nix` → `nix --version` gate → store-path write via `builtins.toFile`
+- Install Nix during prebuild/rootfs injection → `nix --version` gate → store-path write via `builtins.toFile`
 - nixpkgs: import `/opt/nixpkgs` → evaluate `hello` → realize it with substitution allowed → verify `hello` output
 - Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 
@@ -162,7 +167,7 @@ apps/starry/nix/
 ├── nix.sh                       # sandbox-enabled local derivation build
 ├── nix-nosandbox.sh             # builtins.toFile (CI gate, ~30s)
 ├── nix-nixpkgs.sh               # nixpkgs realization and hello execution (CI gate)
-├── test_nix.sh                  # apk add nix + nosandbox + sandbox + nixpkgs phases
+├── test_nix.sh                  # prebuilt nix + nosandbox + sandbox + nixpkgs phases
 ├── build-x86_64-unknown-none.toml
 ├── build-aarch64-unknown-none-softfloat.toml
 ├── qemu-x86_64.toml             # 1800s timeout, shell_init_cmd=test_nix.sh
@@ -173,8 +178,8 @@ apps/starry/nix/
 
 ## Dependencies
 
-- Nix installed in the guest via `apk add nix` (Alpine v3.23 community,
-  `nix 2.31.5-r0`)
+- Nix installed into the app rootfs during prebuild with Alpine v3.23 community
+  `nix 2.31.5-r0`
 - Host network access to GitHub during prebuild (nixpkgs source archive)
 - Guest network access to `cache.nixos.org` for substitution-allowed nixpkgs
   derivations (FR-003)

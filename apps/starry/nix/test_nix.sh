@@ -1,13 +1,9 @@
 #!/bin/sh
 set -eu
 
-echo "=== nix-install ==="
-if ! apk add --no-cache nix; then
-    echo "NIX_INSTALL_TEST_FAILED"
-    exit 1
-fi
-
-if [ ! -x /usr/bin/nix ]; then
+echo "=== nix-prebuilt ==="
+if ! command -v nix >/dev/null 2>&1 || [ ! -x /usr/bin/nix ]; then
+    echo "prebuilt Nix is missing from the app rootfs"
     echo "NIX_INSTALL_TEST_FAILED"
     exit 1
 fi

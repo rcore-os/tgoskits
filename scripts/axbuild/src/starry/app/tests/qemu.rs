@@ -658,6 +658,54 @@ fn apk_package_prebuilds_use_guest_apk_from_staging_root() {
 }
 
 #[test]
+fn nix_app_installs_nix_before_guest_boot() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+
+    let prebuild_path = repo.join("apps/starry/nix/prebuild.sh");
+    let prebuild = fs::read_to_string(&prebuild_path).unwrap();
+    assert!(
+        prebuild.contains("/sbin/apk")
+            && prebuild.contains("--force-no-chroot")
+            && prebuild.contains("--scripts=no")
+            && prebuild.contains("add nix"),
+        "{} must install Alpine-packaged Nix into the app rootfs before boot",
+        prebuild_path.display()
+    );
+    assert!(
+        prebuild.contains("info --recursive --format json nix"),
+        "{} must copy the full Alpine Nix dependency closure, not only newly installed packages",
+        prebuild_path.display()
+    );
+
+    let guest_script_path = repo.join("apps/starry/nix/test_nix.sh");
+    let guest_script = fs::read_to_string(&guest_script_path).unwrap();
+    assert!(
+        !guest_script.contains("apk add") && !guest_script.contains("apk update"),
+        "{} must not install Nix from the guest at QEMU runtime",
+        guest_script_path.display()
+    );
+    assert!(
+        guest_script.contains("command -v nix"),
+        "{} must still verify that the prebuilt Nix binary is present",
+        guest_script_path.display()
+    );
+
+    for script_name in ["nix-nosandbox.sh", "nix.sh", "nix-nixpkgs.sh"] {
+        let script_path = repo.join("apps/starry/nix").join(script_name);
+        let script = fs::read_to_string(&script_path).unwrap();
+        assert!(
+            script.contains("NIX_REMOTE=local"),
+            "{} must use the injected single-user store instead of the daemon socket",
+            script_path.display()
+        );
+    }
+}
+
+#[test]
 fn apk_prebuilds_do_not_poison_qemu_with_guest_library_path() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
