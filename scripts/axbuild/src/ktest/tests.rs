@@ -90,6 +90,45 @@ fn axvisor_qemu_default_build_config_uses_board_defconfig() {
 }
 
 #[test]
+fn starry_kernel_ktest_axstd_dev_dependency_enables_std_entry_compat() {
+    let manifest_path = crate::context::workspace_root_path()
+        .unwrap()
+        .join("os/StarryOS/kernel/Cargo.toml");
+    let manifest: toml::Table =
+        toml::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
+    let axstd = manifest["dev-dependencies"]["ax-std"].as_table().unwrap();
+    let features = axstd["features"].as_array().unwrap();
+
+    assert!(
+        features
+            .iter()
+            .any(|feature| feature.as_str() == Some("std-compat")),
+        "starry-kernel ktest uses the Rust std main(argc, argv) ABI and must enable \
+         ax-std/std-compat"
+    );
+}
+
+#[test]
+fn system_x86_64_uefi_kernel_loader_avoids_ostool_ovmf_prebuilt() {
+    let mut qemu = QemuConfig {
+        args: vec!["-nographic".into()],
+        uefi: true,
+        ..QemuConfig::default()
+    };
+
+    apply_system_x86_64_uefi_kernel_loader(
+        &mut qemu,
+        Path::new("/usr/share/OVMF/OVMF_CODE.fd"),
+        Path::new("/tmp/axtest.vars.fd"),
+    );
+
+    assert!(!qemu.uefi);
+    assert!(qemu.to_bin);
+    assert!(qemu.args.iter().any(|arg| arg.contains("OVMF_CODE.fd")));
+    assert!(qemu.args.iter().any(|arg| arg.contains("axtest.vars.fd")));
+}
+
+#[test]
 fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
     let mut cargo = Cargo {
         package: "demo".into(),

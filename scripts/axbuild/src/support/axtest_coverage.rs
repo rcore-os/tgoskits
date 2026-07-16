@@ -342,8 +342,25 @@ mod capture {
                 .write_all(command.as_bytes())
                 .context("failed to send QEMU memsave command")?;
             stream.flush().ok();
-            Ok(())
+            wait_for_profraw(&self.profraw_path, size)
         }
+    }
+
+    fn wait_for_profraw(path: &Path, size: usize) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(metadata) = fs::metadata(path)
+                && metadata.len() >= size as u64
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        bail!(
+            "QEMU memsave did not create coverage profile {} with expected size {}",
+            path.display(),
+            size
+        )
     }
 
     fn wait_and_connect_monitor(socket: &Path) -> anyhow::Result<UnixStream> {
