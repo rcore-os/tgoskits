@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include <errno.h>
 
 /* linux/futex.h is not in the musl cross sysroot; the ABI values are stable. */
 #ifndef FUTEX_WAIT
@@ -46,6 +47,35 @@ static void ok(const char *name, int cond) {
     }
     fflush(stdout);
 }
+
+/* Set when any tested thread/sync API returns an error. The pthread_* and sem_*
+ * calls return the error code (or -1 with errno for sem) but the barrier/queue
+ * logic completes on the atomic words alone, so an unchecked init or thread
+ * creation failure would let a degraded kernel pass on a fallback path. Every
+ * API return is routed through CK/CKN so such a failure fails the run. */
+static atomic_int g_api_err;
+
+/* Checks a pthread-style API that returns 0 on success and an error code
+ * otherwise. */
+static void api_check(int rc, const char *what) {
+    if (rc != 0) {
+        atomic_store(&g_api_err, 1);
+        printf("API FAIL %s rc=%d\n", what, rc);
+        fflush(stdout);
+    }
+}
+#define CK(call) api_check((call), #call)
+
+/* Checks a libc-style API that returns 0 on success and -1 with errno on
+ * failure (sem_*). */
+static void api_check_neg(int rc, const char *what) {
+    if (rc != 0) {
+        atomic_store(&g_api_err, 1);
+        printf("API FAIL %s rc=%d errno=%d\n", what, rc, errno);
+        fflush(stdout);
+    }
+}
+#define CKN(call) api_check_neg((call), #call)
 
 /* ---- 1. Parallel reduction: 8 threads sum+max a partitioned range ---------- */
 #define RED_THREADS 8
@@ -79,12 +109,12 @@ static void test_parallel_reduction(void) {
         arg[t].hi = (t == RED_THREADS - 1) ? RED_N : (uint32_t)(t + 1) * chunk;
         arg[t].sum = 0;
         arg[t].max = 0;
-        pthread_create(&th[t], NULL, red_worker, &arg[t]);
+        CK(pthread_create(&th[t], NULL, red_worker, &arg[t]));
     }
     uint64_t total = 0;
     uint32_t gmax = 0;
     for (int t = 0; t < RED_THREADS; t++) {
-        pthread_join(th[t], NULL);
+        CK(pthread_join(th[t], NULL));
         total += arg[t].sum;
         if (arg[t].max > gmax) gmax = arg[t].max;
     }
@@ -124,15 +154,15 @@ static uint64_t pc_key(uint32_t prod, uint32_t seq) {
 static void *pc_producer(void *p) {
     uint32_t id = (uint32_t)(uintptr_t)p;
     for (uint32_t s = 0; s < PC_PER_PROD; s++) {
-        pthread_mutex_lock(&pcq.mtx);
+        CK(pthread_mutex_lock(&pcq.mtx));
         while (pcq.count == PC_CAP)
-            pthread_cond_wait(&pcq.not_full, &pcq.mtx);
+            CK(pthread_cond_wait(&pcq.not_full, &pcq.mtx));
         pcq.buf[pcq.tail] = (struct pc_item){ id, s };
         pcq.tail = (pcq.tail + 1) % PC_CAP;
         pcq.count++;
         pc_prod_checksum ^= pc_key(id, s);
-        pthread_cond_signal(&pcq.not_empty);
-        pthread_mutex_unlock(&pcq.mtx);
+        CK(pthread_cond_signal(&pcq.not_empty));
+        CK(pthread_mutex_unlock(&pcq.mtx));
     }
     return NULL;
 }
@@ -140,11 +170,11 @@ static void *pc_producer(void *p) {
 static void *pc_consumer(void *unused) {
     (void)unused;
     for (;;) {
-        pthread_mutex_lock(&pcq.mtx);
+        CK(pthread_mutex_lock(&pcq.mtx));
         while (pcq.count == 0 && !pcq.closed)
-            pthread_cond_wait(&pcq.not_empty, &pcq.mtx);
+            CK(pthread_cond_wait(&pcq.not_empty, &pcq.mtx));
         if (pcq.count == 0 && pcq.closed) {
-            pthread_mutex_unlock(&pcq.mtx);
+            CK(pthread_mutex_unlock(&pcq.mtx));
             return NULL;
         }
         struct pc_item it = pcq.buf[pcq.head];
@@ -159,30 +189,30 @@ static void *pc_consumer(void *unused) {
                 pc_fifo_ok = 0;
             pc_last_seq[it.producer] = it.seq;
         }
-        pthread_cond_signal(&pcq.not_full);
-        pthread_mutex_unlock(&pcq.mtx);
+        CK(pthread_cond_signal(&pcq.not_full));
+        CK(pthread_mutex_unlock(&pcq.mtx));
     }
 }
 
 static void test_producer_consumer(void) {
     memset(&pcq, 0, sizeof(pcq));
-    pthread_mutex_init(&pcq.mtx, NULL);
-    pthread_cond_init(&pcq.not_full, NULL);
-    pthread_cond_init(&pcq.not_empty, NULL);
+    CK(pthread_mutex_init(&pcq.mtx, NULL));
+    CK(pthread_cond_init(&pcq.not_full, NULL));
+    CK(pthread_cond_init(&pcq.not_empty, NULL));
     for (int i = 0; i < PC_PROD; i++) pc_last_seq[i] = UINT32_MAX;
 
     pthread_t prod[PC_PROD], cons[PC_CONS];
     for (int i = 0; i < PC_CONS; i++)
-        pthread_create(&cons[i], NULL, pc_consumer, NULL);
+        CK(pthread_create(&cons[i], NULL, pc_consumer, NULL));
     for (int i = 0; i < PC_PROD; i++)
-        pthread_create(&prod[i], NULL, pc_producer, (void *)(uintptr_t)i);
-    for (int i = 0; i < PC_PROD; i++) pthread_join(prod[i], NULL);
+        CK(pthread_create(&prod[i], NULL, pc_producer, (void *)(uintptr_t)i));
+    for (int i = 0; i < PC_PROD; i++) CK(pthread_join(prod[i], NULL));
 
-    pthread_mutex_lock(&pcq.mtx);
+    CK(pthread_mutex_lock(&pcq.mtx));
     pcq.closed = 1;
-    pthread_cond_broadcast(&pcq.not_empty);
-    pthread_mutex_unlock(&pcq.mtx);
-    for (int i = 0; i < PC_CONS; i++) pthread_join(cons[i], NULL);
+    CK(pthread_cond_broadcast(&pcq.not_empty));
+    CK(pthread_mutex_unlock(&pcq.mtx));
+    for (int i = 0; i < PC_CONS; i++) CK(pthread_join(cons[i], NULL));
 
     ok("pc_count", pc_consumed == PC_TOTAL);
     ok("pc_checksum", pc_prod_checksum == pc_cons_checksum);
@@ -193,16 +223,43 @@ static void test_producer_consumer(void) {
 #define FB_THREADS 6
 #define FB_ROUNDS 50
 
-static int fb_futex;              /* generation counter, futex word */
+/* Generation counter and futex word. Declared atomic because it is both read
+ * and written through C11 atomic generic selection below; `atomic_int` has the
+ * same representation as `int`, so the raw SYS_futex calls still see a plain
+ * 32-bit word at this address. */
+static atomic_int fb_futex;
 static atomic_int fb_arrived;
 static atomic_int fb_phase_err;
 static atomic_int fb_in_phase2;   /* threads that passed the barrier this round */
+/* Set if a FUTEX_* syscall returned an unexpected result. Without this the
+ * barrier still completes on the atomic word alone, so the test would report
+ * success even if the kernel returned ENOSYS for every FUTEX_WAIT/FUTEX_WAKE -
+ * i.e. it would not actually verify futex at all. */
+static atomic_int fb_futex_broken;
+/* Set once FUTEX_WAKE is accepted by the kernel (rc >= 0), proving the syscall
+ * path was really exercised rather than skipped. */
+static atomic_int fb_futex_woke;
 
-static int futex_wait(int *addr, int expected) {
-    return (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected, NULL, NULL, 0);
+static int futex_wait(atomic_int *addr, int expected) {
+    int rc = (int)syscall(SYS_futex, addr, FUTEX_WAIT, expected, NULL, NULL, 0);
+    /* A wait legitimately returns 0 (woken) or fails with EAGAIN (the word
+     * already changed), EINTR, or ETIMEDOUT. Anything else - notably ENOSYS on
+     * a kernel without futex - means the primitive is not working. */
+    if (rc < 0 && errno != EAGAIN && errno != EINTR && errno != ETIMEDOUT) {
+        atomic_store(&fb_futex_broken, 1);
+    }
+    return rc;
 }
-static int futex_wake(int *addr, int n) {
-    return (int)syscall(SYS_futex, addr, FUTEX_WAKE, n, NULL, NULL, 0);
+static int futex_wake(atomic_int *addr, int n) {
+    int rc = (int)syscall(SYS_futex, addr, FUTEX_WAKE, n, NULL, NULL, 0);
+    /* Wake returns the number of waiters woken (>= 0) on success; a negative
+     * return (e.g. ENOSYS) means futex is unavailable. */
+    if (rc < 0) {
+        atomic_store(&fb_futex_broken, 1);
+    } else {
+        atomic_store(&fb_futex_woke, 1);
+    }
+    return rc;
 }
 
 static void *fb_worker(void *unused) {
@@ -236,11 +293,19 @@ static void test_futex_barrier(void) {
     atomic_store(&fb_arrived, 0);
     atomic_store(&fb_phase_err, 0);
     atomic_store(&fb_in_phase2, 0);
+    atomic_store(&fb_futex_broken, 0);
+    atomic_store(&fb_futex_woke, 0);
     pthread_t th[FB_THREADS];
     for (int i = 0; i < FB_THREADS; i++)
-        pthread_create(&th[i], NULL, fb_worker, NULL);
-    for (int i = 0; i < FB_THREADS; i++) pthread_join(th[i], NULL);
-    ok("futex_barrier", atomic_load(&fb_phase_err) == 0);
+        CK(pthread_create(&th[i], NULL, fb_worker, NULL));
+    for (int i = 0; i < FB_THREADS; i++) CK(pthread_join(th[i], NULL));
+    /* Require correct phase ordering AND that futex actually worked: no
+     * unexpected syscall result, and at least one FUTEX_WAKE was accepted by
+     * the kernel. A kernel returning ENOSYS for futex now fails this case
+     * instead of passing on the atomic fallback alone. */
+    ok("futex_barrier",
+       atomic_load(&fb_phase_err) == 0 && atomic_load(&fb_futex_broken) == 0 &&
+           atomic_load(&fb_futex_woke) == 1);
 }
 
 /* ---- 4. Atomic counter contention ----------------------------------------- */
@@ -264,8 +329,8 @@ static void test_atomic_contention(void) {
     atomic_store(&at_seqcst, 0);
     pthread_t th[AT_THREADS];
     for (int i = 0; i < AT_THREADS; i++)
-        pthread_create(&th[i], NULL, at_worker, NULL);
-    for (int i = 0; i < AT_THREADS; i++) pthread_join(th[i], NULL);
+        CK(pthread_create(&th[i], NULL, at_worker, NULL));
+    for (int i = 0; i < AT_THREADS; i++) CK(pthread_join(th[i], NULL));
     unsigned long long ref = (unsigned long long)AT_THREADS * AT_ITERS;
     ok("atomic_relaxed", atomic_load(&at_relaxed) == ref);
     ok("atomic_seqcst", atomic_load(&at_seqcst) == ref);
@@ -284,9 +349,9 @@ static struct {
 static void *ws_worker(void *unused) {
     (void)unused;
     for (;;) {
-        pthread_mutex_lock(&ws.mtx);
+        CK(pthread_mutex_lock(&ws.mtx));
         int idx = ws.next < WS_TASKS ? ws.next++ : -1;
-        pthread_mutex_unlock(&ws.mtx);
+        CK(pthread_mutex_unlock(&ws.mtx));
         if (idx < 0) return NULL;
         atomic_fetch_add(&ws.done[idx], 1);
     }
@@ -294,12 +359,12 @@ static void *ws_worker(void *unused) {
 
 static void test_work_pool(void) {
     ws.next = 0;
-    pthread_mutex_init(&ws.mtx, NULL);
+    CK(pthread_mutex_init(&ws.mtx, NULL));
     for (int i = 0; i < WS_TASKS; i++) atomic_store(&ws.done[i], 0);
     pthread_t th[WS_WORKERS];
     for (int i = 0; i < WS_WORKERS; i++)
-        pthread_create(&th[i], NULL, ws_worker, NULL);
-    for (int i = 0; i < WS_WORKERS; i++) pthread_join(th[i], NULL);
+        CK(pthread_create(&th[i], NULL, ws_worker, NULL));
+    for (int i = 0; i < WS_WORKERS; i++) CK(pthread_join(th[i], NULL));
     int all_once = 1;
     for (int i = 0; i < WS_TASKS; i++)
         if (atomic_load(&ws.done[i]) != 1) { all_once = 0; break; }
@@ -322,9 +387,9 @@ static atomic_int rw_torn;
 static void *rw_reader(void *unused) {
     (void)unused;
     for (uint32_t i = 0; i < RW_READS; i++) {
-        pthread_rwlock_rdlock(&rw.lock);
+        CK(pthread_rwlock_rdlock(&rw.lock));
         if (rw.a + rw.b != RW_K) atomic_store(&rw_torn, 1);
-        pthread_rwlock_unlock(&rw.lock);
+        CK(pthread_rwlock_unlock(&rw.lock));
     }
     return NULL;
 }
@@ -332,27 +397,27 @@ static void *rw_reader(void *unused) {
 static void *rw_writer(void *unused) {
     (void)unused;
     while (!__atomic_load_n(&rw.stop, __ATOMIC_ACQUIRE)) {
-        pthread_rwlock_wrlock(&rw.lock);
+        CK(pthread_rwlock_wrlock(&rw.lock));
         long d = (rw.a % 7) + 1;
         rw.a += d;
         rw.b -= d;               /* keeps a + b == RW_K between rd-lockable points */
-        pthread_rwlock_unlock(&rw.lock);
+        CK(pthread_rwlock_unlock(&rw.lock));
         sched_yield();
     }
     return NULL;
 }
 
 static void test_rwlock(void) {
-    pthread_rwlock_init(&rw.lock, NULL);
+    CK(pthread_rwlock_init(&rw.lock, NULL));
     rw.a = 0; rw.b = RW_K; rw.stop = 0;
     atomic_store(&rw_torn, 0);
     pthread_t rd[RW_READERS], wr;
-    pthread_create(&wr, NULL, rw_writer, NULL);
+    CK(pthread_create(&wr, NULL, rw_writer, NULL));
     for (int i = 0; i < RW_READERS; i++)
-        pthread_create(&rd[i], NULL, rw_reader, NULL);
-    for (int i = 0; i < RW_READERS; i++) pthread_join(rd[i], NULL);
+        CK(pthread_create(&rd[i], NULL, rw_reader, NULL));
+    for (int i = 0; i < RW_READERS; i++) CK(pthread_join(rd[i], NULL));
     __atomic_store_n(&rw.stop, 1, __ATOMIC_RELEASE);
-    pthread_join(wr, NULL);
+    CK(pthread_join(wr, NULL));
     ok("rwlock_no_torn_read", atomic_load(&rw_torn) == 0);
 }
 
@@ -368,30 +433,35 @@ static atomic_int sem_peak;
 static void *sem_worker(void *unused) {
     (void)unused;
     for (int i = 0; i < SEM_ITERS; i++) {
-        sem_wait(&sem);
+        CKN(sem_wait(&sem));
         int cur = atomic_fetch_add(&sem_inside, 1) + 1;
         int peak = atomic_load(&sem_peak);
         while (cur > peak && !atomic_compare_exchange_weak(&sem_peak, &peak, cur))
             ;
         sched_yield();                 /* widen the interleave window on one core */
         atomic_fetch_sub(&sem_inside, 1);
-        sem_post(&sem);
+        CKN(sem_post(&sem));
     }
     return NULL;
 }
 
 static void test_semaphore(void) {
-    sem_init(&sem, 0, SEM_PERMITS);
+    CKN(sem_init(&sem, 0, SEM_PERMITS));
     atomic_store(&sem_inside, 0);
     atomic_store(&sem_peak, 0);
     pthread_t th[SEM_THREADS];
     for (int i = 0; i < SEM_THREADS; i++)
-        pthread_create(&th[i], NULL, sem_worker, NULL);
-    for (int i = 0; i < SEM_THREADS; i++) pthread_join(th[i], NULL);
+        CK(pthread_create(&th[i], NULL, sem_worker, NULL));
+    for (int i = 0; i < SEM_THREADS; i++) CK(pthread_join(th[i], NULL));
     int final_val = -1;
-    sem_getvalue(&sem, &final_val);
-    sem_destroy(&sem);
-    ok("sem_peak_le_permits", atomic_load(&sem_peak) <= SEM_PERMITS && atomic_load(&sem_peak) >= 1);
+    CKN(sem_getvalue(&sem, &final_val));
+    CKN(sem_destroy(&sem));
+    /* The peak concurrent occupancy must be exactly SEM_PERMITS: reaching it
+     * proves all three permits are usable concurrently, and not exceeding it
+     * proves the semaphore actually bounds the critical section. A weaker
+     * `1 <= peak <= permits` would pass even if the semaphore only ever admitted
+     * one thread (i.e. behaved like a plain mutex). */
+    ok("sem_peak_equals_permits", atomic_load(&sem_peak) == SEM_PERMITS);
     ok("sem_value_restored", final_val == SEM_PERMITS);
 }
 
@@ -405,7 +475,7 @@ static atomic_int tl_bad;
 static void *tl_worker(void *p) {
     uint64_t id = (uint64_t)(uintptr_t)p;
     tl_slot = id * id;
-    pthread_setspecific(tl_key, (void *)(uintptr_t)(id + 100));
+    CK(pthread_setspecific(tl_key, (void *)(uintptr_t)(id + 100)));
     for (int i = 0; i < 1000; i++) {
         sched_yield();
         if (tl_slot != id * id) atomic_store(&tl_bad, 1);
@@ -415,13 +485,13 @@ static void *tl_worker(void *p) {
 }
 
 static void test_thread_local(void) {
-    pthread_key_create(&tl_key, NULL);
+    CK(pthread_key_create(&tl_key, NULL));
     atomic_store(&tl_bad, 0);
     pthread_t th[TL_THREADS];
     for (int i = 0; i < TL_THREADS; i++)
-        pthread_create(&th[i], NULL, tl_worker, (void *)(uintptr_t)i);
-    for (int i = 0; i < TL_THREADS; i++) pthread_join(th[i], NULL);
-    pthread_key_delete(tl_key);
+        CK(pthread_create(&th[i], NULL, tl_worker, (void *)(uintptr_t)i));
+    for (int i = 0; i < TL_THREADS; i++) CK(pthread_join(th[i], NULL));
+    CK(pthread_key_delete(tl_key));
     ok("thread_local_isolation", atomic_load(&tl_bad) == 0);
 }
 
@@ -429,37 +499,47 @@ static void test_thread_local(void) {
 #define RR_THREADS 8
 
 static atomic_int rr_go;
+static atomic_int rr_stop;
 static atomic_ullong rr_slot[RR_THREADS];
 
 static void *rr_worker(void *p) {
     int id = (int)(intptr_t)p;
     while (!atomic_load(&rr_go)) sched_yield();
-    struct timespec t0, now;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (;;) {
+    /* Advance until the *shared* deadline set by the controller. A per-thread
+     * timer that starts on first scheduling would give even a starved thread
+     * its own full budget, hiding starvation; a single common window instead
+     * proves every thread was scheduled and progressed inside the same span. */
+    while (!atomic_load(&rr_stop)) {
         atomic_fetch_add(&rr_slot[id], 1);
         sched_yield();
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double dt = (now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9;
-        if (dt > 0.5) break;         /* fixed wall budget */
     }
     return NULL;
 }
 
 static void test_rr_fairness(void) {
     atomic_store(&rr_go, 0);
+    atomic_store(&rr_stop, 0);
     for (int i = 0; i < RR_THREADS; i++) atomic_store(&rr_slot[i], 0);
     pthread_t th[RR_THREADS];
     for (int i = 0; i < RR_THREADS; i++)
-        pthread_create(&th[i], NULL, rr_worker, (void *)(intptr_t)i);
+        CK(pthread_create(&th[i], NULL, rr_worker, (void *)(intptr_t)i));
     atomic_store(&rr_go, 1);
-    for (int i = 0; i < RR_THREADS; i++) pthread_join(th[i], NULL);
-    unsigned long long mn = ~0ull;
+    /* One fixed wall-clock budget shared by all threads. */
+    struct timespec budget = { 0, 500000000L };   /* 0.5 s */
+    nanosleep(&budget, NULL);
+    atomic_store(&rr_stop, 1);
+    for (int i = 0; i < RR_THREADS; i++) CK(pthread_join(th[i], NULL));
+    unsigned long long mn = ~0ull, mx = 0;
     for (int i = 0; i < RR_THREADS; i++) {
         unsigned long long v = atomic_load(&rr_slot[i]);
         if (v < mn) mn = v;
+        if (v > mx) mx = v;
     }
-    ok("rr_fairness_no_starvation", mn > 0);   /* every thread made progress */
+    /* Every thread must have advanced within the shared window (no starvation),
+     * and the busiest thread must not have run away by more than 32x the least
+     * busy - a coarse fairness bound that a round-robin scheduler satisfies but
+     * a starving one does not. */
+    ok("rr_fairness_no_starvation", mn > 0 && mx <= mn * 32);
 }
 
 int main(void) {
@@ -480,7 +560,12 @@ int main(void) {
 
     int total = g_pass + g_fail;
     printf("cpu-concurrency: %d/%d assertions passed\n", g_pass, total);
-    if (g_fail == 0 && g_pass == 14) {
+    if (atomic_load(&g_api_err) != 0)
+        printf("cpu-concurrency: a tested thread/sync API returned an error\n");
+    /* Require every assertion to pass, the exact expected assertion count (so a
+     * skipped/early-exited test cannot masquerade as success), and that no
+     * tested API reported an error. */
+    if (g_fail == 0 && g_pass == 14 && atomic_load(&g_api_err) == 0) {
         printf("ALL PASS %d/%d\n", g_pass, total);
         printf("CPU_CONCURRENCY_PASSED\n");
         return 0;
