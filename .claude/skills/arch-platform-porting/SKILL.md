@@ -30,8 +30,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   or host `/dev/kvm` availability.
   Axvisor x86_64 selects the VMX or SVM backend at runtime from CPUID; the generic QEMU board
   and all Axvisor build configs remain backend-neutral. CI must retain separate Intel/VMX and
-  AMD/SVM QEMU cases because their host CPU exposure and guest workarounds differ, but neither
-  case may select a Cargo `vmx` or `svm` feature.
+  AMD/SVM QEMU cases because their host CPU exposure differs, but neither case may select a
+  Cargo `vmx` or `svm` feature. Both cases must use the same backend-neutral guest baseline so
+  their result isolates the runtime CPUID-selected virtualization path.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.
