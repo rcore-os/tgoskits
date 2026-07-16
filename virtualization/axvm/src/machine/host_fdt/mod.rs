@@ -76,7 +76,6 @@ pub fn generate_host_fdt(
     sanitize_path_tables(&mut guest)?;
     rebuild_memory(&mut guest, plan)?;
     patch_chosen(&mut guest, config)?;
-    patch_psci_conduit(&mut guest)?;
     materialize_virtual_devices(&mut guest, plan)?;
     guest.boot_cpuid_phys = 0;
     guest.memory_reservations.clear();
@@ -363,28 +362,6 @@ fn patch_chosen(guest: &mut Fdt, config: &HostFdtConfig) -> MachinePlanResult<()
     chosen.remove_property("linux,initrd-end");
     if let Some(bootargs) = config.bootargs.as_deref() {
         chosen.set_property(string_property("bootargs", bootargs));
-    }
-    Ok(())
-}
-
-fn patch_psci_conduit(guest: &mut Fdt) -> MachinePlanResult<()> {
-    let psci_nodes = guest
-        .iter_node_ids()
-        .filter(|node_id| {
-            guest.node(*node_id).is_some_and(|node| {
-                node.compatibles()
-                    .any(|compatible| matches!(compatible, "arm,psci-1.0" | "arm,psci-0.2"))
-            })
-        })
-        .collect::<Vec<_>>();
-    for node_id in psci_nodes {
-        let path = guest.path_of(node_id);
-        let node = guest
-            .node_mut(node_id)
-            .ok_or_else(|| MachinePlanError::InvalidFirmware {
-                detail: format!("guest PSCI node '{path}' cannot be updated"),
-            })?;
-        node.set_property(string_property("method", "hvc"));
     }
     Ok(())
 }

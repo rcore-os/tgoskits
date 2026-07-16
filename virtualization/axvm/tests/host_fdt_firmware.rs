@@ -71,19 +71,22 @@ fn host_cpu_selection_uses_the_hardware_affinity_from_reg() {
 }
 
 #[test]
-fn host_psci_conduit_is_replaced_with_the_vm_hvc_conduit() {
-    let host = host_fdt_with_psci("smc");
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
-    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
-    let plan = VmMachinePlanner::new(aarch64_profile())
-        .plan(&request, &snapshot)
-        .unwrap();
+fn host_psci_conduit_is_preserved_for_platform_compatibility() {
+    for method in ["smc", "hvc"] {
+        let host = host_fdt_with_psci(method);
+        let snapshot =
+            HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+        let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+        let plan = VmMachinePlanner::new(aarch64_profile())
+            .plan(&request, &snapshot)
+            .unwrap();
 
-    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
-    let guest = Fdt::from_bytes(&guest).unwrap();
-    let psci = guest.get_by_path("/psci").unwrap().as_node();
+        let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+        let guest = Fdt::from_bytes(&guest).unwrap();
+        let psci = guest.get_by_path("/psci").unwrap().as_node();
 
-    assert_eq!(psci.get_property("method").unwrap().as_str(), Some("hvc"));
+        assert_eq!(psci.get_property("method").unwrap().as_str(), Some(method));
+    }
 }
 
 #[test]

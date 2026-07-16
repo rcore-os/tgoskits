@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Select host-derived AArch64 CPU nodes by their `reg` hardware affinity and
-  replace the host PSCI conduit with the VM-owned HVC interface.
+  preserve the platform PSCI conduit while completing its calls inside the VM.
 - Keep nested FDT interrupt specifiers out of the root-controller topology,
   reject devices with unavailable required providers during planning, and
   remove optional or stale references without exposing host-owned providers;
