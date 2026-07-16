@@ -1,8 +1,12 @@
 board_type = "OrangePi-5-Plus"
-fail_regex = []
+fail_regex = [
+  "ITS queue timeout",
+  "Booted with LPIs enabled, memory probably corrupted",
+  "Failed to disable LPIs",
+]
 shell_init_cmd = "pwd && echo 'test pass'"
 shell_prefix = "orangepi@orangepi5plus:~"
 success_regex = [
   "(?m)^test pass\\s*$",
 ]
-timeout = 300
+timeout = 600

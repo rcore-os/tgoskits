@@ -769,3 +769,32 @@ fn board_case_config_is_also_valid_board_run_config() {
     assert_eq!(config.board_type, "PhytiumPi");
     assert_eq!(config.shell_prefix.as_deref(), Some("login:"));
 }
+
+#[test]
+fn orangepi_linux_board_gate_bounds_slow_storage_and_rejects_its_ownership_faults() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join(
+        "test-suit/axvisor/normal/board-orangepi-5-plus/smoke/board-orangepi-5-plus-linux.toml",
+    );
+    assert!(path.is_file(), "missing board gate config {}", path.display());
+    let config: ostool::board::config::BoardRunConfig =
+        toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+
+    assert!(
+        config.timeout.is_some_and(|timeout| timeout >= 600),
+        "the slow OrangePi-5-Plus storage path needs a bounded 600 second board budget"
+    );
+    for diagnostic in [
+        "ITS queue timeout",
+        "Booted with LPIs enabled, memory probably corrupted",
+        "Failed to disable LPIs",
+    ] {
+        assert!(
+            config
+                .fail_regex
+                .iter()
+                .any(|pattern| pattern.contains(diagnostic)),
+            "the board gate must fail on the ITS ownership diagnostic `{diagnostic}`"
+        );
+    }
+}

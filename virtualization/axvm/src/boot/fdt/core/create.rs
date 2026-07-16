@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    collections::BTreeSet,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::ptr::NonNull;
 
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::tree::{FdtTree, GuestMemorySpec};
@@ -36,7 +40,11 @@ pub fn create_guest_fdt(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
-    let guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
+    let interrupt_projection = GuestInterruptCapabilityProjection::from_host(fdt, crate_config);
+    let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
+        if interrupt_projection.hides_node(path) {
+            return false;
+        }
         should_keep_generated_node(
             fdt,
             node_id,
@@ -46,7 +54,132 @@ pub fn create_guest_fdt(
             phys_cpu_ids,
         )
     })?;
+    interrupt_projection.sanitize_references(&mut guest_tree)?;
     Ok(guest_tree.finish())
+}
+
+#[derive(Default)]
+struct GuestInterruptCapabilityProjection {
+    hidden_its_paths: BTreeSet<String>,
+    hidden_its_phandles: BTreeSet<u32>,
+}
+
+impl GuestInterruptCapabilityProjection {
+    fn from_host(fdt: &Fdt, crate_config: &AxVMCrateConfig) -> Self {
+        let mut projection = Self::default();
+        for node_id in fdt.iter_node_ids() {
+            let Some(node) = fdt.node(node_id) else {
+                continue;
+            };
+            if !is_gic_v3_its(node) || configured_its_covers_node(fdt, node_id, crate_config) {
+                continue;
+            }
+
+            projection.hidden_its_paths.insert(fdt.path_of(node_id));
+            for property_name in ["phandle", "linux,phandle"] {
+                if let Some(phandle) = node
+                    .get_property(property_name)
+                    .and_then(|property| property.get_u32())
+                {
+                    projection.hidden_its_phandles.insert(phandle);
+                }
+            }
+        }
+        projection
+    }
+
+    fn hides_node(&self, path: &str) -> bool {
+        self.hidden_its_paths.contains(path)
+    }
+
+    fn sanitize_references(&self, tree: &mut FdtTree) -> AxVmResult {
+        if self.hidden_its_paths.is_empty() {
+            return Ok(());
+        }
+
+        for (node_id, path) in tree.node_paths() {
+            tree.edit_node(node_id, |node| {
+                if path == "/aliases" {
+                    let stale_aliases = node
+                        .properties()
+                        .iter()
+                        .filter_map(|property| {
+                            property
+                                .as_str()
+                                .filter(|target| self.hidden_its_paths.contains(*target))
+                                .map(|_| property.name().to_string())
+                        })
+                        .collect::<Vec<_>>();
+                    for property_name in stale_aliases {
+                        node.remove_property(&property_name);
+                    }
+                }
+
+                let remove_msi_parent = node
+                    .get_property("msi-parent")
+                    .and_then(|property| property.get_u32_iter().next())
+                    .is_some_and(|phandle| self.hidden_its_phandles.contains(&phandle));
+                if remove_msi_parent {
+                    node.remove_property("msi-parent");
+                }
+
+                let Some(msi_map) = node.get_property("msi-map").cloned() else {
+                    return;
+                };
+                let cells = msi_map.get_u32_iter().collect::<Vec<_>>();
+                let mut retained = Vec::with_capacity(cells.len());
+                if cells.len() % 4 == 0 {
+                    for entry in cells.chunks_exact(4) {
+                        if !self.hidden_its_phandles.contains(&entry[1]) {
+                            retained.extend_from_slice(entry);
+                        }
+                    }
+                } else if !cells
+                    .iter()
+                    .any(|cell| self.hidden_its_phandles.contains(cell))
+                {
+                    return;
+                }
+
+                if retained.is_empty() {
+                    node.remove_property("msi-map");
+                    node.remove_property("msi-map-mask");
+                } else if retained.len() != cells.len() {
+                    let mut property = msi_map;
+                    property.set_u32_ls(&retained);
+                    node.set_property(property);
+                }
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn is_gic_v3_its(node: &Node) -> bool {
+    node.get_property("compatible").is_some_and(|property| {
+        property
+            .as_str_iter()
+            .any(|value| value == "arm,gic-v3-its")
+    })
+}
+
+fn configured_its_covers_node(fdt: &Fdt, node_id: NodeId, crate_config: &AxVMCrateConfig) -> bool {
+    let Some(reg) = fdt
+        .view_typed(node_id)
+        .and_then(|node| node.regs().into_iter().next())
+    else {
+        return false;
+    };
+    let Ok(base_gpa) = usize::try_from(reg.address) else {
+        return false;
+    };
+    let required_length = reg.size.and_then(|size| usize::try_from(size).ok());
+
+    crate_config.devices.emu_devices.iter().any(|device| {
+        device.emu_type == EmulatedDeviceType::GPPTITS
+            && device.base_gpa == base_gpa
+            && required_length.is_none_or(|length| device.length >= length)
+    })
 }
 
 fn should_keep_generated_node(
@@ -269,6 +402,66 @@ mod tests {
         prop
     }
 
+    fn prop_u32_list(name: &str, values: &[u32]) -> Property {
+        let mut prop = Property::new(name, alloc::vec![]);
+        prop.set_u32_ls(values);
+        prop
+    }
+
+    fn prop_string(name: &str, value: &str) -> Property {
+        let mut prop = Property::new(name, alloc::vec![]);
+        prop.set_string(value);
+        prop
+    }
+
+    fn host_fdt_with_unbacked_its() -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let aliases = fdt.add_node(root, Node::new("aliases"));
+        fdt.node_mut(aliases).unwrap().set_property(prop_string(
+            "its0",
+            "/interrupt-controller@fe600000/msi-controller@fe640000",
+        ));
+
+        let gic = fdt.add_node(root, Node::new("interrupt-controller@fe600000"));
+        fdt.node_mut(gic)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(gic)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let its = fdt.add_node(gic, Node::new("msi-controller@fe640000"));
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(prop_string("compatible", "arm,gic-v3-its"));
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(prop_u32("phandle", 0x10e));
+        fdt.view_typed_mut(its)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0xfe64_0000, Some(0x2_0000))]);
+
+        let pcie = fdt.add_node(root, Node::new("pcie@fe180000"));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32_list("msi-map", &[0x3000, 0x10e, 0x3000, 0x1000]));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32("msi-map-mask", 0xffff));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[0, 0xf8, 4]));
+        fdt
+    }
+
     fn test_fdt(dts: &str) -> Fdt {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -382,5 +575,79 @@ mod tests {
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
         assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_hides_unbacked_its_capability() {
+        let fdt = host_fdt_with_unbacked_its();
+        let cfg = AxVMCrateConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(alloc::vec![0]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let passthrough = [
+            "/aliases".into(),
+            "/interrupt-controller@fe600000".into(),
+            "/pcie@fe180000".into(),
+        ];
+
+        let dtb = super::create_guest_fdt(&fdt, &passthrough, &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(
+            reparsed
+                .get_by_path_id("/interrupt-controller@fe600000/msi-controller@fe640000")
+                .is_none()
+        );
+        let pcie = reparsed.get_by_path("/pcie@fe180000").unwrap();
+        assert!(pcie.as_node().get_property("msi-map").is_none());
+        assert!(pcie.as_node().get_property("msi-map-mask").is_none());
+        assert!(pcie.as_node().get_property("interrupts").is_some());
+        let aliases = reparsed.get_by_path("/aliases").unwrap();
+        assert!(aliases.as_node().get_property("its0").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_keeps_configured_its_capability() {
+        let fdt = host_fdt_with_unbacked_its();
+        let cfg = AxVMCrateConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(alloc::vec![0]),
+                ..Default::default()
+            },
+            devices: axvmconfig::VMDevicesConfig {
+                emu_devices: alloc::vec![axvmconfig::EmulatedDeviceConfig {
+                    name: "gppt-gits".into(),
+                    base_gpa: 0xfe64_0000,
+                    length: 0x2_0000,
+                    irq_id: 0,
+                    emu_type: axvmconfig::EmulatedDeviceType::GPPTITS,
+                    cfg_list: alloc::vec![0xfe64_0000],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let passthrough = [
+            "/aliases".into(),
+            "/interrupt-controller@fe600000".into(),
+            "/pcie@fe180000".into(),
+        ];
+
+        let dtb = super::create_guest_fdt(&fdt, &passthrough, &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(
+            reparsed
+                .get_by_path_id("/interrupt-controller@fe600000/msi-controller@fe640000")
+                .is_some()
+        );
+        let pcie = reparsed.get_by_path("/pcie@fe180000").unwrap();
+        assert!(pcie.as_node().get_property("msi-map").is_some());
+        assert!(pcie.as_node().get_property("msi-map-mask").is_some());
+        let aliases = reparsed.get_by_path("/aliases").unwrap();
+        assert!(aliases.as_node().get_property("its0").is_some());
     }
 }
