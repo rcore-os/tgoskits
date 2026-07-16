@@ -1,12 +1,12 @@
 //! Host-derived guest FDT generation from a finalized machine plan.
 
-mod dependencies;
+pub(super) mod dependencies;
 mod virtual_devices;
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     format,
-    string::String,
+    string::{String, ToString},
     vec::Vec,
 };
 
@@ -19,6 +19,7 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, VmMachinePlan,
+    is_guest_firmware_infrastructure,
 };
 
 /// Guest-specific data used while filtering a host FDT snapshot.
@@ -70,25 +71,38 @@ pub fn generate_host_fdt(
         detail: format!("failed to parse captured host FDT: {error:?}"),
     })?;
     sanitize_virtual_device_templates(&mut source, plan)?;
-    let selected = selected_paths(plan, &source)?;
+    let selected = selected_paths(plan, &mut source, config)?;
     let mut guest = clone_selected_tree(&source, &selected, config)?;
+    sanitize_path_tables(&mut guest)?;
     rebuild_memory(&mut guest, plan)?;
     patch_chosen(&mut guest, config)?;
+    patch_psci_conduit(&mut guest)?;
     materialize_virtual_devices(&mut guest, plan)?;
     guest.boot_cpuid_phys = 0;
     guest.memory_reservations.clear();
     Ok(guest.encode().as_ref().to_vec())
 }
 
-fn selected_paths(plan: &VmMachinePlan, source: &Fdt) -> MachinePlanResult<BTreeSet<String>> {
+fn selected_paths(
+    plan: &VmMachinePlan,
+    source: &mut Fdt,
+    config: &HostFdtConfig,
+) -> MachinePlanResult<BTreeSet<String>> {
     let mut selected = BTreeSet::from([String::from("/")]);
     for device in plan.host_devices() {
+        let path = device.id().as_str();
+        if source
+            .get_by_path_id(path)
+            .is_some_and(|node| !selected_cpu(source, node, path, config))
+        {
+            continue;
+        }
         if matches!(
             device.disposition(),
             DeviceDisposition::Passthrough | DeviceDisposition::Structural
-        ) || is_mandatory_fdt_infrastructure(device.compatibles())
+        ) || is_guest_firmware_infrastructure(device.compatibles())
         {
-            selected.insert(device.id().as_str().into());
+            selected.insert(path.into());
         }
     }
     for device in plan.virtual_devices() {
@@ -102,7 +116,7 @@ fn selected_paths(plan: &VmMachinePlan, source: &Fdt) -> MachinePlanResult<BTree
         }
     }
 
-    let protected = plan
+    let mut protected = plan
         .host_devices()
         .iter()
         .filter_map(|device| {
@@ -118,19 +132,15 @@ fn selected_paths(plan: &VmMachinePlan, source: &Fdt) -> MachinePlanResult<BTree
                 .then(|| (device.id().as_str().into(), classification))
         })
         .collect::<BTreeMap<_, _>>();
+    for node_id in source.iter_node_ids() {
+        let path = source.path_of(node_id);
+        if !selected_cpu(source, node_id, &path, config) {
+            protected.insert(path, "unassigned CPU");
+        }
+    }
     selected = resolve_dependencies(source, selected, &protected)?;
     add_ancestors(&mut selected);
     Ok(selected)
-}
-
-fn is_mandatory_fdt_infrastructure(compatibles: &[String]) -> bool {
-    compatibles.iter().any(|compatible| {
-        matches!(
-            compatible.as_str(),
-            "arm,gic-v3" | "arm,gic-v3-its" | "arm,armv8-timer" | "arm,psci-0.2"
-        ) || compatible.starts_with("riscv,plic")
-            || compatible.starts_with("riscv,cpu-intc")
-    })
 }
 
 fn add_ancestors(paths: &mut BTreeSet<String>) {
@@ -225,16 +235,89 @@ fn selected_cpu(source: &Fdt, node_id: NodeId, path: &str, config: &HostFdtConfi
     if !path.starts_with("/cpus/cpu@") {
         return true;
     }
-    let unit_id = path
+    let unit_name = path
         .strip_prefix("/cpus/cpu@")
-        .and_then(|value| value.split('/').next())
-        .and_then(|value| usize::from_str_radix(value, 16).ok());
+        .and_then(|value| value.split('/').next());
+    let unit_id = unit_name.and_then(|value| usize::from_str_radix(value, 16).ok());
+    let cpu_node = unit_name
+        .and_then(|unit| source.get_by_path_id(&format!("/cpus/cpu@{unit}")))
+        .unwrap_or(node_id);
     let reg_id = source
-        .view_typed(node_id)
+        .view_typed(cpu_node)
         .and_then(|view| view.regs().first().map(|reg| reg.address as usize));
-    unit_id
-        .or(reg_id)
+    reg_id
+        .or(unit_id)
         .is_some_and(|id| config.physical_cpu_ids.contains(&id))
+}
+
+fn sanitize_path_tables(guest: &mut Fdt) -> MachinePlanResult<()> {
+    for table_path in ["/aliases", "/__symbols__"] {
+        let Some(table_id) = guest.get_by_path_id(table_path) else {
+            continue;
+        };
+        let references = guest
+            .node(table_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("guest FDT path table '{table_path}' disappeared"),
+            })?
+            .properties()
+            .iter()
+            .filter_map(|property| {
+                property.as_str().map(|target| {
+                    (
+                        property.name().to_string(),
+                        target.split(':').next().unwrap_or(target).to_string(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let stale = references
+            .into_iter()
+            .filter_map(|(property, target)| {
+                (target.starts_with('/') && guest.get_by_path_id(&target).is_none())
+                    .then_some(property)
+            })
+            .collect::<Vec<_>>();
+        let table = guest
+            .node_mut(table_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("guest FDT path table '{table_path}' cannot be updated"),
+            })?;
+        for property in stale {
+            table.remove_property(&property);
+        }
+    }
+    sanitize_stdout_path(guest)
+}
+
+fn sanitize_stdout_path(guest: &mut Fdt) -> MachinePlanResult<()> {
+    let Some(chosen_id) = guest.get_by_path_id("/chosen") else {
+        return Ok(());
+    };
+    let Some(target) = guest
+        .node(chosen_id)
+        .and_then(|node| node.get_property("stdout-path"))
+        .and_then(Property::as_str)
+        .map(|target| target.split(':').next().unwrap_or(target).to_string())
+    else {
+        return Ok(());
+    };
+    let target_exists = if target.starts_with('/') {
+        guest.get_by_path_id(&target).is_some()
+    } else {
+        guest
+            .get_by_path("/aliases")
+            .is_some_and(|aliases| aliases.as_node().get_property(&target).is_some())
+    };
+    if !target_exists {
+        guest
+            .node_mut(chosen_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: "guest /chosen node cannot be updated".into(),
+            })?
+            .remove_property("stdout-path");
+    }
+    Ok(())
 }
 
 fn is_host_memory_path(path: &str) -> bool {
@@ -280,6 +363,28 @@ fn patch_chosen(guest: &mut Fdt, config: &HostFdtConfig) -> MachinePlanResult<()
     chosen.remove_property("linux,initrd-end");
     if let Some(bootargs) = config.bootargs.as_deref() {
         chosen.set_property(string_property("bootargs", bootargs));
+    }
+    Ok(())
+}
+
+fn patch_psci_conduit(guest: &mut Fdt) -> MachinePlanResult<()> {
+    let psci_nodes = guest
+        .iter_node_ids()
+        .filter(|node_id| {
+            guest.node(*node_id).is_some_and(|node| {
+                node.compatibles()
+                    .any(|compatible| matches!(compatible, "arm,psci-1.0" | "arm,psci-0.2"))
+            })
+        })
+        .collect::<Vec<_>>();
+    for node_id in psci_nodes {
+        let path = guest.path_of(node_id);
+        let node = guest
+            .node_mut(node_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("guest PSCI node '{path}' cannot be updated"),
+            })?;
+        node.set_property(string_property("method", "hvc"));
     }
     Ok(())
 }

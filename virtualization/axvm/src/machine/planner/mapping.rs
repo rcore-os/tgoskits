@@ -1,13 +1,17 @@
 //! Physical-device disposition and passthrough identity-map holes.
 
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 use axvm_types::VmMachineMode;
 
 use super::PlannedHostDevice;
 use crate::machine::{
-    AddressRange, DeviceDisposition, HostDeviceOwnership, HostDeviceSelector, HostPlatformSnapshot,
-    MachineProfile, VmMachineRequest,
+    AddressRange, DeviceDisposition, HostDeviceDependencyKind, HostDeviceOwnership,
+    HostDeviceSelector, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, MachineProfile,
+    VmMachineRequest, is_guest_firmware_infrastructure,
 };
 
 pub(super) fn plan_host_devices(
@@ -15,11 +19,11 @@ pub(super) fn plan_host_devices(
     snapshot: &HostPlatformSnapshot,
     denied: &BTreeSet<usize>,
     virtual_templates: &BTreeSet<usize>,
-) -> Vec<PlannedHostDevice> {
+) -> MachinePlanResult<Vec<PlannedHostDevice>> {
     if mode == VmMachineMode::Virtual {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    snapshot
+    let mut planned = snapshot
         .devices()
         .iter()
         .enumerate()
@@ -40,14 +44,67 @@ pub(super) fn plan_host_devices(
                 },
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let indices = planned
+        .iter()
+        .enumerate()
+        .map(|(index, device)| (device.id().clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    for device in &planned {
+        for dependency in device.dependencies() {
+            if !indices.contains_key(dependency.provider()) {
+                return Err(MachinePlanError::InvalidFirmware {
+                    detail: alloc::format!(
+                        "host device '{}' depends on missing provider '{}' through property '{}'",
+                        device.id(),
+                        dependency.provider(),
+                        dependency.property(),
+                    ),
+                });
+            }
+        }
+    }
+
+    loop {
+        let unavailable = planned
+            .iter()
+            .enumerate()
+            .filter(|(_, device)| {
+                matches!(
+                    device.disposition(),
+                    DeviceDisposition::Passthrough | DeviceDisposition::Structural
+                )
+            })
+            .filter_map(|(index, device)| {
+                device
+                    .dependencies()
+                    .iter()
+                    .filter(|dependency| dependency.kind() == HostDeviceDependencyKind::Required)
+                    .any(|dependency| {
+                        let provider = &planned[indices[dependency.provider()]];
+                        !matches!(
+                            provider.disposition(),
+                            DeviceDisposition::Passthrough | DeviceDisposition::Structural
+                        ) && !is_guest_firmware_infrastructure(provider.compatibles())
+                    })
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if unavailable.is_empty() {
+            break;
+        }
+        for index in unavailable {
+            planned[index].set_disposition(DeviceDisposition::Unrepresentable);
+        }
+    }
+    Ok(planned)
 }
 
 pub(super) fn plan_identity_mappings(
     profile: &MachineProfile,
     request: &VmMachineRequest,
     snapshot: &HostPlatformSnapshot,
-    denied: &BTreeSet<usize>,
+    host_devices: &[PlannedHostDevice],
     virtual_holes: &[AddressRange],
 ) -> Vec<AddressRange> {
     if request.mode() == VmMachineMode::Virtual {
@@ -60,13 +117,14 @@ pub(super) fn plan_identity_mappings(
         .map(|memory| memory.range())
         .collect::<Vec<_>>();
     holes.extend_from_slice(profile.reserved_mmio());
-    for (index, device) in snapshot.devices().iter().enumerate() {
-        if denied.contains(&index)
-            || matches!(
-                device.ownership(),
-                HostDeviceOwnership::HostExclusive | HostDeviceOwnership::Unrepresentable
-            )
-        {
+    for device in host_devices {
+        if matches!(
+            device.disposition(),
+            DeviceDisposition::HostExclusive
+                | DeviceDisposition::Denied
+                | DeviceDisposition::VirtualReplacement
+                | DeviceDisposition::Unrepresentable
+        ) {
             holes.extend_from_slice(device.mmio());
         }
     }

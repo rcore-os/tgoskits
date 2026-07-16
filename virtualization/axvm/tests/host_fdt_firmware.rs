@@ -1,7 +1,7 @@
 use axdevice::{DeviceModelId, DeviceRequirements, InterruptSourceKind, ResourceSlot};
 use axvm::machine::{
-    Aarch64GicV3Profile, AddressRange, DeviceInstanceId, FdtInterruptEncoding, GuestMemoryRegion,
-    HostDeviceId, HostDeviceSelector, HostFdtConfig, HostPlatformSnapshot,
+    Aarch64GicV3Profile, AddressRange, DeviceDisposition, DeviceInstanceId, FdtInterruptEncoding,
+    GuestMemoryRegion, HostDeviceId, HostDeviceSelector, HostFdtConfig, HostPlatformSnapshot,
     InterruptControllerProfile, MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource,
     VmMachinePlanner, VmMachineRequest, generate_host_fdt,
 };
@@ -51,6 +51,65 @@ fn host_fdt_is_filtered_and_rebuilt_from_the_machine_plan() {
             .unwrap()
             .as_str(),
         Some("console=ttyAMA0")
+    );
+}
+
+#[test]
+fn host_cpu_selection_uses_the_hardware_affinity_from_reg() {
+    let host = host_fdt_with_non_identity_cpu_unit_addresses();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0x100])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(guest.get_by_path_id("/cpus/cpu@0").is_some());
+    assert!(guest.get_by_path_id("/cpus/cpu@1").is_none());
+}
+
+#[test]
+fn host_psci_conduit_is_replaced_with_the_vm_hvc_conduit() {
+    let host = host_fdt_with_psci("smc");
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let psci = guest.get_by_path("/psci").unwrap().as_node();
+
+    assert_eq!(psci.get_property("method").unwrap().as_str(), Some("hvc"));
+}
+
+#[test]
+fn mixed_interrupt_contexts_keep_only_assigned_cpu_providers() {
+    let host = host_fdt_with_mixed_cpu_interrupt_contexts();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let plic = guest.get_by_path("/soc/plic@c000000").unwrap().as_node();
+
+    assert_eq!(
+        plic.get_property("interrupts-extended")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![10, 3, 10, 7]
+    );
+    assert!(
+        guest
+            .get_by_path_id("/cpus/cpu@1/interrupt-controller")
+            .is_none()
     );
 }
 
@@ -154,7 +213,7 @@ fn virtual_uart_template_does_not_expose_host_dma_iommu_or_msi_capabilities() {
 }
 
 #[test]
-fn passthrough_dependency_cannot_reintroduce_a_host_exclusive_device() {
+fn required_host_dependency_is_rejected_during_machine_planning() {
     let host = host_fdt_with_host_exclusive_dependency();
     let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
@@ -165,10 +224,51 @@ fn passthrough_dependency_cannot_reintroduce_a_host_exclusive_device() {
         .plan(&request, &snapshot)
         .unwrap();
 
-    let error = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap_err();
+    let consumer = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/consumer@a100000")
+        .unwrap();
+    assert_eq!(consumer.disposition(), DeviceDisposition::Unrepresentable);
+    assert!(!plan.claims().contains(consumer.id()));
 
-    assert!(error.to_string().contains("host-exclusive"));
-    assert!(error.to_string().contains("/soc/serial@9000000"));
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/soc/consumer@a100000").is_none());
+    assert!(
+        guest
+            .get_by_path_id("/soc/consumer@a100000/child")
+            .is_none()
+    );
+    assert!(guest.get_by_path_id("/soc/serial@9000000").is_none());
+    assert!(
+        guest
+            .get_by_path("/aliases")
+            .unwrap()
+            .as_node()
+            .get_property("blocked-device")
+            .is_none()
+    );
+}
+
+#[test]
+fn optional_host_dependency_is_removed_without_exposing_its_provider() {
+    let host = host_fdt_with_optional_host_exclusive_dependency();
+    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let consumer = guest
+        .get_by_path("/soc/consumer@a100000")
+        .unwrap()
+        .as_node();
+
+    assert!(consumer.get_property("reset-gpios").is_none());
+    assert!(guest.get_by_path_id("/soc/serial@9000000").is_none());
 }
 
 fn pl011() -> VirtualDeviceDescriptor {
@@ -305,6 +405,60 @@ fn host_fdt_with_uart_interrupt_flags(interrupt_flags: u32) -> Vec<u8> {
     fdt.encode().as_ref().to_vec()
 }
 
+fn host_fdt_with_non_identity_cpu_unit_addresses() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let cpu0 = fdt.get_by_path_id("/cpus/cpu@0").unwrap();
+    fdt.view_typed_mut(cpu0)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x100, None)]);
+    let cpu1 = fdt.get_by_path_id("/cpus/cpu@1").unwrap();
+    fdt.view_typed_mut(cpu1)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0, None)]);
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_psci(method: &str) -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let psci = fdt.add_node(fdt.root_id(), Node::new("psci"));
+    fdt.node_mut(psci)
+        .unwrap()
+        .set_property(string_property("compatible", "arm,psci-1.0"));
+    fdt.node_mut(psci)
+        .unwrap()
+        .set_property(string_property("method", method));
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_mixed_cpu_interrupt_contexts() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    for (cpu_path, phandle) in [("/cpus/cpu@0", 10), ("/cpus/cpu@1", 11)] {
+        let cpu = fdt.get_by_path_id(cpu_path).unwrap();
+        let intc = fdt.add_node(cpu, Node::new("interrupt-controller"));
+        let intc = fdt.node_mut(intc).unwrap();
+        intc.set_property(Property::new("interrupt-controller", Vec::new()));
+        intc.set_property(u32_property("#interrupt-cells", &[1]));
+        intc.set_property(u32_property("phandle", &[phandle]));
+    }
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let plic = fdt.add_node(soc, Node::new("plic@c000000"));
+    let plic_node = fdt.node_mut(plic).unwrap();
+    plic_node.set_property(string_property("compatible", "riscv,plic0"));
+    plic_node.set_property(Property::new("interrupt-controller", Vec::new()));
+    plic_node.set_property(u32_property("#interrupt-cells", &[1]));
+    plic_node.set_property(u32_property(
+        "interrupts-extended",
+        &[10, 3, 10, 7, 11, 3, 11, 7],
+    ));
+    fdt.view_typed_mut(plic)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0c00_0000, Some(0x0040_0000))]);
+    fdt.encode().as_ref().to_vec()
+}
+
 fn host_fdt_with_host_exclusive_dependency() -> Vec<u8> {
     let bytes = host_fdt();
     let mut fdt = Fdt::from_bytes(&bytes).unwrap();
@@ -323,6 +477,39 @@ fn host_fdt_with_host_exclusive_dependency() -> Vec<u8> {
     fdt.node_mut(consumer)
         .unwrap()
         .set_property(u32_property("clocks", &[9]));
+    fdt.view_typed_mut(consumer)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a10_0000, Some(0x1000))]);
+    let child = fdt.add_node(consumer, Node::new("child"));
+    fdt.node_mut(child)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,child"));
+    let aliases = fdt.add_node(fdt.root_id(), Node::new("aliases"));
+    fdt.node_mut(aliases).unwrap().set_property(string_property(
+        "blocked-device",
+        "/soc/consumer@a100000/child",
+    ));
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_optional_host_exclusive_dependency() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let serial = fdt.get_by_path_id("/soc/serial@9000000").unwrap();
+    fdt.node_mut(serial)
+        .unwrap()
+        .set_property(u32_property("phandle", &[9]));
+    fdt.node_mut(serial)
+        .unwrap()
+        .set_property(u32_property("#gpio-cells", &[2]));
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let consumer = fdt.add_node(soc, Node::new("consumer@a100000"));
+    fdt.node_mut(consumer)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,consumer"));
+    fdt.node_mut(consumer)
+        .unwrap()
+        .set_property(u32_property("reset-gpios", &[9, 1, 0]));
     fdt.view_typed_mut(consumer)
         .unwrap()
         .set_regs(&[RegInfo::new(0x0a10_0000, Some(0x1000))]);

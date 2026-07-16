@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Complete VM-visible PSCI v1.0 discovery calls locally and reject unsupported
+  PSCI functions without forwarding guest requests to host firmware.
 - Preserve the caller's DAIF state across guest execution so an AArch64
   passthrough controller can keep host IRQs masked until private GIC state is
   restored.

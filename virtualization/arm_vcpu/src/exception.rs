@@ -220,47 +220,33 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmE
     })
 }
 
-/// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
+/// Handles VM-local PSCI calls made through HVC or SMC.
 ///
-/// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
-/// hvc/smc calling convention is used) or 0xC000_0000..=0xC000_001F (when the 64-bit hvc/smc
-/// calling convention is used) is a psci call. This function handles them all.
+/// PSCI uses the standard-service owner ranges `0x8400_0000..=0x8400_001f`
+/// and `0xc400_0000..=0xc400_001f`. Recognized but unsupported calls are
+/// completed with `PSCI_RET_NOT_SUPPORTED`, so guest requests cannot fall
+/// through to host firmware.
 ///
-/// Returns `None` if the HVC is not a psci call.
+/// Returns `None` when the function identifier is outside the PSCI ranges.
 fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
-    const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
-    const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
-
-    const PSCI_FN_VERSION: u64 = 0x0;
-    const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
-    const PSCI_FN_CPU_OFF: u64 = 0x2;
-    const PSCI_FN_CPU_ON: u64 = 0x3;
-    const _PSCI_FN_MIGRATE: u64 = 0x5;
-    const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
-    const _PSCI_FN_SYSTEM_RESET: u64 = 0x9;
-    const PSCI_FN_END: u64 = 0x1f;
-
-    let fn_ = ctx.gpr[0];
-    let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_32.start())
-    } else if PSCI_FN_RANGE_64.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_64.start())
-    } else {
-        None
-    };
-
-    match fn_offset {
-        Some(PSCI_FN_CPU_OFF) => Some(Ok(ArmVmExit::CpuDown { state: ctx.gpr[1] })),
-        Some(PSCI_FN_CPU_ON) => Some(Ok(ArmVmExit::CpuUp {
-            target_cpu: ctx.gpr[1],
-            entry_point: ArmGuestPhysAddr::from_usize(ctx.gpr[2] as usize),
-            arg: ctx.gpr[3],
-        })),
-        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(ArmVmExit::SystemDown)),
-        // We just forward these request to the ATF directly.
-        Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
-        _ => None,
-    }
+    let call = crate::psci::decode(ctx.gpr[0], [ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]])?;
+    Some(Ok(match call {
+        crate::psci::PsciCall::Complete(result) => {
+            ctx.gpr[0] = result;
+            ArmVmExit::Nothing
+        }
+        crate::psci::PsciCall::CpuOff { state } => ArmVmExit::CpuDown { state },
+        crate::psci::PsciCall::CpuOn {
+            target_cpu,
+            entry_point,
+            context,
+        } => ArmVmExit::CpuUp {
+            target_cpu,
+            entry_point: ArmGuestPhysAddr::from_usize(entry_point as usize),
+            arg: context,
+        },
+        crate::psci::PsciCall::SystemOff => ArmVmExit::SystemDown,
+    }))
 }
 
 /// Handles SMC (Secure Monitor Call) exceptions.

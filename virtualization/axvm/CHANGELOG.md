@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Select host-derived AArch64 CPU nodes by their `reg` hardware affinity and
+  replace the host PSCI conduit with the VM-owned HVC interface.
+- Keep nested FDT interrupt specifiers out of the root-controller topology,
+  reject devices with unavailable required providers during planning, and
+  remove optional or stale references without exposing host-owned providers;
+  retain only assigned-hart entries in mixed RISC-V interrupt context tables.
 - Deassert a forwarded x86 level source by its in-service IOAPIC identity
   before processing EOI, allowing physical INTx delivery to rearm after the
   guest masks or reroutes the entry.

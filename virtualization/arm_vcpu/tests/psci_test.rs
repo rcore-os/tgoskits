@@ -12,75 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for PSCI (Power State Coordination Interface) related functionality
-//!
-//! Note: These tests require aarch64 target.
+#[path = "../src/psci.rs"]
+mod psci;
 
-#![cfg(target_arch = "aarch64")]
+use psci::PsciCall;
 
-/// Test PSCI function number ranges
 #[test]
-fn test_psci_function_ranges() {
-    // 32-bit PSCI function range
-    const PSCI_FN_RANGE_32_START: u64 = 0x8400_0000;
-    const PSCI_FN_RANGE_32_END: u64 = 0x8400_001F;
-
-    // 64-bit PSCI function range
-    const PSCI_FN_RANGE_64_START: u64 = 0xC400_0000;
-    const PSCI_FN_RANGE_64_END: u64 = 0xC400_001F;
-
-    // Test 32-bit range
-    assert!(PSCI_FN_RANGE_32_START <= PSCI_FN_RANGE_32_END);
-    assert_eq!(PSCI_FN_RANGE_32_END - PSCI_FN_RANGE_32_START, 0x1F);
-
-    // Test 64-bit range
-    assert!(PSCI_FN_RANGE_64_START <= PSCI_FN_RANGE_64_END);
-    assert_eq!(PSCI_FN_RANGE_64_END - PSCI_FN_RANGE_64_START, 0x1F);
-
-    // Test that ranges don't overlap
-    assert!(PSCI_FN_RANGE_32_END < PSCI_FN_RANGE_64_START);
+fn version_and_trusted_os_queries_are_completed_inside_the_vm() {
+    assert_eq!(
+        psci::decode(0x8400_0000, [0; 3]),
+        Some(PsciCall::Complete(0x0001_0000))
+    );
+    assert_eq!(
+        psci::decode(0x8400_0006, [0; 3]),
+        Some(PsciCall::Complete(2))
+    );
 }
 
-/// Test PSCI function offsets
 #[test]
-fn test_psci_function_offsets() {
-    // PSCI function offsets (same for both 32-bit and 64-bit)
-    const PSCI_FN_VERSION: u64 = 0x0;
-    const PSCI_FN_CPU_SUSPEND: u64 = 0x1;
-    const PSCI_FN_CPU_OFF: u64 = 0x2;
-    const PSCI_FN_CPU_ON: u64 = 0x3;
-    const PSCI_FN_MIGRATE: u64 = 0x5;
-    const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
-    const PSCI_FN_SYSTEM_RESET: u64 = 0x9;
-
-    assert_eq!(PSCI_FN_VERSION, 0);
-    assert_eq!(PSCI_FN_CPU_SUSPEND, 1);
-    assert_eq!(PSCI_FN_CPU_OFF, 2);
-    assert_eq!(PSCI_FN_CPU_ON, 3);
-    assert_eq!(PSCI_FN_MIGRATE, 5);
-    assert_eq!(PSCI_FN_SYSTEM_OFF, 8);
-    assert_eq!(PSCI_FN_SYSTEM_RESET, 9);
+fn features_report_only_vm_implemented_calls() {
+    assert_eq!(
+        psci::decode(0x8400_000a, [0xc400_0003, 0, 0]),
+        Some(PsciCall::Complete(0))
+    );
+    assert_eq!(
+        psci::decode(0x8400_000a, [0xc400_0001, 0, 0]),
+        Some(PsciCall::Complete(u64::MAX))
+    );
 }
 
-/// Test PSCI function number construction
 #[test]
-fn test_psci_function_number_construction() {
-    // Construct PSCI function numbers
-    let psci_version_32: u64 = 0x8400_0000;
-    let psci_cpu_on_32: u64 = 0x8400_0003;
+fn cpu_on_keeps_the_vm_local_target_and_boot_arguments() {
+    assert_eq!(
+        psci::decode(0xc400_0003, [0x100, 0x8020_0000, 0x55]),
+        Some(PsciCall::CpuOn {
+            target_cpu: 0x100,
+            entry_point: 0x8020_0000,
+            context: 0x55,
+        })
+    );
+}
 
-    let psci_version_64: u64 = 0xC400_0000;
-    let psci_cpu_on_64: u64 = 0xC400_0003;
-
-    // Verify 32-bit functions
-    assert_eq!(psci_version_32 & 0xFF, 0);
-    assert_eq!(psci_cpu_on_32 & 0xFF, 3);
-
-    // Verify 64-bit functions
-    assert_eq!(psci_version_64 & 0xFF, 0);
-    assert_eq!(psci_cpu_on_64 & 0xFF, 3);
-
-    // Verify bit 31 distinguishes 32-bit vs 64-bit
-    assert_eq!(psci_version_32 & 0x40000000, 0);
-    assert_eq!(psci_version_64 & 0x40000000, 0x40000000);
+#[test]
+fn unsupported_psci_calls_do_not_fall_through_to_host_firmware() {
+    assert_eq!(
+        psci::decode(0x8400_0001, [0; 3]),
+        Some(PsciCall::Complete(u64::MAX))
+    );
+    assert_eq!(psci::decode(0x8600_0000, [0; 3]), None);
 }

@@ -6,8 +6,9 @@ use axvm_types::InterruptTriggerMode;
 use fdt_edit::{Fdt, NodeType, PciSpace};
 
 use super::{
-    AddressRange, HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership, HostInterruptResource,
-    HostPlatformSnapshot, MachinePlanError, MachinePlanResult,
+    AddressRange, HostDeviceDependency, HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership,
+    HostInterruptResource, HostPlatformSnapshot, MachinePlanError, MachinePlanResult,
+    host_fdt::dependencies::FdtDependencyIndex,
 };
 
 /// Interrupt-cell encoding used by a host device tree.
@@ -38,6 +39,7 @@ impl HostPlatformSnapshot {
         let mut snapshot = Self::new(generation);
         snapshot.set_source_fdt(bytes);
         let console_path = selected_console_path(&fdt);
+        let dependencies = FdtDependencyIndex::new(&fdt);
 
         for node_id in fdt.iter_node_ids() {
             let Some(node) = fdt.node(node_id) else {
@@ -51,6 +53,20 @@ impl HostPlatformSnapshot {
             );
             for compatible in compatibles {
                 descriptor = descriptor.with_compatible(compatible);
+            }
+            for dependency in dependencies.dependencies(node) {
+                descriptor = descriptor.with_dependency(HostDeviceDependency::new(
+                    HostDeviceId::new(dependency.provider())?,
+                    dependency.property(),
+                    dependency.kind(),
+                )?);
+            }
+            if let Some(parent) = parent_path(&path) {
+                descriptor = descriptor.with_dependency(HostDeviceDependency::new(
+                    HostDeviceId::new(parent)?,
+                    "fdt-parent",
+                    super::HostDeviceDependencyKind::Required,
+                )?);
             }
 
             let mut ranges = fdt
@@ -98,6 +114,13 @@ impl HostPlatformSnapshot {
                                 "host FDT device '{path}' refers to a missing interrupt controller"
                             ),
                         })?;
+                    if !controller_supports_encoding(&fdt, controller_id, interrupt_encoding) {
+                        // This is a controller-local input, not an input of the VM's root
+                        // interrupt controller. The original specifier remains in the source
+                        // FDT for a passthrough controller cascade; only root inputs enter the
+                        // machine plan's host IRQ ownership and delivery topology.
+                        continue;
+                    }
                     let controller = HostDeviceId::new(fdt.path_of(controller_id))?;
                     let (input, trigger) =
                         decode_interrupt(interrupt_encoding, interrupt.specifier.as_slice())
@@ -120,6 +143,32 @@ impl HostPlatformSnapshot {
             snapshot.set_console_device(HostDeviceId::new(path)?)?;
         }
         Ok(snapshot)
+    }
+}
+
+fn parent_path(path: &str) -> Option<&str> {
+    if path == "/" {
+        return None;
+    }
+    let (parent, _) = path.rsplit_once('/')?;
+    Some(if parent.is_empty() { "/" } else { parent })
+}
+
+fn controller_supports_encoding(
+    fdt: &Fdt,
+    controller_id: fdt_edit::NodeId,
+    encoding: FdtInterruptEncoding,
+) -> bool {
+    let Some(controller) = fdt.node(controller_id) else {
+        return false;
+    };
+    match encoding {
+        FdtInterruptEncoding::ArmGic => controller
+            .compatibles()
+            .any(|compatible| compatible == "arm,gic-v3"),
+        FdtInterruptEncoding::FirstCell => controller.compatibles().any(|compatible| {
+            compatible.starts_with("riscv,plic") || compatible.starts_with("riscv,cpu-intc")
+        }),
     }
 }
 
@@ -394,6 +443,35 @@ mod tests {
         assert_eq!(soc.ownership(), HostDeviceOwnership::Structural);
     }
 
+    #[test]
+    fn nested_controller_interrupts_are_not_decoded_as_root_inputs() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let gpio = fdt.add_node(root, Node::new("gpio@1000"));
+        let gpio_node = fdt.node_mut(gpio).unwrap();
+        gpio_node.set_property(Property::new("interrupt-controller", vec![]));
+        gpio_node.set_property(u32_property("#interrupt-cells", &[2]));
+        gpio_node.set_property(u32_property("phandle", &[2]));
+
+        let consumer = fdt.add_node(root, Node::new("consumer@2000"));
+        let consumer_node = fdt.node_mut(consumer).unwrap();
+        consumer_node.set_property(string_property("compatible", "vendor,consumer"));
+        consumer_node.set_property(u32_property("interrupt-parent", &[2]));
+        consumer_node.set_property(u32_property("interrupts", &[5, 4]));
+
+        let snapshot =
+            HostPlatformSnapshot::from_fdt(3, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let consumer = snapshot
+            .devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/consumer@2000")
+            .unwrap();
+
+        assert_eq!(consumer.ownership(), HostDeviceOwnership::Assignable);
+        assert!(consumer.interrupts().is_empty());
+    }
+
     fn string_list(name: &str, values: &[&str]) -> Property {
         let mut bytes = vec![];
         for value in values {
@@ -406,6 +484,12 @@ mod tests {
     fn string_property(name: &str, value: &str) -> Property {
         let mut property = Property::new(name, vec![]);
         property.set_string(value);
+        property
+    }
+
+    fn u32_property(name: &str, values: &[u32]) -> Property {
+        let mut property = Property::new(name, vec![]);
+        property.set_u32_ls(values);
         property
     }
 }

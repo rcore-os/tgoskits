@@ -6,8 +6,9 @@ use axdevice::{DeviceBackend, DeviceModelId, ResolvedDeviceResources, ResourceSl
 use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
 
 use super::super::{
-    AddressRange, DeviceDisposition, DeviceInstanceId, HostDeviceDescriptor, HostDeviceId,
-    HostInterruptResource, InterruptControllerPlan, IoPortRange, LoongArchPlatformPlan,
+    AddressRange, DeviceDisposition, DeviceInstanceId, HostDeviceDependency, HostDeviceDescriptor,
+    HostDeviceId, HostInterruptResource, InterruptControllerPlan, IoPortRange,
+    LoongArchPlatformPlan,
 };
 
 /// A guest interrupt assigned to one named virtual-device resource slot.
@@ -207,9 +208,18 @@ impl PlannedHostDevice {
         self.descriptor.interrupts()
     }
 
+    /// Returns firmware provider dependencies associated with this device.
+    pub fn dependencies(&self) -> &[HostDeviceDependency] {
+        self.descriptor.dependencies()
+    }
+
     /// Returns firmware-compatible identifiers in source order.
     pub fn compatibles(&self) -> &[alloc::string::String] {
         self.descriptor.compatibles()
+    }
+
+    pub(super) const fn set_disposition(&mut self, disposition: DeviceDisposition) {
+        self.disposition = disposition;
     }
 }
 

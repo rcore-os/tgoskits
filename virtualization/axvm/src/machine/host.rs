@@ -22,6 +22,59 @@ pub enum HostDeviceOwnership {
     Unrepresentable,
 }
 
+/// Whether a firmware dependency is necessary to expose a physical device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostDeviceDependencyKind {
+    /// The consumer cannot be represented when the provider is unavailable.
+    Required,
+    /// The capability may be omitted while preserving a safe device model.
+    Optional,
+}
+
+/// One firmware dependency from a host device to a provider node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostDeviceDependency {
+    provider: HostDeviceId,
+    property: String,
+    kind: HostDeviceDependencyKind,
+}
+
+impl HostDeviceDependency {
+    /// Creates a checked firmware dependency.
+    pub fn new(
+        provider: HostDeviceId,
+        property: impl Into<String>,
+        kind: HostDeviceDependencyKind,
+    ) -> MachinePlanResult<Self> {
+        let property = property.into();
+        if property.trim().is_empty() {
+            return Err(super::MachinePlanError::EmptyIdentifier {
+                kind: "host device dependency property",
+            });
+        }
+        Ok(Self {
+            provider,
+            property,
+            kind,
+        })
+    }
+
+    /// Returns the stable identity of the provider node.
+    pub const fn provider(&self) -> &HostDeviceId {
+        &self.provider
+    }
+
+    /// Returns the firmware property containing the reference.
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+
+    /// Returns whether the provider is required or optional.
+    pub const fn kind(&self) -> HostDeviceDependencyKind {
+        self.kind
+    }
+}
+
 /// Firmware description of the host-side route feeding one controller input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostInterruptSource {
@@ -201,6 +254,7 @@ pub struct HostDeviceDescriptor {
     mmio: Vec<AddressRange>,
     pio: Vec<IoPortRange>,
     interrupts: Vec<HostInterruptResource>,
+    dependencies: Vec<HostDeviceDependency>,
 }
 
 impl HostDeviceDescriptor {
@@ -213,6 +267,7 @@ impl HostDeviceDescriptor {
             mmio: Vec::new(),
             pio: Vec::new(),
             interrupts: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 
@@ -237,6 +292,12 @@ impl HostDeviceDescriptor {
     /// Adds a host interrupt resource.
     pub fn with_interrupt(mut self, interrupt: HostInterruptResource) -> Self {
         self.interrupts.push(interrupt);
+        self
+    }
+
+    /// Adds a firmware dependency on another host node.
+    pub fn with_dependency(mut self, dependency: HostDeviceDependency) -> Self {
+        self.dependencies.push(dependency);
         self
     }
 
@@ -270,9 +331,24 @@ impl HostDeviceDescriptor {
         &self.interrupts
     }
 
+    /// Returns firmware dependencies in source-property order.
+    pub fn dependencies(&self) -> &[HostDeviceDependency] {
+        &self.dependencies
+    }
+
     pub(crate) fn set_ownership(&mut self, ownership: HostDeviceOwnership) {
         self.ownership = ownership;
     }
+}
+
+pub(crate) fn is_guest_firmware_infrastructure(compatibles: &[String]) -> bool {
+    compatibles.iter().any(|compatible| {
+        matches!(
+            compatible.as_str(),
+            "arm,gic-v3" | "arm,gic-v3-its" | "arm,armv8-timer" | "arm,psci-1.0" | "arm,psci-0.2"
+        ) || compatible.starts_with("riscv,plic")
+            || compatible.starts_with("riscv,cpu-intc")
+    })
 }
 
 /// Immutable platform snapshot consumed by one planning attempt.

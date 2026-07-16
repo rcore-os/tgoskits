@@ -71,7 +71,7 @@ impl VmMachinePlanner {
             snapshot,
             &denied_devices,
             &consumed_templates,
-        );
+        )?;
         let claims = host_devices
             .iter()
             .filter(|device| device.disposition() == super::DeviceDisposition::Passthrough)
@@ -81,7 +81,7 @@ impl VmMachinePlanner {
             &self.profile,
             request,
             snapshot,
-            &denied_devices,
+            &host_devices,
             &virtual_holes,
         );
         let interrupt_controller =

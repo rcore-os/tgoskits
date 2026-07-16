@@ -25,6 +25,7 @@ mod exception_utils;
 mod exception;
 pub mod host;
 mod pcpu;
+mod psci;
 mod smc;
 mod types;
 mod vcpu;
