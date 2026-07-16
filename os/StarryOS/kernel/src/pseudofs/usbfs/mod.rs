@@ -1485,7 +1485,7 @@ fn cleanup_submitted_urbs(
 
 fn usbfs_should_log_urb() -> bool {
     USBFS_URB_LOG_BUDGET
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |budget| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |budget| {
             budget.checked_sub(1)
         })
         .is_ok()

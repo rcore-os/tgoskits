@@ -270,7 +270,7 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
     let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
     assert!(
         guest_runner.contains("x86_64-unknown-linux-musl")
-            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-05-28\"")
+            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-07-15\"")
             && guest_runner.contains("RUSTUP_TOOLCHAIN=\"starry-selfhost-")
             && guest_runner.contains("--default-toolchain none")
             && guest_runner.contains("export RUSTUP_TOOLCHAIN")

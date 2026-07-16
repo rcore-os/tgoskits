@@ -359,13 +359,7 @@ fn clean_linux_c_module(module_path: &Path) -> Result<()> {
 }
 
 fn normalized_host_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        "riscv64" => "riscv64",
-        "loongarch64" => "loongarch64",
-        _ => std::env::consts::ARCH,
-    }
+    std::env::consts::ARCH
 }
 
 fn linux_c_module_names(makefile: &Path) -> Result<Vec<String>> {

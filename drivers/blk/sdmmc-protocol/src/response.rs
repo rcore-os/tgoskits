@@ -33,8 +33,8 @@ impl Response {
             Self::Empty => {}
             Self::R1(resp) | Self::R1b(resp) => words[0] = resp.raw,
             Self::R2(bytes) => {
-                for (word, chunk) in words.iter_mut().zip(bytes.chunks_exact(4)) {
-                    *word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    *word = u32::from_be_bytes(*chunk);
                 }
             }
             Self::R3(resp) => words[0] = resp.raw,
@@ -55,7 +55,7 @@ pub fn response_from_raw(raw: RawResponse) -> Result<Response, Error> {
         ResponseType::R1b => Response::R1b(R1Response::from_native_raw(raw.words[0])?),
         ResponseType::R2 => {
             let mut bytes = [0; 16];
-            for (chunk, word) in bytes.chunks_exact_mut(4).zip(raw.words) {
+            for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(raw.words) {
                 chunk.copy_from_slice(&word.to_be_bytes());
             }
             Response::R2(bytes)
