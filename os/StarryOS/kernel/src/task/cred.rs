@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP, CAP_SETUID,
-    CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_NICE, CAP_SYS_RESOURCE,
+    CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -188,6 +188,12 @@ impl Cred {
     /// (equivalent to `CAP_SYS_BOOT`).
     pub fn has_cap_sys_boot(&self) -> bool {
         self.has_cap(CAP_SYS_BOOT)
+    }
+
+    /// Check whether this credential may load or unload kernel modules
+    /// (equivalent to `CAP_SYS_MODULE`).
+    pub fn has_cap_sys_module(&self) -> bool {
+        self.has_cap(CAP_SYS_MODULE)
     }
 
     /// Check whether this credential may inspect another process
