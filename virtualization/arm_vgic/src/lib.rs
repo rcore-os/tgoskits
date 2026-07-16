@@ -48,8 +48,7 @@ pub mod v3;
 mod api_reexp {
     #[allow(unused_imports)]
     pub use crate::host::{
-        get_host_gicd_base, get_host_gicr_base, hardware_inject_virtual_interrupt, read_vgicd_iidr,
-        read_vgicd_typer,
+        get_host_gicd_base, get_host_gicr_base, read_vgicd_iidr, read_vgicd_typer,
     };
 }
 
@@ -73,6 +72,4 @@ mod api_reexp {
     pub fn get_host_gicr_base() -> PhysAddr {
         pa!(0)
     }
-
-    pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
 }

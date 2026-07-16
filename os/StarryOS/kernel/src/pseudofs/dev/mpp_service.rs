@@ -15,25 +15,14 @@
 use core::{any::Any, ffi::c_int, mem::size_of};
 
 use ax_driver::jpeg::{self, mpp, registers};
-use ax_runtime::hal::cpu::asm::user_copy;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
-use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps};
-
-fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
-    if unsafe { user_copy(dst, src, size) } != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
-}
-
-fn copy_to_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
-    if unsafe { user_copy(dst, src, size) } != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
-}
+use crate::{
+    file::dmabuf::resolve_contiguous_dmabuf,
+    mm::{UserConstPtr, UserPtr},
+    pseudofs::DeviceOps,
+};
 
 /// Char-device id for `/dev/mpp_service` (opened by path; id is informational).
 pub const MPP_SERVICE_DEVICE_ID: DeviceId = DeviceId::new(0xF1, 0x10);
@@ -50,14 +39,14 @@ struct TaskState {
 
 /// The `/dev/mpp_service` device.
 pub struct MppService {
-    state: Mutex<TaskState>,
+    state: PiMutex<TaskState>,
 }
 
 impl MppService {
     /// Create the device (one global session; MPP serializes one decode at a time).
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(TaskState {
+            state: PiMutex::new(TaskState {
                 session: mpp::MppSession::new(),
                 read_dst: 0,
             }),
@@ -108,21 +97,15 @@ impl DeviceOps for MppService {
 }
 
 fn read_request(uaddr: usize) -> VfsResult<mpp::MppRequest> {
-    let mut req = mpp::MppRequest::default();
-    copy_from_user(
-        (&mut req) as *mut mpp::MppRequest as *mut u8,
-        uaddr as *const u8,
-        size_of::<mpp::MppRequest>(),
-    )?;
-    Ok(req)
+    UserConstPtr::<mpp::MppRequest>::from(uaddr)
+        .read()
+        .map_err(|_| VfsError::InvalidData)
 }
 
 fn write_u32_to_user(uaddr: usize, value: u32) -> VfsResult<()> {
-    copy_to_user(
-        uaddr as *mut u8,
-        (&value) as *const u32 as *const u8,
-        size_of::<u32>(),
-    )
+    UserPtr::<u32>::from(uaddr)
+        .write(value)
+        .map_err(|_| VfsError::InvalidData)
 }
 
 fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()> {
@@ -141,22 +124,20 @@ fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()>
             write_u32_to_user(data, 0)?;
         }
         mpp::cmd::INIT_CLIENT_TYPE => {
-            let mut client: u32 = 0;
-            copy_from_user(
-                (&mut client) as *mut u32 as *mut u8,
-                data as *const u8,
-                size_of::<u32>(),
-            )?;
+            let client = UserConstPtr::<u32>::from(data)
+                .read()
+                .map_err(|_| VfsError::InvalidData)?;
             state
                 .session
                 .init_client_type(client)
                 .map_err(|_| VfsError::InvalidInput)?;
         }
         mpp::cmd::SET_REG_WRITE => {
-            let mut words = [0u32; registers::REG_COUNT];
             let n = (req.size as usize / 4).min(registers::REG_COUNT);
-            copy_from_user(words.as_mut_ptr() as *mut u8, data as *const u8, n * 4)?;
-            state.session.set_reg_write(&words[..n]);
+            let words = UserConstPtr::<u32>::from(data)
+                .read_slice(n)
+                .map_err(|_| VfsError::InvalidData)?;
+            state.session.set_reg_write(&words);
         }
         mpp::cmd::SET_REG_READ => {
             state.read_dst = data;
@@ -165,11 +146,12 @@ fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()>
         mpp::cmd::SET_REG_ADDR_OFFSET => {
             let elem = size_of::<mpp::RegOffset>();
             let cnt = (req.size as usize / elem).min(mpp::MAX_REG_OFFSETS);
-            let mut elems = [mpp::RegOffset::default(); mpp::MAX_REG_OFFSETS];
-            copy_from_user(elems.as_mut_ptr() as *mut u8, data as *const u8, cnt * elem)?;
+            let elems = UserConstPtr::<mpp::RegOffset>::from(data)
+                .read_slice(cnt)
+                .map_err(|_| VfsError::InvalidData)?;
             state
                 .session
-                .add_reg_offsets(&elems[..cnt])
+                .add_reg_offsets(&elems)
                 .map_err(|_| VfsError::InvalidInput)?;
         }
         mpp::cmd::POLL_HW_FINISH | mpp::cmd::POLL_HW_IRQ => {
@@ -199,11 +181,9 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
     let (first, count) = state.session.read_window();
     if state.read_dst != 0 && count > 0 && first < registers::REG_COUNT {
         let count = count.min(registers::REG_COUNT - first);
-        copy_to_user(
-            state.read_dst as *mut u8,
-            readback[first..].as_ptr() as *const u8,
-            count * 4,
-        )?;
+        UserPtr::<u32>::from(state.read_dst)
+            .write_slice(&readback[first..first + count])
+            .map_err(|_| VfsError::InvalidData)?;
     }
 
     state.session.clear_task();

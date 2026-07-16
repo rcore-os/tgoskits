@@ -1,13 +1,21 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(not(test))]
 use ax_kspin::SpinRaw as Mutex;
-use axvm_types::VmArchVcpuOps;
+#[cfg(test)]
+use ax_kspin::{RawContext, RawSpinLock, SpinMutex};
 
+#[cfg(test)]
+type Mutex<T> = SpinMutex<RawSpinLock<RawContext>, T>;
+
+use super::AxvmX86Vcpu;
 use crate::{
-    InterruptTriggerMode,
+    AxVmResult, InterruptTriggerMode,
     arch::x86_64::host_irq::{self as irq, IrqSource},
     config::VMInterruptMode,
     runtime::{VCpuRef, VMRef},
+    vcpu::BoundVcpu,
+    vm::PendingInterrupt,
 };
 
 const IOAPIC_GSI_COUNT: usize = 24;
@@ -89,76 +97,64 @@ pub fn register_ioapic_irq_forwarding_activator(
     *IOAPIC_IRQ_ACTIVATORS[guest_gsi].lock() = Some(activator);
 }
 
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
+/// Publishes a due PIT interrupt from deferred task context.
+///
+/// The vCPU backend is already unbound here. The next bound owner drains the
+/// runtime inbox and performs the architecture-specific injection.
+pub fn queue_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return Ok(());
     }
 
     let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
     let Ok(devices) = vm.get_devices() else {
-        return;
+        return Ok(());
     };
     if !devices.x86_pit_consume_irq0_if_due(now_ns) {
-        return;
+        return Ok(());
     }
 
     let Some(irq) = devices.x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
         trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
+        return Ok(());
     };
 
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    queue_ioapic_interrupt(vm, vcpu, irq)
 }
 
-pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
+/// Publishes a pending serial interrupt from deferred task context.
+pub fn queue_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return Ok(());
     }
 
     let Ok(devices) = vm.get_devices() else {
-        return;
+        return Ok(());
     };
     if !devices.x86_serial_poll_irq() {
-        return;
+        return Ok(());
     }
 
     let Some(irq) = devices.x86_ioapic_assert_gsi(COM1_GSI) else {
         trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
-        return;
+        return Ok(());
     };
 
-    trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    trace!("Queueing x86 COM1 RX IRQ vector {:#x}", irq.vector);
+    queue_ioapic_interrupt(vm, vcpu, irq)
 }
 
-pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
+/// Publishes an IOAPIC level interrupt exposed by a deferred guest EOI.
+pub fn queue_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) -> AxVmResult {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+        return Ok(());
     }
 
     let Ok(devices) = vm.get_devices() else {
-        return;
+        return Ok(());
     };
     let Some(eoi) = devices.x86_ioapic_end_of_interrupt(vector) else {
-        return;
+        return Ok(());
     };
     let pending = eoi.pending;
     if should_rearm_forwarded_host_gsi_after_eoi(pending) {
@@ -166,30 +162,41 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
     }
 
     let Some(irq) = pending else {
-        return;
+        return Ok(());
     };
 
     trace!(
-        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
+        "Queueing pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
         irq.vector
     );
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
+    queue_ioapic_interrupt(vm, vcpu, irq)
+}
+
+fn queue_ioapic_interrupt(
+    vm: &VMRef,
+    vcpu: &VCpuRef,
+    irq: x86_vlapic::IoApicInterrupt,
+) -> AxVmResult {
+    crate::runtime::vcpus::publish_pending_interrupt(
+        vm,
+        vcpu.id(),
+        PendingInterrupt::Triggered {
+            vector: irq.vector as _,
+            trigger: if irq.level_triggered {
                 InterruptTriggerMode::LevelTriggered
             } else {
                 InterruptTriggerMode::EdgeTriggered
             },
-        )
-        .unwrap();
+        },
+    )
 }
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
     !pending.is_some_and(|irq| irq.level_triggered)
 }
 
-pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
+/// Drains host IOAPIC publications while `vcpu` is bound to this CPU.
+pub fn drain_bound_pending_ioapic_irqs(vm: &VMRef, vcpu: &BoundVcpu<'_, '_, AxvmX86Vcpu>) {
     if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
         return;
     }
@@ -212,7 +219,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
         let bit = 1usize << gsi;
         if pending & bit != 0 {
             let level_triggered = pending_level & bit != 0;
-            if forward_passthrough_gsi(vm, vcpu, gsi, level_triggered) {
+            if inject_bound_passthrough_gsi(vm, vcpu, gsi, level_triggered) {
                 if !level_triggered {
                     unmask_forwarded_host_gsi(gsi);
                 }
@@ -408,9 +415,9 @@ pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
     }
 }
 
-fn forward_passthrough_gsi(
+fn inject_bound_passthrough_gsi(
     vm: &VMRef,
-    vcpu: &VCpuRef,
+    vcpu: &BoundVcpu<'_, '_, AxvmX86Vcpu>,
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
@@ -440,16 +447,15 @@ fn forward_passthrough_gsi(
         return false;
     };
 
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            guest_irq.vector as _,
-            if guest_irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
+    vcpu.inject_interrupt_with_trigger(
+        guest_irq.vector as _,
+        if guest_irq.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    )
+    .expect("forwarded IOAPIC injection requires an accessible vCPU backend");
     true
 }
 
@@ -597,13 +603,11 @@ fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use ax_kspin::SpinRaw as Mutex;
-
     use super::{
         COM1_GSI, INVALID_RAW_IRQ, IOAPIC_GSI_COUNT, IOAPIC_HOST_IRQ_EXPLICIT,
         IOAPIC_HOST_IRQ_LEVEL_TRIGGERED, IOAPIC_HOST_IRQS, IOAPIC_IRQ_ACTIVATED,
         IOAPIC_IRQ_ACTIVATORS, IOAPIC_IRQ_MASKED, IOAPIC_IRQ_PENDING, IOAPIC_IRQ_PENDING_LEVEL,
-        PIT_TIMER_GSI, activate_ready_ioapic_forwarding_route_for_test,
+        Mutex, PIT_TIMER_GSI, activate_ready_ioapic_forwarding_route_for_test,
         clear_forwarded_ioapic_gsi_state, forwarded_ioapic_gsi_state_for_test, gsi_bit,
         guest_gsi_for_host_irq, host_irq_to_raw, ioapic_irq_hook_gsis,
         is_level_triggered_forwarded_host_gsi, mark_forwarded_ioapic_gsi_state_for_test,

@@ -712,7 +712,7 @@ mod sg2002_usb_msc {
                         sense[12],
                         sense[13]
                     );
-                    ax_task::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(100));
                 }
                 Err(err) => return Err(err),
             }
@@ -936,11 +936,15 @@ mod sg2002_usb_msc {
 #[cfg(all(feature = "ax-std", axtest))]
 #[axtest::tests]
 mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{future::Future, task::Waker};
+    use std::os::arceos::task::{ThreadWakeHandle, WaitQueue};
+
     use axtest::prelude::*;
 
     #[test]
     fn sg2002_dwc2_usb_msc_read_smoke() -> axtest::AxTestResult {
-        match ax_task::future::block_on(super::sg2002_usb_msc::run()) {
+        match block_on(super::sg2002_usb_msc::run()) {
             Ok(report) => {
                 axtest_println!(
                     "SG2002_DWC2_MSC_REPORT vid={:04x} pid={:04x} vendor=\"{}\" product=\"{}\" \
@@ -958,6 +962,42 @@ mod tests {
             Err(err) => {
                 axtest_println!("SG2002_DWC2_MSC_FAIL error={err}");
                 axtest::AxTestResult::Failed
+            }
+        }
+    }
+
+    struct TestFutureWake {
+        thread: ThreadWakeHandle,
+    }
+
+    impl Wake for TestFutureWake {
+        fn wake(self: Arc<Self>) {
+            let _ = self.thread.wake();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let _ = self.thread.wake();
+        }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let thread = std::os::arceos::task::current_thread_handle()
+            .expect("USB MSC async test requires a scheduler thread");
+        let owner_wake = Arc::new(TestFutureWake {
+            thread: thread.wake_handle(),
+        });
+        // Keep one owner reference through test-kernel shutdown. USB completion
+        // may clone or drop the Waker in hard IRQ context, which must never free.
+        let _permanent_owner = Arc::into_raw(Arc::clone(&owner_wake));
+        let waker = Waker::from(owner_wake);
+        let mut context = core::task::Context::from_waker(&waker);
+        let mut future = core::pin::pin!(future);
+        let park = WaitQueue::new();
+
+        loop {
+            match future.as_mut().poll(&mut context) {
+                core::task::Poll::Ready(output) => return output,
+                core::task::Poll::Pending => park.wait(),
             }
         }
     }

@@ -4,21 +4,18 @@ use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{
-    TaskInner, current,
-    future::{block_on, interruptible},
-};
 use axpoll::IoEvents;
-use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED};
+use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED, RLIMIT_RTTIME};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 #[cfg(target_arch = "riscv64")]
 use starry_vm::vm_read_slice;
 
 use super::{
-    AsThread, ProcessData, Thread, do_exit, get_process_data, get_process_group, get_task,
-    is_zombie_pid,
+    ProcessData, RttimeLimitAction, Thread, UserTaskRef, current_user_task, do_exit,
+    get_process_data, get_process_group, get_task, is_zombie_pid,
 };
+use crate::task::future::{block_on, block_on_user, interruptible_for};
 
 /// Information needed to restart a syscall if SA_RESTART applies.
 pub struct SyscallRestartInfo {
@@ -206,19 +203,26 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 }
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
-    current().clear_interrupt();
-    let wait_result = block_on(interruptible(poll_fn(|cx| {
-        if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-            Poll::Ready(())
-        } else {
-            thr.proc_data.register_ptrace_stop_waker(cx.waker());
-            if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        }
-    })));
+    let task = current_user_task();
+    task.clear_interrupt();
+    let wait_result = block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            poll_fn(|cx| {
+                if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
+                    Poll::Ready(())
+                } else {
+                    thr.proc_data.register_ptrace_stop_waker(cx.waker());
+                    if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }
+            }),
+        ),
+    );
 
     if wait_result.is_err() {
         thr.proc_data.clear_ptrace_stop();
@@ -300,6 +304,13 @@ pub fn check_signals(
     restore_blocked: Option<SignalSet>,
     restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
+    queue_rttime_limit_signal(thr);
+    if current_user_task().take_deadline_overrun() {
+        let _result = thr
+            .signal
+            .send_signal(SignalInfo::new_kernel(Signo::SIGXCPU));
+    }
+
     // Honor zap requests before consulting the signal queue. A sibling
     // performing `execve` set this flag, and we must do a thread-only
     // exit (no `group_exit`) so the new image is left intact.
@@ -402,6 +413,24 @@ pub fn check_signals(
     true
 }
 
+fn queue_rttime_limit_signal(thr: &Thread) {
+    let (soft_limit_us, hard_limit_us) = {
+        let limits = thr.proc_data.rlim.read();
+        let limit = &limits[RLIMIT_RTTIME];
+        (limit.current, limit.max)
+    };
+    let action = thr
+        .time
+        .lock()
+        .check_rttime_limit(&thr.cpu_time, soft_limit_us, hard_limit_us);
+    let signo = match action {
+        RttimeLimitAction::None => return,
+        RttimeLimitAction::Soft => Signo::SIGXCPU,
+        RttimeLimitAction::Hard => Signo::SIGKILL,
+    };
+    let _queued = thr.signal.send_signal(SignalInfo::new_kernel(signo));
+}
+
 /// Notify a process's parent of a job-control state change by sending it
 /// `SIGCHLD` (with `CLD_STOPPED`/`CLD_CONTINUED`) and waking its `waitpid`.
 fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
@@ -428,7 +457,7 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
 /// current thread until `SIGCONT` clears the stop (or `SIGKILL` force-resumes it
 /// so the kill can proceed).
 ///
-/// Uses a plain block — not [`interruptible`](ax_task::future::interruptible) —
+/// Uses a plain block, not [`interruptible`],
 /// because an ordinary signal must **not** wake a stopped process; only
 /// continue/kill clear `is_job_stopped`.
 ///
@@ -472,18 +501,18 @@ fn do_job_stop(thr: &Thread, signo: Signo) {
 }
 
 pub fn block_next_signal() {
-    current().as_thread().block_next_signal_check();
+    current_user_task().as_thread().block_next_signal_check();
 }
 
 pub fn unblock_next_signal() -> bool {
-    current().as_thread().unblock_next_signal_check()
+    current_user_task().as_thread().unblock_next_signal_check()
 }
 
 pub fn with_blocked_signals<R>(
     blocked: Option<SignalSet>,
     f: impl FnOnce() -> AxResult<R>,
 ) -> AxResult<R> {
-    let curr = current();
+    let curr = current_user_task();
     let sig = &curr.as_thread().signal;
 
     let old_blocked = blocked.map(|set| sig.set_blocked(set));
@@ -494,7 +523,7 @@ pub fn with_blocked_signals<R>(
     result
 }
 
-pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: SignalInfo) {
+pub(super) fn send_signal_thread_inner(task: &UserTaskRef, thr: &Thread, sig: SignalInfo) {
     let accepted = thr.signal.send_signal(sig);
     // Always wake signalfd waiters so a signalfd monitoring for this signal
     // (even a blocked one) can become readable in epoll/poll.  Without this,
@@ -509,7 +538,7 @@ pub(super) fn send_signal_thread_inner(task: &TaskInner, thr: &Thread, sig: Sign
 /// Sends a signal to a thread.
 pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo>) -> AxResult<()> {
     let task = get_task(tid)?;
-    let thread = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
+    let thread = task.as_thread();
     if tgid.is_some_and(|tgid| thread.proc_data.proc.pid() != tgid) {
         return Err(AxError::NoSuchProcess);
     }
@@ -595,17 +624,15 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
                         .lock()
                         .is_some_and(|s| s.has(signo))
                 {
-                    ax_task::wake_task(&task);
+                    let _result = task.wake_handle().wake();
                 }
             }
         }
         // Wake signalfd waiters on every thread: even blocked process-level
         // signals must be visible from signalfd in an epoll event loop.
         for tid in proc_data.proc.threads() {
-            if let Ok(task) = get_task(tid)
-                && let Some(thr) = task.try_as_thread()
-            {
-                unsafe { thr.signalfd_waker.wake(IoEvents::IN) };
+            if let Ok(task) = get_task(tid) {
+                unsafe { task.as_thread().signalfd_waker.wake(IoEvents::IN) };
             }
         }
     }
@@ -647,7 +674,7 @@ pub fn send_signal_to_process_group(pgid: Pid, sig: Option<SignalInfo>) -> AxRes
 /// behalf) still go through [`send_signal_to_process`] and can land
 /// on any unmasked thread.
 pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let signo = sig.signo();
     info!(

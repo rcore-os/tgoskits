@@ -21,10 +21,10 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
+    blocking::poll_io,
     config::{DeviceBinding, InterfaceId},
     get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -218,15 +218,13 @@ impl GeneralOptions {
         extra_nonblocking: bool,
         f: F,
     ) -> AxResult<T> {
-        block_on(timeout(
+        poll_io(
+            pollable,
+            IoEvents::OUT,
+            self.nonblocking() || extra_nonblocking,
             self.send_timeout(),
-            poll_io(
-                pollable,
-                IoEvents::OUT,
-                self.nonblocking() || extra_nonblocking,
-                f,
-            ),
-        ))?
+            f,
+        )
     }
 
     /// Like [`recv_poller`] but lets the caller force non-blocking
@@ -237,15 +235,13 @@ impl GeneralOptions {
         extra_nonblocking: bool,
         f: F,
     ) -> AxResult<T> {
-        block_on(timeout(
+        poll_io(
+            pollable,
+            IoEvents::IN,
+            self.nonblocking() || extra_nonblocking,
             self.recv_timeout(),
-            poll_io(
-                pollable,
-                IoEvents::IN,
-                self.nonblocking() || extra_nonblocking,
-                f,
-            ),
-        ))?
+            f,
+        )
     }
 }
 impl Configurable for GeneralOptions {

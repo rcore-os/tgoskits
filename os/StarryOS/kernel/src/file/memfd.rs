@@ -34,7 +34,7 @@ use ax_io::{IoBuf, SeekFrom, prelude::*};
 use ax_memory_addr::VirtAddr;
 use ax_memory_set::MemoryArea;
 use ax_runtime::hal::paging::MappingFlags;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
@@ -62,7 +62,7 @@ pub struct Memfd {
     name: String,
     /// Serializes seal-check-and-truncate to close the TOCTOU window
     /// between `check_truncate` and the underlying `set_len`.
-    truncate_mtx: Mutex<()>,
+    truncate_mtx: PiMutex<()>,
 }
 
 impl Memfd {
@@ -78,7 +78,7 @@ impl Memfd {
             seals: AtomicU32::new(initial),
             shared_writable_mmap_count: AtomicU32::new(0),
             name,
-            truncate_mtx: Mutex::new(()),
+            truncate_mtx: PiMutex::new(()),
         })
     }
 

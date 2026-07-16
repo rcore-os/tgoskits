@@ -189,7 +189,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 fn demo(flag: &AtomicBool, wq: WaitQueue) {
     flag.store(true, Ordering::Relaxed);
-    wq.notify_all(true);
+    wq.notify_all();
 }
 "#,
     );
@@ -340,7 +340,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 fn demo(flag: &AtomicBool, wq: WaitQueue) {
     flag.store(true, Ordering::Release);
-    wq.notify_all(true);
+    wq.notify_all();
     let _ = flag.load(Ordering::Relaxed);
 }
 "#,

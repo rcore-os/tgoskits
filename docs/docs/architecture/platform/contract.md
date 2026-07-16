@@ -42,7 +42,7 @@ pub use ax_plat_macros::secondary_main;
 | --- | --- | --- |
 | `PlatformInfoIf` | `platform.rs` | `fn platform_name() -> &'static str` |
 | `InitIf` | `init.rs` | `init_early`、`init_later`，以及 `smp` feature 下的 `_secondary` 变种 |
-| `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、`claim_runtime_output`，以及 `irq` feature 下的 IRQ 系列 |
+| `ConsoleIf` | `console.rs` | `write_bytes`、`read_bytes`、`device_id`、带 generation token 的 runtime handover，以及 `irq` feature 下的 IRQ 系列 |
 | `MemIf` | `mem.rs` | `phys_ram_ranges`、`reserved_phys_ram_ranges`、`mmio_ranges`、`phys_to_virt`、`virt_to_phys`、`kernel_aspace` |
 | `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
 | `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下 `cpu_boot(cpu_id, stack_top_paddr)` |
@@ -172,7 +172,7 @@ static CPU_ID:  usize = 0;
 static IS_BSP:  bool  = false;
 ```
 
-公共函数：`this_cpu_id`、`this_cpu_is_bsp`、`init_primary`、`init_secondary`。`axplat-dyn` 还通过 `ax-percpu/custom-base` feature 让 percpu 基址指向 `somehal` 维护的区域，见 [dynamic.md](dynamic.md)。
+公共函数：`this_cpu_id`、`this_cpu_is_bsp`、对应的 pinned 变体、`init_primary`、`init_secondary`。`axplat-dyn` 在平台入口把 `somehal` 维护的连续区域注册为 `PerCpuLayoutV1` 并绑定当前 CPU；`init_primary/init_secondary` 只校验该绑定并发布平台字段，见 [dynamic.md](dynamic.md)。
 
 ## 平台选择
 
@@ -207,6 +207,6 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 
 - 平台 crate 实现的是链接期全局接口，不是运行时插件。`ax-crate-interface` 只为每个 `*If` trait 保留一个实现槽。
 - `axplat-dyn` 与另一个外部平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
-- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会同时开启 `somehal/hv` 和 `ax-cpu/arm-el2`。
+- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。`axplat-dyn/hv` 只传播 `somehal/hv`；CPU-local host level 在 final-high platform binding 时从 live runtime state 确定，不由通用 `hv` feature 推测。`ax-cpu/arm-el2` 只能由 AArch64 Axvisor 最终镜像按 target 显式启用，不得污染其它架构或 AArch64 EL1 镜像。
 - `AX_PLATFORM_CRATE` 只决定 `ax-hal` 生成哪个 crate 标识符；Cargo 仍需要通过 `ax-hal` 自己的 feature/依赖把该 crate 放进依赖图。
 - `unsafe extern "Rust"` 入口符号的调用方必须确保 `cpu_id`、`arg` 语义与平台宏文档一致：`arg` 通常是 bootloader 传下来的 device tree blob 地址。

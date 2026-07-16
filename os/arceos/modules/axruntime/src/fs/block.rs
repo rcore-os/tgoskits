@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::pin::Pin;
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
@@ -8,6 +9,10 @@ use ax_fs_ng::{
         FsPage, FsPageProvider,
     },
 };
+use ax_lazyinit::LazyInit;
+use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle};
+
+use crate::task::{ThreadId, ThreadWakeHandle, WaitQueue};
 
 struct RuntimeTimeProvider;
 
@@ -39,8 +44,10 @@ impl FsPageProvider for RuntimePageProvider {
 static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
-static BLOCK_IO_WAIT_WQ: ax_task::WaitQueue = ax_task::WaitQueue::new();
-static BLOCK_DRAIN_NOTIFY: ax_task::IrqNotify = ax_task::IrqNotify::new();
+static BLOCK_IO_WAIT_WQ: WaitQueue = WaitQueue::new();
+static BLOCK_DRAIN_PARK: WaitQueue = WaitQueue::new();
+static BLOCK_DRAIN_NOTIFY: IrqWaitCell = IrqWaitCell::new();
+static BLOCK_DRAIN_WAITER: LazyInit<BlockDrainWaiter> = LazyInit::new();
 #[cfg(feature = "irq")]
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
@@ -48,17 +55,19 @@ struct RuntimeTaskOps;
 
 impl BlockTaskOps for RuntimeTaskOps {
     fn current_task_id(&self) -> Option<u64> {
-        ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
+        crate::task::current_thread_id().ok().map(ThreadId::as_u64)
     }
 
     fn can_block(&self) -> bool {
         crate::is_init_ok()
-            && ax_task::current_may_uninit().is_some()
-            && !ax_task::in_atomic_context()
+            && crate::task::current_thread_id().is_ok()
+            && !crate::guard::in_atomic_context()
     }
 
     fn task_yield(&self) {
-        ax_task::yield_now();
+        if let Err(error) = crate::task::yield_current_cpu() {
+            warn!("block runtime could not yield the current task: {error}");
+        }
     }
 
     fn task_wait(&self) {
@@ -74,28 +83,83 @@ impl BlockTaskOps for RuntimeTaskOps {
     }
 
     fn wake_task(&self, task_id: u64) {
-        let _ = ax_task::wake_task_by_id(task_id);
+        let thread = ThreadId::from_parts(task_id as u32, (task_id >> 32) as u32);
+        if let Ok(handle) = crate::task::thread_handle(thread) {
+            let _ = handle.wake_handle().wake();
+        }
     }
 
     fn notify_waiters(&self) {
-        BLOCK_IO_WAIT_WQ.notify_all(false);
+        BLOCK_IO_WAIT_WQ.notify_all();
     }
 
     fn notify_drain(&self) {
-        BLOCK_DRAIN_NOTIFY.notify();
+        let _ = BLOCK_DRAIN_NOTIFY.notify();
     }
 
     fn notify_drain_from_irq(&self) {
-        BLOCK_DRAIN_NOTIFY.notify_irq();
+        let _ = BLOCK_DRAIN_NOTIFY.notify();
     }
 
     fn wait_for_drain_notification(&self) {
-        BLOCK_DRAIN_NOTIFY.wait();
+        block_until_drain_notification();
     }
 
     fn spawn(&self, name: String, f: Box<dyn FnOnce() + Send + 'static>) {
-        ax_task::spawn_raw(f, name, crate::runtime_default_task_stack_size());
+        if let Err(error) =
+            crate::task::spawn_raw(f, name, crate::runtime_default_task_stack_size())
+        {
+            warn!("failed to spawn block runtime worker: {error}");
+        }
     }
+}
+
+struct BlockDrainWaiter {
+    owner: ThreadId,
+    registration: Pin<Box<IrqWaitRegistration>>,
+    _wake: &'static ThreadWakeHandle,
+}
+
+fn block_until_drain_notification() {
+    let current = crate::task::current_thread_handle()
+        .unwrap_or_else(|error| panic!("block drain waiter has no scheduler thread: {error}"));
+    let waiter = BLOCK_DRAIN_WAITER.get_or_init(|| create_block_drain_waiter(&current));
+    assert_eq!(
+        waiter.owner,
+        current.id(),
+        "block drain notifications must be consumed by one fixed service thread"
+    );
+
+    match BLOCK_DRAIN_NOTIFY.register(waiter.registration.as_ref()) {
+        IrqRegisterResult::Registered | IrqRegisterResult::ConsumedPending => {
+            // A direct wake before the park is retained by ax-task's generation
+            // handshake, so this wait also consumes the pending-before-register case.
+            BLOCK_DRAIN_PARK.wait();
+            let _ = BLOCK_DRAIN_NOTIFY.unregister(waiter.registration.as_ref());
+        }
+        IrqRegisterResult::Occupied => {
+            panic!("block drain IRQ waiter was registered concurrently")
+        }
+    }
+}
+
+fn create_block_drain_waiter(current: &crate::task::ThreadHandle) -> BlockDrainWaiter {
+    let wake = Box::leak(Box::new(current.wake_handle()));
+    // SAFETY: `wake` is intentionally retained for the shutdown lifetime. Its
+    // direct wake path is allocation-free, non-blocking, and hard-IRQ-safe.
+    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_block_drain) };
+    BlockDrainWaiter {
+        owner: current.id(),
+        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
+        _wake: wake,
+    }
+}
+
+unsafe fn wake_block_drain(data: usize) {
+    // SAFETY: `create_block_drain_waiter` publishes only the leaked
+    // `ThreadWakeHandle` pointer stored in `BlockDrainWaiter`.
+    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
+    let _ = wake.wake();
 }
 
 #[cfg(feature = "irq")]

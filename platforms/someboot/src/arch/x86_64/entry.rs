@@ -17,6 +17,8 @@ pub extern "C" fn kernel_entry(
     // uefi crate globals (image_handle/system_table). Clearing .bss here
     // would wipe that state before ExitBootServices.
     if efi_boot == 0 {
+        // x86_64_raw_entry already applied every relative relocation in naked
+        // PIC assembly before this first ordinary Rust frame was entered.
         clear_bss();
     }
 

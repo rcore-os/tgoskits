@@ -75,7 +75,7 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
         features: vec!["ax-std".to_string(), "fs".to_string(), "dns".to_string()],
         ..BuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
         &metadata,

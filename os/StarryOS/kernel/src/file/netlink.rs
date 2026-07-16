@@ -35,7 +35,6 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -47,7 +46,10 @@ use spin::LazyLock;
 use crate::{
     file::{FileLike, IoDst, IoSrc},
     syscall::in_root_net_ns,
-    task::AsThread,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 /// Maximum number of queued receive messages per socket.  Matches
@@ -318,7 +320,11 @@ impl NetlinkSocket {
         match state.addr {
             Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
             _ => {
-                let pid = ax_task::current().as_thread().proc_data.proc.pid();
+                let pid = crate::task::current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .pid();
                 state.addr = Some(sockaddr_nl {
                     nl_family: AF_NETLINK as _,
                     nl_pad: 0,
@@ -550,17 +556,25 @@ impl NetlinkSocket {
         dontwait: bool,
     ) -> AxResult<(usize, bool)> {
         let non_blocking = self.nonblocking() || dontwait;
-        block_on(poll_io(self, IoEvents::IN, non_blocking, || {
-            self.read_one(dst, peek, truncate)
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, non_blocking, || {
+                self.read_one(dst, peek, truncate)
+            }),
+        )
     }
 }
 
 impl FileLike for NetlinkSocket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            self.read_one(dst, false, false)
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                self.read_one(dst, false, false)
+            }),
+        )
         .map(|(len, _)| len)
     }
 

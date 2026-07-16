@@ -14,6 +14,12 @@ pub mod arceos {
     /// Lower-level ArceOS module facade for system components.
     #[doc(no_inline)]
     pub use ax_api::modules;
+
+    /// OS-independent task scheduler types and ArceOS runtime operations.
+    #[cfg(feature = "multitask")]
+    pub mod task {
+        pub use ax_runtime::task::*;
+    }
 }
 
 #[cfg(feature = "std-compat")]

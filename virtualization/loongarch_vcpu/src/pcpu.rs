@@ -1,15 +1,22 @@
 use crate::{
-    registers::{CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gstat_read, gstat_write},
+    registers::{
+        CSR_EENTRY, csr_read, csr_write, gcsr_eentry_read, gintc_set_hwi_passthrough, gstat_read,
+        gstat_write, read_gintc, write_gintc,
+    },
     types::LoongArchVcpuResult,
 };
 
+/// Per-CPU LoongArch virtualization state.
+///
+/// This object stores register snapshots rather than a hardware page, so it
+/// keeps ordinary C alignment and can be embedded in the fixed CPU-area ABI.
 #[repr(C)]
-#[repr(align(4096))]
 pub struct LoongArchPerCpu {
     pub cpu_id: usize,
     pub original_eentry: usize,
     pub original_gstat: usize,
     pub original_gcsr_eentry: usize,
+    pub original_gintc: usize,
     pub enabled: bool,
 }
 
@@ -20,6 +27,7 @@ impl LoongArchPerCpu {
             original_eentry: 0,
             original_gstat: 0,
             original_gcsr_eentry: 0,
+            original_gintc: 0,
             enabled: false,
         })
     }
@@ -28,10 +36,12 @@ impl LoongArchPerCpu {
         self.enabled
     }
 
-    pub fn hardware_enable(&mut self) -> LoongArchVcpuResult {
+    pub fn hardware_enable(&mut self, _cpu_pin: &ax_cpu_local::CpuPin) -> LoongArchVcpuResult {
         self.original_eentry = unsafe { csr_read::<CSR_EENTRY>() };
         self.original_gstat = gstat_read();
         self.original_gcsr_eentry = gcsr_eentry_read();
+        self.original_gintc = read_gintc();
+        unsafe { gintc_set_hwi_passthrough(0) };
         self.enabled = true;
 
         log::debug!(
@@ -44,9 +54,10 @@ impl LoongArchPerCpu {
         Ok(())
     }
 
-    pub fn hardware_disable(&mut self) -> LoongArchVcpuResult {
+    pub fn hardware_disable(&mut self, _cpu_pin: &ax_cpu_local::CpuPin) -> LoongArchVcpuResult {
         unsafe {
             gstat_write(self.original_gstat);
+            write_gintc(self.original_gintc);
             csr_write::<CSR_EENTRY>(self.original_eentry);
         }
         self.enabled = false;

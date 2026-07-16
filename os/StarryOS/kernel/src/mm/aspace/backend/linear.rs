@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
 
@@ -17,7 +17,6 @@ use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting
 /// counted in process RSS (Linux `VM_PFNMAP|VM_IO` analogue).
 #[derive(Clone)]
 pub struct LinearBackend {
-    start: VirtAddr,
     offset: isize,
     shared: bool,
     /// Optional lifetime anchor. Keeps an arbitrary object alive as long as
@@ -25,19 +24,10 @@ pub struct LinearBackend {
     /// `Arc<IonBuffer>` alive while its physical DMA pages are mapped into a
     /// process address space, preventing use-after-free when the fd is closed
     /// before `munmap`.
-    anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
+    _anchor: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 impl LinearBackend {
-    pub fn with_start(&self, new_start: VirtAddr) -> Self {
-        Self {
-            start: new_start,
-            offset: self.offset + (new_start.as_usize() as isize - self.start.as_usize() as isize),
-            shared: self.shared,
-            anchor: self.anchor.clone(),
-        }
-    }
-
     fn pa(&self, va: VirtAddr) -> PhysAddr {
         PhysAddr::from((va.as_usize() as isize - self.offset) as usize)
     }
@@ -91,7 +81,7 @@ impl BackendOps for LinearBackend {
         _flags: MappingFlags,
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _new_aspace: &Arc<PiMutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         Ok(Backend::Linear(self.clone()))
@@ -107,26 +97,24 @@ impl BackendOps for LinearBackend {
 }
 
 impl Backend {
-    pub fn new_linear(start: VirtAddr, offset: isize, shared: bool) -> Self {
+    pub fn new_linear(_start: VirtAddr, offset: isize, shared: bool) -> Self {
         Self::Linear(LinearBackend {
-            start,
             offset,
             shared,
-            anchor: None,
+            _anchor: None,
         })
     }
 
     pub fn new_linear_anchored(
-        start: VirtAddr,
+        _start: VirtAddr,
         offset: isize,
         shared: bool,
         anchor: Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
         Self::Linear(LinearBackend {
-            start,
             offset,
             shared,
-            anchor: Some(anchor),
+            _anchor: Some(anchor),
         })
     }
 }

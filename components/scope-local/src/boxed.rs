@@ -37,7 +37,12 @@ pub(crate) struct ItemBox {
     ptr: NonNull<Header>,
 }
 
+// SAFETY: Item descriptors can only enter through the unsafe, type-matched
+// constructor used by `scope_local!`, which requires the erased payload to be
+// `Send + Sync + 'static`.
 unsafe impl Send for ItemBox {}
+// SAFETY: the same descriptor invariant guarantees shared payload access is
+// valid, while the containing Scope gate excludes mutable aliasing.
 unsafe impl Sync for ItemBox {}
 
 impl ItemBox {

@@ -1,7 +1,9 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
 #[cfg(feature = "irq")]
-use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
+use ax_plat::irq::{
+    CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector,
+};
 use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
@@ -46,7 +48,17 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
-    fn claim_runtime_output() {}
+    fn begin_runtime_output_handover_raw() -> usize {
+        1
+    }
+
+    fn commit_runtime_output_handover_raw(_token: usize) -> bool {
+        true
+    }
+
+    fn abort_runtime_output_handover_raw(_token: usize) -> bool {
+        true
+    }
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
@@ -183,7 +195,13 @@ impl IrqIf for DummyIrq {
         None
     }
 
-    fn send_ipi(_irq: IrqId, _target: IpiTarget) {}
+    fn send_ipi(
+        _irq: IrqId,
+        _target: CpuIpiTarget,
+        _irq_guard: &ax_kspin::IrqGuard,
+    ) -> IpiSendStatus {
+        IpiSendStatus::Invalid
+    }
 
     fn ipi_irq() -> IrqId {
         IrqId::new(ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))

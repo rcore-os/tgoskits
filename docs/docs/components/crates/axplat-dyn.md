@@ -29,10 +29,10 @@
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
 | `lib.rs` | crate 根与装配层 | 裸机目标限定、模块导入、无 `irq` 时的空中断入口 |
-| `boot` | 启动 glue | `#[somehal::entry(Kernel)]`、`#[somehal::secondary_entry]`、`Kernel` 的 `MmioOp` 实现 |
+| `boot` | 启动 glue | 注册并绑定连续 per-CPU layout、`#[somehal::entry(Kernel)]`、`#[somehal::secondary_entry]`、`Kernel` 的 `MmioOp` 实现 |
 | `init` | `InitIf` 实现 | trap 初始化、计时器打开、`post_paging()`、后期 IRQ 打开 |
 | `console` | `ConsoleIf` 实现 | 控制台读写、`\n` 到 `\r\n` 的串口兼容转换 |
-| `mem` | `MemIf` 实现 | 从 `somehal::mem::memory_map()` 生成 RAM/保留区/MMIO 视图，导出 `_percpu_base_ptr` |
+| `mem` | `MemIf` 实现 | 从 `somehal::mem::memory_map()` 生成 RAM/保留区/MMIO 视图 |
 | `generic_timer` | `TimeIf` 实现 | tick/nanos 转换、定时器 IRQ 编号、one-shot 定时器 |
 | `irq` | `IrqIf` 实现 | `HandlerTable<1024>`、启停 IRQ、注册/撤销、公共分发入口 |
 | `power` | `PowerIf` 实现 | `cpu_boot()`、`system_off()`、`cpu_num()` |
@@ -57,8 +57,9 @@
 
 1. `#[somehal::entry(Kernel)]` 标记的 `main()` 作为主核入口。
 2. 入口尝试从 `somehal::fdt_addr_phys()` 取得 FDT 物理地址，作为 `arg` 传给内核。
-3. 主核统一跳到 `ax_plat::call_main(0, arg)`。
-4. 若启用 `smp`，`#[somehal::secondary_entry]` 标记的次核入口会继续调用 `ax_plat::call_secondary_main(cpu_id)`。
+3. 主核从 `somehal::smp::percpu_data_layout()` 构造 `PerCpuLayoutV1`，一次注册连续 layout，并绑定当前 CPU 的 `CpuAreaHeader`。
+4. 主核统一跳到 `ax_plat::call_main(cpu_idx, arg)`；ax-runtime 只校验这个绑定，不再写 CPU anchor。
+5. 若启用 `smp`，次核入口只绑定已注册 layout 中自己的 area，再调用 `ax_plat::call_secondary_main(cpu_id)`。
 
 ```mermaid
 flowchart TD
@@ -97,7 +98,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 不再额外注入一套传统平台包的内核保留区逻辑：当前路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
+per-CPU 基址不再通过逐次外部回调查询。`boot.rs` 将 `somehal` 已分配的连续区域一次注册为 `PerCpuLayoutV1`，此后 current access 由硬件 anchor 加 symbol offset 完成，remote access 由 `runtime_base + cpu_index * area_stride` 做 O(1) 计算。`ax-hal::mem` 因而只消费 `somehal` 已给出的 `KImage` 和 `PerCpuData` 内存事实。
 
 #### 时间、中断与电源
 
@@ -176,7 +177,9 @@ flowchart TD
 | `smp` | 透传到 `ax-plat/smp`，启用次核入口、次核初始化和 `cpu_boot()` 路径 |
 | `irq` | 透传到 `ax-plat/irq`，编译 `irq.rs` 并启用 timer IRQ 相关接口 |
 | `uspace` | 透传到 `somehal/uspace`，说明该路径允许 `somehal` 切换到含用户态支持的构建 |
-| `hv` | 透传到 `somehal/hv` 与 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
+| `hv` | 仅透传到 `somehal/hv`；CPU-local host level 由 final-high runtime binding 确定 |
+
+只有 AArch64 Axvisor 最终镜像可以在 target-specific 组装处显式启用 `ax-cpu/arm-el2`。其它架构与 AArch64 EL1 镜像不得因 `axplat-dyn/hv` 间接获得该 feature。
 
 需要注意，默认 feature 就是 `["smp", "irq"]`，这意味着该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
 
@@ -194,7 +197,7 @@ flowchart TD
 | --- | --- |
 | `axplat` | 提供平台契约与 `call_main()` / `call_secondary_main()` |
 | `somehal` | 提供真实平台事实与入口宏，是本 crate 的核心下层 |
-| `ax-cpu` | 在 `hv` 等场景提供 CPU 模式支持 |
+| `ax-cpu` | 提供通用 CPU/trap 能力；`arm-el2` 不由本 crate 的通用 `hv` feature 传播 |
 | `axklib` | 提供 `iomap()` 等内核内存映射辅助 |
 | `ax-driver` | 提供共享驱动 probe 与 adapter 入口 |
 | `rdrive`、`rdif-block` | 提供运行时设备探测与块设备能力边界 |
@@ -267,7 +270,7 @@ graph TD
 - 启动测试：验证主核、次核入口都能正确进入 `axplat` 入口函数。
 - 契约测试：对 `InitIf`、`MemIf`、`TimeIf`、`PowerIf` 的桥接语义做最小集成回归。
 - 设备测试：在含 `virtio,mmio` 或 PCIe ECAM 的环境下验证 `probe_all_devices()` 至少能发现块设备。
-- 多核测试：在 `smp` 打开时验证 `cpu_boot()`、`_percpu_base_ptr()` 和 CPU 计数一致性。
+- 多核测试：在 `smp` 打开时验证 `cpu_boot()`、连续 `PerCpuLayoutV1`、每核 header/cookie 和 CPU 计数一致性。
 
 ### 5.3 重点风险
 

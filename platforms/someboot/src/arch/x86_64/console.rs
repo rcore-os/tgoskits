@@ -2,7 +2,7 @@ pub struct Console;
 
 const COM1_PORT: u16 = 0x3f8;
 const COM1_CLOCK_HZ: u32 = 1_843_200;
-const COM1_IRQ_VECTOR: usize = 0x30 + 4;
+const COM1_GSI: usize = 4;
 
 const UART_IER: u16 = 1;
 const UART_IIR: u16 = 2;
@@ -52,7 +52,7 @@ impl crate::console::ArchConsoleOps for Console {
     }
 
     fn irq_num() -> Option<usize> {
-        Some(COM1_IRQ_VECTOR)
+        Some(COM1_GSI)
     }
 
     fn set_input_irq_enabled(enabled: bool) {
@@ -107,5 +107,18 @@ impl crate::console::ArchConsoleOps for Console {
         }
 
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn com1_reports_the_firmware_gsi_instead_of_a_cpu_vector() {
+        assert_eq!(
+            <Console as crate::console::ArchConsoleOps>::irq_num(),
+            Some(4)
+        );
     }
 }

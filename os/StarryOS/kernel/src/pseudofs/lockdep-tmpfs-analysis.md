@@ -281,9 +281,13 @@ stack overflow/corruption detected for Task(1, "idle"):
 stack=[0xffffffc080520000..0xffffffc080524000), expected magic=0x57acce1157acce11
 ```
 
-That is no longer a lockdep order report. It points at the 16 KiB primary idle
-task stack in `os/arceos/modules/axtask/src/run_queue.rs`. Further work should
-separate that stack canary issue from the subclass implementation.
+That is no longer a lockdep order report. The diagnostic came from the retired
+ArceOS scheduler's fixed primary idle stack. The current design creates idle
+thread resources in `os/arceos/modules/axruntime/src/task.rs`; the
+OS-independent `components/ax-task` core sees only opaque runtime stack and
+context handles. Any recurrence must therefore be checked against the runtime
+stack allocator and guard-page diagnostics, separately from the subclass
+implementation.
 
 ## Instance identity cleanup
 

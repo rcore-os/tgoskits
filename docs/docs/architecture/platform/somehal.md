@@ -213,8 +213,9 @@ pub trait PlatOp {
 - 子模块：`eiointc`、`pch_pic`、`irq_common`。
 - **IOCSR IPI**：`IOCSR_IPI_SEND = 0x1040`，写入值 `(cpu_id << 16) | vector`，可选阻塞位 `1 << 31`。
 - 中断号：`EIOINTC_IRQ = 3`、`IPI_IRQ = 12`。
-- `begin_irq` 流程：先 ACK timer/IPI，外部 IRQ 走 `eiointc::claim_irq`，再解析 PCH-PIC route，`Drop` 时 `eiointc::complete_irq`。
-- `ActiveIrq` 用 `enum Completion { None, EioIntc { irq } }` 表达完成动作。
+- `begin_irq` 流程：先 ACK timer/IPI，外部 IRQ 走 `eiointc::claim_irq`，再通过预先发布的 CPU fast-path route 解析 PCH-PIC input；edge child 在返回 `ActiveIrq`、进入 action 前写 PCH `CLEAR` 并执行设备写 `dbar`，level child 不写 `CLEAR`。hard IRQ 不查询 `rdrive`，也不获取 controller 控制面锁。
+- `ActiveIrq` 用 `Completion::{None, EioIntc, LioIntc}` 携带 action 后的 parent 完成令牌；PCH edge child 已在 action 前完成 ack，`Drop` 只完成 EIOINTC parent。这样 action 执行期间到达的新 edge 能重新锁存，而 level 的撤销仍由设备负责。
+- PCH-PIC probe 在所有 input 仍 masked 时，把 CPU route 与只读 MMIO completion endpoint 合并成一个 write-before-release 的冻结对象，并校验 MMIO 长度、`1..=64` input 数量及 8 位向量窗口。该对象持续到关机；当前 fast path 只支持一个 PCH，第二实例在 reset/注册前明确失败。
 - ACPI GSI 路由：先 `rdrive::probe::acpi::with_acpi(|s| s.routing().resolve_gsi(gsi))`，再按 `AcpiGsiController::PchPic` 分发。
 
 ### x86_64 (`arch/x86_64/mod.rs`)
@@ -222,9 +223,13 @@ pub trait PlatOp {
 - 子模块：`lapic`、`vector`。
 - 通过 `module_driver!` 注册 ACPI IOAPIC 驱动，`AcpiId { hid: "ACPIIOAP", ... }`。
 - `struct X86IoApicIntc` 实现 `rdif_intc::Interface::{translate_acpi, supports_acpi_gsi, configure_acpi}`。
-- 维护 `routes: Vec<AcpiGsiRoute>`、`vector_routes: Vec<(usize, IrqId)>`、`destinations: Vec<(usize, u8)>`。
+- `AcpiGsiRoute` 只携带固件 GSI、controller identity、controller-local input、trigger 和 polarity，不携带 CPU vector；rdrive 不从 GSI 推导 vector。
+- control plane 为每条有效路由独立分配 external vector，并保存预分配的 `ProgrammedIoApicRoute`；低 GSI 的 `0x30 + gsi` 仅作为 IOAPIC 内部可选偏好，冲突或越界时扫描合法空闲 vector。
+- CPU/IRQ fast path 使用固定容量 endpoint slot，以完整 `u32` GSI 为 key，并用独立的 vector reverse map 从 trap vector 恢复 `IrqId`。查找有固定上界，不访问 rdrive，也不分配。
+- 配置顺序固定为“验证并预留 endpoint/vector → 在全局 IRQ-safe MMIO lock 下写 masked redirection entry → 依次 Release 发布 vector 和 endpoint”；预留 token 在提交前失败时自动回滚。
 - 每个 IOAPIC 的 redirection 表初始化为全部 MASKED；`MASKED_IOAPIC_PLACEHOLDER_VECTOR = 0x21`。
-- 公开：`lapic_ipi_irq_id`、`lapic_timer_irq_id`、`local_vector_irq_id`、`validate_external_vector`、`SPURIOUS_VECTOR`，以及测试用 `APIC_IPI_VECTOR`、`APIC_TIMER_VECTOR`、`ioapic_gsi_irq_id`。
+- IOREGSEL/IOWIN 的 probe、配置、affinity 和 hard-IRQ mask/unmask 访问共享同一把 `SpinIrqSave`，避免多个 IOAPIC 对象或 CPU 交错破坏间接 MMIO transaction。
+- x86 early console 向上报告 COM1 GSI 4；只有 IOAPIC control plane 可以把它分配为 CPU vector。
 
 ## build.rs
 

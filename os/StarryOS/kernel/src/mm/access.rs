@@ -1,10 +1,11 @@
-use alloc::string::String;
+use alloc::{rc::Rc, string::String, vec::Vec};
 use core::{
     alloc::Layout,
     ffi::c_char,
     hint::{spin_loop, unlikely},
-    mem::{MaybeUninit, transmute},
-    ptr, slice,
+    marker::PhantomData,
+    mem::{MaybeUninit, size_of, transmute},
+    ptr,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
@@ -15,52 +16,75 @@ use ax_runtime::hal::{
     cpu::{asm::user_copy, trap::page_fault_handler},
     paging::MappingFlags,
 };
-use ax_task::{current, might_sleep};
+use bytemuck::{AnyBitPattern, NoUninit};
 use extern_trait::extern_trait;
-use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_write_slice};
+use starry_vm::{
+    VmError, VmIo, VmMutPtr, VmPtr, VmResult, vm_load, vm_load_any, vm_load_until_nul,
+    vm_read_slice, vm_write_slice,
+};
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    task::AsThread,
+    task::{UserTaskRef, current_user_task, might_sleep, try_current_user_task},
 };
 
 /// Enables scoped access into user memory, allowing page faults to occur inside
 /// kernel.
 #[track_caller]
-pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
+fn access_user_memory<R>(f: impl FnOnce() -> R) -> VmResult<R> {
+    if ax_runtime::hal::irq::in_irq_context() {
+        return Err(VmError::AccessDenied);
+    }
     assert!(
         ax_runtime::hal::cpu::asm::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
     might_sleep();
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
-        panic!("access_user_memory called outside of thread context");
-    };
+    let curr = current_user_task();
+    let _scope = UserAccessScope::enter(&curr);
+    Ok(f())
+}
 
-    thr.set_accessing_user_memory(true);
-    let result = f();
-    thr.set_accessing_user_memory(false);
-    result
+/// One nestable, task-bound scope in which kernel user-memory faults may be repaired.
+///
+/// The scope is deliberately `!Send`: the depth belongs to the current Starry
+/// thread and must be removed by the same scheduler thread that installed it.
+struct UserAccessScope<'thread> {
+    thread: &'thread crate::task::Thread,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl<'thread> UserAccessScope<'thread> {
+    fn enter(task: &'thread UserTaskRef) -> Self {
+        let thread = task.as_thread();
+        thread.enter_user_memory_access();
+        Self {
+            thread,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for UserAccessScope<'_> {
+    fn drop(&mut self) {
+        self.thread.leave_user_memory_access();
+    }
 }
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {
+    if ax_runtime::hal::irq::in_irq_context() {
+        return Err(AxError::BadAddress);
+    }
     let align = layout.align();
     if start.as_usize() & (align - 1) != 0 {
         return Err(AxError::BadAddress);
     }
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
-        warn!(
-            "reject user region check outside thread context: task={}, start={:#x}, len={}",
-            curr.id_name(),
-            start.as_usize(),
-            layout.size()
-        );
-        return Err(AxError::BadAddress);
-    };
+    let curr = try_current_user_task()
+        .map_err(|_| AxError::BadAddress)?
+        .ok_or(AxError::BadAddress)?;
+    let thr = curr.as_thread();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(AxError::BadAddress);
@@ -80,8 +104,23 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
 
 /// A pointer to user space memory.
 #[repr(transparent)]
-#[derive(PartialEq, Clone, Copy)]
 pub struct UserPtr<T>(*mut T);
+
+impl<T> Copy for UserPtr<T> {}
+
+impl<T> Clone for UserPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> PartialEq for UserPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T> Eq for UserPtr<T> {}
 
 impl<T> From<usize> for UserPtr<T> {
     fn from(value: usize) -> Self {
@@ -102,8 +141,6 @@ impl<T> Default for UserPtr<T> {
 }
 
 impl<T> UserPtr<T> {
-    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ.union(MappingFlags::WRITE);
-
     pub fn address(&self) -> VirtAddr {
         VirtAddr::from_ptr_of(self.0)
     }
@@ -120,21 +157,89 @@ impl<T> UserPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_mut(self) -> AxResult<&'static mut T> {
-        check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
-        Ok(unsafe { &mut *self.0 })
+    /// Copies one initialized value from user memory.
+    pub fn read(self) -> AxResult<T>
+    where
+        T: AnyBitPattern,
+    {
+        self.0.vm_read().map_err(Into::into)
     }
 
-    pub fn get_as_mut_slice(self, len: usize) -> AxResult<&'static mut [T]> {
-        if len == 0 {
-            return Ok(&mut []);
-        }
-        check_region(
-            self.address(),
-            Layout::array::<T>(len).unwrap(),
-            Self::ACCESS_FLAGS,
-        )?;
-        Ok(unsafe { slice::from_raw_parts_mut(self.0, len) })
+    /// Copies one ABI value whose valid-bit-pattern contract is caller-provided.
+    ///
+    /// # Safety
+    ///
+    /// Every possible byte pattern supplied by userspace must be a valid `T`.
+    pub unsafe fn read_abi(self) -> AxResult<T> {
+        let value = self.0.vm_read_uninit()?;
+        // SAFETY: guaranteed by the caller after the copy initialized every byte.
+        Ok(unsafe { value.assume_init() })
+    }
+
+    /// Copies ABI values whose valid-bit-pattern contract is caller-provided.
+    ///
+    /// # Safety
+    ///
+    /// Every possible byte pattern supplied by userspace must be a valid `T`.
+    pub unsafe fn read_abi_slice(self, len: usize) -> AxResult<Vec<T>> {
+        // SAFETY: the caller supplies the element validity contract.
+        unsafe { vm_load_any(self.0.cast_const(), len) }.map_err(Into::into)
+    }
+
+    /// Copies one kernel-owned value to user memory.
+    pub fn write(self, value: T) -> AxResult<()>
+    where
+        T: NoUninit,
+    {
+        self.0.vm_write(value).map_err(Into::into)
+    }
+
+    /// Copies one initialized field without exposing or copying the containing
+    /// ABI object's padding bytes.
+    pub fn write_field<U>(self, offset: usize, value: U) -> AxResult<()>
+    where
+        U: NoUninit,
+    {
+        let field_end = offset
+            .checked_add(size_of::<U>())
+            .filter(|end| *end <= size_of::<T>())
+            .ok_or(AxError::BadAddress)?;
+        debug_assert!(field_end <= size_of::<T>());
+        let field_address = self
+            .0
+            .addr()
+            .checked_add(offset)
+            .ok_or(AxError::BadAddress)?;
+        UserPtr::<U>::from(field_address).write(value)
+    }
+
+    /// Copies an initialized array field without requiring the containing
+    /// array length to implement [`NoUninit`].
+    pub fn write_field_slice<U>(self, offset: usize, values: &[U]) -> AxResult<()>
+    where
+        U: NoUninit,
+    {
+        let byte_len = size_of::<U>()
+            .checked_mul(values.len())
+            .ok_or(AxError::BadAddress)?;
+        offset
+            .checked_add(byte_len)
+            .filter(|end| *end <= size_of::<T>())
+            .ok_or(AxError::BadAddress)?;
+        let field_address = self
+            .0
+            .addr()
+            .checked_add(offset)
+            .ok_or(AxError::BadAddress)?;
+        UserPtr::<U>::from(field_address).write_slice(values)
+    }
+
+    /// Copies kernel-owned values to user memory.
+    pub fn write_slice(self, values: &[T]) -> AxResult<()>
+    where
+        T: NoUninit,
+    {
+        vm_write_slice(self.0, values).map_err(Into::into)
     }
 }
 
@@ -166,12 +271,28 @@ pub fn atomic_update_user_u32(
             }
         }
     })
+    .map_err(AxError::from)?
 }
 
 /// An immutable pointer to user space memory.
 #[repr(transparent)]
-#[derive(PartialEq, Clone, Copy)]
 pub struct UserConstPtr<T>(*const T);
+
+impl<T> Copy for UserConstPtr<T> {}
+
+impl<T> Clone for UserConstPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> PartialEq for UserConstPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T> Eq for UserConstPtr<T> {}
 
 impl<T> From<usize> for UserConstPtr<T> {
     fn from(value: usize) -> Self {
@@ -192,8 +313,6 @@ impl<T> Default for UserConstPtr<T> {
 }
 
 impl<T> UserConstPtr<T> {
-    const ACCESS_FLAGS: MappingFlags = MappingFlags::READ;
-
     pub fn address(&self) -> VirtAddr {
         VirtAddr::from_ptr_of(self.0)
     }
@@ -206,35 +325,45 @@ impl<T> UserConstPtr<T> {
         self.0.is_null()
     }
 
-    pub fn get_as_ref(self) -> AxResult<&'static T> {
-        check_region(self.address(), Layout::new::<T>(), Self::ACCESS_FLAGS)?;
-        Ok(unsafe { &*self.0 })
+    /// Copies one initialized value from user memory.
+    pub fn read(self) -> AxResult<T>
+    where
+        T: AnyBitPattern,
+    {
+        self.0.vm_read().map_err(Into::into)
     }
 
-    pub fn get_as_slice(self, len: usize) -> AxResult<&'static [T]> {
+    /// Copies one ABI value whose valid-bit-pattern contract is caller-provided.
+    ///
+    /// # Safety
+    ///
+    /// Every possible byte pattern supplied by userspace must be a valid `T`.
+    pub unsafe fn read_abi(self) -> AxResult<T> {
+        let value = self.0.vm_read_uninit()?;
+        // SAFETY: guaranteed by the caller after the copy initialized every byte.
+        Ok(unsafe { value.assume_init() })
+    }
+
+    /// Copies initialized values from user memory into kernel-owned storage.
+    pub fn read_slice(self, len: usize) -> AxResult<Vec<T>>
+    where
+        T: AnyBitPattern,
+    {
+        vm_load(self.0, len).map_err(Into::into)
+    }
+
+    /// Validates and prefaults a readable user range without exposing it as a reference.
+    pub fn validate_slice(self, len: usize) -> AxResult<()> {
         if len == 0 {
-            return Ok(&[]);
+            return Ok(());
         }
-        check_region(
-            self.address(),
-            Layout::array::<T>(len).unwrap(),
-            Self::ACCESS_FLAGS,
-        )?;
-        Ok(unsafe { slice::from_raw_parts(self.0, len) })
+        let byte_len = size_of::<T>()
+            .checked_mul(len)
+            .ok_or(AxError::InvalidInput)?;
+        prepare_user_memory("validate read", self.0.addr(), byte_len, MappingFlags::READ)
+            .map_err(Into::into)
     }
 }
-
-macro_rules! nullable {
-    ($ptr:ident.$func:ident($($arg:expr),*)) => {
-        if $ptr.is_null() {
-            Ok(None)
-        } else {
-            Some($ptr.$func($($arg),*)).transpose()
-        }
-    };
-}
-
-pub(crate) use nullable;
 
 /// Cumulative count of user page faults dispatched to the demand-paging handler.
 ///
@@ -244,54 +373,70 @@ pub(crate) use nullable;
 /// `node_vmstat_pgfault`.
 pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Fixed, allocation-free diagnostic for malformed or reentrant task identity lookups.
+static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Fixed, allocation-free diagnostic for malformed task identity during user-copy setup.
+static USER_MEMORY_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
 #[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
-    debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
-
     #[cfg(feature = "stack-guard-page")]
-    if ax_task::diagnose_current_stack_guard_page_fault(vaddr) {
+    if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
     }
 
-    let curr = current();
-    let Some(thr) = curr.try_as_thread() else {
+    // This callback handles only faults caused by a user mapping or by the
+    // kernel explicitly touching one. Reject unrelated kernel addresses before
+    // consulting Starry task identity or entering any sleepable MM path.
+    let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
+    if !user_range.contains(&vaddr.as_usize()) {
         return false;
-    };
+    }
 
-    if unlikely(!thr.is_accessing_user_memory()) {
-        // Still try to handle kernel-mode faults on user-space addresses.
-        // Several syscall sites (e.g. event.rs, net/io.rs, fs/lock.rs) obtain
-        // a direct `&mut` reference into user memory via get_as_mut /
-        // get_as_mut_slice and write through it outside of
-        // access_user_memory().  If a concurrent fork has re-marked the page
-        // read-only between check_region() and the write, the kernel write
-        // hits a COW #PF with no fixup-table entry and panics.  Handling the
-        // fault here lets the standard COW path copy the page just as it
-        // would for a user-mode write.
-        let user_range = USER_SPACE_BASE..USER_SPACE_BASE + USER_SPACE_SIZE;
-        if !user_range.contains(&vaddr.as_usize()) {
+    // The interrupted task may own a user-copy scope, but an IRQ handler is
+    // not part of that copy. Linux keys uaccess recovery to the faulting
+    // instruction; reject IRQ-context faults here so the task-scoped fallback
+    // cannot turn an unrelated hard-IRQ bug into a sleeping MM operation.
+    if ax_runtime::hal::irq::in_irq_context() {
+        return false;
+    }
+
+    let curr = match resolve_page_fault_user_task(try_current_user_task()) {
+        Ok(Some(task)) => task,
+        Ok(None) => return false,
+        Err(_error) => {
+            PAGE_FAULT_IDENTITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        // Avoid recursion / deadlock: if this thread already holds the
-        // aspace lock (e.g. fault inside aspace.lock().handle_page_fault())
-        // we have to bail out instead of trying to lock it again.
-        let aspace_arc = thr.proc_data.aspace();
-        if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-            return false;
-        }
+    };
+    let thr = curr.as_thread();
+
+    if !thr.has_active_user_memory_access() {
+        return false;
     }
 
     might_sleep();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-        warn!(
-            "user page fault while current thread already owns its address-space lock: \
-             vaddr={vaddr:#x}, access_flags={access_flags:#x?}"
-        );
         return false;
     }
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
+}
+
+fn resolve_page_fault_user_task(
+    lookup: Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError>,
+) -> Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError> {
+    match lookup {
+        Ok(task) => Ok(task),
+        Err(
+            ax_std::os::arceos::task::TaskError::NotInitialized
+            | ax_std::os::arceos::task::TaskError::NoRunnableThread
+            | ax_std::os::arceos::task::TaskError::CpuOwnerBorrowed,
+        ) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub const PATH_MAX: usize = 4096;
@@ -323,33 +468,36 @@ pub fn check_access(start: usize, len: usize) -> VmResult {
     }
 }
 
-fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
-    let curr = current();
-    if curr.try_as_thread().is_some() {
-        Ok(())
-    } else {
-        warn!(
-            "reject user memory {op} outside thread context: task={}, start={start:#x}, len={len}",
-            curr.id_name()
-        );
-        Err(VmError::AccessDenied)
+fn user_task_for_memory_access(op: &str, start: usize, len: usize) -> VmResult<UserTaskRef> {
+    match try_current_user_task() {
+        Ok(Some(task)) => Ok(task),
+        Ok(None) => {
+            warn!("reject user memory {op} outside user-task context: start={start:#x}, len={len}");
+            Err(VmError::AccessDenied)
+        }
+        Err(_error) => {
+            USER_MEMORY_IDENTITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            Err(VmError::AccessDenied)
+        }
     }
 }
 
 fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: MappingFlags) -> VmResult {
+    if ax_runtime::hal::irq::in_irq_context() {
+        return Err(VmError::AccessDenied);
+    }
     check_access(start, len)?;
     if len == 0 {
         return Ok(());
     }
-    ensure_thread_context(op, start, len)?;
+    let curr = user_task_for_memory_access(op, start, len)?;
 
     let start = VirtAddr::from(start);
     let end = start + len;
     let page_start = start.align_down_4k();
     let page_end = end.align_up_4k();
 
-    let curr = current();
-    let thr = curr.try_as_thread().ok_or(VmError::AccessDenied)?;
+    let thr = curr.as_thread();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(VmError::AccessDenied);
@@ -378,7 +526,7 @@ unsafe impl VmIo for Vm {
         prepare_user_memory("read", start, buf.len(), MappingFlags::READ)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
-        });
+        })?;
         if unlikely(failed_at != 0) {
             Err(VmError::AccessDenied)
         } else {
@@ -393,7 +541,7 @@ unsafe impl VmIo for Vm {
         prepare_user_memory("write", start, buf.len(), MappingFlags::WRITE)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
-        });
+        })?;
         if unlikely(failed_at != 0) {
             Err(VmError::AccessDenied)
         } else {
@@ -560,4 +708,32 @@ pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_std::os::arceos::task::TaskError;
+
+    use super::*;
+
+    #[test]
+    fn bootstrap_page_fault_has_no_starry_memory_owner() {
+        assert!(matches!(resolve_page_fault_user_task(Ok(None)), Ok(None)));
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::NotInitialized)),
+            Ok(None)
+        ));
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::CpuOwnerBorrowed)),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn malformed_user_extension_is_reported_to_the_fatal_trap_path() {
+        assert!(matches!(
+            resolve_page_fault_user_task(Err(TaskError::InvalidRuntimeHandle)),
+            Err(TaskError::InvalidRuntimeHandle)
+        ));
+    }
 }

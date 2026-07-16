@@ -120,7 +120,7 @@ fn host_fdt_pointer_rejects_null() {
 }
 
 #[test]
-fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
+fn tree_copies_subtree_and_updates_a_property() {
     let mut source = Fdt::new();
     let source_root = source.root_id();
     let bus = source.add_node(source_root, Node::new("soc"));
@@ -138,10 +138,8 @@ fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
     let copied = dest
         .copy_subtree_from(&source, bus, dest.inner().root_id(), false)
         .unwrap();
-    dest.inner_mut()
-        .node_mut(copied)
-        .unwrap()
-        .set_property(prop_str("dma-coherent", "true"));
+    dest.set_property(copied, prop_str("dma-coherent", "true"))
+        .unwrap();
 
     let bytes = dest.finish();
     let reparsed = Fdt::from_bytes(&bytes).unwrap();
@@ -160,6 +158,38 @@ fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
         copied_uart.get_property("status").unwrap().as_str(),
         Some("okay")
     );
+}
+
+#[test]
+fn tree_removes_a_subtree_and_selected_node_properties() {
+    let mut source = Fdt::new();
+    let root = source.root_id();
+    let cpus = source.add_node(root, Node::new("cpus"));
+    source
+        .node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#address-cells", 1));
+    source
+        .node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("riscv,cbop-block-size", 64));
+    source.add_node(cpus, Node::new("cpu@0"));
+    source.add_node(cpus, Node::new("cpu@1"));
+    let mut tree = FdtTree::from_fdt(source);
+
+    assert!(tree.remove_subtree("/cpus/cpu@1").is_some());
+    tree.edit_node(cpus, |node| {
+        node.remove_property("riscv,cbop-block-size");
+    })
+    .unwrap();
+
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let cpus = reparsed.get_by_path("/cpus").unwrap().as_node();
+    assert!(reparsed.get_by_path("/cpus/cpu@0").is_some());
+    assert!(reparsed.get_by_path("/cpus/cpu@1").is_none());
+    assert!(cpus.get_property("#address-cells").is_some());
+    assert!(cpus.get_property("riscv,cbop-block-size").is_none());
 }
 
 #[test]

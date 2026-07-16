@@ -132,6 +132,8 @@ pub enum PciIrqRequirement {
 
 例如 `rdif-block` 的 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask，它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
 
+`rdif-serial` 同样把 hard IRQ 限制为固定 RX/TX/pass budget。`SerialIrqOutcome::budget_exhausted` 表示硬件或软件队列可能仍有工作，上层不能丢弃该状态：OS glue 应将它合并成 task-context 事件，再用 `SerialSoftWork::RESERVICE` 按固定批次继续推进。service thread 的单次 activation 也必须有固定事件批次上限；持续流量达到上限时保留 pending bit、显式 yield，再进入下一批。这样既不把 UART burst 变成无界 IRQ 或内核线程占用，也不会因为 controller EOI 或 level/edge 状态变化而遗失剩余数据。
+
 ```mermaid
 flowchart LR
     Irq["platform IRQ<br/>IrqId"] --> Handler["HAL IRQ handler"]

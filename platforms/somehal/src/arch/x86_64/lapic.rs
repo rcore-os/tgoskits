@@ -8,7 +8,7 @@ const ICR_DELIVERY_PENDING: u32 = 1 << 12;
 pub(super) const ICR_FIXED_BASE: u32 = 0x0000_4000;
 pub(super) const ICR_DEST_SELF: u32 = 0x0004_0000;
 pub(super) const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
-const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
+const IPI_DELIVERY_WAIT_SPINS: usize = 256;
 
 const IA32_APIC_BASE_MSR: u32 = 0x1b;
 const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
@@ -71,18 +71,26 @@ pub(super) fn send_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
 }
 
 fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
+    // Retry is returned only before a new transaction is committed. Once the
+    // ICR is idle, one write is an accepted request and returns Success.
+    wait_xapic_delivery()?;
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
     unsafe {
         lapic_write(LAPIC_REG_ICR_HIGH, destination);
         lapic_write(LAPIC_REG_ICR_LOW, icr_low);
     }
-    wait_xapic_delivery()
+    Ok(())
 }
 
 fn send_x2apic_ipi(icr: u64) -> Result<(), IrqError> {
+    wait_x2apic_delivery()?;
+    // x86 TSO orders normal stores before APIC MMIO/MSR writes; the compiler
+    // fence keeps the Rust publication on the required side of the ICR write.
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
     unsafe {
         x86::msr::wrmsr(IA32_X2APIC_ICR, icr);
     }
-    wait_x2apic_delivery()
+    Ok(())
 }
 
 fn wait_xapic_delivery() -> Result<(), IrqError> {

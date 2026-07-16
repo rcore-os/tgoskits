@@ -1,4 +1,5 @@
-use alloc::format;
+use alloc::{boxed::Box, format, vec::Vec};
+use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
@@ -9,6 +10,11 @@ use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
+static IPI_TARGETS: StaticCell<Box<[AtomicU16]>> = StaticCell::uninit();
+static CLAIMED_IPI_TARGETS: AtomicU8 = AtomicU8::new(0);
+
+const TARGET_UNPUBLISHED: u16 = 0;
+const TARGET_IMPLICIT_UNIPROCESSOR: u16 = 1 << u8::BITS;
 
 module_driver!(
     name: "GICv2",
@@ -65,14 +71,19 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into(), hyper) };
-    gic.init();
     let cpu = gic.cpu_interface();
+    let boot_target = discover_cpu_target(&cpu).map_err(OnProbeError::other)?;
+    gic.init(boot_target);
     let trap = cpu.trap_operations();
     CPU_IF.init(cpu);
     TRAP.init(trap);
+    init_ipi_targets()?;
     super::set_backend(super::GicBackend::V2);
 
-    init_cpu();
+    let cpu_idx = crate::cpu::current_cpu_idx().ok_or_else(|| {
+        OnProbeError::other("current logical CPU is unavailable during GICv2 probe")
+    })?;
+    init_cpu_with_target(cpu_idx, boot_target).map_err(OnProbeError::other)?;
 
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
@@ -122,16 +133,25 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     })
 }
 
-pub fn init_cpu() {
-    unsafe {
-        CPU_IF.update(|cpu| {
-            cpu.init_current_cpu();
-            #[cfg(feature = "hv")]
-            cpu.set_eoi_mode_ns(true);
-        });
-    }
+pub fn init_cpu(cpu_idx: usize) -> Result<(), &'static str> {
+    CPU_IF.init_current_cpu();
+    #[cfg(feature = "hv")]
+    CPU_IF.set_eoi_mode_ns(true);
+
+    let target = discover_cpu_target(&CPU_IF)?;
+    publish_cpu_target(cpu_idx, target)?;
 
     debug!("GICCv2 initialized");
+    Ok(())
+}
+
+fn init_cpu_with_target(cpu_idx: usize, target: CpuInterfaceTarget) -> Result<(), &'static str> {
+    CPU_IF.init_current_cpu();
+    #[cfg(feature = "hv")]
+    CPU_IF.set_eoi_mode_ns(true);
+    publish_cpu_target(cpu_idx, target)?;
+    debug!("GICCv2 initialized");
+    Ok(())
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
@@ -158,10 +178,14 @@ pub fn irq_set_affinity(
     let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity else {
         return Ok(());
     };
-    let target_cpu = super::hardware_cpu_id(cpu_id);
+    let target_cpu =
+        cpu_target(irq_framework::CpuId(cpu_id)).ok_or(crate::irq::IrqError::InvalidCpu)?;
+    let CpuInterfaceTarget::Explicit(target_cpu) = target_cpu else {
+        return Ok(());
+    };
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
         let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
-        gic.set_target_cpu(intid, TargetList::new(&mut core::iter::once(target_cpu)));
+        gic.set_target_cpu(intid, target_cpu);
         Ok::<(), crate::irq::IrqError>(())
     })??;
     Ok(())
@@ -175,15 +199,133 @@ fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::
     checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
-pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
-    let sgi = IntId::sgi(raw as u32);
-    let target = match target {
-        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
-        crate::irq::IpiTarget::Other { cpu_id } => {
-            let target_cpu = super::hardware_cpu_id(cpu_id);
-            SGITarget::TargetList(TargetList::new(&mut core::iter::once(target_cpu)))
-        }
-        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
+pub fn send_ipi(
+    raw: usize,
+    target: crate::irq::CpuIpiTarget,
+    current_cpu: irq_framework::CpuId,
+) -> crate::irq::IpiSendStatus {
+    let Ok(raw) = u32::try_from(raw) else {
+        return crate::irq::IpiSendStatus::Invalid;
     };
-    CPU_IF.send_sgi(sgi, target);
+    if raw >= 16 {
+        return crate::irq::IpiSendStatus::Invalid;
+    }
+    let sgi = IntId::sgi(raw);
+    let target = match target {
+        crate::irq::CpuIpiTarget::Current { cpu } => {
+            if current_cpu != cpu || cpu_target(cpu).is_none() {
+                return crate::irq::IpiSendStatus::Invalid;
+            }
+            SGITarget::Current
+        }
+        crate::irq::CpuIpiTarget::Other { cpu } if cpu == current_cpu => {
+            if cpu_target(cpu).is_none() {
+                return crate::irq::IpiSendStatus::Invalid;
+            }
+            SGITarget::Current
+        }
+        crate::irq::CpuIpiTarget::Other { cpu } => {
+            let Some(CpuInterfaceTarget::Explicit(target_cpu)) = cpu_target(cpu) else {
+                return crate::irq::IpiSendStatus::Invalid;
+            };
+            SGITarget::TargetList(target_cpu)
+        }
+        crate::irq::CpuIpiTarget::AllExceptCurrent { current, cpu_count } => {
+            if current_cpu != current
+                || cpu_count != someboot::smp::runtime_cpu_count()
+                || !(0..cpu_count).all(|cpu| cpu_target(irq_framework::CpuId(cpu)).is_some())
+            {
+                return crate::irq::IpiSendStatus::Invalid;
+            }
+            SGITarget::AllOther
+        }
+    };
+    match CPU_IF.try_send_sgi(sgi, target) {
+        Ok(()) => crate::irq::IpiSendStatus::Success,
+        Err(_) => crate::irq::IpiSendStatus::Invalid,
+    }
+}
+
+fn init_ipi_targets() -> Result<(), OnProbeError> {
+    let cpu_count = someboot::smp::runtime_cpu_count();
+    if !(1..=8).contains(&cpu_count) {
+        return Err(OnProbeError::other(
+            "GICv2 requires between one and eight published CPUs",
+        ));
+    }
+    let targets = (0..cpu_count)
+        .map(|_| AtomicU16::new(TARGET_UNPUBLISHED))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    IPI_TARGETS.init(targets);
+    Ok(())
+}
+
+fn ipi_target_slot(cpu_idx: usize) -> Option<&'static AtomicU16> {
+    IPI_TARGETS
+        .is_init()
+        .then(|| IPI_TARGETS.get(cpu_idx))
+        .flatten()
+}
+
+fn cpu_target(cpu: irq_framework::CpuId) -> Option<CpuInterfaceTarget> {
+    crate::cpu::runtime_cpu_target(cpu)?;
+    let raw = ipi_target_slot(cpu.0)?.load(Ordering::Acquire);
+    decode_cpu_target(raw)
+}
+
+fn discover_cpu_target(cpu: &CpuInterface) -> Result<CpuInterfaceTarget, &'static str> {
+    cpu.discover_target(someboot::smp::runtime_cpu_count())
+        .map_err(|error| match error {
+            CpuTargetDiscoveryError::InvalidCpuCount => "GICv2 CPU count is outside 1..=8",
+            CpuTargetDiscoveryError::MissingOrAmbiguous => {
+                "GICv2 CPU-interface target is missing or ambiguous"
+            }
+        })
+}
+
+fn publish_cpu_target(cpu_idx: usize, target: CpuInterfaceTarget) -> Result<(), &'static str> {
+    let slot = ipi_target_slot(cpu_idx).ok_or("GICv2 logical CPU target slot is missing")?;
+    let claimed = match target {
+        CpuInterfaceTarget::ImplicitUniprocessor => None,
+        CpuInterfaceTarget::Explicit(target) => {
+            let target_bit = target.as_u8();
+            let previous = CLAIMED_IPI_TARGETS.fetch_or(target_bit, Ordering::AcqRel);
+            if previous & target_bit != 0 {
+                return Err("GICv2 CPU-interface target bit is duplicated");
+            }
+            Some(target_bit)
+        }
+    };
+    if slot
+        .compare_exchange(
+            TARGET_UNPUBLISHED,
+            encode_cpu_target(target),
+            Ordering::Release,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        if let Some(target_bit) = claimed {
+            CLAIMED_IPI_TARGETS.fetch_and(!target_bit, Ordering::AcqRel);
+        }
+        return Err("GICv2 logical CPU target was already published");
+    }
+    Ok(())
+}
+
+fn encode_cpu_target(target: CpuInterfaceTarget) -> u16 {
+    match target {
+        CpuInterfaceTarget::ImplicitUniprocessor => TARGET_IMPLICIT_UNIPROCESSOR,
+        CpuInterfaceTarget::Explicit(target) => target.as_u8() as u16,
+    }
+}
+
+fn decode_cpu_target(raw: u16) -> Option<CpuInterfaceTarget> {
+    if raw == TARGET_IMPLICIT_UNIPROCESSOR {
+        Some(CpuInterfaceTarget::ImplicitUniprocessor)
+    } else {
+        let raw = u8::try_from(raw).ok()?;
+        TargetList::from_one_hot(raw).map(CpuInterfaceTarget::Explicit)
+    }
 }

@@ -5,9 +5,8 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
-use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
@@ -26,7 +25,7 @@ use crate::{
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
-    task::AsThread,
+    task::current_user_task,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -108,7 +107,7 @@ impl Pollable for DummyFd {
 }
 
 pub fn sys_dummy_fd(sysno: Sysno) -> AxResult<isize> {
-    if current().name().starts_with("qemu-") {
+    if current_user_task().name().starts_with("qemu-") {
         // We need to be honest to qemu, since it can automatically fallback to
         // other strategies.
         return Err(AxError::Unsupported);
@@ -206,16 +205,17 @@ pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isi
     if length < 0 {
         return Err(AxError::InvalidInput);
     }
+    let fs_context = current_fs_context();
     let file = OpenOptions::new()
         .write(true)
-        .open(&FS_CONTEXT.lock(), &path)?
+        .open(&fs_context.lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
     }
     // Check write permission against current credentials following the
     // same owner/group/other + root-bypass rules as faccessat2(2).
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if cred.fsuid != 0 {
         let metadata = file.location().metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
@@ -578,7 +578,7 @@ fn copy_user_read_buf(buf: *const u8, len: usize) -> AxResult<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
-    Ok(UserConstPtr::<u8>::from(buf).get_as_slice(len)?.to_vec())
+    UserConstPtr::<u8>::from(buf).read_slice(len)
 }
 
 /// `access_ok`-style validation without copying payload (may surface `BadAddress` / EFAULT).
@@ -586,7 +586,7 @@ fn validate_user_read_buf(buf: *const u8, len: usize) -> AxResult<()> {
     if len == 0 {
         return Ok(());
     }
-    UserConstPtr::<u8>::from(buf).get_as_slice(len)?;
+    UserConstPtr::<u8>::from(buf).validate_slice(len)?;
     Ok(())
 }
 
@@ -602,7 +602,7 @@ fn validate_user_iov_buf_regions(iov: *const IoVec, iovcnt: usize) -> AxResult<u
             return Err(AxError::InvalidInput);
         }
         let seg = iov.iov_len as usize;
-        UserConstPtr::<u8>::from(iov.iov_base.cast_const()).get_as_slice(seg)?;
+        UserConstPtr::<u8>::from(iov.iov_base.cast_const()).validate_slice(seg)?;
         total = total.checked_add(seg).ok_or(AxError::InvalidInput)?;
     }
     Ok(total)

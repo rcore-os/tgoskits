@@ -11,7 +11,7 @@ use crate::pseudofs::{DeviceMmap, DeviceOps};
 // Types from https://github.com/Tangzh33/asterinas
 
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct FrameBufferBitfield {
     /// The beginning of bitfield.
     offset: u32,
@@ -22,7 +22,7 @@ pub struct FrameBufferBitfield {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct VarScreenInfo {
     pub xres: u32, // Visible resolution
     pub yres: u32,
@@ -57,7 +57,7 @@ struct VarScreenInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct FixScreenInfo {
     pub id: [u8; 16],       // Identification string, e.g., "TT Builtin"
     pub smem_start: u64,    // Start of framebuffer memory (physical address)
@@ -68,12 +68,15 @@ struct FixScreenInfo {
     pub xpanstep: u16,      // Zero if no hardware panning
     pub ypanstep: u16,      // Zero if no hardware panning
     pub ywrapstep: u16,     // Zero if no hardware ywrap
+    pub _padding0: u16,     // Explicit ABI alignment before line_length
     pub line_length: u32,   // Length of a line in bytes
+    pub _padding1: u32,     // Explicit ABI alignment before mmio_start
     pub mmio_start: u64,    // Start of Memory Mapped I/O (physical address)
     pub mmio_len: u32,      // Length of Memory Mapped I/O
     pub accel: u32,         // Indicate to driver which specific chip/card we have
     pub capabilities: u16,  // See FB_CAP_*
     pub reserved: [u16; 2], // Reserved for future compatibility
+    pub _padding2: u16,     // Explicit tail bytes in the 64-bit ABI
 }
 
 async fn refresh_task() {
@@ -82,7 +85,7 @@ async fn refresh_task() {
         if !ax_display::framebuffer_flush() {
             warn!("Failed to refresh framebuffer");
         }
-        ax_task::future::sleep(delay).await;
+        crate::task::future::sleep(delay).await;
     }
 }
 
@@ -92,8 +95,8 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        ax_task::spawn_with_name(
-            || ax_task::future::block_on(refresh_task()),
+        crate::task::spawn_kernel_thread(
+            || crate::task::future::block_on(refresh_task()),
             "fb-refresh".into(),
         );
         let info = ax_display::framebuffer_info();
@@ -199,12 +202,15 @@ impl DeviceOps for FrameBuffer {
                     xpanstep: 0,
                     ypanstep: 0,
                     ywrapstep: 0,
+                    _padding0: 0,
                     line_length: (info.fb_size / info.height as usize) as u32,
+                    _padding1: 0,
                     mmio_start: 0,
                     mmio_len: 0,
                     accel: 0,
                     capabilities: 0,
                     reserved: [0; 2],
+                    _padding2: 0,
                 })?;
                 Ok(0)
             }

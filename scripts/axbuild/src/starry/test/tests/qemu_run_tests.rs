@@ -251,6 +251,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
         Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
     assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
+    assert!(cargo.features.contains(&"smp".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
 }
 
@@ -290,11 +291,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .contains(&"starry-kernel/plat-dyn".to_string())
     );
     assert!(cargo.features.contains(&"qemu".to_string()));
-    assert!(
-        cargo
-            .target
-            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
-    );
+    assert_eq!(cargo.target, "aarch64-unknown-none-softfloat");
 }
 
 #[test]

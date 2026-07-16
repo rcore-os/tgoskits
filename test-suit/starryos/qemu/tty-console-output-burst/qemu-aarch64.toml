@@ -1,0 +1,46 @@
+args = [
+    "-nographic",
+    "-machine",
+    "virt,gic-version=2",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+    "-device",
+    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "-audiodev",
+    "none,id=audio0",
+    "-device",
+    "usb-audio,bus=xhci.0,audiodev=audio0",
+    "-drive",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-busybox.img",
+    "-device",
+    "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "exec /usr/bin/tty-output-burst"
+success_regex = ["(?m)^STARRY_TTY_OUTPUT_BURST_FRAME:120:[^\\r\\n]{192}\\r?\\nSTARRY_TTY_OUTPUT_BURST_PASSED\\s*$"]
+fail_regex = [
+    "(?i)panic",
+    "(?m)^lockdep fatal violation\\s*$",
+    "/dev/console has no serial TTY binding",
+    "Failed to bind console tty",
+    "(?m)^STARRY_TTY_OUTPUT_BURST_FAILED",
+]
+timeout = 300

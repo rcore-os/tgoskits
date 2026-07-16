@@ -67,11 +67,11 @@ flowchart TB
 
 ```rust
 // lib.rs:113-123
-static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
-static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
+static LISTEN_TABLE: PreemptLazy<ListenTable> = PreemptLazy::new(ListenTable::new);
+static SOCKET_SET: PreemptLazy<SocketSetWrapper> = PreemptLazy::new(SocketSetWrapper::new);
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
-static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
+static SERVICE: PreemptOnce<Mutex<Service>> = PreemptOnce::new();
+static NET_CONTROL: PreemptOnce<Arc<NetControl>> = PreemptOnce::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
 static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -90,6 +90,14 @@ while POLL_AGAIN.swap(false, Ordering::AcqRel) {
 ```
 
 这行代码定义了主锁顺序：`SERVICE -> SOCKET_SET.inner -> Service::poll()`。因此任何已经持有 `SOCKET_SET.inner` 的路径都不能反向获取 `SERVICE`。
+
+所有 task-context 全局 lazy 对象使用 `PreemptOnce` / `PreemptLazy`。initializer
+可保持 IRQ 开启，但在值发布前不能被同 CPU task 切走；这样不会出现 raw
+`spin::Once` owner 被抢占后，replacement task 持 `SpinNoIrq` 等待同一 Once 的
+自死锁。网络初始化还采用显式阶段顺序：先在私有 `Service` 上准备 device worker
+引用并完成全部 PollSet/waker 注册，再发布 `NET_CONTROL` / `SERVICE`，最后才使
+RX、TX 和 net-poll worker runnable。动态设备同样先在 `SERVICE` 锁内只更新对象图
+并取得 prepared worker 引用，释放锁后再初始化 PollSet 和启动线程。
 
 `Service::poll()` 的主体在 `service.rs`。它在同一轮 poll 内处理 Router RX、DHCP event、DHCP server reply、smoltcp poll、DHCP 定时器、orphan reaper 和 Router TX dispatch：
 
@@ -607,7 +615,7 @@ Ethernet IRQ 共享状态定义在 `device/ethernet.rs`：
 // device/ethernet.rs:123-138
 struct EthernetIrqState {
     irq: Option<usize>,
-    irq_registration: spin::Once<Box<dyn EthernetIrqRegistration>>,
+    irq_registration: PreemptOnce<Box<dyn EthernetIrqRegistration>>,
     oob_rx: bool,
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
     poll_ready: PollSet,
@@ -873,6 +881,10 @@ net-poll worker:
 - 新路径没有 `SOCKET_SET.inner -> SERVICE` 的反向获取。
 - 设备 worker 没有在持有 `DeviceHandle.inner` 或 driver `SpinNoIrq` 时进入 `SERVICE` / `SOCKET_SET`。
 - `SpinNoIrq` guard 内没有 sleep、wait、block_on、DNS 查询或 socket API。
+- `SpinNoIrq` guard 内不执行首次 lazy allocation；PollSet 初始化和 worker spawn
+  必须位于 `SERVICE` / device guard 外。
+- scheduler online 后新增 task-context lazy state 使用 `PreemptOnce` / `PreemptLazy`，
+  不直接使用 raw `spin::Once` / `spin::LazyLock`。
 - 新增全局表优先使用短临界区，并说明它与 `SERVICE` / `SOCKET_SET` 的顺序。
 - 新增 socket 局部状态优先用原子或 `RwLock`，避免把整个 POSIX 操作包在全局 `SocketSet` 锁内。
 - 新增 worker wake 路径只设置原子/waker，不直接执行 smoltcp poll。

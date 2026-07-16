@@ -37,13 +37,18 @@ impl fmt::Display for AllocationBacktrace {
 
 fn run_memory_analysis() {
     // Wait for gc
-    ax_task::yield_now();
-    cleanup_task_tables();
+    crate::task::yield_now();
+    cleanup_task_tables()
+        .unwrap_or_else(|error| panic!("task table contains an invalid user extension: {error}"));
     clear_elf_cache();
 
     ax_println!(
         "Alive tasks: {:?}",
-        tasks().iter().map(|it| it.id_name()).collect::<Vec<_>>()
+        tasks()
+            .unwrap_or_else(|error| panic!("failed to enumerate Starry tasks: {error}"))
+            .iter()
+            .map(|it| it.id_name())
+            .collect::<Vec<_>>()
     );
 
     let from = STAMPED_GENERATION.load(Ordering::SeqCst);

@@ -10,7 +10,11 @@ categories = ["virtualization", "no-std"]
 description = "Shared base types for AxVM virtualization components"
 
 [dependencies]
+ax-cpu-local = { workspace = true }
 ax-cpumask = { workspace = true }
 ax-memory-addr = { workspace = true }
 bitflags = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+ax-cpu-local = { workspace = true, features = ["host-test"] }

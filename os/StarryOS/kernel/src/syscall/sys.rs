@@ -1,10 +1,12 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{ffi::c_char, mem::MaybeUninit};
+use core::{
+    ffi::c_char,
+    mem::{MaybeUninit, offset_of},
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_sync::Mutex;
-use ax_task::current;
+use ax_fs_ng::vfs::current_fs_context;
+use ax_sync::PiMutex;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
     system::{new_utsname, sysinfo},
@@ -15,9 +17,10 @@ use ringbuf::{
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
-#[cfg(target_arch = "riscv64")]
-use crate::mm::UserPtr;
-use crate::task::{AsThread, SockFilter, SockFprog, get_task, processes};
+use crate::{
+    mm::UserPtr,
+    task::{SockFilter, SockFprog, current_user_task, get_task, processes},
+};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -123,11 +126,11 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
-    spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
+static SYSLOG_STATE: spin::LazyLock<PiMutex<SyslogState>> =
+    spin::LazyLock::new(|| PiMutex::new(SyslogState::new()));
 
 pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
-    if !current().as_thread().cred().has_cap_sys_boot() {
+    if !current_user_task().as_thread().cred().has_cap_sys_boot() {
         return Err(AxError::from(LinuxError::EPERM));
     }
 
@@ -186,7 +189,7 @@ fn commit_cred_with_id_rules(
 }
 
 fn user_ns_overflow_uid() -> u32 {
-    let curr = current();
+    let curr = current_user_task();
     let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
     let ns = nsproxy.user_ns.lock();
     if ns.is_root || ns.uid_mapped {
@@ -196,7 +199,7 @@ fn user_ns_overflow_uid() -> u32 {
 }
 
 fn user_ns_overflow_gid() -> u32 {
-    let curr = current();
+    let curr = current_user_task();
     let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
     let ns = nsproxy.user_ns.lock();
     if ns.is_root || ns.gid_mapped {
@@ -210,7 +213,7 @@ pub fn sys_getuid() -> AxResult<isize> {
     if overflow != 0 {
         return Ok(overflow as isize);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     Ok(cred.uid as isize)
 }
 
@@ -219,7 +222,7 @@ pub fn sys_geteuid() -> AxResult<isize> {
     if overflow != 0 {
         return Ok(overflow as isize);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     Ok(cred.euid as isize)
 }
 
@@ -228,7 +231,7 @@ pub fn sys_getgid() -> AxResult<isize> {
     if overflow != 0 {
         return Ok(overflow as isize);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     Ok(cred.gid as isize)
 }
 
@@ -237,7 +240,7 @@ pub fn sys_getegid() -> AxResult<isize> {
     if overflow != 0 {
         return Ok(overflow as isize);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     Ok(cred.egid as isize)
 }
 
@@ -249,7 +252,7 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult
         suid.vm_write(overflow)?;
         return Ok(0);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     ruid.vm_write(cred.uid)?;
     euid.vm_write(cred.euid)?;
     suid.vm_write(cred.suid)?;
@@ -264,7 +267,7 @@ pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult
         sgid.vm_write(overflow)?;
         return Ok(0);
     }
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     rgid.vm_write(cred.gid)?;
     egid.vm_write(cred.egid)?;
     sgid.vm_write(cred.sgid)?;
@@ -275,7 +278,7 @@ pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult
 
 pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
     debug!("sys_setresuid <= ruid: {ruid}, euid: {euid}, suid: {suid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -326,7 +329,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
 
 pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
     debug!("sys_setresgid <= rgid: {rgid}, egid: {egid}, sgid: {sgid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -381,7 +384,7 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     if !uid_valid(uid) {
         return Err(AxError::InvalidInput);
     }
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -414,7 +417,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
     if !uid_valid(gid) {
         return Err(AxError::InvalidInput);
     }
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -443,7 +446,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
 
 pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
     debug!("sys_setreuid <= ruid: {ruid}, euid: {euid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -491,7 +494,7 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
 
 pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
     debug!("sys_setregid <= rgid: {rgid}, egid: {egid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let mut new = (*old).clone();
@@ -545,7 +548,7 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
 
 pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
     debug!("sys_setfsuid <= fsuid: {fsuid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let prev_fsuid = old.fsuid;
@@ -579,7 +582,7 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
 
 pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
     debug!("sys_setfsgid <= fsgid: {fsgid}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
     let prev_fsgid = old.fsgid;
@@ -608,7 +611,7 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
 
 pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
     debug!("sys_getgroups <= size: {size}");
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     let ngroups = cred.groups.len();
     if size == 0 {
         return Ok(ngroups as isize);
@@ -627,7 +630,7 @@ const NGROUPS_MAX: usize = 65536;
 
 pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     debug!("sys_setgroups <= size: {size}");
-    let thread = current();
+    let thread = current_user_task();
     let thread = thread.as_thread();
     let old = thread.cred();
 
@@ -660,7 +663,7 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
 }
 
 pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     // Build the utsname inside a block so the SpinNoIrq guard is dropped
     // before we touch user memory via vm_write (access_user_memory requires
     // IRQs enabled, but SpinNoIrq disables them).
@@ -669,15 +672,25 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
         let ns = nsproxy.uts_ns.lock();
         axnsproxy::build_utsname(&ns)
     };
-    name.vm_write(uts)?;
+    write_utsname(name, uts)?;
     Ok(0)
+}
+
+fn write_utsname(user: *mut new_utsname, value: new_utsname) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field_slice(offset_of!(new_utsname, sysname), &value.sysname)?;
+    user.write_field_slice(offset_of!(new_utsname, nodename), &value.nodename)?;
+    user.write_field_slice(offset_of!(new_utsname, release), &value.release)?;
+    user.write_field_slice(offset_of!(new_utsname, version), &value.version)?;
+    user.write_field_slice(offset_of!(new_utsname, machine), &value.machine)?;
+    user.write_field_slice(offset_of!(new_utsname, domainname), &value.domainname)
 }
 
 pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
     if len > 64 {
         return Err(AxError::InvalidInput);
     }
-    let curr = current();
+    let curr = current_user_task();
     if curr.as_thread().cred().euid != 0 {
         return Err(AxError::OperationNotPermitted);
     }
@@ -697,7 +710,7 @@ pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
     if len > 64 {
         return Err(AxError::InvalidInput);
     }
-    let curr = current();
+    let curr = current_user_task();
     if curr.as_thread().cred().euid != 0 {
         return Err(AxError::OperationNotPermitted);
     }
@@ -737,12 +750,29 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     kinfo.procs = processes().len() as _;
     kinfo.mem_unit = 1;
 
-    info.vm_write(kinfo)?;
+    write_sysinfo(info, kinfo)?;
     Ok(0)
 }
 
+fn write_sysinfo(user: *mut sysinfo, value: sysinfo) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(sysinfo, uptime), value.uptime)?;
+    user.write_field(offset_of!(sysinfo, loads), value.loads)?;
+    user.write_field(offset_of!(sysinfo, totalram), value.totalram)?;
+    user.write_field(offset_of!(sysinfo, freeram), value.freeram)?;
+    user.write_field(offset_of!(sysinfo, sharedram), value.sharedram)?;
+    user.write_field(offset_of!(sysinfo, bufferram), value.bufferram)?;
+    user.write_field(offset_of!(sysinfo, totalswap), value.totalswap)?;
+    user.write_field(offset_of!(sysinfo, freeswap), value.freeswap)?;
+    user.write_field(offset_of!(sysinfo, procs), value.procs)?;
+    user.write_field(offset_of!(sysinfo, pad), value.pad)?;
+    user.write_field(offset_of!(sysinfo, totalhigh), value.totalhigh)?;
+    user.write_field(offset_of!(sysinfo, freehigh), value.freehigh)?;
+    user.write_field(offset_of!(sysinfo, mem_unit), value.mem_unit)
+}
+
 fn require_syslog_privilege() -> AxResult<()> {
-    if current().as_thread().cred().euid == 0 {
+    if current_user_task().as_thread().cred().euid == 0 {
         Ok(())
     } else {
         Err(AxError::OperationNotPermitted)
@@ -854,7 +884,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
         "/dev/urandom"
     };
 
-    let f = FS_CONTEXT.lock().resolve(path)?;
+    let f = current_fs_context().lock().resolve(path)?;
     let mut kbuf = vec![0; len];
     let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
 
@@ -864,7 +894,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
 }
 
 fn check_seccomp_install_permission() -> AxResult<()> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     if thread.no_new_privs() || thread.cred().has_cap_sys_admin() {
         Ok(())
@@ -905,17 +935,15 @@ fn seccomp_action_available(args: *const ()) -> AxResult<isize> {
 }
 
 fn sync_seccomp_to_thread_group() {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
     for tid in thread.proc_data.proc.threads() {
         if tid == thread.tid() {
             continue;
         }
-        if let Ok(task) = get_task(tid)
-            && let Some(peer) = task.try_as_thread()
-        {
-            peer.set_seccomp_state(state.clone());
+        if let Ok(task) = get_task(tid) {
+            task.as_thread().set_seccomp_state(state.clone());
         }
     }
 }
@@ -930,12 +958,12 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
             if flags != 0 || !args.is_null() {
                 return Err(AxError::InvalidInput);
             }
-            current().as_thread().install_seccomp_strict()?;
+            current_user_task().as_thread().install_seccomp_strict()?;
         }
         SECCOMP_SET_MODE_FILTER => {
             check_seccomp_install_permission()?;
             let filter = read_seccomp_filter(args)?;
-            let curr = current();
+            let curr = current_user_task();
             let thread = curr.as_thread();
             thread.append_seccomp_filter(filter)?;
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
@@ -971,7 +999,7 @@ pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResul
 
 #[cfg(target_arch = "riscv64")]
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct RiscvHwprobe {
     key: i64,
     value: u64,
@@ -995,8 +1023,10 @@ pub fn sys_riscv_hwprobe(
         return Err(AxError::InvalidInput);
     }
 
-    let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
-    for pair in pairs {
+    let input_pairs = crate::mm::UserConstPtr::<RiscvHwprobe>::from(pairs.cast_const().cast());
+    let output_pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast());
+    let mut pairs = input_pairs.read_slice(pair_count)?;
+    for pair in &mut pairs {
         if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
             pair.value = value;
         } else {
@@ -1004,6 +1034,7 @@ pub fn sys_riscv_hwprobe(
             pair.value = 0;
         }
     }
+    output_pairs.write_slice(&pairs)?;
 
     Ok(0)
 }

@@ -19,7 +19,6 @@ axvmconfig
 bitmap-allocator
 ax-cpumask
 irq-framework
-ax-kernel-guard
 ax-kspin
 ax-lazyinit
 ax-linked-list-r4l

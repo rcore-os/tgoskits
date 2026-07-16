@@ -16,7 +16,9 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 use lru::LruCache;
 
 use super::page::PageCache;
-use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
+#[cfg(feature = "ext4")]
+use crate::os::sync::SpinMutex;
+use crate::os::{memory::PAGE_SIZE, sync::PiMutex};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
@@ -26,8 +28,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
-    spin::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: spin::LazyLock<SpinMutex<InodeCacheIndex>> =
+    spin::LazyLock::new(|| SpinMutex::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.
@@ -50,9 +52,9 @@ struct EvictListener {
 intrusive_adapter!(EvictListenerAdapter = Box<EvictListener>: EvictListener { link: LinkedListAtomicLink });
 
 struct CachedFileShared {
-    page_cache: Mutex<LruCache<u32, PageCache>>,
-    io_lock: Mutex<()>,
-    evict_listeners: Mutex<LinkedList<EvictListenerAdapter>>,
+    page_cache: PiMutex<LruCache<u32, PageCache>>,
+    io_lock: PiMutex<()>,
+    evict_listeners: PiMutex<LinkedList<EvictListenerAdapter>>,
     backing: Option<FileNode>,
     len: AtomicU64,
 }
@@ -60,11 +62,11 @@ struct CachedFileShared {
 impl CachedFileShared {
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
-            page_cache: Mutex::new(LruCache::new(
+            page_cache: PiMutex::new(LruCache::new(
                 NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
             )),
-            io_lock: Mutex::new(()),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            io_lock: PiMutex::new(()),
+            evict_listeners: PiMutex::new(LinkedList::default()),
             backing: Some(backing),
             len: AtomicU64::new(len),
         }
@@ -72,9 +74,9 @@ impl CachedFileShared {
 
     pub fn new_unbounded(len: u64) -> Self {
         Self {
-            page_cache: Mutex::new(LruCache::unbounded()),
-            io_lock: Mutex::new(()),
-            evict_listeners: Mutex::new(LinkedList::default()),
+            page_cache: PiMutex::new(LruCache::unbounded()),
+            io_lock: PiMutex::new(()),
+            evict_listeners: PiMutex::new(LinkedList::default()),
             backing: None,
             len: AtomicU64::new(len),
         }

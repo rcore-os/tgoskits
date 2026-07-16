@@ -1,5 +1,6 @@
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
+use super::TargetList;
 use crate::{IntId, define::Trigger};
 
 register_structs! {
@@ -151,7 +152,7 @@ impl DistributorReg {
     }
 
     /// Configure interrupt targets for SPIs (Shared Peripheral Interrupts)
-    pub(crate) fn configure_interrupt_targets(&self, max_interrupts: u32) {
+    pub(crate) fn configure_interrupt_targets(&self, max_interrupts: u32, target: TargetList) {
         // SGIs (0-15) and PPIs (16-31) don't use ITARGETSR
         // Only SPIs (32+) need target configuration
         if max_interrupts <= 32 {
@@ -160,7 +161,7 @@ impl DistributorReg {
 
         let total_interrupts = (max_interrupts as usize).min(self.ITARGETSR.len());
         for i in 32..total_interrupts {
-            self.ITARGETSR[i].set(0x01);
+            self.ITARGETSR[i].set(target.as_u8());
         }
     }
 

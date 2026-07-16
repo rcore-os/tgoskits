@@ -32,3 +32,6 @@ rdif-pcie = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true
+
+[dev-dependencies]
+ax-kspin-test-runtime = { path = "../../components/kspin/test-runtime" }

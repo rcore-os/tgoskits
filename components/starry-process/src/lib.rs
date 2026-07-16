@@ -5,6 +5,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate ax_kspin_test_runtime as _;
+
 mod process;
 mod process_group;
 mod session;

@@ -8,7 +8,7 @@ use core::ffi::c_long;
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
+use ax_std::os::arceos::task::yield_current_cpu;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
 use starry_process::{Pid, Process, ProcessGroup, Session};
@@ -17,8 +17,9 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AsThread, Cred, FutexKey, ProcessData, Thread, TimerState, futex_table_for_process,
-    send_signal_thread_inner, send_signal_to_process, send_signal_to_thread,
+    Cred, FutexKey, ProcessData, Thread, TimerState, UserTaskRef, WeakUserTaskRef,
+    current_user_task, futex_table_for_process, send_signal_thread_inner, send_signal_to_process,
+    send_signal_to_thread,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -43,7 +44,7 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
     }
 }
 
-static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
+static TASK_TABLE: RwLock<BTreeMap<Pid, WeakUserTaskRef>> = RwLock::new(BTreeMap::new());
 
 static PROCESS_TABLE: RwLock<WeakMap<Pid, Weak<ProcessData>>> = RwLock::new(WeakMap::new());
 
@@ -78,16 +79,29 @@ static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap:
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
 #[cfg(feature = "memtrack")]
-pub fn cleanup_task_tables() {
-    TASK_TABLE.write().cleanup();
+pub fn cleanup_task_tables() -> AxResult<()> {
+    let mut invalid_extension = false;
+    TASK_TABLE.write().retain(|_, task| match task.upgrade() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(_) => {
+            invalid_extension = true;
+            true
+        }
+    });
     PROCESS_TABLE.write().cleanup();
     PROCESS_GROUP_TABLE.write().cleanup();
     SESSION_TABLE.write().cleanup();
+    if invalid_extension {
+        Err(AxError::BadState)
+    } else {
+        Ok(())
+    }
 }
 
 /// Add the task, the thread and possibly its process, process group and session
 /// to the corresponding tables.
-pub fn add_task_to_table(task: &AxTaskRef) {
+pub fn add_task_to_table(task: &UserTaskRef) {
     // Key by the user-visible thread tid, not the scheduler `task.id()`. The two
     // are equal for every task except the init process, whose pid/tid is pinned
     // to 1 while its scheduler id stays at whatever the allocator handed out
@@ -97,7 +111,7 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     let tid = task.as_thread().tid() as Pid;
 
     let mut task_table = TASK_TABLE.write();
-    task_table.insert(tid, task);
+    task_table.insert(tid, task.downgrade());
 
     let proc = &proc_data.proc;
     let pid = proc.pid();
@@ -120,16 +134,30 @@ pub fn add_task_to_table(task: &AxTaskRef) {
 }
 
 /// Lists all tasks.
-pub fn tasks() -> Vec<AxTaskRef> {
-    TASK_TABLE.read().values().collect()
+pub fn tasks() -> AxResult<Vec<UserTaskRef>> {
+    let table = TASK_TABLE.read();
+    let mut tasks = Vec::with_capacity(table.len());
+    for task in table.values() {
+        if let Some(task) = task.upgrade().map_err(|_| AxError::BadState)? {
+            tasks.push(task);
+        }
+    }
+    Ok(tasks)
 }
 
 /// Finds the task with the given TID.
-pub fn get_task(tid: Pid) -> AxResult<AxTaskRef> {
+pub fn get_task(tid: Pid) -> AxResult<UserTaskRef> {
     if tid == 0 {
-        return Ok(current().clone());
+        return Ok(current_user_task());
     }
-    TASK_TABLE.read().get(&tid).ok_or(AxError::NoSuchProcess)
+    let weak = TASK_TABLE
+        .read()
+        .get(&tid)
+        .copied()
+        .ok_or(AxError::NoSuchProcess)?;
+    weak.upgrade()
+        .map_err(|_| AxError::BadState)?
+        .ok_or(AxError::NoSuchProcess)
 }
 
 /// Lists all processes.
@@ -140,7 +168,7 @@ pub fn processes() -> Vec<Arc<ProcessData>> {
 /// Finds the process with the given PID.
 pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
     if pid == 0 {
-        return Ok(current().as_thread().proc_data.clone());
+        return Ok(current_user_task().as_thread().proc_data.clone());
     }
     PROCESS_TABLE.read().get(&pid).ok_or(AxError::NoSuchProcess)
 }
@@ -254,7 +282,7 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
 /// `kill(pid, 0)` must still see it until the parent reaps it.
 pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
     if pid == 0 {
-        return Ok(current().as_thread().proc_data.proc.clone());
+        return Ok(current_user_task().as_thread().proc_data.proc.clone());
     }
     if let Ok(proc_data) = get_process_data(pid) {
         return Ok(proc_data.proc.clone());
@@ -265,12 +293,10 @@ pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
 /// Finds the credentials for a process that may already be a zombie.
 pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
     if pid == 0 {
-        return Ok(current().as_thread().cred());
+        return Ok(current_user_task().as_thread().cred());
     }
-    if let Ok(task) = get_task(pid)
-        && let Some(thr) = task.try_as_thread()
-    {
-        return Ok(thr.cred());
+    if let Ok(task) = get_task(pid) {
+        return Ok(task.as_thread().cred());
     }
     get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
 }
@@ -319,45 +345,18 @@ pub fn register_session(session: &Arc<Session>) {
     session_table.insert(session.sid(), session);
 }
 
-/// Accumulates CPU time for `task` from a timer-tick IRQ context.
-///
-/// Unlike `poll_timer`, this never emits signals, making it safe to call
-/// from interrupt handlers.
-pub fn tick_cpu_time(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // Reentrant borrow means the task is mid-state-transition; skip.
-        return;
-    };
-    time.tick();
-}
-
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
-pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
-    let Some(thr) = task.try_as_thread() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    let Ok(time) = thr.time.try_borrow() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    time.output()
+pub fn task_cpu_time(task: &UserTaskRef) -> (TimeValue, TimeValue) {
+    task.as_thread().cpu_time.output()
 }
 
 /// Poll the timer
-pub fn poll_timer(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
+pub fn poll_timer(task: &UserTaskRef) {
+    let thr = task.as_thread();
+    let pending = thr.time.lock().poll(&thr.cpu_time);
+    for signo in pending.into_iter() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
+    }
 }
 
 /// Poll the process-level POSIX timers.
@@ -370,19 +369,13 @@ pub fn poll_process_timer(pid: Pid) {
 }
 
 /// Sets the timer state.
-pub fn set_timer_state(task: &TaskInner, state: TimerState) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
+pub fn set_timer_state(task: &UserTaskRef, state: TimerState) {
+    let thr = task.as_thread();
+    let pending = thr.time.lock().poll(&thr.cpu_time);
+    for signo in pending.into_iter() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
-    time.set_state(state);
+    }
+    thr.cpu_time.set_state(state);
 }
 
 #[repr(C)]
@@ -487,7 +480,7 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> AxResult<(
             debug!("robust list: entry limit reached");
             break;
         }
-        ax_task::yield_now();
+        let _decision = yield_current_cpu();
     }
 
     // Process the pending entry that was skipped in the loop
@@ -528,7 +521,7 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn do_exit(exit_code: i32, group_exit: bool) {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
@@ -571,7 +564,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         if let Some(futex) = guard {
             futex.wq.wake(1, u32::MAX);
         }
-        ax_task::yield_now();
+        let _decision = yield_current_cpu();
     }
 
     let process = &thr.proc_data.proc;
@@ -662,9 +655,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Send pdeathsig to child processes
         for child in children_snapshot {
             let child_pid = child.pid();
-            if let Ok(child_task) = get_task(child_pid)
-                && let Some(child_thr) = child_task.try_as_thread()
-            {
+            if let Ok(child_task) = get_task(child_pid) {
+                let child_thr = child_task.as_thread();
                 let sig = child_thr.pdeathsig();
                 if sig > 0
                     && let Some(signo) = Signo::from_repr(sig as u8)
@@ -736,9 +728,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 /// removed from the table). The two updates are not atomic with respect
 /// to each other; a brief window exists where both keys point at the same
 /// task, which is harmless because both lookups resolve to the same task.
-pub fn rebind_task_tid(task: &AxTaskRef, old_tid: Pid, new_tid: Pid) {
+pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) {
     let mut table = TASK_TABLE.write();
-    table.insert(new_tid, task);
+    table.insert(new_tid, task.downgrade());
     table.remove(&old_tid);
 }
 
@@ -754,13 +746,13 @@ pub fn rebind_task_tid(task: &AxTaskRef, old_tid: Pid, new_tid: Pid) {
 /// longer a user thread; callers should treat that as "already reaped".
 pub fn zap_thread(tid: Pid) -> AxResult<()> {
     let task = get_task(tid)?;
-    let thr = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
+    let thr = task.as_thread();
     thr.set_exit_request();
     // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
     // (pipe read, futex wait) — no interrupt waker is registered there — so a
     // SIGKILLed sibling would linger until async GC, deferring `clear()` and
     // its frame reclaim. `wake_task` force-unblocks the parked thread so it
     // returns, observes the pending exit, and runs `do_exit` synchronously.
-    ax_task::wake_task(&task);
+    let _result = task.wake_handle().wake();
     Ok(())
 }

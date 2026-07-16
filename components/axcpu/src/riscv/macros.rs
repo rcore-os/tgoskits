@@ -188,7 +188,10 @@ macro_rules! include_asm_macros {
             .macro PUSH_GENERAL_REGS
                 PUSH_POP_GENERAL_REGS STR
             .endm
-            .macro POP_GENERAL_REGS
+            .macro RESTORE_KERNEL_CONTEXT
+                PUSH_POP_GENERAL_REGS LDR
+            .endm
+            .macro RESTORE_USER_CONTEXT
                 PUSH_POP_GENERAL_REGS LDR
             .endm
 

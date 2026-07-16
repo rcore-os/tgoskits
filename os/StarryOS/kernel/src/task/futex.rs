@@ -17,16 +17,15 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
-use ax_sync::{LockdepMutexExt, Mutex};
-use ax_task::{
-    current,
-    future::{self, block_on, interruptible},
-};
+use ax_sync::{LockdepMutexExt, PiMutex};
 use hashbrown::HashMap;
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    task::{AsThread, ProcessData},
+    task::{
+        ProcessData, current_user_task,
+        future::{self, block_on_user, interruptible_for},
+    },
 };
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
@@ -37,7 +36,7 @@ pub struct WaitQueue {
     // Futex waits must re-check the user value while serializing with wakeups.
     // That re-check may fault and sleep, so this queue cannot use a no-IRQ
     // spinlock.
-    inner: Mutex<WaitQueueInner>,
+    inner: PiMutex<WaitQueueInner>,
 }
 
 #[derive(Default)]
@@ -54,7 +53,7 @@ struct Waiter {
 struct WaiterState {
     woken: AtomicBool,
     cancelled: AtomicBool,
-    cleanup: Mutex<Option<FutexWaitCleanup>>,
+    cleanup: PiMutex<Option<FutexWaitCleanup>>,
 }
 
 impl WaiterState {
@@ -62,7 +61,7 @@ impl WaiterState {
         Self {
             woken: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-            cleanup: Mutex::new(cleanup),
+            cleanup: PiMutex::new(cleanup),
         }
     }
 
@@ -185,16 +184,23 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
-        block_on(interruptible(future::timeout(
-            timeout,
-            WaitIfFuture {
-                queue: self,
-                bitset,
-                cleanup,
-                condition: Some(condition),
-                state: None,
-            },
-        )))??
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            interruptible_for(
+                &task,
+                future::timeout(
+                    timeout,
+                    WaitIfFuture {
+                        queue: self,
+                        bitset,
+                        cleanup,
+                        condition: Some(condition),
+                        state: None,
+                    },
+                ),
+            ),
+        )??
     }
 
     fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
@@ -472,7 +478,7 @@ impl FutexKey {
         if matches!(mode, FutexKeyMode::Private) {
             return Self::Private { address };
         }
-        let curr = current();
+        let curr = current_user_task();
         let aspace_arc = curr.as_thread().proc_data.aspace();
         let aspace = aspace_arc.lock();
         Self::new(&aspace, address, mode)
@@ -511,13 +517,13 @@ impl FutexEntry {
 }
 
 /// A table mapping memory addresses to futex wait queues.
-pub struct FutexTable(Mutex<HashMap<usize, Arc<FutexEntry>>>);
+pub struct FutexTable(PiMutex<HashMap<usize, Arc<FutexEntry>>>);
 
 impl FutexTable {
     /// Creates a new `FutexTable`.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(PiMutex::new(HashMap::new()))
     }
 
     /// Checks if the futex table is empty.
@@ -632,11 +638,11 @@ impl FutexTables {
     }
 }
 
-static SHARED_FUTEX_TABLES: Mutex<FutexTables> = Mutex::new(FutexTables::new());
+static SHARED_FUTEX_TABLES: PiMutex<FutexTables> = PiMutex::new(FutexTables::new());
 
 /// Returns the futex table for the given key.
 pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {
-    let curr = current();
+    let curr = current_user_task();
     futex_table_for_process(curr.as_thread().proc_data.as_ref(), key)
 }
 

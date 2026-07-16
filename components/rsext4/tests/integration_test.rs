@@ -5,6 +5,7 @@
 
 use std::cell::Cell;
 
+use ax_kspin_test_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},

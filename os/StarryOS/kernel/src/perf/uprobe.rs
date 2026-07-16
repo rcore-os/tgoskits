@@ -16,10 +16,7 @@ use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
 use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
-use crate::{
-    kprobe::KprobeAuxiliary,
-    task::{AsThread, get_task},
-};
+use crate::{kprobe::KprobeAuxiliary, task::get_task};
 
 /// Resolve the target ELF's mapped base in the target process and build a
 /// uprobe `ProbeBuilder` for `base + offset`.

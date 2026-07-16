@@ -7,7 +7,7 @@
 //! # Architecture Support
 //!
 //! All four supported architectures are enabled: x86_64, riscv64, aarch64,
-//! and loongarch64. Each architecture provides TrapFrame↔PtRegs register
+//! and loongarch64. Each architecture provides UserRegisters↔PtRegs register
 //! conversion to bridge the kernel's trap frame format with the kprobe
 //! crate's portable `PtRegs` type.
 //!
@@ -20,8 +20,12 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_kspin::{RawSpinNoIrq, SpinNoIrq};
+use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::{MappingFlags, PageSize};
+use ax_runtime::hal::{
+    cpu::{KernelTrapFrame, UserRegisters},
+    paging::{MappingFlags, PageSize},
+};
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
     register_kprobe as kprobe_crate_register_kprobe,
@@ -30,15 +34,13 @@ use kprobe::{
     unregister_kretprobe as kprobe_crate_unregister_kretprobe,
 };
 
-use crate::task::AsThread;
-
 /// Raw mutex used as the `L` type parameter for the `kprobe` crate's
 /// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
 /// Backed by [`ax_kspin::RawSpinNoIrq`], which disables kernel preemption and
-/// local IRQs across the critical section (`NoPreemptIrqSave` semantics, the
+/// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
 /// preemption and IRQs enabled could be re-entered on the same CPU and would
@@ -188,34 +190,28 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 
     fn insert_kretprobe_instance_to_task(instance: RetprobeInstance) {
-        let task = ax_task::current_may_uninit();
-        if let Some(task) = task {
-            let thread = task.try_as_thread();
-            if let Some(thread) = thread {
-                let mut kretprobe_instances = thread.kretprobe_stack.lock();
-                kretprobe_instances.push(instance);
-                return;
-            }
+        if let Some(task) = crate::task::try_current_user_irq_view() {
+            task.push_kretprobe(instance);
+            return;
         }
-        // If the current task is None, we can store it in a static variable
-        let mut instances = INSTANCE.lock();
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+            panic!("nested kretprobe tried to re-enter the kernel stack");
+        };
+        if instances.len() == KERNEL_KRETPROBE_STACK_CAPACITY {
+            core::mem::forget(instance);
+            panic!("kernel task exceeded its fixed kretprobe nesting capacity");
+        }
         instances.push(instance);
     }
 
     fn pop_kretprobe_instance_from_task() -> RetprobeInstance {
-        let task = ax_task::current_may_uninit();
-        if let Some(task) = task {
-            let thread = task.try_as_thread();
-            if let Some(thread) = thread {
-                let mut kretprobe_instances = thread.kretprobe_stack.lock();
-                return kretprobe_instances
-                    .pop()
-                    .expect("kretprobe instance stack underflow");
-            }
+        if let Some(task) = crate::task::try_current_user_irq_view() {
+            return task.pop_kretprobe();
         }
-        // If the current task is None, we can pop it from the static variable
-        let mut instances = INSTANCE.lock();
-        instances.pop().unwrap()
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+            panic!("nested kretprobe tried to re-enter the kernel stack");
+        };
+        instances.pop().expect("kernel kretprobe stack underflow")
     }
 }
 
@@ -232,7 +228,14 @@ pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
 static KPROBE_POINT_LIST: SpinNoIrq<KprobePointList> = SpinNoIrq::new(KprobePointList::new());
-static INSTANCE: SpinNoIrq<Vec<RetprobeInstance>> = SpinNoIrq::new(Vec::new());
+const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
+static INSTANCE: LazyInit<SpinNoIrq<Vec<RetprobeInstance>>> = LazyInit::new();
+
+fn kernel_kretprobe_stack() -> &'static SpinNoIrq<Vec<RetprobeInstance>> {
+    INSTANCE
+        .get()
+        .expect("kernel kretprobe stack must be prepared before probes are armed")
+}
 
 fn with_manager<F, R>(f: F) -> R
 where
@@ -266,6 +269,7 @@ pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
 /// Register a kretprobe and return its live handle.
 #[inline(never)]
 pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
+    INSTANCE.get_or_init(|| SpinNoIrq::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
     with_manager_and_list(|mgr, list| {
         kprobe_crate_register_kretprobe(mgr, list, builder).expect("Failed to register kretprobe")
     })
@@ -277,7 +281,7 @@ pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
 }
 
-pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprobe::PtRegs {
+pub(crate) fn trapframe_to_ptregs(tf: &UserRegisters) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
         kprobe::PtRegs {
@@ -406,7 +410,7 @@ pub(crate) fn trapframe_to_ptregs(tf: &ax_runtime::hal::cpu::TrapFrame) -> kprob
     }
 }
 
-pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::cpu::TrapFrame) {
+pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut UserRegisters) {
     #[cfg(target_arch = "x86_64")]
     {
         tf.r15 = pt.r15 as u64;
@@ -511,22 +515,26 @@ pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut ax_runtime::hal::c
     }
 }
 
-pub fn handle_breakpoint(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
-    let mut pt_regs = trapframe_to_ptregs(tf);
+pub fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) -> bool {
+    let mut updated = tf.snapshot();
+    let mut pt_regs = trapframe_to_ptregs(&updated);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
-        ptregs_write_back(&pt_regs, tf);
+        ptregs_write_back(&pt_regs, &mut updated);
+        tf.apply_registers(&updated);
         return true;
     }
     false
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn handle_debug(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> bool {
-    let mut pt_regs = trapframe_to_ptregs(tf);
+pub fn handle_debug(tf: &mut KernelTrapFrame<'_>) -> bool {
+    let mut updated = tf.snapshot();
+    let mut pt_regs = trapframe_to_ptregs(&updated);
     let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
-        ptregs_write_back(&pt_regs, tf);
+        ptregs_write_back(&pt_regs, &mut updated);
+        tf.apply_registers(&updated);
         return true;
     }
     false

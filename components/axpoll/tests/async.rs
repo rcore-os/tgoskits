@@ -12,6 +12,8 @@ use axpoll::{IoEvents, PollSet};
 use futures::future;
 use tokio::sync::Barrier;
 
+mod common;
+
 struct WaitFuture {
     ps: Arc<PollSet>,
     ready: Arc<AtomicBool>,

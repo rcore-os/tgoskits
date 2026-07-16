@@ -100,7 +100,7 @@ unsafe impl Send for IonBuffer {}
 unsafe impl Sync for IonBuffer {}
 
 /// Ion 分配请求
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IonAllocData {
     /// 请求的大小
@@ -120,7 +120,7 @@ pub struct IonAllocData {
 }
 
 /// Ion FD 数据（用于导入外部 fd）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IonFdData {
     /// 外部文件描述符
@@ -130,7 +130,7 @@ pub struct IonFdData {
 }
 
 /// Ion 句柄数据（用于释放缓冲区）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IonHandleData {
     /// Ion 句柄
@@ -141,7 +141,7 @@ pub const MAX_HEAP_NAME: usize = 32;
 pub const MAX_ION_BUFFER_NAME: usize = 32;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct IonHeapData {
     pub name: [u8; MAX_HEAP_NAME],
     pub type_: u32,
@@ -152,7 +152,7 @@ pub struct IonHeapData {
 }
 
 /// Ion 堆查询数据
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IonHeapQuery {
     /// 堆计数（输入：要查询的堆数量，输出：实际堆数量）

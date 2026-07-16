@@ -6,7 +6,7 @@
 //! (becomes readable when `expire_count > 0`).
 //!
 //! Implementation model: each `Timerfd::new` spawns exactly one long-lived
-//! background task (via `ax_task::spawn_raw`) that owns a weak reference to
+//! background task (via the Starry task facade) that owns a weak reference to
 //! the Timerfd. The task loops, reading the current deadline under the state
 //! lock, then parks on whichever fires first: the deadline (via
 //! `timeout_at_wall`) or an "arm event" poked by `settime` / `Drop`. One task
@@ -30,12 +30,17 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io, timeout_at_wall};
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::{
+        current_user_task,
+        future::{block_on, block_on_user, poll_io_for, timeout_at_wall},
+    },
+};
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
 /// musl and glibc both pass `CLOCK_REALTIME` or `CLOCK_MONOTONIC`. Other
@@ -69,7 +74,7 @@ pub struct Timerfd {
     /// absolute deadline (which is always in this domain) into the
     /// internal wall-time domain before arming the monotonic timer wheel.
     clockid: u32,
-    state: Mutex<State>,
+    state: PiMutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
     non_blocking: AtomicBool,
@@ -91,7 +96,7 @@ impl Timerfd {
         }
         let this = Arc::new(Self {
             clockid,
-            state: Mutex::new(State::default()),
+            state: PiMutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),
@@ -100,10 +105,10 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        ax_task::spawn_raw(
+        crate::task::spawn_kernel_thread_with_stack(
             move || block_on(run_timer(weak)),
             "timerfd".to_owned(),
-            ax_task::default_task_stack_size(),
+            crate::task::default_task_stack_size(),
         );
         Ok(this)
     }
@@ -306,41 +311,45 @@ impl FileLike for Timerfd {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
             return Err(AxError::InvalidInput);
         }
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            // Race-free read: atomically claim the entire `expire_count`
-            // snapshot via CAS so concurrent readers can't both observe
-            // and copy the same ticks. Linux's `timerfd_read(2)` holds
-            // the timerfd spinlock across the load + clear; we get the
-            // same single-consumer guarantee from the CAS loop. A
-            // simultaneous `fetch_add` from the timer task raises the
-            // count past `n`, the CAS fails, and we re-snapshot before
-            // copying — so newly-arrived ticks aren't dropped either.
-            let n = loop {
-                let observed = self.expire_count.load(Ordering::Acquire);
-                if observed == 0 {
-                    return Err(AxError::WouldBlock);
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                // Race-free read: atomically claim the entire `expire_count`
+                // snapshot via CAS so concurrent readers can't both observe
+                // and copy the same ticks. Linux's `timerfd_read(2)` holds
+                // the timerfd spinlock across the load + clear; we get the
+                // same single-consumer guarantee from the CAS loop. A
+                // simultaneous `fetch_add` from the timer task raises the
+                // count past `n`, the CAS fails, and we re-snapshot before
+                // copying — so newly-arrived ticks aren't dropped either.
+                let n = loop {
+                    let observed = self.expire_count.load(Ordering::Acquire);
+                    if observed == 0 {
+                        return Err(AxError::WouldBlock);
+                    }
+                    if self
+                        .expire_count
+                        .compare_exchange(observed, 0, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        break observed;
+                    }
+                };
+                // Linux's timerfd_read(2): a failed read does not discard
+                // expirations. Restore the claimed count on copyout failure,
+                // and re-wake `poll_rx` so any reader or poller that
+                // entered its wait between our CAS-to-zero and this restore
+                // notices the fd is readable again.
+                if let Err(e) = dst.write(&n.to_ne_bytes()) {
+                    self.expire_count.fetch_add(n, Ordering::AcqRel);
+                    // Restored expire_count is visible before re-waking readers.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    return Err(e);
                 }
-                if self
-                    .expire_count
-                    .compare_exchange(observed, 0, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    break observed;
-                }
-            };
-            // Linux's timerfd_read(2): a failed read does not discard
-            // expirations. Restore the claimed count on copyout failure,
-            // and re-wake `poll_rx` so any reader or poller that
-            // entered its wait between our CAS-to-zero and this restore
-            // notices the fd is readable again.
-            if let Err(e) = dst.write(&n.to_ne_bytes()) {
-                self.expire_count.fetch_add(n, Ordering::AcqRel);
-                // Restored expire_count is visible before re-waking readers.
-                unsafe { self.poll_rx.wake(IoEvents::IN) };
-                return Err(e);
-            }
-            Ok(core::mem::size_of::<u64>())
-        }))
+                Ok(core::mem::size_of::<u64>())
+            }),
+        )
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

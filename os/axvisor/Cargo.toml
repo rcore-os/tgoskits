@@ -67,7 +67,18 @@ anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "paging",
+    "irq",
+    "multitask",
+    "task-ext",
+    "smp",
+    "hv",
+    "tls",
+] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
@@ -78,7 +89,11 @@ ax-driver.workspace = true
 axplat-dyn.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-cpu-local.workspace = true
 axplat-dyn = { workspace = true, features = ["hv"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ax-cpu = { workspace = true, features = ["arm-el2"] }
 
 [dev-dependencies]
 axtest.workspace = true

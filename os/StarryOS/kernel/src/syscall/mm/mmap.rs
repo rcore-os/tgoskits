@@ -4,7 +4,6 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::paging::{MappingFlags, PageSize};
-use ax_task::current;
 use linux_raw_sys::general::*;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     mm::{Backend, BackendOps, SharedPages},
     pseudofs::{Device, DeviceMmap},
     syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
-    task::AsThread,
+    task::current_user_task,
 };
 
 bitflags::bitflags! {
@@ -137,7 +136,7 @@ pub fn sys_mmap(
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let curr_aspace = curr.as_thread().proc_data.aspace();
     let mut aspace = curr_aspace.lock();
     let Some(permission_flags) = MmapProt::from_bits(prot) else {
@@ -595,7 +594,7 @@ pub fn sys_munmap(addr: usize, length: usize) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
     debug!("sys_munmap <= addr: {addr:#x}, length: {length:x}");
-    let curr = current();
+    let curr = current_user_task();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
@@ -624,7 +623,7 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
         return Ok(0);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_arc.lock();
     let length = align_up_4k(length);
@@ -687,7 +686,7 @@ struct MremapMove<'a> {
 
 fn mremap_move(
     aspace: &mut crate::mm::AddrSpace,
-    aspace_ref: &Arc<ax_sync::Mutex<crate::mm::AddrSpace>>,
+    aspace_ref: &Arc<ax_sync::PiMutex<crate::mm::AddrSpace>>,
     move_args: MremapMove<'_>,
 ) -> AxResult {
     let MremapMove {
@@ -801,7 +800,7 @@ pub fn sys_mremap(
         }
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let aspace_ref = &curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_ref.lock();
 
@@ -986,7 +985,7 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
         return Ok(0);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_arc.lock();
 
@@ -1044,7 +1043,7 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     let end_val = addr.checked_add(length).ok_or(AxError::InvalidInput)?;
     let end = VirtAddr::from(end_val);
 
-    let curr = current();
+    let curr = current_user_task();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let writebacks: Vec<_> = {
         let aspace = aspace_arc.lock();
@@ -1100,7 +1099,7 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     }
     let size = end - aligned;
 
-    let curr = current();
+    let curr = current_user_task();
     let aspace_arc = curr.as_thread().proc_data.aspace();
     let mut aspace = aspace_arc.lock();
     let start = VirtAddr::from(aligned);

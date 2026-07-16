@@ -2,8 +2,7 @@ use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
-use ax_task::current;
+use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
@@ -22,7 +21,7 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
-    task::AsThread,
+    task::current_user_task,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every
@@ -64,9 +63,10 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
     };
     let tmpfs = tmpfs.ok_or(AxError::NotFound)?;
 
-    let fs = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
         axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
@@ -88,7 +88,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    FS_CONTEXT.lock().resolve(path).is_ok()
+    current_fs_context().lock().resolve(path).is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {

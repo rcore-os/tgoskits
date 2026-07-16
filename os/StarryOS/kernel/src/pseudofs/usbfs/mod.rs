@@ -1,6 +1,7 @@
 mod descriptor;
 mod irq;
 mod manager;
+mod refresh;
 mod sysfs;
 mod tree;
 
@@ -17,7 +18,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError, LinuxResult};
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_sync::Mutex as BlockingMutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::Filesystem;
 use axpoll::{IoEvents, PollSet, Pollable};
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
@@ -69,11 +70,10 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
-    ax_task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || manager::usbfs_refresh_task(refresh_manager.clone()),
         "usbfs-refresh".to_owned(),
     );
-    manager.notify_refresh();
 
     Ok(Some(create_filesystem(manager)))
 }
@@ -181,10 +181,10 @@ pub(crate) fn open_usbfs_file(
         bus_num: ops.bus_num,
         device_num: ops.device_num,
         snapshot,
-        lease: BlockingMutex::new(None),
-        lifecycle_lock: BlockingMutex::new(()),
+        lease: PiMutex::new(None),
+        lifecycle_lock: PiMutex::new(()),
         claimed_interfaces: Mutex::new(Default::default()),
-        submitted_urbs: Arc::new(BlockingMutex::new(VecDeque::new())),
+        submitted_urbs: Arc::new(PiMutex::new(VecDeque::new())),
         pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
         urb_worker: Arc::new(UrbWorker::new()),
@@ -200,10 +200,10 @@ struct UsbDeviceFile {
     bus_num: u8,
     device_num: u8,
     snapshot: descriptor::UsbDeviceSnapshot,
-    lease: BlockingMutex<Option<Arc<manager::UsbDeviceLease>>>,
-    lifecycle_lock: BlockingMutex<()>,
+    lease: PiMutex<Option<Arc<manager::UsbDeviceLease>>>,
+    lifecycle_lock: PiMutex<()>,
     claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
-    submitted_urbs: Arc<BlockingMutex<VecDeque<SubmittedUrb>>>,
+    submitted_urbs: Arc<PiMutex<VecDeque<SubmittedUrb>>>,
     pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
     urb_worker: Arc<UrbWorker>,
@@ -784,9 +784,9 @@ impl UsbDeviceFile {
         let poll_urbs = self.poll_urbs.clone();
         let worker = self.urb_worker.clone();
         let manager = self.manager.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
-                ax_task::future::block_on(async {
+                crate::task::future::block_on(async {
                     loop {
                         let mut ready = Vec::new();
                         {
@@ -894,7 +894,7 @@ impl UsbDeviceFile {
                                 ),
                             );
                         } else {
-                            ax_task::yield_now();
+                            crate::task::yield_now();
                         }
                     }
                 });
@@ -1200,7 +1200,7 @@ impl UsbDeviceFile {
     fn reap_urb(&self, arg: usize, nonblocking: bool) -> AxResult<usize> {
         self.collect_submitted_urbs(None);
         if !nonblocking && self.pending_urbs.lock().is_empty() {
-            ax_task::future::block_on(poll_fn(|cx| {
+            crate::task::future::block_on(poll_fn(|cx| {
                 if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
                     Poll::Ready(())
                 } else {
@@ -1246,7 +1246,7 @@ impl UsbDeviceFile {
 
         if !submitted.is_deferred() {
             let lease = self.lease.lock().clone();
-            ax_task::spawn_with_name(
+            crate::task::spawn_kernel_thread(
                 move || {
                     let _lease = lease;
                     cleanup_submitted_urbs(alloc::vec![submitted], None);
@@ -1405,7 +1405,7 @@ impl Drop for UsbDeviceFile {
             return;
         }
 
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 let _lease = lease;
                 cleanup_submitted_urbs(submitted, None);
@@ -1476,7 +1476,7 @@ fn cleanup_submitted_urbs(
             if deadline.is_some_and(|deadline| ax_runtime::hal::time::wall_time() >= deadline) {
                 break;
             }
-            ax_task::sleep(Duration::from_millis(1));
+            crate::task::sleep(Duration::from_millis(1));
         }
     }
 

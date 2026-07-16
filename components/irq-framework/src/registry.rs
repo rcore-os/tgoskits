@@ -22,7 +22,7 @@ pub struct Registry<O: IrqOps> {
 }
 
 unsafe impl<O: IrqOps + Send> Send for Registry<O> {}
-unsafe impl<O: IrqOps + Send> Sync for Registry<O> {}
+unsafe impl<O: IrqOps + Sync> Sync for Registry<O> {}
 
 struct RegistryState {
     descriptors: Vec<Descriptor>,
@@ -570,14 +570,8 @@ impl<O: IrqOps> Registry<O> {
     ) -> Result<(), IrqError> {
         match cpu {
             None => self.ops.set_enabled(irq, None, enabled),
-            Some(cpu) if cpu == self.ops.current_cpu() => {
-                self.ops.set_enabled(irq, Some(cpu), enabled)
-            }
             Some(cpu) => {
-                if self.ops.in_irq_context() {
-                    return Err(IrqError::InIrqContext);
-                }
-                let mut request = RemoteEnable {
+                let mut request = CpuOwnedLineUpdate {
                     registry: self as *const Self as *mut (),
                     irq,
                     cpu,
@@ -586,8 +580,8 @@ impl<O: IrqOps> Registry<O> {
                 };
                 self.ops.run_on_cpu_sync(
                     cpu,
-                    remote_enable_thunk::<O>,
-                    (&mut request as *mut RemoteEnable).cast(),
+                    cpu_owned_line_update_thunk::<O>,
+                    (&mut request as *mut CpuOwnedLineUpdate).cast(),
                 )?;
                 request.result
             }
@@ -792,7 +786,7 @@ impl<O: IrqOps> Drop for DispatchGuard<'_, O> {
     }
 }
 
-struct RemoteEnable {
+struct CpuOwnedLineUpdate {
     registry: *mut (),
     irq: IrqId,
     cpu: CpuId,
@@ -800,8 +794,8 @@ struct RemoteEnable {
     result: Result<(), IrqError>,
 }
 
-unsafe fn remote_enable_thunk<O: IrqOps>(arg: *mut ()) {
-    let request = unsafe { &mut *arg.cast::<RemoteEnable>() };
+unsafe fn cpu_owned_line_update_thunk<O: IrqOps>(arg: *mut ()) {
+    let request = unsafe { &mut *arg.cast::<CpuOwnedLineUpdate>() };
     let registry = unsafe { &*(request.registry as *const Registry<O>) };
     request.result = registry
         .ops

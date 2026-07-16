@@ -27,7 +27,7 @@ Other optional modules and their corresponding features are as follows:
 | [ax-fs-ng](../modules/axfs-ng) | fs | ArceOS filesystem module. |
 | [ax-net](../modules/ax-net) | net | ArceOS network module. |
 | [axdriver](../modules/axdriver) | driver-*, fs, net, display | ArceOS device drivers. |
-| [ax-task](../modules/axtask) | multitask | ArceOS task management module. |
+| [ax-task](../../../components/ax-task) | multitask | OS-independent task and SMP scheduler component, integrated by ax-runtime. |
 | [axsync](../modules/axsync) | multitask | ArceOS synchronization primitives. |
 
 See [arceos-apps](https://github.com/arceos-org/arceos-apps) for example applications and their required modules and features.

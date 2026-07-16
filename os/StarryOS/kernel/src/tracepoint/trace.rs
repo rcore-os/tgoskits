@@ -1,11 +1,11 @@
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
 
 use crate::pseudofs::DirectRwFsFileOps;
 
 /// File representing the trace content.
-pub struct TraceFile(Mutex<TraceFileState>);
+pub struct TraceFile(SpinMutex<TraceFileState>);
 
 struct TraceFileState {
     snapshot: Option<TracePipeSnapshot>,
@@ -29,7 +29,7 @@ impl TraceFileState {
 impl TraceFile {
     /// Creates a new `TraceFile` instance.
     pub const fn new() -> Self {
-        TraceFile(Mutex::new(TraceFileState::new()))
+        TraceFile(SpinMutex::new(TraceFileState::new()))
     }
 }
 
@@ -67,7 +67,7 @@ impl DirectRwFsFileOps for TraceFile {
 }
 
 /// File representing the trace command line cache.
-pub struct TraceCmdLineFile(Mutex<TraceCmdLineFileState>);
+pub struct TraceCmdLineFile(SpinMutex<TraceCmdLineFileState>);
 
 struct TraceCmdLineFileState {
     snapshot: Option<TraceCmdLineCacheSnapshot>,
@@ -91,7 +91,7 @@ impl TraceCmdLineFileState {
 impl TraceCmdLineFile {
     /// Creates a new `TraceCmdLineFile` instance.
     pub const fn new() -> Self {
-        TraceCmdLineFile(Mutex::new(TraceCmdLineFileState::new()))
+        TraceCmdLineFile(SpinMutex::new(TraceCmdLineFileState::new()))
     }
 }
 

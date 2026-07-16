@@ -241,7 +241,25 @@ impl ProcessSignalManager {
         };
 
         if let Some(oldact) = oldact.nullable() {
-            oldact.vm_write(old_action.into())?;
+            let old_action: kernel_sigaction = old_action.into();
+            let base = oldact.addr();
+            ((base + core::mem::offset_of!(kernel_sigaction, sa_handler_kernel)) as *mut usize)
+                .vm_write(
+                    old_action
+                        .sa_handler_kernel
+                        .map_or(0, |handler| handler as usize),
+                )?;
+            ((base + core::mem::offset_of!(kernel_sigaction, sa_flags)) as *mut usize)
+                .vm_write(old_action.sa_flags as usize)?;
+            #[cfg(sa_restorer)]
+            ((base + core::mem::offset_of!(kernel_sigaction, sa_restorer)) as *mut usize)
+                .vm_write(
+                    old_action
+                        .sa_restorer
+                        .map_or(0, |restorer| restorer as usize),
+                )?;
+            ((base + core::mem::offset_of!(kernel_sigaction, sa_mask)) as *mut u64)
+                .vm_write(old_action.sa_mask.sig[0] as u64)?;
         }
         Ok(0)
     }

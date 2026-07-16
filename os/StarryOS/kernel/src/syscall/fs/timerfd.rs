@@ -5,11 +5,14 @@ use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
 use linux_raw_sys::general::{__kernel_itimerspec, __kernel_timespec, O_CLOEXEC, O_NONBLOCK};
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::VmPtr;
 
-use crate::file::{
-    FileLike, add_file_like,
-    timerfd::{TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET, Timerfd},
+use crate::{
+    file::{
+        FileLike, add_file_like,
+        timerfd::{TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET, Timerfd},
+    },
+    syscall::time::write_kernel_itimerspec,
 };
 
 // linux-raw-sys does not export these under their `TFD_*` names, so alias.
@@ -83,7 +86,7 @@ pub fn sys_timerfd_settime(
             it_interval: duration_to_timespec(old_ival),
             it_value: duration_to_timespec(old_rem),
         };
-        old_ptr.vm_write(old)?;
+        write_kernel_itimerspec(old_ptr, old)?;
     }
     Ok(0)
 }
@@ -96,6 +99,6 @@ pub fn sys_timerfd_gettime(fd: i32, curr_value: *mut __kernel_itimerspec) -> AxR
         it_interval: duration_to_timespec(ival),
         it_value: duration_to_timespec(rem),
     };
-    curr_value.vm_write(out)?;
+    write_kernel_itimerspec(curr_value, out)?;
     Ok(0)
 }

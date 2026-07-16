@@ -926,6 +926,28 @@ mod tests {
     }
 
     #[test]
+    fn masking_irqs_preserves_polling_configuration() {
+        let (_guard, mut uart) = serial();
+        let lcr = LineControlFlags::WORD_LENGTH_8 | LineControlFlags::STOP_BITS;
+        let mcr = ModemControlFlags::DATA_TERMINAL_READY
+            | ModemControlFlags::REQUEST_TO_SEND
+            | ModemControlFlags::OUT_2;
+        DLL_REG.store(7, Ordering::SeqCst);
+        DLH_REG.store(3, Ordering::SeqCst);
+        REGS[UART_LCR as usize].store(lcr.bits(), Ordering::SeqCst);
+        REGS[UART_MCR as usize].store(mcr.bits(), Ordering::SeqCst);
+
+        uart.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        uart.set_irq_mask(InterruptMask::empty());
+
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
+        assert_eq!(DLL_REG.load(Ordering::SeqCst), 7);
+        assert_eq!(DLH_REG.load(Ordering::SeqCst), 3);
+        assert_eq!(REGS[UART_LCR as usize].load(Ordering::SeqCst), lcr.bits());
+        assert_eq!(REGS[UART_MCR as usize].load(Ordering::SeqCst), mcr.bits());
+    }
+
+    #[test]
     fn try_read_empty_returns_zero() {
         let (_guard, mut uart) = serial();
         let mut buf = [0];

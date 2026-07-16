@@ -51,13 +51,30 @@ cargo doc --no-deps
 
 ### Example
 
-```rust
-use scope_local as _;
+```ignore
+use std::sync::Arc;
+
+use scope_local::scope_local;
+
+scope_local! {
+    static REQUEST_COUNT: usize = 0;
+    static CONTEXT: Arc<str> = Arc::from("global");
+}
 
 fn main() {
-    // Integrate `scope-local` into your project here.
+    // The embedding runtime must provide ax-kspin's LockRuntime first.
+    let count = REQUEST_COUNT.with(|count| *count);
+    let context = CONTEXT.clone_current();
+    assert_eq!(count, 0);
+    assert_eq!(&*context, "global");
 }
 ```
+
+Active-scope access uses a non-escaping closure so a per-CPU lookup cannot
+outlive its CPU pin. Prefer `clone_current` for `Arc`-backed resources and take
+sleepable locks only after the clone returns. Code that already owns an IRQ or
+preemption guard can use `with_pinned`; hard-IRQ code must use
+`try_with_pinned`, which never performs lazy initialization.
 
 ### Documentation
 

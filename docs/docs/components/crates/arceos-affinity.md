@@ -39,13 +39,8 @@ flowchart LR
 
 关键点在于 `ax-task::set_current_affinity()` 并不只是记录一个掩码；在开启 SMP 时，如果当前 CPU 不再满足亲和性，它会立刻走迁移路径。
 
-### 1.3 feature 与调度器关系
-`Cargo.toml` 中的：
-
-- `sched-rr`
-- `sched-cfs`
-
-会透传到 `ax-std` 对应的调度器 feature。这个 crate 本身并不强依赖某一种调度算法，但它确实依赖：
+### 1.3 与调度策略的关系
+亲和性不依赖某一种调度策略，也不再透传全局 scheduler feature。这个测试依赖：
 
 - `multitask`
 - 可见 CPU 数

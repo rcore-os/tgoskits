@@ -117,7 +117,7 @@ StarryOS 专用组件（位于 `components/`）：
 | `rknpu` | Rockchip NPU 驱动 |
 | `vsock` | VSOCK 支持 |
 
-内核默认启用：`fp-simd`, `irq`, `uspace`, `multitask`, `task-ext`, `sched-rr`, `rtc`, `ext4`, `net`。
+内核默认启用：`fp-simd`, `irq`, `uspace`, `multitask`, `task-ext`, `rtc`, `ext4`, `net`。调度策略由每个线程的 scheduler policy 决定，不再由构建 feature 全局选择。
 
 ### 3.3 KCOV 暂不引入
 
@@ -578,7 +578,7 @@ StarryOS 复用了大量 ArceOS 模块，改动共享模块时的验证策略：
 |----------|--------|--------|
 | `components/axerrno`、`kspin` 等基础 crate | `cargo test -p <crate>` | ArceOS helloworld + StarryOS qemu |
 | `os/arceos/modules/axhal` | ArceOS helloworld | StarryOS qemu |
-| `os/arceos/modules/axtask` | ArceOS helloworld | StarryOS qemu |
+| `components/ax-task`、`os/arceos/modules/axruntime/src/task.rs` | `cargo test -p ax-task` + ArceOS task QEMU | StarryOS qemu |
 | `components/starry-process` 等 Starrry 专用 | StarryOS qemu | — |
 | `os/StarryOS/kernel/*` | StarryOS qemu | — |
 

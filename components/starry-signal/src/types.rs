@@ -136,7 +136,18 @@ impl Signo {
 }
 
 /// Signal set. Compatible with `struct sigset_t` in libc.
-#[derive(Default, Clone, Copy, Not, BitOr, BitOrAssign, BitAnd, BitAndAssign)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Not,
+    BitOr,
+    BitOrAssign,
+    BitAnd,
+    BitAndAssign,
+    bytemuck::AnyBitPattern,
+    bytemuck::NoUninit,
+)]
 #[repr(transparent)]
 pub struct SignalSet(u64);
 
@@ -388,10 +399,12 @@ impl fmt::Debug for SignalInfo {
 
 /// Signal stack. Compatible with `struct sigaltstack` in libc.
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct SignalStack {
     pub sp: usize,
     pub flags: u32,
+    /// Explicit alignment bytes in the 64-bit `stack_t` ABI.
+    pub _padding: u32,
     pub size: usize,
 }
 
@@ -400,6 +413,7 @@ impl Default for SignalStack {
         Self {
             sp: 0,
             flags: SS_DISABLE,
+            _padding: 0,
             size: 0,
         }
     }

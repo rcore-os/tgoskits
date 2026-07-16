@@ -26,3 +26,4 @@ impl ProcessExt for Arc<Process> {
         self.fork(alloc_pid())
     }
 }
+use ax_kspin_test_runtime as _;

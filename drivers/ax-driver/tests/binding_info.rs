@@ -9,6 +9,7 @@ use ax_driver::{
     BindingIrq, BindingIrqSource, binding_info_from_acpi_route, binding_info_from_fdt,
     binding_irq_from_named_fdt_interrupt,
 };
+use ax_kspin_test_runtime as _;
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId,
     Klib, PhysAddr, VirtAddr, impl_trait,
@@ -217,7 +218,6 @@ fn acpi_binding_info_preserves_route_without_setup() {
         Some(&BindingIrq::Source(BindingIrqSource::AcpiGsiRoute(
             irq_framework::AcpiGsiRoute {
                 gsi: acpi_route().gsi,
-                vector: acpi_route().vector,
                 controller: irq_framework::AcpiGsiController::IoApic,
                 controller_id: acpi_route().controller_id,
                 controller_address: acpi_route().controller_address,
@@ -352,7 +352,6 @@ fn minimal_irq_fdt() -> Fdt {
 fn acpi_route() -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: 32,
-        vector: 0x50,
         controller: AcpiGsiController::IoApic,
         controller_id: 0,
         controller_address: 0xfec0_0000,

@@ -1,6 +1,7 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
 mod sched;
+mod sched_filter;
 mod trace;
 mod trace_pipe;
 
@@ -8,7 +9,7 @@ use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{
     num::NonZero,
     ops::Deref,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -16,15 +17,14 @@ use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use ax_sync::Mutex;
-use ax_task::{IrqNotify, current};
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    task::AsThread,
+    task::{future::IrqNotify, try_current_user_irq_view},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
@@ -33,8 +33,8 @@ const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
 // The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
-// preemption disabled). A sleeping `ax_sync::Mutex` would trip the
+// `sched:sched_switch` runs from the ax-task switch path (IRQ off,
+// preemption disabled). A sleeping `ax_sync::PiMutex` would trip the
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
 // uses for exactly this reason.
@@ -65,10 +65,11 @@ pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
 
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: Mutex<TracePipeRaw>,
+    raw_pipe: SpinMutex<TracePipeRaw>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
-    cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
+    sched_notify: IrqNotify,
+    cmdline_cache: LazyInit<SpinMutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
 
@@ -76,9 +77,10 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: SpinMutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
+            sched_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }
@@ -87,14 +89,17 @@ impl TraceState {
 
 static TRACE_STATE: TraceState = TraceState::new();
 static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
+static SCHED_TRACE_WORKER_ID: AtomicU64 = AtomicU64::new(0);
+static TRACE_PIPE_NOTIFY_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KernelTraceAux;
 
 impl KernelTraceOps for KernelTraceAux {
     fn current_pid() -> u32 {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        proc_data.proc.pid()
+        if let Some(pid) = sched::replay_current_pid() {
+            return pid;
+        }
+        try_current_user_irq_view().map_or(0, |task| task.tid())
     }
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
@@ -108,16 +113,19 @@ impl KernelTraceOps for KernelTraceAux {
     }
 
     fn trace_cmdline_push(pid: u32) {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        let exe_path = proc_data.exe_path.read();
-        let pname = exe_path
-            .split(' ')
-            .next()
-            .unwrap_or("unknown")
-            .split('/')
-            .next_back()
-            .unwrap_or("unknown");
+        if let Some((comm, len)) = sched::replay_comm(pid) {
+            let pname = core::str::from_utf8(&comm[..len]).unwrap_or("unknown");
+            TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
+            return;
+        }
+        let Some(curr) = try_current_user_irq_view() else {
+            return;
+        };
+        let mut comm = [0; 16];
+        let Some(len) = curr.copy_comm(&mut comm) else {
+            return;
+        };
+        let pname = core::str::from_utf8(&comm[..len]).unwrap_or("unknown");
         TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
     }
 
@@ -146,18 +154,27 @@ impl KernelTraceOps for KernelTraceAux {
     }
 }
 
-fn start_trace_pipe_notify_worker() {
+fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
-        return;
+        panic!("trace pipe notify worker started twice");
     }
-    ax_task::spawn_with_name(
-        || loop {
-            TRACE_STATE.pipe_notify.wait();
-            // Trace records are queued before the deferred poll wake.
-            unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+    crate::task::spawn_kernel_thread(
+        || {
+            loop {
+                TRACE_STATE.pipe_notify.wait();
+                // Trace records are queued before the deferred poll wake.
+                unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+            }
         },
         "trace-pipe-notify".into(),
-    );
+    )
+}
+
+fn publish_trace_worker_id(slot: &AtomicU64, worker: &ax_runtime::task::ThreadHandle, name: &str) {
+    let worker_id = worker.id().as_u64();
+    assert_ne!(worker_id, 0, "{name} has an invalid scheduler identity");
+    slot.compare_exchange(0, worker_id, Ordering::Release, Ordering::Relaxed)
+        .unwrap_or_else(|_| panic!("{name} started twice"));
 }
 
 /// Carries the unread suffix of a formatted text record across `read_at` calls.
@@ -281,10 +298,24 @@ pub fn tracepoint_init() -> AxResult<()> {
     TRACE_STATE.ext_tracepoints.init_once(ext_tps);
     TRACE_STATE
         .cmdline_cache
-        .init_once(Mutex::new(TraceCmdLineCache::new(
+        .init_once(SpinMutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
-    start_trace_pipe_notify_worker();
+    let sched_worker = sched::start_worker();
+    let pipe_worker = start_trace_pipe_notify_worker();
+    publish_trace_worker_id(
+        &SCHED_TRACE_WORKER_ID,
+        &sched_worker,
+        "scheduler trace worker",
+    );
+    publish_trace_worker_id(
+        &TRACE_PIPE_NOTIFY_WORKER_ID,
+        &pipe_worker,
+        "trace pipe notify worker",
+    );
+    // The hook becomes visible only after both infrastructure identities are
+    // published, so their first schedule-in cannot enter the deferred ring.
+    sched::install();
     Ok(())
 }
 

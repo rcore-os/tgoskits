@@ -10,12 +10,17 @@ license.workspace = true
 [features]
 default = []
 
-irq = ["ax-task?/irq"]
+irq = ["ax-runtime/irq"]
 ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
 paging = ["dep:ax-mm"]
 dma = ["dep:ax-dma"]
-multitask = ["ax-task/multitask", "ax-sync/multitask"]
+multitask = [
+    "irq",
+    "dep:ax-cpumask",
+    "ax-runtime/multitask",
+    "ax-sync/multitask",
+]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]
@@ -26,6 +31,7 @@ dummy-if-not-enabled = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
+ax-cpumask = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
 ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true
@@ -39,4 +45,3 @@ ax-net = { workspace = true, optional = true }
 axpoll.workspace = true
 ax-runtime.workspace = true
 ax-sync.workspace = true
-ax-task = { workspace = true, optional = true }

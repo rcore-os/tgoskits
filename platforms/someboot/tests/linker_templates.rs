@@ -6,6 +6,12 @@ use linker::{LinkerArch, LinkerConfig, render_linker_script, source_paths};
 const CONFIG: LinkerConfig = LinkerConfig {
     kernel_load_vaddr: 0xffff_ffff_8000_0000,
     kernel_load_paddr: 0x20_0000,
+    kernel_tls: true,
+};
+
+const NO_TLS_CONFIG: LinkerConfig = LinkerConfig {
+    kernel_tls: false,
+    ..CONFIG
 };
 
 fn assert_common_contract(script: &str) {
@@ -55,6 +61,12 @@ fn preserves_arch_specific_linker_contracts() {
 
     let x86_64 = render_linker_script(LinkerArch::X86_64, CONFIG);
     assert!(x86_64.contains("OUTPUT_ARCH(i386:x86-64)"));
+    assert!(x86_64.contains("KERNEL_LOAD_ADDRESS = 0x200000;"));
+    assert!(
+        x86_64.contains(
+            "_kernel_entry = ABSOLUTE(KERNEL_LOAD_ADDRESS + (x86_64_raw_entry - _head));"
+        )
+    );
     assert!(x86_64.contains("_kernel_image_size = ABSOLUTE(_end - _head);"));
     assert!(!x86_64.contains("*(.options)"));
 
@@ -63,6 +75,97 @@ fn preserves_arch_specific_linker_contracts() {
     assert!(riscv64.contains("KEEP(*(.text._head))"));
     assert!(riscv64.contains(".dynamic : ALIGN(8)"));
     assert!(!riscv64.contains("*(.dynamic .dynsym .dynstr .hash .gnu.hash)"));
+}
+
+#[test]
+fn omits_tls_program_header_and_sections_when_kernel_tls_is_disabled() {
+    for arch in [
+        LinkerArch::Aarch64,
+        LinkerArch::Loongarch64,
+        LinkerArch::X86_64,
+        LinkerArch::Riscv64,
+    ] {
+        let script = render_linker_script(arch, NO_TLS_CONFIG);
+
+        assert!(
+            !script.contains("PT_TLS"),
+            "{arch:?} no-TLS script must not declare PT_TLS"
+        );
+        assert!(
+            !script.contains(".tdata :"),
+            "{arch:?} no-TLS script must not create .tdata"
+        );
+        assert!(
+            !script.contains(".tbss :"),
+            "{arch:?} no-TLS script must not create .tbss"
+        );
+        assert!(script.contains(".forbidden_kernel_tls (NOLOAD)"));
+        assert!(script.contains("ASSERT(SIZEOF(.forbidden_kernel_tls) == 0"));
+    }
+}
+
+#[test]
+fn preserves_tls_sections_when_kernel_tls_is_enabled() {
+    for arch in [
+        LinkerArch::Aarch64,
+        LinkerArch::Loongarch64,
+        LinkerArch::X86_64,
+        LinkerArch::Riscv64,
+    ] {
+        let script = render_linker_script(arch, CONFIG);
+
+        assert!(script.contains(".tdata :"), "{arch:?} lost .tdata");
+        assert!(script.contains(".tbss :"), "{arch:?} lost .tbss");
+    }
+}
+
+#[test]
+fn loongarch_bss_sections_leave_the_tls_program_header() {
+    let script = render_linker_script(LinkerArch::Loongarch64, CONFIG);
+    let sbss = script
+        .split_once("    .sbss :")
+        .expect("LoongArch linker script must contain .sbss")
+        .1
+        .split_once("    .bss :")
+        .expect("LoongArch .sbss must precede .bss")
+        .0;
+    let bss = script
+        .split_once("    .bss :")
+        .expect("LoongArch linker script must contain .bss")
+        .1
+        .split_once("    __bss_stop = .;")
+        .expect("LoongArch .bss must precede __bss_stop")
+        .0;
+
+    assert!(
+        sbss.contains("} :text"),
+        "LoongArch .sbss must not inherit the preceding :tls PHDR"
+    );
+    assert!(
+        bss.contains("} :text"),
+        "LoongArch .bss must not inherit the preceding :tls PHDR"
+    );
+}
+
+#[test]
+fn riscv_dynamic_metadata_does_not_split_the_tls_template() {
+    let script = render_linker_script(LinkerArch::Riscv64, CONFIG);
+    let dynamic = script
+        .find("    .dynamic :")
+        .expect("RISC-V linker script must retain .dynamic");
+    let got = script
+        .find("    .got :")
+        .expect("RISC-V linker script must retain .got");
+    let tdata = script
+        .find("    .tdata :")
+        .expect("RISC-V linker script must retain .tdata");
+    let tbss = script
+        .find("    .tbss :")
+        .expect("RISC-V linker script must retain .tbss");
+
+    assert!(dynamic < tdata, ".dynamic must precede the TLS template");
+    assert!(got < tdata, ".got must precede the TLS template");
+    assert!(tdata < tbss, ".tdata must precede .tbss");
 }
 
 #[test]
@@ -76,5 +179,6 @@ fn tracks_arch_templates_and_shared_fragments_for_cargo_reruns() {
     assert!(paths.contains(&"src/arch/x86_64/link.ld"));
     assert!(paths.contains(&"src/ld/text.ld"));
     assert!(paths.contains(&"src/ld/bss.ld"));
+    assert!(paths.contains(&"src/ld/bss-no-tls.ld"));
     assert!(paths.contains(&"src/ld/discard-exit.ld"));
 }

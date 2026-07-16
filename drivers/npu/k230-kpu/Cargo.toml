@@ -10,6 +10,7 @@ authors = ["rcore-os developers"]
 license.workspace = true
 
 [dependencies]
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }
 
 [package.metadata.docs.rs]
 targets = ["riscv64gc-unknown-none-elf"]

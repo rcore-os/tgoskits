@@ -19,45 +19,43 @@
 //! Then, it filters out illegal instruction from exceptions.
 //! ref: <https://github.com/luojia65/zihai/blob/main/zihai/src/detect.rs>
 
-use core::arch::{asm, naked_asm};
+use core::{
+    arch::{asm, naked_asm},
+    mem::offset_of,
+};
 
-use riscv::{
-    interrupt::{Exception, Interrupt, Trap},
-    register::{
-        scause::Scause,
-        sstatus,
-        stvec::{self, Stvec, TrapMode},
-    },
+use ax_cpu_local::CpuPin;
+use riscv::register::{
+    sstatus,
+    stvec::{self, Stvec, TrapMode},
 };
 use riscv_h::register::hgatp::{self, Hgatp, HgatpValues};
 
 /// Detect if hypervisor extension exists on current hart environment
 ///
 /// This function tries to read hgatp and returns false if the read operation failed.
-pub fn detect_h_extension() -> bool {
-    // run detection by trap on csrr instruction.
-    let ans = with_detect_trap(0, || unsafe {
-        asm!("csrr  {}, 0x680", out(reg) _, options(nomem, nostack)); // 0x680 => hgatp
-    });
+pub fn detect_h_extension(cpu_pin: &CpuPin) -> bool {
+    let ans = with_detect_trap(cpu_pin);
     // return the answer from output flag. 0 => success; any trap means unsupported.
     ans == 0
 }
 
 /// Returns the maximum supported RISC-V G-stage page-table levels.
-pub fn max_guest_page_table_levels() -> usize {
-    if !detect_h_extension() {
+pub fn max_guest_page_table_levels(cpu_pin: &CpuPin) -> usize {
+    if !detect_h_extension(cpu_pin) {
         return 0;
     }
-    if detect_hgatp_mode(HgatpValues::Sv48x4) {
+    if detect_hgatp_mode(cpu_pin, HgatpValues::Sv48x4) {
         4
-    } else if detect_hgatp_mode(HgatpValues::Sv39x4) {
+    } else if detect_hgatp_mode(cpu_pin, HgatpValues::Sv39x4) {
         3
     } else {
         0
     }
 }
 
-fn detect_hgatp_mode(mode: HgatpValues) -> bool {
+fn detect_hgatp_mode(cpu_pin: &CpuPin, mode: HgatpValues) -> bool {
+    let _irq_guard = LocalIrqGuard::new(cpu_pin);
     let saved = hgatp::read();
     let mut candidate = Hgatp::from_bits(0);
     candidate.set_mode(mode);
@@ -71,209 +69,168 @@ fn detect_hgatp_mode(mode: HgatpValues) -> bool {
     supported
 }
 
-// Tries to execute all instructions defined in clojure `f`.
-// If resulted in an exception, this function returns its exception id.
-//
-// This function is useful to detect if an instruction exists on current environment.
+/// Probes the H-extension CSR while preserving the kernel register contract.
+///
+/// The host value of `sscratch` depends on the final-image register mode: it is
+/// zero in `LinuxCurrent` kernel context and names the CPU prefix in
+/// `UnikernelTls`. The probe temporarily points it at stack-owned state only for
+/// the three-instruction assembly window that can trap; both the success path
+/// and the trap vector restore the exact entry value before Rust runs again.
 #[inline]
-fn with_detect_trap(param: usize, f: impl FnOnce()) -> usize {
-    // disable interrupts and handle exceptions only
-    let (sie, stvec, tp) = unsafe { init_detect_trap(param) };
-    // run detection inner
-    f();
-    // restore trap handler and enable interrupts
-    unsafe { restore_detect_trap(sie, stvec, tp) }
+fn with_detect_trap(cpu_pin: &CpuPin) -> usize {
+    let (sie, stvec) = init_detect_trap(cpu_pin);
+    let mut state = DetectState::new(read_sscratch());
+    run_h_extension_probe(&mut state);
+    restore_detect_trap(sie, stvec);
+    state.result
 }
 
-// rust trap handler for detect exceptions
-extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
-    // store returned exception id value into tp register
-    // specially: illegal instruction => 2
-    trap_frame.tp = trap_frame.scause.bits();
-
-    let trap: Trap<Interrupt, Exception> = match trap_frame.scause.cause().try_into() {
-        Err(_) => {
-            trap_frame.tp = usize::MAX;
-            trap_frame.sepc = trap_frame.sepc.wrapping_add(4);
-            return;
-        }
-        Ok(trap) => trap,
+#[inline]
+fn read_sscratch() -> usize {
+    let saved_sscratch;
+    // SAFETY: H-extension detection runs in supervisor context, where reading
+    // the host scratch CSR is permitted and has no side effects.
+    unsafe {
+        asm!(
+            "csrr {}, sscratch",
+            out(reg) saved_sscratch,
+            options(nomem, nostack)
+        )
     };
-
-    // if illegal instruction, skip current instruction
-    match trap {
-        Trap::Exception(Exception::IllegalInstruction) => {
-            let mut insn_bits = riscv_illegal_insn_bits((trap_frame.stval & 0xFFFF) as u16);
-            if insn_bits == 0 {
-                let insn_half = unsafe { *(trap_frame.sepc as *const u16) };
-                insn_bits = riscv_illegal_insn_bits(insn_half);
-            }
-            // skip current instruction
-            trap_frame.sepc = trap_frame.sepc.wrapping_add(insn_bits);
-        }
-        Trap::Exception(_) | Trap::Interrupt(_) => {
-            trap_frame.tp = usize::MAX;
-            trap_frame.sepc = trap_frame.sepc.wrapping_add(4);
-        }
-    }
+    saved_sscratch
 }
 
-// Gets risc-v instruction bits from illegal instruction stval value, or 0 if unknown
 #[inline]
-fn riscv_illegal_insn_bits(insn: u16) -> usize {
-    if insn == 0 {
-        return 0; // stval[0..16] == 0, unknown
+fn run_h_extension_probe(state: &mut DetectState) {
+    let saved_sscratch = state.saved_sscratch;
+    // SAFETY: init_detect_trap installed the matching direct vector with local
+    // interrupts disabled. `state` remains live across the complete assembly
+    // window, and both normal and exceptional paths restore the entry CSR.
+    unsafe {
+        asm!(
+            "csrw sscratch, {state}",
+            "csrr {probe_value}, 0x680",
+            "csrw sscratch, {saved_sscratch}",
+            state = in(reg) state,
+            saved_sscratch = in(reg) saved_sscratch,
+            probe_value = out(reg) _,
+            options(nostack)
+        )
     }
-    if insn & 0b11 != 0b11 {
-        return 2; // 16-bit
-    }
-    if insn & 0b11100 != 0b11100 {
-        return 4; // 32-bit
-    }
-    // >= 48-bit instructions can be added here if the detector needs them.
-    // >= 48-bit, unknown from this function by now
-    0
 }
 
 // Initialize environment for trap detection and filter in exception only
 #[inline]
-unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
+fn init_detect_trap(_cpu_pin: &CpuPin) -> (bool, Stvec) {
     // clear SIE to handle exception only
     let stored_sie = sstatus::read().sie();
+    // SAFETY: the previous SIE value is retained below and restored only after
+    // the original stvec has been reinstalled.
     unsafe {
         sstatus::clear_sie();
     }
     // use detect trap handler to handle exceptions
     let stored_stvec = stvec::read();
-    let mut trap_addr = on_detect_trap as *const () as usize;
-    if trap_addr & 0b1 != 0 {
-        trap_addr += 0b1;
-    }
-    let stored_tp: usize;
-
+    let trap_addr = on_detect_trap as *const () as usize;
+    assert_eq!(
+        trap_addr & 0b11,
+        0,
+        "H-extension probe trap vector must be four-byte aligned"
+    );
     let mut stvec = Stvec::from_bits(0);
     stvec.set_address(trap_addr);
     stvec.set_trap_mode(TrapMode::Direct);
 
-    unsafe {
-        stvec::write(stvec);
-        // store tp register. tp will be used to load parameter and store return value
-        asm!("mv  {}, tp", "mv  tp, {}", out(reg) stored_tp, in(reg) param, options(nomem, nostack));
+    // SAFETY: local interrupts are disabled and on_detect_trap is an aligned
+    // direct-mode vector that handles the single fixed-width probe.
+    unsafe { stvec::write(stvec) }
+    (stored_sie, stored_stvec)
+}
+
+struct LocalIrqGuard {
+    restore_sie: bool,
+}
+
+impl LocalIrqGuard {
+    fn new(_cpu_pin: &CpuPin) -> Self {
+        let restore_sie = sstatus::read().sie();
+        // SAFETY: CpuPin prevents migration for the complete CSR transaction;
+        // Drop restores the entry SIE state on the same CPU.
+        unsafe { sstatus::clear_sie() };
+        Self { restore_sie }
     }
-    // returns preserved previous hardware states
-    (stored_sie, stored_stvec, stored_tp)
+}
+
+impl Drop for LocalIrqGuard {
+    fn drop(&mut self) {
+        if self.restore_sie {
+            // SAFETY: this is the inverse of LocalIrqGuard::new and CpuPin is
+            // still borrowed by the surrounding operation.
+            unsafe { sstatus::set_sie() };
+        }
+    }
 }
 
 // Restore previous hardware states before trap detection
 #[inline]
-unsafe fn restore_detect_trap(sie: bool, stvec: Stvec, tp: usize) -> usize {
-    // read the return value from tp register, and restore tp value
-    let ans: usize;
+fn restore_detect_trap(sie: bool, stvec: Stvec) {
+    // SAFETY: this is the inverse of init_detect_trap. The probe assembly has
+    // already restored sscratch, so subsequent traps may use the host vector.
     unsafe {
-        asm!("mv  {}, tp", "mv  tp, {}", out(reg) ans, in(reg) tp, options(nomem, nostack));
-        // restore trap vector settings
         asm!("csrw  stvec, {}", in(reg) stvec.bits(), options(nomem, nostack));
-        // enable interrupts
         if sie {
             sstatus::set_sie();
         };
     }
-    ans
 }
 
-// Trap frame for instruction exception detection
+/// Stack-owned state shared with the temporary probe trap vector.
 #[repr(C)]
-struct TrapFrame {
-    ra: usize,
-    tp: usize,
-    a0: usize,
-    a1: usize,
-    a2: usize,
-    a3: usize,
-    a4: usize,
-    a5: usize,
-    a6: usize,
-    a7: usize,
-    t0: usize,
-    t1: usize,
-    t2: usize,
-    t3: usize,
-    t4: usize,
-    t5: usize,
-    t6: usize,
-    sstatus: usize,
-    sepc: usize,
-    scause: Scause,
-    stval: usize,
+struct DetectState {
+    saved_sscratch: usize,
+    result: usize,
+    saved_t0: usize,
+    saved_t1: usize,
 }
 
-// Assembly trap handler for instruction detection.
-//
-// This trap handler shares the same stack from its prospective caller,
-// the caller must ensure it has abundant stack size for a trap handler.
-//
-// This function should not be used in conventional trap handling,
-// as it does not preserve a special trap stack, and it's designed to
-// handle exceptions only rather than interrupts.
+impl DetectState {
+    const fn new(saved_sscratch: usize) -> Self {
+        Self {
+            saved_sscratch,
+            result: 0,
+            saved_t0: 0,
+            saved_t1: 0,
+        }
+    }
+}
+
+/// Trap vector used only by the fixed-width H-extension CSR probe.
+///
+/// Local interrupts are disabled while this vector is installed. It records
+/// the exception cause, advances past the four-byte CSR instruction, and
+/// restores `sscratch` before returning to the probe assembly window. No Rust
+/// code runs while `sscratch` contains the temporary state pointer.
 #[unsafe(naked)]
 unsafe extern "C" fn on_detect_trap() -> ! {
     naked_asm!(
         ".p2align 2",
-        "addi   sp, sp, -8*21",
-        "sd     ra, 0*8(sp)",
-        "sd     tp, 1*8(sp)",
-        "sd     a0, 2*8(sp)",
-        "sd     a1, 3*8(sp)",
-        "sd     a2, 4*8(sp)",
-        "sd     a3, 5*8(sp)",
-        "sd     a4, 6*8(sp)",
-        "sd     a5, 7*8(sp)",
-        "sd     a6, 8*8(sp)",
-        "sd     a7, 9*8(sp)",
-        "sd     t0, 10*8(sp)",
-        "sd     t1, 11*8(sp)",
-        "sd     t2, 12*8(sp)",
-        "sd     t3, 13*8(sp)",
-        "sd     t4, 14*8(sp)",
-        "sd     t5, 15*8(sp)",
-        "sd     t6, 16*8(sp)",
-        "csrr   t0, sstatus",
-        "sd     t0, 17*8(sp)",
+        "csrrw  t0, sscratch, t0",
+        "sd     t1, {saved_t1}(t0)",
+        "csrr   t1, sscratch",
+        "sd     t1, {saved_t0}(t0)",
+        "csrr   t1, scause",
+        "sd     t1, {result}(t0)",
         "csrr   t1, sepc",
-        "sd     t1, 18*8(sp)",
-        "csrr   t2, scause",
-        "sd     t2, 19*8(sp)",
-        "csrr   t3, stval",
-        "sd     t3, 20*8(sp)",
-        "mv     a0, sp",
-        "call   {rust_detect_trap}",
-        "ld     t0, 17*8(sp)",
-        "csrw   sstatus, t0",
-        "ld     t1, 18*8(sp)",
+        "addi   t1, t1, 4",
         "csrw   sepc, t1",
-        "ld     t2, 19*8(sp)",
-        "csrw   scause, t2",
-        "ld     t3, 20*8(sp)",
-        "csrw   stval, t3",
-        "ld     ra, 0*8(sp)",
-        "ld     tp, 1*8(sp)",
-        "ld     a0, 2*8(sp)",
-        "ld     a1, 3*8(sp)",
-        "ld     a2, 4*8(sp)",
-        "ld     a3, 5*8(sp)",
-        "ld     a4, 6*8(sp)",
-        "ld     a5, 7*8(sp)",
-        "ld     a6, 8*8(sp)",
-        "ld     a7, 9*8(sp)",
-        "ld     t0, 10*8(sp)",
-        "ld     t1, 11*8(sp)",
-        "ld     t2, 12*8(sp)",
-        "ld     t3, 13*8(sp)",
-        "ld     t4, 14*8(sp)",
-        "ld     t5, 15*8(sp)",
-        "ld     t6, 16*8(sp)",
-        "addi   sp, sp, 8*21",
+        "ld     t1, {saved_sscratch}(t0)",
+        "csrw   sscratch, t1",
+        "ld     t1, {saved_t1}(t0)",
+        "ld     t0, {saved_t0}(t0)",
         "sret",
-        rust_detect_trap = sym rust_detect_trap,
+        saved_sscratch = const offset_of!(DetectState, saved_sscratch),
+        result = const offset_of!(DetectState, result),
+        saved_t0 = const offset_of!(DetectState, saved_t0),
+        saved_t1 = const offset_of!(DetectState, saved_t1),
     )
 }

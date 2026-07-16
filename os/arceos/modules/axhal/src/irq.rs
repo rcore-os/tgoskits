@@ -16,7 +16,7 @@ pub use ax_plat::irq::{
     try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
-pub use ax_plat::irq::{IpiTarget, send_ipi};
+pub use ax_plat::irq::{CpuIpiTarget, IpiSendStatus, send_ipi};
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
 #[cfg(feature = "ipi")]
@@ -31,10 +31,19 @@ pub fn ipi_irq() -> IrqId {
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
 pub fn handle_irq(vector: usize) -> bool {
     prepare_irq_context(TrapVector(vector));
-    let guard = ax_kernel_guard::NoPreempt::new();
+    let guard = ax_kspin::PreemptGuard::new();
     let handled = handle(TrapVector(vector)).is_some();
 
-    drop(guard); // rescheduling may occur when preemption is re-enabled.
+    if crate::asm::irqs_enabled() {
+        drop(guard);
+    } else {
+        unsafe {
+            // SAFETY: dispatch completed controller EOI and removed the
+            // hard-IRQ marker. The architecture trap frame still owns the
+            // interrupted flags, so scheduling here must keep raw IRQs masked.
+            guard.finish_irq_return();
+        }
+    }
     handled
 }
 

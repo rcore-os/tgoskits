@@ -3,18 +3,19 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
-use ax_task::{AxTaskExt, spawn_task};
+use ax_sync::PiMutex;
 use starry_process::{Pid, Process};
 
 use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
-    task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
+    task::{
+        ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task,
+        spawn_user_thread,
+    },
     tracepoint::tracepoint_init,
 };
 
@@ -33,7 +34,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
-    let loc = FS_CONTEXT
+    let loc = current_fs_context()
         .lock()
         .resolve(&args[0])
         .expect("Failed to resolve executable path");
@@ -53,8 +54,7 @@ pub fn init(args: &[String], envs: &[String]) {
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
-    let mut task = new_user_task(&name, uctx, 0);
-    task.ctx_mut().set_page_table_root(uspace.page_table_root());
+    let page_table_root = uspace.page_table_root().as_usize();
 
     // PID 1 must really be 1: the init process is the root of the process
     // hierarchy and userspace (e.g. systemd's `getpid() == 1` system-manager
@@ -69,14 +69,13 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    if let Err(err) = tty::bind_console_to(&proc) {
-        warn!("Failed to bind console tty: {err:?}");
-    }
+    let console_handover = tty::prepare_console_handover(&proc)
+        .unwrap_or_else(|err| panic!("Failed to prepare console tty handover: {err:?}"));
 
     let proc = ProcessData::new(
         proc,
         ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
-        Arc::new(Mutex::new(uspace)),
+        Arc::new(PiMutex::new(uspace)),
         Arc::default(),
         None,
         pid,
@@ -85,26 +84,32 @@ pub fn init(args: &[String], envs: &[String]) {
 
     {
         let mut scope = proc.scope.write();
-        crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+        crate::file::add_stdio(&mut FD_TABLE.scope_cell_mut(&mut scope).write())
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
-    *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
+    console_handover
+        .commit()
+        .unwrap_or_else(|err| panic!("Failed to commit console tty handover: {err:?}"));
 
-    let task = {
-        let _guard = NoPreemptIrqSave::new();
-        let task = spawn_task(task);
-        add_task_to_table(&task);
-        tty::arm_console_irq();
-        task
-    };
+    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
+
+    let task = spawn_user_thread(
+        new_user_task(uctx, 0),
+        name,
+        crate::config::KERNEL_STACK_SIZE,
+        page_table_root,
+        thr,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));
+    add_task_to_table(&task);
 
     // TODO: wait for all processes to finish
     let exit_code = task.join();
     info!("Init process exited with code: {exit_code:?}");
 
-    let cx = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let cx = fs_context.lock();
     cx.root_dir()
         .unmount_all()
         .expect("Failed to unmount all filesystems");

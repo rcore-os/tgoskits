@@ -13,7 +13,7 @@ use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 
 use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
@@ -565,7 +565,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _new_aspace: &Arc<PiMutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
         let cow_flags = flags - MappingFlags::WRITE;

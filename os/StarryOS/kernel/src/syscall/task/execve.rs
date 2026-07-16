@@ -12,10 +12,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
-use ax_task::{current, future::block_on, yield_now};
+use ax_sync::PiMutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
@@ -24,9 +23,9 @@ use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{FD_TABLE, ResolveAtResult, memfd::Memfd, resolve_at},
+    file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
-    task::{AsThread, rebind_task_tid, zap_thread},
+    task::{current_user_task, future::block_on, rebind_task_tid, yield_now, zap_thread},
 };
 
 pub fn sys_execve(
@@ -36,7 +35,7 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    let loc = current_fs_context().lock().resolve(&path)?;
     do_execve(uctx, loc, path, argv, envp)
 }
 
@@ -123,7 +122,7 @@ fn do_execve(
 
     debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc_data = &thr.proc_data;
     let my_tid = thr.tid();
@@ -139,9 +138,8 @@ fn do_execve(
     // the holder has crossed into irreversible teardown — which we observe
     // by `zap_thread` setting our `exit_request`.
     //
-    // We can't use `ax_sync::Mutex::lock` directly: it sleeps on
-    // `WaitQueue::wait_until`, which is not awakened by zap's
-    // `task.interrupt()`, and (worse) on release the loser would acquire
+    // We can't use `ax_sync::PiMutex::lock` directly: its PI wait is not
+    // cancelled by zap's `task.interrupt()`, and (worse) on release the loser would acquire
     // the mutex and proceed with execve on top of the holder's already-
     // committed new image. Busy-yield with an `exit_request` probe gives
     // us:
@@ -191,7 +189,7 @@ fn do_execve(
                 // not by the kernel. This is a pragmatic workaround until
                 // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
-                let shell_loc = FS_CONTEXT.lock().resolve(shell_path)?;
+                let shell_loc = current_fs_context().lock().resolve(shell_path)?;
                 new_name = shell_loc.name().to_string();
                 new_exe_path = shell_loc.absolute_path()?.to_string();
                 args = iter::once(String::from(shell_path))
@@ -277,7 +275,8 @@ fn do_execve(
     // image. Once all siblings are reaped, the snapshot reflects the final
     // post-quiescence table. The close pass below runs under the same
     // `FD_TABLE.write()` guard so no new fds appear between scan and close.
-    let mut fd_table = FD_TABLE.write();
+    let fd_table_owner = current_fd_table();
+    let mut fd_table = fd_table_owner.write();
     let cloexec_fds: Vec<_> = fd_table
         .ids()
         .filter(|it| fd_table.get(*it).unwrap().cloexec)
@@ -288,11 +287,11 @@ fn do_execve(
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
-    // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
+    // Replace the aspace Arc so the parent's shared Arc<PiMutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
     let new_pt_root = new_aspace.page_table_root();
-    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
+    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
     proc_data.replace_aspace(newaspace_arc);
     proc_data.mark_vm_aspace_private_after_exec();
 

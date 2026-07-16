@@ -1,3 +1,4 @@
+use ax_kspin_test_runtime as _;
 use starry_signal::{SignalInfo, SignalSet, Signo};
 
 #[test]

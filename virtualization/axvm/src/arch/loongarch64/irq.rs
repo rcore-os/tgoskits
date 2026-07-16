@@ -54,8 +54,12 @@ fn set_irq_enabled(raw_irq: usize, enabled: bool) {
 }
 
 fn inject_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize) {
+    let interrupt = crate::vm::PendingInterrupt::External {
+        vector,
+        physical_irq,
+    };
     if let Err(err) =
-        crate::runtime::vcpus::queue_external_interrupt(vm_id, vcpu_id, vector, physical_irq)
+        crate::runtime::vcpus::publish_pending_interrupt_by_id(vm_id, vcpu_id, interrupt)
     {
         warn!(
             "failed to queue LoongArch platform IRQ {vector:#x}/physical {physical_irq:#x} for \

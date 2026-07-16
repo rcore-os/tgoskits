@@ -4,9 +4,8 @@ use core::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use ax_ipi::run_on_cpu;
-use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
+use ax_ipi::{CpuId, run_on_cpu};
+use ax_kspin::{PreemptIrqGuard, SpinNoIrq};
 use ax_runtime::hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
 
 static STOP_MACHINE_LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
@@ -36,7 +35,7 @@ impl StopMachineState {
 }
 
 fn park_remote_cpu(state: Arc<StopMachineState>) {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqGuard::new();
 
     state.parked.fetch_add(1, Ordering::SeqCst);
     while state.stage.load(Ordering::SeqCst) == STAGE_PARKED {
@@ -75,7 +74,8 @@ where
         }
 
         let state = state.clone();
-        run_on_cpu(cpu_id, move || park_remote_cpu(state));
+        run_on_cpu(CpuId(cpu_id), move || park_remote_cpu(state))
+            .unwrap_or_else(|error| panic!("stop_machine: failed to park CPU {cpu_id}: {error:?}"));
     }
 
     const MAX_WAIT_NS: u64 = 5_000_000_000; // 5 seconds

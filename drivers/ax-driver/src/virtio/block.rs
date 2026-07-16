@@ -7,7 +7,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_kspin::PreemptIrqGuard;
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
 use virtio_drivers::transport::DeviceType;
@@ -125,7 +125,7 @@ impl<T: Transport + 'static> VirtIoBlkDevice<T> {
     }
 
     fn with_task<R>(&self, f: impl FnOnce(&mut VirtIoBlkInner<T>) -> R) -> R {
-        let _irq_guard = NoPreemptIrqSave::new();
+        let _irq_guard = PreemptIrqGuard::new();
         let _active = VirtioBlkAccessGuard::enter_task(&self.access_active);
         // SAFETY: `access_active` serializes all mutable access to the raw
         // transport, and task-side callers keep local IRQ/preemption disabled.

@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_cpu_local::CpuPin;
+
 use crate::{
     context_frame::LoongArchContextFrame,
     guest_csr::inject_guest_interrupt_at,
@@ -323,14 +325,18 @@ fn guest_eiointc_pending_hwi(vcpu: &LoongArchVcpuIocsrState) -> Option<usize> {
     None
 }
 
-fn update_guest_eiointc_irq(ctx: &mut LoongArchContextFrame, vcpu: &LoongArchVcpuIocsrState) {
+fn update_guest_eiointc_irq(
+    cpu_pin: &CpuPin,
+    ctx: &mut LoongArchContextFrame,
+    vcpu: &LoongArchVcpuIocsrState,
+) {
     let hwi_bits = HWI_MASK;
     if let Some(hwi) = guest_eiointc_pending_hwi(vcpu) {
         ctx.gcsr_estat = (ctx.gcsr_estat & !hwi_bits) | (1usize << hwi);
-        crate::registers::set_hwi_interrupts(1usize << hwi);
+        crate::registers::set_hwi_interrupts(cpu_pin, 1usize << hwi);
     } else {
         ctx.gcsr_estat &= !hwi_bits;
-        crate::registers::set_hwi_interrupts(0);
+        crate::registers::set_hwi_interrupts(cpu_pin, 0);
     }
 }
 
@@ -462,15 +468,26 @@ fn read_guest_iocsr(
     }
 }
 
+#[derive(Clone, Copy)]
+struct IocsrWrite {
+    address: usize,
+    width: usize,
+    value: usize,
+}
+
 fn write_guest_iocsr<H: LoongArchHostOps>(
+    cpu_pin: &CpuPin,
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    addr: usize,
-    len: usize,
-    value: usize,
+    write: IocsrWrite,
 ) -> Option<LoongArchVmExit> {
+    let IocsrWrite {
+        address: addr,
+        width: len,
+        value,
+    } = write;
     let vcpu = state.vcpu(vcpu_id)?;
     match addr {
         LOONGARCH_IOCSR_IPI_STATUS => Some(LoongArchVmExit::Nothing),
@@ -552,13 +569,15 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
             let target_cpu = iocsr_send_cpu(value);
             let target = value & 0xffff;
             if target_cpu == vcpu_id {
-                write_guest_iocsr_send_data::<H>(state, ctx, vm_id, vcpu_id, target, value);
+                write_guest_iocsr_send_data::<H>(
+                    cpu_pin, state, ctx, vm_id, vcpu_id, target, value,
+                );
             }
             Some(LoongArchVmExit::Nothing)
         }
         EXTIOI_VIRT_CONFIG => {
             vcpu.eiointc_virt_config.store(value, Ordering::Release);
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             Some(LoongArchVmExit::Nothing)
         }
         EIOINTC_NODEMAP_BASE..EIOINTC_NODEMAP_END => {
@@ -573,12 +592,12 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
         }
         EIOINTC_IPMAP_BASE..EIOINTC_IPMAP_END => {
             write_atomic_u32_slots(&vcpu.eiointc_ipmap, addr, EIOINTC_IPMAP_BASE, len, value);
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             Some(LoongArchVmExit::Nothing)
         }
         EIOINTC_ENABLE_BASE..EIOINTC_ENABLE_END => {
             write_atomic_u32_slots(&vcpu.eiointc_enable, addr, EIOINTC_ENABLE_BASE, len, value);
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             Some(LoongArchVmExit::Nothing)
         }
         EIOINTC_BOUNCE_BASE..EIOINTC_BOUNCE_END => {
@@ -587,12 +606,12 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
         }
         EIOINTC_ISR_COMPAT_BASE..EIOINTC_ISR_COMPAT_END => {
             clear_eiointc_isr_slots(vcpu, addr, EIOINTC_ISR_COMPAT_BASE, len, value);
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             Some(LoongArchVmExit::Nothing)
         }
         EIOINTC_ISR_BASE..EIOINTC_ISR_END if is_eiointc_isr_addr(addr) => {
             clear_eiointc_isr_slots(vcpu, addr, EIOINTC_ISR_BASE, len, value);
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             log_eiointc_trace(
                 "clear",
                 vm_id,
@@ -611,7 +630,7 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
                 len,
                 value,
             );
-            update_guest_eiointc_irq(ctx, vcpu);
+            update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
             Some(LoongArchVmExit::Nothing)
         }
         EIOINTC_GUEST_OWNED_BASE..EIOINTC_GUEST_OWNED_END => Some(LoongArchVmExit::Nothing),
@@ -620,6 +639,7 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
 }
 
 fn write_guest_iocsr_send_data<H: LoongArchHostOps>(
+    cpu_pin: &CpuPin,
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
@@ -641,16 +661,28 @@ fn write_guest_iocsr_send_data<H: LoongArchHostOps>(
         data = ((old & byte_mask) as usize) | (data & !(byte_mask as usize));
     }
 
-    let _ = write_guest_iocsr::<H>(state, ctx, vm_id, vcpu_id, target, 4, data);
+    let _ = write_guest_iocsr::<H>(
+        cpu_pin,
+        state,
+        ctx,
+        vm_id,
+        vcpu_id,
+        IocsrWrite {
+            address: target,
+            width: 4,
+            value: data,
+        },
+    );
 }
 
 pub(crate) fn inject_enabled_pending_interrupt(
+    cpu_pin: &CpuPin,
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vcpu_id: LoongArchVcpuId,
 ) -> bool {
     if let Some(vcpu) = state.vcpu(vcpu_id) {
-        update_guest_eiointc_irq(ctx, vcpu);
+        update_guest_eiointc_irq(cpu_pin, ctx, vcpu);
     }
     let pending_enabled = ctx.gcsr_estat & ctx.gcsr_ectl & LOCAL_INTERRUPT_MASK;
     if ctx.gcsr_eentry != 0
@@ -665,6 +697,7 @@ pub(crate) fn inject_enabled_pending_interrupt(
 }
 
 pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
+    cpu_pin: &CpuPin,
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     ins: usize,
@@ -751,13 +784,16 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
         }
         4 => {
             if let Some(reason) = write_guest_iocsr::<H>(
+                cpu_pin,
                 state,
                 ctx,
                 vm_id,
                 vcpu_id,
-                rj_value,
-                len,
-                ctx.x[rd] as u8 as usize,
+                IocsrWrite {
+                    address: rj_value,
+                    width: len,
+                    value: ctx.x[rd] as u8 as usize,
+                },
             ) {
                 advance_guest_pc(ctx);
                 return reason;
@@ -768,13 +804,16 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
         }
         5 => {
             if let Some(reason) = write_guest_iocsr::<H>(
+                cpu_pin,
                 state,
                 ctx,
                 vm_id,
                 vcpu_id,
-                rj_value,
-                len,
-                ctx.x[rd] as u16 as usize,
+                IocsrWrite {
+                    address: rj_value,
+                    width: len,
+                    value: ctx.x[rd] as u16 as usize,
+                },
             ) {
                 advance_guest_pc(ctx);
                 return reason;
@@ -785,13 +824,16 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
         }
         6 => {
             if let Some(reason) = write_guest_iocsr::<H>(
+                cpu_pin,
                 state,
                 ctx,
                 vm_id,
                 vcpu_id,
-                rj_value,
-                len,
-                ctx.x[rd] as u32 as usize,
+                IocsrWrite {
+                    address: rj_value,
+                    width: len,
+                    value: ctx.x[rd] as u32 as usize,
+                },
             ) {
                 advance_guest_pc(ctx);
                 return reason;
@@ -801,9 +843,18 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
             }
         }
         7 => {
-            if let Some(reason) =
-                write_guest_iocsr::<H>(state, ctx, vm_id, vcpu_id, rj_value, len, ctx.x[rd])
-            {
+            if let Some(reason) = write_guest_iocsr::<H>(
+                cpu_pin,
+                state,
+                ctx,
+                vm_id,
+                vcpu_id,
+                IocsrWrite {
+                    address: rj_value,
+                    width: len,
+                    value: ctx.x[rd],
+                },
+            ) {
                 advance_guest_pc(ctx);
                 return reason;
             } else {

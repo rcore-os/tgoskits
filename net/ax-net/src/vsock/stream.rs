@@ -22,7 +22,7 @@ use core::task::Context;
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::connection_manager::*;
@@ -38,9 +38,9 @@ use crate::{
 /// Stream transport for vsock sockets.
 pub struct VsockStreamTransport {
     /// Connection id registered with the vsock manager.
-    conn_id: Mutex<Option<VsockConnId>>,
+    conn_id: SpinMutex<Option<VsockConnId>>,
     /// Shared connection state once bound, connecting, or connected.
-    connection: Mutex<Option<Arc<Mutex<Connection>>>>,
+    connection: SpinMutex<Option<Arc<SpinMutex<Connection>>>>,
     /// Public POSIX-facing stream state.
     state: StateLock,
     /// Shared socket options.
@@ -51,15 +51,15 @@ impl VsockStreamTransport {
     /// Create a new idle vsock stream transport.
     pub fn new() -> Self {
         Self {
-            conn_id: Mutex::new(None),
-            connection: Mutex::new(None),
+            conn_id: SpinMutex::new(None),
+            connection: SpinMutex::new(None),
             state: StateLock::new(State::Idle),
             general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
         }
     }
 
     /// Returns the manager connection associated with this stream.
-    fn get_connection(&self) -> AxResult<Arc<Mutex<Connection>>> {
+    fn get_connection(&self) -> AxResult<Arc<SpinMutex<Connection>>> {
         self.connection.lock().clone().ok_or(AxError::NotConnected)
     }
 }
@@ -143,8 +143,8 @@ impl VsockStreamTransport {
 
             // create new VsockStreamTransport
             let new_transport = VsockStreamTransport {
-                conn_id: Mutex::new(Some(conn_id)),
-                connection: Mutex::new(Some(conn)),
+                conn_id: SpinMutex::new(Some(conn_id)),
+                connection: SpinMutex::new(Some(conn)),
                 state: StateLock::new(State::Connected),
                 general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };

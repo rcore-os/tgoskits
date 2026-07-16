@@ -40,10 +40,6 @@ impl FdtTree {
         &self.fdt
     }
 
-    pub(crate) fn inner_mut(&mut self) -> &mut Fdt {
-        &mut self.fdt
-    }
-
     pub(crate) fn finish(mut self) -> Vec<u8> {
         self.normalize_guest_header();
         self.fdt.encode().as_ref().to_vec()
@@ -84,16 +80,28 @@ impl FdtTree {
     }
 
     pub(crate) fn set_property(&mut self, node_id: NodeId, prop: Property) -> AxVmResult {
+        self.edit_node(node_id, |node| node.set_property(prop))
+    }
+
+    pub(crate) fn edit_node(
+        &mut self,
+        node_id: NodeId,
+        edit: impl FnOnce(&mut Node),
+    ) -> AxVmResult {
         let node = self
             .fdt
             .node_mut(node_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?;
-        node.set_property(prop);
+        edit(node);
         Ok(())
     }
 
     pub(crate) fn add_node(&mut self, parent: NodeId, node: Node) -> NodeId {
         self.fdt.add_node(parent, node)
+    }
+
+    pub(crate) fn remove_subtree(&mut self, path: &str) -> Option<NodeId> {
+        self.fdt.remove_by_path(path)
     }
 
     pub(crate) fn rebuild_memory_nodes(&mut self, regions: &[GuestMemorySpec]) -> AxVmResult {
@@ -221,7 +229,7 @@ impl FdtTree {
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
         paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
         for path in paths {
-            self.fdt.remove_by_path(&path);
+            self.remove_subtree(&path);
         }
     }
 }

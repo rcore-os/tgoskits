@@ -7,6 +7,7 @@ mod job;
 mod namespace;
 pub mod ptrace;
 mod schedule;
+mod schedule_abi;
 mod thread;
 mod wait;
 

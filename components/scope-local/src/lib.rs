@@ -10,4 +10,4 @@ mod item;
 mod scope;
 
 pub use item::{Item, LocalItem, ScopeItem, ScopeItemMut};
-pub use scope::{ActiveScope, Scope};
+pub use scope::{ActiveScope, Scope, ScopeCell, ScopeCellReadGuard, ScopeCellWriteGuard};

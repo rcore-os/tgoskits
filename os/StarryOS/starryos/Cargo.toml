@@ -44,7 +44,14 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "fs",
+    "multitask",
+    "irq",
+] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }

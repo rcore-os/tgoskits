@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 use core::cell::UnsafeCell;
 
 use ax_errno::AxError;
-use ax_kernel_guard::IrqSave;
+use ax_kspin::IrqGuard;
 use axklib::irq::{CpuId, IrqError, run_on_cpu_sync};
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
@@ -117,7 +117,7 @@ where
         let op = unsafe { &mut *call.op.get() }
             .take()
             .expect("serial owner call entered twice");
-        let _irq_guard = IrqSave::new();
+        let _irq_guard = IrqGuard::new();
         let lease = unsafe { OwnerLease::new_unchecked(call.owner) };
         let result = op(lease);
         unsafe { *call.result.get() = Some(result) };

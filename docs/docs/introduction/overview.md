@@ -76,6 +76,7 @@ flowchart TD
 tgoskits/
 ├── components/                # 独立可复用组件 crate（Git Subtree 管理）
 │   ├── axsched/               # 调度算法（CFS、RR、多级反馈队列）
+│   ├── ax-task/               # OS 无关 SMP 调度器、任务状态机和等待队列
 │   ├── axallocator/           # 内存分配器（bitmap、buddy 等策略）
 │   ├── axvm / axvm-types / axdevice/  # 虚拟化抽象（VM / vCPU 协议 / 虚拟设备）
 │   ├── starry-process/        # StarryOS 进程管理
@@ -85,7 +86,7 @@ tgoskits/
 │   └── ...                    # 文件系统、同步原语、错误码、CPU 抽象等
 ├── os/
 │   ├── arceos/                # ArceOS 模块化 unikernel
-│   │   ├── modules/           # 17 个内核模块（axhal, axtask, axmm...）
+│   │   ├── modules/           # OS 接入模块（axhal, axruntime, axsync, axmm...）
 │   │   ├── api/               # API 聚合层（arceos_api, posix_api, feature）
 │   │   ├── ulib/              # 用户态库（axstd, axlibc）
 │   │   └── examples/          # 内置示例（helloworld, shell, http*）
@@ -129,9 +130,9 @@ flowchart LR
         posix_api["arceos_posix_api"]
         feature["feature"]
     end
-    subgraph mods["内核模块 (17)"]
+    subgraph mods["内核与 runtime 接入模块"]
         hal["axhal"]
-        task["axtask"]
+        runtime["axruntime"]
         mm["axmm"]
         fs["axfs"]
         net["axnet"]
@@ -139,13 +140,16 @@ flowchart LR
         sync["axsync"]
         other["..."]
     end
+    task["components/ax-task"]
 
     ulib --> api --> mods
+    task --> runtime
 ```
 
 | 层次 | 内容 | 职责 |
 |------|------|------|
-| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axdriver`, `axfs`, `axnet`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、设备驱动、文件系统、网络栈 |
+| 内核模块 (`modules/`) | `axhal`, `axruntime`, `axmm`, `axdriver`, `axfs`, `axsync`, `axlog` 等 | 硬件抽象、调度 runtime 接入、内存管理、设备驱动、文件系统、网络栈 |
+| 可复用组件 (`components/`) | `ax-task` 等 | OS 无关调度、任务状态机、SMP wake 与等待队列 |
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api`, `feature` | 向上提供统一 API 接口与 feature 开关 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 

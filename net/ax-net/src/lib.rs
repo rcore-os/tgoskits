@@ -38,6 +38,7 @@ extern crate alloc;
 extern crate std;
 
 mod addr;
+mod blocking;
 mod config;
 mod consts;
 mod device;
@@ -57,6 +58,8 @@ mod socket;
 pub(crate) mod state;
 /// TCP socket implementation.
 pub mod tcp;
+#[cfg(test)]
+mod test_runtime;
 /// UDP socket implementation.
 pub mod udp;
 /// Unix domain socket implementation.
@@ -71,20 +74,21 @@ use alloc::{
 };
 use core::{
     net::{IpAddr, Ipv4Addr},
+    pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::Waker,
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, ax_err_type};
-use ax_sync::Mutex;
-use ax_task::{IrqNotify, WaitQueue};
+use ax_kspin::{PreemptLazy as LazyLock, PreemptOnce as Once};
+use ax_sync::SpinMutex;
+use ax_task::{IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
-use spin::{LazyLock, Once};
 
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceList};
@@ -117,7 +121,7 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-static SERVICE: Once<Mutex<Service>> = Once::new();
+static SERVICE: Once<SpinMutex<Service>> = Once::new();
 static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
 static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
 static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
@@ -127,8 +131,8 @@ static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
-static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static DEFERRED_POLL_WAKES: LazyLock<SpinMutex<Vec<DeferredPollEntry>>> =
+    LazyLock::new(|| SpinMutex::new(Vec::new()));
 
 pub(crate) struct DeferPollWake {
     pub(crate) poll: Arc<PollSet>,
@@ -154,15 +158,21 @@ impl Wake for DeferPollWake {
 /// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
 /// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
 /// `ioctl`) reach the device's [`WifiControl`] by name.
-static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static WIFI_CONTROLS: LazyLock<SpinMutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
+    LazyLock::new(|| SpinMutex::new(Vec::new()));
 
-static NET_IRQ_NOTIFY: IrqNotify = IrqNotify::new();
+static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
+static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
+static NET_IRQ_REGISTRATION: Once<&'static IrqWaitRegistration> = Once::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-fn get_service() -> ax_sync::MutexGuard<'static, Service> {
+fn net_poll_device_waker() -> &'static Waker {
+    LazyLock::force(&NET_POLL_DEVICE_WAKER)
+}
+
+fn get_service() -> ax_sync::SpinMutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")
@@ -291,9 +301,6 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     for name in router.device_names() {
         info!("Device: {}", name);
     }
-    router.start_rx_workers();
-    router.start_tx_workers();
-
     let control = Arc::new(NetControl::new(interfaces, routes, dns));
     let mut service = Service::new(router, control.clone());
     service.iface.update_ip_addrs(|ip_addrs| {
@@ -306,10 +313,13 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         service.enable_dhcp(id, dev, name, mac, metric);
     }
     let dhcp_enabled = service.dhcp_enabled();
+    let workers = service.prepare_device_workers();
+    workers.register_device_waker(net_poll_device_waker());
     NET_CONTROL.call_once(|| control);
-    SERVICE.call_once(|| Mutex::new(service));
-    get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
-    ax_task::spawn_with_name(net_poll_worker, "net-poll".to_owned());
+    SERVICE.call_once(|| SpinMutex::new(service));
+    workers.start();
+    spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
+        .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
     }
@@ -348,6 +358,15 @@ fn validate_config(config: &NetworkConfig) {
             panic!("Invalid DNS server at index {}: unspecified address", i);
         }
     }
+}
+
+pub(crate) fn spawn_permanent_worker<F>(name: String, entry: F) -> Result<(), ax_task::TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let handle = ax_task::ThreadBuilder::new(name).spawn(entry)?;
+    handle.detach_permanent();
+    Ok(())
 }
 
 fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) -> Ipv4Cidr {
@@ -459,7 +478,15 @@ fn poll_until_idle() {
         }
 
         while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+            loop {
+                let outcome = get_service().poll(&mut SOCKET_SET.inner.lock());
+                for waker in outcome.expired_wakers {
+                    waker.wake();
+                }
+                if !outcome.progressed {
+                    break;
+                }
+            }
         }
         POLLING_INTERFACES.store(false, Ordering::Release);
         if !POLL_AGAIN.load(Ordering::Acquire) {
@@ -473,7 +500,7 @@ fn poll_until_idle() {
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
     publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
+        NET_POLL_WAKE.notify_one();
     });
 }
 
@@ -486,7 +513,7 @@ fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
     if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
-        NET_POLL_WAKE.notify_one(true);
+        NET_POLL_WAKE.notify_one();
     }
 }
 
@@ -596,17 +623,20 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
     } else {
         EthernetDevice::new(config.name.clone(), dev, Some(cidr))
     };
-    let dev_idx = get_service().register_static_device(config.name.clone(), eth_dev, mac, cidr);
-    if let Some(client_ip) = config.dhcp_server_client_ip {
-        let client_ip = Ipv4Address::from(client_ip);
-        let subnet_mask = mask_from_prefix(config.prefix_len);
-        get_service().enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
-    }
+    let workers = {
+        let mut service = get_service();
+        let dev_idx = service.register_static_device(config.name.clone(), eth_dev, mac, cidr);
+        if let Some(client_ip) = config.dhcp_server_client_ip {
+            let client_ip = Ipv4Address::from(client_ip);
+            let subnet_mask = mask_from_prefix(config.prefix_len);
+            service.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
+        }
+        service.prepare_device_workers_for(dev_idx)
+    };
+    workers.register_device_waker(net_poll_device_waker());
+    workers.start();
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
-    if config.dedicated_poll {
-        get_service().register_device_waker(&NET_POLL_DEVICE_WAKER);
-    }
     request_poll();
 }
 
@@ -711,8 +741,8 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
 /// The deferred net task requests polling and wakes socket waiters from ordinary
 /// task context.
 pub fn wake_net_task_irq() {
-    NET_IRQ_NOTIFY.notify_irq();
-    NET_POLL_WAKE.notify_one_from_irq();
+    NET_IRQ_EVENT.store(true, Ordering::Release);
+    let _result = NET_IRQ_WAIT.notify();
 }
 
 fn next_poll_delay() -> Duration {
@@ -747,17 +777,20 @@ impl Wake for NetPollWake {
 }
 
 fn net_poll_worker() {
+    initialize_net_irq_registration();
     loop {
+        let _result = NET_IRQ_WAIT.register(net_irq_registration());
         let delay = next_poll_delay();
         let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
             NET_POLL_REQUESTED.load(Ordering::Acquire)
-                || NET_IRQ_NOTIFY.is_pending()
+                || NET_IRQ_EVENT.load(Ordering::Acquire)
                 || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
         });
+        let _removed = NET_IRQ_WAIT.unregister(net_irq_registration());
         if !timed_out {
             take_poll_request(&NET_POLL_REQUESTED, || {});
         }
-        let irq_pending = NET_IRQ_NOTIFY.drain();
+        let irq_pending = NET_IRQ_EVENT.swap(false, Ordering::AcqRel);
         if device_poll_fallback_due(timed_out, irq_pending, delay) {
             get_service().wake_all_devices();
         }
@@ -765,6 +798,39 @@ fn net_poll_worker() {
         poll_until_idle();
         drain_deferred_poll_wakes();
     }
+}
+
+fn initialize_net_irq_registration() {
+    NET_IRQ_REGISTRATION.call_once(|| {
+        let thread = ax_task::current_thread_handle()
+            .unwrap_or_else(|error| panic!("net poll worker has no scheduler thread: {error}"));
+        let wake = Box::leak(Box::new(thread.wake_handle()));
+        // SAFETY: both the leaked direct wake and its scheduler thread remain
+        // valid for the permanent net worker's lifetime. The callback only
+        // performs bounded ax-task direct-wake publication.
+        let irq_wake = unsafe {
+            IrqWakeHandle::from_raw(
+                wake as *const ThreadWakeHandle as usize,
+                wake_net_poll_thread,
+            )
+        };
+        Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)))
+    });
+}
+
+fn net_irq_registration() -> Pin<&'static IrqWaitRegistration> {
+    let registration = *NET_IRQ_REGISTRATION
+        .get()
+        .expect("net IRQ registration must be initialized by its worker");
+    // SAFETY: the registration is leaked, never moves, and is detached or
+    // owned by NET_IRQ_WAIT across each one-shot wait iteration.
+    unsafe { Pin::new_unchecked(registration) }
+}
+
+unsafe fn wake_net_poll_thread(data: usize) {
+    // SAFETY: initialization stores a leaked ThreadWakeHandle at this address.
+    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
+    let _result = wake.wake();
 }
 
 fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
@@ -912,7 +978,7 @@ impl DnsSocketGuard {
                     if ax_hal::time::monotonic_time_nanos() >= deadline {
                         return Err(ax_err_type!(TimedOut, "DNS query timed out"));
                     }
-                    ax_task::yield_now();
+                    let _result = ax_task::yield_current_cpu();
                 }
                 Err(err) => return Err(err),
             }
@@ -938,11 +1004,41 @@ fn wait_for_dhcp_bootstrap() {
 }
 
 #[cfg(test)]
+mod initialization_contract_tests {
+    #[test]
+    fn device_pollsets_are_initialized_before_service_publication_and_worker_start() {
+        let source = include_str!("lib.rs");
+        let init_network = source
+            .split_once("pub fn init_network")
+            .expect("init_network must exist")
+            .1
+            .split_once("fn validate_config")
+            .expect("init_network must precede validate_config")
+            .0;
+        let initialize_pollsets = init_network
+            .find("workers.register_device_waker(net_poll_device_waker())")
+            .expect("prepared device poll sets must be initialized before publication");
+        let publish_service = init_network
+            .find("SERVICE.call_once")
+            .expect("the initialized Service must be published once");
+        let start_workers = init_network
+            .find("workers.start()")
+            .expect("prepared device workers must start after publication");
+
+        assert!(
+            initialize_pollsets < publish_service && publish_service < start_workers,
+            "a runnable worker must never observe or contend with a partially initialized device \
+             PollSet"
+        );
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
     use std::sync::{Mutex as StdMutex, MutexGuard, Once};
 
-    use ax_sync::Mutex;
+    use ax_sync::SpinMutex;
     use smoltcp::wire::{IpAddress, Ipv4Address, Ipv4Cidr};
 
     use crate::{
@@ -1026,7 +1122,7 @@ pub(crate) mod test_support {
             });
 
             NET_CONTROL.call_once(|| control);
-            SERVICE.call_once(|| Mutex::new(service));
+            SERVICE.call_once(|| SpinMutex::new(service));
         });
     }
 }

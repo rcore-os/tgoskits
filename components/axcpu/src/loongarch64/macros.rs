@@ -1,3 +1,20 @@
+const LOONGARCH_KSAVE_CSR_BASE: usize = 0x30;
+
+// Assembly templates require literal `.equ` values, while ax-cpu-local owns
+// the cross-crate allocation. Tie both representations at compile time.
+const _: () = {
+    use ax_cpu_local::loongarch64::{
+        HOST_PERCPU_KS, HOST_VCPU_KS, HOST_VCPU_TMP_KS, KSAVE_KSP, KSAVE_T0, KSAVE_T1,
+    };
+
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_KSP == 0x30);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T0 == 0x31);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T1 == 0x32);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_PERCPU_KS == 0x33);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_KS == 0x34);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_TMP_KS == 0x35);
+};
+
 macro_rules! include_asm_macros {
     () => {
         r#"
@@ -26,6 +43,12 @@ macro_rules! include_asm_macros {
         .equ KSAVE_KSP,            0x30
         .equ KSAVE_T0,             0x31
         .equ KSAVE_T1,             0x32
+        // Host scratch-register ownership follows the Linux LoongArch ABI:
+        // KS0-KS2 belong to exception entry, KS3 shadows the immutable
+        // per-CPU base, and KS4-KS5 are reserved for virtualization.
+        .equ KSAVE_PERCPU,         0x33
+        .equ KSAVE_VCPU,           0x34
+        .equ KSAVE_VCPU_TMP,       0x35
 
         .macro STD rd, rj, off
             st.d   \rd, \rj, \off*8
@@ -72,6 +95,46 @@ macro_rules! include_asm_macros {
         .endm
         .macro POP_GENERAL_REGS
             PUSH_POP_GENERAL_REGS LDD
+        .endm
+
+        // `$r21` is the kernel per-CPU base. A kernel trap frame may resume
+        // after its task migrated, so the destination CPU's live value must
+        // survive the restore. In contrast, a user return uses
+        // RESTORE_USER_GENERAL_REGS to restore the user's `u0` value.
+        .macro RESTORE_KERNEL_GENERAL_REGS
+            LDD    $ra, $sp, 1
+            LDD    $tp, $sp, 2
+            LDD    $a0, $sp, 4
+            LDD    $a1, $sp, 5
+            LDD    $a2, $sp, 6
+            LDD    $a3, $sp, 7
+            LDD    $a4, $sp, 8
+            LDD    $a5, $sp, 9
+            LDD    $a6, $sp, 10
+            LDD    $a7, $sp, 11
+            LDD    $t0, $sp, 12
+            LDD    $t1, $sp, 13
+            LDD    $t2, $sp, 14
+            LDD    $t3, $sp, 15
+            LDD    $t4, $sp, 16
+            LDD    $t5, $sp, 17
+            LDD    $t6, $sp, 18
+            LDD    $t7, $sp, 19
+            LDD    $t8, $sp, 20
+            LDD    $fp, $sp, 22
+            LDD    $s0, $sp, 23
+            LDD    $s1, $sp, 24
+            LDD    $s2, $sp, 25
+            LDD    $s3, $sp, 26
+            LDD    $s4, $sp, 27
+            LDD    $s5, $sp, 28
+            LDD    $s6, $sp, 29
+            LDD    $s7, $sp, 30
+            LDD    $s8, $sp, 31
+        .endm
+
+        .macro RESTORE_USER_GENERAL_REGS
+            POP_GENERAL_REGS
         .endm
 
         .macro _asm_extable, from, to

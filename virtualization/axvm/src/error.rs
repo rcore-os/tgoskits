@@ -93,6 +93,15 @@ pub enum AxVmError {
         operation: &'static str,
         detail: String,
     },
+    /// No vCPU is currently published on this host CPU.
+    #[error("no vCPU is published on the current host CPU")]
+    CurrentVcpuUnavailable,
+    /// The hard-IRQ publication bitmap cannot represent this interrupt vector.
+    #[error("current-vCPU interrupt vector {vector:#x} exceeds the fixed pending bitmap")]
+    CurrentVcpuInterruptOutOfRange {
+        /// Rejected interrupt vector.
+        vector: usize,
+    },
     /// A host capability used by AxVM failed.
     #[error("host operation {operation} failed: {detail}")]
     Host {

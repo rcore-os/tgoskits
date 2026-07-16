@@ -15,7 +15,7 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
     trap::PageFaultFlags,
 };
-use ax_sync::{LockdepMutexExt, Mutex};
+use ax_sync::{LockdepMutexExt, PiMutex};
 
 use crate::mm::ProcessVmStat;
 
@@ -48,7 +48,7 @@ pub struct AddrSpace {
     pt: PageTable,
     /// Number of live [`crate::task::ProcessData`] instances that reference this
     /// address space (each `fork`/`clone` / `execve` slot that holds the
-    /// `Arc<Mutex<AddrSpace>>`).
+    /// `Arc<PiMutex<AddrSpace>>`).
     ///
     /// This must **not** be confused with `Arc::strong_count`, which also counts
     /// transient clones from `ProcessData::aspace()` and is not reliable for
@@ -348,16 +348,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn replace_area_metadata(
-        &mut self,
-        start: VirtAddr,
-        size: usize,
-        flags: MappingFlags,
-        backend: Backend,
-    ) -> AxResult {
-        self.replace_area_metadata_with_reported_flags(start, size, flags, flags, backend)
-    }
-
     pub fn replace_area_metadata_with_reported_flags(
         &mut self,
         start: VirtAddr,
@@ -504,14 +494,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Updates mapping within the specified virtual address range.
-    ///
-    /// Returns an error if the address range is out of the address space or not
-    /// aligned.
-    pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> AxResult {
-        self.protect_with_reported_flags(start, size, flags, flags)
-    }
-
     pub fn protect_with_reported_flags(
         &mut self,
         start: VirtAddr,
@@ -630,8 +612,8 @@ impl AddrSpace {
     /// After each area is mapped, `memfd_on_after_map` runs so each cloned memfd
     /// shared-writable VMA increments the same counter as [`AddrSpace::map`].
     /// (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
-    pub fn try_clone(&mut self) -> AxResult<Arc<Mutex<Self>>> {
-        let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
+    pub fn try_clone(&mut self) -> AxResult<Arc<PiMutex<Self>>> {
+        let new_aspace = Arc::new(PiMutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
         // The caller holds the source AddrSpace lock while this fresh AddrSpace
@@ -726,15 +708,15 @@ impl AddrSpace {
 }
 
 /// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.
-pub(crate) fn attach_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+pub(crate) fn attach_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
 }
 
 /// One [`crate::task::ProcessData`] releases its logical slot. When the last slot
-/// is dropped while holding [`Mutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
+/// is dropped while holding [`PiMutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
 /// so inode-scoped accounting (memfd, etc.) is torn down before the page table
 /// is reclaimed.
-pub(crate) fn release_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+pub(crate) fn release_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     let mut guard = aspace.lock();
     let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
     debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");

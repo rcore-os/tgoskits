@@ -1,11 +1,16 @@
 use core::{future::poll_fn, task::Poll};
 
-use ax_sync::Mutex;
-use ax_task::future::{block_on, interruptible};
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::VfsResult;
 use ktracepoint::TracePipeOps;
 
-use crate::pseudofs::DirectRwFsFileOps;
+use crate::{
+    pseudofs::DirectRwFsFileOps,
+    task::{
+        current_user_task,
+        future::{block_on_user, interruptible_for},
+    },
+};
 
 /// File representing the trace pipe.
 ///
@@ -15,12 +20,12 @@ use crate::pseudofs::DirectRwFsFileOps;
 /// this node cannot faithfully reserve and release a reader slot yet. Keep the
 /// limitation documented here until tracefs files can move their read state to
 /// open-file private data.
-pub struct TracePipeFile(Mutex<super::TextDrain>);
+pub struct TracePipeFile(SpinMutex<super::TextDrain>);
 
 impl TracePipeFile {
     /// Creates a new `TracePipeFile` instance.
     pub const fn new() -> Self {
-        Self(Mutex::new(super::TextDrain::new()))
+        Self(SpinMutex::new(super::TextDrain::new()))
     }
 
     fn readable(&self) -> bool {
@@ -46,22 +51,31 @@ impl DirectRwFsFileOps for TracePipeFile {
             }
 
             // wait for new data
-            let _result = block_on(interruptible(poll_fn(|cx| match self.readable() {
-                true => Poll::Ready(true),
-                false => {
-                    // Registration happens from trace_pipe read task context.
-                    unsafe {
-                        super::TRACE_STATE
-                            .pipe_event
-                            .register(cx.waker(), axpoll::IoEvents::IN)
-                    };
-                    if self.readable() {
-                        Poll::Ready(true)
-                    } else {
-                        Poll::Pending
-                    }
-                }
-            })))?;
+            let task = current_user_task();
+            let _result = block_on_user(
+                &task,
+                interruptible_for(
+                    &task,
+                    poll_fn(|cx| {
+                        match self.readable() {
+                            true => Poll::Ready(true),
+                            false => {
+                                // Registration happens from trace_pipe read task context.
+                                unsafe {
+                                    super::TRACE_STATE
+                                        .pipe_event
+                                        .register(cx.waker(), axpoll::IoEvents::IN)
+                                };
+                                if self.readable() {
+                                    Poll::Ready(true)
+                                } else {
+                                    Poll::Pending
+                                }
+                            }
+                        }
+                    }),
+                ),
+            )?;
         };
         Ok(read_len)
     }

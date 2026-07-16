@@ -1,14 +1,13 @@
 use core::mem::size_of;
 
 use ax_errno::{AxError, LinuxError};
-use ax_task::current;
 use starry_vm::{VmMutPtr, VmPtr};
 
-use crate::task::AsThread;
+use crate::task::current_user_task;
 
 /// Linux rseq area layout used for ABI validation.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct RseqArea {
     cpu_id_start: u32,
     cpu_id: u32,
@@ -68,7 +67,7 @@ pub fn sys_rseq(addr: *mut u8, len: usize, flags: u32, sig: u32) -> Result<isize
     );
 
     let addr = validate_rseq_args(addr, len, flags)?;
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let registered_addr = thr.rseq_area();
     let unregister = flags & RSEQ_FLAG_UNREGISTER != 0;

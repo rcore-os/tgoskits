@@ -11,9 +11,8 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, sync_all_cached_files};
+use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
-use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
@@ -22,9 +21,9 @@ use linux_raw_sys::{
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
-    task::AsThread,
+    task::current_user_task,
     time::TimeValueLike,
 };
 
@@ -61,7 +60,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
     // this, curses/CPython (glances) hit "Unsupported ioctl command".
     if cmd == FIOCLEX || cmd == FIONCLEX {
-        FD_TABLE
+        current_fd_table()
             .write()
             .get_mut(fd as _)
             .ok_or(AxError::BadFileDescriptor)?
@@ -87,7 +86,8 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let mut fs = fs_context.lock();
     let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
     Ok(0)
@@ -97,7 +97,7 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    FS_CONTEXT.lock().set_current_dir(entry)?;
+    current_fs_context().lock().set_current_dir(entry)?;
     Ok(0)
 }
 
@@ -115,7 +115,8 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let mut fs = fs_context.lock();
     let loc = fs.resolve(path)?;
     if loc.node_type() != NodeType::Directory {
         return Err(AxError::NotADirectory);
@@ -158,7 +159,7 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
@@ -191,7 +192,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 }
 
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let path = vm_load_path_string(path)?;
     debug!(
@@ -418,7 +419,7 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
 
-    let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
+    let cwd = current_fs_context().lock().current_dir().absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
@@ -446,7 +447,7 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     with_fs(new_dirfd, |fs| {
@@ -516,7 +517,7 @@ pub fn sys_fchownat(
         .ok_or(AxError::BadFileDescriptor)?;
     let meta = loc.metadata()?;
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
 
     // Permission checks following Linux semantics:
     // - Changing the file owner (uid) requires CAP_CHOWN.
@@ -615,7 +616,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         .ok_or(AxError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
@@ -738,7 +739,7 @@ pub fn sys_utimensat(
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
 
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
@@ -812,7 +813,7 @@ pub fn sys_sync() -> AxResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
     sync_all_cached_files(false)?;
-    FS_CONTEXT.lock().root_dir().sync(false)?;
+    current_fs_context().lock().root_dir().sync(false)?;
     Ok(0)
 }
 

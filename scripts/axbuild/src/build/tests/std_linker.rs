@@ -204,7 +204,7 @@ fn std_build_dynamic_x86_64_prepares_binary_artifact() {
     let cargo = BuildInfo {
         ..BuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
         &metadata,

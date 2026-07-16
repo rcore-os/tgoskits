@@ -9,7 +9,7 @@ use ax_net::{
 pub fn bind_dev_log() -> LinuxResult<()> {
     let server = UnixSocket::new(DgramTransport::new(1));
     server.bind(SocketAddrEx::Unix(UnixSocketAddr::Path("/dev/log".into())))?;
-    ax_task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || {
             let mut buf = [0u8; 65536];
             loop {

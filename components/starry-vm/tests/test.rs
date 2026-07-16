@@ -4,7 +4,7 @@ use std::{
     sync::{LazyLock, Mutex, MutexGuard},
 };
 
-use bytemuck::AnyBitPattern;
+use bytemuck::{AnyBitPattern, NoUninit};
 use extern_trait::extern_trait;
 use starry_vm::{VmError, VmIo, VmMutPtr, VmPtr, VmResult, vm_read_slice, vm_write_slice};
 
@@ -68,23 +68,28 @@ fn test_perm() {
 
 #[test]
 fn test_ptr() {
-    #[derive(Debug, Clone, Copy, PartialEq, AnyBitPattern)]
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, AnyBitPattern, NoUninit)]
     struct Foo {
         a: i64,
         b: f32,
+        padding: u32,
     }
 
     const A: Foo = Foo {
         a: 42,
         b: f32::consts::PI,
+        padding: 0,
     };
     const B: Foo = Foo {
         a: 84,
         b: f32::consts::E,
+        padding: 0,
     };
     const C: Foo = Foo {
         a: 168,
         b: f32::consts::TAU,
+        padding: 0,
     };
 
     let ptr = 0x2000 as *mut Foo;

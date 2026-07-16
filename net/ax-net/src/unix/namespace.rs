@@ -14,6 +14,7 @@
 use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::{AxResult, ax_err_type};
+use ax_kspin::PreemptOnce;
 
 use super::BindSlot;
 
@@ -32,7 +33,7 @@ pub trait UnixNamespace: Send + Sync {
     fn unbind(&self, path: &str) -> AxResult<()>;
 }
 
-static UNIX_NS: spin::Once<Box<dyn UnixNamespace>> = spin::Once::new();
+static UNIX_NS: PreemptOnce<Box<dyn UnixNamespace>> = PreemptOnce::new();
 
 /// Register Unix namespace provider.
 ///

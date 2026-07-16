@@ -187,7 +187,7 @@ impl RiscvNestedPagingConfig {
 }
 
 /// VM exits returned by the RISC-V vCPU core.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RiscvVmExit {
     /// Guest issued a hypercall.
     Hypercall {

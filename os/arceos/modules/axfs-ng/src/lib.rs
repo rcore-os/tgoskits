@@ -28,6 +28,9 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
+#[cfg(test)]
+mod test_runtime;
+
 pub use block::{
     BlockRegion,
     runtime::{BlockDeviceHandle, block_io_stats, release_block_irqs_for_passthrough},

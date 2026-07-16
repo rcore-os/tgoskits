@@ -1,18 +1,22 @@
 //! Core vCPU and nested-paging contract implemented by every target architecture.
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 
+use ax_kspin::PreemptGuard;
 use ax_memory_addr::VirtAddr;
 use axaddrspace::NestedPageTableOps;
-use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
+use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps};
 
-use super::{BoundVcpuExit, VcpuRunAction};
-use crate::{AxVmResult, ax_err};
+use super::{BoundVcpuExit, CommonDeferredRunWork, VcpuRunAction};
+use crate::{
+    AxVmResult,
+    vcpu::{BoundVcpu, PinnedCpuContext},
+};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
-    type DeferredRunWork;
+    type DeferredRunWork: Copy + 'static + From<CommonDeferredRunWork>;
     type NestedPageTable: NestedPageTableOps;
 
     fn has_hardware_support() -> bool;
@@ -33,15 +37,20 @@ pub(crate) trait ArchOps {
         vcpu.set_gpr(0, arg);
     }
 
-    fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+    fn before_first_run(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
 
-    fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+    fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &BoundVcpu<'_, '_, Self::VCpu>) {}
 
     fn inject_pending_interrupt(
         _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &BoundVcpu<'_, '_, Self::VCpu>,
         interrupt: crate::vm::PendingInterrupt,
-    ) {
+    ) -> AxVmResult {
         match interrupt {
             crate::vm::PendingInterrupt::Normal(vector) => {
                 trace!(
@@ -49,14 +58,15 @@ pub(crate) trait ArchOps {
                     vcpu.vm_id(),
                     vcpu.id()
                 );
-                if let Err(err) = vcpu.inject_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
+                vcpu.inject_interrupt(vector)
+            }
+            crate::vm::PendingInterrupt::Triggered { vector, trigger } => {
+                trace!(
+                    "Injecting queued {trigger:?} interrupt {vector:#x} into VM[{}] VCpu[{}]",
+                    vcpu.vm_id(),
+                    vcpu.id()
+                );
+                vcpu.inject_interrupt_with_trigger(vector, trigger)
             }
             crate::vm::PendingInterrupt::External {
                 vector,
@@ -68,29 +78,45 @@ pub(crate) trait ArchOps {
                     vcpu.vm_id(),
                     vcpu.id()
                 );
+                Ok(())
             }
         }
     }
 
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        vector: usize,
-    ) {
-        crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
-    }
-
     fn on_last_vcpu_exit(_vm_id: usize) {}
 
-    fn after_mmio_write(_vm: &crate::AxVMRef) {}
+    fn after_mmio_read(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
 
-    fn handle_vcpu_exit_bound(
+    fn after_mmio_write(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
+    /// Handles work that is safe while the vCPU remains bound to one host CPU.
+    ///
+    /// Preemption is disabled and `CURRENT_VCPU` is published for this call.
+    /// Implementations must not block, yield, or retain CPU-local references;
+    /// return the architecture's deferred-work result for operations that
+    /// require a normal task context.
+    fn handle_vcpu_exit_bound<'cpu>(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>>;
+        exit: <Self::VCpu as VmArchVcpuOps>::Exit<'cpu>,
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>>
+    where
+        Self::VCpu: 'cpu;
 
+    /// Finishes exit work after backend unbind and CPU-local cleanup.
+    ///
+    /// This hook runs with normal host preemption restored and may perform
+    /// blocking or scheduler-facing operations.
     fn finish_deferred_run_work(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -104,54 +130,63 @@ pub(crate) trait ArchOps {
     where
         Self: Sized,
     {
-        let vm_id = vm.id();
-        let vcpu_id = vcpu.id();
-
-        match vcpu.state() {
-            VmVcpuState::Free => vcpu.bind()?,
-            VmVcpuState::Ready => {}
-            state => {
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not Free or Ready, but {state:?}")
-                );
-            }
-        }
-
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
-
-                let exit = vcpu.run()?;
-                trace!("{exit:#x?}");
-                match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                    BoundVcpuExit::Continue => continue,
-                    action => break Ok(action),
-                }
-            }
-        });
-
-        let unbind_result = vcpu.unbind();
-        match run_result {
-            Ok(BoundVcpuExit::Complete(action)) => {
-                unbind_result?;
-                Ok(action)
-            }
-            Ok(BoundVcpuExit::Defer(work)) => {
-                unbind_result?;
-                Self::finish_deferred_run_work(vm, vcpu, work)
-            }
-            Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
-            Err(err) => {
-                if let Err(unbind_err) = unbind_result {
-                    warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}"
-                    );
-                }
-                Err(err)
-            }
+        match run_vcpu_pinned::<Self>(vm, vcpu)? {
+            BoundVcpuExit::Complete(action) => Ok(action),
+            BoundVcpuExit::Defer(work) => Self::finish_deferred_run_work(vm, vcpu, work),
+            BoundVcpuExit::Continue => unreachable!("continued exits do not leave run loop"),
         }
     }
+}
+
+fn run_vcpu_pinned<A: ArchOps>(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
+    let preempt_guard = PreemptGuard::new();
+    let pinned_cpu = PinnedCpuContext::new(preempt_guard.cpu_pin());
+    let _current_vcpu = vcpu.enter_pinned(&pinned_cpu);
+
+    // Every run acquires a fresh CPU binding. A previous `Ready` state can no
+    // longer be resumed on an unverified CPU.
+    vcpu.bind(&pinned_cpu)?;
+    let run_result = {
+        let bound_vcpu = BoundVcpu::new(vcpu, &pinned_cpu);
+        A::before_vcpu_run(vm, &bound_vcpu);
+
+        loop {
+            if let Err(error) =
+                crate::runtime::vcpus::inject_pending_interrupts::<A>(vm, &bound_vcpu)
+            {
+                break Err(error);
+            }
+            if let Err(error) = bound_vcpu.drain_published_interrupts() {
+                break Err(error);
+            }
+
+            let exit = match vcpu.run(&pinned_cpu) {
+                Ok(exit) => exit,
+                Err(error) => break Err(error),
+            };
+            let exit_result = A::handle_vcpu_exit_bound(vm, vcpu, exit);
+            trace!("VM[{}] VCpu[{}] completed a bound exit", vm.id(), vcpu.id());
+            match exit_result {
+                Ok(BoundVcpuExit::Continue) => {}
+                Ok(action) => break Ok(action),
+                Err(error) => break Err(error),
+            }
+        }
+    };
+
+    // Backend unbind restores host-owned CPU state before CURRENT_VCPU is
+    // cleared by `_current_vcpu` and preemption is restored by `preempt_guard`.
+    if let Err(error) = vcpu.unbind(&pinned_cpu) {
+        panic!(
+            "fatal vCPU cleanup invariant: VM[{}] VCpu[{}] could not restore host state: {error:?}",
+            vm.id(),
+            vcpu.id()
+        );
+    }
+    run_result
 }
 
 pub(crate) fn target_phys_cpu_ids(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> Vec<usize> {
@@ -197,4 +232,27 @@ pub(crate) fn default_vcpu_affinities(
     }
 
     vcpus
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pinned_runner_always_rebinds_and_treats_cleanup_failure_as_fatal() {
+        let architecture_ops = include_str!("ops.rs");
+        let pinned_runner = architecture_ops
+            .split_once("fn run_vcpu_pinned")
+            .expect("AxVM must have one pinned backend runner")
+            .1
+            .split_once("pub(crate) fn target_phys_cpu_ids")
+            .expect("pinned runner must end before affinity helpers")
+            .0;
+
+        assert!(pinned_runner.contains("vcpu.bind(&pinned_cpu)?"));
+        assert!(pinned_runner.contains("if let Err(error) = vcpu.unbind(&pinned_cpu)"));
+        assert!(pinned_runner.contains("fatal vCPU cleanup invariant"));
+        assert!(
+            !pinned_runner.contains("VmVcpuState::Ready"),
+            "a stale bound state must never bypass a fresh CPU bind"
+        );
+    }
 }

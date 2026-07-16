@@ -1,10 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_task::{
-    current,
-    future::{block_on, interruptible},
-};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
@@ -17,9 +13,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{PidFd, get_file_like},
     task::{
-        AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-        get_zombie_cred, is_zombie_clone_child, processes, remove_process, traced_zombies_for,
-        unregister_zombie, wait_on_pollset, zombie_wait_parent_tid,
+        JobStatus, ProcessData, current_user_task, decode_wait_status,
+        future::{block_on_user, interruptible_for},
+        get_process_data, get_task, get_zombie_cred, is_zombie_clone_child, processes,
+        remove_process, traced_zombies_for, unregister_zombie, wait_on_pollset,
+        zombie_wait_parent_tid,
     },
 };
 
@@ -235,7 +233,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -286,7 +284,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             for tid in child.threads() {
                 if let Ok(task) = get_task(tid) {
                     let thr = task.as_thread();
-                    let (utime, stime) = thr.time.borrow().output();
+                    let (utime, stime) = thr.cpu_time.output();
                     proc_data.add_child_cpu_time(utime, stime);
                 }
             }
@@ -338,10 +336,14 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
 }
 
 pub fn sys_waitid(
@@ -350,7 +352,7 @@ pub fn sys_waitid(
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -424,7 +426,9 @@ pub fn sys_waitid(
                     linux_raw_sys::general::CLD_TRAPPED as i32,
                     stopped_wait_signo(&data, signo),
                 );
-                infop.vm_write(siginfo.0)?;
+                // SAFETY: new_sigchld zeroes the complete siginfo storage
+                // before setting the active union fields.
+                unsafe { infop.vm_write_abi(&siginfo.0)? };
             }
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 data.mark_ptrace_stop_reported_for(stop_tid);
@@ -442,14 +446,16 @@ pub fn sys_waitid(
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
-                infop.vm_write(siginfo.0)?;
+                // SAFETY: new_sigchld zeroes the complete siginfo storage
+                // before setting the active union fields.
+                unsafe { infop.vm_write_abi(&siginfo.0)? };
             }
 
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 for tid in child.threads() {
                     if let Ok(task) = get_task(tid) {
                         let thr = task.as_thread();
-                        let (utime, stime) = thr.time.borrow().output();
+                        let (utime, stime) = thr.cpu_time.output();
                         proc_data.add_child_cpu_time(utime, stime);
                     }
                 }
@@ -463,7 +469,9 @@ pub fn sys_waitid(
         if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
                 let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
-                infop.vm_write(zeroed)?;
+                // SAFETY: zeroed initializes all bytes of the siginfo union and
+                // is the Linux waitid WNOHANG sentinel representation.
+                unsafe { infop.vm_write_abi(&zeroed)? };
             }
             Ok(Some(0))
         } else {
@@ -471,8 +479,12 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
 }

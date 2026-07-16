@@ -1,11 +1,12 @@
 use core::{
     any::Any,
+    mem::offset_of,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileBackend;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
@@ -24,6 +25,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use super::loop_block::BlockCache;
 use crate::{
     file::{FileLike, get_file_like},
+    mm::UserPtr,
     pseudofs::{DeviceMmap, DeviceOps},
 };
 
@@ -36,13 +38,13 @@ pub struct LoopDevice {
     number: u32,
     dev_id: DeviceId,
     /// Underlying file for the loop device, if any.
-    pub file: Mutex<Option<FileBackend>>,
+    pub file: PiMutex<Option<FileBackend>>,
     /// Read-only flag for the loop device.
     pub ro: AtomicBool,
     /// Read-ahead size for the loop device, in bytes.
     pub ra: AtomicU32,
     /// Backing file name for the loop device.
-    file_name: Mutex<[u8; 64]>,
+    file_name: PiMutex<[u8; 64]>,
     /// Bit mask of `LO_FLAGS_*` (READ_ONLY, AUTOCLEAR, PARTSCAN, DIRECT_IO).
     flags: AtomicU32,
     /// Whether the device is opened exclusively (O_EXCL).
@@ -50,7 +52,7 @@ pub struct LoopDevice {
     /// Block-device data cache.  Populated by `as_dyn_block_device()`,
     /// written back and cleared by `LOOP_CLR_FD`.
     #[cfg(feature = "ext4")]
-    pub(super) block_cache: Mutex<BlockCache>,
+    pub(super) block_cache: PiMutex<BlockCache>,
 }
 
 impl LoopDevice {
@@ -58,14 +60,14 @@ impl LoopDevice {
         Self {
             number,
             dev_id,
-            file: Mutex::new(None),
+            file: PiMutex::new(None),
             ro: AtomicBool::new(false),
             ra: AtomicU32::new(512),
-            file_name: Mutex::new([0u8; 64]),
+            file_name: PiMutex::new([0u8; 64]),
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
             #[cfg(feature = "ext4")]
-            block_cache: Mutex::new(BlockCache::new()),
+            block_cache: PiMutex::new(BlockCache::new()),
         }
     }
 
@@ -198,7 +200,7 @@ impl DeviceOps for LoopDevice {
                 self.flags.store(0, Ordering::Relaxed);
             }
             LOOP_GET_STATUS => {
-                (arg as *mut loop_info).vm_write(self.get_info()?)?;
+                write_loop_info(arg as *mut loop_info, self.get_info()?)?;
             }
             LOOP_SET_STATUS => {
                 // `loop_info` is a C ioctl payload copied from the guest ABI.
@@ -216,7 +218,7 @@ impl DeviceOps for LoopDevice {
                 self.set_lo_flags(info.lo_flags as u32);
             }
             LOOP_GET_STATUS64 => {
-                (arg as *mut loop_info64).vm_write(self.get_info64()?)?;
+                write_loop_info64(arg as *mut loop_info64, self.get_info64()?)?;
             }
             LOOP_SET_STATUS64 => {
                 // `loop_info64` is a C ioctl payload copied from the guest ABI.
@@ -332,16 +334,19 @@ impl DeviceOps for LoopDevice {
                     0
                 };
                 #[repr(C)]
+                #[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
                 struct HdGeometry {
                     heads: u8,
                     sectors: u8,
                     cylinders: u16,
+                    _padding: u32,
                     start: u64,
                 }
                 let geo = HdGeometry {
                     heads,
                     sectors,
                     cylinders: cyl,
+                    _padding: 0,
                     start: 0,
                 };
                 (arg as *mut HdGeometry).vm_write(geo)?;
@@ -369,4 +374,46 @@ impl DeviceOps for LoopDevice {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE
     }
+}
+
+fn write_loop_info(user: *mut loop_info, info: loop_info) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(loop_info, lo_number), info.lo_number)?;
+    user.write_field(offset_of!(loop_info, lo_device), info.lo_device)?;
+    user.write_field(offset_of!(loop_info, lo_inode), info.lo_inode)?;
+    user.write_field(offset_of!(loop_info, lo_rdevice), info.lo_rdevice)?;
+    user.write_field(offset_of!(loop_info, lo_offset), info.lo_offset)?;
+    user.write_field(offset_of!(loop_info, lo_encrypt_type), info.lo_encrypt_type)?;
+    user.write_field(
+        offset_of!(loop_info, lo_encrypt_key_size),
+        info.lo_encrypt_key_size,
+    )?;
+    user.write_field(offset_of!(loop_info, lo_flags), info.lo_flags)?;
+    user.write_field(offset_of!(loop_info, lo_name), info.lo_name)?;
+    user.write_field(offset_of!(loop_info, lo_encrypt_key), info.lo_encrypt_key)?;
+    user.write_field(offset_of!(loop_info, lo_init), info.lo_init)?;
+    user.write_field(offset_of!(loop_info, reserved), info.reserved)
+}
+
+fn write_loop_info64(user: *mut loop_info64, info: loop_info64) -> AxResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(offset_of!(loop_info64, lo_device), info.lo_device)?;
+    user.write_field(offset_of!(loop_info64, lo_inode), info.lo_inode)?;
+    user.write_field(offset_of!(loop_info64, lo_rdevice), info.lo_rdevice)?;
+    user.write_field(offset_of!(loop_info64, lo_offset), info.lo_offset)?;
+    user.write_field(offset_of!(loop_info64, lo_sizelimit), info.lo_sizelimit)?;
+    user.write_field(offset_of!(loop_info64, lo_number), info.lo_number)?;
+    user.write_field(
+        offset_of!(loop_info64, lo_encrypt_type),
+        info.lo_encrypt_type,
+    )?;
+    user.write_field(
+        offset_of!(loop_info64, lo_encrypt_key_size),
+        info.lo_encrypt_key_size,
+    )?;
+    user.write_field(offset_of!(loop_info64, lo_flags), info.lo_flags)?;
+    user.write_field(offset_of!(loop_info64, lo_file_name), info.lo_file_name)?;
+    user.write_field(offset_of!(loop_info64, lo_crypt_name), info.lo_crypt_name)?;
+    user.write_field(offset_of!(loop_info64, lo_encrypt_key), info.lo_encrypt_key)?;
+    user.write_field(offset_of!(loop_info64, lo_init), info.lo_init)
 }

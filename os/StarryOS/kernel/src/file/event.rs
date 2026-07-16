@@ -5,10 +5,15 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
+};
 
 pub struct EventFd {
     count: AtomicU64,
@@ -30,6 +35,27 @@ impl EventFd {
             poll_tx: PollSet::new(),
         })
     }
+
+    /// Adds to the counter from a kernel producer without user-task signal semantics.
+    ///
+    /// This path never waits for counter space. It is intended for completion
+    /// producers such as Linux AIO workers, which must not impersonate the
+    /// submitting user thread or inherit its interruption state.
+    pub(crate) fn signal_kernel(&self, value: u64) -> ax_io::Result<()> {
+        if value == u64::MAX {
+            return Err(AxError::InvalidInput);
+        }
+        if value != 0 {
+            self.count
+                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                    (u64::MAX - count > value).then_some(count + value)
+                })
+                .map_err(|_| AxError::WouldBlock)?;
+            // Counter publication precedes task-context poll fan-out.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
+        }
+        Ok(())
+    }
 }
 
 impl FileLike for EventFd {
@@ -38,28 +64,32 @@ impl FileLike for EventFd {
             return Err(AxError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let result = self
-                .count
-                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
-                    if count > 0 {
-                        let dec = if self.semaphore { 1 } else { count };
-                        Some(count - dec)
-                    } else {
-                        None
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let result =
+                    self.count
+                        .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                            if count > 0 {
+                                let dec = if self.semaphore { 1 } else { count };
+                                Some(count - dec)
+                            } else {
+                                None
+                            }
+                        });
+                match result {
+                    Ok(count) => {
+                        let value = if self.semaphore { 1 } else { count };
+                        dst.write(&value.to_ne_bytes())?;
+                        // Counter space is visible before waking writers.
+                        unsafe { self.poll_tx.wake(IoEvents::OUT) };
+                        Ok(size_of::<u64>())
                     }
-                });
-            match result {
-                Ok(count) => {
-                    let value = if self.semaphore { 1 } else { count };
-                    dst.write(&value.to_ne_bytes())?;
-                    // Counter space is visible before waking writers.
-                    unsafe { self.poll_tx.wake(IoEvents::OUT) };
-                    Ok(size_of::<u64>())
+                    Err(_) => Err(AxError::WouldBlock),
                 }
-                Err(_) => Err(AxError::WouldBlock),
-            }
-        }))
+            }),
+        )
     }
 
     fn write(&self, src: &mut IoSrc) -> ax_io::Result<usize> {
@@ -74,25 +104,13 @@ impl FileLike for EventFd {
             return Err(AxError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-            let result = self
-                .count
-                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
-                    if u64::MAX - count > value {
-                        Some(count + value)
-                    } else {
-                        None
-                    }
-                });
-            match result {
-                Ok(_) => {
-                    // Counter increment is visible before waking readers.
-                    unsafe { self.poll_rx.wake(IoEvents::IN) };
-                    Ok(size_of::<u64>())
-                }
-                Err(_) => Err(AxError::WouldBlock),
-            }
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+                self.signal_kernel(value).map(|()| size_of::<u64>())
+            }),
+        )
     }
 
     fn nonblocking(&self) -> bool {

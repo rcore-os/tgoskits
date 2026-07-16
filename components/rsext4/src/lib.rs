@@ -13,6 +13,8 @@
 extern crate alloc;
 
 #[cfg(test)]
+extern crate ax_kspin_test_runtime as _;
+#[cfg(test)]
 extern crate std;
 
 // Re-export shared configuration constants for external callers.

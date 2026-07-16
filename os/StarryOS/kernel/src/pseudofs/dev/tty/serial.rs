@@ -15,8 +15,7 @@ use ax_runtime::hal::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
 };
-use ax_sync::Mutex;
-use ax_task::IrqNotify;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
@@ -25,26 +24,28 @@ use starry_process::Process;
 
 use super::{
     Tty,
+    serial_start::{FailedStartRecovery, SerialStartMode, SerialStartPolicy},
     terminal::{
         Terminal,
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::pseudofs::DeviceOps;
+use crate::{pseudofs::DeviceOps, task::future::IrqNotify};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
 const SERIAL_RX_DRAIN_CHUNK: usize = 256;
 const SERIAL_SYNC_ECHO_LIMIT: usize = 256;
-const SERIAL_DEFAULT_BAUDRATE: u32 = 115_200;
+const SERIAL_EVENT_BATCH_LIMIT: usize = 64;
 
 bitflags! {
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     struct SerialEventBits: u32 {
         const RX_READY = 1 << 0;
         const TX_SPACE = 1 << 1;
         const HANGUP   = 1 << 2;
+        const RESERVICE = 1 << 3;
     }
 }
 
@@ -52,6 +53,60 @@ pub struct SerialTtyEntry {
     number: usize,
     tty: Arc<SerialTtyDriver>,
     backend: Arc<SerialBackend>,
+}
+
+/// Proof that the selected boot console is reserved for an adopt-only start and
+/// bound as the init process's controlling terminal.
+#[must_use = "dropping the token leaves early console output ownership unchanged"]
+pub struct PreparedConsoleHandover {
+    backend: Arc<SerialBackend>,
+    committed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PortStartError {
+    Failed,
+    RecoveryFailed,
+}
+
+impl PreparedConsoleHandover {
+    /// Irreversibly transfers console output ownership to the runtime TTY.
+    ///
+    /// Construction performs no UART access. Commit first pauses early output,
+    /// starts the runtime port without recomputing the line rate, and then
+    /// permanently retires the early path. Any startup error drops the platform
+    /// token and restores boot polling after the runtime driver masks its IRQs.
+    pub fn commit(mut self) -> AxResult<()> {
+        let platform_handover = ax_runtime::hal::console::prepare_runtime_output_handover()
+            .map_err(|_| AxError::ResourceBusy)?;
+        match self.backend.commit_console_handover() {
+            Ok(()) => {}
+            Err(PortStartError::Failed) => {
+                drop(platform_handover);
+                warn!("{} console takeover failed", self.backend.tty_name);
+                return Err(AxError::Unsupported);
+            }
+            Err(PortStartError::RecoveryFailed) => {
+                // The device may still have live runtime IRQ state. Permanently
+                // suppress early access before reporting the fatal invariant;
+                // restoring boot polling here could create two register owners.
+                platform_handover.commit().map_err(|_| AxError::BadState)?;
+                return Err(AxError::BadState);
+            }
+        }
+        platform_handover.commit().map_err(|_| AxError::BadState)?;
+        self.backend.complete_console_handover();
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for PreparedConsoleHandover {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.backend.cancel_console_handover();
+        }
+    }
 }
 
 impl SerialTtyEntry {
@@ -80,18 +135,58 @@ struct SerialBackend {
     rx: SpinNoIrq<RxQueue>,
     irq: IrqId,
     irq_handle: SpinNoIrq<Option<IrqHandle>>,
+    start_policy: SerialStartPolicy,
+    console_handover_prepared: AtomicBool,
     started: AtomicBool,
-    start_lock: Mutex<()>,
+    start_lock: PiMutex<()>,
     events: SerialEvents,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
     tx_notify: IrqNotify,
-    output_lock: Mutex<()>,
+    output_lock: PiMutex<()>,
 }
 
 struct SerialEvents {
     pending: AtomicU32,
     notify: IrqNotify,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SerialEventBatch {
+    Drained,
+    Deferred,
+}
+
+fn serial_soft_work_for_events(pending: SerialEventBits) -> SerialSoftWork {
+    let mut work = SerialSoftWork::empty();
+    if pending.contains(SerialEventBits::TX_SPACE) {
+        work |= SerialSoftWork::TX_KICK;
+    }
+    if pending.contains(SerialEventBits::RESERVICE) {
+        work |= SerialSoftWork::RESERVICE;
+    }
+    work
+}
+
+fn process_serial_event_batch(
+    mut take_pending: impl FnMut() -> SerialEventBits,
+    mut publish_pending: impl FnMut(SerialEventBits),
+    mut observe_ready: impl FnMut(SerialEventBits),
+    mut service: impl FnMut(SerialSoftWork) -> SerialIrqOutcome,
+) -> SerialEventBatch {
+    for _ in 0..SERIAL_EVENT_BATCH_LIMIT {
+        let pending = take_pending();
+        if pending.is_empty() {
+            return SerialEventBatch::Drained;
+        }
+        observe_ready(pending);
+
+        let work = serial_soft_work_for_events(pending);
+        if !work.is_empty() {
+            publish_pending(serial_event_bits_for_outcome(service(work)));
+        }
+    }
+    SerialEventBatch::Deferred
 }
 
 impl SerialEvents {
@@ -201,23 +296,15 @@ pub fn console_device() -> Arc<dyn DeviceOps> {
         .unwrap_or_else(|| Arc::new(NoConsole))
 }
 
-pub fn bind_console_to(proc: &Process) -> AxResult<()> {
+pub fn prepare_console_handover(proc: &Process) -> AxResult<PreparedConsoleHandover> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
-        entry.backend.ensure_started()?;
-        ax_runtime::hal::console::claim_runtime_output();
-        return entry.tty.bind_to(proc);
+        let handover = entry.backend.prepare_console_handover()?;
+        entry.tty.bind_to(proc)?;
+        return Ok(handover);
     }
     Err(AxError::NoSuchDevice)
-}
-
-pub fn arm_console_irq() {
-    if let Some(index) = SERIAL_REGISTRY.console_index
-        && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
-    {
-        entry.backend.start_port();
-    }
 }
 
 impl SerialRegistry {
@@ -257,6 +344,18 @@ impl SerialRegistry {
         let console_selection =
             select_console_candidate(&candidates, ax_runtime::hal::console::device_id());
         let console_index = console_selection.as_ref().map(ConsoleSelection::index);
+        for (index, entry) in entries.iter().enumerate() {
+            let mode = if Some(index) == console_index {
+                SerialStartMode::AdoptBootConfiguration
+            } else {
+                SerialStartMode::ConfigurePort
+            };
+            entry
+                .backend
+                .start_policy
+                .assign(mode)
+                .expect("serial startup policy must be assigned exactly once");
+        }
         if let Some(index) = console_index {
             let number = entries[index].number;
             match console_selection {
@@ -313,13 +412,15 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         rx: SpinNoIrq::new(rx),
         irq: irq_id,
         irq_handle: SpinNoIrq::new(None),
+        start_policy: SerialStartPolicy::new(),
+        console_handover_prepared: AtomicBool::new(false),
         started: AtomicBool::new(false),
-        start_lock: Mutex::new(()),
+        start_lock: PiMutex::new(()),
         events: SerialEvents::new(),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
         tx_notify: IrqNotify::new(),
-        output_lock: Mutex::new(()),
+        output_lock: PiMutex::new(()),
     });
 
     backend.register_irq(irq)?;
@@ -384,53 +485,161 @@ impl SerialBackend {
         }
     }
 
-    fn start_port(&self) -> bool {
+    fn start_port(&self) -> Result<(), PortStartError> {
         if self.started.load(Ordering::Acquire) {
-            return true;
+            return Ok(());
         }
         let _guard = self.start_lock.lock();
+        self.start_port_locked()
+    }
+
+    fn try_start_console_port(&self) -> Result<(), PortStartError> {
+        let Some(_guard) = self.start_lock.try_lock() else {
+            return Err(PortStartError::Failed);
+        };
+        self.start_port_locked()
+    }
+
+    fn start_port_locked(&self) -> Result<(), PortStartError> {
         if self.started.load(Ordering::Acquire) {
-            return true;
+            return Ok(());
         }
 
         let Some(handle) = *self.irq_handle.lock() else {
-            return false;
+            return Err(PortStartError::Failed);
         };
 
-        if let Err(err) =
-            self.startup_port(&Config::new().baudrate(startup_baudrate(self.baudrate())))
-        {
-            warn!(
-                "{} failed to start serial port {}: {:?}",
-                self.tty_name, self.name, err
-            );
-            return false;
+        let Ok(mode) = self.start_policy.mode() else {
+            return Err(PortStartError::Failed);
+        };
+        let config = match mode.startup_baudrate(|| self.baudrate()) {
+            Some(baudrate) => Config::new().baudrate(baudrate),
+            None => Config::new(),
+        };
+        if let Err(err) = self.startup_port(&config) {
+            let recovered = self.abort_failed_start(mode);
+            if mode == SerialStartMode::ConfigurePort {
+                warn!(
+                    "{} failed to start serial port {}: {:?}",
+                    self.tty_name, self.name, err
+                );
+            }
+            return Err(if recovered {
+                PortStartError::Failed
+            } else {
+                PortStartError::RecoveryFailed
+            });
         }
 
         if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            self.shutdown_port();
-            warn!(
-                "Failed to enable {} IRQ handler for irq {:?}: {err:?}",
-                self.tty_name, self.irq
-            );
-            return false;
+            let recovered = self.abort_failed_start(mode);
+            let _ = ax_runtime::hal::irq::disable_irq(handle);
+            let _ = ax_runtime::hal::irq::synchronize_irq(handle);
+            if mode == SerialStartMode::ConfigurePort {
+                warn!(
+                    "Failed to enable {} IRQ handler for irq {:?}: {err:?}",
+                    self.tty_name, self.irq
+                );
+            }
+            return Err(if recovered {
+                PortStartError::Failed
+            } else {
+                PortStartError::RecoveryFailed
+            });
         }
 
         self.started.store(true, Ordering::Release);
+        if mode == SerialStartMode::ConfigurePort {
+            self.publish_started_events();
+        }
+        Ok(())
+    }
+
+    fn abort_failed_start(&self, mode: SerialStartMode) -> bool {
+        match mode.failed_start_recovery() {
+            FailedStartRecovery::RestoreBootPolling => {
+                ax_serial::run_on_owner(self.owner, |lease| self.port.quiesce_to_polling(lease))
+                    .is_ok()
+            }
+            FailedStartRecovery::ShutdownPort => self.shutdown_port(),
+        }
+    }
+
+    fn publish_started_events(&self) {
         publish_serial_outcome(
             self,
             self.service_on_owner(SerialSoftWork::RESERVICE),
             false,
         );
         self.events.publish(SerialEventBits::RX_READY);
-        true
     }
 
     fn ensure_started(&self) -> AxResult<()> {
-        if self.start_port() {
-            Ok(())
-        } else {
-            Err(AxError::Unsupported)
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.start_policy.mode() != Ok(SerialStartMode::ConfigurePort) {
+            return Err(AxError::ResourceBusy);
+        }
+        match self.start_port() {
+            Ok(()) => Ok(()),
+            Err(PortStartError::Failed) => Err(AxError::Unsupported),
+            Err(PortStartError::RecoveryFailed) => {
+                panic!("serial startup rollback failed for {}", self.tty_name)
+            }
+        }
+    }
+
+    fn open(&self) -> AxResult<()> {
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        match self.start_policy.mode() {
+            Ok(SerialStartMode::ConfigurePort) => self.ensure_started(),
+            Ok(SerialStartMode::AdoptBootConfiguration)
+                if self.console_handover_prepared.load(Ordering::Acquire) =>
+            {
+                Ok(())
+            }
+            Ok(SerialStartMode::AdoptBootConfiguration) => Err(AxError::ResourceBusy),
+            Err(_) => Err(AxError::Unsupported),
+        }
+    }
+
+    fn prepare_console_handover(self: &Arc<Self>) -> AxResult<PreparedConsoleHandover> {
+        if self.start_policy.mode() != Ok(SerialStartMode::AdoptBootConfiguration)
+            || self.started.load(Ordering::Acquire)
+        {
+            return Err(AxError::ResourceBusy);
+        }
+        self.console_handover_prepared
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| AxError::ResourceBusy)?;
+        Ok(PreparedConsoleHandover {
+            backend: Arc::clone(self),
+            committed: false,
+        })
+    }
+
+    fn commit_console_handover(&self) -> Result<(), PortStartError> {
+        if !self.console_handover_prepared.load(Ordering::Acquire)
+            || self.start_policy.mode() != Ok(SerialStartMode::AdoptBootConfiguration)
+        {
+            return Err(PortStartError::Failed);
+        }
+        self.try_start_console_port()
+    }
+
+    fn complete_console_handover(&self) {
+        self.console_handover_prepared
+            .store(false, Ordering::Release);
+        self.publish_started_events();
+    }
+
+    fn cancel_console_handover(&self) {
+        if !self.started.load(Ordering::Acquire) {
+            self.console_handover_prepared
+                .store(false, Ordering::Release);
         }
     }
 
@@ -439,8 +648,8 @@ impl SerialBackend {
             .map_err(|_| ConfigError::RegisterError)?
     }
 
-    fn shutdown_port(&self) {
-        let _ = ax_serial::run_on_owner(self.owner, |lease| self.port.shutdown(lease));
+    fn shutdown_port(&self) -> bool {
+        ax_serial::run_on_owner(self.owner, |lease| self.port.shutdown(lease)).is_ok()
     }
 
     fn set_port_config(&self, config: &Config) -> Result<(), ConfigError> {
@@ -487,20 +696,12 @@ impl SerialBackend {
             if self.tx_idle() {
                 return Ok(());
             }
-            ax_task::sleep(Duration::from_millis(1));
+            crate::task::sleep(Duration::from_millis(1));
         }
     }
 
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
         self.rx.lock().drain(out)
-    }
-}
-
-fn startup_baudrate(current: u32) -> u32 {
-    if current == 0 {
-        SERIAL_DEFAULT_BAUDRATE
-    } else {
-        current
     }
 }
 
@@ -532,23 +733,25 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
 
 fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
     let task_name = format!("{}-event", backend.tty_name);
-    ax_task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             backend.events.wait();
-            loop {
-                let pending = backend.events.take();
-                if pending.is_empty() {
-                    break;
-                }
-                if pending.contains(SerialEventBits::RX_READY) {
-                    unsafe { backend.input_source.wake(IoEvents::IN) };
-                }
-                if pending.contains(SerialEventBits::TX_SPACE) {
-                    backend.tx_notify.notify();
-                    unsafe { backend.output_source.wake(IoEvents::OUT) };
-                    let outcome = backend.service_on_owner(SerialSoftWork::TX_KICK);
-                    publish_serial_outcome(&backend, outcome, false);
-                }
+            let disposition = process_serial_event_batch(
+                || backend.events.take(),
+                |events| backend.events.publish(events),
+                |pending| {
+                    if pending.contains(SerialEventBits::RX_READY) {
+                        unsafe { backend.input_source.wake(IoEvents::IN) };
+                    }
+                    if pending.contains(SerialEventBits::TX_SPACE) {
+                        backend.tx_notify.notify();
+                        unsafe { backend.output_source.wake(IoEvents::OUT) };
+                    }
+                },
+                |work| backend.service_on_owner(work),
+            );
+            if disposition == SerialEventBatch::Deferred {
+                crate::task::yield_now();
             }
         },
         task_name,
@@ -560,6 +763,17 @@ fn publish_serial_outcome(
     outcome: SerialIrqOutcome,
     from_irq: bool,
 ) -> SerialEventBits {
+    let events = serial_event_bits_for_outcome(outcome);
+
+    if from_irq {
+        backend.events.publish_irq(events);
+    } else {
+        backend.events.publish(events);
+    }
+    events
+}
+
+fn serial_event_bits_for_outcome(outcome: SerialIrqOutcome) -> SerialEventBits {
     let mut events = SerialEventBits::empty();
     if outcome.rx_pushed > 0 {
         events |= SerialEventBits::RX_READY;
@@ -567,11 +781,8 @@ fn publish_serial_outcome(
     if outcome.tx_wakeup {
         events |= SerialEventBits::TX_SPACE;
     }
-
-    if from_irq {
-        backend.events.publish_irq(events);
-    } else {
-        backend.events.publish(events);
+    if outcome.budget_exhausted {
+        events |= SerialEventBits::RESERVICE;
     }
     events
 }
@@ -621,7 +832,7 @@ impl TtyRead for SerialReader {
 
 impl TtyWrite for SerialWriter {
     fn open(&self) -> AxResult<()> {
-        self.backend.ensure_started()
+        self.backend.open()
     }
 
     fn write(&self, buf: &[u8]) {
@@ -758,9 +969,81 @@ mod tests {
     use rdrive::DeviceId as RDriveDeviceId;
 
     use super::{
-        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, assign_tty_numbers,
-        select_console_candidate,
+        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, SERIAL_EVENT_BATCH_LIMIT,
+        SerialEventBatch, SerialEventBits, SerialIrqOutcome, SerialSoftWork, assign_tty_numbers,
+        process_serial_event_batch, select_console_candidate, serial_event_bits_for_outcome,
+        serial_soft_work_for_events,
     };
+
+    #[test]
+    fn event_worker_defers_and_republishes_multi_budget_reservice() {
+        use core::cell::Cell;
+
+        let pending_bits = Cell::new(SerialEventBits::RESERVICE.bits());
+        let service_calls = Cell::new(0usize);
+        let take_pending = || SerialEventBits::from_bits_retain(pending_bits.replace(0));
+        let publish_pending = |events: SerialEventBits| {
+            pending_bits.set(pending_bits.get() | events.bits());
+        };
+        let service = |work: SerialSoftWork| {
+            assert!(work.contains(SerialSoftWork::RESERVICE));
+            let call = service_calls.get() + 1;
+            service_calls.set(call);
+            SerialIrqOutcome {
+                claimed: true,
+                rx_pushed: 0,
+                tx_sent: 64,
+                tx_wakeup: false,
+                budget_exhausted: call < SERIAL_EVENT_BATCH_LIMIT + 2,
+            }
+        };
+
+        assert_eq!(
+            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
+            SerialEventBatch::Deferred
+        );
+        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT);
+        assert_ne!(pending_bits.get() & SerialEventBits::RESERVICE.bits(), 0);
+
+        assert_eq!(
+            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
+            SerialEventBatch::Drained
+        );
+        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT + 2);
+        assert_eq!(pending_bits.get(), 0);
+    }
+
+    #[test]
+    fn event_worker_maps_tx_and_reservice_work_independently() {
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::TX_SPACE),
+            SerialSoftWork::TX_KICK
+        );
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::RESERVICE),
+            SerialSoftWork::RESERVICE
+        );
+        assert_eq!(
+            serial_soft_work_for_events(SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE),
+            SerialSoftWork::TX_KICK | SerialSoftWork::RESERVICE
+        );
+    }
+
+    #[test]
+    fn exhausted_irq_budget_requests_task_context_reservice() {
+        let outcome = SerialIrqOutcome {
+            claimed: true,
+            rx_pushed: 3,
+            tx_sent: 5,
+            tx_wakeup: true,
+            budget_exhausted: true,
+        };
+
+        assert_eq!(
+            serial_event_bits_for_outcome(outcome),
+            SerialEventBits::RX_READY | SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE
+        );
+    }
 
     #[test]
     fn aliases_keep_linux_ttys_numbering() {
@@ -856,11 +1139,5 @@ mod tests {
             select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
             None
         );
-    }
-
-    #[test]
-    fn zero_hardware_baudrate_uses_runtime_default() {
-        assert_eq!(super::startup_baudrate(0), super::SERIAL_DEFAULT_BAUDRATE);
-        assert_eq!(super::startup_baudrate(1_500_000), 1_500_000);
     }
 }

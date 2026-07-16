@@ -17,13 +17,12 @@ sidebar_label: "检查机制总览"
 
 `might_sleep` 用来检查当前代码是否在原子上下文中执行了可能睡眠或重调度的操作。
 
-当前原子上下文主要包括：
-
-- IRQ 已关闭。
-- 显式 IRQ context。
-- preempt 已禁用。
-
-如果在这类上下文中调用可能阻塞的路径，系统会 panic，并打印调用点、结构化原因、IRQ enabled 状态、显式 IRQ context、preempt 计数、CPU、任务 ID 和任务状态。启用 `lockdep` 时，还会打印当前 held-lock stack，包括 kind、`sleep_forbidden`、class、addr 和 acquire 位置。
+重构后的 portable `ax-task` 通过 `TaskRuntime::in_hard_irq` 拒绝 hard IRQ
+中的 yield、park、sleep、exit 和 PI block，fallible API 返回
+`TaskError::UnsafeContext`。StarryOS 的 `might_sleep()` 当前也显式检查 hard
+IRQ。IRQ-disabled、普通 preempt-disabled task context 和“仅因持有 raw spin
+lock 而不能睡眠”的统一诊断尚未重新接入，因此不能把旧调度器曾打印的完整
+`preempt_count`/held-lock 字段当成当前保证。
 
 当前实现还没有完整覆盖所有“不能睡眠”的语义来源。特别是：
 
@@ -33,22 +32,27 @@ sidebar_label: "检查机制总览"
 
 典型覆盖路径包括：
 
-- `ax_task::yield_now`
-- `ax_task::sleep_until`
-- `ax_task::exit`
+- `ax_runtime::task::yield_current_cpu`
+- `ax_task::sleep_until`（经 runtime-backed facade）
+- `ax_runtime::task::exit_current`
 - `WaitQueue::wait*`
-- `TaskInner::join`
-- `future::block_on`
-- `ax-sync::Mutex::lock`
+- `ax_runtime::task::wait_thread` / `join_thread`
+- Starry `task::future::block_on`
+- `ax_sync::PiMutex::lock`
 - Starry 用户内存访问和 page fault slow path
 
-`ax-sync::Mutex::try_lock` 不属于覆盖路径。它是单次 CAS，不会阻塞或睡眠，因此保持可在原子上下文中调用，语义接近 Linux `mutex_trylock`。
+`ax_sync::PiMutex::try_lock` 不属于覆盖路径。它只检查 mutex 本地 owner，不会
+donation、阻塞或睡眠，因此保持可在原子上下文中做非阻塞尝试，语义接近 Linux
+`mutex_trylock`。成功后得到的 guard 仍不能包住任何睡眠操作。
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/api.rs`
-- `os/arceos/modules/axtask/src/wait_queue.rs`
-- `os/arceos/modules/axtask/src/future/mod.rs`
+- `components/ax-task/src/facade.rs`
+- `components/ax-task/src/wait_queue.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
+- `os/StarryOS/kernel/src/task/future.rs`
+- `os/StarryOS/kernel/src/task/scheduler_task.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
 - `os/arceos/modules/axhal/src/irq.rs`
 - `platforms/ax-plat/src/irq.rs`
@@ -95,75 +99,56 @@ cargo xtask sync-lint
 - 增加更多高置信模式，例如 publish 后通过 IPI、signal 或其他调度事件唤醒观察者。
 - 改进忽略注释的审计能力，让长期保留的 `sync-lint: ignore` 更容易被复查。
 
-## 3. [Task Stack Canary 与 Guard Page](./task-stack-guard-page.md)
+## 3. [Task Stack Guard Page 与 Stack Protector](./task-stack-guard-page.md)
 
-task stack canary 用来发现任务栈溢出或栈底被破坏。
+`ax-task` 现在只拥有 opaque `StackHandle`，不再内置 task-stack canary 或
+`multitask` operational feature。创建线程时，portable core 通过
+`StackRequest` 向 runtime 申请栈和可选 guard 区；`ax-runtime` 负责页面分配、
+上下文栈顶、page-fault 诊断和最终回收。
 
-启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
-
-当前 `ax-task` 的 `multitask` feature 会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+`stack-guard-page` 在动态 runtime task/idle 栈底保留不可访问 guard 区，栈向下
+越界时由 `ax-runtime::task::diagnose_current_stack_guard_page_fault()` 报告。
+bootstrap 线程借用平台 boot context/stack，不由该动态分配器提供 guard page。
 
 `stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
 
-canary 覆盖范围包括：
-
-- 动态分配的普通任务栈。
-- 主 CPU 的 boot stack。
-- secondary CPU 的 boot/idle stack。
-- 由平台提供的 secondary boot stack。
-
-guard page 当前覆盖范围更窄，只覆盖 `TaskStack::alloc()` 创建并由 `ax-task`
-拥有生命周期的动态任务栈。它不覆盖 `TaskStack::borrowed()` 包装的
-boot/current 栈，也不覆盖未来可能引入的独立 IRQ stack、exception stack
-或 overflow stack。这个边界与动态平台无直接绑定：动态任务栈覆盖，borrowed 栈暂不覆盖。
+guard page 覆盖 `ax-runtime` 为普通线程和 idle 线程分配的栈，不覆盖平台
+boot stack，也不覆盖未来可能引入的独立 IRQ、exception 或 overflow stack。
+线程退出后只有在 wake/header 引用安全回收后，runtime 才销毁 context、TLS 和栈。
 
 Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任务栈底是否
 被覆盖，作用与当前 `stack canary` 接近；`CONFIG_STACKPROTECTOR` /
 `CONFIG_STACKPROTECTOR_STRONG` 则依赖编译器在函数栈帧中插入 canary，
 函数返回前比较保存值和运行时 guard，失败时调用 `__stack_chk_fail()`。
-后者可以发现尚未一路覆盖到任务栈底的函数局部栈溢出，是当前机制尚未覆盖
-的方向。
-
-项目后续可参照 Linux 分阶段增强栈帧级保护。第一阶段优先实现跨架构的
-全局 guard 方案：通过 opt-in hardening 开关在构建系统中注入
-`-Z stack-protector=strong`，并在内核运行时提供 `__stack_chk_guard`
-和 `__stack_chk_fail()`。当前 nightly 对项目使用的
+后者可以发现尚未触碰 guard page 的函数局部栈溢出。项目已提供 opt-in
+`stack-protector` feature：构建系统注入 `-Zstack-protector=strong`，
+`ax-runtime` 提供 `__stack_chk_guard` 和 `__stack_chk_fail()`。当前 nightly 对
+项目使用的
 `x86_64-unknown-none`、`riscv64gc-unknown-none-elf`、
 `aarch64-unknown-none-softfloat`、`loongarch64-unknown-none-softfloat`
-四个目标都接受 `-Z stack-protector=strong`，生成对象也统一依赖
-`__stack_chk_guard` / `__stack_chk_fail`，因此全局 guard 方案可以作为
-四架构共同的最小闭环。第二阶段再评估 Linux 风格 per-task 或 per-cpu
+四个目标都接受该参数，形成四架构共同的全局 guard 闭环。后续再评估 Linux
+风格 per-task 或 per-CPU
 guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 系统寄存器约定逐步设计；loongarch64 在 Linux 6.12 中也主要体现为全局
 `__stack_chk_guard` 路径，建议放在全局方案稳定后再单独评估。
 
-平台栈边界需要来自平台事实。linker script 中的
-`boot_stack` / `boot_stack_top` 符号只是兼容占位，并不表示真实栈空间。动态平台
-的主 CPU 和 secondary CPU boot stack 都应通过平台提供的
-`boot_stack_bounds(cpu_id)` 获取，否则 stack canary 写入可能落到内核镜像
-映射边界之外，在真实板卡上触发 page fault。
-
-当前 primary idle task 栈大小仍保留一个过渡策略：非 `lockdep` 构建保持
-原来的 16 KiB 栈，`lockdep` 构建使用 `TASK_STACK_SIZE`，以便为额外的
-检查路径保留栈空间。后续可以考虑统一 idle task 栈大小配置。
+平台 boot context/stack 仍必须由当前 CPU 自己使用。`ax-runtime` 将 bootstrap
+和 idle scheduler record 固定到 owner CPU，防止 bring-up continuation 在另一 CPU
+的 boot resources 上恢复；动态 idle 栈大小统一来自 runtime task-stack 配置。
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/task.rs`
-- `os/arceos/modules/axtask/src/run_queue.rs`
-- `os/arceos/modules/axruntime/src/mp.rs`
-- `platforms/axplat-dyn/src/boot.rs`
+- `components/ax-task/src/thread_start.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
+- `os/arceos/modules/axruntime/src/stack_protector.rs`
+- `scripts/axbuild/src/build/info.rs`
 
 后续改进方向：
 
-- 在更多边界点触发检查，例如任务退出、panic 前诊断或长时间运行的 idle 路径。
 - 持续完善动态任务栈 guard page 的 SMP shootdown、跨架构 QEMU 回归和 fault 诊断。
-- 增加 opt-in 的编译器栈帧级 stack protector，先采用四架构通用的
-  全局 `__stack_chk_guard` / `__stack_chk_fail` 方案，再评估 per-task
-  或 per-cpu guard。
 - 后续在 `axmm` 上补 kernel vmap allocator，把 guard page 从额外物理页演进为仅占虚拟地址空间的空洞。
-- 在 vmap-style 栈和 stack metadata 稳定后，再评估 borrowed boot/current 栈、secondary boot 栈以及专用 IRQ/exception/overflow 栈的 guard page 接入。
-- 完善不同架构和不同平台栈布局的文档，明确 canary 写入位置和误报边界。
+- 在 vmap-style 栈和 stack metadata 稳定后，再评估 boot 栈以及专用 IRQ/exception/overflow 栈的 guard page 接入。
+- 在全局 stack protector 稳定后再评估 per-task/per-CPU guard。
 
 ## 4. [Panic/Oops 递归保护](./panic-recursion-guards.md)
 
@@ -224,7 +209,7 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 接入范围包括：
 
 - `ax-kspin` spin lock。
-- `ax-sync` mutex。
+- `ax_sync::SpinMutex` / 兼容 `Mutex`（经 `ax-kspin`）和 `PiMutex`。
 - POSIX pthread mutex lockdep-aware 布局。
 - ArceOS lockdep QEMU 回归用例。
 
@@ -232,10 +217,12 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 - `components/lockdep/src/state.rs`
 - `components/lockdep/src/trace.rs`
-- `components/kspin/src/lockdep.rs`
+- `components/kspin/src/context.rs`
+- `components/kspin/src/runtime_call.rs`
+- `components/kspin/src/wrapper.rs`
 - `os/arceos/modules/axsync/src/lockdep.rs`
-- `os/arceos/modules/axtask/src/api.rs`
-- [`test-suit/arceos/rust/task/lockdep/`](https://github.com/rcore-os/tgoskits/tree/dev/test-suit/arceos/rust/task/lockdep)
+- `os/arceos/modules/axruntime/src/guard.rs`
+- [`test-suit/arceos/rust/src/lockdep/`](https://github.com/rcore-os/tgoskits/tree/dev/test-suit/arceos/rust/src/lockdep)
 
 后续改进方向：
 
@@ -249,8 +236,8 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 ## CI 默认启用边界
 
-除 `lockdep` 外，这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。
+除 `lockdep` 外，这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`multitask` 构建还会覆盖 `ax-task` 的 hard-IRQ 上下文检查、runtime 栈 guard page，以及编译器 stack protector。
 
-需要注意的是，`might_sleep` 与 task stack canary 并不是对所有单线程 ArceOS 测试包无条件启用。它们覆盖 StarryOS、Axvisor 以及多数 ArceOS QEMU 测试，但不覆盖未启用 `multitask` 的单线程测试包。
+需要注意的是，这些任务上下文与任务栈检查并不对所有单线程 ArceOS 测试包无条件启用。它们覆盖 StarryOS、Axvisor 以及多数 ArceOS QEMU 多任务测试，但不覆盖未启用 `multitask` 的单线程测试包。
 
 `lockdep` 由于运行时开销、诊断输出和行为侵入性更强，当前不作为默认 CI feature 启用，而是通过显式 `lockdep` feature 和专门回归用例维护。

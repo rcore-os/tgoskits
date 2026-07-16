@@ -35,9 +35,6 @@ pub trait HostMemory {
 pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
-
-    /// Program the host one-shot timer.
-    fn set_oneshot_timer(&self, deadline_ns: u64);
 }
 
 /// Host CPU topology and affinity operations.
@@ -47,18 +44,12 @@ pub trait HostCpu {
 
     /// Number of usable host CPUs.
     fn cpu_count(&self) -> usize;
-
-    /// Current host CPU ID.
-    fn this_cpu_id(&self) -> usize;
 }
 
 /// Host platform lifecycle and virtualization controls.
 pub trait HostPlatform {
     /// Check whether hardware virtualization is available.
     fn has_hardware_support(&self) -> bool;
-
-    /// Enable virtualization on the current host CPU.
-    fn enable_virtualization_on_current_cpu(&self) -> AxVmResult;
 
     /// Enable virtualization on every usable host CPU.
     fn enable_virtualization_on_all_cpus(&self) -> AxVmResult;

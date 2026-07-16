@@ -11,9 +11,17 @@ use walkdir::{DirEntry, WalkDir};
 const SPIN_VERSION_REQ: &str = "=0.12.2";
 const SPIN_LOCKFILE_VERSION: &str = "0.12.2";
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
-const ALLOWED_SPIN_FEATURES: &[&str] = &["lock_api", "once", "lazylock"];
+const ALLOWED_SPIN_FEATURES: &[&str] = &[
+    "lazylock",
+    "lock_api",
+    "mutex",
+    "once",
+    "rwlock",
+    "use_ticket_mutex",
+];
 const FORBIDDEN_SPIN_RWLOCK_PATTERNS: &[&str] =
     &["spin::RwLock", "spin::rwlock", "use spin::RwLock"];
+const AX_KSPIN_RAW_IMPLEMENTATION: &str = "components/kspin/src/raw.rs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -147,7 +155,8 @@ fn check_workspace_spin_dependency(
             "missing workspace spin dependency",
             format!(
                 "add `spin = {{ version = \"{SPIN_VERSION_REQ}\", default-features = false, \
-                 features = [\"lock_api\", \"once\", \"lazylock\"] }}`"
+                 features = [\"lazylock\", \"lock_api\", \"mutex\", \"once\", \"rwlock\", \
+                 \"use_ticket_mutex\"] }}`"
             ),
         ));
         return;
@@ -193,7 +202,8 @@ fn check_workspace_spin_dependency(
             "workspace spin dependency must be a table",
             format!(
                 "use `spin = {{ version = \"{SPIN_VERSION_REQ}\", default-features = false, \
-                 features = [\"lock_api\", \"once\", \"lazylock\"] }}`"
+                 features = [\"lazylock\", \"lock_api\", \"mutex\", \"once\", \"rwlock\", \
+                 \"use_ticket_mutex\"] }}`"
             ),
         )),
     }
@@ -361,6 +371,12 @@ fn check_no_spin_rwlock_usage(
         if path == workspace_root.join("scripts/axbuild/src/spin_lint.rs") {
             continue;
         }
+        if path
+            .strip_prefix(workspace_root)
+            .is_ok_and(|relative| relative == Path::new(AX_KSPIN_RAW_IMPLEMENTATION))
+        {
+            continue;
+        }
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         for (line_index, line) in contents.lines().enumerate() {
@@ -461,7 +477,7 @@ fn check_default_features_disabled(
             manifest_path,
             format!("{location}.default-features"),
             "spin default features must be disabled",
-            "set `default-features = false` so upstream mutex/rwlock features stay unavailable",
+            "set `default-features = false` so only the audited workspace feature set is enabled",
         )),
         Some(_) => findings.push(Finding::new(
             manifest_path,
@@ -505,7 +521,7 @@ fn check_allowed_features(
                 manifest_path,
                 format!("{location}.features"),
                 "workspace spin dependency must list allowed features",
-                "enable exactly `lock_api`, `once`, and `lazylock`",
+                "enable exactly the audited feature set in `ALLOWED_SPIN_FEATURES`",
             ));
         }
         return;
@@ -516,7 +532,7 @@ fn check_allowed_features(
             manifest_path,
             format!("{location}.features"),
             "spin features must be an array",
-            "use `features = [\"lock_api\", \"once\", \"lazylock\"]`",
+            "use the exact audited feature set from `ALLOWED_SPIN_FEATURES`",
         ));
         return;
     };
@@ -537,7 +553,7 @@ fn check_allowed_features(
                 manifest_path,
                 format!("{location}.features[{index}]"),
                 format!("spin feature `{feature}` is not allowed"),
-                "only `lock_api`, `once`, and `lazylock` may be enabled",
+                "only features listed in `ALLOWED_SPIN_FEATURES` may be enabled",
             ));
         }
         seen.insert(feature);
@@ -550,7 +566,7 @@ fn check_allowed_features(
                     manifest_path,
                     format!("{location}.features"),
                     format!("workspace spin dependency must enable feature `{required}`"),
-                    "enable exactly `lock_api`, `once`, and `lazylock`",
+                    "enable exactly the audited feature set in `ALLOWED_SPIN_FEATURES`",
                 ));
             }
         }
@@ -647,7 +663,7 @@ mod tests {
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
         write_file(
@@ -698,7 +714,7 @@ checksum = "abc"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 
 [patch.crates-io]
 spin = { path = "components/spin" }
@@ -749,7 +765,7 @@ version = "0.12.2"
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.2", path = "components/spin", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", path = "components/spin", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
@@ -774,7 +790,7 @@ spin = { version = "=0.12.2", path = "components/spin", default-features = false
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.2", default-features = true, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = true, features = ["lazylock", "lock_api", "mutex", "once", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
@@ -788,7 +804,7 @@ spin = { version = "=0.12.2", default-features = true, features = ["lock_api", "
     }
 
     #[test]
-    fn rejects_root_spin_rwlock_feature() {
+    fn rejects_root_spin_feature_outside_the_audited_set() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -799,17 +815,17 @@ spin = { version = "=0.12.2", default-features = true, features = ["lock_api", "
 members = ["crate"]
 
 [workspace.dependencies]
-spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock", "rwlock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lazylock", "lock_api", "mutex", "once", "portable-atomic", "rwlock", "use_ticket_mutex"] }
 "#,
         );
 
         let findings = lint_workspace(root.path()).unwrap();
 
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("feature `rwlock` is not allowed"))
-        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("feature `portable-atomic` is not allowed")
+        }));
     }
 
     #[test]
@@ -890,7 +906,7 @@ spin = { version = "=0.12.2", features = ["once"] }
     }
 
     #[test]
-    fn rejects_explicit_spin_dependency_with_rwlock_feature() {
+    fn rejects_explicit_spin_dependency_with_unaudited_feature() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -903,17 +919,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spin = { version = "=0.12.2", default-features = false, features = ["once", "rwlock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["once", "portable-atomic"] }
 "#,
         );
 
         let findings = lint_workspace(root.path()).unwrap();
 
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.message.contains("feature `rwlock` is not allowed"))
-        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("feature `portable-atomic` is not allowed")
+        }));
     }
 
     #[test]
@@ -1063,5 +1079,24 @@ pub fn bad() {
                 .iter()
                 .any(|finding| finding.message.contains("forbidden `spin::RwLock`"))
         );
+    }
+
+    #[test]
+    fn permits_spin_rwlock_only_in_ax_kspin_raw_algorithm() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            AX_KSPIN_RAW_IMPLEMENTATION,
+            r#"
+pub struct RawSpinRwLock {
+    inner: spin::RwLock<()>,
+}
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+
+        assert!(findings.is_empty(), "{findings:#?}");
     }
 }

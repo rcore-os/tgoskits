@@ -4,7 +4,7 @@ use axvm_types::GuestPhysAddr;
 
 use crate::{
     AxVmResult,
-    architecture::{ArchOps, BoundVcpuExit, VcpuRunAction},
+    architecture::{ArchOps, VcpuRunAction},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -26,11 +26,11 @@ pub(crate) trait CpuUpOps: ArchOps {
     }
 }
 
-pub(crate) fn handle<A: CpuUpOps>(
+pub(crate) fn finish<A: CpuUpOps>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: CpuUpExit,
-) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
+) -> AxVmResult<VcpuRunAction> {
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
     info!(
@@ -44,10 +44,10 @@ pub(crate) fn handle<A: CpuUpOps>(
             exit.target_cpu
         );
         vcpu.set_return_value(usize::MAX);
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+        return Ok(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
-        }));
+        });
     };
 
     match crate::runtime::vcpus::vcpu_on(
@@ -62,8 +62,8 @@ pub(crate) fn handle<A: CpuUpOps>(
             vcpu.set_return_value(usize::MAX);
         }
     }
-    Ok(BoundVcpuExit::Complete(VcpuRunAction {
+    Ok(VcpuRunAction {
         waits_for_event: false,
         stop_reason: None,
-    }))
+    })
 }

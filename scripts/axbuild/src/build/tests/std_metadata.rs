@@ -51,7 +51,7 @@ fn std_build_auto_enables_app_arceos_feature_when_declared() {
         features: Vec::new(),
         ..BuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-helloworld",
         "x86_64-unknown-none",
         &metadata,
@@ -81,7 +81,7 @@ fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
         ],
         ..BuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-httpclient",
         "aarch64-unknown-none-softfloat",
         &metadata,
@@ -117,7 +117,7 @@ fn std_build_aarch64_defaults_to_dynamic_platform() {
     let cargo = BuildInfo {
         ..BuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(
+    .into_prepared_std_cargo_config_with_metadata(
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
         &metadata,
@@ -153,7 +153,7 @@ fn std_build_config_preserves_backtrace_rustflags_from_env() {
     info.env.insert("DWARF".to_string(), "y".to_string());
 
     let cargo = info
-        .into_prepared_base_cargo_config_with_metadata(
+        .into_prepared_std_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
             &metadata,
@@ -175,7 +175,7 @@ fn std_build_config_enables_stack_protector_from_feature() {
     };
 
     let cargo = info
-        .into_prepared_base_cargo_config_with_metadata(
+        .into_prepared_std_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
             &metadata,

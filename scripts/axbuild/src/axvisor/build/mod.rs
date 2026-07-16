@@ -63,11 +63,7 @@ fn to_cargo_config(
     normalize_axvisor_feature_surface(&mut config.build_info.features, &config.target, metadata)?;
     let mut cargo = config
         .build_info
-        .into_prepared_base_cargo_config_with_metadata(
-            &request.package,
-            &config.target,
-            metadata,
-        )?;
+        .into_prepared_std_cargo_config_with_metadata(&request.package, &config.target, metadata)?;
     remove_dynamic_platform_features(&mut cargo.features);
     patch_axvisor_cargo_config(&mut cargo, request, metadata, &config.vm_configs)?;
     Ok(cargo)

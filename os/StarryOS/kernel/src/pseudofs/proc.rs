@@ -7,15 +7,9 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{
-    ffi::CStr,
-    fmt::Write,
-    iter,
-    mem::size_of,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::{ffi::CStr, fmt::Write, iter, mem::size_of, sync::atomic::Ordering};
 
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 #[cfg(target_arch = "aarch64")]
@@ -24,7 +18,7 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
+use ax_std::os::arceos::task::{CpuId, CpuSet, ThreadState};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
@@ -39,15 +33,27 @@ use crate::{
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
     },
     task::{
-        AsThread, Cred, ProcessData, TaskStat, Thread, get_process_data, get_task, processes,
-        tasks, tick_cpu_time,
+        Cred, ProcessData, TaskStat, Thread, UserTaskRef, WeakUserTaskRef, current_user_task,
+        get_process_data, get_task, processes, tasks,
     },
 };
 
-/// Global IRQ counter incremented on every timer tick.
-/// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
-static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 const PROCFS_INIT_PID: Pid = 1;
+
+fn upgrade_proc_task(task: &WeakUserTaskRef) -> VfsResult<Option<UserTaskRef>> {
+    (*task).upgrade().map_err(|_| VfsError::BadState)
+}
+
+fn require_proc_task(task: &WeakUserTaskRef) -> VfsResult<UserTaskRef> {
+    upgrade_proc_task(task)?.ok_or(VfsError::NotFound)
+}
+
+fn procfs_get_task(tid: Pid) -> VfsResult<UserTaskRef> {
+    get_task(tid).map_err(|error| match error {
+        VfsError::NoSuchProcess => VfsError::NotFound,
+        error => error,
+    })
+}
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
 
@@ -280,7 +286,7 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     let _ = writeln!(buf);
 }
 
-fn render_stat() -> String {
+fn render_stat() -> VfsResult<String> {
     let up = monotonic_time();
     let cpu_count = ax_runtime::hal::cpu_num() as u64;
     // Total CPU-time budget in jiffies across all CPUs (USER_HZ = 100).
@@ -289,7 +295,7 @@ fn render_stat() -> String {
 
     // Single snapshot: aggregate CPU time and count task states together
     // to avoid holding the task-table lock twice and getting inconsistent data.
-    let all_tasks = tasks();
+    let all_tasks = tasks()?;
     let mut user_ms: u128 = 0;
     let mut sys_ms: u128 = 0;
     let mut procs_running: u64 = 0;
@@ -299,9 +305,11 @@ fn render_stat() -> String {
         user_ms += u.as_millis();
         sys_ms += s.as_millis();
         match task.state() {
-            TaskState::Running | TaskState::Ready => procs_running += 1,
-            TaskState::Blocked => procs_blocked += 1,
-            TaskState::Exited => {}
+            ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
+                procs_running += 1
+            }
+            ThreadState::Parking | ThreadState::Blocked => procs_blocked += 1,
+            ThreadState::Exited => {}
         }
     }
     let task_count = all_tasks.len() as u64;
@@ -321,7 +329,7 @@ fn render_stat() -> String {
     let per_cpu_sys = sys_jiffies / cpu_count;
     let per_cpu_idle = idle_jiffies / cpu_count;
 
-    let irq_total = IRQ_CNT.load(Ordering::Relaxed) as u64;
+    let irq_total = ax_runtime::task::timer_irq_count();
 
     let mut buf = format!("cpu  {user_jiffies} 0 {sys_jiffies} {idle_jiffies} 0 0 0 0 0 0\n");
     for i in 0..cpu_count {
@@ -337,7 +345,7 @@ fn render_stat() -> String {
     let _ = writeln!(buf, "procs_running {procs_running}");
     let _ = writeln!(buf, "procs_blocked {procs_blocked}");
     let _ = writeln!(buf, "softirq 0 0 0 0 0 0 0 0 0 0 0");
-    buf
+    Ok(buf)
 }
 
 fn render_proc_net_arp() -> String {
@@ -417,7 +425,8 @@ fn render_mounts() -> String {
     // enumerated here because the VFS does not expose a public mount-tree
     // walker, so third-party mounts made via mount(2) are absent.
     let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         ctx.root_dir().filesystem().name().to_string()
     };
     let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
@@ -438,7 +447,8 @@ fn render_mountinfo() -> String {
     // precedes the fs type. Tools such as node_exporter's filesystem collector and findmnt read
     // this file (in preference to /proc/mounts) to discover mount points before statfs().
     let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = current_fs_context();
+        let ctx = fs_context.lock();
         ctx.root_dir().filesystem().name().to_string()
     };
     let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");
@@ -659,7 +669,7 @@ impl SimpleDirOps for ProcessTaskDir {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let process = self.process.upgrade().ok_or(VfsError::NotFound)?;
         let tid = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let task = get_task(tid).map_err(|_| VfsError::NotFound)?;
+        let task = procfs_get_task(tid)?;
         if task.as_thread().proc_data.proc.pid() != process.pid() {
             return Err(VfsError::NotFound);
         }
@@ -670,7 +680,7 @@ impl SimpleDirOps for ProcessTaskDir {
             self.fs.clone(),
             Arc::new(ThreadDir {
                 fs: self.fs.clone(),
-                task: Arc::downgrade(&task),
+                task: task.downgrade(),
                 proc_data,
                 path_pid: process.pid(),
                 procfs_pid: None,
@@ -689,12 +699,12 @@ impl SimpleDirOps for ProcessTaskDir {
 /// memory counters so cross-process reads do not depend on a possibly stale task
 /// weak reference after pid reuse.
 fn render_thread_status(
-    task: &WeakAxTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     path_pid: Pid,
     procfs_pid: Option<Pid>,
 ) -> VfsResult<String> {
-    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+    let task = require_proc_task(task)?;
     let thread = task.as_thread();
     let aspace_arc = proc_data.aspace();
     let mem = ProcessMemStats::collect(&aspace_arc.lock());
@@ -719,17 +729,19 @@ fn render_thread_status(
             cred: &cred,
             num_threads,
         },
-        task.cpumask(),
+        task.affinity(),
         ax_runtime::hal::cpu_num(),
         &mem,
     ))
 }
 
-fn task_status_state(task: &AxTaskRef) -> &'static str {
+fn task_status_state(task: &UserTaskRef) -> &'static str {
     match task.state() {
-        TaskState::Running | TaskState::Ready => "R (running)",
-        TaskState::Blocked => "S (sleeping)",
-        TaskState::Exited => "Z (zombie)",
+        ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking => {
+            "R (running)"
+        }
+        ThreadState::Parking | ThreadState::Blocked => "S (sleeping)",
+        ThreadState::Exited => "Z (zombie)",
     }
 }
 
@@ -753,12 +765,12 @@ struct TaskStatusFields<'a> {
 
 fn render_task_status(
     base: TaskStatusBase<'_>,
-    cpumask: AxCpuMask,
+    cpumask: CpuSet,
     cpu_num: usize,
     mem: &ProcessMemStats,
 ) -> String {
-    let cpus_allowed = format_cpumask_hex(cpumask, cpu_num);
-    let cpus_allowed_list = format_cpumask_list(cpumask, cpu_num);
+    let cpus_allowed = format_cpumask_hex(&cpumask, cpu_num);
+    let cpus_allowed_list = format_cpumask_list(&cpumask, cpu_num);
 
     render_task_status_fields(&TaskStatusFields {
         base,
@@ -820,8 +832,8 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
     )
 }
 
-fn format_cpumask_hex(cpumask: AxCpuMask, cpu_num: usize) -> String {
-    format_cpu_presence_hex(&collect_cpu_presence(&cpumask, cpu_num))
+fn format_cpumask_hex(cpumask: &CpuSet, cpu_num: usize) -> String {
+    format_cpu_presence_hex(&collect_cpu_presence(cpumask, cpu_num))
 }
 
 fn format_cpu_presence_hex(cpu_presence: &[bool]) -> String {
@@ -842,8 +854,8 @@ fn format_cpu_presence_hex(cpu_presence: &[bool]) -> String {
         .join(",")
 }
 
-fn format_cpumask_list(cpumask: AxCpuMask, cpu_num: usize) -> String {
-    format_cpu_presence_list(&collect_cpu_presence(&cpumask, cpu_num))
+fn format_cpumask_list(cpumask: &CpuSet, cpu_num: usize) -> String {
+    format_cpu_presence_list(&collect_cpu_presence(cpumask, cpu_num))
 }
 
 fn format_cpu_presence_list(cpu_presence: &[bool]) -> String {
@@ -873,16 +885,11 @@ fn format_cpu_presence_list(cpu_presence: &[bool]) -> String {
     ranges.join(",")
 }
 
-fn collect_cpu_presence<I>(cpus: I, cpu_num: usize) -> Vec<bool>
-where
-    I: IntoIterator<Item = usize>,
-{
+fn collect_cpu_presence(cpus: &CpuSet, cpu_num: usize) -> Vec<bool> {
     let mut cpu_presence = vec![false; cpu_num];
 
-    for cpu in cpus {
-        if cpu < cpu_num {
-            cpu_presence[cpu] = true;
-        }
+    for (cpu, allowed) in cpu_presence.iter_mut().enumerate() {
+        *allowed = cpus.contains(CpuId::new(cpu as u32));
     }
 
     cpu_presence
@@ -891,16 +898,20 @@ where
 /// The /proc/[pid]/fd directory
 struct ThreadFdDir {
     fs: Arc<SimpleFs>,
-    task: WeakAxTaskRef,
+    task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for ThreadFdDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let Some(task) = self.task.upgrade() else {
-            return Box::new(iter::empty());
+        let task = match upgrade_proc_task(&self.task) {
+            Ok(Some(task)) => task,
+            Ok(None) => return Box::new(iter::empty()),
+            Err(error) => panic!("procfs fd directory has an invalid user extension: {error}"),
         };
-        let ids = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+        let scope = task.as_thread().proc_data.scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        let ids = fd_table
             .read()
             .ids()
             .map(|id| Cow::Owned(id.to_string()))
@@ -910,10 +921,12 @@ impl SimpleDirOps for ThreadFdDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let path = FD_TABLE
-            .scope(&task.as_thread().proc_data.scope.read())
+        let scope = task.as_thread().proc_data.scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        let path = fd_table
             .read()
             .get(fd as _)
             .ok_or(VfsError::NotFound)?
@@ -935,7 +948,7 @@ impl SimpleDirOps for ThreadFdDir {
 /// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
 struct NsDir {
     fs: Arc<SimpleFs>,
-    task: WeakAxTaskRef,
+    task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for NsDir {
@@ -949,8 +962,8 @@ impl SimpleDirOps for NsDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task_ref = self.task.clone();
-        let Some(task) = task_ref.upgrade() else {
+        let task_ref = self.task;
+        let Some(task) = upgrade_proc_task(&task_ref)? else {
             return Err(VfsError::NotFound);
         };
         let proc_data = &task.as_thread().proc_data;
@@ -1001,7 +1014,7 @@ impl SimpleDirOps for NsDir {
 /// The /proc/[pid] directory
 struct ThreadDir {
     fs: Arc<SimpleFs>,
-    task: WeakAxTaskRef,
+    task: WeakUserTaskRef,
     /// Authoritative process state for memory counters (`path_pid` lookup).
     proc_data: Arc<ProcessData>,
     /// Numeric `/proc/<pid>` component used for live [`ProcessData`] lookup.
@@ -1009,12 +1022,13 @@ struct ThreadDir {
     procfs_pid: Option<Pid>,
 }
 
-fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
+fn render_thread_maps(task: &WeakUserTaskRef) -> VfsResult<String> {
     let mut output = String::new();
 
-    let task = match task.upgrade() {
-        Some(t) => t,
-        None => return Ok(output),
+    let task = match upgrade_proc_task(task) {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok(output),
+        Err(error) => return Err(error),
     };
 
     let aspace_arc = task.as_thread().proc_data.aspace();
@@ -1103,13 +1117,14 @@ fn render_thread_maps(task: &WeakAxTaskRef) -> VfsResult<String> {
 /// `dirty` are 0 (Linux also reports 0 for `lib`/`dirty` since 2.6); `text` and
 /// `data` are derived from the areas' executable / writable flags.
 fn render_thread_statm(
-    task: &WeakAxTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     _path_pid: Pid,
 ) -> VfsResult<String> {
-    let _task = match task.upgrade() {
-        Some(t) => t,
-        None => return Ok("0 0 0 0 0 0 0\n".into()),
+    let _task = match upgrade_proc_task(task) {
+        Ok(Some(task)) => task,
+        Ok(None) => return Ok("0 0 0 0 0 0 0\n".into()),
+        Err(error) => return Err(error),
     };
     let aspace_arc = proc_data.aspace();
     let mm = aspace_arc.lock();
@@ -1117,12 +1132,12 @@ fn render_thread_statm(
 }
 
 fn render_thread_stat(
-    task: &WeakAxTaskRef,
+    task: &WeakUserTaskRef,
     proc_data: &Arc<ProcessData>,
     _path_pid: Pid,
     procfs_pid: Option<Pid>,
 ) -> VfsResult<Vec<u8>> {
-    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+    let task = require_proc_task(task)?;
     let mut stat = TaskStat::from_thread(&task)?;
     let aspace_arc = proc_data.aspace();
     let mem = ProcessMemStats::collect(&aspace_arc.lock());
@@ -1138,7 +1153,7 @@ fn render_thread_stat(
     Ok(format!("{stat}").into_bytes())
 }
 
-fn render_thread_auxv(task: &AxTaskRef) -> Vec<u8> {
+fn render_thread_auxv(task: &UserTaskRef) -> Vec<u8> {
     let mut entries = task.as_thread().proc_data.auxv.read().clone();
     entries.push(AuxEntry::new(AuxType::NULL, 0));
     let mut bytes = Vec::with_capacity(entries.len() * size_of::<AuxEntry>());
@@ -1154,7 +1169,7 @@ struct ProcMemFile {
 
 impl ProcMemFile {
     fn check_access(&self) -> VfsResult<()> {
-        let current_task = current();
+        let current_task = current_user_task();
         let current_proc = &current_task.as_thread().proc_data;
         if current_proc.proc.pid() == self.proc_data.proc.pid() {
             return Ok(());
@@ -1247,10 +1262,10 @@ impl SimpleDirOps for ThreadDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let task = require_proc_task(&self.task)?;
         Ok(match name {
             "stat" => {
-                let task = self.task.clone();
+                let task = self.task;
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
@@ -1260,7 +1275,7 @@ impl SimpleDirOps for ThreadDir {
                 .into()
             }
             "statm" => {
-                let task = self.task.clone();
+                let task = self.task;
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
                 SimpleFile::new_regular(fs, move || {
@@ -1269,7 +1284,7 @@ impl SimpleDirOps for ThreadDir {
                 .into()
             }
             "status" => {
-                let task = self.task.clone();
+                let task = self.task;
                 let proc_data = self.proc_data.clone();
                 let path_pid = self.path_pid;
                 let procfs_pid = self.procfs_pid;
@@ -1306,7 +1321,7 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "maps" => {
-                let task = self.task.clone();
+                let task = self.task;
                 let seq = SeqObject::new(move || render_thread_maps(&task));
                 SpecialFsFile::new_regular_with_perm(
                     fs.clone(),
@@ -1372,7 +1387,7 @@ impl SimpleDirOps for ThreadDir {
                 fs.clone(),
                 Arc::new(ThreadFdDir {
                     fs,
-                    task: Arc::downgrade(&task),
+                    task: task.downgrade(),
                 }),
             )
             .into(),
@@ -1517,7 +1532,7 @@ impl SimpleDirOps for ThreadDir {
                 fs.clone(),
                 Arc::new(NsDir {
                     fs,
-                    task: self.task.clone(),
+                    task: self.task,
                 }),
             )
             .into(),
@@ -1545,7 +1560,7 @@ impl SimpleDirOps for ProcFsHandler {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let (task, path_pid, procfs_pid, proc_data) = if name == "self" {
-            let task = current().clone();
+            let task = current_user_task().clone();
             let path_pid = task.as_thread().proc_data.proc.pid();
             let proc_data = procfs_lookup_process(path_pid).map_err(|_| VfsError::NotFound)?;
             (task, path_pid, None, proc_data)
@@ -1561,7 +1576,7 @@ impl SimpleDirOps for ProcFsHandler {
                     .into_iter()
                     .next()
                     .ok_or(VfsError::NotFound)?;
-                get_task(tid).map_err(|_| VfsError::NotFound)?
+                procfs_get_task(tid)?
             };
             let procfs_pid =
                 (procfs_visible_pid(&proc_data.proc) != proc_data.proc.pid()).then_some(pid);
@@ -1571,7 +1586,7 @@ impl SimpleDirOps for ProcFsHandler {
             self.0.clone(),
             Arc::new(ThreadDir {
                 fs: self.0.clone(),
-                task: Arc::downgrade(&task),
+                task: task.downgrade(),
                 proc_data,
                 path_pid,
                 procfs_pid,
@@ -1600,10 +1615,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
         }),
     );
-    root.add(
-        "stat",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_stat())),
-    );
+    root.add("stat", SimpleFile::new_regular(fs.clone(), render_stat));
     root.add(
         "diskstats",
         SimpleFile::new_regular(fs.clone(), || Ok(render_diskstats())),
@@ -1634,10 +1646,18 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "loadavg",
         SimpleFile::new_regular(fs.clone(), || {
-            let all_tasks = tasks();
+            let all_tasks = tasks()?;
             let running = all_tasks
                 .iter()
-                .filter(|t| matches!(t.state(), TaskState::Running | TaskState::Ready))
+                .filter(|task| {
+                    matches!(
+                        task.state(),
+                        ThreadState::New
+                            | ThreadState::Ready
+                            | ThreadState::Running
+                            | ThreadState::Waking
+                    )
+                })
                 .count();
             let total = all_tasks.len();
             Ok(format!("0.00 0.00 0.00 {running}/{total} 1\n"))
@@ -1663,26 +1683,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             }
         }),
     );
-    // Timer-tick callbacks registered once on the boot CPU.
-    // IRQ counting: increment the module-level IRQ_CNT on every tick.
-    ax_task::register_timer_callback(|_| {
-        IRQ_CNT.fetch_add(1, Ordering::Relaxed);
-    });
-    // CPU-time accounting: accumulate utime/stime for the running task on
-    // each tick, so preempted tasks don't have to wait until the next syscall
-    // to record their CPU usage.
-    // Note: this callback runs only on the boot CPU (TIMER_CALLBACKS is
-    // per-CPU).  On SMP, tasks on other CPUs still get their time recorded
-    // at syscall boundaries via set_timer_state(); the tick path is an
-    // additional precision improvement for CPU 0.
-    ax_task::register_timer_callback(|_| {
-        tick_cpu_time(&ax_task::current());
-    });
-
     root.add(
         "interrupts",
         SimpleFile::new_regular(fs.clone(), || {
-            Ok(format!("0: {}", IRQ_CNT.load(Ordering::Relaxed)))
+            Ok(format!("0: {}", ax_runtime::task::timer_irq_count()))
         }),
     );
 
@@ -1908,12 +1912,12 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 }
 #[cfg(test)]
 mod tests {
-    use alloc::{format, string::String};
+    use alloc::{format, string::String, vec::Vec};
 
     use super::{
-        TaskStatusBase, TaskStatusFields, collect_cpu_presence, format_cpu_presence_hex,
-        format_cpu_presence_list, render_proc_bus_usb_devices_from_snapshots,
-        render_task_status_fields,
+        CpuId, CpuSet, TaskStatusBase, TaskStatusFields, collect_cpu_presence,
+        format_cpu_presence_hex, format_cpu_presence_list,
+        render_proc_bus_usb_devices_from_snapshots, render_task_status_fields,
     };
     use crate::{mm::ProcessMemStats, pseudofs::usbfs::UsbDeviceSnapshotInfo, task::Cred};
 
@@ -1933,8 +1937,19 @@ mod tests {
         )
     }
 
+    fn collect_test_cpu_presence(
+        cpus: impl IntoIterator<Item = usize>,
+        cpu_num: usize,
+    ) -> Vec<bool> {
+        let mut set = CpuSet::empty(cpu_num);
+        for cpu in cpus {
+            assert!(set.insert(CpuId::new(cpu as u32)));
+        }
+        collect_cpu_presence(&set, cpu_num)
+    }
+
     fn render_task_status_from_cpus(tgid: u32, pid: u64, cpus: &[usize], cpu_num: usize) -> String {
-        let cpu_presence = collect_cpu_presence(cpus.iter().copied(), cpu_num);
+        let cpu_presence = collect_test_cpu_presence(cpus.iter().copied(), cpu_num);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
 
@@ -1991,21 +2006,21 @@ mod tests {
 
     #[test]
     fn cpus_allowed_hex_matches_actual_affinity_bits() {
-        let cpu_presence = collect_cpu_presence([1, 3], 4);
+        let cpu_presence = collect_test_cpu_presence([1, 3], 4);
 
         assert_eq!(format_cpu_presence_hex(&cpu_presence), "0000000a");
     }
 
     #[test]
     fn cpus_allowed_hex_orders_32bit_words_from_high_to_low() {
-        let cpu_presence = collect_cpu_presence([0, 1, 32, 63], 64);
+        let cpu_presence = collect_test_cpu_presence([0, 1, 32, 63], 64);
 
         assert_eq!(format_cpu_presence_hex(&cpu_presence), "80000001,00000003");
     }
 
     #[test]
     fn cpus_allowed_list_compacts_contiguous_ranges() {
-        let cpu_presence = collect_cpu_presence([0, 2, 3, 4, 7, 9, 10, 11], 12);
+        let cpu_presence = collect_test_cpu_presence([0, 2, 3, 4, 7, 9, 10, 11], 12);
 
         assert_eq!(format_cpu_presence_list(&cpu_presence), "0,2-4,7,9-11");
     }
@@ -2028,7 +2043,7 @@ mod tests {
         // psutil `Process.num_threads()` parses this line with the regex
         // `br'Threads:\t(\d+)'` and blindly indexes `[0]`; a missing line
         // raises an uncaught IndexError that crashes glances' process_iter.
-        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpu_presence = collect_test_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
         let status = render_task_status_fields(&TaskStatusFields {
@@ -2055,7 +2070,7 @@ mod tests {
 
     #[test]
     fn task_status_reports_tracer_pid_for_debuggers() {
-        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpu_presence = collect_test_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
         let status = render_task_status_fields(&TaskStatusFields {
@@ -2080,7 +2095,7 @@ mod tests {
 
     #[test]
     fn status_includes_vm_size_from_mem_stats() {
-        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpu_presence = collect_test_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
         let mem = ProcessMemStats {

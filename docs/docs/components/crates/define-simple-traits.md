@@ -106,7 +106,7 @@
 
 在这个仓库里，`crate_interface` 的正式用法出现在真实组件中，例如：
 
-- ArceOS 侧：`ax-log` 定义 `LogIf`，`ax-runtime` 提供实现；`kernel_guard` 定义 `KernelGuardIf`，`ax-task` 提供实现。
+- ArceOS 侧：`ax-log` 定义 `LogIf`，`ax-runtime` 提供实现；新的锁与任务能力通过各自 trait-ffi 边界接入 runtime。
 - 平台与组件侧：`axplat` 对 `impl_interface` 做了平台封装。
 - Axvisor 侧：`axvisor_api` 重新导出 `crate_interface` 相关宏接口。
 

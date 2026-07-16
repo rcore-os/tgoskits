@@ -5,6 +5,8 @@
 
 use core::marker::PhantomData;
 
+use ax_cpu_local::CpuPin;
+
 use crate::{
     X86GuestPhysAddr, X86HostOps, X86NestedPagingConfig, X86VCpuCreateConfig, X86VCpuSetupConfig,
     X86VcpuResult, X86VmExit,
@@ -59,15 +61,15 @@ impl<H: X86HostOps> X86ArchVCpu<H> {
         x86_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    pub fn run(&mut self) -> X86VcpuResult<X86VmExit> {
+    pub fn run(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult<X86VmExit> {
         x86_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    pub fn bind(&mut self) -> X86VcpuResult {
+    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
         x86_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 
-    pub fn unbind(&mut self) -> X86VcpuResult {
+    pub fn unbind(&mut self, _cpu_pin: &CpuPin) -> X86VcpuResult {
         x86_err!(Unsupported, "no hypervisor backend (vmx/svm) enabled")
     }
 

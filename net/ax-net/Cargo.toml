@@ -19,7 +19,7 @@ ax-io = { workspace = true }
 ax-kspin = { workspace = true }
 axpoll = { workspace = true }
 ax-sync = { workspace = true }
-ax-task = { workspace = true, features = ["irq", "multitask"] }
+ax-task.workspace = true
 bitflags = "2.9"
 cfg-if = { workspace = true }
 enum_dispatch = "0.3"
@@ -30,7 +30,6 @@ log = { workspace = true }
 rd-net = { workspace = true }
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
-spin = { workspace = true }
 
 [dependencies.smoltcp]
 workspace = true
@@ -58,5 +57,5 @@ features = [
 
 [dev-dependencies]
 ax-hal = { workspace = true, features = ["host-test"] }
-ax-kspin = { workspace = true, features = ["host-test"] }
-ax-task = { workspace = true, features = ["host-test"] }
+ax-kspin.workspace = true
+ax-task.workspace = true

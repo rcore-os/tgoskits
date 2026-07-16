@@ -65,7 +65,7 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
-    /// Verify that no external `spin` package is resolved
+    /// Verify the pinned upstream `spin` dependency and its usage boundary
     SpinLint,
     /// Remote board management via ostool-server
     Board {

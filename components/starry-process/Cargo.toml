@@ -9,10 +9,11 @@ repository = "https://github.com/Starry-OS/starry-process"
 license = "Apache-2.0"
 
 [dependencies]
-ax-kspin = { workspace = true, features = ["smp"] }
+ax-kspin.workspace = true
 ax-lazyinit = { workspace = true }
 weak-map = "0.1"
 
 [dev-dependencies]
 ctor = "0.4.1"
-ax-kspin = { workspace = true, features = ["host-test", "smp"] }
+ax-kspin.workspace = true
+ax-kspin-test-runtime = { path = "../kspin/test-runtime" }

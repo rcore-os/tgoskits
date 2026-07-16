@@ -19,8 +19,10 @@ use aarch64_cpu::registers::*;
 use crate::{ArmHostOps, ArmVcpuResult};
 
 /// Per-CPU AArch64 virtualization state.
+///
+/// Hardware vector storage is separate from this CSR snapshot, so the type
+/// keeps ordinary C alignment and can be embedded in the fixed CPU-area ABI.
 #[repr(C)]
-#[repr(align(4096))]
 pub struct ArmPerCpu {
     /// per cpu id
     pub cpu_id: usize,

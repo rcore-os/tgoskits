@@ -323,6 +323,11 @@ fn guest_timer_init_ticks(ctx: &LoongArchContextFrame) -> u64 {
     guest_tcfg_initval(ctx.gcsr_tcfg) as u64
 }
 
+fn mark_guest_timer_expired(ctx: &mut LoongArchContextFrame) {
+    ctx.gcsr_tval = 0;
+    ctx.gcsr_estat |= TIMER_BIT;
+}
+
 fn cancel_guest_timer<H: LoongArchHostOps>(guest_timer_token: &mut Option<usize>) {
     if let Some(token) = guest_timer_token.take() {
         H::cancel_timer(token);
@@ -343,8 +348,7 @@ fn register_guest_timer<H: LoongArchHostOps>(
 
     let init_ticks = guest_timer_init_ticks(ctx);
     if init_ticks == 0 {
-        ctx.gcsr_tval = 0;
-        ctx.gcsr_estat |= TIMER_BIT;
+        mark_guest_timer_expired(ctx);
         if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
             log::trace!(
                 "LoongArch guest timer immediate: tcfg={:#x}, estat={:#x}",
@@ -367,10 +371,20 @@ fn register_guest_timer<H: LoongArchHostOps>(
             deadline_ns
         );
     }
-    let token = H::register_timer(
+    let Some(token) = H::register_timer(
         Duration::from_nanos(deadline_ns),
         Box::new(move |_| H::inject_interrupt(vm_id, vcpu_id, INT_TIMER)),
-    );
+    ) else {
+        mark_guest_timer_expired(ctx);
+        if GUEST_TIMER_LOGS.fetch_add(1, Ordering::Relaxed) < 64 {
+            log::warn!(
+                "LoongArch guest timer capacity exhausted: tcfg={:#x}, estat={:#x}",
+                ctx.gcsr_tcfg,
+                ctx.gcsr_estat
+            );
+        }
+        return;
+    };
     *guest_timer_token = Some(token);
 }
 
@@ -489,4 +503,89 @@ pub(crate) fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> Loong
     }
     advance_guest_pc(ctx);
     LoongArchVmExit::Idle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        LoongArchHostPhysAddr, LoongArchHostVirtAddr,
+        registers::{
+            guest_tcfg_enabled, guest_tcfg_periodic, guest_tcfg_value,
+            guest_ticlr_clear_timer_value,
+        },
+    };
+
+    struct TimerCapacityExhaustedHost;
+
+    impl LoongArchHostOps for TimerCapacityExhaustedHost {
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            1_000
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> Option<usize> {
+            None
+        }
+
+        fn cancel_timer(_token: usize) {}
+
+        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
+    }
+
+    #[test]
+    fn timer_capacity_failure_expires_the_guest_timer_without_a_token() {
+        let timer_config = guest_tcfg_value(true, false, 400);
+        let mut ctx = LoongArchContextFrame::default();
+        let mut guest_timer_token = None;
+
+        write_guest_timer_csr::<TimerCapacityExhaustedHost>(
+            &mut ctx,
+            CSR_TCFG,
+            timer_config,
+            1,
+            2,
+            &mut guest_timer_token,
+        );
+
+        assert!(guest_timer_token.is_none());
+        assert_eq!(ctx.gcsr_tval, 0);
+        assert_ne!(ctx.gcsr_estat & TIMER_BIT, 0);
+        assert!(guest_tcfg_enabled(ctx.gcsr_tcfg));
+    }
+
+    #[test]
+    fn periodic_timer_capacity_failure_reasserts_the_cleared_event() {
+        let mut ctx = LoongArchContextFrame {
+            gcsr_tcfg: guest_tcfg_value(true, true, 400),
+            gcsr_estat: TIMER_BIT,
+            ..LoongArchContextFrame::default()
+        };
+        let mut guest_timer_token = None;
+
+        write_guest_timer_csr::<TimerCapacityExhaustedHost>(
+            &mut ctx,
+            CSR_TICLR,
+            guest_ticlr_clear_timer_value(),
+            1,
+            2,
+            &mut guest_timer_token,
+        );
+
+        assert!(guest_timer_token.is_none());
+        assert_eq!(ctx.gcsr_tval, 0);
+        assert_ne!(ctx.gcsr_estat & TIMER_BIT, 0);
+        assert!(guest_tcfg_enabled(ctx.gcsr_tcfg));
+        assert!(guest_tcfg_periodic(ctx.gcsr_tcfg));
+    }
 }

@@ -283,7 +283,6 @@ mod tests {
         );
         let route = AcpiGsiRoute {
             gsi: 5,
-            vector: 37,
             controller: AcpiGsiController::IoApic,
             controller_id: 0,
             controller_address: 0xfec0_0000,

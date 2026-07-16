@@ -1,4 +1,4 @@
-use irq_framework::{IrqError, IrqId, IrqSource};
+use irq_framework::{CpuId, CpuIpiTarget, IpiSendStatus, IrqError, IrqId, IrqSource};
 use rdrive::probe::OnProbeError;
 use someboot::{ArchTrait, PagingError};
 
@@ -13,8 +13,8 @@ pub trait PlatOp {
         Err(IrqError::Unsupported)
     }
 
-    fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
-        panic!("IPI is not implemented for this dynamic platform");
+    fn send_ipi(_irq: IrqId, _target: CpuIpiTarget, _current_cpu: CpuId) -> IpiSendStatus {
+        IpiSendStatus::Invalid
     }
 
     fn ipi_irq() -> IrqId;
@@ -34,14 +34,10 @@ pub trait PlatOp {
 
     fn secondary_init();
 
-    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole);
+    fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) -> Result<(), IrqError>;
 
-    fn init_secondary_boot_irqs(cpu_idx: usize) {
-        Self::init_boot_irq_cpu(cpu_idx, crate::irq::CpuBootRole::Secondary);
-    }
-
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        let _ = cpu_id;
+    fn init_secondary_boot_irqs(cpu_idx: usize) -> Result<(), IrqError> {
+        Self::init_boot_irq_cpu(cpu_idx, crate::irq::CpuBootRole::Secondary)
     }
 }
 

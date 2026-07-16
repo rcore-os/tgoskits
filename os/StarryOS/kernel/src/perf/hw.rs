@@ -37,8 +37,6 @@ use ax_hal::mem::virt_to_phys;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 #[cfg(target_arch = "aarch64")]
-use ax_task::IrqNotify;
-#[cfg(target_arch = "aarch64")]
 use axpoll::PollSet;
 use axpoll::{IoEvents, Pollable};
 use kbpf_basic::linux_bpf::perf_event_attr;
@@ -52,6 +50,8 @@ use super::PerfEventOps;
 use super::PerfReadValues;
 #[cfg(target_arch = "aarch64")]
 use super::sampling::{self, SampleSlot};
+#[cfg(target_arch = "aarch64")]
+use crate::task::future::IrqNotify;
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
@@ -258,7 +258,7 @@ fn start_sampling_notify_worker(
     notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    ax_task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             notify.wait();
             if !poll_alive.load(Ordering::Acquire) {
@@ -1013,11 +1013,9 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
 /// its own — for per-task events the ring/notify live on the `PerTaskCounter`.
 #[cfg(target_arch = "aarch64")]
 fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
-    use crate::task::AsThread;
-
-    // Resolve the target task and its `Thread` (kernel tasks have none).
+    // The Starry task table contains user tasks only.
     let task = crate::task::get_task(pid as u32)?;
-    let thr = task.try_as_thread().ok_or(AxError::NoSuchProcess)?;
+    let thr = task.as_thread();
 
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;

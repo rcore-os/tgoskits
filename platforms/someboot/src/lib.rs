@@ -12,6 +12,9 @@ extern crate core;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate std;
+
 #[macro_use]
 pub mod console;
 
@@ -77,13 +80,16 @@ pub trait ArchTrait {
 
     fn cpu_current_hartid() -> usize;
 
+    /// Returns the stable CPU-local host-level byte for the live final image.
+    fn cpu_local_host_level() -> u8 {
+        0
+    }
+
     fn jump_to(entry: usize, sp: usize) -> !;
 
     fn post_allocator();
 
     fn init_boot_tls() {}
-    fn init_runtime_percpu_reg(_cpu_idx: usize) {}
-
     fn per_cpu_trap_init(is_primary: bool);
     fn trap_addr() -> usize;
 
@@ -166,7 +172,7 @@ pub enum DCacheOp {
 
 pub fn post_allocator() {
     fdt::init_with_alloc();
-    smp::init_percpu();
+    smp::finalize_secondary_boot_metadata();
     debug!("Setup after allocator");
     arch::Arch::post_allocator();
 }
@@ -210,13 +216,14 @@ fn prime_entry() -> ! {
     mem::memory_map_setup();
     mem::print_memory_map();
 
+    smp::initialize_percpu_layout();
+
     unsafe extern "C" {
         fn __someboot_main() -> !;
     }
 
     let entry = __someboot_main as *const () as usize;
     let cpu_idx = crate::smp::early_current_cpu_idx();
-    arch::Arch::init_runtime_percpu_reg(cpu_idx);
     let sp = crate::smp::cpu_meta(cpu_idx).unwrap().stack_top;
     let sp = __percpu(sp);
     println!(

@@ -2,6 +2,7 @@ mod ptm;
 mod pts;
 mod pty;
 mod serial;
+mod serial_start;
 mod terminal;
 mod usb_serial;
 
@@ -19,8 +20,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::Mutex;
-use ax_task::current;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::NodeFlags;
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -36,14 +36,12 @@ pub use self::{
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
-    serial::{
-        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
-    },
+    serial::{SerialTtyDriver, console_device, prepare_console_handover, serial_tty_entries},
     usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
 };
 use crate::{
     pseudofs::DeviceOps,
-    task::{AsThread, get_process_group, send_signal_to_process_group},
+    task::{current_user_task, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
@@ -64,7 +62,7 @@ pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
 pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
-    ldisc: Mutex<LineDiscipline<R, W>>,
+    ldisc: PiMutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
@@ -74,7 +72,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
-        let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
+        let ldisc = PiMutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
             terminal,
@@ -254,11 +252,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.this
                     .upgrade()
                     .unwrap()
-                    .bind_to(&current().as_thread().proc_data.proc)?;
+                    .bind_to(&current_user_task().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
-                let session = current().as_thread().proc_data.proc.group().session();
-                if current()
+                let session = current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .session();
+                if current_user_task()
                     .as_thread()
                     .proc_data
                     .proc

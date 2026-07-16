@@ -1,47 +1,113 @@
-use alloc::collections::VecDeque;
+use alloc::boxed::Box;
+use core::ptr;
 
-use crate::event::{Callback, IpiEvent};
+use crate::event::Callback;
 
-/// A queue of IPI events.
+/// One caller-allocated callback node linked into a destination FIFO.
+pub struct IpiEventNode {
+    src_cpu_id: usize,
+    callback: Option<Callback>,
+    next: *mut Self,
+}
+
+impl IpiEventNode {
+    /// Allocates a detached node before CPU pinning or queue locking begins.
+    pub fn prepare(callback: Callback) -> Box<Self> {
+        Box::new(Self {
+            src_cpu_id: usize::MAX,
+            callback: Some(callback),
+            next: ptr::null_mut(),
+        })
+    }
+
+    /// Removes the callback from a detached node.
+    pub fn take_callback(&mut self) -> Callback {
+        self.callback
+            .take()
+            .expect("a detached IPI event node owns one callback")
+    }
+
+    pub(crate) fn take_parts(&mut self) -> (usize, Callback) {
+        let source = self.src_cpu_id;
+        let callback = self.take_callback();
+        (source, callback)
+    }
+}
+
+// SAFETY: a detached node is uniquely owned by its Box. Once linked, every
+// pointer mutation is serialized by the destination's SpinNoIrq queue lock;
+// the callback itself is Send.
+unsafe impl Send for IpiEventNode {}
+
+/// Intrusive FIFO of caller-allocated IPI callback nodes.
 ///
-/// It internally uses a `VecDeque` to store the events, make it
-/// possible to pop these events using FIFO order.
+/// `push` only links an existing node and therefore cannot allocate.
 pub struct IpiEventQueue {
-    events: VecDeque<IpiEvent>,
+    head: *mut IpiEventNode,
+    tail: *mut IpiEventNode,
 }
 
 impl IpiEventQueue {
-    /// Create a new empty timer list.
-    pub fn new() -> Self {
+    /// Creates an empty callback FIFO.
+    pub const fn new() -> Self {
         Self {
-            events: VecDeque::new(),
+            head: ptr::null_mut(),
+            tail: ptr::null_mut(),
         }
     }
 
-    /// Whether there is no event.
-    #[allow(dead_code)]
+    /// Returns whether the queue contains no callback node.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.head.is_null()
     }
 
-    /// Push a new event into the queue.
-    pub fn push(&mut self, src_cpu_id: usize, callback: Callback) {
-        self.events.push_back(IpiEvent {
-            src_cpu_id,
-            callback,
-        });
-    }
+    /// Links one preallocated node at the FIFO tail without allocating.
+    pub fn push(&mut self, src_cpu_id: usize, mut node: Box<IpiEventNode>) {
+        debug_assert!(node.next.is_null());
+        debug_assert!(node.callback.is_some());
+        node.src_cpu_id = src_cpu_id;
+        let node = Box::into_raw(node);
 
-    /// Try to pop the latest event that exists in the queue.
-    ///
-    /// Return `None` if no event is available.
-    #[must_use]
-    pub fn pop_one(&mut self) -> Option<(usize, Callback)> {
-        if let Some(e) = self.events.pop_front() {
-            Some((e.src_cpu_id, e.callback))
+        if self.tail.is_null() {
+            self.head = node;
         } else {
-            None
+            // SAFETY: a non-null tail is one live node exclusively owned by
+            // this queue, and `&mut self` serializes its link update.
+            unsafe { (*self.tail).next = node };
+        }
+        self.tail = node;
+    }
+
+    /// Detaches the FIFO head without allocating.
+    #[must_use]
+    pub fn pop_node(&mut self) -> Option<Box<IpiEventNode>> {
+        let node = self.head;
+        if node.is_null() {
+            return None;
+        }
+
+        // SAFETY: head is a live Box allocation owned exclusively by this
+        // queue. Detaching it transfers that unique ownership back to Box.
+        let next = unsafe { (*node).next };
+        self.head = next;
+        if next.is_null() {
+            self.tail = ptr::null_mut();
+        }
+        // Clear the intrusive link before returning the detached node.
+        unsafe { (*node).next = ptr::null_mut() };
+        Some(unsafe { Box::from_raw(node) })
+    }
+}
+
+// SAFETY: all pointees are Send and queue mutation requires `&mut self`; the
+// owning SpinNoIrq supplies cross-CPU exclusion.
+unsafe impl Send for IpiEventQueue {}
+
+impl Drop for IpiEventQueue {
+    fn drop(&mut self) {
+        while let Some(node) = self.pop_node() {
+            drop(node);
         }
     }
 }

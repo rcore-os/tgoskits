@@ -209,6 +209,12 @@ pub struct GuestSystemRegisters {
     hpfar_el2: u64,
 }
 
+/// Offset of the guest-owned `TPIDR_EL0` slot consumed by world-switch assembly.
+pub(crate) const GUEST_TPIDR_EL0_OFFSET: usize =
+    core::mem::offset_of!(GuestSystemRegisters, tpidr_el0);
+
+const _: () = assert!(GUEST_TPIDR_EL0_OFFSET.is_multiple_of(core::mem::align_of::<u64>()));
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GuestTimerRegisters {
     cntvoff_el2: u64,
@@ -265,7 +271,7 @@ impl GuestSystemRegisters {
             asm!("mrs {0}, AMAIR_EL1", out(reg) self.amair_el1);
             asm!("mrs {0}, VBAR_EL1", out(reg) self.vbar_el1);
             asm!("mrs {0:x}, CONTEXTIDR_EL1", out(reg) self.contextidr_el1);
-            asm!("mrs {0}, TPIDR_EL0", out(reg) self.tpidr_el0);
+            // TPIDR_EL0 is saved by lower-EL assembly before host TLS is restored.
             asm!("mrs {0}, TPIDR_EL1", out(reg) self.tpidr_el1);
             asm!("mrs {0}, TPIDRRO_EL0", out(reg) self.tpidrro_el0);
 
@@ -325,7 +331,7 @@ impl GuestSystemRegisters {
             asm!("msr AMAIR_EL1, {0}", in(reg) self.amair_el1);
             asm!("msr VBAR_EL1, {0}", in(reg) self.vbar_el1);
             asm!("msr CONTEXTIDR_EL1, {0:x}", in(reg) self.contextidr_el1);
-            asm!("msr TPIDR_EL0, {0}", in(reg) self.tpidr_el0);
+            // TPIDR_EL0 is installed only by the final guest-entry assembly window.
             asm!("msr TPIDR_EL1, {0}", in(reg) self.tpidr_el1);
             asm!("msr TPIDRRO_EL0, {0}", in(reg) self.tpidrro_el0);
 

@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::current_fs_context;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
@@ -11,7 +11,6 @@ use ax_net::{
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
-use ax_task::current;
 use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -29,7 +28,7 @@ use super::addr::{
 use crate::{
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::AsThread,
+    task::current_user_task,
 };
 
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
@@ -41,7 +40,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             warn!("Unsupported packet socket type: {ty}");
             return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
         }
-        if !current().as_thread().cred().has_cap_net_raw() {
+        if !current_user_task().as_thread().cred().has_cap_net_raw() {
             return Err(AxError::from(LinuxError::EPERM));
         }
         let socket = PacketSocket::new(proto as u16)?;
@@ -52,7 +51,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let pid = current_user_task().as_thread().proc_data.proc.pid();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -95,7 +94,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto != IPPROTO_ICMP as u32 {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
             }
-            if !current().as_thread().cred().has_cap_net_raw() {
+            if !current_user_task().as_thread().cred().has_cap_net_raw() {
                 return Err(AxError::from(LinuxError::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
@@ -122,7 +121,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+            addr.nl_pid = current_user_task().as_thread().proc_data.proc.pid();
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
@@ -147,12 +146,12 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
         SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
         _ => None,
     };
-    let cred = current().as_thread().cred();
+    let cred = current_user_task().as_thread().cred();
 
     socket.bind(addr)?;
 
     if let Some(path) = unix_path
-        && let Err(err) = FS_CONTEXT
+        && let Err(err) = current_fs_context()
             .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {
@@ -231,7 +230,9 @@ pub fn sys_accept4(
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
     if !addr.is_null() {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+        let mut addrlen_value = addrlen.read()?;
+        remote_addr.write_to_user(addr, &mut addrlen_value)?;
+        addrlen.write(addrlen_value)?;
     }
 
     Ok(fd)
@@ -263,7 +264,7 @@ pub fn sys_socketpair(
         return Err(AxError::from(LinuxError::EAFNOSUPPORT));
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let pid = current_user_task().as_thread().proc_data.proc.pid();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
             let (sock1, sock2) = StreamTransport::new_pair(pid);
@@ -287,9 +288,9 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    *fds.get_as_mut()? = [
+    fds.write([
         sock1.add_to_fd_table(cloexec)?,
         sock2.add_to_fd_table(cloexec)?,
-    ];
+    ])?;
     Ok(0)
 }

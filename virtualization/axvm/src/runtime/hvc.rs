@@ -348,12 +348,21 @@ impl HyperCall {
                 parameter: "arguments",
                 detail,
             },
+            AxVmError::CurrentVcpuInterruptOutOfRange { .. } => HyperCallError::InvalidParameter {
+                code: self.code,
+                parameter: "interrupt vector",
+                detail,
+            },
             AxVmError::InvalidState { .. } | AxVmError::InvalidTransition { .. } => {
                 HyperCallError::InvalidState {
                     code: self.code,
                     detail,
                 }
             }
+            AxVmError::CurrentVcpuUnavailable => HyperCallError::InvalidState {
+                code: self.code,
+                detail,
+            },
             AxVmError::VmNotFound { vm_id } => HyperCallError::ResourceNotFound {
                 code: self.code,
                 resource: format!("VM {vm_id}"),

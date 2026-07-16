@@ -13,7 +13,7 @@ use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
 };
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use enum_dispatch::enum_dispatch;
 
 mod cow;
@@ -124,7 +124,7 @@ pub trait BackendOps {
         flags: MappingFlags,
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
-        new_aspace: &Arc<Mutex<AddrSpace>>,
+        new_aspace: &Arc<PiMutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend>;
 
@@ -193,7 +193,7 @@ impl Backend {
         &self,
         new_start: VirtAddr,
         src_offset: usize,
-        aspace: &Arc<Mutex<AddrSpace>>,
+        aspace: &Arc<PiMutex<AddrSpace>>,
     ) -> AxResult<Self> {
         let adjusted = new_start
             .as_usize()

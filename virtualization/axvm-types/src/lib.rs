@@ -26,6 +26,7 @@ mod error;
 use alloc::{string::String, vec::Vec};
 use core::fmt::{Debug, Display, Formatter, LowerHex, UpperHex};
 
+use ax_cpu_local::CpuPin;
 use ax_memory_addr::{AddrRange, PhysAddr, VirtAddr, def_usize_addr, def_usize_addr_formatter};
 pub use error::{VmBackendError, VmBackendResult};
 
@@ -417,8 +418,13 @@ pub trait VmArchVcpuOps: Sized {
     type CreateConfig;
     /// Architecture-specific setup configuration.
     type SetupConfig;
-    /// Architecture-specific VM-exit type returned by [`Self::run`].
-    type Exit: Debug;
+    /// Architecture-specific VM-exit ownership returned by [`Self::run`].
+    ///
+    /// The lifetime lets a backend keep CPU-owned state inside an RAII exit
+    /// value that cannot outlive the pin used for guest entry.
+    type Exit<'cpu>: Debug
+    where
+        Self: 'cpu;
 
     /// Creates a new architecture-specific vCPU.
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> VmBackendResult<Self>;
@@ -428,12 +434,13 @@ pub trait VmArchVcpuOps: Sized {
     fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> VmBackendResult;
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> VmBackendResult;
-    /// Runs the vCPU until an architecture-specific VM exit.
-    fn run(&mut self) -> VmBackendResult<Self::Exit>;
-    /// Binds the vCPU to the current physical CPU.
-    fn bind(&mut self) -> VmBackendResult;
-    /// Unbinds the vCPU from the current physical CPU.
-    fn unbind(&mut self) -> VmBackendResult;
+    /// Runs the vCPU until an architecture-specific VM exit while pinned to
+    /// the current physical CPU.
+    fn run<'cpu>(&'cpu mut self, cpu_pin: &'cpu CpuPin) -> VmBackendResult<Self::Exit<'cpu>>;
+    /// Binds the vCPU to the physical CPU covered by `cpu_pin`.
+    fn bind(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
+    /// Unbinds the vCPU from the physical CPU covered by `cpu_pin`.
+    fn unbind(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
     /// Sets a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
     /// Decodes an architecture-specific memory fault as a legacy normalized
@@ -452,15 +459,17 @@ pub trait VmArchVcpuOps: Sized {
     /// Injects an interrupt into the vCPU.
     fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
     /// Injects an interrupt with trigger-mode metadata.
+    ///
+    /// The default supports edge-triggered delivery only. Backends that can
+    /// represent level-triggered state must override this method explicitly.
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
     ) -> VmBackendResult {
-        debug_assert!(
-            trigger == InterruptTriggerMode::EdgeTriggered,
-            "level-triggered interrupt injection requires an architecture-specific implementation"
-        );
+        if trigger == InterruptTriggerMode::LevelTriggered {
+            return Err(VmBackendError::Unsupported);
+        }
         self.inject_interrupt(vector)
     }
     /// Processes a guest EOI and returns an external EOI vector when needed.
@@ -478,9 +487,9 @@ pub trait VmArchPerCpuOps: Sized {
     /// Whether virtualization is enabled on the current CPU.
     fn is_enabled(&self) -> bool;
     /// Enables virtualization on the current CPU.
-    fn hardware_enable(&mut self) -> VmBackendResult;
+    fn hardware_enable(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
     /// Disables virtualization on the current CPU.
-    fn hardware_disable(&mut self) -> VmBackendResult;
+    fn hardware_disable(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
     /// Returns the max guest page table levels supported by this architecture.
     fn max_guest_page_table_levels(&self) -> usize {
         4
@@ -752,12 +761,12 @@ mod tests {
             self.enabled
         }
 
-        fn hardware_enable(&mut self) -> VmBackendResult {
+        fn hardware_enable(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
             self.enabled = true;
             Ok(())
         }
 
-        fn hardware_disable(&mut self) -> VmBackendResult {
+        fn hardware_disable(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
             self.enabled = false;
             Ok(())
         }
@@ -773,7 +782,7 @@ mod tests {
     impl VmArchVcpuOps for MockVcpu {
         type CreateConfig = ();
         type SetupConfig = ();
-        type Exit = MockExit;
+        type Exit<'cpu> = MockExit;
 
         fn new(
             _vm_id: VMId,
@@ -795,15 +804,15 @@ mod tests {
             Ok(())
         }
 
-        fn run(&mut self) -> VmBackendResult<Self::Exit> {
+        fn run<'cpu>(&'cpu mut self, _cpu_pin: &'cpu CpuPin) -> VmBackendResult<Self::Exit<'cpu>> {
             Ok(MockExit::SysRegRead { reg: 2 })
         }
 
-        fn bind(&mut self) -> VmBackendResult {
+        fn bind(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
             Ok(())
         }
 
-        fn unbind(&mut self) -> VmBackendResult {
+        fn unbind(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
             Ok(())
         }
 
@@ -819,8 +828,11 @@ mod tests {
     #[test]
     fn vcpu_protocol_lives_in_axvm_types() {
         let mut percpu = MockPerCpu::new(0).unwrap();
+        // SAFETY: this test never schedules and the mock backend does not
+        // access CPU-owned state.
+        let cpu_pin = unsafe { CpuPin::new_unchecked() };
         assert!(!percpu.is_enabled());
-        percpu.hardware_enable().unwrap();
+        percpu.hardware_enable(&cpu_pin).unwrap();
         assert!(percpu.is_enabled());
 
         let mut vcpu = MockVcpu::new(1, 0, ()).unwrap();
@@ -834,7 +846,7 @@ mod tests {
         .unwrap();
         vcpu.setup(()).unwrap();
         assert!(matches!(
-            vcpu.run().unwrap(),
+            vcpu.run(&cpu_pin).unwrap(),
             MockExit::SysRegRead { reg: 2 }
         ));
     }

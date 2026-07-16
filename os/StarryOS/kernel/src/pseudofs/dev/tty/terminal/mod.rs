@@ -11,7 +11,7 @@ pub mod ldisc;
 pub mod termios;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AnyBitPattern)]
+#[derive(Debug, Copy, Clone, AnyBitPattern, bytemuck::NoUninit)]
 pub struct WindowSize {
     pub ws_row: u16,
     pub ws_col: u16,

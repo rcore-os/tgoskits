@@ -29,8 +29,8 @@ impl LoongArchHostOps for DummyHost {
     fn register_timer(
         _deadline: Duration,
         _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> usize {
-        0
+    ) -> Option<usize> {
+        Some(0)
     }
 
     fn cancel_timer(_token: usize) {}

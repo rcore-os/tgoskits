@@ -26,6 +26,9 @@
 
 #![no_std]
 
+#[cfg(all(feature = "uspace", feature = "tls"))]
+compile_error!("ax-hal features `uspace` and `tls` select incompatible register ownership modes");
+
 #[allow(unused_imports)]
 #[macro_use]
 extern crate log;
@@ -62,8 +65,9 @@ pub mod paging;
 /// Console input and output.
 pub mod console {
     pub use ax_plat::console::{
-        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output,
-        device_id, read_bytes, write_bytes, write_text_bytes,
+        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoverError,
+        RuntimeOutputHandover, device_id, prepare_runtime_output_handover, read_bytes, write_bytes,
+        write_text_bytes,
     };
     #[cfg(feature = "irq")]
     pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
@@ -91,9 +95,10 @@ pub mod trap {
 /// There are two types of context:
 ///
 /// - [`TaskContext`][ax_cpu::TaskContext]: The context of a task.
-/// - [`TrapFrame`][ax_cpu::TrapFrame]: The context of an interrupt or an exception.
+/// - [`UserRegisters`][ax_cpu::UserRegisters]: User-owned registers saved at a trap boundary.
+/// - [`KernelTrapFrame`][ax_cpu::KernelTrapFrame]: A CPU-pinned view of a kernel trap.
 pub mod context {
-    pub use ax_cpu::{TaskContext, TrapFrame};
+    pub use ax_cpu::{KernelTlsBase, KernelTrapFrame, TaskContext, UserRegisters};
 }
 
 pub use ax_cpu as cpu;
@@ -167,3 +172,25 @@ macro_rules! addr_of_sym {
 }
 #[cfg(feature = "tls")]
 pub(crate) use addr_of_sym;
+
+#[cfg(test)]
+mod test_lock_runtime {
+    use ax_kspin::{LockRuntime, LockdepEvent, impl_trait};
+
+    struct TestLockRuntime;
+
+    impl_trait! {
+        impl LockRuntime for TestLockRuntime {
+            fn irq_enter() {}
+            fn irq_exit() {}
+            fn preempt_enter() {}
+            fn preempt_exit() {}
+            unsafe fn preempt_exit_irq_return() {}
+            fn current_thread_id() -> u64 { 1 }
+            fn lockdep_acquire(_event: LockdepEvent) {}
+            fn lockdep_release(_event: LockdepEvent) {}
+            fn lockdep_set_trace_enabled(_enabled: bool) {}
+            fn lockdep_dump_trace() {}
+        }
+    }
+}

@@ -1,7 +1,7 @@
 use rdif_block::{BlkError, CompletionHint, RequestId};
 
 use super::{DrainEvents, PendingTable, PollClaim, PollProgress, RequestKey, RuntimeDmaBuffer};
-use crate::os::{sync::IrqMutex as SpinNoIrq, wake_task};
+use crate::os::{sync::SpinMutex as SpinNoIrq, wake_task};
 
 struct ClaimedQueueBatch {
     queue_id: usize,

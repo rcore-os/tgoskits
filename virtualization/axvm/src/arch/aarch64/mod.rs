@@ -12,6 +12,7 @@ use arm_vcpu::{
     ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
 };
 use arm_vgic::host::ArmVgicHostIf;
+use ax_cpu_local::CpuPin;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
@@ -19,7 +20,10 @@ use axvm_types::{
     VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{
+    ArchOps, BoundVcpuExit, CommonDeferredRunWork, HypercallExit, MmioReadExit, MmioWriteExit,
+    VcpuRunAction,
+};
 use crate::{
     AxVmResult, ax_err,
     host::{HostCpu, HostMemory, HostTime, default_host},
@@ -47,7 +51,23 @@ pub(crate) struct Aarch64Arch;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Aarch64DeferredRunWork {
+    Common(CommonDeferredRunWork),
+    SysReg(sysreg::DeferredRunWork),
+    CpuUp(CpuUpExit),
+    SendIpi(SendIpiExit),
     ExternalInterrupt { vector: usize },
+}
+
+impl From<CommonDeferredRunWork> for Aarch64DeferredRunWork {
+    fn from(work: CommonDeferredRunWork) -> Self {
+        Self::Common(work)
+    }
+}
+
+impl From<sysreg::DeferredRunWork> for Aarch64DeferredRunWork {
+    fn from(work: sysreg::DeferredRunWork) -> Self {
+        Self::SysReg(work)
+    }
 }
 
 impl CpuUpOps for Aarch64Arch {}
@@ -70,11 +90,14 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_bound<'cpu>(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        exit: <Self::VCpu as VmArchVcpuOps>::Exit<'cpu>,
+    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>>
+    where
+        Self::VCpu: 'cpu,
+    {
         match exit {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
@@ -85,7 +108,7 @@ impl ArchOps for Aarch64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => super::handle_mmio_read::<Self>(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -98,6 +121,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),
@@ -142,15 +166,13 @@ impl ArchOps for Aarch64Arch {
                 target_cpu,
                 entry_point,
                 arg,
-            } => cpu_up::handle::<Self>(
-                vm,
-                vcpu,
+            } => Ok(BoundVcpuExit::Defer(Aarch64DeferredRunWork::CpuUp(
                 CpuUpExit {
                     target_cpu,
                     entry_point: arm_guest_phys_addr_to_ax(entry_point),
                     arg,
                 },
-            ),
+            ))),
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
@@ -164,9 +186,7 @@ impl ArchOps for Aarch64Arch {
                 send_to_all,
                 send_to_self,
                 vector,
-            } => ipi::handle(
-                vm,
-                vcpu.id(),
+            } => Ok(BoundVcpuExit::Defer(Aarch64DeferredRunWork::SendIpi(
                 SendIpiExit {
                     target_cpu,
                     target_cpu_aux,
@@ -174,11 +194,8 @@ impl ArchOps for Aarch64Arch {
                     send_to_self,
                     vector,
                 },
-            ),
-            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            })),
+            ))),
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Continue),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
     }
@@ -189,8 +206,20 @@ impl ArchOps for Aarch64Arch {
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
+            Aarch64DeferredRunWork::Common(work) => {
+                return super::finish_deferred::<Self>(vm, vcpu, work);
+            }
+            Aarch64DeferredRunWork::SysReg(work) => {
+                return sysreg::finish(vm, vcpu, work);
+            }
+            Aarch64DeferredRunWork::CpuUp(exit) => {
+                return cpu_up::finish::<Self>(vm, vcpu, exit);
+            }
+            Aarch64DeferredRunWork::SendIpi(exit) => {
+                return ipi::finish(vm, vcpu.id(), exit);
+            }
             Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
-                Self::after_external_interrupt(vm, vcpu, vector);
+                ax_std::os::arceos::modules::ax_hal::irq::handle_irq(vector);
             }
         }
         Ok(VcpuRunAction {
@@ -222,7 +251,7 @@ pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
 impl VmArchVcpuOps for AxvmArmVcpu {
     type CreateConfig = ArmVcpuCreateConfig;
     type SetupConfig = ArmVcpuSetupConfig;
-    type Exit = ArmVmExit;
+    type Exit<'cpu> = ArmVmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
@@ -243,16 +272,16 @@ impl VmArchVcpuOps for AxvmArmVcpu {
         arm_result(self.0.setup(config))
     }
 
-    fn run(&mut self) -> BackendResult<Self::Exit> {
-        arm_result(self.0.run())
+    fn run<'cpu>(&'cpu mut self, cpu_pin: &'cpu CpuPin) -> BackendResult<Self::Exit<'cpu>> {
+        arm_result(self.0.run(cpu_pin))
     }
 
-    fn bind(&mut self) -> BackendResult {
-        arm_result(self.0.bind())
+    fn bind(&mut self, cpu_pin: &CpuPin) -> BackendResult {
+        arm_result(self.0.bind(cpu_pin))
     }
 
-    fn unbind(&mut self) -> BackendResult {
-        arm_result(self.0.unbind())
+    fn unbind(&mut self, cpu_pin: &CpuPin) -> BackendResult {
+        arm_result(self.0.unbind(cpu_pin))
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
@@ -279,11 +308,11 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
         self.0.is_enabled()
     }
 
-    fn hardware_enable(&mut self) -> BackendResult {
+    fn hardware_enable(&mut self, _cpu_pin: &ax_cpu_local::CpuPin) -> BackendResult {
         arm_result(self.0.hardware_enable::<AxvmArmHostOps>())
     }
 
-    fn hardware_disable(&mut self) -> BackendResult {
+    fn hardware_disable(&mut self, _cpu_pin: &ax_cpu_local::CpuPin) -> BackendResult {
         arm_result(self.0.hardware_disable())
     }
 
@@ -358,7 +387,11 @@ mod tests {
         );
     }
 
-    fn assert_arm_exit_type<T: VmArchVcpuOps<Exit = ArmVmExit>>() {}
+    fn assert_arm_exit_type<T>()
+    where
+        for<'cpu> T: VmArchVcpuOps<Exit<'cpu> = ArmVmExit>,
+    {
+    }
 
     #[test]
     fn axvm_arm_vcpu_uses_arm_exit_type() {
@@ -406,16 +439,44 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         default_host().cpu_count()
     }
 
+    fn current_vm_id() -> usize {
+        super::current_vcpu_identity_for_task()
+            .unwrap_or_else(|error| panic!("current AArch64 vCPU identity is invalid: {error}"))
+            .expect("current AArch64 VM is not set")
+            .into_ids()
+            .0
+    }
+
     fn current_vcpu_id() -> usize {
-        crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
+        super::current_vcpu_identity_for_task()
+            .unwrap_or_else(|error| panic!("current AArch64 vCPU identity is invalid: {error}"))
+            .expect("current AArch64 vCPU is not set")
+            .into_ids()
+            .1
     }
 
     fn current_time_nanos() -> u64 {
         default_host().monotonic_time().as_nanos() as u64
     }
 
-    fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
+    fn register_timer(
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> Option<usize> {
+        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+    }
+
+    fn cancel_timer(token: usize) {
+        let _ = crate::timer::cancel_timer(token);
+    }
+
+    fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
+        if let Err(err) = crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector) {
+            warn!(
+                "failed to queue AArch64 virtual interrupt {vector:#x} for VM[{vm_id}] \
+                 VCpu[{vcpu_id}]: {err:?}"
+            );
+        }
     }
 
     fn read_vgicd_iidr() -> u32 {
@@ -432,9 +493,5 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn get_host_gicr_base() -> PhysAddr {
         gic::host_gicr_base()
-    }
-
-    fn hardware_inject_virtual_interrupt(vector: u8) {
-        gic::inject_interrupt(vector as usize);
     }
 }

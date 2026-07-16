@@ -1,14 +1,21 @@
+use alloc::boxed::Box;
 use core::{
     any::Any,
-    mem::{MaybeUninit, size_of},
-    sync::atomic::{AtomicU64, Ordering},
+    hint::spin_loop,
+    mem::size_of,
+    pin::Pin,
+    sync::atomic::{AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
+use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_runtime::hal::cpu::asm::user_copy;
-use ax_task::WaitQueue;
+use ax_std::os::arceos::task::{
+    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
+    ThreadId, ThreadWakeHandle, WaitQueue,
+};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+use bytemuck::{AnyBitPattern, NoUninit};
 use k230_kpu::{
     CommandRange, KPU_CFG_PADDR, KPU_CFG_SIZE, KPU_INFO_F_FAKE_OUTPUT, KPU_INFO_F_FDT,
     KPU_INFO_F_IRQ_WAIT, KPU_INFO_F_RUNTIME_SCRATCH, KPU_IOC_CLEAR, KPU_IOC_GET_INFO,
@@ -19,9 +26,12 @@ use k230_kpu::{
     Kpu, KpuInfo,
 };
 
-use crate::pseudofs::{
-    DeviceMmap, DeviceOps,
-    dev::{IrqRegistration, request_shared_disabled},
+use crate::{
+    mm::{UserConstPtr, UserPtr},
+    pseudofs::{
+        DeviceMmap, DeviceOps,
+        dev::{IrqRegistration, request_shared_disabled},
+    },
 };
 
 pub const KPU_DEVICE_ID: DeviceId = DeviceId::new(240, 1);
@@ -30,6 +40,13 @@ const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 // move this IRQ state into per-device storage.
 static KPU_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
+static KPU_SERVICE_PARK: WaitQueue = WaitQueue::new();
+static KPU_IRQ_NOTIFY: IrqWaitCell = IrqWaitCell::new();
+static KPU_SERVICE_WAITER: LazyInit<KpuServiceWaiter> = LazyInit::new();
+static KPU_SERVICE_STATE: AtomicU8 = AtomicU8::new(KPU_SERVICE_STOPPED);
+const KPU_SERVICE_STOPPED: u8 = 0;
+const KPU_SERVICE_STARTING: u8 = 1;
+const KPU_SERVICE_STARTED: u8 = 2;
 
 pub struct KpuDevice {
     hw: Kpu,
@@ -439,6 +456,9 @@ fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration>
             return None;
         }
     };
+    if !start_kpu_irq_service() {
+        return None;
+    }
     if let Err(err) = registration.enable() {
         warn!("k230-kpu devfs: failed to enable IRQ {irq:?}: {err:?}");
         return None;
@@ -448,8 +468,119 @@ fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration>
 
 fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
-    KPU_DONE_WQ.notify_all_from_irq();
+    let _result = KPU_IRQ_NOTIFY.notify();
     ax_runtime::hal::irq::IrqReturn::Handled
+}
+
+struct KpuServiceWaiter {
+    owner: ThreadId,
+    registration: Pin<Box<IrqWaitRegistration>>,
+    _wake: &'static ThreadWakeHandle,
+}
+
+fn start_kpu_irq_service() -> bool {
+    loop {
+        match KPU_SERVICE_STATE.load(Ordering::Acquire) {
+            KPU_SERVICE_STARTED => return true,
+            KPU_SERVICE_STARTING => spin_loop(),
+            KPU_SERVICE_STOPPED => {
+                if KPU_SERVICE_STATE
+                    .compare_exchange(
+                        KPU_SERVICE_STOPPED,
+                        KPU_SERVICE_STARTING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+            _ => unreachable!("invalid KPU IRQ service state"),
+        }
+    }
+
+    match crate::task::try_spawn_kernel_thread_with_stack(
+        kpu_irq_service,
+        "kpu-irq-service".into(),
+        crate::task::default_task_stack_size(),
+    ) {
+        Ok(_service) => {
+            KPU_SERVICE_STATE.store(KPU_SERVICE_STARTED, Ordering::Release);
+            true
+        }
+        Err(error) => {
+            KPU_SERVICE_STATE.store(KPU_SERVICE_STOPPED, Ordering::Release);
+            warn!("k230-kpu devfs: failed to spawn IRQ service thread: {error}");
+            false
+        }
+    }
+}
+
+fn kpu_irq_service() {
+    let current = scheduler::current_thread_handle()
+        .unwrap_or_else(|error| panic!("KPU IRQ service has no scheduler thread: {error}"));
+    let waiter = KPU_SERVICE_WAITER.get_or_init(|| create_kpu_service_waiter(&current));
+    assert_eq!(
+        waiter.owner,
+        current.id(),
+        "KPU IRQ notifications must be consumed by one fixed service thread"
+    );
+
+    loop {
+        let registration = KPU_IRQ_NOTIFY.register(waiter.registration.as_ref());
+        if !complete_kpu_service_cycle(
+            registration,
+            || KPU_SERVICE_PARK.wait(),
+            || {
+                let _removed = KPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
+            },
+            || KPU_DONE_WQ.notify_all(),
+        ) {
+            panic!("KPU IRQ service registration was occupied concurrently");
+        }
+    }
+}
+
+fn create_kpu_service_waiter(current: &scheduler::ThreadHandle) -> KpuServiceWaiter {
+    let wake = Box::leak(Box::new(current.wake_handle()));
+    // SAFETY: the wake handle is retained for the shutdown lifetime. Its direct
+    // wake path is allocation-free, non-blocking, and hard-IRQ-safe.
+    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_kpu_service) };
+    KpuServiceWaiter {
+        owner: current.id(),
+        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
+        _wake: wake,
+    }
+}
+
+fn complete_kpu_service_cycle<P, C, F>(
+    registration: IrqRegisterResult,
+    park: P,
+    cleanup: C,
+    fanout: F,
+) -> bool
+where
+    P: FnOnce(),
+    C: FnOnce(),
+    F: FnOnce(),
+{
+    match registration {
+        IrqRegisterResult::Registered | IrqRegisterResult::ConsumedPending => {
+            park();
+            cleanup();
+            fanout();
+            true
+        }
+        IrqRegisterResult::Occupied => false,
+    }
+}
+
+unsafe fn wake_kpu_service(data: usize) {
+    // SAFETY: `create_kpu_service_waiter` publishes only its leaked
+    // `ThreadWakeHandle`, retained by the shutdown-lifetime waiter.
+    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
+    let _result = wake.wake();
 }
 
 fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
@@ -497,37 +628,71 @@ fn decode_named_region(
     .flatten()
 }
 
-fn copy_from_user<T: Copy>(arg: usize) -> VfsResult<T> {
+fn copy_from_user<T: AnyBitPattern>(arg: usize) -> VfsResult<T> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let mut value = MaybeUninit::<T>::uninit();
-    let ret = unsafe {
-        user_copy(
-            value.as_mut_ptr().cast::<u8>(),
-            arg as *const u8,
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(unsafe { value.assume_init() })
+    UserConstPtr::<T>::from(arg)
+        .read()
+        .map_err(|_| VfsError::InvalidData)
 }
 
-fn copy_to_user<T: Copy>(arg: usize, value: &T) -> VfsResult<()> {
+fn copy_to_user<T: NoUninit>(arg: usize, value: &T) -> VfsResult<()> {
     if arg == 0 {
         return Err(VfsError::InvalidInput);
     }
-    let ret = unsafe {
-        user_copy(
-            arg as *mut u8,
-            (value as *const T).cast::<u8>(),
-            size_of::<T>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
+    UserPtr::<T>::from(arg)
+        .write(*value)
+        .map_err(|_| VfsError::InvalidData)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn pending_before_register_runs_service_fanout_after_park_cleanup() {
+        assert_service_cycle_order(IrqRegisterResult::ConsumedPending);
     }
-    Ok(())
+
+    #[test]
+    fn register_before_irq_runs_service_fanout_after_park_cleanup() {
+        assert_service_cycle_order(IrqRegisterResult::Registered);
+    }
+
+    #[test]
+    fn occupied_registration_does_not_park_or_fanout() {
+        let step = Cell::new(0);
+        let completed = complete_kpu_service_cycle(
+            IrqRegisterResult::Occupied,
+            || step.set(1),
+            || step.set(2),
+            || step.set(3),
+        );
+        assert!(!completed);
+        assert_eq!(step.get(), 0);
+    }
+
+    fn assert_service_cycle_order(registration: IrqRegisterResult) {
+        let step = Cell::new(0);
+        let completed = complete_kpu_service_cycle(
+            registration,
+            || {
+                assert_eq!(step.get(), 0);
+                step.set(1);
+            },
+            || {
+                assert_eq!(step.get(), 1);
+                step.set(2);
+            },
+            || {
+                assert_eq!(step.get(), 2);
+                step.set(3);
+            },
+        );
+        assert!(completed);
+        assert_eq!(step.get(), 3);
+    }
 }

@@ -52,9 +52,8 @@
 - 给上层运行时提供 `add/remove/pick/put_prev/task_tick/set_priority` 这组就绪队列操作。
 
 ### 使用场景
-- `BaseScheduler`：由 `ax-task/src/run_queue.rs` 直接依赖。
-- `FifoScheduler` / `RRScheduler` / `CFScheduler`：由 `ax-task/src/api.rs` 按 feature 选成 `Scheduler` 类型别名。
-- `FifoTask` / `RRTask` / `CFSTask`：由 `ax-task` 用来包裹 `TaskInner`，形成真正进入运行队列的对象。
+- `BaseScheduler`、`FifoScheduler`、`RRScheduler` 和 `CFScheduler` 保留为独立算法库 API。
+- 新的 `components/ax-task` 不再依赖本 crate；它使用统一的 per-CPU 多类 runqueue 和 EEVDF/RT/Deadline accounting。
 
 ### 边界说明
 - `axsched` 不保存任务的 `Running/Ready/Blocked/Exited` 状态机；那是 `ax-task::TaskState` 的职责。
@@ -65,9 +64,7 @@
 ```mermaid
 graph LR
     linked_list["ax-linked-list-r4l"] --> axsched["ax-sched"]
-    axsched --> ax-task["ax-task"]
-    ax-task --> starry["starry-kernel"]
-    ax-task --> axvisor["axvisor (indirect)"]
+    consumers["independent algorithm consumers"] --> axsched["ax-sched"]
 ```
 
 ### 直接依赖
@@ -75,7 +72,7 @@ graph LR
 - `alloc` / `BTreeMap`：CFS 的有序队列依赖标准 `alloc` 数据结构。
 
 ### 主要消费者
-- `ax-task`：当前仓库里唯一的直接消费者，也是 `axsched` 的实际封装层。
+- 本 crate 当前作为独立算法组件保留；新的任务运行时不再通过它选择生产调度类。
 
 ## 开发指南
 ### 接入方式
@@ -92,8 +89,7 @@ ax-sched = { workspace = true }
 
 ### 4.3 开发建议
 - 如果要新增新算法，优先新增一个实现 `BaseScheduler` 的独立调度器，而不是把现有三个调度器改成巨大的 feature if-else。
-- 如果只是想改任务对象字段，应优先看 `ax-task::TaskInner`，不要在 `axsched` 里扩散业务语义。
-- 对需要复杂 load balancing 的场景，应在 `ax-task::run_queue` 层做队列选择，而不是让 `axsched` 感知整个系统拓扑。
+- 任务生命周期、SMP load balance 和生产 policy 变更应直接在新 `ax-task` 的领域模块中实现，不要让 `axsched` 感知系统拓扑。
 
 ## 测试
 ### 测试覆盖
@@ -109,8 +105,7 @@ ax-sched = { workspace = true }
 - CFS 的 vruntime 排序与 `nice` 映射。
 
 ### 集成测试
-- 在 `ax-task` 中分别打开 `multitask`、`sched-rr`、`sched-cfs`，验证系统级调度行为不回归。
-- 检查 `set_priority()` 在上层 API 中的外显行为是否与所选调度器一致。
+- 本 crate 的算法单测保持独立；系统级行为由 `ax-task` 的 Linux/Zephyr/reference 测试覆盖。
 
 ### 覆盖率
 - 对 `axsched`，算法行为覆盖比普通行覆盖更重要。

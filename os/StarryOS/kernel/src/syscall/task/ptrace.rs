@@ -13,7 +13,6 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::current;
 use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
@@ -28,7 +27,7 @@ use crate::task::PtraceStopFpData;
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{Cred, ProcessData, current_user_task, get_process_cred, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -267,7 +266,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
 }
 
 fn ptrace_traceme() -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     if proc_data.proc.parent().is_none()
         || proc_data.is_ptrace_traceme()
@@ -295,7 +294,7 @@ fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
     tracee.set_ptrace_singlestep_for(tid, false);
     tracee.set_ptrace_syscall_trace_for(tid, false);
     tracee.resume_ptrace_stop_with_signal_for(tid, signo);
-    ax_task::yield_now();
+    crate::task::yield_now();
     Ok(0)
 }
 
@@ -324,7 +323,7 @@ fn ptrace_singlestep(pid: usize, data: usize) -> AxResult<isize> {
 }
 
 fn ptrace_attach(pid: usize) -> AxResult<isize> {
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
         return Err(AxError::from(LinuxError::EPERM));
@@ -599,7 +598,7 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
 }
 
 fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
         return Err(AxError::from(LinuxError::EPERM));
@@ -1065,7 +1064,7 @@ fn process_vm_copy(
 
 fn process_vm_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let current_pid = current().as_thread().proc_data.proc.pid();
+    let current_pid = current_user_task().as_thread().proc_data.proc.pid();
     if tracee_pid == current_pid {
         get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
     } else {
@@ -1131,7 +1130,7 @@ fn ptrace_stopped_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
 
 fn ptrace_stopped_tracee_with_tid(pid: usize) -> AxResult<(Arc<ProcessData>, u32)> {
     let pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee = ptrace_tracee_by_pid_or_tid(pid)?;
     let is_tracer = (tracee.is_ptrace_traceme() || tracee.is_ptrace_attached())
         && tracee

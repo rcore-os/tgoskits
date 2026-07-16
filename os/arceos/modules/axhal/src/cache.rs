@@ -13,7 +13,7 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
 pub fn flush_tlb_range_all_cpus(start: VirtAddr, size: usize) {
     #[cfg(feature = "ipi")]
     {
-        let _guard = ax_kernel_guard::NoPreempt::new();
+        let _guard = ax_kspin::PreemptGuard::new();
         let current_cpu = crate::percpu::this_cpu_id();
         let arg = FlushRangeArg {
             start: start.as_usize(),
@@ -62,7 +62,7 @@ pub fn flush_icache_all() {
 pub fn flush_icache_all_cpus() {
     #[cfg(feature = "ipi")]
     {
-        let _guard = ax_kernel_guard::NoPreempt::new();
+        let _guard = ax_kspin::PreemptGuard::new();
         let current_cpu = crate::percpu::this_cpu_id();
 
         for cpu_id in 0..crate::cpu_num() {

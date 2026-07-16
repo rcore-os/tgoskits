@@ -21,7 +21,7 @@ pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
 };
-use crate::task::{AsThread, SeccompDecision, do_exit, seccomp_errno};
+use crate::task::{SeccompDecision, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
@@ -49,7 +49,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
     };
 
     trace!("Syscall {sysno:?}");
-    match ax_task::current()
+    match crate::task::current_user_task()
         .as_thread()
         .seccomp_state()
         .evaluate(uctx)
@@ -602,6 +602,25 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             sys_sched_setscheduler(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
         }
         Sysno::sched_getparam => sys_sched_getparam(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::sched_setparam => sys_sched_setparam(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::sched_get_priority_min => sys_sched_get_priority_min(uctx.arg0() as _),
+        Sysno::sched_get_priority_max => sys_sched_get_priority_max(uctx.arg0() as _),
+        Sysno::sched_rr_get_interval => {
+            sys_sched_rr_get_interval(uctx.arg0() as _, uctx.arg1() as _)
+        }
+        #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+        Sysno::sched_rr_get_interval_time64 => {
+            sys_sched_rr_get_interval_time64(uctx.arg0() as _, uctx.arg1() as _)
+        }
+        Sysno::sched_setattr => {
+            sys_sched_setattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+        Sysno::sched_getattr => sys_sched_getattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
         Sysno::getpriority => sys_getpriority(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setpriority => sys_setpriority(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
@@ -963,7 +982,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {
-            let tid = ax_task::current().as_thread().tid();
+            let tid = crate::task::current_user_task().as_thread().tid();
             warn!("Unimplemented syscall: {sysno} (tid={tid})");
             Err(AxError::Unsupported)
         }

@@ -19,10 +19,14 @@ pub trait LoongArchHostOps {
     fn ticks_to_nanos(ticks: u64) -> u64;
 
     /// Register a guest timer callback at an absolute host deadline.
+    ///
+    /// Returns `None` when the host timer service has no registration
+    /// capacity. The vCPU core converts that failure into an immediate guest
+    /// timer event so a CSR write cannot silently lose its wakeup.
     fn register_timer(
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> usize;
+    ) -> Option<usize>;
 
     /// Cancel a guest timer callback.
     fn cancel_timer(token: usize);

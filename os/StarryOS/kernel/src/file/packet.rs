@@ -9,8 +9,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
@@ -26,6 +25,10 @@ use super::{
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 const PACKET_HOST: u8 = 0;
@@ -108,7 +111,7 @@ struct PacketSocketState {
 }
 
 pub struct PacketSocket {
-    state: Mutex<PacketSocketState>,
+    state: PiMutex<PacketSocketState>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -120,7 +123,7 @@ impl PacketSocket {
         }
         let info = first_visible_ethernet()?;
         Ok(Self {
-            state: Mutex::new(PacketSocketState {
+            state: PiMutex::new(PacketSocketState {
                 bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,
             }),
@@ -174,14 +177,18 @@ impl PacketSocket {
     }
 
     pub fn recv_packet(&self, dst: &mut IoDst) -> AxResult<(usize, SockAddrLl)> {
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let (data, from) = {
-                let mut state = self.state.lock();
-                state.pending.take().ok_or(AxError::WouldBlock)?
-            };
-            let written = dst.write(&data)?;
-            Ok((written, from))
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let (data, from) = {
+                    let mut state = self.state.lock();
+                    state.pending.take().ok_or(AxError::WouldBlock)?
+                };
+                let written = dst.write(&data)?;
+                Ok((written, from))
+            }),
+        )
     }
 
     pub fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {

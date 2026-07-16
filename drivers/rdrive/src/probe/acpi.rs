@@ -42,7 +42,6 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
-pub const PCI_INTX_VECTOR_BASE: usize = 0x30;
 const LOONGARCH_PCH_PIC_GSI_COUNT: u16 = 256;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
@@ -146,9 +145,8 @@ struct AcpiGsiSource {
 
 impl AcpiGsiSource {
     fn contains_gsi(self, gsi: u32) -> bool {
-        let start = self.gsi_base;
-        let end = start.saturating_add(u32::from(self.gsi_count));
-        (start..end).contains(&gsi)
+        gsi.checked_sub(self.gsi_base)
+            .is_some_and(|input| input < u32::from(self.gsi_count))
     }
 
     fn route(
@@ -160,7 +158,6 @@ impl AcpiGsiSource {
         let controller_input = u8::try_from(gsi.checked_sub(self.gsi_base)?).ok()?;
         Some(AcpiGsiRoute {
             gsi,
-            vector: PCI_INTX_VECTOR_BASE + gsi as usize,
             controller: self.controller,
             controller_id: self.controller_id,
             controller_address: self.controller_address,
@@ -227,11 +224,6 @@ impl AcpiRouting {
             .copied()
             .map(AcpiIoApic::gsi_source)
             .chain(self.pch_pics.iter().copied().map(AcpiPchPic::gsi_source))
-    }
-
-    pub fn resolve_vector(&self, vector: usize) -> Option<AcpiGsiRoute> {
-        let gsi = vector.checked_sub(PCI_INTX_VECTOR_BASE)?;
-        self.resolve_gsi(gsi as u32)
     }
 
     fn default_trigger(&self, gsi: u32) -> AcpiIrqTrigger {
@@ -385,7 +377,7 @@ mod tests {
         System {
             ecam_regions: Vec::new(),
             routing,
-            interpreter: interpreter_with_devices(handler.clone()),
+            interpreter: Some(interpreter_with_devices(handler.clone())),
             handler,
             pci: None,
             probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
@@ -481,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn ioapic_routes_map_gsi_to_stable_vector() {
+    fn ioapic_routes_preserve_firmware_controller_metadata() {
         let mut routing = AcpiRouting::new();
         routing.add_io_apic(AcpiIoApic {
             id: 0,
@@ -493,7 +485,6 @@ mod tests {
         let legacy_irq = routing
             .resolve_gsi(4)
             .expect("legacy ISA GSI 4 should be handled by the IOAPIC");
-        assert_eq!(legacy_irq.vector, 0x34);
         assert_eq!(legacy_irq.controller_input, 4);
         assert_eq!(legacy_irq.trigger, AcpiIrqTrigger::Edge);
         assert_eq!(legacy_irq.polarity, AcpiIrqPolarity::ActiveHigh);
@@ -506,7 +497,6 @@ mod tests {
         assert_eq!(irq.controller_id, 0);
         assert_eq!(irq.controller_address, 0xfec0_0000);
         assert_eq!(irq.controller_input, 16);
-        assert_eq!(irq.vector, 0x40);
         assert_eq!(irq.trigger, AcpiIrqTrigger::Level);
         assert_eq!(irq.polarity, AcpiIrqPolarity::ActiveLow);
         assert!(routing.resolve_gsi(24).is_none());
@@ -578,7 +568,6 @@ mod tests {
         assert_eq!(route.controller_id, 1);
         assert_eq!(route.controller_address, 0x1000_0000);
         assert_eq!(route.controller_input, 18);
-        assert_eq!(route.vector, 0x30 + 82);
         assert!(routing.resolve_gsi(128).is_none());
     }
 
@@ -601,10 +590,92 @@ mod tests {
         let route = routing
             .resolve_gsi(2)
             .expect("overridden ISA GSI should still route through the IOAPIC");
-        assert_eq!(route.vector, 0x32);
         assert_eq!(route.controller_input, 2);
         assert_eq!(route.trigger, AcpiIrqTrigger::Level);
         assert_eq!(route.polarity, AcpiIrqPolarity::ActiveLow);
+    }
+
+    #[test]
+    fn ioapic_route_supports_gsi_256_without_using_it_as_a_vector() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 3,
+            address: 0xfec0_1000,
+            gsi_base: 256,
+            redirection_entries: 24,
+        });
+
+        let route = routing
+            .resolve_gsi(256)
+            .expect("the first input of a high-base IOAPIC must be routable");
+
+        assert_eq!(route.gsi, 256);
+        assert_eq!(route.controller_id, 3);
+        assert_eq!(route.controller_address, 0xfec0_1000);
+        assert_eq!(route.controller_input, 0);
+    }
+
+    #[test]
+    fn sparse_ioapic_gsi_base_preserves_the_controller_local_input() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 4,
+            address: 0xfec0_2000,
+            gsi_base: 0x1_0000,
+            redirection_entries: 24,
+        });
+
+        let route = routing
+            .resolve_gsi(0x1_0007)
+            .expect("a sparse high GSI must remain a firmware routing key");
+
+        assert_eq!(route.gsi, 0x1_0007);
+        assert_eq!(route.controller_id, 4);
+        assert_eq!(route.controller_input, 7);
+    }
+
+    #[test]
+    fn ioapic_range_can_end_at_the_largest_u32_gsi() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 5,
+            address: 0xfec0_3000,
+            gsi_base: u32::MAX - 7,
+            redirection_entries: 8,
+        });
+
+        let route = routing
+            .resolve_gsi(u32::MAX)
+            .expect("checked GSI offsets must not lose the top u32 route");
+
+        assert_eq!(route.gsi, u32::MAX);
+        assert_eq!(route.controller_input, 7);
+    }
+
+    #[test]
+    fn two_ioapics_route_equal_local_inputs_by_full_gsi() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 1,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        routing.add_io_apic(AcpiIoApic {
+            id: 2,
+            address: 0xfec0_1000,
+            gsi_base: 256,
+            redirection_entries: 24,
+        });
+
+        let low = routing.resolve_gsi(7).expect("low IOAPIC route");
+        let high = routing.resolve_gsi(263).expect("high IOAPIC route");
+
+        assert_eq!(low.controller_input, 7);
+        assert_eq!(high.controller_input, 7);
+        assert_ne!(low.gsi, high.gsi);
+        assert_ne!(low.controller_id, high.controller_id);
+        assert_ne!(low.controller_address, high.controller_address);
     }
 
     #[test]

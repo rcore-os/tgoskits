@@ -21,6 +21,8 @@ When a boot failure appears in a high layer, still audit lower-layer contracts. 
 - Dynamic platform means the platform facts come from firmware/runtime discovery through `someboot`, `somehal`, and `axplat-dyn`. It does not remove the need for arch-specific page table, trap, timer, IRQ, and power code.
 - Match the x86_64 dynamic UEFI path first: firmware disk layout, `to_bin` behavior, pflash/OVMF handling, and handoff expectations.
 - Keep dynamic platform features aligned across `ax-std`, `ax-hal`, `ax-driver`, `axvm`, and the OS package. A partial `plat-dyn` feature set often compiles but fails after device or memory init.
+- Treat register mode as a final-image choice. StarryOS uses `LinuxCurrent` and has no kernel TLS; Axvisor has no host userspace and explicitly selects `ax-std/tls`, which propagates `UnikernelTls` through ax-runtime, ax-hal, axplat-dyn, somehal, and someboot. Reusable `axvm` and architecture vCPU crates must not select the host mode themselves. The same final `someboot/tls` feature selects the linker layout: TLS images retain `PT_TLS`, `.tdata`, and `.tbss`, while no-TLS images must not synthesize empty TLS program headers or output sections.
+- Keep kernel build pipelines shared rather than adding OS-specific target formats. StarryOS selects axbuild's common no-std PIE mode with its original `*-unknown-none*` target and `core,alloc`; it must not inject fake std libraries, `std-compat`, or a new JSON target. Axvisor continues to use the existing std/musl PIE pipeline.
 - For std/musl targets, derive the initial JSON from a known Rust target where possible, then minimally adjust ABI, linker, relocation model, and soft-float. A `none-softfloat` target passing does not prove musl/std ABI correctness.
 - Prefer runtime memory map data over board constants. Any early helper such as `phys_to_virt` must be valid for the phase where it is called.
 
@@ -37,13 +39,58 @@ Use this order when auditing an early boot port:
 7. MMU enable is followed by the required barrier, TLB flush, and an address-basis-safe jump.
 8. Post-MMU console and panic paths are usable.
 9. Per-CPU data and secondary boot stacks are allocated and initialized.
-10. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+10. Immutable logical-to-hardware CPU metadata is complete before runtime CPU count is published; runtime IPI routing never reparses ACPI/FDT.
+11. Each secondary's private interrupt interface and controller target are published before the CPU becomes online; a missing target fails bring-up.
+12. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+
+## Runtime IPI Debugging
+
+- Follow the ownership chain from queue/inbox publication to the final device
+  write. The publish barrier belongs immediately before the LAPIC/GIC/SBI/IOCSR
+  transaction, while the lowest public sender keeps an `IrqGuard` alive across
+  identity lookup and commit. A guard only in a higher facade is insufficient
+  if `somehal` still exposes an unguarded safe sender.
+- Interpret `Success` as a committed doorbell, `Retry` as no new transaction
+  committed, and `Invalid` as a permanent target/configuration error. On xAPIC
+  and x2APIC, bound the busy wait before the ICR write; do not report `Retry`
+  after a write that may already have delivered.
+- For a software all-except-current send, keep one CPU pin across current-ID
+  capture, complete target preflight, and every commit. Re-pinning for each
+  target can migrate A to B, exclude old A, then mistake B for local and omit
+  both CPUs. Preflight every encoding before the first write so `Invalid` never
+  describes a partially committed broadcast.
+- A scheduler/callback doorbell needs a generation token and a preallocated
+  persistent retry set. When diagnosing a sleeping target, check the published
+  work, claimed generation, retry bit/count, safe-point acknowledgement, and
+  final WFI recheck in that order. A stuck retry may suppress WFI, but the idle
+  loop must still enter the local scheduler on every iteration.
+- When boot output and a runtime serial driver share one UART, use the typed
+  `Active -> Paused -> Claimed` platform handover. `Paused` must be serialized
+  with the last early-console register access and must make later early reads
+  and writes inert. Start the runtime UART with normal task latency; on failure,
+  mask its device IRQ with `quiesce_to_polling()` and restore its portable core
+  without shutting down or changing the boot line settings, then abort the
+  platform token. This catches
+  SMP write-after-check races that an atomic `claimed` flag alone cannot close.
+- A scheduler switch hook can publish a stable heap identity, but it cannot leak
+  a context-aware reader guard across the switch. If the first task operation
+  reports an unexpected preemption/lock depth, inspect OS scope/current hooks
+  for retained guards before changing the scheduler baton or task policy.
+- On x86_64, an immediate user fault followed by a kernel fault with `RSP` near
+  a user selector such as `0x1b` can be a misaligned `TSS.RSP0`, not a corrupt
+  TSS. IA-32e aligns the privilege-transition stack down to 16 bytes. Inspect
+  the published RSP0, handler-entry RSP, and the frame tail in GDB; require the
+  task-owned `UserContext` and its trap-frame end to be 16-byte aligned instead
+  of compensating only in entry assembly.
 
 ## RISC-V FDT SMP Notes
 
 - Enumerate only CPU nodes that firmware marks available. A missing `status` property is usable, `status = "okay"`/`"ok"` is usable, and `status = "disabled"` must be skipped.
 - Keep FDT `reg` hart IDs as firmware CPU IDs and map them onto dense logical CPU IDs separately. On VisionFive2, `cpu@0` is a disabled S7 management hart while the usable U74 cores are `cpu@1` through `cpu@4`; full-core boot should therefore start from hart 1 and bring up harts 2-4, not fall back to single-core mode.
 - If a RISC-V board traps when secondaries are released, dump `/cpus` from the boot FDT before changing `max_cpu_num`; disabled or non-OS CPU nodes are a common cause of `cpu_on` targeting the wrong hart.
+- Register ownership changes at one explicit platform boundary. Naked boot entry captures firmware `a0` in `CpuBootInfoV1`; an early scratch pointer may name that record but never stores the raw hart ID. In `LinuxCurrent`, the binder installs the boot `CurrentThreadHeader` in kernel `tp` and clears kernel `sscratch`; user execution temporarily stores kernel `tp` in `sscratch`, and trap entry uses the Linux-style `csrrw` handshake before clearing it again. In `UnikernelTls`, `tp` is task TLS and `sscratch` remains the CPU-prefix anchor. `gp` is always the canonical psABI global pointer.
+- After enabling the high virtual mapping, branch through a high-address naked trampoline that rebuilds `__global_pointer$` before calling Rust. Rebuilding `gp` before the address-basis change still leaves a physical alias in the register and commonly fails at the first relaxed global access.
+- A guest or feature-probe assembly window may borrow `sscratch`, but every exit path must restore the selected host convention (`sscratch=0` plus `tp=current` for LinuxCurrent, or `sscratch=prefix` plus `tp=TLS` for UnikernelTls) before per-CPU access, trap dispatch, or any Rust call. Inspect final object code because a source-level helper inserted inside that window breaks the contract.
 
 ## LoongArch Lessons
 
@@ -53,6 +100,9 @@ Use this order when auditing an early boot port:
 - Initialize trap vectors on every CPU, not only the boot CPU.
 - Flush or barrier boot arguments before `cpu_on`; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
+- Treat live `r21 == KS3` as an invariant after the platform binder runs. KS0 is the trap stack, KS1/KS2 are trap temporaries, and vCPU code must use KS4/KS5 rather than borrowing KS3. Save user `r21` before loading KS3, and never restore a kernel trap frame's `r21` on return.
+- Treat EIOINTC and PCH-PIC as a hierarchical irqchip. Resolve the PCH input when claiming the EIO vector, clear an edge child and execute a device-write `dbar` before entering its action, then complete the parent after the action; leave a level child asserted until its device deasserts it. Publish route lookup plus the immutable child MMIO endpoint as one frozen object while all inputs are masked; hard IRQ must not enter rdrive or take the controller's task/control-plane lock.
+- A UART IRQ budget is a latency bound, not permission to lose work. When `SerialIrqOutcome::budget_exhausted` is set, publish a coalesced service-thread event and invoke `SerialSoftWork::RESERVICE` in bounded task-context batches. Bound one worker activation and yield before another batch under continuous traffic. Use an `exec`-launched guest writer for output stress so shell forks, pipes, and child waits are not misdiagnosed as scheduler or UART failures.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
 ## Finding Local Linux Source
@@ -108,7 +158,10 @@ Important details:
 | Immediate reset after MMU enable | wrong page table root, missing identity/current mapping, bad barrier/TLB flush, invalid jump target |
 | High-half fetch fault | kernel high map, relocation offset, symbol address basis, direct-map window |
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
-| Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
+| Secondary CPU silent or primary CPU reports a pointer-like CPU ID during an IRQ storm | `cpu_on` argument, cache flush, stack, platform `CpuRegisterBinding` before secondary HAL/GIC/lock use, trap setup, logical CPU ID mapping; an unbound secondary can recurse through synchronous exceptions and overflow into an adjacent CPU area |
+| Remote wake published but target sleeps | IPI generation/retry bit, publish barrier, immutable CPU-ID mapping, target interface readiness, final WFI gate |
+| Serial burst stops after a bounded amount of data | dropped `budget_exhausted` continuation, task-context `RESERVICE` publication, PCH edge-child acknowledgement before EIO parent completion, or a test that mixes UART traffic with shell subprocess/pipe waits |
+| xAPIC callback corruption or wrong target | unguarded lowest sender, nested split ICR high/low writes, APIC-ID truncation, Retry reported after commit |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
 | Axvisor build works but QEMU hangs | firmware/OVMF path, LVZ QEMU, guest image/rootfs, dynamic platform memory map, post-UEFI transition |

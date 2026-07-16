@@ -18,10 +18,9 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-spin = { workspace = true }
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test", "smp"] }
+ax-kspin.workspace = true
 tokio = { version = "1.37", features = [
     "rt-multi-thread",
     "macros",

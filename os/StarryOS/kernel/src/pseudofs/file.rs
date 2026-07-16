@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering, task::Context};
 
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{
     FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags,
     NodeOps, NodePermission, NodeType, VfsError, VfsResult,
@@ -341,7 +341,7 @@ impl<T: DirectRwFsFileOps> FileNodeOps for SpecialFsFile<T> {
 /// A Sequential file, which only supports reading all content. It is used for procfs and sysfs.
 pub struct SeqObject {
     ops: Arc<dyn SimpleFileOps>,
-    content_cache: Mutex<Option<Vec<u8>>>,
+    content_cache: PiMutex<Option<Vec<u8>>>,
 }
 
 impl DirectRwFsFileOps for SeqObject {
@@ -370,7 +370,7 @@ impl SeqObject {
     /// more features like iterating content.
     pub fn new(ops: impl SimpleFileOps) -> Self {
         Self {
-            content_cache: Mutex::new(None),
+            content_cache: PiMutex::new(None),
             ops: Arc::new(ops),
         }
     }

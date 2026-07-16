@@ -184,7 +184,6 @@ impl From<rdif_intc::AcpiGsiRoute> for BindingIrqSource {
     fn from(route: rdif_intc::AcpiGsiRoute) -> Self {
         Self::AcpiGsiRoute(AcpiGsiRoute {
             gsi: route.gsi,
-            vector: route.vector,
             controller: match route.controller {
                 rdif_intc::AcpiGsiController::IoApic => irq_framework::AcpiGsiController::IoApic,
                 rdif_intc::AcpiGsiController::PchPic => irq_framework::AcpiGsiController::PchPic,

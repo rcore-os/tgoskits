@@ -20,7 +20,6 @@ use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
-use ax_task::current;
 use kbpf_basic::{
     helper::RawBPFHelperFn,
     linux_bpf::{bpf_attr, bpf_cmd},
@@ -31,6 +30,8 @@ use kbpf_basic::{
     prog::BpfProgMeta,
     raw_tracepoint::BpfRawTracePointArg,
 };
+
+use crate::task::try_current_user_irq_view;
 
 pub(crate) mod error;
 pub mod map;
@@ -45,7 +46,6 @@ use crate::{
     kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
-    task::AsThread,
 };
 
 /// The global BPF helper-function table (id → `RawBPFHelperFn`). Populated by
@@ -68,9 +68,11 @@ const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
 /// `bpf_get_current_pid_tgid()` — returns `(tgid << 32) | tid` of the
 /// currently running task, matching the Linux kernel helper ABI.
 fn bpf_get_current_pid_tgid(_a: u64, _b: u64, _c: u64, _d: u64, _e: u64) -> u64 {
-    let task = current();
-    let tgid = task.as_thread().proc_data.proc.pid() as u64;
-    let pid = task.as_thread().tid() as u64;
+    let Some(task) = try_current_user_irq_view() else {
+        return 0;
+    };
+    let tgid = task.tgid() as u64;
+    let pid = task.tid() as u64;
     (tgid << 32) | pid
 }
 
@@ -85,9 +87,22 @@ fn bpf_get_current_comm(buf: u64, size_of_buf: u64, _c: u64, _d: u64, _e: u64) -
         return 0;
     }
 
-    let task = current();
-    let comm = task.name();
-    let comm_bytes = comm.as_bytes();
+    let task = try_current_user_irq_view();
+    let mut comm = [0; 16];
+    let snapshot_len = match task.as_ref() {
+        Some(task) => task.copy_comm(&mut comm),
+        None => None,
+    };
+    drop(task);
+    let comm_len = match snapshot_len {
+        Some(len) => len,
+        None => {
+            comm.fill(0);
+            comm[..6].copy_from_slice(b"kernel");
+            6
+        }
+    };
+    let comm_bytes = &comm[..comm_len];
 
     if size == 0 {
         return (-22i64) as u64; // -EINVAL

@@ -5,11 +5,9 @@ use alloc::format;
 use super::Aarch64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform},
     ax_err_type,
 };
-
-impl HostTimePlatform for Aarch64Arch {}
 
 impl BootImagePlatform for Aarch64Arch {
     fn load_guest_dtb(

@@ -51,13 +51,29 @@ cargo doc --no-deps
 
 ### 示例
 
-```rust
-use scope_local as _;
+```ignore
+use std::sync::Arc;
+
+use scope_local::scope_local;
+
+scope_local! {
+    static REQUEST_COUNT: usize = 0;
+    static CONTEXT: Arc<str> = Arc::from("global");
+}
 
 fn main() {
-    // 在这里将 `scope-local` 集成到你的项目中。
+    // 嵌入系统必须先提供 ax-kspin 的 LockRuntime。
+    let count = REQUEST_COUNT.with(|count| *count);
+    let context = CONTEXT.clone_current();
+    assert_eq!(count, 0);
+    assert_eq!(&*context, "global");
 }
 ```
+
+当前 scope 的访问通过不可逃逸闭包完成，保证 per-CPU 查找结果不会超过
+CPU pin 的生命周期。对于 `Arc` 持有的资源，应优先使用 `clone_current`，并在
+克隆返回、恢复抢占后再获取可睡眠锁。已经持有 IRQ 或抢占 guard 的代码可使用
+`with_pinned`；hard IRQ 只能使用不会触发惰性初始化的 `try_with_pinned`。
 
 ### 文档
 

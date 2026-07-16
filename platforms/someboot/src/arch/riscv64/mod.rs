@@ -2,6 +2,7 @@
 mod _macros;
 
 mod addrspace;
+mod boot;
 mod console;
 mod entry;
 pub(crate) mod irq;
@@ -185,6 +186,10 @@ impl ArchTrait for Arch {
     type P = Generic;
     type Console = console::Console;
 
+    fn cpu_local_host_level() -> u8 {
+        u8::from(cfg!(feature = "hv"))
+    }
+
     fn _va(paddr: usize) -> *mut u8 {
         (paddr + addrspace::PAGE_OFFSET) as *mut u8
     }
@@ -194,11 +199,7 @@ impl ArchTrait for Arch {
     }
 
     fn cpu_current_hartid() -> usize {
-        let hart_id: usize;
-        unsafe {
-            core::arch::asm!("mv {hart_id}, tp", hart_id = out(reg) hart_id, options(nostack, preserves_flags));
-        }
-        hart_id
+        boot::current().hart_id()
     }
 
     fn jump_to(entry: usize, sp: usize) -> ! {

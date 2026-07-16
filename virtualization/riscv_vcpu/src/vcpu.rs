@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::marker::PhantomData;
+use core::{fmt, marker::PhantomData};
 
+use ax_cpu_local::CpuPin;
 use riscv::register::{scause, sie, sstatus};
 use riscv_decode::{
     Instruction,
@@ -59,6 +60,7 @@ const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
+const SSTATUS_SIE: usize = 1 << 1;
 #[cfg(feature = "sstc")]
 const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
@@ -67,6 +69,115 @@ const CSR_STIMECMP: u16 = 0x14d;
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
+}
+
+/// Host interrupt state borrowed for exactly one guest-entry round.
+///
+/// Like Linux `local_irq_save` and Zephyr `arch_irq_lock`, the saved status is
+/// an ownership token: restore may re-enable interrupts only when its matching
+/// save observed them enabled.
+struct HostIrqState {
+    saved_sstatus: usize,
+    saved_sie: usize,
+}
+
+impl HostIrqState {
+    fn save_and_disable() -> Self {
+        let saved_sstatus: usize;
+        // SAFETY: this atomically snapshots and clears only the host SIE bit.
+        // The implicit memory clobber keeps guest-entry state inside the IRQ
+        // disabled interval.
+        unsafe {
+            core::arch::asm!(
+                "csrrc {saved_sstatus}, sstatus, {sie_mask}",
+                saved_sstatus = out(reg) saved_sstatus,
+                sie_mask = in(reg) SSTATUS_SIE,
+                options(nostack),
+            );
+        }
+        let state = Self {
+            saved_sstatus,
+            saved_sie: sie::read().bits(),
+        };
+        // SAFETY: global SIE is masked, so changing the sources that may cause
+        // a guest exit cannot enter a host handler in this setup window.
+        unsafe {
+            sie::set_sext();
+            sie::set_ssoft();
+        }
+        state
+    }
+
+    fn restore(&self) {
+        // Restore source enables before the global bit. A pending source may
+        // run only after the caller's saved SIE state has been honored.
+        unsafe {
+            sie::write(sie::Sie::from_bits(self.saved_sie));
+            core::arch::asm!(
+                "csrs sstatus, {restore_sie}",
+                restore_sie = in(reg) self.saved_sstatus & SSTATUS_SIE,
+                options(nostack),
+            );
+        }
+    }
+}
+
+impl Drop for HostIrqState {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+/// One decoded guest exit that still owns the host IRQ-save interval.
+///
+/// The value borrows both the vCPU and its CPU pin. Consequently safe code
+/// cannot enter or unbind the vCPU, end the pinned scope, or move the exit to
+/// another thread before IRQ state is restored by [`Drop`].
+///
+/// ```compile_fail
+/// use ax_cpu_local::CpuPin;
+/// use riscv_vcpu::{RiscvHostOps, RiscvVcpu};
+///
+/// fn unbind_too_early<H: RiscvHostOps>(vcpu: &mut RiscvVcpu<H>, pin: &CpuPin) {
+///     let exit = vcpu.run(pin).unwrap();
+///     vcpu.unbind(pin).unwrap();
+///     drop(exit);
+/// }
+/// ```
+#[must_use = "dropping the bound exit restores the caller's host IRQ state"]
+pub struct RiscvBoundExit<'cpu> {
+    event: RiscvVmExit,
+    irq_state: Option<HostIrqState>,
+    _vcpu: PhantomData<&'cpu mut ()>,
+    _cpu_pin: PhantomData<&'cpu CpuPin>,
+}
+
+impl<'cpu> RiscvBoundExit<'cpu> {
+    fn new(event: RiscvVmExit, irq_state: HostIrqState) -> Self {
+        Self {
+            event,
+            irq_state: Some(irq_state),
+            _vcpu: PhantomData,
+            _cpu_pin: PhantomData,
+        }
+    }
+
+    /// Returns a copy of the decoded exit without releasing IRQ ownership.
+    pub const fn event(&self) -> RiscvVmExit {
+        self.event
+    }
+}
+
+impl fmt::Debug for RiscvBoundExit<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.event.fmt(formatter)
+    }
+}
+
+impl Drop for RiscvBoundExit<'_> {
+    fn drop(&mut self) {
+        drop(self.irq_state.take());
+    }
 }
 
 /// A virtual CPU within a guest
@@ -211,31 +322,26 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Runs the vCPU until a host-visible exit occurs.
-    pub fn run(&mut self) -> RiscvVcpuResult<RiscvVmExit> {
-        unsafe {
-            sstatus::clear_sie();
-            sie::set_sext();
-            sie::set_ssoft();
-            // Keep the current HS timer enable state instead of forcing it on
-            // for every VM entry. Guest timer re-arming and host timer users
-            // must manage `stimer` explicitly, otherwise a pending HS timer can
-            // preempt the guest on every re-entry and starve VS interrupt work.
-        }
+    pub fn run<'cpu>(
+        &'cpu mut self,
+        _cpu_pin: &'cpu CpuPin,
+    ) -> RiscvVcpuResult<RiscvBoundExit<'cpu>> {
+        let host_irq_state = HostIrqState::save_and_disable();
+        // Keep the current HS timer enable state instead of forcing it on for
+        // every VM entry. Guest timer re-arming and host timer users must
+        // manage `stimer` explicitly, otherwise a pending HS timer can preempt
+        // the guest on every re-entry and starve VS interrupt work.
         unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
             // by its page table
             _run_guest(&mut self.regs);
         }
-        unsafe {
-            sie::clear_sext();
-            sie::clear_ssoft();
-            sstatus::set_sie();
-        }
-        self.vmexit_handler()
+        let exit = self.vmexit_handler()?;
+        Ok(RiscvBoundExit::new(exit, host_irq_state))
     }
 
     /// Binds the vCPU to the current physical CPU.
-    pub fn bind(&mut self) -> RiscvVcpuResult {
+    pub fn bind(&mut self, _cpu_pin: &CpuPin) -> RiscvVcpuResult {
         // Load the vCPU's CSRs from the stored state.
         unsafe {
             let vsatp = Vsatp::from_bits(self.regs.vs_csrs.vsatp);
@@ -276,7 +382,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Unbinds the vCPU from the current physical CPU.
-    pub fn unbind(&mut self) -> RiscvVcpuResult {
+    pub fn unbind(&mut self, _cpu_pin: &CpuPin) -> RiscvVcpuResult {
         self.sbi.pmu.backend_unbind();
         // Store the vCPU's CSRs to the stored state.
         unsafe {
@@ -337,10 +443,9 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         if vector != S_EXT {
             return Err(RiscvVcpuError::Unsupported);
         }
-        unsafe {
-            hvip::set_vseip();
-        }
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
+        let mut pending = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
+        pending.set_vseip(true);
+        self.regs.virtual_hs_csrs.hvip = pending.bits();
         Ok(())
     }
 
@@ -351,13 +456,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 }
 
 impl<H: RiscvHostOps> RiscvVcpu<H> {
-    /// Capture any virtual pending interrupt bits that were raised after the
-    /// last `unbind()` so the next `bind()` does not overwrite them with stale
-    /// saved state.
-    pub fn latch_hvip_from_hw(&mut self) {
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
-    }
-
     /// Attempts to decode the current guest-page-fault trap as an MMIO access.
     pub fn decode_mmio_fault(
         &mut self,

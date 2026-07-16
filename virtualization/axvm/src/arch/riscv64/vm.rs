@@ -3,7 +3,7 @@
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
-use super::{Riscv64Arch, irq, npt};
+use super::{AxvmRiscvVcpuCreateConfig, Riscv64Arch, irq, npt};
 use crate::{
     AxVmResult, ax_err,
     config::AxVMConfig,
@@ -36,13 +36,19 @@ impl Riscv64Arch {
                 let mut factories = default_device_factories()?;
                 let mode = vm.interrupt_mode();
                 let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let interrupt_resources =
+                    irq::configure(vm.id(), &mut factories, mode, &emulated_devices)?;
+                init_vm_with(
+                    vm,
+                    &factories,
+                    interrupt_resources.interrupt_fabric,
+                    interrupt_resources.vplic,
+                )
             }
             VmInitRequest::Provided {
                 factories,
                 interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+            } => init_vm_with(vm, factories, interrupt_fabric, None),
         }
     }
 }
@@ -51,6 +57,7 @@ fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
     interrupt_fabric: crate::InterruptFabric,
+    vplic: Option<irq::VplicResources>,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
         let placements = vcpu_placements(resources);
@@ -60,10 +67,13 @@ fn init_vm_with(
             .dtb_load_gpa
             .unwrap_or_default();
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-            Ok(RiscvVcpuCreateConfig {
-                hart_id: placement.id,
-                dtb_addr: dtb_addr.as_usize(),
-            })
+            Ok(AxvmRiscvVcpuCreateConfig::new(
+                RiscvVcpuCreateConfig {
+                    hart_id: placement.id,
+                    dtb_addr: dtb_addr.as_usize(),
+                },
+                irq::bind_vcpu(vplic.as_ref(), placement.id)?,
+            ))
         })?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         devices.register_special_devices(vm)?;
@@ -85,13 +95,17 @@ fn build_vcpu_setup_config(
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
-    let mut levels = riscv_vcpu::max_guest_page_table_levels();
+    let mut levels = None;
     for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
-        levels = levels.min(
-            crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                .unwrap_or_else(riscv_vcpu::max_guest_page_table_levels),
-        );
+        let Some(cpu_levels) = crate::percpu::cpu_max_guest_page_table_levels(cpu_id) else {
+            return ax_err!(
+                Unsupported,
+                "RISC-V virtualization capability for target CPU {cpu_id} is not initialized"
+            );
+        };
+        levels = Some(levels.map_or(cpu_levels, |current: usize| current.min(cpu_levels)));
     }
+    let levels = levels.unwrap_or(0);
     match levels {
         3 | 4 => Ok(levels),
         _ => ax_err!(Unsupported, "no supported RISC-V G-stage paging mode"),

@@ -24,13 +24,13 @@
 
 use alloc::vec::Vec;
 
-use ax_sync::Mutex;
+use ax_kspin::PreemptLazy as LazyLock;
+use ax_sync::SpinMutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp,
     time::Instant,
 };
-use spin::LazyLock;
 
 /// Orphaned TCP socket awaiting final cleanup.
 struct OrphanSocket {
@@ -63,8 +63,8 @@ enum ReapReason {
 /// Accessed by:
 /// - TcpSocket::drop() to add orphans
 /// - net-poll worker to reap finished orphans
-static ORPHAN_SOCKETS: LazyLock<Mutex<Vec<OrphanSocket>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static ORPHAN_SOCKETS: LazyLock<SpinMutex<Vec<OrphanSocket>>> =
+    LazyLock::new(|| SpinMutex::new(Vec::new()));
 
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;

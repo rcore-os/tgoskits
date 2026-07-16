@@ -1,31 +1,36 @@
 //! Time management module.
 
-use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
-use core::{mem, time::Duration};
-
-use ax_kspin::SpinNoIrq as Mutex;
-use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
-use ax_task::{
-    WeakAxTaskRef, current,
-    future::{block_on, timeout_at_wall},
+use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap};
+use core::{
+    mem,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
 };
+
+use ax_kspin::{PreemptGuard, SpinNoIrq as Mutex};
+use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
+use ax_std::os::arceos::task as scheduler;
 use event_listener::{Event, listener};
 use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::task::{poll_process_timer, poll_timer};
+use crate::task::{
+    WeakUserTaskRef, current_user_task,
+    future::{block_on, timeout_at_wall},
+    poll_process_timer, poll_timer,
+};
 
-fn time_value_from_nanos(nanos: usize) -> TimeValue {
-    let secs = nanos as u64 / NANOS_PER_SEC;
-    let nsecs = nanos as u64 - secs * NANOS_PER_SEC;
+fn time_value_from_nanos(nanos: u64) -> TimeValue {
+    let secs = nanos / NANOS_PER_SEC;
+    let nsecs = nanos - secs * NANOS_PER_SEC;
     TimeValue::new(secs, nsecs as u32)
 }
 
 #[derive(Debug, Clone)]
 pub enum AlarmTarget {
-    Thread(WeakAxTaskRef),
+    Thread(WeakUserTaskRef),
     Process(Pid),
 }
 
@@ -120,12 +125,15 @@ impl ITimer {
 /// Register an alarm at the given wall-clock deadline for the current task.
 /// Used by both ITimer and POSIX timers.
 pub fn register_alarm(deadline: Duration) {
-    register_alarm_for(deadline, AlarmTarget::Thread(Arc::downgrade(&current())));
+    register_alarm_for(
+        deadline,
+        AlarmTarget::Thread(current_user_task().downgrade()),
+    );
 }
 
 /// Register an alarm at the given wall-clock deadline for a specific target.
-/// Used when re-arming periodic POSIX timers from the alarm_task context,
-/// where `current()` is the alarm_task, not the user task.
+/// Used when re-arming periodic POSIX timers from the kernel alarm worker,
+/// which deliberately carries no Starry user-task extension.
 pub fn register_alarm_for(deadline: Duration, target: AlarmTarget) {
     let mut guard = ALARM_LIST.lock();
     let should_wake = guard.peek().is_none_or(|it| it.deadline > deadline);
@@ -137,27 +145,235 @@ pub fn register_alarm_for(deadline: Duration, target: AlarmTarget) {
 }
 
 /// Represents the state of the timer.
-#[derive(Debug)]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimerState {
     /// Fallback state.
-    None,
+    None   = 0,
     /// The timer is running in user space.
-    User,
+    User   = 1,
     /// The timer is running in kernel space.
-    Kernel,
+    Kernel = 2,
 }
 
-/// A manager for time-related operations.
+impl TimerState {
+    fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::User,
+            2 => Self::Kernel,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Lock-free CPU accounting updated directly from scheduler switch hooks.
+///
+/// Hook-side methods perform only bounded atomic operations: they neither
+/// allocate nor acquire a lock nor enqueue a signal. Task-context code takes a
+/// stable snapshot and handles interval timers and RLIMIT_RTTIME delivery.
+pub struct CpuTimeAccounting {
+    user_ns: AtomicU64,
+    system_ns: AtomicU64,
+    last_account_ns: AtomicU64,
+    realtime_continuous_ns: AtomicU64,
+    realtime_reset_generation: AtomicU64,
+    writers: AtomicUsize,
+    completed_writes: AtomicU64,
+    state: AtomicU8,
+    running: AtomicBool,
+    realtime_policy: AtomicBool,
+}
+
+impl Default for CpuTimeAccounting {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpuTimeAccounting {
+    pub(crate) fn new() -> Self {
+        Self {
+            user_ns: AtomicU64::new(0),
+            system_ns: AtomicU64::new(0),
+            last_account_ns: AtomicU64::new(0),
+            realtime_continuous_ns: AtomicU64::new(0),
+            realtime_reset_generation: AtomicU64::new(0),
+            writers: AtomicUsize::new(0),
+            completed_writes: AtomicU64::new(0),
+            state: AtomicU8::new(TimerState::None as u8),
+            running: AtomicBool::new(false),
+            realtime_policy: AtomicBool::new(false),
+        }
+    }
+
+    /// Returns the current user time and system time as a tuple of `TimeValue`.
+    pub fn output(&self) -> (TimeValue, TimeValue) {
+        let snapshot = self.snapshot_at(monotonic_time_nanos() as u64);
+        (
+            time_value_from_nanos(snapshot.user_ns),
+            time_value_from_nanos(snapshot.system_ns),
+        )
+    }
+
+    /// Publishes the current user/kernel execution state.
+    pub fn set_state(&self, state: TimerState) {
+        let _preempt_guard = PreemptGuard::new();
+        self.set_state_at(state, monotonic_time_nanos() as u64);
+    }
+
+    pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
+        self.scheduler_switch_in_at(realtime_policy, monotonic_time_nanos() as u64);
+    }
+
+    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) {
+        self.scheduler_switch_out_at(reason, monotonic_time_nanos() as u64);
+    }
+
+    pub(crate) fn set_realtime_policy(&self, realtime_policy: bool, leaving_realtime: bool) {
+        let _preempt_guard = PreemptGuard::new();
+        self.set_realtime_policy_at(
+            realtime_policy,
+            leaving_realtime,
+            monotonic_time_nanos() as u64,
+        );
+    }
+
+    fn scheduler_switch_in_at(&self, realtime_policy: bool, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.last_account_ns.store(now_ns, Ordering::Release);
+        self.realtime_policy
+            .store(realtime_policy, Ordering::Release);
+        self.running.store(true, Ordering::Release);
+    }
+
+    fn scheduler_switch_out_at(&self, reason: scheduler::SwitchReason, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.account_running_until(now_ns);
+        self.running.store(false, Ordering::Release);
+        if reason == scheduler::SwitchReason::Blocked {
+            self.reset_realtime_continuous();
+        }
+    }
+
+    fn set_state_at(&self, state: TimerState, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.account_running_until(now_ns);
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    fn set_realtime_policy_at(&self, realtime_policy: bool, leaving_realtime: bool, now_ns: u64) {
+        let _writer = self.begin_write();
+        self.account_running_until(now_ns);
+        self.realtime_policy
+            .store(realtime_policy, Ordering::Release);
+        if leaving_realtime {
+            self.reset_realtime_continuous();
+        }
+    }
+
+    fn account_running_until(&self, now_ns: u64) {
+        if !self.running.load(Ordering::Acquire) {
+            self.last_account_ns.store(now_ns, Ordering::Release);
+            return;
+        }
+        let previous = self.last_account_ns.fetch_max(now_ns, Ordering::AcqRel);
+        let delta = now_ns.saturating_sub(previous);
+        if delta == 0 {
+            return;
+        }
+        if self.realtime_policy.load(Ordering::Acquire) {
+            self.realtime_continuous_ns
+                .fetch_add(delta, Ordering::Relaxed);
+        }
+        match TimerState::from_raw(self.state.load(Ordering::Acquire)) {
+            TimerState::User => {
+                self.user_ns.fetch_add(delta, Ordering::Relaxed);
+            }
+            TimerState::Kernel => {
+                self.system_ns.fetch_add(delta, Ordering::Relaxed);
+            }
+            TimerState::None => {}
+        }
+    }
+
+    fn reset_realtime_continuous(&self) {
+        self.realtime_continuous_ns.store(0, Ordering::Release);
+        self.realtime_reset_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot_at(&self, now_ns: u64) -> CpuTimeSnapshot {
+        loop {
+            let completed = self.completed_writes.load(Ordering::Acquire);
+            if self.writers.load(Ordering::Acquire) != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let mut snapshot = CpuTimeSnapshot {
+                user_ns: self.user_ns.load(Ordering::Relaxed),
+                system_ns: self.system_ns.load(Ordering::Relaxed),
+                realtime_continuous_ns: self.realtime_continuous_ns.load(Ordering::Relaxed),
+                realtime_reset_generation: self.realtime_reset_generation.load(Ordering::Relaxed),
+                realtime_policy: self.realtime_policy.load(Ordering::Relaxed),
+            };
+            if self.running.load(Ordering::Relaxed) {
+                let residual = now_ns.saturating_sub(self.last_account_ns.load(Ordering::Relaxed));
+                match TimerState::from_raw(self.state.load(Ordering::Relaxed)) {
+                    TimerState::User => {
+                        snapshot.user_ns = snapshot.user_ns.saturating_add(residual);
+                    }
+                    TimerState::Kernel => {
+                        snapshot.system_ns = snapshot.system_ns.saturating_add(residual);
+                    }
+                    TimerState::None => {}
+                }
+                if self.realtime_policy.load(Ordering::Relaxed) {
+                    snapshot.realtime_continuous_ns =
+                        snapshot.realtime_continuous_ns.saturating_add(residual);
+                }
+            }
+            if self.writers.load(Ordering::Acquire) == 0
+                && self.completed_writes.load(Ordering::Acquire) == completed
+            {
+                return snapshot;
+            }
+        }
+    }
+
+    fn begin_write(&self) -> CpuTimeWriter<'_> {
+        self.writers.fetch_add(1, Ordering::AcqRel);
+        CpuTimeWriter { accounting: self }
+    }
+}
+
+struct CpuTimeWriter<'accounting> {
+    accounting: &'accounting CpuTimeAccounting,
+}
+
+impl Drop for CpuTimeWriter<'_> {
+    fn drop(&mut self) {
+        self.accounting
+            .completed_writes
+            .fetch_add(1, Ordering::Release);
+        self.accounting.writers.fetch_sub(1, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CpuTimeSnapshot {
+    user_ns: u64,
+    system_ns: u64,
+    realtime_continuous_ns: u64,
+    realtime_reset_generation: u64,
+    realtime_policy: bool,
+}
+
+/// Task-context interval-timer and RLIMIT_RTTIME state.
 pub struct TimeManager {
-    utime_ns: usize,
-    stime_ns: usize,
-    /// Baseline for itimer delta calculation in `poll()`.
-    /// Updated only by `poll()`, never by `tick()`.
-    last_wall_ns: usize,
-    /// Baseline for tick-based CPU time accumulation.
-    /// Updated by `tick()` and synced to `last_wall_ns` at the end of `poll()`.
-    last_tick_ns: usize,
-    state: TimerState,
+    last_wall_ns: u64,
+    last_user_ns: u64,
+    last_system_ns: u64,
+    rttime_watchdog: RttimeWatchdog,
     itimers: [ITimer; 3],
 }
 
@@ -170,77 +386,75 @@ impl Default for TimeManager {
 impl TimeManager {
     pub(crate) fn new() -> Self {
         Self {
-            utime_ns: 0,
-            stime_ns: 0,
             last_wall_ns: 0,
-            last_tick_ns: 0,
-            state: TimerState::None,
+            last_user_ns: 0,
+            last_system_ns: 0,
+            rttime_watchdog: RttimeWatchdog::new(),
             itimers: Default::default(),
         }
     }
 
-    /// Returns the current user time and system time as a tuple of `TimeValue`.
-    pub fn output(&self) -> (TimeValue, TimeValue) {
-        let utime = time_value_from_nanos(self.utime_ns);
-        let stime = time_value_from_nanos(self.stime_ns);
-        (utime, stime)
+    /// Polls CPU/wall interval timers without invoking external code.
+    pub(crate) fn poll(&mut self, accounting: &CpuTimeAccounting) -> PendingTimerSignals {
+        self.poll_at(accounting, monotonic_time_nanos() as u64)
     }
 
-    /// Accumulates CPU time for the current tick without emitting signals.
-    ///
-    /// Safe to call from IRQ/timer-callback context.  Signal-bearing itimers
-    /// are checked only through the full `poll()` path at syscall boundaries.
-    ///
-    /// Uses `last_tick_ns` as the exclusive baseline so that `poll()`'s
-    /// itimer accounting (which uses the independent `last_wall_ns`) is not
-    /// affected.
-    pub fn tick(&mut self) {
-        let now_ns = monotonic_time_nanos() as usize;
-        let delta = now_ns.saturating_sub(self.last_tick_ns);
-        match self.state {
-            TimerState::User => self.utime_ns += delta,
-            TimerState::Kernel => self.stime_ns += delta,
-            TimerState::None => {}
-        }
-        self.last_tick_ns = now_ns;
-        // last_wall_ns is intentionally NOT touched here so that poll()
-        // continues to see the full wall-clock delta for itimer accounting.
-    }
-
-    /// Polls the time manager to update the timers and emit signals if
-    /// necessary.
-    pub fn poll(&mut self, emitter: impl Fn(Signo)) {
-        let now_ns = monotonic_time_nanos() as usize;
-        // itimer_delta: full wall-clock time since the last poll() call.
-        // Used for interval-timer accounting so they fire at the right time
-        // regardless of whether tick() has been called in between.
-        let itimer_delta = now_ns.saturating_sub(self.last_wall_ns);
-        // remaining: time since the last tick() that has not yet been counted
-        // in utime_ns / stime_ns.  If tick() was never called, last_tick_ns ==
-        // last_wall_ns and remaining == itimer_delta (identical to original).
-        let remaining = now_ns.saturating_sub(self.last_tick_ns);
-        match self.state {
-            TimerState::User => {
-                self.utime_ns += remaining;
-                self.update_itimer(ITimerType::Virtual, itimer_delta, &emitter);
-                self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
-            }
-            TimerState::Kernel => {
-                self.stime_ns += remaining;
-                self.update_itimer(ITimerType::Prof, itimer_delta, &emitter);
-            }
-            TimerState::None => {}
-        }
-        self.update_itimer(ITimerType::Real, itimer_delta, &emitter);
+    fn poll_at(&mut self, accounting: &CpuTimeAccounting, now_ns: u64) -> PendingTimerSignals {
+        let snapshot = accounting.snapshot_at(now_ns);
+        let user_delta = snapshot.user_ns.saturating_sub(self.last_user_ns);
+        let system_delta = snapshot.system_ns.saturating_sub(self.last_system_ns);
+        let mut pending = PendingTimerSignals::new();
+        pending.record(
+            ITimerType::Virtual,
+            self.update_itimer(ITimerType::Virtual, timer_delta(user_delta)),
+        );
+        pending.record(
+            ITimerType::Prof,
+            self.update_itimer(
+                ITimerType::Prof,
+                timer_delta(user_delta.saturating_add(system_delta)),
+            ),
+        );
+        pending.record(
+            ITimerType::Real,
+            self.update_itimer(
+                ITimerType::Real,
+                timer_delta(now_ns.saturating_sub(self.last_wall_ns)),
+            ),
+        );
+        self.last_user_ns = snapshot.user_ns;
+        self.last_system_ns = snapshot.system_ns;
         self.last_wall_ns = now_ns;
-        // Sync tick baseline with poll baseline so the next tick() starts
-        // from a clean slate.
-        self.last_tick_ns = now_ns;
+        pending
     }
 
-    /// Updates the timer state.
-    pub fn set_state(&mut self, state: TimerState) {
-        self.state = state;
+    pub(crate) fn check_rttime_limit(
+        &mut self,
+        accounting: &CpuTimeAccounting,
+        soft_limit_us: u64,
+        hard_limit_us: u64,
+    ) -> RttimeLimitAction {
+        let snapshot = accounting.snapshot_at(monotonic_time_nanos() as u64);
+        self.check_rttime_snapshot(snapshot, soft_limit_us, hard_limit_us)
+    }
+
+    fn check_rttime_snapshot(
+        &mut self,
+        snapshot: CpuTimeSnapshot,
+        soft_limit_us: u64,
+        hard_limit_us: u64,
+    ) -> RttimeLimitAction {
+        if !snapshot.realtime_policy {
+            self.rttime_watchdog
+                .reset(snapshot.realtime_reset_generation, soft_limit_us);
+            return RttimeLimitAction::None;
+        }
+        self.rttime_watchdog.check(
+            snapshot.realtime_continuous_ns / 1_000,
+            snapshot.realtime_reset_generation,
+            soft_limit_us,
+            hard_limit_us,
+        )
     }
 
     /// Sets the interval timer of the specified type with the given interval
@@ -256,8 +470,8 @@ impl TimeManager {
             ITimer::new(interval_ns, remained_ns),
         );
         (
-            time_value_from_nanos(old.interval_ns),
-            time_value_from_nanos(old.remained_ns),
+            time_value_from_nanos(old.interval_ns as u64),
+            time_value_from_nanos(old.remained_ns as u64),
         )
     }
 
@@ -265,71 +479,286 @@ impl TimeManager {
     pub fn get_itimer(&self, ty: ITimerType) -> (TimeValue, TimeValue) {
         let itimer = &self.itimers[ty as usize];
         (
-            time_value_from_nanos(itimer.interval_ns),
-            time_value_from_nanos(itimer.remained_ns),
+            time_value_from_nanos(itimer.interval_ns as u64),
+            time_value_from_nanos(itimer.remained_ns as u64),
         )
     }
 
-    fn update_itimer(&mut self, ty: ITimerType, delta: usize, emitter: impl Fn(Signo)) {
-        if self.itimers[ty as usize].update(delta) {
-            emitter(ty.signo());
+    fn update_itimer(&mut self, ty: ITimerType, delta: usize) -> bool {
+        self.itimers[ty as usize].update(delta)
+    }
+}
+
+/// Fixed-size signal batch returned after releasing the timer metadata lock.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PendingTimerSignals {
+    signals: [Option<Signo>; 3],
+}
+
+impl PendingTimerSignals {
+    const fn new() -> Self {
+        Self { signals: [None; 3] }
+    }
+
+    fn record(&mut self, timer: ITimerType, expired: bool) {
+        if expired {
+            self.signals[timer as usize] = Some(timer.signo());
         }
     }
+
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = Signo> {
+        self.signals.into_iter().flatten()
+    }
+}
+
+fn timer_delta(delta: u64) -> usize {
+    delta.min(usize::MAX as u64) as usize
+}
+
+struct RttimeWatchdog {
+    reset_generation: u64,
+    soft_limit_us: u64,
+    next_signal_us: u64,
+}
+
+impl RttimeWatchdog {
+    const fn new() -> Self {
+        Self {
+            reset_generation: 0,
+            soft_limit_us: u64::MAX,
+            next_signal_us: u64::MAX,
+        }
+    }
+
+    fn check(
+        &mut self,
+        runtime_us: u64,
+        reset_generation: u64,
+        soft_limit_us: u64,
+        hard_limit_us: u64,
+    ) -> RttimeLimitAction {
+        if hard_limit_us != u64::MAX && runtime_us >= hard_limit_us {
+            return RttimeLimitAction::Hard;
+        }
+        if soft_limit_us == u64::MAX {
+            self.reset(reset_generation, soft_limit_us);
+            return RttimeLimitAction::None;
+        }
+        if self.reset_generation != reset_generation || self.soft_limit_us != soft_limit_us {
+            self.reset(reset_generation, soft_limit_us);
+        }
+        if runtime_us >= self.next_signal_us {
+            self.next_signal_us = self.next_signal_us.saturating_add(1_000_000);
+            RttimeLimitAction::Soft
+        } else {
+            RttimeLimitAction::None
+        }
+    }
+
+    fn reset(&mut self, reset_generation: u64, soft_limit_us: u64) {
+        self.reset_generation = reset_generation;
+        self.soft_limit_us = soft_limit_us;
+        self.next_signal_us = soft_limit_us;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RttimeLimitAction {
+    None,
+    Soft,
+    Hard,
 }
 
 async fn alarm_task() {
     loop {
-        let mut guard = ALARM_LIST.lock();
-        let Some(entry) = guard.peek() else {
-            drop(guard);
-            listener!(EVENT_NEW_TIMER => listener);
-
-            if !ALARM_LIST.lock().is_empty() {
-                continue;
-            }
-            listener.await;
-
-            continue;
-        };
-
-        let now = wall_time();
-        if entry.deadline <= now {
-            let entry_deadline = entry.deadline;
-            let target = entry.target.clone();
-            assert!(guard.pop().is_some_and(|it| it.deadline == entry_deadline));
-            drop(guard);
-            match target {
-                AlarmTarget::Thread(weak_task) => {
-                    if let Some(task) = weak_task.upgrade() {
-                        poll_timer(&task);
-                    }
+        match next_alarm_action(wall_time()) {
+            AlarmAction::AwaitNewTimer => {
+                listener!(EVENT_NEW_TIMER => listener);
+                if ALARM_LIST.lock().is_empty() {
+                    listener.await;
                 }
+            }
+            AlarmAction::Fire(target) => match target {
+                AlarmTarget::Thread(weak_task) => match weak_task.upgrade() {
+                    Ok(Some(task)) => poll_timer(&task),
+                    Ok(None) => {}
+                    Err(error) => {
+                        panic!("timer target has an invalid Starry user extension: {error}")
+                    }
+                },
                 AlarmTarget::Process(pid) => {
                     poll_process_timer(pid);
                 }
+            },
+            AlarmAction::AwaitDeadline(deadline) => {
+                listener!(EVENT_NEW_TIMER => listener);
+                let deadline_is_current = ALARM_LIST
+                    .lock()
+                    .peek()
+                    .is_some_and(|entry| entry.deadline == deadline);
+                if deadline_is_current {
+                    let _ = timeout_at_wall(Some(deadline), listener).await;
+                }
             }
-        } else {
-            let deadline = entry.deadline;
-            drop(guard);
-            listener!(EVENT_NEW_TIMER => listener);
-            if ALARM_LIST
-                .lock()
-                .peek()
-                .is_none_or(|it| it.deadline != deadline)
-            {
-                continue;
-            }
-            let _ = timeout_at_wall(Some(deadline), listener).await;
         }
     }
+}
+
+enum AlarmAction {
+    AwaitNewTimer,
+    Fire(AlarmTarget),
+    AwaitDeadline(Duration),
+}
+
+fn next_alarm_action(now: Duration) -> AlarmAction {
+    let mut alarms = ALARM_LIST.lock();
+    let Some(entry) = alarms.peek() else {
+        return AlarmAction::AwaitNewTimer;
+    };
+    if entry.deadline > now {
+        return AlarmAction::AwaitDeadline(entry.deadline);
+    }
+    let entry = alarms
+        .pop()
+        .unwrap_or_else(|| unreachable!("peeked alarm must still be present while locked"));
+    AlarmAction::Fire(entry.target)
 }
 
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
-    ax_task::spawn_raw(
+    crate::task::try_spawn_kernel_thread_with_stack(
         || block_on(alarm_task()),
         "alarm_task".to_owned(),
-        ax_task::default_task_stack_size(),
-    );
+        crate::config::KERNEL_STACK_SIZE,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn alarm task: {error}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.scheduler_switch_in_at(true, 0);
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 500_000);
+        assert_eq!(
+            accounting.snapshot_at(500_000).realtime_continuous_ns,
+            500_000
+        );
+
+        accounting.scheduler_switch_in_at(true, 500_000);
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Yield, 1_000_000);
+        assert_eq!(
+            accounting.snapshot_at(1_000_000).realtime_continuous_ns,
+            1_000_000
+        );
+
+        accounting.scheduler_switch_in_at(true, 1_000_000);
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 1_500_000);
+        assert_eq!(
+            accounting.snapshot_at(1_500_000).realtime_continuous_ns,
+            1_500_000
+        );
+
+        accounting.scheduler_switch_in_at(true, 1_500_000);
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 2_000_000);
+        let blocked = accounting.snapshot_at(2_000_000);
+        assert_eq!(blocked.realtime_continuous_ns, 0);
+        assert_eq!(blocked.realtime_reset_generation, 1);
+    }
+
+    #[test]
+    fn leaving_rt_policy_resets_continuous_runtime() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.set_state_at(TimerState::Kernel, 0);
+        accounting.scheduler_switch_in_at(true, 0);
+        accounting.set_realtime_policy_at(false, true, 2_000_000);
+        let fair = accounting.snapshot_at(3_000_000);
+        assert_eq!(fair.realtime_continuous_ns, 0);
+        assert_eq!(fair.system_ns, 3_000_000);
+
+        accounting.set_realtime_policy_at(true, false, 3_000_000);
+        assert_eq!(
+            accounting.snapshot_at(3_500_000).realtime_continuous_ns,
+            500_000
+        );
+    }
+
+    #[test]
+    fn remote_policy_update_closes_its_bounded_writer_epoch() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.scheduler_switch_in_at(true, 0);
+
+        accounting.set_realtime_policy_at(false, true, 1_000_000);
+
+        assert_eq!(accounting.writers.load(Ordering::Acquire), 0);
+        assert_eq!(accounting.completed_writes.load(Ordering::Acquire), 2);
+        assert_eq!(accounting.snapshot_at(2_000_000).realtime_continuous_ns, 0);
+    }
+
+    #[test]
+    fn rttime_watchdog_uses_exact_limits_and_one_second_soft_intervals() {
+        let mut watchdog = RttimeWatchdog::new();
+        assert_eq!(watchdog.check(9, 0, 10, u64::MAX), RttimeLimitAction::None);
+        assert_eq!(watchdog.check(10, 0, 10, u64::MAX), RttimeLimitAction::Soft);
+        assert_eq!(
+            watchdog.check(1_000_009, 0, 10, u64::MAX),
+            RttimeLimitAction::None
+        );
+        assert_eq!(
+            watchdog.check(1_000_010, 0, 10, u64::MAX),
+            RttimeLimitAction::Soft
+        );
+
+        let mut hard_watchdog = RttimeWatchdog::new();
+        assert_eq!(
+            hard_watchdog.check(19, 0, u64::MAX, 20),
+            RttimeLimitAction::None
+        );
+        assert_eq!(
+            hard_watchdog.check(20, 0, u64::MAX, 20),
+            RttimeLimitAction::Hard
+        );
+
+        let accounting = CpuTimeAccounting::new();
+        let mut manager = TimeManager::new();
+        assert_eq!(
+            manager.check_rttime_snapshot(accounting.snapshot_at(0), 0, 0),
+            RttimeLimitAction::None
+        );
+    }
+
+    #[test]
+    fn rttime_reset_generation_rearms_the_soft_limit() {
+        let mut watchdog = RttimeWatchdog::new();
+        assert_eq!(watchdog.check(10, 0, 10, u64::MAX), RttimeLimitAction::Soft);
+        assert_eq!(watchdog.check(0, 1, 10, u64::MAX), RttimeLimitAction::None);
+        assert_eq!(watchdog.check(10, 1, 10, u64::MAX), RttimeLimitAction::Soft);
+    }
+
+    #[test]
+    fn timer_poll_returns_a_bounded_signal_batch_without_a_callback() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.scheduler_switch_in_at(false, 0);
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 10);
+        let mut manager = TimeManager::new();
+        for timer in &mut manager.itimers {
+            *timer = ITimer {
+                interval_ns: 0,
+                remained_ns: 5,
+            };
+        }
+
+        let signals: alloc::vec::Vec<_> = manager.poll_at(&accounting, 10).into_iter().collect();
+
+        assert_eq!(signals.len(), 3);
+        assert!(signals.contains(&Signo::SIGALRM));
+        assert!(signals.contains(&Signo::SIGVTALRM));
+        assert!(signals.contains(&Signo::SIGPROF));
+    }
 }

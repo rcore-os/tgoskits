@@ -50,7 +50,7 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 #[cfg(feature = "sg2002")]
 use spin::Once;
@@ -176,20 +176,20 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    state: Mutex<RandomState>,
+    state: PiMutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(RandomState::new(random_seed())),
+            state: PiMutex::new(RandomState::new(random_seed())),
         }
     }
 
     #[cfg(any(test, axtest))]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
-            state: Mutex::new(RandomState::new(seed)),
+            state: PiMutex::new(RandomState::new(seed)),
         }
     }
 }

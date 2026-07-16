@@ -4,7 +4,6 @@ use std::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
         modules::ax_hal::percpu::this_cpu_id,
     },
-    println,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Duration,
@@ -56,19 +55,12 @@ fn wake_sleep_queue_after_waiter_enqueued() {
     panic!("sleeper did not enter wait queue");
 }
 
-#[cfg(target_arch = "aarch64")]
-pub fn run() -> crate::TestResult {
-    println!("task_wait_queue_remote_wake: skipped on aarch64");
-    Ok(())
-}
-
-#[cfg(not(target_arch = "aarch64"))]
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
-    if cpu_num < 2 {
-        println!("task_wait_queue_remote_wake: skipped on single CPU");
-        return Ok(());
-    }
+    assert!(
+        cpu_num >= 2,
+        "remote wait-queue wake test requires at least two online CPUs"
+    );
 
     let waker_cpu = 0;
     let sleeper_cpu = 1;

@@ -259,6 +259,24 @@ impl PlicIrqHandler {
         self.init_by_context(ctx);
     }
 
+    /// Reads the controller's WARL priority value for one source.
+    ///
+    /// This operation is lock-free and only accesses the source-owned PLIC
+    /// priority register. Callers must validate the source before publishing
+    /// an IRQ-side endpoint that uses it.
+    pub fn priority(&self, source: NonZeroU32) -> u32 {
+        self.regs().interrupt_priority[source.get() as usize].get()
+    }
+
+    /// Writes one source-owned PLIC priority register.
+    ///
+    /// This is the IRQ-side primitive used by a prevalidated source lease.
+    /// Writing zero masks the source without a read-modify-write of a shared
+    /// context-enable word; restoring the lease's WARL readback unmasks it.
+    pub fn set_priority(&self, source: NonZeroU32, priority: u32) {
+        self.regs().interrupt_priority[source.get() as usize].set(priority);
+    }
+
     /// Claim an interrupt in `context`, returning its source.
     pub fn claim(&self, ctx: usize) -> Option<NonZeroU32> {
         NonZeroU32::new(self.regs().contexts[ctx].interrupt_claim_complete.get())

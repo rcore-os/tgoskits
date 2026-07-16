@@ -39,10 +39,13 @@ pub enum AcpiGsiController {
     PchPic,
 }
 
+/// Firmware-owned ACPI GSI routing metadata.
+///
+/// A CPU vector is deliberately absent: the target interrupt controller owns
+/// vector allocation after translating this route to its hardware domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiGsiRoute {
     pub gsi: u32,
-    pub vector: usize,
     pub controller: AcpiGsiController,
     pub controller_id: u16,
     pub controller_address: u64,

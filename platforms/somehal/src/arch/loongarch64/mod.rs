@@ -3,7 +3,7 @@ use rdif_intc::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger
 
 use crate::{
     common::PlatOp,
-    irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource},
+    irq::{CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
 };
 
 mod eiointc;
@@ -16,6 +16,8 @@ use crate::irq_routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_ir
 pub struct Plat;
 
 const IOCSR_IPI_SEND_CPU_SHIFT: u32 = 16;
+const IOCSR_IPI_SEND_CPU_MASK: u32 = 0x03ff;
+const IOCSR_IPI_SEND_VECTOR_MASK: u32 = 0x1f;
 const IOCSR_IPI_SEND_BLOCKING: u32 = 1 << 31;
 
 const IOCSR_IPI_STATUS: usize = 0x1000;
@@ -57,19 +59,51 @@ fn is_loongarch_external_domain(domain: crate::irq::IrqDomainId) -> bool {
         || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchLioIntc)
 }
 
-fn make_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> u32 {
-    let mut value = (cpu_id as u32) << IOCSR_IPI_SEND_CPU_SHIFT | vector;
+fn checked_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> Option<u32> {
+    let cpu_id = u32::try_from(cpu_id).ok()?;
+    if cpu_id > IOCSR_IPI_SEND_CPU_MASK || vector > IOCSR_IPI_SEND_VECTOR_MASK {
+        return None;
+    }
+    let mut value = cpu_id << IOCSR_IPI_SEND_CPU_SHIFT | vector;
     if blocking {
         value |= IOCSR_IPI_SEND_BLOCKING;
     }
-    value
+    Some(value)
+}
+
+#[inline]
+fn device_write_barrier() {
+    // `dbar 0` orders normal-memory publication and MMIO/IOCSR device writes
+    // before a subsequent device operation can become visible.
+    // SAFETY: `dbar` changes ordering only and has no register operands.
+    unsafe { core::arch::asm!("dbar 0", options(nostack, preserves_flags)) }
+}
+
+#[inline]
+fn publish_before_ipi() {
+    // The inbox publication is normal memory while IOCSR_IPI_SEND is an
+    // ordering-sensitive device write. Complete the publication before the
+    // remote CPU can observe the interrupt.
+    device_write_barrier();
+}
+
+fn send_ipi_to_cpu(cpu: irq_framework::CpuId) -> IpiSendStatus {
+    let Some(hardware_cpu) = crate::cpu::runtime_cpu_target(cpu) else {
+        return IpiSendStatus::Invalid;
+    };
+    let hardware_cpu = hardware_cpu.as_usize();
+    let Some(send_value) = checked_ipi_send_value(hardware_cpu, IPI_VECTOR, false) else {
+        return IpiSendStatus::Invalid;
+    };
+    publish_before_ipi();
+    iocsr_write_w(IOCSR_IPI_SEND, send_value);
+    IpiSendStatus::Success
 }
 
 fn ack_pending_ipi() -> u32 {
     let status = iocsr_read_w(IOCSR_IPI_STATUS);
     if status != 0 {
         iocsr_write_w(IOCSR_IPI_CLEAR, status);
-        trace!("IPI status = {status:#x}");
     }
     status
 }
@@ -92,7 +126,6 @@ fn resolve_acpi_route(route: AcpiGsiRoute) -> Result<IrqId, IrqError> {
 fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: route.gsi,
-        vector: route.vector,
         controller: match route.controller {
             irq_framework::AcpiGsiController::IoApic => rdif_intc::AcpiGsiController::IoApic,
             irq_framework::AcpiGsiController::PchPic => rdif_intc::AcpiGsiController::PchPic,
@@ -150,21 +183,47 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(
+        irq: IrqId,
+        target: CpuIpiTarget,
+        current_cpu: irq_framework::CpuId,
+    ) -> IpiSendStatus {
         if irq != Self::ipi_irq() {
-            warn!("refuse to send non-runtime LoongArch IPI IRQ {irq:?}");
-            return;
+            return IpiSendStatus::Invalid;
         }
         match target {
-            crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
-                Self::send_ipi_to_cpu(cpu_id);
+            CpuIpiTarget::Current { cpu } => {
+                if current_cpu != cpu {
+                    return IpiSendStatus::Invalid;
+                }
+                send_ipi_to_cpu(cpu)
             }
-            crate::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                for target_cpu in 0..cpu_num {
-                    if target_cpu != cpu_id {
-                        Self::send_ipi_to_cpu(target_cpu);
+            CpuIpiTarget::Other { cpu } => send_ipi_to_cpu(cpu),
+            CpuIpiTarget::AllExceptCurrent { current, cpu_count } => {
+                if cpu_count != someboot::smp::runtime_cpu_count() || current_cpu != current {
+                    return IpiSendStatus::Invalid;
+                }
+                // Preflight every physical core encoding so Invalid can never
+                // follow a partially committed broadcast.
+                if (0..cpu_count).filter(|cpu| *cpu != current.0).any(|cpu| {
+                    crate::cpu::runtime_cpu_target(irq_framework::CpuId(cpu))
+                        .and_then(|target| {
+                            checked_ipi_send_value(target.as_usize(), IPI_VECTOR, false)
+                        })
+                        .is_none()
+                }) {
+                    return IpiSendStatus::Invalid;
+                }
+                for target_cpu in 0..cpu_count {
+                    let target_cpu = irq_framework::CpuId(target_cpu);
+                    if target_cpu != current {
+                        let status = send_ipi_to_cpu(target_cpu);
+                        if status != IpiSendStatus::Success {
+                            return status;
+                        }
                     }
                 }
+                IpiSendStatus::Success
             }
         }
     }
@@ -205,9 +264,14 @@ impl PlatOp for Plat {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = pch_pic::irq_for_external_vector(external)
-                    .unwrap_or_else(|| eiointc_irq(external));
-                Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
+                if let Some(irq) = pch_pic::acknowledge_external_vector(external) {
+                    Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
+                } else {
+                    Some(ActiveIrq::new(
+                        eiointc_irq(external),
+                        Completion::EioIntc { irq: external },
+                    ))
+                }
             }
             RawIrq::Unknown => {
                 warn!("unrouted LoongArch CPU interrupt line {raw}");
@@ -240,17 +304,26 @@ impl PlatOp for Plat {
 
     fn secondary_init() {}
 
-    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
+    fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) -> Result<(), IrqError> {
+        Ok(())
+    }
+}
 
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        if cpu_id > u16::MAX as usize {
-            warn!("refuse to send LoongArch IPI to out-of-range CPU id {cpu_id}");
-            return;
-        }
-        iocsr_write_w(
-            IOCSR_IPI_SEND,
-            make_ipi_send_value(cpu_id, IPI_VECTOR, false),
+#[cfg(test)]
+mod ipi_tests {
+    use super::*;
+
+    #[test]
+    fn checked_ipi_encoder_reserves_bits_26_through_30() {
+        let max = checked_ipi_send_value(0x3ff, 0x1f, true).unwrap();
+        assert_eq!(
+            (max >> IOCSR_IPI_SEND_CPU_SHIFT) & IOCSR_IPI_SEND_CPU_MASK,
+            0x3ff
         );
+        assert_eq!(max & IOCSR_IPI_SEND_VECTOR_MASK, 0x1f);
+        assert_eq!(max & 0x7c00_0000, 0);
+        assert!(checked_ipi_send_value(0x400, 0, false).is_none());
+        assert!(checked_ipi_send_value(0, 0x20, false).is_none());
     }
 }
 

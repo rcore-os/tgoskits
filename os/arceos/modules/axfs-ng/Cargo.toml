@@ -11,13 +11,13 @@ license.workspace = true
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = []
-lockdep = ["axfs-ng-vfs/lockdep"]
+lockdep = ["axfs-ng-vfs/lockdep", "ax-sync/lockdep"]
 
 [dependencies]
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["multitask"] }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }

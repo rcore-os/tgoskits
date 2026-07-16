@@ -47,7 +47,7 @@ const SUPPORTED_OPS: [u8; 7] = [
 ];
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeHeader {
     last_op: u8,
     ops_len: u8,
@@ -56,7 +56,7 @@ struct IoUringProbeHeader {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeOp {
     op: u8,
     resv: u8,
@@ -205,7 +205,10 @@ pub fn sys_io_uring_setup(entries: u32, params: *mut io_uring_params) -> AxResul
 
     let ring = IoUring::new(sq_entries, cq_entries)?;
     ring.fill_params(&mut params_value);
-    params.vm_write(params_value)?;
+    // SAFETY: vm_read_uninit copied the complete userspace object
+    // representation, including padding and reserved bytes, before fill_params
+    // updated selected integer fields. No byte in params_value is uninitialized.
+    unsafe { params.vm_write_abi(&params_value)? };
     ring.add_to_fd_table(false).map(|fd| fd as isize)
 }
 

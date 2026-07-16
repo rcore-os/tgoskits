@@ -46,7 +46,7 @@ pub use types::{
 pub use self::{
     host::RiscvHostOps,
     percpu::{RISCVPerCpu, RiscvPerCpu},
-    vcpu::{RISCVVCpu, RiscvVCpu, RiscvVcpu},
+    vcpu::{RISCVVCpu, RiscvBoundExit, RiscvVCpu, RiscvVcpu},
 };
 
 /// Extension ID for hypercall, defined by ourselves.
