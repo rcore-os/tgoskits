@@ -575,7 +575,16 @@ jobs:
           #   apk_region: us
           #   limit_to_owner: ""
           #   main_pr_only: true
-          - name: Test axvisor self-hosted x86_64
+          - name: Test axvisor self-hosted x86_64(svm)
+            use_container: false
+            runs_on: '["self-hosted","linux","amd","kvm"]'
+            require_kvm: true
+            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted x86_64(vmx)
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             require_kvm: true
@@ -584,7 +593,7 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted x86_64 UEFI
+          - name: Test axvisor self-hosted x86_64(vmx) UEFI
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             require_kvm: true
@@ -647,37 +656,6 @@ jobs:
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
-            main_pr_only: false
-          - name: Test axvisor x86_64 svm hosted
-            use_container: false
-            runs_on: '["ubuntu-latest"]'
-            command: |
-              cpu_vendor="$(awk -F ': *' '/^vendor_id/ { print $2; exit }' /proc/cpuinfo)"
-              if [ "$cpu_vendor" = "GenuineIntel" ]; then
-                echo "::notice::Skipping axvisor x86_64 SVM hosted test on Intel CPU; SVM requires an AMD CPU."
-                {
-                  echo "## Axvisor SVM hosted test skipped"
-                  echo ""
-                  echo "Runner CPU vendor is \`GenuineIntel\`; AMD SVM tests require an AMD CPU."
-                } >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-
-              rustup component add llvm-tools
-              sudo apt-get update
-              sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
-              sudo usermod -aG kvm $USER
-              sg kvm -c '
-                set -eux
-                rust_host="$(rustc -vV | awk "/^host:/ { print \$2 }")"
-                llvm_tools_dir="$(rustc --print sysroot)/lib/rustlib/${rust_host}/bin"
-                export PATH="${llvm_tools_dir}:${PATH}"
-                command -v rust-objcopy
-                cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
-              '
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
