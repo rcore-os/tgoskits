@@ -24,13 +24,21 @@ run() {
     name="$1"; prog="$2"
     [ -x "$prog" ] || { echo "gpu-gles: $name absent (not built this arch) - skipped"; return 0; }
     total=$((total + 1))
-    out="$(cd "$BIN" && "$prog" 2>&1)"
-    if echo "$out" | grep -qE "OK [0-9]+$"; then
+    # Capture the carpet's exit status *immediately*: a teardown crash, an
+    # assert-then-exit, or a signal (rc > 128) after the "OK <n>" marker was
+    # printed must count as a failure. Gating on the marker alone would report
+    # such a run as passed. Require both a zero exit and the marker.
+    out="$(cd "$BIN" && "$prog" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] && echo "$out" | grep -qE "OK [0-9]+$"; then
         echo "$out" | grep -E ": PASS=|OK [0-9]+$" | tail -1
         pass=$((pass + 1))
     else
         echo "$out" | tail -6
-        echo "CARPET FAILED: $name"
+        if [ "$rc" -ne 0 ]; then
+            echo "CARPET FAILED: $name (exit status $rc)"
+        else
+            echo "CARPET FAILED: $name (missing OK marker)"
+        fi
         fail=$((fail + 1))
     fi
 }
