@@ -93,6 +93,7 @@ tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 anyhow = "1.0"
+axvmconfig = { workspace = true, default-features = false }
 prettyplease = "0.2"
 proc-macro2 = "1.0"
 quote = "1.0"

@@ -44,6 +44,23 @@ fn parses_typed_machine_memory_and_virtual_device() {
 }
 
 #[test]
+fn host_tooling_validates_toml_for_the_requested_target_architecture() {
+    let config = MINIMAL_CONFIG
+        .replace("mode = \"virtual\"", "mode = \"passthrough\"")
+        .replace("guest_base = 0x8000_0000", "guest_base = 0")
+        .replace(
+            "backing = { kind = \"allocate\" }",
+            "backing = { kind = \"identity-allocate\" }",
+        );
+
+    assert!(matches!(
+        AxVMCrateConfig::from_toml_for_target_arch(&config, "aarch64"),
+        Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
+    ));
+    AxVMCrateConfig::from_toml_for_target_arch(&config, "x86_64").unwrap();
+}
+
+#[test]
 fn rejects_removed_legacy_machine_and_device_fields() {
     let legacy = r#"
 [machine]
@@ -160,6 +177,68 @@ fn identity_allocated_memory_is_x86_passthrough_only() {
         validate_memory_regions(&[region], VmMachineMode::Passthrough, "aarch64"),
         Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
     ));
+}
+
+#[test]
+fn fixed_host_backings_publish_early_physical_reservations() {
+    let regions = [
+        MemoryRegionConfig {
+            guest_base: 0x8000_0000,
+            size: 0x2000_0000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::Host {
+                host_base: 0x1_8000_0000,
+            },
+        },
+        MemoryRegionConfig {
+            guest_base: 0xa000_0000,
+            size: 0x1000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::Shared {
+                host_base: 0x2_0000_0000,
+            },
+        },
+        MemoryRegionConfig {
+            guest_base: 0xb000_0000,
+            size: 0x20_0000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::Reserved,
+        },
+        MemoryRegionConfig {
+            guest_base: 0xc000_0000,
+            size: 0x20_0000,
+            permissions: MemoryPermissions::default(),
+            backing: MemoryBackingConfig::Allocate,
+        },
+    ];
+
+    let reservations = regions
+        .iter()
+        .filter_map(MemoryRegionConfig::host_physical_reservation)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        reservations,
+        vec![
+            HostPhysicalMemoryReservation::new(0x1_8000_0000, 0x2000_0000),
+            HostPhysicalMemoryReservation::new(0x2_0000_0000, 0x1000),
+            HostPhysicalMemoryReservation::new(0xb000_0000, 0x20_0000),
+        ]
+    );
+}
+
+#[test]
+fn fixed_host_reservation_requires_complete_reserved_range_coverage() {
+    let reservation = HostPhysicalMemoryReservation::new(0x1_0000, 0x3000);
+
+    assert!(reservation.is_covered_by([
+        HostPhysicalMemoryReservation::new(0x1_2000, 0x1000),
+        HostPhysicalMemoryReservation::new(0x1_0000, 0x2000),
+    ]));
+    assert!(!reservation.is_covered_by([
+        HostPhysicalMemoryReservation::new(0x1_0000, 0x1000),
+        HostPhysicalMemoryReservation::new(0x1_2000, 0x1000),
+    ]));
 }
 
 #[test]

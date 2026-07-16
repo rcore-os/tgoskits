@@ -116,6 +116,66 @@ pub enum MemoryBackingConfig {
     Reserved,
 }
 
+/// Host physical RAM that must be unavailable to the host allocator before VM construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostPhysicalMemoryReservation {
+    host_base: u64,
+    size: u64,
+}
+
+impl HostPhysicalMemoryReservation {
+    /// Creates a reservation descriptor from an already validated memory region.
+    pub const fn new(host_base: u64, size: u64) -> Self {
+        Self { host_base, size }
+    }
+
+    /// Returns the first reserved host physical address.
+    pub const fn host_base(self) -> u64 {
+        self.host_base
+    }
+
+    /// Returns the reservation length in bytes.
+    pub const fn size(self) -> u64 {
+        self.size
+    }
+
+    /// Returns whether validated reserved ranges completely cover this reservation.
+    ///
+    /// Input order is irrelevant and adjacent ranges jointly provide coverage. Empty or
+    /// overflowing descriptors never count as valid coverage.
+    pub fn is_covered_by(
+        self,
+        ranges: impl IntoIterator<Item = HostPhysicalMemoryReservation>,
+    ) -> bool {
+        let Some(reservation_end) = self.host_base.checked_add(self.size) else {
+            return false;
+        };
+        if self.size == 0 {
+            return false;
+        }
+
+        let mut ranges = ranges.into_iter().collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|range| range.host_base);
+        let mut covered_end = self.host_base;
+        for range in ranges {
+            let Some(range_end) = range.host_base.checked_add(range.size) else {
+                continue;
+            };
+            if range.size == 0 || range_end <= covered_end {
+                continue;
+            }
+            if range.host_base > covered_end {
+                return false;
+            }
+            covered_end = range_end;
+            if covered_end >= reservation_end {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// One explicit guest RAM, reserved, or shared-memory region.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -132,6 +192,24 @@ pub struct MemoryRegionConfig {
     /// Physical backing policy.
     #[serde(default)]
     pub backing: MemoryBackingConfig,
+}
+
+impl MemoryRegionConfig {
+    /// Returns the early host-allocator reservation required by this fixed backing.
+    ///
+    /// Allocator-owned backings are excluded because allocating them is itself the ownership
+    /// transition. Fixed host, shared, and platform-reserved backings must already be outside the
+    /// host free list before any VM or vCPU allocation can use the same physical pages.
+    pub const fn host_physical_reservation(&self) -> Option<HostPhysicalMemoryReservation> {
+        let host_base = match &self.backing {
+            MemoryBackingConfig::Host { host_base } | MemoryBackingConfig::Shared { host_base } => {
+                *host_base
+            }
+            MemoryBackingConfig::Reserved => self.guest_base,
+            MemoryBackingConfig::Allocate | MemoryBackingConfig::IdentityAllocate => return None,
+        };
+        Some(HostPhysicalMemoryReservation::new(host_base, self.size))
+    }
 }
 
 /// Explicit guest memory layout.

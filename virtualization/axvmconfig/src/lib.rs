@@ -453,15 +453,34 @@ pub struct AxVMCrateConfig {
 }
 
 impl AxVMCrateConfig {
-    /// Deserialize the toml string to `AxVMCrateConfig`.
+    /// Deserializes and validates a TOML configuration for the current build target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AxVmConfigError`] when the TOML shape or any target-specific policy is invalid.
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
+        Self::from_toml_for_target_arch(raw_cfg_str, BUILD_TARGET_ARCH)
+    }
+
+    /// Deserializes and validates a TOML configuration for an explicit target architecture.
+    ///
+    /// Host-side build tools use this entry point because Cargo compiles their dependencies for
+    /// the host, while the embedded VM configuration must obey the eventual Axvisor target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AxVmConfigError`] when the TOML shape or any policy for `target_arch` is invalid.
+    pub fn from_toml_for_target_arch(
+        raw_cfg_str: &str,
+        target_arch: &str,
+    ) -> AxVmConfigResult<Self> {
         let config: AxVMCrateConfig = toml::from_str(raw_cfg_str)?;
-        config.kernel.validate_boot_config()?;
-        config.validate()?;
+        config.kernel.validate_boot_config_for_arch(target_arch)?;
+        config.validate_for_arch(target_arch)?;
         Ok(config)
     }
 
-    fn validate(&self) -> AxVmConfigResult {
+    fn validate_for_arch(&self, target_arch: &str) -> AxVmConfigResult {
         for device in &self.devices.disable_defaults {
             if device != "console" {
                 return Err(AxVmConfigError::UnsupportedDefaultDevice {
@@ -469,7 +488,7 @@ impl AxVMCrateConfig {
                 });
             }
         }
-        validate_memory_regions(&self.memory.regions, self.machine.mode(), BUILD_TARGET_ARCH)
+        validate_memory_regions(&self.memory.regions, self.machine.mode(), target_arch)
     }
 }
 

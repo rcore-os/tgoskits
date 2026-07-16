@@ -37,10 +37,19 @@ use axvm::{
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
 use axvm_types::MappingFlags;
-use axvmconfig::{AxVMCrateConfig, DeviceSelectorConfig, MemoryBackingConfig, MemoryRegionConfig};
+use axvmconfig::{
+    AxVMCrateConfig, DeviceSelectorConfig, HostPhysicalMemoryReservation, MemoryBackingConfig,
+    MemoryRegionConfig,
+};
 
 #[cfg(feature = "fs")]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VmConfigOrigin {
+    Startup,
+    Runtime,
+}
 
 #[allow(dead_code)]
 pub mod vmcfg {
@@ -99,17 +108,23 @@ pub fn init_guest_vms() {
 
     for raw_cfg_str in gvm_raw_configs {
         debug!("Initializing guest VM with config: {:#?}", raw_cfg_str);
-        if let Err(e) = init_guest_vm(&raw_cfg_str) {
+        if let Err(e) = init_guest_vm_from_origin(&raw_cfg_str, VmConfigOrigin::Startup) {
             error!("Failed to initialize guest VM: {e:#}");
         }
     }
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+    init_guest_vm_from_origin(raw_cfg, VmConfigOrigin::Runtime)
+}
+
+fn init_guest_vm_from_origin(raw_cfg: &str, origin: VmConfigOrigin) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
     let vm_create_config =
         AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
+    validate_host_memory_reservations(&vm_create_config, origin)
+        .with_context(|| format!("validate fixed host memory for VM[{configured_vm_id}]"))?;
 
     #[cfg(feature = "fs")]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
@@ -178,6 +193,48 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     }
 
     Ok(vm_id)
+}
+
+fn validate_host_memory_reservations(
+    config: &AxVMCrateConfig,
+    origin: VmConfigOrigin,
+) -> Result<()> {
+    for reservation in config
+        .memory
+        .regions
+        .iter()
+        .filter_map(MemoryRegionConfig::host_physical_reservation)
+    {
+        if origin == VmConfigOrigin::Runtime {
+            bail!(
+                "runtime VM creation cannot claim fixed host RAM {:#x}/{:#x}; use allocator-owned \
+                 backing or include the VM config in the Axvisor build",
+                reservation.host_base(),
+                reservation.size()
+            );
+        }
+        let is_reserved = reservation.is_covered_by(
+            axplat_dyn::early_reserved_phys_ram_ranges().filter_map(early_reserved_ram_range),
+        );
+        if !is_reserved {
+            bail!(
+                "fixed host RAM range {:#x}/{:#x} was not reserved before host allocator \
+                 initialization; include this VM config in the Axvisor build",
+                reservation.host_base(),
+                reservation.size()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn early_reserved_ram_range(
+    (host_base, size): (usize, usize),
+) -> Option<HostPhysicalMemoryReservation> {
+    Some(HostPhysicalMemoryReservation::new(
+        u64::try_from(host_base).ok()?,
+        u64::try_from(size).ok()?,
+    ))
 }
 
 pub(crate) fn build_axvm_config(

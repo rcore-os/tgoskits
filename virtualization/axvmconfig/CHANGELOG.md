@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate fixed guest-memory ranges for overlap and preserve x86 DMA-capable
   VM-owned RAM through the explicit passthrough-only `identity-allocate`
   backing policy.
+- Expose typed early host-memory reservations for fixed `host`, `shared`, and
+  `reserved` backings, including complete-range coverage validation.
+- Let host-side build tooling validate embedded TOML against the explicit
+  Axvisor target architecture.
 
 ### Removed
 
