@@ -5,63 +5,93 @@ sidebar_label: "构建"
 
 # ArceOS 构建
 
-`cargo xtask arceos build` 把用户友好的高层参数（`--package`、`--arch`、`--smp`）转换为 Cargo 能理解的底层编译参数（target triple、features、环境变量、链接器脚本），最终调用 ostool 的 `cargo_build()` 完成编译。本节描述 ArceOS 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)，QEMU/U-Boot/板卡运行详见 [ArceOS 运行](./runtime)。
+`cargo xtask arceos build` 通过 `ArceOS::build()`、`prepare_arceos_request()` 和 `arceos/build/` 将 app 选择转换为可执行的 Cargo 配置。共享 Cargo 基础配置以 `to_bin = false` 创建 ELF，运行命令再按运行器配置准备启动产物。
 
-构建过程分七个阶段。ArceOS 与 [StarryOS](../starry/build)、[Axvisor](../axvisor/build) 共享前四个阶段的逻辑（初始化、参数解析、arch/target 解析、Build Info 加载），在 Feature 解析和 Cargo 配置组装阶段开始分化。
+## 1. Rust 应用构建
 
-## 流程总览
+Rust app 的构建路径从请求解析开始，将 package、target 和 Build Config 固化为一次 Cargo 调用；每个阶段都有对应代码锚点，便于排查错误发生的位置。
 
 ```mermaid
 flowchart TD
-    A["cargo xtask arceos build<br/>--package arceos-helloworld"] --> B[1. 初始化 AppContext]
-    B --> C["2. 参数解析<br/>CLI + Snapshot 合并"]
-    C --> D["3. Arch / Target 解析<br/>默认 aarch64"]
-    D --> E["4. Build Info 加载<br/>tmp/axbuild/config/&lt;pkg&gt;/build-&lt;target&gt;.toml"]
-    E --> F["5. Feature 解析<br/>前缀族检测 + 旧平台项过滤 + smp 注入"]
-    F --> G["6. Cargo 配置组装<br/>动态平台链接脚本 + env"]
-    G --> H["7. ostool cargo_build"]
+    A["arceos build"] --> B["prepare_arceos_request"]
+    B --> C["解析 package / arch / target / config"]
+    C --> D["必要时从 qemu board 创建缺失 Build Config"]
+    D --> E["load_build_config_with_makefile_features"]
+    E --> F["BuildInfo → std PIE Cargo 配置"]
+    F --> G["AppContext::build → ostool cargo_build"]
+    G --> H["ELF"]
 ```
 
-## 阶段细节
+### 1.1 请求解析
 
-### 1-2. 初始化与参数解析
+`context/resolve.rs` 先读取 Snapshot，再读取存在的显式或可继承 Build Config 中的 `package`、`target` 选择器。package 的优先级是 CLI → 配置 → Snapshot；没有任何来源时给出明确错误。显式 arch/target 会抑制不匹配的 Snapshot 搭配，详情见 [参数与配置](../configuration)。
 
-`ArceOS::new()` 创建 `AppContext`（详见 [参数与配置 §AppContext](../configuration#appcontext)），随后 `prepare_arceos_request()` 把 CLI 参数与 `tmp/axbuild/.arceos.toml` Snapshot 合并为 `ResolvedBuildRequest`。**`--package` 是 ArceOS 的必需参数**，会被写入 Snapshot 供后续短命令复用。
+### 1.2 配置装载
 
-### 3. Arch / Target 解析
+默认配置路径是：
 
-ArceOS 默认架构为 `aarch64`（`aarch64-unknown-none-softfloat`）。arch↔target 映射规则详见 [参数与配置 §Arch / Target 映射](../configuration#arch--target-映射)。ArceOS 的四种架构均走动态平台路径，Build Info 中不再提供平台选择开关。
+```text
+tmp/axbuild/config/<package>/build-<target>.toml
+```
 
-### 4. Build Info 加载
+对于 `build` 和 `qemu`，若默认路径不存在，`ensure_default_build_config_for_target()` 会查找 `os/arceos/configs/board/qemu-<arch>.toml` 中 package 与 target 都匹配的文件并复制。找不到匹配 board 时，`ensure_build_info()` 才会写入 `ArceosBuildConfig::default_config()`。
 
-ArceOS 的 Build Info 位于 `tmp/axbuild/config/<package>/build-<target>.toml`。初次构建时写入 `ArceosBuildConfig::default_config()`（默认 `BuildInfo` 加空的 `app-c` 字段）；后续构建直接 TOML 反序列化，用户可手动编辑调整 features 和环境变量。详见 [参数与配置 §Build Info](../configuration#build-info)。
+普通 ArceOS Build Config 的最小示例：
 
-### 5. Feature 解析
+```toml
+features = ["net", "ax-driver/virtio-net"]
+log = "Info"
+max_cpu_num = 2
 
-`BuildInfo::resolve_features()` 执行 ArceOS 特有的 feature 处理：
+[env]
+BACKTRACE = "y"
+```
 
-- **前缀族检测**：通过分析包的 Cargo.toml 依赖确定使用 `ax-std/` 还是 `ax-runtime/` 前缀
-- **旧平台项过滤**：移除 `plat-dyn`、`defplat`、`myplat` 等旧平台选择 feature；动态平台由当前构建路径固定提供
-- **SMP feature 注入**：`max_cpu_num > 1` 时注入 `{prefix}/smp`
-- **遗留别名归一化**：`axstd` → `ax-std`、`feature` → `ax-runtime`
+Board 文件可以额外带 `package` 与 `target`，因此既可作为 `defconfig` 模板，也可作为显式 `--config` 的请求选择器。
 
-### 6-7. Cargo 配置组装与执行
+### 1.3 特性装配
 
-构建使用动态平台链接脚本 `Taxplat.x`。硬件信息来自启动时的固件表、FDT/ACPI 和 `somehal`/`axplat-dyn` 运行时发现结果；`axbuild` 不再生成 `.axconfig.toml`，也不再向 Cargo 注入 `AX_CONFIG_PATH`。最终 `AppContext::build()` 调用 `Tool::cargo_build()` 完成编译，产出 ELF（aarch64/riscv64 进一步转为 raw binary）。
+`load_build_config_with_makefile_features()` 执行以下操作：
 
-## ArceOS 特有：C 应用构建管线
+1. 校验 Build Config 根字段和 feature；
+2. 合并 `FEATURES` 环境变量；
+3. 用 CLI `--smp` 覆盖 `max_cpu_num`；
+4. 再次校验，确保环境变量同样不能绕过规则。
 
-除标准构建外，ArceOS 还支持独立的 C 应用构建（`scripts/axbuild/src/arceos/cbuild.rs`），通过 `ax-libc` 提供的 C 运行时和 musl 交叉工具链把用户 C 源码链接为可在 ArceOS 运行的 ELF。此管线不依赖测试框架，可独立使用。详见 [ArceOS 测试 §C 应用构建管线](./test#c-应用构建管线)。
+随后共享 BuildInfo 逻辑把裸机 logical target 映射到 `scripts/targets/std/pie/` 下的 musl JSON target，设置 `build-std=std,panic_abort`，准备交叉 C 编译环境、占位库和 linker wrapper。`max_cpu_num > 1` 会加入 `smp`；应用 Cargo metadata 决定该 feature 传递给 app、`ax-std` 或两者。
 
-## 用法示例
+### 1.4 产物生成
+
+`AppContext::build()` 调用 `ostool_build::cargo_build()`，基础 Cargo 配置中的 `to_bin` 为 `false`。生成的 ELF 路径由 ostool 输出；QEMU、U-Boot 或 Board 命令才会根据各自运行配置决定是否准备 raw BIN。
+
+## 2. C 应用构建
+
+`app-c` 是 ArceOS 专属配置字段：
+
+```toml
+app-c = "../../my-c-app"
+features = ["fs"]
+log = "Info"
+```
+
+- 相对路径相对于 Build Config 文件解析；目录必须直接包含 C 源文件。
+- `prepare_arceos_request()` 将 package 锁定为 `ax-libc`，冲突的 `--package` 会报错。
+- `load_c_app_cargo_config()` 以 `build-std=core,alloc` 准备 ax-libc 的 Cargo 环境；`cbuild::build_c_app()` 再执行 CMake/musl 编译和链接。
+- C app 的 `build` 打印 ELF 路径。QEMU 运行读取 `qemu.to_bin` 决定是否转换；U-Boot C app 总是请求 BIN。
+
+## 3. 命令示例
+
+这些示例分别验证默认 target、显式 target/SMP 与 board 文件作为完整选择器的行为。
 
 ```bash
-# 构建单个 app（默认 aarch64）
-cargo arceos build --package arceos-helloworld
+# 默认 aarch64
+cargo xtask arceos build --package arceos-helloworld
 
-# 切换架构
-cargo arceos build --package arceos-httpserver --arch riscv64
+# 目标架构与多核
+cargo xtask arceos build --package arceos-httpserver --arch riscv64 --smp 4
 
-# 多核
-cargo arceos build --package arceos-helloworld --smp 4
+# 使用完整配置选择器
+cargo xtask arceos build --config os/arceos/configs/board/qemu-aarch64.toml
 ```
+
+运行阶段的 QEMU/FAT32 行为见 [ArceOS 运行](./runtime)。

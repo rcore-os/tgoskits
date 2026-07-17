@@ -14,8 +14,8 @@ use axvm_types::{
 };
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
-    X86MsrAddr, X86NestedPagingConfig, X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig,
-    X86VcpuError, X86VcpuResult, X86VmExit,
+    X86MsrAddr, X86NestedPagingConfig, X86PerCpuState, X86Port, X86Vcpu, X86VcpuCreateConfig,
+    X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
 };
 use x86_vlapic::{
     X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicHostOps,
@@ -43,7 +43,7 @@ mod interrupt_controller;
 pub(crate) mod irq;
 #[path = "../../architecture/nested_page_fault.rs"]
 mod nested_page_fault;
-mod npt;
+mod nested_paging;
 pub(crate) mod port;
 mod serial;
 #[path = "../../architecture/sysreg.rs"]
@@ -152,10 +152,10 @@ impl ArchOps for X86_64Arch {
     type VCpu = AxvmX86Vcpu;
     type PerCpu = AxvmX86PerCpu;
     type DeferredRunWork = DeferredRunWork;
-    type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
+    type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
-        x86_vcpu::has_hardware_support()
+        x86_vcpu::initialize_hardware_support().is_ok()
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
@@ -498,7 +498,7 @@ impl X86HostOps for AxvmX86HostOps {
     }
 }
 
-pub(crate) struct AxvmX86Vcpu(x86_vcpu::X86ArchVCpu<AxvmX86HostOps>);
+pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
 
 impl AxvmX86Vcpu {
     fn deliver_local_apic_vector(&mut self, vector: usize) -> BackendResult {
@@ -520,15 +520,12 @@ impl AxvmX86Vcpu {
 }
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
-    type CreateConfig = X86VCpuCreateConfig;
-    type SetupConfig = X86VCpuSetupConfig;
+    type CreateConfig = X86VcpuCreateConfig;
+    type SetupConfig = X86VcpuSetupConfig;
     type Exit = X86VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        x86_result(x86_vcpu::X86ArchVCpu::new_with_config(
-            vm_id, vcpu_id, config,
-        ))
-        .map(Self)
+        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config)).map(Self)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -567,11 +564,11 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 }
 
-pub(crate) struct AxvmX86PerCpu(x86_vcpu::X86ArchPerCpuState<AxvmX86HostOps>);
+pub(crate) struct AxvmX86PerCpu(X86PerCpuState<AxvmX86HostOps>);
 
 impl VmArchPerCpuOps for AxvmX86PerCpu {
     fn new(cpu_id: usize) -> BackendResult<Self> {
-        x86_result(x86_vcpu::X86ArchPerCpuState::new(cpu_id)).map(Self)
+        x86_result(X86PerCpuState::new(cpu_id)).map(Self)
     }
 
     fn is_enabled(&self) -> bool {
@@ -587,10 +584,21 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     }
 }
 
-#[cfg(feature = "vmx")]
-pub(crate) fn x86_apic_access_page_addr() -> axvm_types::HostPhysAddr {
-    let addr = x86_vcpu::x86_apic_access_page_addr::<AxvmX86HostOps>();
-    axvm_types::HostPhysAddr::from(addr.as_usize())
+pub(crate) fn x86_apic_access_page_addr() -> AxVmResult<axvm_types::HostPhysAddr> {
+    x86_result(x86_vcpu::apic_access_page_addr::<AxvmX86HostOps>())
+        .map(|addr| axvm_types::HostPhysAddr::from(addr.as_usize()))
+        .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
+}
+
+pub(crate) fn x86_apic_access_page_gpa() -> AxVmResult<axvm_types::GuestPhysAddr> {
+    x86_result(x86_vcpu::apic_access_page_gpa())
+        .map(|addr| axvm_types::GuestPhysAddr::from(addr.as_usize()))
+        .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
+}
+
+pub(crate) fn x86_requires_apic_access_page() -> AxVmResult<bool> {
+    x86_result(x86_vcpu::requires_apic_access_page())
+        .map_err(|error| AxVmError::vcpu("check x86 APIC access page", error))
 }
 
 fn handle_x86_nested_page_fault(

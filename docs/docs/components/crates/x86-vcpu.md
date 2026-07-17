@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / x86 虚拟 CPU 后端
 > 版本：`0.2.2`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/vmx/*`、`src/regs/*`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`src/vmx/*`、`src/svm/*`、`src/regs/*`
 
 `x86_vcpu` 是 Axvisor 所依赖的 ArceOS Hypervisor 体系中面向 x86_64 的架构后端，实现了基于 Intel VT-x/VMX 和 AMD SVM 的 vCPU 执行引擎。它实现 `axvm-types` 给出的架构协议接口，并把 PIO、APIC、MSR、EPT/NPT 等 x86 语义保留在本 crate 内部，统一生命周期和运行循环由 `axvm` 负责。
 
@@ -15,7 +15,7 @@
 该 crate 的职责可以概括为三点：
 
 - 实现 x86_64 架构下的 `VmArchVcpuOps`
-- 实现每物理 CPU 的 VMX 启停逻辑
+- 实现每物理 CPU 的 VMX 或 SVM 启停逻辑
 - 将 VMX/SVM exit 原因翻译成 `axvm-types::VmExit`
 
 它不承担：
@@ -31,13 +31,17 @@
 
 | 模块 | 作用 | 关键内容 |
 | --- | --- | --- |
-| `lib.rs` | feature 入口和公共导出 | 选择 `vmx` 路径、导出 `VmxArchVCpu`、`has_hardware_support` |
+| `lib.rs` | crate 入口和公共导出 | 导出稳定的 x86 vCPU 类型与接口 |
+| `runtime.rs` | 运行时选择与统一接口 | 根据 CPUID 选择 VMX/SVM、实现 `X86Vcpu`、`X86PerCpuState` |
 | `vmx/vcpu.rs` | vCPU 主实现 | `VmxVcpu`、setup、run、vmexit、注入事件 |
 | `vmx/percpu.rs` | 每核 VMX 状态 | `VmxPerCpuState`、`vmxon` / `vmxoff` |
 | `vmx/vmcs.rs` | VMCS 访问封装 | 字段读写、控制域配置、exit 信息解析 |
 | `vmx/structs.rs` | VMX 内存结构 | `VmxRegion`、I/O bitmap、MSR bitmap、EPT pointer |
 | `vmx/definitions.rs` | 常量与枚举 | exit reason、控制位、事件信息等 |
 | `vmx/instructions.rs` | 特权指令辅助 | `invept` 等 |
+| `svm/vcpu.rs` | AMD vCPU 主实现 | `SvmVcpu`、setup、run、VM exit、注入事件 |
+| `svm/percpu.rs` | 每核 SVM 状态 | `SvmPerCpuState`、`EFER.SVME` 与 HSAVE 页 |
+| `svm/vmcb.rs` | VMCB 访问封装 | 控制域、状态域与 exit 信息解析 |
 | `regs/` | 通用寄存器布局与保存恢复 | `GeneralRegisters` 和汇编辅助 |
 | `msr.rs` | MSR 常量与访问 | VMX 能力和常见寄存器读写 |
 | `ept.rs` | EPT 相关辅助 | `GuestPageWalkInfo` 等辅助结构 |
@@ -151,14 +155,9 @@
 
 有两点需要在文档里明确：
 
-#### 仅 VMX 路径成熟
+#### 后端在运行时固定
 
-虽然 `Cargo.toml` 中声明了：
-
-- `vmx`
-- `svm`
-
-但当前源码的完整实现只覆盖 Intel VMX。`svm` 更像占位 feature，而不是可用的 AMD SVM 后端。
+`x86_vcpu` 不声明 `vmx` 或 `svm` Cargo feature。AxVM 初始化时读取当前 CPU 的 CPUID，选择唯一的 VMX 或 SVM 后端；其余参与虚拟化的物理 CPU 必须暴露相同能力，否则初始化失败。
 
 #### EPT violation 尚未完整上抛
 
@@ -168,9 +167,9 @@
 
 ### 功能概览
 
-- 检测 x86 VMX 硬件支持
-- 启用和关闭每核 VMX 状态
-- 创建与配置 VMCS
+- 检测 x86 VMX/SVM 硬件支持
+- 启用和关闭每核 VMX 或 SVM 状态
+- 创建与配置 VMCS 或 VMCB
 - 运行 vCPU 并处理 VM-exit
 - 拦截和转发 I/O、MSR、x2APIC 相关访问
 - 注入中断和异常事件
@@ -257,9 +256,9 @@ graph TD
 要在系统中启用 `x86_vcpu`，至少需要具备：
 
 1. x86_64 平台
-2. 硬件支持 VMX
+2. 硬件支持 VMX 或 SVM
 3. 上层实现 `AxVCpuHal` / 相关物理内存接口
-4. 能为 VMCS、bitmap、EPT 等对象提供可用的宿主资源
+4. 能为 VMCS/VMCB、bitmap、EPT/NPT 等对象提供可用的宿主资源
 
 ### 4.2 新增一个 VM-exit 处理路径
 
@@ -281,12 +280,12 @@ graph TD
 
 ### 5.1 当前测试面
 
-源码内已经有一批不依赖真实 VMX 运行的单元测试，主要覆盖：
+源码内已经有一批不依赖真实 VMX/SVM 运行的单元测试，主要覆盖：
 
 - 位定义
 - 结构体布局
 - 一些辅助对象与寄存器逻辑
-- `MockMmHal` 支撑下的部分 VMX 状态初始化路径
+- `MockMmHal` 支撑下的 VMX/SVM 状态初始化路径
 
 ### 集成测试
 
@@ -301,7 +300,6 @@ graph TD
 
 ### 5.3 当前文档应显式提示的风险
 
-- `svm` 目前不是成熟实现
 - `APIC_ACCESS` 等部分路径仍未完全实现
 - EPT violation 的统一退出语义还不完整
 - `x86_vlapic` 为外部依赖，不在本仓库源码中，排查 LAPIC 相关行为时需要跨仓库联动
@@ -310,7 +308,7 @@ graph TD
 
 | 项目 | 位置 | 角色 | 核心作用 |
 | --- | --- | --- | --- |
-| ArceOS | Hypervisor 扩展链中的 x86 后端 | x86 架构虚拟 CPU 执行层 | 当 ArceOS 作为 Axvisor 宿主时，为 x86 VM 提供 VMX 级执行能力 |
+| ArceOS | Hypervisor 扩展链中的 x86 后端 | x86 架构虚拟 CPU 执行层 | 当 ArceOS 作为 Axvisor 宿主时，为 x86 VM 提供 VMX 或 SVM 执行能力 |
 | StarryOS | 当前仓库中无直接常规依赖 | 间接相关基础件 | StarryOS 若未来接入同一 hypervisor 栈，可通过 `axvm` 间接使用它 |
 | Axvisor | x86 虚拟化执行核心 | x86 vCPU 后端实现 | 与 `axvm`、`axaddrspace`、`axdevice` 等共同组成 x86 客户机执行面 |
 

@@ -34,6 +34,8 @@ VmMachineRequest
 
 Passthrough 从 host FDT/ACPI 得到设备模板。默认授权 `Assignable` 和 `Transferable`，
 但强制保护、deny 和虚拟替换优先。
+x86_64 不再用配置 feature 选择 VMX/SVM，而是在 host 初始化时按 CPUID 固定 backend，
+并为所有参与虚拟化的 pCPU 校验一致性；nested page table 随 backend 选择 EPT 或 NPT。
 
 非 RAM I/O aperture 默认 identity-map，同时对 host exclusive、reserved、deny、Guest
 RAM、boot blobs、虚拟设备和虚拟 controller window 打洞。RAM 始终显式分配，未分配

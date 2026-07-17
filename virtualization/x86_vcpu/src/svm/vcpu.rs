@@ -23,7 +23,7 @@ use super::{
 use crate::{
     X86AccessFlags, X86AccessWidth, X86EmulatedMmioRegion, X86GuestPhysAddr, X86GuestVirtAddr,
     X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig,
-    X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError, X86VcpuResult, X86VmExit, host,
+    X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
     msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
     xstate::XState,
 };
@@ -235,7 +235,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         &mut self,
         entry: X86GuestPhysAddr,
         npt_root: X86HostPhysAddr,
-        config: X86VCpuSetupConfig,
+        config: X86VcpuSetupConfig,
     ) -> X86VcpuResult {
         self.emulated_mmio_regions = config.emulated_mmio_regions().to_vec();
         self.setup_io_bitmap(&config)?;
@@ -365,7 +365,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
-    fn setup_io_bitmap(&mut self, config: &X86VCpuSetupConfig) -> X86VcpuResult {
+    fn setup_io_bitmap(&mut self, config: &X86VcpuSetupConfig) -> X86VcpuResult {
         // This port is part of the x86 QEMU test contract: 0x604 reports test completion.
         self.iopm
             .set_intercept_of_range(QEMU_EXIT_PORT as _, 2, true);
@@ -1472,7 +1472,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        _config: X86VCpuCreateConfig,
+        _config: X86VcpuCreateConfig,
     ) -> X86VcpuResult<Self> {
         Self::create(vm_id, vcpu_id)
     }
@@ -1487,7 +1487,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
-    pub fn setup(&mut self, config: X86VCpuSetupConfig) -> X86VcpuResult {
+    pub fn setup(&mut self, config: X86VcpuSetupConfig) -> X86VcpuResult {
         let entry = self
             .entry
             .ok_or(x86_err_type!(InvalidInput, "SVM guest entry is not set"))?;

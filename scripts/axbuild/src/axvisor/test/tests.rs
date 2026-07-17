@@ -711,32 +711,39 @@ fn discovers_uboot_test_group_from_board_cases() {
 }
 
 #[test]
-fn x86_linux_direct_boot_configs_keep_timer_calibration_bypass() {
+fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for path in [
-        "os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml",
-        "os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml",
-    ] {
-        let content = fs::read_to_string(workspace_root.join(path)).unwrap();
-        let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
-        let cmdline = config.kernel.cmdline;
+    let path = "os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+    let cmdline = config.kernel.cmdline;
 
+    assert!(
+        cmdline.contains("no_timer_check"),
+        "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration stalls"
+    );
+    for option in [
+        "rootwait",
+        "nox2apic",
+        "tsc=unstable",
+        "initcall_blacklist=ahci_pci_driver_init,i8042_init",
+    ] {
         assert!(
-            cmdline.contains("no_timer_check"),
-            "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration stalls"
-        );
-        assert!(
-            cmdline.len() <= X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT,
-            "{path} cmdline length {} exceeds the currently verified x86 direct-boot limit of {} \
-             bytes and can truncate getty arguments",
-            cmdline.len(),
-            X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT
-        );
-        assert!(
-            cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
-            "{path} should keep complete getty arguments after `--` so init does not exit"
+            cmdline.contains(option),
+            "{path} should retain the shared x86 direct-boot safety option {option}"
         );
     }
+    assert!(
+        cmdline.len() <= X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT,
+        "{path} cmdline length {} exceeds the currently verified x86 direct-boot limit of {} \
+         bytes and can truncate getty arguments",
+        cmdline.len(),
+        X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT
+    );
+    assert!(
+        cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
+        "{path} should keep complete getty arguments after `--` so init does not exit"
+    );
 }
 
 #[test]

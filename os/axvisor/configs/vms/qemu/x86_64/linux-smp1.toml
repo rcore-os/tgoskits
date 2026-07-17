@@ -6,7 +6,7 @@ interrupts_passthrough = false
 
 [base]
 id = 1
-name = "linux-x86_64-qemu-svm"
+name = "linux-x86_64-qemu"
 cpu_num = 1
 phys_cpu_sets = [0x1]
 
@@ -16,7 +16,12 @@ image_location = "fs"
 kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x200000
 enable_bios = false
-cmdline = "console=ttyS0 root=/dev/vda ro rootwait rootflags=noload devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi irqpoll no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0 dumb"
+# Keep one conservative direct-boot baseline for both nested backends. These
+# options avoid the previously observed timer calibration and early device
+# probing stalls without selecting VMX or SVM in the guest configuration. The
+# x86 direct-boot protocol limits this command line to 231 bytes, so omit the
+# non-essential rootfs `noload` and terminal `dumb` options instead.
+cmdline = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0"
 
 [[memory.regions]]
 guest_base = 0x0

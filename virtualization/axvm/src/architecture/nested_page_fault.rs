@@ -1,5 +1,6 @@
 //! Nested-page-fault handling shared by architectures that report raw faults.
 
+use axaddrspace::NestedPageTableOps;
 use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use crate::vm::AxVMResources;

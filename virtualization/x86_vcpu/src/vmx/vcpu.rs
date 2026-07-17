@@ -42,8 +42,8 @@ use super::{
 use crate::{
     X86AccessFlags, X86AccessWidth, X86EmulatedMmioRegion, X86GuestMemoryRegion, X86GuestPhysAddr,
     X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo,
-    X86NestedPagingConfig, X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig, X86VcpuError,
-    X86VcpuResult, X86VmExit, ept::GuestPageWalkInfo, host, msr::Msr, regs::GeneralRegisters,
+    X86NestedPagingConfig, X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult,
+    X86VcpuSetupConfig, X86VmExit, host, msr::Msr, regs::GeneralRegisters,
     restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
@@ -168,16 +168,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         Ok(vcpu)
     }
 
-    /// Set the new [`VmxVcpu`] context from guest OS.
-    pub fn setup_vm(
-        &mut self,
-        nested_page_table_root: X86HostPhysAddr,
-        entry: X86GuestPhysAddr,
-    ) -> X86VcpuResult {
-        self.setup_vmcs(entry, nested_page_table_root, X86VCpuSetupConfig::default())?;
-        Ok(())
-    }
-
     // /// Get the identifier of this [`VmxVcpu`].
     // pub fn vcpu_id(&self) -> usize {
     //     get_current_vcpu::<Self>().unwrap().id()
@@ -293,11 +283,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         vmcs::exit_info()
     }
 
-    /// Raw information for VM Exits Due to Vectored Events, See SDM 25.9.2
-    pub fn raw_interrupt_exit_info(&self) -> X86VcpuResult<u32> {
-        vmcs::raw_interrupt_exit_info()
-    }
-
     /// Information for VM exits due to external interrupts.
     pub fn interrupt_exit_info(&self) -> X86VcpuResult<vmcs::VmxInterruptInfo> {
         vmcs::interrupt_exit_info()
@@ -333,11 +318,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         VmcsGuestNW::RSP.read().unwrap()
     }
 
-    /// Set guest stack pointer. (`RSP`)
-    pub fn set_stack_pointer(&mut self, rsp: usize) {
-        VmcsGuestNW::RSP.write(rsp).unwrap()
-    }
-
     /// Translate guest virtual addr to linear addr    
     pub fn gla2gva(&self, guest_rip: X86GuestVirtAddr) -> X86GuestVirtAddr {
         let cpu_mode = self.get_cpu_mode();
@@ -351,59 +331,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
         //     seg_base, guest_rip, cpu_mode
         // );
         guest_rip + seg_base
-    }
-
-    /// Get Translate guest page table info
-    pub fn get_ptw_info(&self) -> GuestPageWalkInfo {
-        let top_entry = VmcsGuestNW::CR3.read().unwrap();
-        let level = self.get_paging_level();
-        let is_write_access = false;
-        let is_inst_fetch = false;
-        let is_user_mode_access = ((VmcsGuest32::SS_ACCESS_RIGHTS.read().unwrap() >> 5) & 0x3) == 3;
-        let mut pse = true;
-        let mut nxe =
-            (VmcsGuest64::IA32_EFER.read().unwrap() & EferFlags::NO_EXECUTE_ENABLE.bits()) != 0;
-        let wp = (VmcsGuestNW::CR0.read().unwrap() & Cr0Flags::WRITE_PROTECT.bits() as usize) != 0;
-        let is_smap_on = (VmcsGuestNW::CR4.read().unwrap()
-            & Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION.bits() as usize)
-            != 0;
-        let is_smep_on = (VmcsGuestNW::CR4.read().unwrap()
-            & Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION.bits() as usize)
-            != 0;
-        let width: u32;
-        if level == 4 || level == 3 {
-            width = 9;
-        } else if level == 2 {
-            width = 10;
-            pse = VmcsGuestNW::CR4.read().unwrap() & Cr4Flags::PAGE_SIZE_EXTENSION.bits() as usize
-                != 0;
-            nxe = false;
-        } else {
-            width = 0;
-        }
-        GuestPageWalkInfo {
-            top_entry,
-            level,
-            width,
-            is_user_mode_access,
-            is_write_access,
-            is_inst_fetch,
-            pse,
-            wp,
-            nxe,
-            is_smap_on,
-            is_smep_on,
-        }
-    }
-
-    /// Guest rip. (`RIP`)
-    pub fn rip(&self) -> usize {
-        VmcsGuestNW::RIP.read().unwrap()
-    }
-
-    /// Guest cs. (`cs`)
-    pub fn cs(&self) -> u16 {
-        VmcsGuest16::CS_SELECTOR.read().unwrap()
     }
 
     /// Advance guest `RIP` by `instr_len` bytes.
@@ -449,24 +376,11 @@ impl<H: X86HostOps> VmxVcpu<H> {
         VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS.write(ctrl)?;
         Ok(())
     }
-
-    /// Set I/O intercept by modifying I/O bitmap.
-    pub fn set_io_intercept_of_range(&mut self, port_base: u32, count: u32, intercept: bool) {
-        self.io_bitmap
-            .set_intercept_of_range(port_base, count, intercept)
-    }
-
-    /// Set msr intercept by modifying msr bitmap.
-    /// Todo: distinguish read and write.
-    pub fn set_msr_intercept_of_range(&mut self, msr: u32, intercept: bool) {
-        self.msr_bitmap.set_read_intercept(msr, intercept);
-        self.msr_bitmap.set_write_intercept(msr, intercept);
-    }
 }
 
 // Implementation of private methods
 impl<H: X86HostOps> VmxVcpu<H> {
-    fn setup_io_bitmap(&mut self, config: &X86VCpuSetupConfig) -> X86VcpuResult {
+    fn setup_io_bitmap(&mut self, config: &X86VcpuSetupConfig) -> X86VcpuResult {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
         // in `modules/axvm/src/device/x86_64/mod.rs` somehow.
@@ -521,7 +435,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         &mut self,
         entry: X86GuestPhysAddr,
         nested_page_table_root: X86HostPhysAddr,
-        config: X86VCpuSetupConfig,
+        config: X86VcpuSetupConfig,
     ) -> X86VcpuResult {
         self.guest_memory_regions = config.guest_memory_regions().to_vec();
         self.emulated_mmio_regions = config.emulated_mmio_regions().to_vec();
@@ -637,7 +551,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         &mut self,
         nested_page_table_root: X86HostPhysAddr,
         is_guest: bool,
-        config: &X86VCpuSetupConfig,
+        config: &X86VcpuSetupConfig,
     ) -> X86VcpuResult {
         // Intercept external interrupts and use the VMX preemption timer.
         use PinbasedControls as PinCtrl;
@@ -1671,7 +1585,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        _config: X86VCpuCreateConfig,
+        _config: X86VcpuCreateConfig,
     ) -> X86VcpuResult<Self> {
         Self::new(vm_id, vcpu_id)
     }
@@ -1686,7 +1600,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         Ok(())
     }
 
-    pub fn setup(&mut self, config: X86VCpuSetupConfig) -> X86VcpuResult {
+    pub fn setup(&mut self, config: X86VcpuSetupConfig) -> X86VcpuResult {
         self.setup_vmcs(
             self.entry.ok_or(X86VcpuError::InvalidInput)?,
             self.nested_page_table_root
@@ -1887,6 +1801,7 @@ mod tests {
     use alloc::format;
 
     use super::*;
+    use crate::ept::GuestPageWalkInfo;
 
     #[test]
     fn test_vm_cpu_mode_enum() {

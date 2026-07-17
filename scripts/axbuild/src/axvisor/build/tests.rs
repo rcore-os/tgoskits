@@ -254,22 +254,27 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_forwards_explicit_x86_svm_backend() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join("build-x86_64-svm.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["svm"]
+fn load_cargo_config_rejects_explicit_x86_backend_features() {
+    for feature in ["vmx", "svm"] {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(format!("build-x86_64-{feature}.toml"));
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+features = ["{feature}"]
 log = "Info"
-"#,
-    )
-    .unwrap();
+"#
+            ),
+        )
+        .unwrap();
 
-    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+        let err =
+            load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap_err();
 
-    assert!(cargo.features.contains(&"svm".to_string()));
-    assert!(!cargo.features.contains(&"vmx".to_string()));
+        assert!(err.to_string().contains("selected from CPU capabilities"));
+        assert!(err.to_string().contains(&format!("`{feature}`")));
+    }
 }
 
 #[test]
@@ -367,7 +372,7 @@ fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
         "qemu-x86_64",
         r#"
 target = "x86_64-unknown-none"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 vm_configs = []
 "#,
@@ -393,7 +398,7 @@ vm_configs = []
         fs::read_to_string(board_path).unwrap()
     );
     assert!(cargo.features.contains(&"fs".to_string()));
-    assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
@@ -472,7 +477,7 @@ fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     fs::write(
         &config_path,
         r#"
-features = ["ax-driver/virtio-blk", "fs", "vmx"]
+features = ["ax-driver/virtio-blk", "fs"]
 log = "Info"
 "#,
     )
@@ -513,7 +518,7 @@ fn load_cargo_config_defaults_x86_to_dynamic_platform_when_omitted() {
     fs::write(
         &config_path,
         r#"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 "#,
     )
@@ -549,7 +554,7 @@ fn load_cargo_config_applies_stack_protector_from_makefile_features() {
     fs::write(
         &config_path,
         r#"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 "#,
     )

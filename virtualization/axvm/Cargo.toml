@@ -10,12 +10,9 @@ keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
 [features]
-default = ["vmx"]
 std = ["axdevice/std", "axvmconfig/std", "virtual_ns16550/std"]
-fs = ["vmx", "ax-std/fs"]
+fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
-vmx = ["x86_vcpu/vmx"]
-svm = ["x86_vcpu/svm"]
 sstc = ["riscv_vcpu/sstc"]
 
 [dependencies]

@@ -2,22 +2,18 @@
 
 use alloc::sync::Arc;
 
-#[cfg(feature = "vmx")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use axdevice_base::{DeviceRegistry as _, PortDeviceAdapter, Resource};
-#[cfg(feature = "vmx")]
-use axvm_types::MappingFlags;
-use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{MappingFlags, NestedPagingConfig, VmArchVcpuOps};
 use x86_vcpu::{
-    X86GuestMemoryRegion, X86GuestPhysAddr, X86HostVirtAddr, X86VCpuCreateConfig,
-    X86VCpuSetupConfig,
+    X86GuestMemoryRegion, X86GuestPhysAddr, X86HostVirtAddr, X86VcpuCreateConfig,
+    X86VcpuSetupConfig,
 };
 
-#[cfg(feature = "vmx")]
-use super::x86_apic_access_page_addr;
 use super::{
     AMD_FCH_MMIO_BASE, AMD_FCH_MMIO_SIZE, X86_64Arch, interrupt_controller::X86InterruptController,
-    npt, x86_result,
+    nested_paging, x86_apic_access_page_addr, x86_apic_access_page_gpa,
+    x86_requires_apic_access_page, x86_result,
 };
 use crate::{
     AxVmError, AxVmResult, ax_err,
@@ -40,7 +36,7 @@ impl X86_64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements);
-        let page_table = npt::NestedPageTable::new(levels)?;
+        let page_table = nested_paging::NestedPageTable::new(levels)?;
         AxVMResources::from_page_table(config, page_table, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
@@ -74,7 +70,7 @@ fn init_vm_with(
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
-        let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VCpuCreateConfig))?;
+        let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
         let mut devices = PreparedDevices::empty();
         register_interrupt_controller(
             resources.config(),
@@ -94,7 +90,7 @@ fn init_vm_with(
         validate_guest_dtb(resources)?;
 
         let mut owned_regions = guest_owned_regions(resources);
-        append_arch_owned_regions(&mut owned_regions);
+        append_arch_owned_regions(&mut owned_regions)?;
         map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
         map_arch_address_space(resources)?;
         let setup_config = build_vcpu_setup_config(
@@ -114,7 +110,7 @@ fn build_vcpu_setup_config(
     memory_regions: &[crate::vm::VMMemoryRegion],
     devices: &axdevice::AxVmDevices,
 ) -> AxVmResult<<super::AxvmX86Vcpu as VmArchVcpuOps>::SetupConfig> {
-    let mut setup_config = X86VCpuSetupConfig::default();
+    let mut setup_config = X86VcpuSetupConfig::default();
     setup_config.set_com1_emulation(
         config
             .machine_plan()
@@ -247,30 +243,31 @@ fn register_planned_host_ports(
     Ok(())
 }
 
-fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) {
-    #[cfg(feature = "vmx")]
-    regions.push(GuestOwnedRegion::new(
-        x86_vcpu::X86_APIC_ACCESS_GPA,
-        PAGE_SIZE_4K,
-        crate::layout::VmRegionKind::Reserved,
-    ));
-    #[cfg(not(feature = "vmx"))]
-    let _ = regions;
+fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) -> AxVmResult {
+    if x86_requires_apic_access_page()? {
+        let gpa = x86_apic_access_page_gpa()?;
+        regions.push(GuestOwnedRegion::new(
+            gpa.as_usize(),
+            PAGE_SIZE_4K,
+            crate::layout::VmRegionKind::Reserved,
+        ));
+    }
+    Ok(())
 }
 
 fn map_arch_address_space(resources: &mut AxVMResources) -> AxVmResult {
-    #[cfg(feature = "vmx")]
-    resources
-        .address_space
-        .map_linear(
-            axvm_types::GuestPhysAddr::from(x86_vcpu::X86_APIC_ACCESS_GPA),
-            x86_apic_access_page_addr(),
-            PAGE_SIZE_4K,
-            MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
-        )
-        .map_err(|error| AxVmError::memory("map x86 APIC access page", error))?;
-    #[cfg(not(feature = "vmx"))]
-    let _ = resources;
+    if x86_requires_apic_access_page()? {
+        let gpa = x86_apic_access_page_gpa()?;
+        resources
+            .address_space
+            .map_linear(
+                gpa,
+                x86_apic_access_page_addr()?,
+                PAGE_SIZE_4K,
+                MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
+            )
+            .map_err(|error| AxVmError::memory("map x86 APIC access page", error))?;
+    }
     Ok(())
 }
 

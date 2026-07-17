@@ -16,8 +16,8 @@
 
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
-    X86MsrAddr, X86NestedPagingConfig, X86Port, X86VCpuCreateConfig, X86VCpuSetupConfig,
-    X86VcpuError, X86VcpuResult, X86VmExit,
+    X86MsrAddr, X86NestedPagingConfig, X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult,
+    X86VcpuSetupConfig, X86VmExit,
 };
 use x86_vlapic::X86VlapicHostOps;
 
@@ -137,7 +137,7 @@ fn nested_paging_config_uses_x86_local_types() {
 
 #[test]
 fn setup_config_reports_x86_errors() {
-    let mut config = X86VCpuSetupConfig::default();
+    let mut config = X86VcpuSetupConfig::default();
 
     assert_eq!(
         config.add_passthrough_port_range(0x6000, 0),
@@ -182,7 +182,7 @@ fn host_ops_can_report_typed_errors() {
 
 #[test]
 fn create_config_is_not_tied_to_axvm_traits() {
-    let _create = X86VCpuCreateConfig;
-    let _setup = X86VCpuSetupConfig::default();
+    let _create = X86VcpuCreateConfig;
+    let _setup = X86VcpuSetupConfig::default();
     let _host: Option<DummyHost> = None;
 }
