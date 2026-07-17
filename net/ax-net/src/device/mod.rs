@@ -113,6 +113,20 @@ pub trait Device: Send + Sync {
         Vec::new()
     }
 
+    /// Returns the count of TX errors accumulated during device operations
+    /// (e.g. buffer allocation failures, transmit hardware errors) since
+    /// the last call. The internal accumulator is cleared on each call.
+    fn drain_deferred_tx_errors(&mut self) -> u64 {
+        0
+    }
+
+    /// Returns the count of RX errors accumulated during device operations
+    /// (e.g. driver receive errors, malformed frames) since the last call.
+    /// The internal accumulator is cleared on each call.
+    fn drain_deferred_rx_errors(&mut self) -> u64 {
+        0
+    }
+
     /// Updates the IPv4 address used by device-local protocol helpers.
     fn set_ipv4_addr(&mut self, _addr: Option<Ipv4Cidr>) {}
 

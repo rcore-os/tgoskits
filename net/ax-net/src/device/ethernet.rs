@@ -140,6 +140,14 @@ pub struct EthernetDevice {
     /// into the IP buffer, but must still count toward RX statistics.
     /// Drained by the router's RX worker via [`Device::drain_deferred_rx`].
     deferred_rx_frame_lens: Vec<usize>,
+    /// Count of TX errors accumulated during device operations (buffer
+    /// allocation failures, transmit hardware errors). Drained by the
+    /// router's workers via [`Device::drain_deferred_tx_errors`].
+    deferred_tx_errors: u64,
+    /// Count of RX errors accumulated during device operations (driver
+    /// receive errors, malformed frames). Drained by the router's workers
+    /// via [`Device::drain_deferred_rx_errors`].
+    deferred_rx_errors: u64,
 }
 
 fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
@@ -242,6 +250,8 @@ impl EthernetDevice {
             pending_packets,
             deferred_tx_frame_lens: Vec::new(),
             deferred_rx_frame_lens: Vec::new(),
+            deferred_tx_errors: 0,
+            deferred_rx_errors: 0,
         }
     }
 
@@ -589,6 +599,7 @@ impl Device for EthernetDevice {
                     Err(err) => {
                         if !matches!(err, NetDeviceError::Again) {
                             warn!("receive failed: {:?}", err);
+                            self.deferred_rx_errors += 1;
                         }
                         return 0;
                     }
@@ -604,6 +615,7 @@ impl Device for EthernetDevice {
                 self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
             if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
                 warn!("recycle_rx_buffer failed: {:?}", err);
+                self.deferred_rx_errors += 1;
             }
             if frame_len > 0 {
                 return frame_len;
@@ -616,25 +628,33 @@ impl Device for EthernetDevice {
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
         if next_hop.is_broadcast() || is_subnet_broadcast {
             let mut inner = self.inner.driver.lock();
-            return Self::send_to(
+            let frame_len = Self::send_to(
                 &mut **inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
                 EthernetProtocol::Ipv4,
             );
+            if frame_len == 0 {
+                self.deferred_tx_errors += 1;
+            }
+            return frame_len;
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(neighbor) if neighbor.expires_at > timestamp => {
                 let mut inner = self.inner.driver.lock();
-                return Self::send_to(
+                let frame_len = Self::send_to(
                     &mut **inner,
                     neighbor.hardware_address,
                     packet.len(),
                     |buf| buf.copy_from_slice(packet),
                     EthernetProtocol::Ipv4,
                 );
+                if frame_len == 0 {
+                    self.deferred_tx_errors += 1;
+                }
+                return frame_len;
             }
             Some(_) => {
                 self.neighbors.remove(&next_hop);
@@ -673,6 +693,14 @@ impl Device for EthernetDevice {
 
     fn drain_deferred_rx(&mut self) -> Vec<usize> {
         core::mem::take(&mut self.deferred_rx_frame_lens)
+    }
+
+    fn drain_deferred_tx_errors(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_tx_errors)
+    }
+
+    fn drain_deferred_rx_errors(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_rx_errors)
     }
 
     fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {

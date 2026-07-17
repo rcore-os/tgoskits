@@ -380,13 +380,20 @@ fn render_proc_net_dev() -> String {
         .to_string();
     // Per interface: 8 receive columns (bytes packets errs drop fifo frame
     // compressed multicast) then 8 transmit columns (bytes packets errs drop
-    // fifo colls carrier compressed). Only bytes/packets have a source; the
-    // error/drop/fifo columns have no accounting yet and stay zero.
+    // fifo colls carrier compressed).
     for st in ax_net::net_dev_stats() {
         let _ = writeln!(
             buf,
-            "{:>8}: {} {} 0 0 0 0 0 0 {} {} 0 0 0 0 0 0",
-            st.name, st.rx_bytes, st.rx_packets, st.tx_bytes, st.tx_packets
+            "{:>8}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0",
+            st.name,
+            st.rx_bytes,
+            st.rx_packets,
+            st.rx_errors,
+            st.rx_dropped,
+            st.tx_bytes,
+            st.tx_packets,
+            st.tx_errors,
+            st.tx_dropped,
         );
     }
     buf
@@ -1785,7 +1792,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             "dev",
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
         );
-
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
 

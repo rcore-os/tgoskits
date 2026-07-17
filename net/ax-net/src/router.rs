@@ -88,8 +88,12 @@ pub struct NetDevStats {
     pub name: String,
     pub rx_bytes: u64,
     pub rx_packets: u64,
+    pub rx_errors: u64,
+    pub rx_dropped: u64,
     pub tx_bytes: u64,
     pub tx_packets: u64,
+    pub tx_errors: u64,
+    pub tx_dropped: u64,
 }
 
 #[derive(Debug)]
@@ -280,8 +284,12 @@ struct DeviceHandle {
     /// payload plus per-device L2 header), aligned with Linux semantics.
     rx_bytes: AtomicU64,
     rx_packets: AtomicU64,
+    rx_errors: AtomicU64,
+    rx_dropped: AtomicU64,
     tx_bytes: AtomicU64,
     tx_packets: AtomicU64,
+    tx_errors: AtomicU64,
+    tx_dropped: AtomicU64,
 }
 
 impl DeviceHandle {
@@ -305,8 +313,12 @@ impl DeviceHandle {
             rx_ready: AtomicBool::new(false),
             rx_bytes: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
+            rx_errors: AtomicU64::new(0),
+            rx_dropped: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
             tx_packets: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
         })
     }
 
@@ -331,14 +343,34 @@ impl DeviceHandle {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn count_rx_error(&self) {
+        self.rx_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count_rx_drop(&self) {
+        self.rx_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count_tx_error(&self) {
+        self.tx_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count_tx_drop(&self) {
+        self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn stats(&self) -> NetDevStats {
         NetDevStats {
             interface_id: self.interface_id,
             name: self.name.clone(),
             rx_bytes: self.rx_bytes.load(Ordering::Relaxed),
             rx_packets: self.rx_packets.load(Ordering::Relaxed),
+            rx_errors: self.rx_errors.load(Ordering::Relaxed),
+            rx_dropped: self.rx_dropped.load(Ordering::Relaxed),
             tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
             tx_packets: self.tx_packets.load(Ordering::Relaxed),
+            tx_errors: self.tx_errors.load(Ordering::Relaxed),
+            tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
         }
     }
 
@@ -388,6 +420,7 @@ impl DeviceHandle {
                 next_hop,
                 packet.len()
             );
+            self.count_tx_drop();
             return false;
         };
         let tx = TxPacket { next_hop, bytes };
@@ -396,6 +429,7 @@ impl DeviceHandle {
                 "{}: TX queue is full, dropping packet to {}",
                 self.name, next_hop
             );
+            self.count_tx_drop();
             return false;
         }
         self.tx_wake.notify_one(true);
@@ -751,6 +785,13 @@ impl Router {
                 .enqueue(bytes.len(), rx_metadata(packet.interface_id, bytes))
             else {
                 warn!("Router RX buffer is full, dropping packet");
+                if let Some(dev) = self
+                    .devices
+                    .iter()
+                    .find(|d| d.interface_id == packet.interface_id)
+                {
+                    dev.count_rx_drop();
+                }
                 break;
             };
             dst.copy_from_slice(bytes);
@@ -980,6 +1021,8 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
                     .send(packet.next_hop, packet.bytes.as_slice(), now());
             if frame_len > 0 {
                 device.count_tx(frame_len);
+            } else {
+                device.count_tx_drop();
             }
         } else {
             device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
@@ -1023,6 +1066,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
                         device.name,
                         packet.len()
                     );
+                    device.count_rx_drop();
                     continue;
                 };
                 local_batch.push_back((
@@ -1043,6 +1087,15 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             // (e.g. ARP requests processed in handle_frame()).
             for frame_len in device_inner.drain_deferred_rx() {
                 device.count_rx(frame_len);
+            }
+            // Drain device-internal error counters.
+            let tx_errs = device_inner.drain_deferred_tx_errors();
+            for _ in 0..tx_errs {
+                device.count_tx_error();
+            }
+            let rx_errs = device_inner.drain_deferred_rx_errors();
+            for _ in 0..rx_errs {
+                device.count_rx_error();
             }
         }
 
