@@ -399,6 +399,28 @@ fn render_proc_net_dev() -> String {
     buf
 }
 
+fn render_proc_net_snmp() -> String {
+    // Smoltcp 0.13.1 does not expose per-protocol cumulative counters
+    // (retransmits, out-of-order, etc.) through its public socket API.
+    // This file exists for Linux compatibility and reports zero counters;
+    // real values will be populated when the necessary infrastructure is
+    // added to the network stack.
+    let mut buf = String::new();
+    let _ = writeln!(
+        buf,
+        "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails \
+         EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors"
+    );
+    let _ = writeln!(buf, "Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0 0");
+    let _ = writeln!(
+        buf,
+        "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors \
+         IgnoredMulti"
+    );
+    let _ = writeln!(buf, "Udp: 0 0 0 0 0 0 0 0");
+    buf
+}
+
 /// Block-device major reported for the root virtio-blk disk (`vda`) in
 /// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
 /// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
@@ -1791,6 +1813,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         net.add(
             "dev",
             SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_dev())),
+        );
+        net.add(
+            "snmp",
+            SimpleFile::new_regular(fs.clone(), || Ok(render_proc_net_snmp())),
         );
         SimpleDir::new_maker(fs.clone(), Arc::new(net))
     });
