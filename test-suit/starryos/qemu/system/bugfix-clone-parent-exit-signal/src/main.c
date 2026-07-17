@@ -9,6 +9,24 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifndef SYS_clone3
+#define SYS_clone3 435
+#endif
+
+struct clone3_args {
+    unsigned long long flags;
+    unsigned long long pidfd;
+    unsigned long long child_tid;
+    unsigned long long parent_tid;
+    unsigned long long exit_signal;
+    unsigned long long stack;
+    unsigned long long stack_size;
+    unsigned long long tls;
+    unsigned long long set_tid;
+    unsigned long long set_tid_size;
+    unsigned long long cgroup;
+};
+
 struct clone_report {
     pid_t child;
     int error;
@@ -54,6 +72,19 @@ static int read_report(int fd, struct clone_report *report)
 
 int main(void)
 {
+    struct clone3_args clone3_args = {
+        .flags = CLONE_PARENT,
+        .exit_signal = SIGCHLD,
+    };
+    errno = 0;
+    if (syscall(SYS_clone3, &clone3_args, sizeof(clone3_args)) != -1 ||
+        errno != EINVAL) {
+        printf("FAIL: clone3(CLONE_PARENT, exit_signal=SIGCHLD) must return "
+               "EINVAL, errno=%d (%s)\n",
+               errno, strerror(errno));
+        return 1;
+    }
+
     int report_pipe[2];
     if (pipe(report_pipe) != 0) {
         printf("FAIL: pipe errno=%d (%s)\n", errno, strerror(errno));
