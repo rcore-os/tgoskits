@@ -95,8 +95,11 @@ impl<H: X86HostOps> X86PerCpuState<H> {
     ///
     /// # Errors
     ///
-    /// Propagates the selected backend's hardware-enable error.
+    /// Returns a capability-selection error when the current CPU does not
+    /// expose the backend selected by the bootstrap CPU. Propagates the
+    /// selected backend's hardware-enable error.
     pub fn hardware_enable(&mut self) -> X86VcpuResult {
+        validate_current_cpu_backend()?;
         match &mut self.inner {
             X86PerCpuStateInner::Vmx(state) => state.hardware_enable(),
             X86PerCpuStateInner::Svm(state) => state.hardware_enable(),

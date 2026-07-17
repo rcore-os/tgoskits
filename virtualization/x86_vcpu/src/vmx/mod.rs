@@ -29,15 +29,6 @@ pub use self::{
 };
 use crate::{X86HostOps, X86HostPhysAddr, X86VcpuError};
 
-/// Return if current platform support virtualization extension.
-pub fn has_hardware_support() -> bool {
-    if let Some(feature) = raw_cpuid::CpuId::new().get_feature_info() {
-        feature.has_vmx()
-    } else {
-        false
-    }
-}
-
 pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
 }
