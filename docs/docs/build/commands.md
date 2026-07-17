@@ -54,7 +54,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask starry` | StarryOS 构建/运行/测试/app/perf/kmod | [StarryOS](./starry/overview) |
 | `cargo xtask axvisor` | Axvisor 构建/运行/测试（含 `test uboot`） | [Axvisor](./axvisor/overview) |
 
-通用的参数解析、Snapshot、Build Info、feature 校验和 QEMU `to_bin` 契约见 [参数与配置](./configuration)；CI 自动化见 [自动 CI 测试](./ci)。
+通用的参数解析、Snapshot、Build Info、feature 校验和 QEMU `to_bin` 契约见 [参数与配置](./configuration)；三套系统共享的 QEMU/板卡测试编排（用例发现、build wrapper、pipeline 类型、rootfs 缓存、grouped runner）见 [测试基础设施](./test_infra)；CI 自动化见 [自动 CI 测试](./ci)。
 
 ---
 
