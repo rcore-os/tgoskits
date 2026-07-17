@@ -29,6 +29,7 @@ const AXTEST_SUITE_OK: &str = "AXTEST_SUITE_OK";
 const AXTEST_SUITE_FAIL: &str = "AXTEST_SUITE_FAIL";
 const AXTEST_CASE_FAIL: &str = "AXTEST_CASE .* status=fail";
 const PANIC_FAIL: &str = "panicked at";
+const COVERAGE_IGNORED_SOURCE_REGEX: &str = r"[/\\]\.(cargo|rustup)[/\\]";
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ArgsKtest {
@@ -566,13 +567,7 @@ fn generate_ktest_coverage_html(
     .with_context(|| format!("failed to create {}", profdata_path.display()))?;
     run_tool(
         &llvm_cov,
-        [
-            OsString::from("show"),
-            elf_path.as_os_str().to_os_string(),
-            OsString::from(format!("-instr-profile={}", profdata_path.display())),
-            OsString::from("-format=html"),
-            OsString::from(format!("-output-dir={}", html_dir.display())),
-        ],
+        llvm_cov_html_args(elf_path, &profdata_path, &html_dir),
     )
     .with_context(|| {
         format!(
@@ -584,6 +579,19 @@ fn generate_ktest_coverage_html(
     println!("  coverage profdata: {}", profdata_path.display());
     println!("  coverage html: {}/index.html", html_dir.display());
     Ok(())
+}
+
+fn llvm_cov_html_args(elf_path: &Path, profdata_path: &Path, html_dir: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("show"),
+        elf_path.as_os_str().to_os_string(),
+        OsString::from(format!("-instr-profile={}", profdata_path.display())),
+        OsString::from("-format=html"),
+        OsString::from(format!("-output-dir={}", html_dir.display())),
+        OsString::from(format!(
+            "-ignore-filename-regex={COVERAGE_IGNORED_SOURCE_REGEX}"
+        )),
+    ]
 }
 
 fn find_llvm_tool(tool: &str) -> PathBuf {

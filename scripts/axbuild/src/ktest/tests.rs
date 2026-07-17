@@ -163,3 +163,25 @@ fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
             .is_some_and(|flags| flags.contains("cfg(axtest)"))
     );
 }
+
+#[test]
+fn llvm_cov_html_args_ignore_cargo_and_rustup_sources() {
+    let args = llvm_cov_html_args(
+        Path::new("/repo/target/kernel.elf"),
+        Path::new("/repo/coverage/kernel.profdata"),
+        Path::new("/repo/coverage/kernel-html"),
+    );
+    let rendered = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
+
+    assert!(rendered.iter().any(|arg| arg == "show"));
+    assert!(
+        rendered
+            .iter()
+            .any(|arg| arg == "-ignore-filename-regex=[/\\\\]\\.(cargo|rustup)[/\\\\]"),
+        "llvm-cov HTML reports should not include Cargo registry or Rust toolchain sources: \
+         {rendered:?}"
+    );
+}
