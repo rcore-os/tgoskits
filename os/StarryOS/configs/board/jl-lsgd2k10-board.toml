@@ -1,0 +1,14 @@
+# Remote JL-LSGD2K10 runtime config. The build config is jl-lsgd2k10.toml.
+# Image transfer, U-Boot parameters, and the board DTB are provided by the board server profile.
+board_type = "JL-LSGD2K10"
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo STARRY_JL_LSGD2K10_BOOT_OK"
+success_regex = ["(?m)^STARRY_JL_LSGD2K10_BOOT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "failed to determine root device",
+]
+timeout = 600

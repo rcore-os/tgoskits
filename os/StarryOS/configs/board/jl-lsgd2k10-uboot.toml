@@ -1,0 +1,18 @@
+# Local U-Boot config for booting StarryOS on JL-LSGD2K10.
+# The remote board-server config is jl-lsgd2k10-board.toml.
+serial = "/dev/ttyUSB2"
+baud_rate = "115200"
+dtb_file = "os/StarryOS/configs/board/jl-lsgd2k10.dtb"
+
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo STARRY_JL_LSGD2K10_BOOT_OK"
+success_regex = ["(?m)^STARRY_JL_LSGD2K10_BOOT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "failed to determine root device",
+]
+timeout = 600
+
