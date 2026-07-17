@@ -292,7 +292,6 @@ mod tests {
             base,
             head,
             source: "secret source".into(),
-            fixed_by: "a".repeat(40),
             expected: vec![ExpectedFinding {
                 id: "secret-finding".into(),
                 path: "src/lib.rs".into(),

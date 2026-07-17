@@ -6,7 +6,7 @@ title: "StarryOS 快速上手"
 
 # StarryOS 快速上手
 
-StarryOS 的快速上手建议先选择板卡配置，再执行常规构建或运行命令。`cargo starry config ls` 用于查看当前支持的板卡名称，`cargo starry defconfig <board>` 会把选中的板卡配置写入默认构建配置并记录到 StarryOS 命令快照，后续 `cargo starry build`、`cargo starry qemu`、`cargo starry uboot` 或 `cargo starry board` 会沿用这份配置。
+StarryOS 通过板卡配置确定目标架构、平台 feature 和运行参数。`cargo starry config ls` 列出配置名称，`cargo starry defconfig BOARD_NAME` 将选中配置写入默认构建配置和命令快照，后续 `build`、`qemu`、`uboot` 或 `board` 命令沿用该配置。
 
 ```mermaid
 flowchart LR
@@ -29,7 +29,7 @@ cargo starry config ls
 输出中的名称可以直接传给 `defconfig`：
 
 ```bash
-cargo starry defconfig <board>
+cargo starry defconfig qemu-riscv64
 ```
 
 完成 `defconfig` 后，后续命令通常不需要再重复传 `--config`、`--target` 或 `--arch`。`quick-start` 是旧的便捷入口，后续会废弃；新的快速上手路径请使用 `config ls`、`defconfig` 和常规 `cargo starry` 子命令。
@@ -40,9 +40,7 @@ StarryOS 的 QEMU 启动通常包含 rootfs。当前 `qemu` 路径会在缺少 r
 
 ### 2.1 RISC-V 64
 
-`riscv64` 仍然是最适合作为首条验证路径的架构。它在文档和测试套件中都较常用，适合先确认 rootfs 和 QEMU 路径是否已经接通。
-
-推荐第一次从 `riscv64` 开始：
+`qemu-riscv64` 使用 RISC-V 64 target，并在启动时准备对应架构的 rootfs。
 
 ```bash
 cargo starry defconfig qemu-riscv64
@@ -60,7 +58,7 @@ cargo starry qemu
 
 ### 2.2 AArch64
 
-如果后续会继续关注板级路径或与 Axvisor 的 AArch64 环境对齐，可以尽快补跑这一条。它也是 StarryOS 当前非常重要的一条验证路径。
+`qemu-aarch64` 使用 AArch64 target，并在启动时准备对应架构的 rootfs。
 
 ```bash
 cargo starry defconfig qemu-aarch64
@@ -78,7 +76,7 @@ cargo starry qemu
 
 ### 2.3 x86_64
 
-`x86_64` 适合作为 PC 类平台的补充验证路径。命令和其它架构基本一致，差异主要体现在目标 triple 和对应的 QEMU 配置上。
+`qemu-x86_64` 使用 x86_64 target 和 PC 类 QEMU 平台配置。
 
 ```bash
 cargo starry defconfig qemu-x86_64
@@ -96,7 +94,7 @@ cargo starry qemu
 
 ### 2.4 LoongArch64
 
-LoongArch64 路径更适合在主流架构已经跑通之后再验证。这样出现问题时，也更容易区分是环境问题还是实验性架构路径带来的差异。
+`qemu-loongarch64` 使用 LoongArch64 target，运行环境需要提供 `qemu-system-loongarch64`。
 
 ```bash
 cargo starry defconfig qemu-loongarch64
@@ -117,11 +115,15 @@ cargo starry qemu
 
 ## 3. 开发板快速启动
 
+开发板路径复用 `cargo starry defconfig BOARD_NAME` 选择构建配置，但 rootfs 来源、镜像传输方式和启动固件由具体硬件决定。以下三种板卡分别覆盖 LoongArch64 SATA、RISC-V SD 卡和 ostool-server 管理路径，不能互换 U-Boot 地址或根设备参数。
+
 ### 3.1 Loongson 2K1000
 
 2K1000 使用 LoongArch64 动态平台路径，target 为 `loongarch64-unknown-none-softfloat`。U-Boot 通过 `go` 启动内核并传入 FDT，StarryOS 从板载 SATA SSD 的 ext4 分区挂载 rootfs。
 
-#### 3.1.1 相关 crates 与驱动
+#### 3.1.1 实现组件
+
+LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备发现和文件系统组件共同组成。下表把用户可见的串口、存储、网络和 rootfs 能力映射到对应 crate 与实现位置，便于按故障阶段定位代码。
 
 | 类型 | crates | feature 或实现位置 | 作用 |
 | --- | --- | --- | --- |
@@ -164,11 +166,11 @@ cargo starry build \
 
 当前配置没有写死 `root=` 参数。已验证的磁盘布局中只有一个受支持的 ext4 分区，`ax-fs-ng` 会扫描 AHCI 设备和分区表后自动选择它作为根文件系统。如果磁盘上存在多个可用文件系统分区，应显式整理根设备选择，不能依赖“唯一分区”规则。
 
-#### 3.1.3 通过 TFTP 和 U-Boot 启动
+#### 3.1.3 网络引导
 
 先把生成的 `starryos.bin` 放到 TFTP 根目录。下面的 IP 地址是示例，应按本地网络修改：
 
-```bash
+```console
 setenv ipaddr 192.168.99.20
 setenv serverip 192.168.99.10
 setenv netmask 255.255.255.0
@@ -176,14 +178,14 @@ setenv netmask 255.255.255.0
 
 [PR #1368](https://github.com/rcore-os/tgoskits/pull/1368) 实板验证使用下面的镜像和 FDT 地址。换用不同 U-Boot 或内存布局时，应先确认地址不会覆盖 U-Boot、FDT、内核或其它保留内存：
 
-```bash
+```console
 setenv loadaddr 0x9000000098000000
 setenv fdt_addr 0x900000000a000000
 ```
 
 可以一次性保存下面的启动脚本：
 
-```bash
+```console
 setenv starry_fdt_addr 'fdt addr ${fdtcontroladdr}'
 setenv starry_fdt_size 'fdt header get fdt_size totalsize'
 setenv starry_fdt_move 'fdt move ${fdtcontroladdr} ${fdt_addr} ${fdt_size}'
@@ -206,7 +208,7 @@ saveenv
 
 之后每次启动执行：
 
-```bash
+```console
 run boot_starry
 ```
 
@@ -214,9 +216,11 @@ run boot_starry
 
 ### 3.2 LicheeRV-Nano-SG2002
 
-LicheeRV-Nano-SG2002 当前走 U-Boot 串口启动路径，适合在已经烧录并能正常进入 Linux 的开发板上验证 StarryOS。StarryOS 直接使用板上的 Linux 原生 ext4 根文件系统，默认根分区为 `root=/dev/mmcblk0p2`，不需要再单独制作 Starry rootfs 分区。
+LicheeRV-Nano-SG2002 使用 U-Boot 串口启动路径，要求开发板已经烧录并能正常进入 Linux。StarryOS 直接使用板上的 Linux 原生 ext4 根文件系统，默认根分区为 `root=/dev/mmcblk0p2`，不需要再单独制作 Starry rootfs 分区。
 
-#### 3.1.1 相关 crates 与驱动
+#### 3.2.1 实现组件
+
+SG2002 路径需要 someboot 完成固件交接，并由板级支持、串口和 SD 卡驱动建立可交互的 StarryOS 环境。下表列出各启动阶段的实现入口，排查根设备或控制台问题时应从相应组件开始。
 
 | 类型 | crates | feature 或实现位置 | 作用 |
 | --- | --- | --- | --- |
@@ -230,7 +234,7 @@ LicheeRV-Nano-SG2002 当前走 U-Boot 串口启动路径，适合在已经烧录
 
 板卡构建配置位于 `os/StarryOS/configs/board/licheerv-nano-sg2002.toml`。其中 `cvsd` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持。
 
-#### 3.1.2 启动准备与构建
+#### 3.2.2 构建准备
 
 实板启动前需要准备：
 
@@ -255,7 +259,7 @@ cargo starry build \
 
 该配置使用 `riscv64gc-unknown-none-elf` 目标，并启用 SG2002 板级支持、T-Head MAE、SD 卡和串口驱动。后面的 `cargo starry uboot` 或 `cargo starry board` 都会自动构建，因此只想快速启动时可以跳过这里的 `cargo starry build`。
 
-#### 3.1.3 通过 U-Boot 启动
+#### 3.2.3 固件启动
 
 本地串口启动使用 `uboot` 子命令。默认配置来自 `os/StarryOS/configs/board/licheerv-nano-sg2002-uboot.toml`，串口是 `/dev/ttyUSB0`，波特率为 `115200`：
 
@@ -266,13 +270,13 @@ cargo starry uboot \
 
 这条路径会构建 `riscv64gc-unknown-none-elf` 目标，并根据 SG2002 的 ITS 模板生成 FIT image，随后通过 U-Boot 的 `loady` 串口传输到 `fit_load_addr = 0x82200000`，再执行 `bootm 0x82200000`。内核入口地址为 `kernel_load_addr = 0x80200000`。
 
-也可以通过 ostool-server 自动完成板卡申请、U-Boot 启动和串口连接：
+也可以通过 ostool-server 自动完成板卡申请、U-Boot 启动和串口连接。执行前必须把 `OSTOOL_SERVER` 和 `OSTOOL_PORT` 设置为实际板卡服务器的地址与端口；命令中的 shell 检查会在变量缺失时直接报错：
 
 ```bash
 cargo starry board \
   --board-config os/StarryOS/configs/board/licheerv-nano-sg2002-board.toml \
-  --server <ip> \
-  --port <port>
+  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
+  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
 `licheerv-nano-sg2002-board.toml` 中维护的是 StarryOS 侧的运行和判定配置：板卡类型为 `LicheeRV-Nano-SG2002`，shell 提示符为 `root@starry:`，超时时间为 600 秒。进入 shell 后会执行：
@@ -292,17 +296,19 @@ STARRY_SG2002_BOOT_OK
 ```bash
 cargo starry test board \
   --board licheerv-nano-sg2002 \
-  --server <ip> \
-  --port <port>
+  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
+  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
 常规远端启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board-licheerv-nano-sg2002` 下的配置。若启动停在根设备探测阶段，请确认 SD 卡第二分区存在可挂载的 ext4 根文件系统。
 
-### 3.2 StarFive VisionFive 2（星光 2）
+### 3.3 StarFive VisionFive 2
 
 VisionFive 2 与 LicheeRV-Nano-SG2002 一样通过 U-Boot 启动。VisionFive 2 使用动态平台配置，并通过 JH7110 MMC 驱动挂载开发板上已有的 Linux ext4 根文件系统；与 QEMU 路径不同，这里不需要执行 `cargo starry rootfs`。仓库当前已验证的自动化流程由 ostool-server 申请板卡，通过 U-Boot 加载内核并连接串口。
 
-#### 3.2.1 相关 crates 与驱动
+#### 3.3.1 实现组件
+
+VisionFive 2 通过动态平台和 FDT 发现 PLIC、串口、RTC 与 JH7110 MMC，最终从 SD 卡挂载 ext4 rootfs。下表给出这些硬件能力对应的 crate 和 feature，用于区分通用驱动问题与 JH7110 SoC 适配问题。
 
 | 类型 | crates | feature 或实现位置 | 作用 |
 | --- | --- | --- | --- |
@@ -318,7 +324,7 @@ VisionFive 2 与 LicheeRV-Nano-SG2002 一样通过 U-Boot 启动。VisionFive 2 
 
 板卡构建配置位于 `os/StarryOS/configs/board/visionfive2.toml`。其中 `starfive-jh7110-dwmmc` feature 会同时启用通用 DWMMC/SD 协议、块设备接口以及 JH7110 SoC 时钟和复位支持。
 
-#### 3.2.2 启动准备与构建
+#### 3.3.2 构建准备
 
 实板启动前需要准备：
 
@@ -345,15 +351,15 @@ cargo starry build \
 
 该配置使用 `riscv64gc-unknown-none-elf` 目标，并启用串口、RTC 和 `starfive-jh7110-dwmmc` 驱动。后面的 `cargo starry board` 也会自动构建，因此只想快速启动时可以跳过这里的 `cargo starry build`。
 
-#### 3.2.3 通过 U-Boot 启动
+#### 3.3.3 固件启动
 
-当前维护入口使用 ostool-server 驱动 VisionFive 2 的 U-Boot 启动流程：
+当前维护入口使用 ostool-server 驱动 VisionFive 2 的 U-Boot 启动流程，并复用前文设置的 `OSTOOL_SERVER` 与 `OSTOOL_PORT`：
 
 ```bash
 cargo starry board \
   --board-config os/StarryOS/configs/board/visionfive2-board.toml \
-  --server <ip> \
-  --port <port>
+  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
+  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
 这条命令会使用 `visionfive2.toml` 构建 StarryOS，并将构建产物转换为板卡运行时需要的内核镜像；随后根据 `visionfive2-board.toml` 向 ostool-server 申请 `VisionFive2`，由服务器控制开发板进入 U-Boot、传输并加载内核。U-Boot 启动内核并传入当前开发板的 FDT 后，StarryOS 会从 FDT 发现 PLIC、串口、RTC 和 JH7110 MMC，从 SD 卡选择并挂载 ext4 rootfs，进入 `root@starry:` shell，最后执行预设的 shell 探针并在成功后释放板卡。
@@ -377,8 +383,8 @@ STARRY_VISIONFIVE2_SHELL_OK
 ```bash
 cargo starry test board \
   --board visionfive2 \
-  --server <ip> \
-  --port <port>
+  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
+  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
 常规启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board-visionfive2` 下的配置。若启动停在根设备探测阶段，请先确认 SD 卡能被 U-Boot/Linux 正常识别，并且其中存在可挂载的 ext4 根文件系统。
@@ -395,7 +401,7 @@ cargo starry test qemu --target riscv64gc-unknown-none-elf
 cargo starry app qemu -t stress/git --arch riscv64
 
 # 仅运行指定用例
-cargo starry test qemu --target aarch64-unknown-none-softfloat -c qemu-smp1/system
+cargo starry test qemu --target aarch64-unknown-none-softfloat -c qemu/system
 
 # 其他架构
 cargo starry test qemu --target x86_64-unknown-none
@@ -405,15 +411,9 @@ cargo starry test qemu --target loongarch64-unknown-none-softfloat
 如果需要板测：
 
 ```bash
-cargo starry test board --board orangepi-5-plus --server <ip> --port <port>
-cargo starry test board --board licheerv-nano-sg2002 --server <ip> --port <port>
-cargo starry test board --board visionfive2 --server <ip> --port <port>
+cargo starry test board --board orangepi-5-plus --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
+cargo starry test board --board licheerv-nano-sg2002 --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
+cargo starry test board --board visionfive2 --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
 详细说明见：[StarryOS 测试套件设计](/docs/build/starry/test)
-
-若需要继续了解 case 结构、rootfs 组织方式和测试实现细节，可以继续阅读：
-
-- [StarryOS 开发指南](/docs/development/starryos)
-- [StarryOS 测试套件设计](/docs/build/starry/test)
-- [QEMU 运行](/docs/build/overview)

@@ -9,11 +9,11 @@ description: Review one specified GitHub pull request in this tgoskits repositor
 
 This skill is a normative review specification, not a suggestion list. When it triggers, read the entire `SKILL.md` before deciding the review outcome, then follow every applicable requirement unless a higher-priority system or developer instruction conflicts.
 
-Before judging code quality, maintainability, or merge readiness, fully read every file under `book/guideline/` and treat those documents as mandatory coding standards for both author-side implementation and reviewer-side assessment. If the conversation context is compacted, resumed from a summary, or you cannot confidently recall the guideline contents, re-read all files under `book/guideline/` before continuing; do not rely on memory or a previous partial read.
+Before judging code quality, maintainability, or merge readiness, fully read `book/guideline/code-quality.md` and treat it as the mandatory baseline for author-side implementation and reviewer-side assessment. Read additional domain guidelines only when the changed behavior is in their scope. In particular, fully read `book/guideline/starry/syscall.md` whenever the PR changes or claims to change user-visible StarryOS syscall/Linux ABI semantics. This is a semantic trigger: it also applies when the diff is in task, VFS, namespace, signal, socket, credential, memory-management, or another helper rather than the syscall directory. When a domain guideline is inapplicable, record the concrete reason in the review checklist. If context is compacted, resumed from a summary, or an applicable guideline cannot be recalled confidently, re-read that complete guideline before continuing; do not rely on memory or a previous partial read.
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
-After reading the full skill and all files under `book/guideline/`, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, `book/guideline/` coding standards, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+After reading the full skill, `book/guideline/code-quality.md`, and every applicable domain guideline, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, baseline code quality, domain-guideline applicability and compliance, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
 
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
@@ -25,8 +25,9 @@ environment and output contract for this mode. If either condition is absent, fo
 online workflow in the rest of this skill.
 
 In offline benchmark mode, treat the committed change from `bench-base` to `HEAD` as the one change
-under review. Read the complete skill, `AGENTS.md`, every file under `book/guideline/`, the offline
-contract, and the supplied output schema before judging the change. Apply the review-focus,
+under review. Read the complete skill, `AGENTS.md`, `book/guideline/code-quality.md`, every domain
+guideline applicable to the changed semantics, the offline contract, and the supplied output schema
+before judging the change. Apply the review-focus,
 test-quality, blocking-finding, hardware/ABI, security/soundness, maintainability, and documentation
 requirements from this skill to the local diff and relevant in-repository context.
 
@@ -240,6 +241,8 @@ Review the PR against its stated intent, the current base branch, existing proje
 - Axvisor config semantics for `entry_point`, `kernel_load_addr`, `memory_regions`, `map_type`, and guest image layout.
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
+
+For any change that affects or claims to affect user-visible StarryOS syscall/Linux ABI semantics, fully read and apply `book/guideline/starry/syscall.md` before judging correctness. Follow its evidence hierarchy and comparison workflow even when the changed line is outside the syscall directory. The review must trace indirect helper changes back to every affected syscall entry and must record the Linux version or commit used when behavior is version-dependent.
 
 ### Review Lenses And Finding Discipline
 

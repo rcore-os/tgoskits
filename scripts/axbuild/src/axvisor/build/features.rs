@@ -14,6 +14,16 @@ pub(super) fn reject_unsupported_nested_platform_features(
         ));
     }
 
+    if let Some(feature) = features
+        .iter()
+        .find(|feature| matches!(feature.as_str(), "vmx" | "svm"))
+    {
+        return Err(anyhow!(
+            "x86 virtualization backend is selected from CPU capabilities at runtime; remove \
+             `{feature}` from `features`"
+        ));
+    }
+
     if let Some(feature) = features.iter().find(|feature| {
         nested_platform_feature_name(feature, known_platforms).is_some()
             || known_platforms.iter().any(|platform| platform == *feature)

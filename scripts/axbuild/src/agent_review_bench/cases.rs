@@ -20,7 +20,6 @@ pub(super) struct BenchCase {
     pub(super) base: String,
     pub(super) head: String,
     pub(super) source: String,
-    pub(super) fixed_by: String,
     pub(super) expected: Vec<ExpectedFinding>,
 }
 
@@ -126,7 +125,6 @@ pub(super) fn select_cases<'a>(
 pub(super) fn prepare_case(workspace_root: &Path, case: &BenchCase) -> anyhow::Result<()> {
     ensure_commit(workspace_root, case, &case.base)?;
     ensure_commit(workspace_root, case, &case.head)?;
-    ensure_commit(workspace_root, case, &case.fixed_by)?;
     ensure_ancestor(workspace_root, &case.base, &case.head)?;
 
     let changed_paths = git_lines(
@@ -189,11 +187,7 @@ fn validate_case_schema(case: &BenchCase) -> anyhow::Result<()> {
     if !(case.remote.starts_with("https://") || case.remote.starts_with("git@")) {
         bail!("remote must be an https:// or git@ fetch URL");
     }
-    for (name, sha) in [
-        ("base", case.base.as_str()),
-        ("head", case.head.as_str()),
-        ("fixed_by", case.fixed_by.as_str()),
-    ] {
+    for (name, sha) in [("base", case.base.as_str()), ("head", case.head.as_str())] {
         if !valid_sha(sha) {
             bail!("{name} must be a full 40-character lowercase hexadecimal SHA");
         }
@@ -399,7 +393,6 @@ mod tests {
             base: "a".repeat(40),
             head: "b".repeat(40),
             source: "https://github.com/example/repo/pull/1".into(),
-            fixed_by: "c".repeat(40),
             expected: vec![ExpectedFinding {
                 id: "sample-finding".into(),
                 path: "src/lib.rs".into(),
@@ -420,6 +413,34 @@ mod tests {
         let mut case = sample_case();
         case.head = "abc".into();
         assert!(validate_case_schema(&case).is_err());
+    }
+
+    #[test]
+    fn parses_case_without_fixed_by_and_rejects_legacy_field() {
+        let case = r#"
+id = "0001-sample"
+pr = 1
+title = "sample"
+remote = "https://github.com/example/repo.git"
+base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+source = "https://github.com/example/repo/pull/1"
+
+[[expected]]
+id = "sample-finding"
+path = "src/lib.rs"
+line = 1
+severity = "major"
+description = "sample defect"
+"#;
+        assert!(toml::from_str::<BenchCase>(case).is_ok());
+
+        let legacy_case = case.replace(
+            "source = \"https://github.com/example/repo/pull/1\"",
+            "source = \"https://github.com/example/repo/pull/1\"\nfixed_by = \
+             \"cccccccccccccccccccccccccccccccccccccccc\"",
+        );
+        assert!(toml::from_str::<BenchCase>(&legacy_case).is_err());
     }
 
     #[test]
