@@ -21,10 +21,7 @@ use crate::{
     X86HostOps, X86VcpuResult,
     msr::Msr,
     types::X86_PAGE_SIZE_4K as PAGE_SIZE,
-    vmx::{
-        has_hardware_support,
-        structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
-    },
+    vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
     xstate::enable_xsave,
 };
 
@@ -68,9 +65,6 @@ impl<H: X86HostOps> VmxPerCpuState<H> {
     }
 
     pub fn hardware_enable(&mut self) -> X86VcpuResult {
-        if !has_hardware_support() {
-            return x86_err!(Unsupported, "CPU does not support feature VMX");
-        }
         if self.is_enabled() {
             return x86_err!(ResourceBusy, "VMX is already turned on");
         }
