@@ -5,7 +5,6 @@ remote = "https://github.com/rcore-os/tgoskits.git"
 base = "dbbe0e06576fd1446c014d4edea3aa480505b5e9"
 head = "6a4a23fe147e02d46c66df1d2fca8269098c2fba"
 source = "https://github.com/rcore-os/tgoskits/pull/1611#discussion_r3583879562"
-fixed_by = "a1a6ed0ce4ac56e006280cca268973578bd7a89d"
 
 [[expected]]
 id = "axvisor-nested-qemu-watchdog-disabled"

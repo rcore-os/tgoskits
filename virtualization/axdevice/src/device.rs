@@ -56,6 +56,10 @@ struct RangeEntry {
     size: u64,
 }
 
+fn ranges_overlap(start: u64, end: u64, other_start: u64, other_end: u64) -> bool {
+    start < other_end && other_start < end
+}
+
 /// represent A vm own devices
 pub struct AxVmDevices {
     /// Registered devices (append-only; index is the DeviceId).
@@ -274,37 +278,39 @@ impl AxVmDevices {
 
         let saved_len = self.devices.len();
         for device in &bundle.devices {
-            match self.register(device.clone()) {
-                Ok(_id) => {}
-                Err(e) => {
-                    self.rollback_devices(saved_len);
-                    if let Some(topology) = interrupt_topology {
-                        Self::rollback_controllers(topology, &registered_controllers);
-                    }
-                    return Err(e.into());
+            if let Err(error) = self.register(device.clone()) {
+                self.truncate_devices(saved_len);
+                if let Some(topology) = interrupt_topology {
+                    Self::rollback_controllers(topology, &registered_controllers);
                 }
+                return Err(error.into());
             }
         }
         self.pollable_devices.extend(bundle.pollable);
         Ok(())
     }
 
-    fn rollback_devices(&mut self, saved_len: usize) {
-        while self.devices.len() > saved_len {
-            let Some(device) = self.devices.pop() else {
-                break;
-            };
-            for resource in device.resources() {
-                match *resource {
-                    Resource::MmioRange { base, .. } => {
-                        self.mmio_index.remove(&base);
-                    }
-                    Resource::PortRange { base, .. } => {
-                        self.port_index.remove(&base);
-                    }
-                    Resource::SysReg { addr, .. } => {
-                        self.sysreg_index.remove(&addr);
-                    }
+    fn truncate_devices(&mut self, len: usize) {
+        while self.devices.len() > len {
+            let device = self
+                .devices
+                .pop()
+                .expect("device length was checked before rollback");
+            self.remove_resources(device.resources());
+        }
+    }
+
+    fn remove_resources(&mut self, resources: &[Resource]) {
+        for resource in resources {
+            match *resource {
+                Resource::MmioRange { base, .. } => {
+                    self.mmio_index.remove(&base);
+                }
+                Resource::PortRange { base, .. } => {
+                    self.port_index.remove(&base);
+                }
+                Resource::SysReg { addr, .. } => {
+                    self.sysreg_index.remove(&addr);
                 }
             }
         }
@@ -321,32 +327,223 @@ impl AxVmDevices {
         }
     }
 
-    // ─── Resource rollback ────────────────────────────────────────
-
-    /// Removes `resources` from the index maps.  Used to undo a
-    /// partially-completed insertion when a conflict is discovered
-    /// mid-way through `insert_resources`.
-    fn rollback_resources(&mut self, resources: &[Resource]) {
-        for r in resources {
-            match *r {
-                Resource::MmioRange { base, .. } => {
-                    self.mmio_index.remove(&base);
+    /// Validates a complete device resource set before mutating dispatch indices.
+    fn validate_resources(&self, resources: &[Resource]) -> Result<(), RegistryError> {
+        for (index, resource) in resources.iter().enumerate() {
+            let earlier_resources = &resources[..index];
+            match *resource {
+                Resource::MmioRange { base, size } => {
+                    self.validate_mmio_range(base, size, earlier_resources)?;
                 }
-                Resource::PortRange { base, .. } => {
-                    self.port_index.remove(&base);
+                Resource::PortRange { base, size } => {
+                    self.validate_port_range(base, size, earlier_resources)?;
                 }
-                Resource::SysReg { addr, .. } => {
-                    self.sysreg_index.remove(&addr);
+                Resource::SysReg { addr, count } => {
+                    self.validate_sysreg_range(addr, count, earlier_resources)?;
                 }
             }
         }
+        Ok(())
     }
 
-    // ─── BTreeMap insertion with inline conflict detection ─────────
+    fn validate_mmio_range(
+        &self,
+        base: u64,
+        size: u64,
+        earlier_resources: &[Resource],
+    ) -> Result<(), RegistryError> {
+        let resource = Resource::MmioRange { base, size };
+        if size == 0 {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::ZeroSized,
+            });
+        }
+        let Some(end) = base.checked_add(size) else {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::AddressOverflow,
+            });
+        };
+        if earlier_resources.iter().any(|earlier| {
+            matches!(
+                *earlier,
+                Resource::MmioRange {
+                    base: earlier_base,
+                    size: earlier_size,
+                } if ranges_overlap(
+                    base,
+                    end,
+                    earlier_base,
+                    earlier_base.saturating_add(earlier_size),
+                )
+            )
+        }) {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::OverlappingResources,
+            });
+        }
+        if let Some((existing_base, existing)) = self.mmio_conflict(base, end) {
+            return Err(RegistryError::AddressConflict {
+                resource,
+                existing: Resource::MmioRange {
+                    base: existing_base,
+                    size: existing.size,
+                },
+                existing_device: DeviceId::new(existing.slot as u32),
+            });
+        }
+        Ok(())
+    }
 
-    /// Inserts every resource of device `idx` into the three BTreeMap
-    /// indices, checking for validity errors and range conflicts
-    /// as each key is inserted.
+    fn validate_port_range(
+        &self,
+        base: u16,
+        size: u16,
+        earlier_resources: &[Resource],
+    ) -> Result<(), RegistryError> {
+        let resource = Resource::PortRange { base, size };
+        if size == 0 {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::ZeroSized,
+            });
+        }
+        let end = base as u64 + size as u64;
+        if end > u16::MAX as u64 + 1 {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::AddressOverflow,
+            });
+        }
+        if earlier_resources.iter().any(|earlier| {
+            matches!(
+                *earlier,
+                Resource::PortRange {
+                    base: earlier_base,
+                    size: earlier_size,
+                } if ranges_overlap(
+                    base as u64,
+                    end,
+                    earlier_base as u64,
+                    earlier_base as u64 + earlier_size as u64,
+                )
+            )
+        }) {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::OverlappingResources,
+            });
+        }
+        if let Some((existing_base, existing)) = self.port_conflict(base, end) {
+            return Err(RegistryError::AddressConflict {
+                resource,
+                existing: Resource::PortRange {
+                    base: existing_base,
+                    size: existing.size as u16,
+                },
+                existing_device: DeviceId::new(existing.slot as u32),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_sysreg_range(
+        &self,
+        addr: u32,
+        count: u32,
+        earlier_resources: &[Resource],
+    ) -> Result<(), RegistryError> {
+        let resource = Resource::SysReg { addr, count };
+        if count == 0 {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::ZeroSized,
+            });
+        }
+        let end = addr as u64 + count as u64;
+        if end > u32::MAX as u64 + 1 {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::AddressOverflow,
+            });
+        }
+        if earlier_resources.iter().any(|earlier| {
+            matches!(
+                *earlier,
+                Resource::SysReg {
+                    addr: earlier_addr,
+                    count: earlier_count,
+                } if ranges_overlap(
+                    addr as u64,
+                    end,
+                    earlier_addr as u64,
+                    earlier_addr as u64 + earlier_count as u64,
+                )
+            )
+        }) {
+            return Err(RegistryError::InvalidResource {
+                resource,
+                reason: InvalidResourceReason::OverlappingResources,
+            });
+        }
+        if let Some((existing_addr, existing)) = self.sysreg_conflict(addr, end) {
+            return Err(RegistryError::AddressConflict {
+                resource,
+                existing: Resource::SysReg {
+                    addr: existing_addr,
+                    count: existing.size as u32,
+                },
+                existing_device: DeviceId::new(existing.slot as u32),
+            });
+        }
+        Ok(())
+    }
+
+    fn mmio_conflict(&self, base: u64, end: u64) -> Option<(u64, &RangeEntry)> {
+        if let Some((&existing_base, existing)) = self.mmio_index.range(..=base).next_back()
+            && base < existing_base.saturating_add(existing.size)
+        {
+            return Some((existing_base, existing));
+        }
+        self.mmio_index
+            .range(base..)
+            .next()
+            .filter(|(existing_base, _)| **existing_base < end)
+            .map(|(&existing_base, existing)| (existing_base, existing))
+    }
+
+    fn port_conflict(&self, base: u16, end: u64) -> Option<(u16, &RangeEntry)> {
+        if let Some((&existing_base, existing)) = self.port_index.range(..=base).next_back()
+            && (base as u64) < existing_base as u64 + existing.size
+        {
+            return Some((existing_base, existing));
+        }
+        self.port_index
+            .range(base..)
+            .next()
+            .filter(|(existing_base, _)| (**existing_base as u64) < end)
+            .map(|(&existing_base, existing)| (existing_base, existing))
+    }
+
+    fn sysreg_conflict(&self, addr: u32, end: u64) -> Option<(u32, &RangeEntry)> {
+        if let Some((&existing_addr, existing)) = self.sysreg_index.range(..=addr).next_back()
+            && (addr as u64) < existing_addr as u64 + existing.size
+        {
+            return Some((existing_addr, existing));
+        }
+        self.sysreg_index
+            .range(addr..)
+            .next()
+            .filter(|(existing_addr, _)| (**existing_addr as u64) < end)
+            .map(|(&existing_addr, existing)| (existing_addr, existing))
+    }
+
+    // ─── BTreeMap insertion ───────────────────────────────────────
+
+    /// Inserts every prevalidated resource of device `idx` into the dispatch
+    /// indices.
     ///
     /// Because earlier resources of the *same* device are already in
     /// the index when later ones are checked, same-device internal
@@ -356,14 +553,15 @@ impl AxVmDevices {
     /// neighbour entry belongs to the current device, and as
     /// [`RegistryError::AddressConflict`] otherwise.
     ///
-    /// On any error the keys inserted so far are rolled back through
-    /// [`rollback_resources`], leaving the indices unchanged.
+    /// Validation runs before the first mutation. The inline checks remain as
+    /// defensive guards for the index invariants and roll back any inserted
+    /// prefix if one of those guards fails.
     fn insert_resources(
         &mut self,
         idx: usize,
         resources: &[Resource],
     ) -> Result<(), RegistryError> {
-        validate_resources(resources)?;
+        self.validate_resources(resources)?;
         for (i, r) in resources.iter().enumerate() {
             match *r {
                 Resource::MmioRange { base, size } => {
@@ -371,7 +569,7 @@ impl AxVmDevices {
                     if let Some(existing) = self.mmio_index.get(&base) {
                         let existing_size = existing.size;
                         let existing_slot = existing.slot;
-                        self.rollback_resources(&resources[..i]);
+                        self.remove_resources(&resources[..i]);
                         return Err(RegistryError::AddressConflict {
                             resource: Resource::MmioRange { base, size },
                             existing: Resource::MmioRange {
@@ -391,7 +589,7 @@ impl AxVmDevices {
                         let conflicting_base = *prev_base;
                         let conflicting_size = existing.size;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::MmioRange { base, size },
@@ -418,7 +616,7 @@ impl AxVmDevices {
                         let conflicting_base = *next_base;
                         let conflicting_size = existing.size;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::MmioRange { base, size },
@@ -442,7 +640,7 @@ impl AxVmDevices {
                     if let Some(existing) = self.port_index.get(&base) {
                         let existing_size = existing.size as u16;
                         let existing_slot = existing.slot;
-                        self.rollback_resources(&resources[..i]);
+                        self.remove_resources(&resources[..i]);
                         return Err(RegistryError::AddressConflict {
                             resource: Resource::PortRange { base, size },
                             existing: Resource::PortRange {
@@ -468,7 +666,7 @@ impl AxVmDevices {
                         let conflicting_base = *prev_base;
                         let conflicting_size = existing.size as u16;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::PortRange { base, size },
@@ -494,7 +692,7 @@ impl AxVmDevices {
                         let conflicting_base = *next_base;
                         let conflicting_size = existing.size as u16;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::PortRange { base, size },
@@ -516,7 +714,7 @@ impl AxVmDevices {
                     if let Some(existing) = self.sysreg_index.get(&addr) {
                         let existing_count = existing.size as u32;
                         let existing_slot = existing.slot;
-                        self.rollback_resources(&resources[..i]);
+                        self.remove_resources(&resources[..i]);
                         return Err(RegistryError::AddressConflict {
                             resource: Resource::SysReg { addr, count },
                             existing: Resource::SysReg {
@@ -544,7 +742,7 @@ impl AxVmDevices {
                         let conflicting_addr = *prev_addr;
                         let conflicting_count = existing.size as u32;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::SysReg { addr, count },
@@ -570,7 +768,7 @@ impl AxVmDevices {
                         let conflicting_addr = *reg_addr;
                         let conflicting_count = existing.size as u32;
                         let conflicting_slot = existing.slot;
-                        self.rollback_resources(&resources[..=i]);
+                        self.remove_resources(&resources[..=i]);
                         if conflicting_slot == idx {
                             return Err(RegistryError::InvalidResource {
                                 resource: Resource::SysReg { addr, count },
@@ -982,40 +1180,6 @@ impl AxVmDevices {
             })?;
         Ok(())
     }
-}
-
-fn validate_resources(resources: &[Resource]) -> Result<(), RegistryError> {
-    for resource in resources {
-        let invalid_reason = match *resource {
-            Resource::MmioRange { base, size } => (size == 0)
-                .then_some(InvalidResourceReason::ZeroSized)
-                .or_else(|| {
-                    base.checked_add(size)
-                        .is_none()
-                        .then_some(InvalidResourceReason::AddressOverflow)
-                }),
-            Resource::PortRange { base, size } => (size == 0)
-                .then_some(InvalidResourceReason::ZeroSized)
-                .or_else(|| {
-                    ((base as u32 + size as u32) > u16::MAX as u32 + 1)
-                        .then_some(InvalidResourceReason::AddressOverflow)
-                }),
-            Resource::SysReg { addr, count } => (count == 0)
-                .then_some(InvalidResourceReason::ZeroSized)
-                .or_else(|| {
-                    addr.checked_add(count.saturating_sub(1))
-                        .is_none()
-                        .then_some(InvalidResourceReason::AddressOverflow)
-                }),
-        };
-        if let Some(reason) = invalid_reason {
-            return Err(RegistryError::InvalidResource {
-                resource: resource.clone(),
-                reason,
-            });
-        }
-    }
-    Ok(())
 }
 
 impl Default for AxVmDevices {

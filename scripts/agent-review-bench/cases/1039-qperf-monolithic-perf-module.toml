@@ -5,7 +5,6 @@ remote = "https://github.com/rcore-os/tgoskits.git"
 base = "f0a27a0a47b0bf520a5bad2824e399616428b04a"
 head = "4e6d7ecac930eec51c419eb8cea28e396fe82a39"
 source = "https://github.com/rcore-os/tgoskits/pull/1039#discussion_r3585803023"
-fixed_by = "0bfaa3e6a3d90d81ff7a344e434f1274673ad593"
 
 [[expected]]
 id = "qperf-perf-module-mixes-responsibilities"

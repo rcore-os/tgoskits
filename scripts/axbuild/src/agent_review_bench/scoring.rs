@@ -241,7 +241,6 @@ mod tests {
             base: "a".repeat(40),
             head: "b".repeat(40),
             source: "source".into(),
-            fixed_by: "c".repeat(40),
             expected: vec![expected("first"), expected("second")],
         }
     }
