@@ -4,10 +4,7 @@ use crate::{
     X86HostOps, X86VcpuResult,
     host::PhysFrame,
     msr::Msr,
-    svm::{
-        flags::{VmCr, VmCrFlags},
-        has_hardware_support,
-    },
+    svm::flags::{VmCr, VmCrFlags},
     xstate::enable_xsave,
 };
 
@@ -33,9 +30,6 @@ impl<H: X86HostOps> SvmPerCpuState<H> {
     }
 
     pub fn hardware_enable(&mut self) -> X86VcpuResult {
-        if !has_hardware_support() {
-            return x86_err!(Unsupported, "CPU does not support AMD SVM");
-        }
         if VmCr::read().contains(VmCrFlags::SVMDIS) {
             return x86_err!(Unsupported, "AMD SVM is disabled by VM_CR");
         }
