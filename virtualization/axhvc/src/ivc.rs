@@ -241,7 +241,29 @@ fn issue_hypercall(invocation: HyperCallInvocation) -> IvcHyperCallResult<isize>
     Ok(x0 as isize)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
+fn issue_hypercall(invocation: HyperCallInvocation) -> IvcHyperCallResult<isize> {
+    let mut rax = invocation.code as usize;
+    let args = invocation.args;
+    unsafe {
+        // The Axvisor x86_64 ABI uses rax for the hypercall number and return
+        // value, and rdi/rsi/rdx/rcx/r8/r9 for up to six integer arguments.
+        core::arch::asm!(
+            "vmcall",
+            inlateout("rax") rax,
+            in("rdi") args[0],
+            in("rsi") args[1],
+            in("rdx") args[2],
+            in("rcx") args[3],
+            in("r8") args[4],
+            in("r9") args[5],
+            options(nostack),
+        );
+    }
+    Ok(rax as isize)
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 fn issue_hypercall(_invocation: HyperCallInvocation) -> IvcHyperCallResult<isize> {
     Err(IvcHyperCallError::UnsupportedArchitecture)
 }

@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Context;
@@ -13,8 +14,9 @@ use crate::{
 
 const ARCEOS_QEMU_GUEST_PACKAGE: &str = "ax-helloworld";
 const ARCEOS_QEMU_GUEST_KERNEL_PATH: &str = "/guest/arceos/ax-helloworld-x86_64.bin";
-const ARCEOS_IVC_AARCH64_GUEST_PACKAGES: &[&str] =
-    &["arceos-ivc-publisher", "arceos-ivc-subscriber"];
+const ARCEOS_IVC_GUEST_PACKAGES: &[&str] = &["arceos-ivc-publisher", "arceos-ivc-subscriber"];
+const AXVISOR_IVC_LINUX_PUBLISHER_GUEST_PATH: &str = "/root/ivc-publish";
+const AXVISOR_IVC_LINUX_SUBSCRIBER_GUEST_PATH: &str = "/root/ivc-subscribe";
 
 #[derive(Clone, Copy)]
 struct ArceosIvcGuestProfile {
@@ -27,7 +29,7 @@ struct ArceosIvcGuestProfile {
 const ARCEOS_IVC_GUEST_PROFILES: &[ArceosIvcGuestProfile] = &[ArceosIvcGuestProfile {
     arch: "aarch64",
     target: "aarch64-unknown-none-softfloat",
-    packages: ARCEOS_IVC_AARCH64_GUEST_PACKAGES,
+    packages: ARCEOS_IVC_GUEST_PACKAGES,
     vmconfig_marker: "ivc",
 }];
 
@@ -129,6 +131,78 @@ pub(super) fn inject_arceos_x86_64_guest_image(
     result
 }
 
+pub(super) fn inject_arceos_ivc_guest_images(
+    workspace_root: &Path,
+    request: &ResolvedAxvisorRequest,
+    case: &PreparedAxvisorQemuCase,
+    prepared_assets: &mut test_case::PreparedCaseAssets,
+) -> anyhow::Result<()> {
+    let guests = arceos_ivc_guest_image_specs(workspace_root, request);
+    if guests.is_empty() {
+        return Ok(());
+    }
+
+    let (overlay_dir, temporary_overlay_run_dir) =
+        direct_overlay_dir(workspace_root, request, case)?;
+    for (source, guest_path) in guests {
+        ensure_file_exists(&source, "ArceOS IVC guest image")?;
+        copy_guest_overlay_file(&source, &overlay_dir, &guest_path, "ArceOS IVC guest image")?;
+    }
+    let result = crate::rootfs::inject::inject_overlay(&prepared_assets.rootfs_path, &overlay_dir);
+    test_case::remove_case_run_dir(temporary_overlay_run_dir.as_deref());
+    result
+}
+
+pub(super) fn inject_linux_ivc_assets(
+    workspace_root: &Path,
+    request: &ResolvedAxvisorRequest,
+    case: &PreparedAxvisorQemuCase,
+    prepared_assets: &mut test_case::PreparedCaseAssets,
+) -> anyhow::Result<()> {
+    if !case_needs_linux_ivc_assets(request, case) {
+        return Ok(());
+    }
+
+    let out_dir = build_linux_ivc_assets(workspace_root, &request.arch)?;
+    let publisher = out_dir.join("ivc-publish");
+    let subscriber = out_dir.join("ivc-subscribe");
+    ensure_file_exists(&publisher, "Linux IVC publisher demo")?;
+    ensure_file_exists(&subscriber, "Linux IVC subscriber demo")?;
+
+    let (overlay_dir, temporary_overlay_run_dir) =
+        direct_overlay_dir(workspace_root, request, case)?;
+    copy_guest_overlay_file(
+        &publisher,
+        &overlay_dir,
+        AXVISOR_IVC_LINUX_PUBLISHER_GUEST_PATH,
+        "Linux IVC publisher demo",
+    )?;
+    copy_guest_overlay_file(
+        &subscriber,
+        &overlay_dir,
+        AXVISOR_IVC_LINUX_SUBSCRIBER_GUEST_PATH,
+        "Linux IVC subscriber demo",
+    )?;
+    let result = crate::rootfs::inject::inject_overlay(&prepared_assets.rootfs_path, &overlay_dir);
+    test_case::remove_case_run_dir(temporary_overlay_run_dir.as_deref());
+    result
+}
+
+fn direct_overlay_dir(
+    workspace_root: &Path,
+    request: &ResolvedAxvisorRequest,
+    case: &PreparedAxvisorQemuCase,
+) -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
+    let layout = test_case::case_asset_layout(
+        workspace_root,
+        &request.target,
+        &case.case.case.display_name,
+    )?;
+    fs::create_dir_all(&layout.run_dir)
+        .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+    Ok((layout.overlay_dir, Some(layout.run_dir)))
+}
+
 fn copy_guest_overlay_file(
     source: &Path,
     overlay_dir: &Path,
@@ -150,12 +224,60 @@ fn copy_guest_overlay_file(
     Ok(())
 }
 
+fn arceos_ivc_guest_image_specs(
+    workspace_root: &Path,
+    request: &ResolvedAxvisorRequest,
+) -> Vec<(PathBuf, String)> {
+    matching_arceos_ivc_guest_profiles(request)
+        .flat_map(|profile| profile.matching_packages(request))
+        .map(|(profile, package)| {
+            let source = arceos_guest_elf_path(workspace_root, profile.target, package, false)
+                .with_extension("bin");
+            let guest_path = format!("/guest/arceos/{package}.bin");
+            (source, guest_path)
+        })
+        .collect()
+}
+
+fn case_needs_linux_ivc_assets(
+    request: &ResolvedAxvisorRequest,
+    case: &PreparedAxvisorQemuCase,
+) -> bool {
+    case.case.case.name.contains("ivc")
+        && request.vmconfigs.iter().any(|path| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("linux-ivc"))
+        })
+}
+
+fn build_linux_ivc_assets(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
+    let source_dir = workspace_root.join("apps/linux/ivc");
+    let build_script = source_dir.join("build.sh");
+    ensure_file_exists(&build_script, "Linux IVC build script")?;
+
+    let out_dir = workspace_root.join("tmp/axbuild/ivc").join(arch);
+    let mut command = Command::new(&build_script);
+    command
+        .current_dir(&source_dir)
+        .env("AXVISOR_IVC_ARCH", arch)
+        .env("AXVISOR_IVC_OUT_DIR", &out_dir);
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run {}", build_script.display()))?;
+    if !status.success() {
+        anyhow::bail!("Linux IVC asset build failed with status {status}");
+    }
+    Ok(out_dir)
+}
+
 pub(super) fn build_group_needs_arceos_x86_64_guest(request: &ResolvedAxvisorRequest) -> bool {
     request.arch == "x86_64"
         && request.vmconfigs.iter().any(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("arceos"))
+                .is_some_and(|name| name.starts_with("arceos") && !name.contains("ivc"))
         })
 }
 

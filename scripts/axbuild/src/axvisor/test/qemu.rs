@@ -12,7 +12,7 @@ use super::{
     assets::{
         arceos_ivc_guest_requests, arceos_x86_64_guest_request, axvisor_case_asset_config,
         build_group_needs_arceos_x86_64_guest, case_needs_arceos_x86_64_guest,
-        inject_arceos_x86_64_guest_image,
+        inject_arceos_ivc_guest_images, inject_arceos_x86_64_guest_image, inject_linux_ivc_assets,
     },
     discover_qemu_cases,
     discovery::{
@@ -308,6 +308,30 @@ impl Axvisor {
                 )
             })?;
         }
+        inject_arceos_ivc_guest_images(
+            self.app.workspace_root(),
+            request,
+            case,
+            &mut prepared_assets,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare ArceOS IVC guest image for Axvisor qemu case `{}`",
+                case.case.case.name
+            )
+        })?;
+        inject_linux_ivc_assets(
+            self.app.workspace_root(),
+            request,
+            case,
+            &mut prepared_assets,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare Linux IVC assets for Axvisor qemu case `{}`",
+                case.case.case.name
+            )
+        })?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         let cargo = build::load_cargo_config(request)?;
