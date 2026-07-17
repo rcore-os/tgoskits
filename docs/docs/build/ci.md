@@ -105,10 +105,10 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 | Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
 | Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
 | Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
-| Test axvisor self-hosted x86_64 | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；仅 `rcore-os` 仓库触发 |
-| Test axvisor self-hosted x86_64 UEFI | `self-hosted linux intel kvm` | 否 | 无 | 安装/定位 OVMF，生成 nimbos UEFI VM config，并运行 `cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64(svm) | `self-hosted linux amd kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64(vmx) | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted x86_64(vmx) UEFI | `self-hosted linux intel kvm` | 否 | 无 | 安装/定位 OVMF，生成 nimbos UEFI VM config，并运行 `cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos`；仅 `rcore-os` 仓库触发 |
 | Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target 与 OVMF，运行 `cargo axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |
-| Test axvisor x86_64 svm hosted | `ubuntu-latest` | 否 | 无 | AMD SVM 虚拟化冒烟测试；Intel CPU 时自动跳过 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board roc-rk3568-pc-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board roc-rk3568-pc-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board phytiumpi-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board phytiumpi-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
@@ -136,7 +136,7 @@ self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted
 |-----------|----------|----------|------|
 | `test-axvisor-loongarch64` | Test axvisor loongarch64 QEMU | `push` 事件 | Axvisor loongarch64 编译产物 |
 | `test-starry-riscv64/aarch64/loongarch64/x86_64` | Test starry riscv64/aarch64/loongarch64/x86_64 QEMU | `push` 事件 | StarryOS QEMU 编译产物 |
-| 无（`cache_key: ""`） | static checks、self-hosted runner job、hosted x86_64/SVM/board 类 job | - | 不启用 `Swatinem/rust-cache`；self-hosted 任务依赖 runner 本地磁盘缓存 |
+| 无（`cache_key: ""`） | static checks、self-hosted x86_64/board 类 job | - | 不启用 `Swatinem/rust-cache`；self-hosted 任务依赖 runner 本地磁盘缓存 |
 
 self-hosted runner 不设置 `cache_key`，避免 `Swatinem/rust-cache@v2` 的 post-job 清理影响 runner 上跨次运行自然积累的共享缓存。
 

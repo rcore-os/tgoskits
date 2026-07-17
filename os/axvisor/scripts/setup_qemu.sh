@@ -236,7 +236,7 @@ case "$GUEST" in
   arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
   arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|.github/workflows/qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
   linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  linux-x86_64)   CFG="qemu_x86_64_linux|qemu/x86_64/linux-vmx-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux-qemu|test pass!" ;;
+  linux-x86_64)   CFG="qemu_x86_64_linux|qemu/x86_64/linux-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux-qemu|test pass!" ;;
   nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
   nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
   linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;

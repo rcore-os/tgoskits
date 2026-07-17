@@ -555,10 +555,14 @@ mod tests {
         git(workspace, &["commit", "--quiet", "-m", "head"]);
         let head = git_output(workspace, &["rev-parse", "HEAD"]);
 
-        fs::write(workspace.join("fixed.txt"), "fixed\n").unwrap();
+        // Keep the benchmark snapshot distinct from the mutable test workspace
+        // where mock runners write artifacts during repeated invocations.
+        fs::write(workspace.join("workspace-state.txt"), "test workspace\n").unwrap();
         git(workspace, &["add", "--all"]);
-        git(workspace, &["commit", "--quiet", "-m", "fix"]);
-        let fixed_by = git_output(workspace, &["rev-parse", "HEAD"]);
+        git(
+            workspace,
+            &["commit", "--quiet", "-m", "test workspace state"],
+        );
 
         BenchCase {
             id: "0001-sample".into(),
@@ -568,7 +572,6 @@ mod tests {
             base,
             head,
             source: "secret source".into(),
-            fixed_by,
             expected: vec![ExpectedFinding {
                 id: "sample-finding".into(),
                 path: "src/lib.rs".into(),
