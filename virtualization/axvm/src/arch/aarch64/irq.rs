@@ -2,18 +2,19 @@
 
 use alloc::vec::Vec;
 
-use axvm_types::Aarch64GicSpi;
-
 use crate::{
     AxVmError, AxVmResult,
     config::Aarch64ForwardedIrq,
-    irq::forwarding::{GenerationOwnerTable, aarch64_virtual_timer_route},
+    irq::forwarding::{
+        ControllerIrqRegistry, PhysicalIrqRoute, aarch64_virtual_timer_route,
+        resolve_exclusive_irq_owner,
+    },
 };
 
 const SPI_BASE: usize = 32;
 const SPI_LIMIT: usize = 1020;
 const SPI_COUNT: usize = SPI_LIMIT - SPI_BASE;
-static SPI_OWNERS: GenerationOwnerTable<SPI_COUNT> = GenerationOwnerTable::new();
+static SPI_REGISTRY: ControllerIrqRegistry<SPI_COUNT> = ControllerIrqRegistry::new(SPI_BASE as u32);
 
 pub(crate) fn register_platform_irq_injector() {
     ax_crate_interface::call_interface!(
@@ -38,35 +39,40 @@ pub(crate) fn setup_hybrid_forwarding(
     let resolved = routes
         .iter()
         .map(|route| {
-            ax_hal::irq::resolve_external_irq(ax_hal::irq::HwIrq(route.host_intid())).map_err(
-                |error| {
+            ax_hal::irq::resolve_external_irq(ax_hal::irq::HwIrq(route.host_intid()))
+                .map(|irq| PhysicalIrqRoute::new(irq, route.guest_intid() as usize))
+                .map_err(|error| {
                     AxVmError::interrupt(
                         "resolve AArch64 Hybrid SPI",
                         format_args!("INTID {}: {error:?}", route.host_intid()),
                     )
-                },
-            )
+                })
         })
         .collect::<AxVmResult<Vec<_>>>()?;
-    let spis = routes
-        .iter()
-        .map(|route| Aarch64GicSpi::new(route.host_spi_offset()).unwrap())
-        .collect::<Vec<_>>();
-    let indices = spis
-        .iter()
-        .map(|spi| spi_index(spi.intid() as usize))
-        .collect::<Vec<_>>();
-    let claims = SPI_OWNERS
-        .claim_all(owner, generation, &indices)
-        .map_err(|index| {
+    for route in &resolved {
+        SPI_REGISTRY
+            .bind_domain(route.host_irq().domain)
+            .map_err(|domain| {
+                AxVmError::interrupt(
+                    "bind AArch64 Hybrid GIC domain",
+                    format_args!("registry is already bound to {domain:?}"),
+                )
+            })?;
+    }
+    let claims = SPI_REGISTRY
+        .claim_all(owner, generation, &resolved)
+        .map_err(|route| {
             AxVmError::resource_conflict(
                 "AArch64 GIC SPI",
-                format_args!("INTID {} is already owned by another VM", index + SPI_BASE),
+                format_args!(
+                    "INTID {} is already owned by another VM",
+                    route.host_irq().hwirq.0
+                ),
             )
         })?;
 
-    for irq in resolved {
-        ax_hal::irq::set_affinity(irq, affinity).map_err(|error| {
+    for route in resolved {
+        ax_hal::irq::set_affinity(route.host_irq(), affinity).map_err(|error| {
             AxVmError::interrupt("route AArch64 Hybrid SPI", format_args!("{error:?}"))
         })?;
     }
@@ -75,31 +81,26 @@ pub(crate) fn setup_hybrid_forwarding(
 }
 
 pub(crate) fn unregister_forward_spis(vm: &crate::AxVMRef, generation: usize) {
-    let indices = hybrid_routes(vm)
+    let routes = hybrid_routes(vm)
         .iter()
-        .map(|route| spi_index(route.host_intid() as usize))
+        .filter_map(|route| {
+            SPI_REGISTRY
+                .bound_irq(route.host_intid())
+                .map(|irq| PhysicalIrqRoute::new(irq, route.guest_intid() as usize))
+        })
         .collect::<Vec<_>>();
     let Some(owner) = vm.id().checked_add(1) else {
         return;
     };
-    SPI_OWNERS.release_generation(owner, generation, &indices);
+    SPI_REGISTRY.release_generation(owner, generation, &routes);
 }
 
 fn hybrid_routes(vm: &crate::AxVMRef) -> Vec<Aarch64ForwardedIrq> {
     vm.with_config(|config| config.aarch64_hybrid_forwarded_irqs().to_vec())
 }
 
-fn checked_spi_index(intid: usize) -> Option<usize> {
-    (SPI_BASE..SPI_LIMIT)
-        .contains(&intid)
-        .then_some(intid - SPI_BASE)
-}
-
-fn spi_index(intid: usize) -> usize {
-    intid - SPI_BASE
-}
-
-fn inject_virtual_irq(intid: usize) -> bool {
+fn inject_virtual_irq(irq: ax_hal::irq::IrqId) -> bool {
+    let intid = irq.hwirq.0 as usize;
     if let Some(route) = aarch64_virtual_timer_route(intid) {
         return super::gic::inject_interrupt_hw1(
             route.virtual_intid,
@@ -108,28 +109,30 @@ fn inject_virtual_irq(intid: usize) -> bool {
                 .expect("the virtual-timer route is hardware mapped"),
         );
     }
-    let Some(vm_id) = crate::current_vm_id() else {
-        trace!("skip AArch64 physical IRQ {intid}: no current VM context");
+    let current_claim = crate::manager::current_forwarding_token().and_then(|token| {
+        token
+            .vm_id
+            .checked_add(1)
+            .map(|owner| (owner, token.generation))
+    });
+    let Some((owner, _generation)) =
+        resolve_exclusive_irq_owner(SPI_REGISTRY.active_claim(irq), current_claim)
+    else {
+        trace!("skip AArch64 physical IRQ {intid}: no compatible VM owner");
+        return false;
+    };
+    let Some(vm_id) = owner.checked_sub(1) else {
         return false;
     };
     let Some(vm) = crate::get_vm_by_id(vm_id) else {
         return false;
     };
-    let Some(index) = checked_spi_index(intid) else {
-        return false;
-    };
-    let Some(owner) = vm_id.checked_add(1) else {
-        return false;
-    };
-    if !SPI_OWNERS.is_owned_by(index, owner) {
-        return false;
-    }
-    let guest_intid = vm.with_config(|config| {
+    let route = vm.with_config(|config| {
         config
             .aarch64_hybrid_forwarded_irqs()
             .iter()
             .find(|route| route.host_intid() as usize == intid)
-            .map(|route| route.guest_intid() as usize)
+            .map(|route| PhysicalIrqRoute::new(irq, route.guest_intid() as usize))
     });
-    guest_intid.is_some_and(|guest| super::gic::inject_interrupt_hw1(guest, intid))
+    route.is_some_and(|route| super::gic::inject_interrupt_hw1(route.guest_irq(), intid))
 }

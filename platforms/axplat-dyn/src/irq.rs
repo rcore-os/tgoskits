@@ -25,7 +25,7 @@ const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
     all(target_arch = "aarch64", feature = "hv"),
     all(target_arch = "riscv64", feature = "hv"),
 ))]
-pub fn register_virtual_irq_injector(injector: fn(usize) -> bool) {
+pub fn register_virtual_irq_injector(injector: fn(IrqId) -> bool) {
     VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
 }
 
@@ -70,7 +70,7 @@ impl IrqIf for IrqIfImpl {
             #[cfg(all(target_arch = "aarch64", feature = "hv"))]
             {
                 let forwardable = is_aarch64_guest_forwardable(irq);
-                let injected = forwardable && inject_aarch64_virtual_irq(irq.hwirq.0 as usize);
+                let injected = forwardable && inject_aarch64_virtual_irq(irq);
                 if should_mark_aarch64_forwarded_hw(forwardable, injected) {
                     active.mark_forwarded_hw();
                     return Some(irq);
@@ -78,8 +78,7 @@ impl IrqIf for IrqIfImpl {
             }
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-            if should_forward_riscv_guest_irq(irq, IrqOutcome::default())
-                && inject_virtual_irq(irq.hwirq.0 as usize)
+            if should_forward_riscv_guest_irq(irq, IrqOutcome::default()) && inject_virtual_irq(irq)
             {
                 return Some(irq);
             }
@@ -203,23 +202,23 @@ fn is_loongarch_guest_forwardable(irq: IrqId) -> bool {
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn inject_virtual_irq(irq: usize) -> bool {
+fn inject_virtual_irq(irq: IrqId) -> bool {
     let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
     if injector.is_null() {
-        trace!("skip RISC-V virtual IRQ {irq}: injector is not registered");
+        trace!("skip RISC-V virtual IRQ {irq:?}: injector is not registered");
         return false;
     }
-    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
+    unsafe { core::mem::transmute::<*mut (), fn(IrqId) -> bool>(injector)(irq) }
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "hv"))]
-fn inject_aarch64_virtual_irq(irq: usize) -> bool {
+fn inject_aarch64_virtual_irq(irq: IrqId) -> bool {
     let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
     if injector.is_null() {
-        trace!("skip AArch64 virtual IRQ {irq}: injector is not registered");
+        trace!("skip AArch64 virtual IRQ {irq:?}: injector is not registered");
         return false;
     }
-    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
+    unsafe { core::mem::transmute::<*mut (), fn(IrqId) -> bool>(injector)(irq) }
 }
 
 #[cfg(test)]

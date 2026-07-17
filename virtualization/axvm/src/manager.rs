@@ -104,6 +104,29 @@ pub fn current_vm_id() -> Option<VMId> {
     get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.vm_id())
 }
 
+/// Identifies the VM runtime whose vCPU task is executing on this CPU.
+#[allow(
+    dead_code,
+    reason = "the forwarding token is consumed only by architecture-selected modules"
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ForwardingToken {
+    pub(crate) vm_id: VMId,
+    pub(crate) generation: usize,
+}
+
+/// Returns the current vCPU task's forwarding ownership token.
+#[allow(
+    dead_code,
+    reason = "the forwarding token is consumed only by architecture-selected modules"
+)]
+pub(crate) fn current_forwarding_token() -> Option<ForwardingToken> {
+    get_current_vcpu::<ArchVCpu>().map(|vcpu| ForwardingToken {
+        vm_id: vcpu.vm_id(),
+        generation: vcpu.forwarding_generation(),
+    })
+}
+
 /// Return the current vCPU ID from the vCPU currently executing on this CPU.
 pub fn current_vcpu_id() -> Option<usize> {
     get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.id())

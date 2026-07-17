@@ -26,7 +26,114 @@ use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
 };
 
-use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
+use crate::{
+    AxVmError, AxVmResult, ax_err, ax_err_type,
+    irq::{
+        InterruptFabric,
+        forwarding::{ControllerIrqRegistry, PhysicalIrqRoute},
+    },
+};
+
+const PLIC_FIRST_SOURCE: u32 = 1;
+const PLIC_SOURCE_COUNT: usize = 1023;
+static PLIC_REGISTRY: ControllerIrqRegistry<PLIC_SOURCE_COUNT> =
+    ControllerIrqRegistry::new(PLIC_FIRST_SOURCE);
+
+pub(crate) fn setup_hybrid_forwarding(
+    vm: &crate::AxVMRef,
+    cpu_id: usize,
+    generation: usize,
+) -> AxVmResult {
+    let owner = vm
+        .id()
+        .checked_add(1)
+        .expect("VM ID must leave zero available as the unowned PLIC marker");
+    let routes = resolve_hybrid_routes(vm)?;
+    for route in &routes {
+        PLIC_REGISTRY
+            .bind_domain(route.host_irq().domain)
+            .map_err(|domain| {
+                AxVmError::interrupt(
+                    "bind RISC-V Hybrid PLIC domain",
+                    format_args!("registry is already bound to {domain:?}"),
+                )
+            })?;
+    }
+    let claims = PLIC_REGISTRY
+        .claim_all(owner, generation, &routes)
+        .map_err(|route| {
+            AxVmError::resource_conflict(
+                "RISC-V PLIC source",
+                format_args!(
+                    "source {} is already owned by another VM",
+                    route.host_irq().hwirq.0
+                ),
+            )
+        })?;
+    let affinity = ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(cpu_id));
+    for route in routes {
+        ax_hal::irq::set_affinity(route.host_irq(), affinity).map_err(|error| {
+            AxVmError::interrupt("route RISC-V Hybrid PLIC source", format_args!("{error:?}"))
+        })?;
+    }
+    claims.commit();
+    Ok(())
+}
+
+pub(crate) fn unregister_hybrid_forwarding(vm: &crate::AxVMRef, generation: usize) {
+    let routes = vm.with_config(|config| {
+        config
+            .pass_through_irqs()
+            .iter()
+            .filter_map(|&source| {
+                PLIC_REGISTRY
+                    .bound_irq(source)
+                    .map(|irq| PhysicalIrqRoute::new(irq, source as usize))
+            })
+            .collect::<alloc::vec::Vec<_>>()
+    });
+    let Some(owner) = vm.id().checked_add(1) else {
+        return;
+    };
+    PLIC_REGISTRY.release_generation(owner, generation, &routes);
+}
+
+pub(crate) fn hybrid_guest_irq(
+    vm: &crate::AxVMRef,
+    irq: ax_hal::irq::IrqId,
+    generation: usize,
+) -> Option<usize> {
+    if vm.interrupt_mode() != VMInterruptMode::Hybrid {
+        return None;
+    }
+    let owner = vm.id().checked_add(1)?;
+    if !PLIC_REGISTRY.is_active_owner(irq, owner, generation) {
+        return None;
+    }
+    vm.with_config(|config| {
+        config
+            .pass_through_irqs()
+            .contains(&irq.hwirq.0)
+            .then(|| PhysicalIrqRoute::new(irq, irq.hwirq.0 as usize))
+            .map(PhysicalIrqRoute::guest_irq)
+    })
+}
+
+fn resolve_hybrid_routes(vm: &crate::AxVMRef) -> AxVmResult<alloc::vec::Vec<PhysicalIrqRoute>> {
+    vm.with_config(|config| config.pass_through_irqs().to_vec())
+        .into_iter()
+        .map(|source| {
+            ax_hal::irq::resolve_external_irq(ax_hal::irq::HwIrq(source))
+                .map(|irq| PhysicalIrqRoute::new(irq, source as usize))
+                .map_err(|error| {
+                    AxVmError::interrupt(
+                        "resolve RISC-V Hybrid PLIC source",
+                        format_args!("source {source}: {error:?}"),
+                    )
+                })
+        })
+        .collect()
+}
 
 struct RiscvPlicIrqSink {
     vplic: Arc<VPlicGlobal>,

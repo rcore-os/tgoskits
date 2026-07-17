@@ -61,6 +61,52 @@ impl ArchOps for Riscv64Arch {
         register_platform_irq_injector();
     }
 
+    fn prepare_runtime_start(
+        vm: &crate::AxVMRef,
+        primary_vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        generation: usize,
+    ) -> crate::AxVmResult {
+        if vm.interrupt_mode() != VMInterruptMode::Hybrid {
+            return Ok(());
+        }
+        let requested_mask = primary_vcpu.phys_cpu_set().ok_or_else(|| {
+            crate::AxVmError::invalid_input(
+                "prepare RISC-V Hybrid forwarding",
+                "primary vCPU has no fixed physical CPU mask",
+            )
+        })?;
+        crate::irq::forwarding::exclusive_cpu_from_mask(Some(requested_mask)).ok_or_else(|| {
+            crate::AxVmError::invalid_input(
+                "prepare RISC-V Hybrid forwarding",
+                format_args!("primary vCPU mask {requested_mask:#x} is not exclusive"),
+            )
+        })?;
+        let effective_mask =
+            crate::runtime::vcpus::vcpu_task_cpu_mask(vm.id(), primary_vcpu.id(), requested_mask);
+        let cpu_id = crate::irq::forwarding::exclusive_cpu_from_mask(Some(effective_mask))
+            .ok_or_else(|| {
+                crate::AxVmError::invalid_input(
+                    "prepare RISC-V Hybrid forwarding",
+                    format_args!(
+                        "primary vCPU effective mask {effective_mask:#x} is not exclusive"
+                    ),
+                )
+            })?;
+        irq::setup_hybrid_forwarding(vm, cpu_id, generation)
+    }
+
+    fn cancel_runtime_start(vm: &crate::AxVMRef, generation: usize) {
+        if vm.interrupt_mode() == VMInterruptMode::Hybrid {
+            irq::unregister_hybrid_forwarding(vm, generation);
+        }
+    }
+
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef, runtime: &crate::vm::VmRuntimeHandle) {
+        if vm.interrupt_mode() == VMInterruptMode::Hybrid {
+            irq::unregister_hybrid_forwarding(vm, runtime.forwarding_generation_id());
+        }
+    }
+
     fn before_first_run(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -462,22 +508,34 @@ fn first_cpu_in_mask(mask: usize) -> Option<usize> {
     (mask != 0).then_some(mask.trailing_zeros() as usize)
 }
 
-fn inject_virtual_irq(irq_id: usize) -> bool {
-    let Some(vm_id) = crate::current_vm_id() else {
+fn inject_virtual_irq(physical_irq: ax_hal::irq::IrqId) -> bool {
+    let irq_id = physical_irq.hwirq.0 as usize;
+    let Some(token) = crate::manager::current_forwarding_token() else {
         trace!("skip RISC-V virtual IRQ {irq_id}: no current VM context");
         return false;
     };
 
     debug!("injecting RISC-V virtual IRQ id: {irq_id}");
 
-    let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
-        if let Err(err) = vm.pulse_interrupt(irq_id) {
-            warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
+    let Some(injected) = crate::manager::with_vm(token.vm_id, |vm| {
+        let guest_irq = match vm.interrupt_mode() {
+            VMInterruptMode::Hybrid => irq::hybrid_guest_irq(vm, physical_irq, token.generation),
+            VMInterruptMode::Passthrough => Some(irq_id),
+            _ => None,
+        };
+        let Some(guest_irq) = guest_irq else {
+            return false;
+        };
+        if let Err(err) = vm.pulse_interrupt(guest_irq) {
+            warn!("failed to inject RISC-V virtual IRQ {guest_irq}: {err:?}");
             return false;
         }
         true
     }) else {
-        warn!("cannot inject RISC-V virtual IRQ {irq_id}: VM[{vm_id}] not found");
+        warn!(
+            "cannot inject RISC-V virtual IRQ {irq_id}: VM[{}] not found",
+            token.vm_id
+        );
         return false;
     };
 

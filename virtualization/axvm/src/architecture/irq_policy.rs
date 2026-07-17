@@ -32,8 +32,8 @@ mod tests {
     use super::validate_irq_mode;
 
     #[test]
-    fn riscv_hybrid_is_rejected_without_changing_passthrough() {
-        assert!(validate_irq_mode("RISC-V", false, VMInterruptMode::Hybrid).is_err());
-        assert!(validate_irq_mode("RISC-V", false, VMInterruptMode::Passthrough).is_ok());
+    fn riscv_complete_backend_accepts_hybrid_and_passthrough() {
+        assert!(validate_irq_mode("RISC-V", true, VMInterruptMode::Hybrid).is_ok());
+        assert!(validate_irq_mode("RISC-V", true, VMInterruptMode::Passthrough).is_ok());
     }
 }

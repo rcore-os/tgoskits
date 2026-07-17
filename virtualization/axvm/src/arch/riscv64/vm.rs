@@ -24,7 +24,7 @@ impl Riscv64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         crate::architecture::irq_policy::validate_irq_mode(
             "RISC-V",
-            false,
+            true,
             config.interrupt_mode(),
         )?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();

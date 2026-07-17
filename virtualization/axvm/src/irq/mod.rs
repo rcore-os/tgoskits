@@ -28,7 +28,7 @@ pub(crate) mod forwarding;
 #[ax_crate_interface::def_interface]
 pub trait PlatformIrqInjectorIf {
     /// Registers a callback that forwards a physical IRQ line into the current guest.
-    fn register_virtual_irq_injector(injector: fn(usize) -> bool);
+    fn register_virtual_irq_injector(injector: fn(ax_hal::irq::IrqId) -> bool);
 }
 
 /// Resolves device interrupt lines against one VM's interrupt backend.

@@ -764,7 +764,8 @@ impl AxVM {
                 },
                 || {
                     runtime.register_vcpu_participant();
-                    let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
+                    let primary_task =
+                        crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu, generation);
                     let task = crate::host::task::spawn_task(primary_task);
                     runtime.add_vcpu_task(0, task);
                 },

@@ -115,7 +115,7 @@ fn failed_vm_initialization_resets_transient_resources_before_retry() {
     assert!(initialize.contains("return Err(err)"));
 }
 #[test]
-fn aarch64_hybrid_forwarding_is_prepared_before_vcpu_spawn() {
+fn hybrid_forwarding_is_prepared_before_vcpu_spawn() {
     let vm = include_str!("../src/vm/mod.rs");
     let start = vm
         .split_once("pub fn start(self: &Arc<Self>)")
@@ -160,6 +160,29 @@ fn aarch64_hybrid_forwarding_is_prepared_before_vcpu_spawn() {
     let irq = include_str!("../src/arch/aarch64/irq.rs");
     assert!(irq.contains("generation: usize"));
     assert!(!irq.contains("vm.with_runtime"));
+
+    let riscv64 = include_str!("../src/arch/riscv64/mod.rs");
+    assert!(riscv64.contains("fn prepare_runtime_start"));
+    assert!(riscv64.contains("irq::setup_hybrid_forwarding(vm, cpu_id, generation)"));
+    assert!(riscv64.contains("fn cancel_runtime_start"));
+    assert!(riscv64.contains("irq::unregister_hybrid_forwarding(vm, generation)"));
+}
+
+#[test]
+fn hard_irq_forwarding_uses_a_typed_runtime_generation_token() {
+    let vcpu = include_str!("../src/vcpu.rs");
+    assert!(vcpu.contains("forwarding_generation: AtomicUsize"));
+    assert!(vcpu.contains("pub(crate) fn forwarding_generation"));
+
+    let manager = include_str!("../src/manager.rs");
+    assert!(manager.contains("pub(crate) fn current_forwarding_token"));
+    assert!(manager.contains("vcpu.forwarding_generation()"));
+
+    let runtime = include_str!("../src/runtime/vcpus.rs");
+    assert!(runtime.contains("vcpu.set_forwarding_generation(forwarding_generation)"));
+
+    let injector = include_str!("../src/irq/mod.rs");
+    assert!(injector.contains("injector: fn(ax_hal::irq::IrqId) -> bool"));
 }
 
 #[test]

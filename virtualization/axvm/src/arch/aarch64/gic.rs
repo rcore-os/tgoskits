@@ -8,7 +8,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::{
     host::{HostMemory, default_host},
-    irq::forwarding::{LrRouteRequest, LrSnapshot, LrState, lr_matches_route},
+    irq::forwarding::{ExistingLrAction, LrRouteRequest, LrSnapshot, LrState, existing_lr_action},
 };
 
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
@@ -72,7 +72,7 @@ fn inject_interrupt_gic_v3(vector: usize, physical_intid: Option<usize>) -> bool
     };
 
     for i in 0..lr_num {
-        let lr_val = ich_lr_el2_get(i);
+        let mut lr_val = ich_lr_el2_get(i);
         let hardware = lr_val.read(ICH_LR_EL2::HW) != 0;
         let snapshot = LrSnapshot {
             virtual_intid: lr_val.read(ICH_LR_EL2::VINTID) as usize,
@@ -85,9 +85,18 @@ fn inject_interrupt_gic_v3(vector: usize, physical_intid: Option<usize>) -> bool
                 _ => LrState::PendingActive,
             },
         };
-        if lr_matches_route(snapshot, request) {
-            debug!("Virtual interrupt {vector} already pending/active in LR{i}, skipping");
-            return true;
+        match existing_lr_action(snapshot, request) {
+            Some(ExistingLrAction::Coalesce) => {
+                debug!("Virtual interrupt {vector} already pending in LR{i}, coalescing");
+                return true;
+            }
+            Some(ExistingLrAction::MarkPendingActive) => {
+                lr_val.modify(ICH_LR_EL2::STATE::PendingAndActive);
+                ich_lr_el2_set(i, lr_val);
+                debug!("Virtual interrupt {vector} active in LR{i}, marking pending-active");
+                return true;
+            }
+            None => {}
         }
     }
 

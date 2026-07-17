@@ -241,7 +241,7 @@ pub(crate) fn vcpu_on(
 
     let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
     runtime.register_vcpu_participant();
-    let vcpu_task = alloc_vcpu_task(&vm, vcpu);
+    let vcpu_task = alloc_vcpu_task(&vm, vcpu, runtime.forwarding_generation_id());
     runtime.add_vcpu_task(vcpu_id, vcpu_task);
     Ok(())
 }
@@ -250,12 +250,21 @@ pub(crate) fn vcpu_on(
     dead_code,
     reason = "only non-x86 guest firmware boots secondary vCPUs"
 )]
-pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
-    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
+pub(crate) fn alloc_vcpu_task(
+    vm: &VMRef,
+    vcpu: VCpuRef,
+    forwarding_generation: usize,
+) -> crate::AxTaskRef {
+    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu, forwarding_generation))
 }
 
-pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
+pub(crate) fn build_vcpu_task(
+    vm: &VMRef,
+    vcpu: VCpuRef,
+    forwarding_generation: usize,
+) -> crate::TaskInner {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
+    vcpu.set_forwarding_generation(forwarding_generation);
     let mut vcpu_task = crate::TaskInner::new(
         vcpu_run,
         format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id()),

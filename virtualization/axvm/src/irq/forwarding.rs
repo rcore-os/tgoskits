@@ -1,7 +1,7 @@
 //! Host-testable physical interrupt forwarding primitives.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRaw;
 
@@ -11,7 +11,47 @@ const SETUP_UNINITIALIZED: u8 = 0;
 const SETUP_IN_PROGRESS: u8 = 1;
 const SETUP_READY: u8 = 2;
 const SETUP_FAILED: u8 = 3;
+const OWNER_UNCLAIMED: u8 = 0;
+const OWNER_RESERVED: u8 = 1;
+const OWNER_ACTIVE: u8 = 2;
 static NEXT_GENERATION_ID: AtomicUsize = AtomicUsize::new(1);
+#[allow(
+    dead_code,
+    reason = "the controller registry is consumed only by architecture-selected modules"
+)]
+const UNBOUND_IRQ_DOMAIN: u16 = u16::MAX;
+
+/// One resolved physical-to-guest interrupt route.
+#[allow(
+    dead_code,
+    reason = "physical routes are consumed only by architecture-selected modules"
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PhysicalIrqRoute {
+    host_irq: ax_hal::irq::IrqId,
+    guest_irq: usize,
+}
+
+#[allow(
+    dead_code,
+    reason = "physical routes are consumed only by architecture-selected modules"
+)]
+impl PhysicalIrqRoute {
+    pub(crate) const fn new(host_irq: ax_hal::irq::IrqId, guest_irq: usize) -> Self {
+        Self {
+            host_irq,
+            guest_irq,
+        }
+    }
+
+    pub(crate) const fn host_irq(self) -> ax_hal::irq::IrqId {
+        self.host_irq
+    }
+
+    pub(crate) const fn guest_irq(self) -> usize {
+        self.guest_irq
+    }
+}
 
 pub(crate) fn next_generation_id() -> usize {
     let id = NEXT_GENERATION_ID.fetch_add(1, Ordering::Relaxed);
@@ -30,16 +70,17 @@ pub(crate) fn exclusive_cpu_from_mask(mask: Option<usize>) -> Option<usize> {
 /// An atomic owner table whose releases are scoped to one runtime generation.
 #[allow(
     dead_code,
-    reason = "the host-tested ownership model has a production consumer only on AArch64"
+    reason = "the ownership model is consumed only by architecture-selected modules"
 )]
 pub(crate) struct GenerationOwnerTable<const N: usize> {
     owners: [AtomicUsize; N],
     generations: [AtomicUsize; N],
+    states: [AtomicU8; N],
     update_lock: SpinRaw<()>,
 }
 #[allow(
     dead_code,
-    reason = "the host-tested ownership model has a production consumer only on AArch64"
+    reason = "the ownership model is consumed only by architecture-selected modules"
 )]
 pub(crate) struct PendingGenerationClaim<'a, const N: usize> {
     table: &'a GenerationOwnerTable<N>,
@@ -51,10 +92,12 @@ pub(crate) struct PendingGenerationClaim<'a, const N: usize> {
 
 #[allow(
     dead_code,
-    reason = "the host-tested ownership model has a production consumer only on AArch64"
+    reason = "the ownership model is consumed only by architecture-selected modules"
 )]
 impl<const N: usize> PendingGenerationClaim<'_, N> {
     pub(crate) fn commit(mut self) {
+        self.table
+            .activate_generation(self.owner, self.generation, &self.newly_claimed);
         self.committed = true;
     }
 }
@@ -70,13 +113,14 @@ impl<const N: usize> Drop for PendingGenerationClaim<'_, N> {
 
 #[allow(
     dead_code,
-    reason = "the host-tested ownership model has a production consumer only on AArch64"
+    reason = "the ownership model is consumed only by architecture-selected modules"
 )]
 impl<const N: usize> GenerationOwnerTable<N> {
     pub(crate) const fn new() -> Self {
         Self {
             owners: [const { AtomicUsize::new(0) }; N],
             generations: [const { AtomicUsize::new(0) }; N],
+            states: [const { AtomicU8::new(OWNER_UNCLAIMED) }; N],
             update_lock: SpinRaw::new(()),
         }
     }
@@ -104,6 +148,7 @@ impl<const N: usize> GenerationOwnerTable<N> {
             if self.owners[index].load(Ordering::Acquire) == 0 {
                 self.generations[index].store(generation, Ordering::Release);
                 self.owners[index].store(owner, Ordering::Release);
+                self.states[index].store(OWNER_RESERVED, Ordering::Release);
                 newly_claimed.push(index);
             }
         }
@@ -122,6 +167,7 @@ impl<const N: usize> GenerationOwnerTable<N> {
             if self.owners[index].load(Ordering::Acquire) == owner
                 && self.generations[index].load(Ordering::Acquire) == generation
             {
+                self.states[index].store(OWNER_UNCLAIMED, Ordering::Release);
                 self.owners[index].store(0, Ordering::Release);
                 self.generations[index].store(0, Ordering::Release);
             }
@@ -129,7 +175,154 @@ impl<const N: usize> GenerationOwnerTable<N> {
     }
 
     pub(crate) fn is_owned_by(&self, index: usize, owner: usize) -> bool {
-        self.owners[index].load(Ordering::Acquire) == owner
+        self.states[index].load(Ordering::Acquire) == OWNER_ACTIVE
+            && self.owners[index].load(Ordering::Acquire) == owner
+    }
+
+    pub(crate) fn is_active_owner(&self, index: usize, owner: usize, generation: usize) -> bool {
+        self.states[index].load(Ordering::Acquire) == OWNER_ACTIVE
+            && self.owners[index].load(Ordering::Acquire) == owner
+            && self.generations[index].load(Ordering::Acquire) == generation
+    }
+
+    fn activate_generation(&self, owner: usize, generation: usize, indices: &[usize]) {
+        let _guard = self.update_lock.lock();
+        for &index in indices {
+            assert_eq!(self.owners[index].load(Ordering::Acquire), owner);
+            assert_eq!(self.generations[index].load(Ordering::Acquire), generation);
+            self.states[index].store(OWNER_ACTIVE, Ordering::Release);
+        }
+    }
+}
+
+/// Generation ownership for one bounded interrupt-controller domain.
+#[allow(
+    dead_code,
+    reason = "the controller registry is consumed only by architecture-selected modules"
+)]
+pub(crate) struct ControllerIrqRegistry<const N: usize> {
+    domain: AtomicU16,
+    first_hwirq: u32,
+    owners: GenerationOwnerTable<N>,
+}
+
+#[allow(
+    dead_code,
+    reason = "the controller registry is consumed only by architecture-selected modules"
+)]
+impl<const N: usize> ControllerIrqRegistry<N> {
+    pub(crate) const fn new(first_hwirq: u32) -> Self {
+        Self {
+            domain: AtomicU16::new(UNBOUND_IRQ_DOMAIN),
+            first_hwirq,
+            owners: GenerationOwnerTable::new(),
+        }
+    }
+
+    pub(crate) fn bind_domain(
+        &self,
+        domain: ax_hal::irq::IrqDomainId,
+    ) -> Result<(), ax_hal::irq::IrqDomainId> {
+        match self.domain.compare_exchange(
+            UNBOUND_IRQ_DOMAIN,
+            domain.0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(current) if current == domain.0 => Ok(()),
+            Err(current) => Err(ax_hal::irq::IrqDomainId(current)),
+        }
+    }
+
+    pub(crate) fn slot(&self, irq: ax_hal::irq::IrqId) -> Option<usize> {
+        if self.domain.load(Ordering::Acquire) != irq.domain.0 {
+            return None;
+        }
+        let slot = irq.hwirq.0.checked_sub(self.first_hwirq)? as usize;
+        (slot < N).then_some(slot)
+    }
+
+    pub(crate) fn bound_irq(&self, hwirq: u32) -> Option<ax_hal::irq::IrqId> {
+        let domain = self.domain.load(Ordering::Acquire);
+        if domain == UNBOUND_IRQ_DOMAIN {
+            return None;
+        }
+        let irq =
+            ax_hal::irq::IrqId::new(ax_hal::irq::IrqDomainId(domain), ax_hal::irq::HwIrq(hwirq));
+        self.slot(irq).map(|_| irq)
+    }
+
+    pub(crate) fn claim_all(
+        &self,
+        owner: usize,
+        generation: usize,
+        routes: &[PhysicalIrqRoute],
+    ) -> Result<PendingGenerationClaim<'_, N>, PhysicalIrqRoute> {
+        let indices = routes
+            .iter()
+            .map(|route| self.slot(route.host_irq).ok_or(*route))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.owners
+            .claim_all(owner, generation, &indices)
+            .map_err(|conflict| {
+                routes
+                    .iter()
+                    .copied()
+                    .find(|route| self.slot(route.host_irq) == Some(conflict))
+                    .expect("a conflicting slot came from the validated route set")
+            })
+    }
+
+    pub(crate) fn release_generation(
+        &self,
+        owner: usize,
+        generation: usize,
+        routes: &[PhysicalIrqRoute],
+    ) {
+        let indices = routes
+            .iter()
+            .filter_map(|route| self.slot(route.host_irq))
+            .collect::<Vec<_>>();
+        self.owners.release_generation(owner, generation, &indices);
+    }
+
+    pub(crate) fn is_active_owner(
+        &self,
+        irq: ax_hal::irq::IrqId,
+        owner: usize,
+        generation: usize,
+    ) -> bool {
+        self.slot(irq)
+            .is_some_and(|slot| self.owners.is_active_owner(slot, owner, generation))
+    }
+
+    pub(crate) fn active_claim(&self, irq: ax_hal::irq::IrqId) -> Option<(usize, usize)> {
+        let slot = self.slot(irq)?;
+        let _guard = self.owners.update_lock.lock();
+        if self.owners.states[slot].load(Ordering::Acquire) != OWNER_ACTIVE {
+            return None;
+        }
+        let owner = self.owners.owners[slot].load(Ordering::Acquire);
+        let generation = self.owners.generations[slot].load(Ordering::Acquire);
+        Some((owner, generation))
+    }
+}
+
+/// Resolves an exclusively owned IRQ while preventing injection into another
+/// VM's active vCPU context.
+#[allow(
+    dead_code,
+    reason = "the host-tested owner policy has a production consumer only on AArch64"
+)]
+pub(crate) fn resolve_exclusive_irq_owner(
+    active_claim: Option<(usize, usize)>,
+    current_claim: Option<(usize, usize)>,
+) -> Option<(usize, usize)> {
+    let active_claim = active_claim?;
+    match current_claim {
+        Some(current_claim) if current_claim != active_claim => None,
+        _ => Some(active_claim),
     }
 }
 
@@ -227,6 +420,16 @@ pub(crate) struct LrRouteRequest {
     pub physical_intid: Option<usize>,
 }
 
+#[allow(
+    dead_code,
+    reason = "the host-testable LR model has a production consumer only on AArch64"
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExistingLrAction {
+    Coalesce,
+    MarkPendingActive,
+}
+
 /// Returns the current-CPU hardware route for the AArch64 virtual timer PPI.
 #[allow(
     dead_code,
@@ -255,6 +458,23 @@ pub(crate) fn lr_matches_route(snapshot: LrSnapshot, request: LrRouteRequest) ->
         && snapshot.physical_intid == request.physical_intid
 }
 
+#[allow(
+    dead_code,
+    reason = "the host-testable LR model has a production consumer only on AArch64"
+)]
+pub(crate) fn existing_lr_action(
+    snapshot: LrSnapshot,
+    request: LrRouteRequest,
+) -> Option<ExistingLrAction> {
+    if !lr_matches_route(snapshot, request) {
+        return None;
+    }
+    if snapshot.state == LrState::Active && request.physical_intid.is_none() {
+        return Some(ExistingLrAction::MarkPendingActive);
+    }
+    Some(ExistingLrAction::Coalesce)
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -266,9 +486,62 @@ mod tests {
     };
 
     use super::{
-        LrRouteRequest, LrSnapshot, LrState, aarch64_virtual_timer_route, lr_matches_route,
+        ExistingLrAction, LrRouteRequest, LrSnapshot, LrState, aarch64_virtual_timer_route,
+        existing_lr_action, lr_matches_route,
     };
     use crate::AxVmError;
+
+    fn irq(domain: u16, hwirq: u32) -> ax_hal::irq::IrqId {
+        ax_hal::irq::IrqId::new(ax_hal::irq::IrqDomainId(domain), ax_hal::irq::HwIrq(hwirq))
+    }
+
+    #[test]
+    fn controller_registry_rejects_equal_hwirq_from_another_domain() {
+        let registry = super::ControllerIrqRegistry::<32>::new(1);
+        let route = super::PhysicalIrqRoute::new(irq(7, 5), 9);
+        let wrong_domain = super::PhysicalIrqRoute::new(irq(8, 5), 9);
+
+        registry.bind_domain(route.host_irq().domain).unwrap();
+
+        assert_eq!(registry.slot(route.host_irq()), Some(4));
+        assert_eq!(registry.slot(wrong_domain.host_irq()), None);
+    }
+
+    #[test]
+    fn controller_registry_checks_owner_and_generation_for_typed_irq() {
+        let registry = super::ControllerIrqRegistry::<32>::new(1);
+        let route = super::PhysicalIrqRoute::new(irq(7, 5), 9);
+        registry.bind_domain(route.host_irq().domain).unwrap();
+        registry
+            .claim_all(3, 10, core::slice::from_ref(&route))
+            .unwrap()
+            .commit();
+
+        assert!(registry.is_active_owner(route.host_irq(), 3, 10));
+        assert!(!registry.is_active_owner(route.host_irq(), 3, 11));
+        assert!(!registry.is_active_owner(irq(8, 5), 3, 10));
+    }
+
+    #[test]
+    fn exclusive_irq_owner_survives_a_temporary_absence_of_vcpu_context() {
+        let registry = super::ControllerIrqRegistry::<32>::new(1);
+        let route = super::PhysicalIrqRoute::new(irq(7, 5), 9);
+        registry.bind_domain(route.host_irq().domain).unwrap();
+        registry
+            .claim_all(3, 10, core::slice::from_ref(&route))
+            .unwrap()
+            .commit();
+
+        assert_eq!(registry.active_claim(route.host_irq()), Some((3, 10)));
+        assert_eq!(
+            super::resolve_exclusive_irq_owner(Some((3, 10)), None),
+            Some((3, 10))
+        );
+        assert_eq!(
+            super::resolve_exclusive_irq_owner(Some((3, 10)), Some((4, 11))),
+            None
+        );
+    }
 
     #[test]
     fn generation_claim_same_owner_different_generation_conflicts_without_claiming_free_prefix() {
@@ -315,6 +588,26 @@ mod tests {
         owners.claim_all(3, 10, &[1]).unwrap().commit();
 
         assert!(owners.is_owned_by(1, 3));
+    }
+
+    #[test]
+    fn generation_claim_is_invisible_until_committed() {
+        let owners = super::GenerationOwnerTable::<8>::new();
+        let claim = owners.claim_all(3, 10, &[1]).unwrap();
+
+        assert!(!owners.is_active_owner(1, 3, 10));
+
+        claim.commit();
+        assert!(owners.is_active_owner(1, 3, 10));
+    }
+
+    #[test]
+    fn active_ownership_requires_the_exact_runtime_generation() {
+        let owners = super::GenerationOwnerTable::<8>::new();
+        owners.claim_all(3, 10, &[1]).unwrap().commit();
+
+        assert!(owners.is_active_owner(1, 3, 10));
+        assert!(!owners.is_active_owner(1, 3, 11));
     }
 
     #[test]
@@ -475,6 +768,44 @@ mod tests {
             },
             software,
         ));
+    }
+
+    #[test]
+    fn active_software_irq_reinjection_marks_the_lr_pending_active() {
+        let request = LrRouteRequest {
+            virtual_intid: 33,
+            physical_intid: None,
+        };
+        let active = LrSnapshot {
+            virtual_intid: 33,
+            hardware: false,
+            physical_intid: None,
+            state: LrState::Active,
+        };
+
+        assert_eq!(
+            existing_lr_action(active, request),
+            Some(ExistingLrAction::MarkPendingActive)
+        );
+    }
+
+    #[test]
+    fn active_hardware_irq_reinjection_remains_coalesced() {
+        let request = LrRouteRequest {
+            virtual_intid: 45,
+            physical_intid: Some(45),
+        };
+        let active = LrSnapshot {
+            virtual_intid: 45,
+            hardware: true,
+            physical_intid: Some(45),
+            state: LrState::Active,
+        };
+
+        assert_eq!(
+            existing_lr_action(active, request),
+            Some(ExistingLrAction::Coalesce)
+        );
     }
 
     #[test]

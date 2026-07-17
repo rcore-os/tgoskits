@@ -15,7 +15,11 @@
 //! AxVM-owned architecture-independent vCPU wrapper.
 
 use alloc::format;
-use core::{cell::UnsafeCell, mem::MaybeUninit};
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{
@@ -40,6 +44,7 @@ struct AxVCpuInnerConst {
 pub struct AxVCpu<A: VmArchVcpuOps> {
     inner_const: AxVCpuInnerConst,
     inner_mut: Mutex<AxVCpuInnerMut>,
+    forwarding_generation: AtomicUsize,
     arch_vcpu: UnsafeCell<A>,
 }
 
@@ -60,6 +65,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
             }),
+            forwarding_generation: AtomicUsize::new(0),
             arch_vcpu: UnsafeCell::new(
                 A::new(vm_id, vcpu_id, arch_config)
                     .map_err(|error| map_vcpu_backend_error("create vCPU", error))?,
@@ -101,6 +107,22 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Returns the allowed physical CPU mask.
     pub const fn phys_cpu_set(&self) -> Option<usize> {
         self.inner_const.phys_cpu_set
+    }
+
+    /// Publishes the forwarding generation owned by this vCPU's runtime.
+    pub(crate) fn set_forwarding_generation(&self, generation: usize) {
+        assert_ne!(generation, 0, "zero is not a forwarding generation");
+        self.forwarding_generation
+            .store(generation, Ordering::Release);
+    }
+
+    /// Returns the forwarding generation owned by this vCPU's runtime.
+    #[allow(
+        dead_code,
+        reason = "the forwarding token is consumed only by architecture-selected modules"
+    )]
+    pub(crate) fn forwarding_generation(&self) -> usize {
+        self.forwarding_generation.load(Ordering::Acquire)
     }
 
     /// Returns the current vCPU state.
