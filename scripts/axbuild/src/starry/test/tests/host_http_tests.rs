@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
     let root = tempdir().unwrap();
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(&case_dir).unwrap();
     let test_case = TestQemuCase {
-        name: "qemu/system".to_string(),
-        display_name: "qemu/system".to_string(),
+        name: "qemu-smp1/system".to_string(),
+        display_name: "qemu-smp1/system".to_string(),
         case_dir: case_dir.clone(),
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),
@@ -32,7 +32,7 @@ fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
 #[test]
 fn starry_qemu_single_subcase_skips_unneeded_host_http_server() {
     let root = tempdir().unwrap();
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     let subcase_dir = case_dir.join("syscall-test-uid-gid-re-setters");
     fs::create_dir_all(subcase_dir.join("src")).unwrap();
     fs::write(
@@ -55,7 +55,7 @@ fn starry_qemu_single_subcase_skips_unneeded_host_http_server() {
 #[test]
 fn starry_qemu_single_subcase_keeps_needed_host_http_server() {
     let root = tempdir().unwrap();
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     let subcase_dir = case_dir.join("apk-curl-equivalence");
     fs::create_dir_all(subcase_dir.join("src")).unwrap();
     fs::write(

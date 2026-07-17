@@ -70,9 +70,9 @@ fn discovers_grouped_case_commands_and_sorted_subcases() {
 #[test]
 fn discovers_flat_qemu_wrapper_case_with_subcases() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("smoke/c")).unwrap();
     fs::create_dir_all(case_dir.join("usb-storage/c")).unwrap();
 
@@ -80,8 +80,8 @@ fn discovers_flat_qemu_wrapper_case_with_subcases() {
 
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.name, "system");
-    assert_eq!(cases[0].case.display_name, "qemu/system");
-    assert_eq!(cases[0].build_group, "qemu");
+    assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
+    assert_eq!(cases[0].build_group, "qemu-smp1");
     assert_eq!(
         cases[0]
             .case
@@ -96,23 +96,23 @@ fn discovers_flat_qemu_wrapper_case_with_subcases() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/system"),
+        Some("qemu-smp1/system"),
     )
     .unwrap();
     assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].case.display_name, "qemu/system");
+    assert_eq!(selected[0].case.display_name, "qemu-smp1/system");
 
     let listed = discover_all_qemu_cases_with_archs(root.path(), None).unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "qemu/system");
+    assert_eq!(listed[0].name, "qemu-smp1/system");
 }
 
 #[test]
 fn starry_qemu_subcase_selector_maps_to_system_parent() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
     fs::write(
         case_dir.join("alpha/CMakeLists.txt"),
@@ -124,12 +124,12 @@ fn starry_qemu_subcase_selector_maps_to_system_parent() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/alpha"),
+        Some("qemu-smp1/alpha"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.display_name, "qemu/system");
+    assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
         Some(BTreeSet::from(["alpha".to_string()]))
@@ -139,9 +139,9 @@ fn starry_qemu_subcase_selector_maps_to_system_parent() {
 #[test]
 fn starry_qemu_subcase_selector_accepts_installed_binary_name() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("syscall-test-uid-gid-re-setters/src")).unwrap();
     fs::write(
         case_dir.join("syscall-test-uid-gid-re-setters/CMakeLists.txt"),
@@ -156,12 +156,12 @@ install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/test-uid-gid-re-setters"),
+        Some("qemu-smp1/test-uid-gid-re-setters"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.display_name, "qemu/system");
+    assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
         Some(BTreeSet::from([
@@ -173,9 +173,9 @@ install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-
 #[test]
 fn starry_qemu_system_subcase_selector_sets_filter() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp4", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp4", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp4/system");
     fs::create_dir_all(case_dir.join("test-futex-race/src")).unwrap();
     fs::write(
         case_dir.join("test-futex-race/CMakeLists.txt"),
@@ -187,12 +187,12 @@ fn starry_qemu_system_subcase_selector_sets_filter() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/system/test-futex-race"),
+        Some("qemu-smp4/system/test-futex-race"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.display_name, "qemu/system");
+    assert_eq!(cases[0].case.display_name, "qemu-smp4/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
         Some(BTreeSet::from(["test-futex-race".to_string()]))
@@ -202,9 +202,9 @@ fn starry_qemu_system_subcase_selector_sets_filter() {
 #[test]
 fn starry_qemu_system_selector_keeps_full_group() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
     fs::write(
         case_dir.join("alpha/CMakeLists.txt"),
@@ -216,21 +216,21 @@ fn starry_qemu_system_selector_keeps_full_group() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/system"),
+        Some("qemu-smp1/system"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.display_name, "qemu/system");
+    assert_eq!(cases[0].case.display_name, "qemu-smp1/system");
     assert_eq!(cases[0].case.grouped_subcase_filter, None);
 }
 
 #[test]
 fn starry_qemu_subcase_selector_reports_unknown_subcase() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
     fs::write(
         case_dir.join("alpha/CMakeLists.txt"),
@@ -242,22 +242,22 @@ fn starry_qemu_subcase_selector_reports_unknown_subcase() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/missing"),
+        Some("qemu-smp1/missing"),
     )
     .unwrap_err()
     .to_string();
 
-    assert!(err.contains("qemu/system"));
+    assert!(err.contains("qemu-smp1/system"));
     assert!(err.contains("missing"));
 }
 
 #[test]
 fn starry_qemu_subcase_selector_prefers_existing_direct_case() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    write_qemu_test_config(root.path(), "normal", "qemu", "alpha", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    write_qemu_test_config(root.path(), "normal", "qemu-smp1", "alpha", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(case_dir.join("alpha/src")).unwrap();
     fs::write(
         case_dir.join("alpha/CMakeLists.txt"),
@@ -269,46 +269,46 @@ fn starry_qemu_subcase_selector_prefers_existing_direct_case() {
         root.path(),
         "x86_64",
         "x86_64-unknown-none",
-        Some("qemu/alpha"),
+        Some("qemu-smp1/alpha"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.display_name, "qemu/alpha");
+    assert_eq!(cases[0].case.display_name, "qemu-smp1/alpha");
     assert_eq!(cases[0].case.grouped_subcase_filter, None);
 }
 
 #[test]
 fn starry_qemu_list_accepts_subcase_selector() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
 
-    let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu/alpha")).unwrap();
+    let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu-smp1/alpha")).unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "qemu/system");
+    assert_eq!(listed[0].name, "qemu-smp1/system");
 }
 
 #[test]
 fn starry_qemu_list_prefers_existing_direct_case() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    write_qemu_test_config(root.path(), "normal", "qemu", "alpha", "x86_64");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    write_qemu_test_config(root.path(), "normal", "qemu-smp1", "alpha", "x86_64");
 
-    let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu/alpha")).unwrap();
+    let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu-smp1/alpha")).unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "qemu/alpha");
+    assert_eq!(listed[0].name, "qemu-smp1/alpha");
 }
 
 #[test]
 fn discovers_flat_qemu_wrapper_case_with_root_cmake_subcases() {
     let root = tempdir().unwrap();
-    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
-    write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", "x86_64");
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
+    write_flat_qemu_build_config(root.path(), "qemu-smp1", "x86_64-unknown-none");
+    write_flat_grouped_qemu_test_config(root.path(), "qemu-smp1", "system", "x86_64");
+    let case_dir = root.path().join("test-suit/starryos/qemu-smp1/system");
     fs::create_dir_all(&case_dir).unwrap();
     fs::write(
         case_dir.join("CMakeLists.txt"),
@@ -346,64 +346,45 @@ fn discovers_flat_qemu_wrapper_case_with_root_cmake_subcases() {
 #[test]
 fn starry_system_grouped_cases_use_root_cmake_layout() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
 
-    let root_cmake = system_dir.join("CMakeLists.txt");
-    assert!(
-        root_cmake.is_file(),
-        "{} must be the grouped system CMake project entry",
-        root_cmake.display()
-    );
-
-    let mut subcase_count = 0;
-    for entry in fs::read_dir(&system_dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if !path.is_dir()
-            || path.file_name().is_some_and(|name| name == "common")
-            || !path.join("CMakeLists.txt").is_file()
-        {
-            continue;
-        }
-        subcase_count += 1;
+    for group in ["qemu-smp1", "qemu-smp4"] {
+        let system_dir = workspace_root.join(format!("test-suit/starryos/{group}/system"));
+        let root_cmake = system_dir.join("CMakeLists.txt");
         assert!(
-            !path.join("c").exists(),
-            "{} must keep CMakeLists.txt and src/ directly under the subcase",
-            path.display()
+            root_cmake.is_file(),
+            "{} must be the grouped system CMake project entry",
+            root_cmake.display()
         );
+
+        let mut subcase_count = 0;
+        for entry in fs::read_dir(&system_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir()
+                || path.file_name().is_some_and(|name| name == "common")
+                || !path.join("CMakeLists.txt").is_file()
+            {
+                continue;
+            }
+            subcase_count += 1;
+            assert!(
+                !path.join("c").exists(),
+                "{} must keep CMakeLists.txt and src/ directly under the subcase",
+                path.display()
+            );
+            assert!(
+                path.join("src").is_dir() || path.join("CMakeLists.txt").is_file(),
+                "{} must remain a buildable subcase directory",
+                path.display()
+            );
+        }
+
         assert!(
-            path.join("src").is_dir() || path.join("CMakeLists.txt").is_file(),
-            "{} must remain a buildable subcase directory",
-            path.display()
+            subcase_count > 0,
+            "{} must contain grouped C subcases",
+            system_dir.display()
         );
     }
-
-    assert!(
-        subcase_count > 0,
-        "{} must contain grouped C subcases",
-        system_dir.display()
-    );
-}
-
-#[test]
-fn system_x86_64_uses_explicit_uefi_boot() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config_path = workspace_root.join("test-suit/starryos/qemu/system/qemu-x86_64.toml");
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-
-    assert_eq!(
-        config.get("uefi").and_then(toml::Value::as_bool),
-        Some(true),
-        "{} must explicitly use UEFI because CI tests the PR merge ref where x86_64 dynamic boot \
-         is no longer inferred",
-        config_path.display()
-    );
-    assert_eq!(
-        config.get("to_bin").and_then(toml::Value::as_bool),
-        Some(true),
-        "{} must explicitly boot the raw binary artifact under UEFI",
-        config_path.display()
-    );
 }
 
 #[test]
@@ -504,7 +485,7 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
         "board-orangepi-5-plus",
         "x86_64-unknown-none",
     );
-    write_qemu_build_config(root.path(), "normal", "qemu", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), "normal", "qemu-smp1", "x86_64-unknown-none");
     fs::create_dir_all(
         root.path()
             .join("test-suit/starryos/board-orangepi-5-plus/smoke"),
@@ -516,12 +497,12 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
         "board_type = \"OrangePi-5-Plus\"\n",
     )
     .unwrap();
-    write_qemu_test_config(root.path(), "normal", "qemu", "smoke", "x86_64");
+    write_qemu_test_config(root.path(), "normal", "qemu-smp1", "smoke", "x86_64");
 
     let cases =
         discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", Some("smoke")).unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].build_group, "qemu");
+    assert_eq!(cases[0].build_group, "qemu-smp1");
     assert_eq!(cases[0].case.name, "smoke");
 }

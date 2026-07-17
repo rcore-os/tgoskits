@@ -13,8 +13,9 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+# The std/PIC Starry image must use the x86_64 UEFI handoff instead of direct -kernel loading.
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "exec /usr/bin/test_nix.sh"
 success_regex = ["(?m)^NIX_APP_TESTS_PASSED\\s*$"]

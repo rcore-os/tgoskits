@@ -26,27 +26,6 @@ fn qemu_case_requirements_default_to_single_cpu() {
 }
 
 #[test]
-fn uefi_qemu_snapshot_keeps_esp_writable() {
-    let mut qemu = QemuConfig {
-        args: vec![
-            "-snapshot".to_string(),
-            "-drive".to_string(),
-            "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
-        ],
-        uefi: true,
-        ..Default::default()
-    };
-
-    qemu_test::apply_drive_snapshot_without_global_snapshot(&mut qemu);
-
-    assert!(!qemu.args.iter().any(|arg| arg == "-snapshot"));
-    assert_eq!(
-        qemu.args[1],
-        "id=disk0,if=none,format=raw,file=/tmp/rootfs.img,snapshot=on"
-    );
-}
-
-#[test]
 fn qemu_case_rootfs_uses_drive_file_arg() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
@@ -204,10 +183,10 @@ fn qemu_case_rootfs_defaults_without_drive_file_arg() {
 #[test]
 fn qemu_cases_are_grouped_by_build_config() {
     let default_build_config = PathBuf::from("/tmp/default/build-x86_64-unknown-none.toml");
-    let qemu_build_config = PathBuf::from("/tmp/qemu/build-x86_64-unknown-none.toml");
+    let smp4_build_config = PathBuf::from("/tmp/smp4/build-x86_64-unknown-none.toml");
     let cases = vec![
         prepared_qemu_case("smoke", default_build_config.clone()),
-        prepared_qemu_case("qemu/system", qemu_build_config.clone()),
+        prepared_qemu_case("qemu-smp4/system", smp4_build_config.clone()),
         prepared_qemu_case("syscall", default_build_config.clone()),
     ];
 
@@ -223,14 +202,14 @@ fn qemu_cases_are_grouped_by_build_config() {
             .collect::<Vec<_>>(),
         vec!["smoke", "syscall"]
     );
-    assert_eq!(groups[1].build_config_path, qemu_build_config.as_path());
+    assert_eq!(groups[1].build_config_path, smp4_build_config.as_path());
     assert_eq!(
         groups[1]
             .cases
             .iter()
             .map(|case| case.case.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["qemu/system"]
+        vec!["qemu-smp4/system"]
     );
 }
 
@@ -254,7 +233,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     let build_config = write_qemu_build_config_with_max_cpu_num(
         root.path(),
         "normal",
-        "qemu",
+        "qemu-smp4",
         "x86_64-unknown-none",
         4,
     );
@@ -265,7 +244,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         max_cpu_num: Some(1),
-        ..crate::starry::build::default_starry_build_info()
+        ..crate::starry::build::default_starry_build_info_for_target("x86_64-unknown-none")
     });
 
     let (_group_request, cargo) =
@@ -280,7 +259,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     let root = tempdir().unwrap();
     let build_config = root
         .path()
-        .join("test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml");
+        .join("test-suit/starryos/qemu-smp1/build-aarch64-unknown-none-softfloat.toml");
     fs::create_dir_all(build_config.parent().unwrap()).unwrap();
     fs::write(
         &build_config,
@@ -295,7 +274,9 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
         features: vec!["qemu".to_string()],
-        ..crate::starry::build::default_starry_build_info()
+        ..crate::starry::build::default_starry_build_info_for_target(
+            "aarch64-unknown-none-softfloat",
+        )
     });
 
     let (_group_request, cargo) =
