@@ -120,10 +120,30 @@ pub trait Device: Send + Sync {
         0
     }
 
+    /// Returns the count of TX drops accumulated during device operations
+    /// (e.g. pending buffer full) since the last call.
+    /// The internal accumulator is cleared on each call.
+    ///
+    /// Distinct from `drain_deferred_tx_errors`: tx_errors counts hardware/
+    /// driver-level transmission failures and protocol errors; tx_drops counts
+    /// packets that were intentionally discarded due to resource constraints
+    /// (buffer exhaustion, queue overflow).
+    fn drain_deferred_tx_drops(&mut self) -> u64 {
+        0
+    }
+
     /// Returns the count of RX errors accumulated during device operations
     /// (e.g. driver receive errors, malformed frames) since the last call.
     /// The internal accumulator is cleared on each call.
     fn drain_deferred_rx_errors(&mut self) -> u64 {
+        0
+    }
+
+    /// Returns the count of RX drops accumulated during device operations
+    /// (e.g. frames with unsupported EtherType that were successfully
+    /// received at L2 but cannot be processed by the stack) since the last
+    /// call. The internal accumulator is cleared on each call.
+    fn drain_deferred_rx_drops(&mut self) -> u64 {
         0
     }
 

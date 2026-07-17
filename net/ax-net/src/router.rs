@@ -328,8 +328,11 @@ impl DeviceHandle {
     /// must ensure `len > 0` when counting a real reception; a zero `len` only
     /// makes sense for testing or diagnostic paths.
     fn count_rx(&self, len: usize) {
-        // Relaxed ordering is sufficient: only the owning device worker writes
-        // each counter, and /proc/net/dev readers tolerate slight staleness.
+        // Relaxed ordering is sufficient: fetch_add provides atomic RMW that
+        // guarantees no lost updates even with concurrent writers (device
+        // worker + loopback dispatch + deferred drains).  /proc/net/dev
+        // readers tolerate slight staleness, and no cross-thread
+        // happens-before relationship depends on these counters.
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
     }
@@ -811,12 +814,17 @@ impl Router {
         let device = &self.devices[dev];
         if device.interface_id == InterfaceId::LOOPBACK {
             // Loopback traffic is transmitted and received on the same
-            // interface. RX is counted here (not in `poll`) because the injected
-            // packet is drained from the shared RX queue without an owning
-            // device.
-            device.count_tx(packet.len());
-            device.count_rx(packet.len());
-            return inject_loopback_rx(&self.queues.rx, next_hop, packet);
+            // interface. Count only after successful injection so that
+            // failures (buffer full, over-MTU) are correctly recorded as
+            // drops rather than silently inflating the byte/packet counters.
+            let ok = inject_loopback_rx(&self.queues.rx, next_hop, packet);
+            if ok {
+                device.count_tx(packet.len());
+                device.count_rx(packet.len());
+            } else {
+                device.count_rx_drop();
+            }
+            return ok;
         }
         device.enqueue_tx(next_hop, packet)
     }
@@ -949,17 +957,42 @@ fn dispatch_unicast_packet(
             "No route found for source {} destination {}",
             src_addr, dst_addr
         );
+        // Attribute the drop to the source device's tx_dropped, matching
+        // Linux behaviour where an unroutable locally-generated packet
+        // increments the ingress device's drop counter (often alongside
+        // LINUX_MIB_IPINNOROUTES).
+        if let Some(src_dev) = routes
+            .select_route_if(&src_addr, |_| true)
+            .and_then(|r| devices.get(r.dev))
+        {
+            src_dev.count_tx_drop();
+        } else if let Some(lo_dev) = devices
+            .iter()
+            .find(|d| d.interface_id == InterfaceId::LOOPBACK)
+        {
+            // Fallback: source address not in any route table (e.g.
+            // unnumbered interface, removed address).  Attribute to
+            // loopback so the drop is at least observable.
+            lo_dev.count_tx_drop();
+        }
         return false;
     };
 
     let dev = &devices[route.dev];
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
-        // buffer, bypassing per-device workers and the shared RX queue. This
-        // fast path never reaches `poll`, so both directions are counted here.
-        dev.count_tx(packet.len());
-        dev.count_rx(packet.len());
-        inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
+        // buffer, bypassing per-device workers and the shared RX queue. Count
+        // only after successful injection so that failures (buffer full) are
+        // correctly recorded as drops rather than silently inflating the
+        // byte/packet counters.
+        let ok = inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets);
+        if ok {
+            dev.count_tx(packet.len());
+            dev.count_rx(packet.len());
+        } else {
+            dev.count_rx_drop();
+        }
+        ok
     } else {
         dev.enqueue_tx(route.next_hop, packet)
     }
@@ -1021,9 +1054,12 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
                     .send(packet.next_hop, packet.bytes.as_slice(), now());
             if frame_len > 0 {
                 device.count_tx(frame_len);
-            } else {
-                device.count_tx_drop();
             }
+            // Return-0 without counting: EthernetDevice::send() internally
+            // tracks tx_errors (via deferred_tx_errors / deferred_tx_drops)
+            // and the RX worker drains them into DeviceHandle. ARP-pending
+            // packets are not dropped — they are queued in pending_packets
+            // and sent later through process_arp() → deferred_tx_frame_lens.
         } else {
             device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
         }
@@ -1093,9 +1129,17 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             for _ in 0..tx_errs {
                 device.count_tx_error();
             }
+            let tx_drops = device_inner.drain_deferred_tx_drops();
+            for _ in 0..tx_drops {
+                device.count_tx_drop();
+            }
             let rx_errs = device_inner.drain_deferred_rx_errors();
             for _ in 0..rx_errs {
                 device.count_rx_error();
+            }
+            let rx_drops = device_inner.drain_deferred_rx_drops();
+            for _ in 0..rx_drops {
+                device.count_rx_drop();
             }
         }
 

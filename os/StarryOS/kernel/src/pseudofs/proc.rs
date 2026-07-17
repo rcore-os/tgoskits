@@ -374,26 +374,36 @@ fn render_proc_net_arp() -> String {
 }
 
 fn render_proc_net_dev() -> String {
-    let mut buf = "Inter-|   Receive                                                |  \
-                   Transmit\nface |bytes    packets errs drop fifo frame compressed \
-                   multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+    // Header matches Linux dev_seq_show() in net/core/net-procfs.c exactly.
+    let mut buf = "Inter-|   Receive                                                |  Transmit\n \
+                   face |bytes    packets errs drop fifo frame compressed multicast|bytes    \
+                   packets errs drop fifo colls carrier compressed\n"
         .to_string();
-    // Per interface: 8 receive columns (bytes packets errs drop fifo frame
-    // compressed multicast) then 8 transmit columns (bytes packets errs drop
-    // fifo colls carrier compressed).
     for st in ax_net::net_dev_stats() {
+        // Format matches Linux dev_seq_printf_stats(): 17 fixed-width columns.
+        // Hardware-only fields (fifo, frame, compressed, multicast, colls,
+        // carrier) stay at 0 — QEMU virtio has no hardware event source for them.
         let _ = writeln!(
             buf,
-            "{:>8}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0",
+            "{:>6}: {:>7} {:>7} {:>4} {:>4} {:>4} {:>5} {:>10} {:>9} {:>8} {:>7} {:>4} {:>4} \
+             {:>4} {:>5} {:>7} {:>10}",
             st.name,
             st.rx_bytes,
             st.rx_packets,
             st.rx_errors,
             st.rx_dropped,
+            0u64, // fifo — hardware only
+            0u64, // frame — rx_length+over+crc+frame aggregate, hardware only
+            0u64, // compressed — hardware only
+            0u64, // multicast — hardware only
             st.tx_bytes,
             st.tx_packets,
             st.tx_errors,
             st.tx_dropped,
+            0u64, // fifo — hardware only
+            0u64, // colls — hardware only
+            0u64, // carrier — aborted+carrier+window+heartbeat aggregate, hw only
+            0u64, // compressed — hardware only
         );
     }
     buf
