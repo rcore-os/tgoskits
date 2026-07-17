@@ -59,6 +59,11 @@ pub use axvm_types::{
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub use host::storage::{
+    GuestIrqRouteLease, GuestIrqRoutesRevoked, GuestStorageRoutesRevoked, HostStorageHandoff,
+    HostStorageHandoffError, HostStorageHandoffState, HostStoragePciEndpoint,
+};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
@@ -69,7 +74,9 @@ pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, inject_vm_vcpu_interrupt, register_vm,
 };
-pub use runtime::vcpus::vcpu_on as boot_secondary_vcpu;
+pub use runtime::{
+    DefaultVmRunReport, DefaultVmStartFailure, vcpus::vcpu_on as boot_secondary_vcpu,
+};
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use timer::{cancel_timer as cancel_vm_timer, register_timer as register_vm_timer};
 pub use vm::{

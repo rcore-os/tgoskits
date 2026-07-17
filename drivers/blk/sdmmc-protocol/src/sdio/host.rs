@@ -50,9 +50,44 @@ pub enum HostEventSource {
     Data,
 }
 
+/// Result of retrying one IRQ snapshot from the bounded task-context
+/// continuation selected by [`HostEvent::ack_deferred`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferredIrqAck {
+    /// The retry acquired the register block but found no pending device
+    /// source. No initialization or request state may advance from the old
+    /// deferred notification.
+    Unhandled,
+    /// The IRQ endpoint acquired the register block and acknowledged any
+    /// pending source into queue-local cached state. This variant requires a
+    /// non-empty host event produced by the destructive snapshot.
+    Acknowledged,
+    /// Another short register update still owns the block; the fixed work item
+    /// must be requeued without inspecting request completion state.
+    Contended,
+}
+
+impl DeferredIrqAck {
+    pub fn from_event(event: &impl HostEvent) -> Self {
+        if event.ack_deferred() {
+            Self::Contended
+        } else if event.kind() == HostEventKind::None {
+            Self::Unhandled
+        } else {
+            Self::Acknowledged
+        }
+    }
+}
+
 /// Stable event summary extracted by a host controller IRQ handler.
 pub trait HostEvent {
     fn kind(&self) -> HostEventKind;
+
+    /// Reports that destructive IRQ acknowledgement was deliberately deferred
+    /// because task context currently owns the controller register block.
+    fn ack_deferred(&self) -> bool {
+        false
+    }
 
     fn source(&self) -> HostEventSource {
         HostEventSource::Controller
@@ -60,6 +95,16 @@ pub trait HostEvent {
 
     fn queue_id(&self) -> Option<BlockRequestId> {
         None
+    }
+
+    /// Whether this acknowledged event can advance the serialized block
+    /// request state machine.
+    ///
+    /// Controller sideband events may be handled without scheduling queue
+    /// service. The default preserves the legacy single-queue behaviour for
+    /// hosts that do not classify sideband status separately.
+    fn requests_block_queue_service(&self) -> bool {
+        self.kind() != HostEventKind::None
     }
 }
 
@@ -82,11 +127,12 @@ pub trait SdioIrqHandle: Send + 'static {
     fn handle_irq(&mut self) -> Self::Event;
 }
 
-/// Optional IRQ-capable extension of [`SdioHost`].
+/// IRQ-endpoint extension of [`SdioHost`].
 ///
-/// The normal data path remains the submit/poll methods on [`SdioHost`].
-/// IRQ support only gives OS glue an owned top-half endpoint that clears the
-/// device-side source and records status for later task-context polling.
+/// Hardware runtime queues require this endpoint. The top half clears the
+/// device-side source and records a stable snapshot; bounded task context then
+/// advances the request from that snapshot without re-reading destructive
+/// interrupt status.
 pub trait SdioIrqHost: SdioHost {
     type IrqHandle: SdioIrqHandle<Event = Self::Event>;
 
@@ -98,14 +144,16 @@ pub const SDMMC_BLOCK_QUEUE_ID: usize = 0;
 
 /// Convert a host IRQ event into the fixed SD/MMC block queue hint.
 ///
-/// SD/MMC adapters expose one rdif block queue per controller in this
-/// workspace, so any non-empty host event is a stable "queue 0 may progress"
-/// signal. Request completion still happens only when task context calls
-/// `poll_request()`.
+/// SD/MMC adapters expose one RDIF block queue per controller in this
+/// workspace. Request-relevant events map to queue 0, while acknowledged
+/// controller sideband events remain handled without queue activation. RDIF
+/// completion still happens only when serialized task context consumes the
+/// acknowledged event batch.
 pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize> {
-    match event.kind() {
-        HostEventKind::None => None,
-        _ => Some(SDMMC_BLOCK_QUEUE_ID),
+    if event.requests_block_queue_service() {
+        Some(SDMMC_BLOCK_QUEUE_ID)
+    } else {
+        None
     }
 }
 
@@ -125,6 +173,23 @@ pub trait SdioHost {
 
     /// Advance a submitted command and harvest the response when complete.
     fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error>;
+
+    /// Advance a command using the caller's absolute monotonic time.
+    ///
+    /// The default is suitable only for hosts whose command programming never
+    /// contains an eventless timed transition.
+    fn poll_command_response_at(&mut self, now_ns: u64) -> Result<CommandResponsePoll, Error> {
+        let _ = now_ns;
+        self.poll_command_response()
+    }
+
+    /// Absolute activation required before command programming may continue.
+    ///
+    /// This deadline permits another state transition; it is never evidence
+    /// that the command completed.
+    fn command_wake_at(&self) -> Option<u64> {
+        None
+    }
 
     type DataRequest<'a>
     where
@@ -153,6 +218,22 @@ pub trait SdioHost {
         &mut self,
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error>;
+
+    /// Advance a data command using the caller's absolute monotonic time.
+    fn poll_data_request_at<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+        now_ns: u64,
+    ) -> Result<DataCommandPoll, Error> {
+        let _ = now_ns;
+        self.poll_data_request(request)
+    }
+
+    /// Absolute activation required before data-command programming may
+    /// continue. Completion still requires an acknowledged controller IRQ.
+    fn data_request_wake_at<'a>(&self, _request: &Self::DataRequest<'a>) -> Option<u64> {
+        None
+    }
 
     type BusRequest;
 
@@ -195,48 +276,50 @@ pub trait SdioHost {
 
     fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error>;
 
+    /// Advance a bus operation with the caller's absolute monotonic time.
+    ///
+    /// Hosts whose bus transitions are entirely register-driven may keep the
+    /// default implementation. Hosts with eventless platform sequencing use
+    /// `now_ns` to advance an explicit state machine; they must not obtain a
+    /// hidden clock or busy-wait inside this callback.
+    fn poll_bus_op_at(
+        &mut self,
+        request: &mut Self::BusRequest,
+        now_ns: u64,
+    ) -> Result<OperationPoll<()>, Error> {
+        let _ = now_ns;
+        self.poll_bus_op(request)
+    }
+
+    /// Absolute activation requested by the current bus-operation state.
+    ///
+    /// `None` asks the protocol's bounded eventless-transition scheduler to
+    /// choose its normal next check. A returned deadline is never interpreted
+    /// as successful hardware completion; it only permits another state-machine
+    /// transition.
+    fn bus_op_wake_at(&self, _request: &Self::BusRequest) -> Option<u64> {
+        None
+    }
+
     /// Route command/data completion and error status to the host IRQ line.
-    ///
-    /// Default is a no-op so polling-only hosts do not have to implement IRQ
-    /// support.
-    fn enable_completion_irq(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
+    fn enable_completion_irq(&mut self) -> Result<(), Error>;
 
-    /// Mask host IRQ delivery while keeping the controller usable for polling.
-    ///
-    /// Default is a no-op for polling-only hosts.
-    fn disable_completion_irq(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
+    /// Mask host IRQ delivery before recovery or ownership transfer.
+    fn disable_completion_irq(&mut self) -> Result<(), Error>;
 
-    fn completion_irq_enabled(&self) -> bool {
-        false
-    }
+    fn completion_irq_enabled(&self) -> bool;
 
     /// Register the task that should be woken when command or data progress is
-    /// possible. Polling-only hosts may keep the default no-op implementation.
+    /// possible. Runtime block queues use their owned IRQ endpoint instead.
     fn register_waker(&mut self, _waker: &Waker) {}
 
-    /// Optional monotonic wall-clock source, in milliseconds.
+    /// Legacy host-local millisecond clock.
     ///
-    /// `None` (the default) means the host has no clock; the protocol layer
-    /// falls back to the poll-counter timeouts documented in
-    /// [`SdioInitTiming`] / [`MmcSwitchTiming`]. `Some(t)` switches the
-    /// ACMD41 / CMD1 power-up and MMC `CMD6 SWITCH` busy-wait budgets to
-    /// wall-clock deadlines, making timeouts independent of caller poll
-    /// cadence.
-    ///
-    /// The protocol layer keeps both checks active whenever a clock is
-    /// available — whichever fires first surfaces as `Error::Timeout`. So a
-    /// host that opts in via this method gets accurate timeouts even when
-    /// glue polls very slowly, and is still protected by the poll budget if
-    /// the clock unexpectedly stalls.
-    ///
-    /// Implementations must be monotonic across calls within a single host
-    /// instance. Resolution finer than 1 ms is fine but not required —
-    /// jiffies at 100 Hz works. Wraparound at `u64` milliseconds
-    /// (~584 million years) is safe to ignore.
+    /// Card initialization now consumes only caller-provided
+    /// [`super::InitInput::now_ns`], so it never calls this method. The hook is
+    /// retained for source compatibility with host operations outside the
+    /// initialization FSM and may be removed after those users migrate to an
+    /// explicit absolute-time input.
     fn now_ms(&self) -> Option<u64> {
         None
     }

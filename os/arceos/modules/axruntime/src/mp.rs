@@ -26,7 +26,7 @@ fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let mut slot = 0;
-    let cpu_num = ax_hal::cpu_num();
+    let cpu_num = super::runtime_cpu_count();
     for i in 0..cpu_num {
         if i != primary_cpu_id && slot < cpu_num - 1 {
             prepare_secondary_boot_stack(slot, i);
@@ -41,6 +41,10 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
                 core::hint::spin_loop();
             }
         }
+    }
+
+    while super::ONLINE_RUNTIME_CPUS.load(Ordering::Acquire) != cpu_num {
+        core::hint::spin_loop();
     }
 }
 
@@ -90,9 +94,9 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "ipi")]
     ax_ipi::init();
 
-    // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
-    // primary cannot enter user-visible init while remote CPUs still lack SGI
-    // handlers or pending per-CPU IRQ enables.
+    // Bring up local IRQ/IPI delivery before publishing CPU-runtime readiness
+    // so the primary cannot activate shared workers or devices while remote
+    // CPUs still lack SGI handlers or pending per-CPU IRQ enables.
     #[cfg(feature = "irq")]
     super::init_percpu_irq(cpu_id);
 
@@ -105,12 +109,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "multitask")]
     crate::task::publish_current_cpu_online().expect("failed to publish secondary scheduler CPU");
 
-    info!("Secondary CPU {cpu_id:x} init OK.");
-    super::INITED_CPUS.fetch_add(1, Ordering::Release);
+    #[cfg(feature = "workqueue")]
+    crate::workqueue::initialize_workqueue_cpu(cpu_id)
+        .expect("failed to initialize secondary shared worker lanes");
 
-    while !super::is_init_ok() {
-        core::hint::spin_loop();
-    }
+    super::mark_current_cpu_runtime_online(cpu_id);
+
+    info!("Secondary CPU {cpu_id:x} init OK.");
 
     #[cfg(feature = "multitask")]
     crate::task::run_idle();

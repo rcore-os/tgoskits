@@ -217,11 +217,12 @@ riscv-h = { version = "0.4.8", path = "virtualization/riscv-h" }
 riscv_vcpu = { version = "0.5.18", path = "virtualization/riscv_vcpu" }
 riscv_vplic = { version = "0.4.20", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.7.2", path = "drivers/blk/nvme-driver" }
+ahci-host = { version = "0.1.0", path = "drivers/blk/ahci-host" }
 pcie = { version = "0.6.7", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.10", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.2.2", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.3", path = "drivers/interface/rdif-base" }
-rdif-block = { version = "0.11.2", path = "drivers/interface/rdif-block" }
+rdif-block = { version = "0.12.0", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5.4", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.3.0", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
@@ -334,8 +335,6 @@ trait-ffi = "0.2.11"
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }
-simple-ahci = "0.1.1-preview.1"
-bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"
 kmod-tools = "0.3"
 kprobe = "0.6"

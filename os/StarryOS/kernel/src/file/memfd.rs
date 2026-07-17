@@ -162,7 +162,7 @@ impl Memfd {
     /// both race on `set_len`, with only the last write observed.
     pub fn set_len_sealed(&self, new_len: u64) -> AxResult {
         let _guard = self.truncate_mtx.lock();
-        let current_len = self.inner.inner().backend()?.location().len()?;
+        let current_len = self.inner.inner().backend()?.len()?;
         self.check_truncate(current_len, new_len)?;
         self.inner
             .inner()
@@ -207,7 +207,7 @@ impl Memfd {
         //   - at-EOF or past-EOF write: -1 EPERM.
         // EPERM here is distinct from the F_SEAL_WRITE path above which
         // rejects every write; F_SEAL_GROW only rejects growth.
-        let cur_len = self.inner.inner().backend()?.location().len()?;
+        let cur_len = self.inner.inner().backend()?.len()?;
         if offset >= cur_len {
             return Err(AxError::OperationNotPermitted);
         }
@@ -226,9 +226,9 @@ fn memfd_from_file_backend(backend: &Backend) -> Option<Arc<Memfd>> {
     if !f.is_shared_file_map() {
         return None;
     }
-    f.cache_location()
-        .user_data()
-        .get::<MemfdRef>()
+    f.cache_user_data::<MemfdRef>()
+        .ok()
+        .flatten()
         .map(|memfd| memfd.0.clone())
 }
 
@@ -426,7 +426,7 @@ impl FileLike for Memfd {
         // route them through `write_at` at the current cursor; then
         // advance the inner cursor manually so the next sequential
         // write picks up correctly.
-        let cur_len = self.inner.inner().backend()?.location().len()?;
+        let cur_len = self.inner.inner().backend()?.len()?;
         let cursor = self.inner.inner().seek(SeekFrom::Current(0))?;
         if cursor >= cur_len {
             return Err(AxError::OperationNotPermitted);
@@ -501,9 +501,7 @@ impl FileLike for Memfd {
         };
         file.inner()
             .backend()?
-            .location()
-            .user_data()
-            .get::<MemfdRef>()
+            .get_user_data::<MemfdRef>()?
             .map(|memfd| memfd.0.clone())
             .ok_or(AxError::InvalidInput)
     }

@@ -2,15 +2,12 @@
 
 extern crate alloc;
 
-#[cfg(not(feature = "fs"))]
-use alloc::vec::Vec;
 #[cfg(feature = "fs")]
-use alloc::{string::String, vec, vec::Vec};
+use alloc::vec;
+use alloc::{format, string::String, vec::Vec};
 
-#[cfg(feature = "fs")]
-use anyhow::anyhow;
 use anyhow::{Context, Result};
-use axvm::{AxVMRef, AxvmRuntime, VMId};
+use axvm::{AxVMRef, AxvmRuntime, DefaultVmRunReport, VMId};
 
 /// AxVM top-level manager.
 ///
@@ -19,6 +16,12 @@ use axvm::{AxVMRef, AxvmRuntime, VMId};
 /// commands. The lower `axvm` crate only supplies VM/runtime primitives.
 pub struct AxvmManager {
     runtime: AxvmRuntime,
+    #[cfg(feature = "fs")]
+    host_storage_handoff: Option<axvm::HostStorageHandoff>,
+    #[cfg(feature = "fs")]
+    guest_irq_route_lease: Option<axvm::GuestIrqRouteLease>,
+    #[cfg(feature = "fs")]
+    guest_irq_routes_revoked: Option<axvm::GuestIrqRoutesRevoked>,
 }
 
 impl AxvmManager {
@@ -26,19 +29,46 @@ impl AxvmManager {
     pub fn new() -> Result<Self> {
         Ok(Self {
             runtime: AxvmRuntime::new().context("initialize AxVM runtime")?,
+            #[cfg(feature = "fs")]
+            host_storage_handoff: None,
+            #[cfg(feature = "fs")]
+            guest_irq_route_lease: None,
+            #[cfg(feature = "fs")]
+            guest_irq_routes_revoked: None,
         })
     }
 
     /// Load and initialize the default VM set.
-    pub fn init_default_vms(&self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if host storage cannot be transferred safely before a
+    /// configured passthrough guest starts.
+    pub fn init_default_vms(&mut self) -> Result<()> {
         crate::config::init_guest_vms();
         self.runtime.init_vms();
-        self.release_host_filesystem_for_guest_passthrough();
+        self.release_host_storage_for_guest_passthrough()?;
+        Ok(())
     }
 
     /// Start the default VM set and wait until it exits.
-    pub fn start_default_vms(&self) {
-        self.runtime.start_default_vms();
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when stopped guests cannot return storage ownership to
+    /// the host without violating controller or filesystem invariants, or when
+    /// any configured VM could not enter its first runtime generation.
+    pub fn start_default_vms(&mut self) -> Result<()> {
+        let run_report = self.runtime.start_default_vms();
+        let cleanup_result = self.finish_default_guest_storage();
+        finish_default_vm_run(run_report, cleanup_result)
+    }
+
+    fn finish_default_guest_storage(&mut self) -> Result<()> {
+        #[cfg(feature = "fs")]
+        self.ensure_default_guest_irq_routes_revoked()
+            .context("revoke stopped default-guest passthrough IRQ routes")?;
+        self.return_host_storage_after_guest_exit()
     }
 
     /// Create one VM from a TOML config string.
@@ -48,6 +78,7 @@ impl AxvmManager {
 
     /// Start a VM by ID.
     pub fn start_vm(vm_id: VMId) -> Result<()> {
+        Self::ensure_interactive_operation_has_no_passthrough(vm_id, "start")?;
         AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
     }
 
@@ -63,14 +94,14 @@ impl AxvmManager {
 
     /// Reset a VM by ID.
     pub fn reset_vm(vm_id: VMId) -> Result<()> {
+        Self::ensure_interactive_operation_has_no_passthrough(vm_id, "reset")?;
         AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
     }
 
     /// Remove a VM by ID.
-    pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
-        #[cfg(target_arch = "loongarch64")]
-        unregister_loongarch_passthrough_irq_routes(vm_id);
-        AxvmRuntime::remove_vm(vm_id)
+    pub fn remove_vm(vm_id: VMId) -> Result<Option<AxVMRef>> {
+        Self::ensure_interactive_operation_has_no_passthrough(vm_id, "remove")?;
+        Ok(AxvmRuntime::remove_vm(vm_id))
     }
 
     /// Run a closure with a VM by ID.
@@ -88,28 +119,184 @@ impl AxvmManager {
         axvm::get_vm_by_id(vm_id)
     }
 
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {
-        if !crate::config::host_filesystem_release_required() {
-            return;
+    fn ensure_interactive_operation_has_no_passthrough(
+        vm_id: VMId,
+        operation: &'static str,
+    ) -> Result<()> {
+        let vm =
+            Self::vm_by_id(vm_id).ok_or_else(|| anyhow::anyhow!("VM[{vm_id}] was not found"))?;
+        let uses_passthrough = vm.with_config(|config| {
+            !config.pass_through_devices().is_empty()
+                || !config.pass_through_addresses().is_empty()
+                || !config.pass_through_ports().is_empty()
+                || !config.pass_through_spis().is_empty()
+        });
+        if uses_passthrough {
+            return Err(anyhow::anyhow!(
+                "interactive {operation} of passthrough VM[{vm_id}] is unsupported without a \
+                 retained host-device ownership transaction; configure it as a default guest"
+            ));
         }
-
-        axvm::shutdown_host_filesystems().expect(
-            "Failed to release host filesystem before guest passthrough devices take ownership",
-        );
-        #[cfg(target_arch = "x86_64")]
-        crate::config::prepare_x86_host_fs_passthrough_devices();
-        info!("Host filesystem cleanly unmounted before guest passthrough devices start");
+        Ok(())
     }
 
-    #[cfg(not(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    )))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {}
+    #[cfg(feature = "fs")]
+    fn release_host_storage_for_guest_passthrough(&mut self) -> Result<()> {
+        if self.guest_irq_route_lease.is_some()
+            || self.guest_irq_routes_revoked.is_some()
+            || self.host_storage_handoff.is_some()
+        {
+            return Err(anyhow::anyhow!(
+                "default-guest storage/IRQ ownership transaction is already active"
+            ));
+        }
+
+        let prepared_handoff = axvm::begin_host_storage_handoff()
+            .context("select and detach host storage for guest passthrough")?;
+        let Some(mut handoff) = prepared_handoff else {
+            let mut route_lease = axvm::GuestIrqRouteLease::new();
+            let activation = axvm::activate_guest_storage_routes(None, &mut route_lease);
+            self.guest_irq_route_lease = Some(route_lease);
+            if let Err(activation_error) = activation {
+                return self
+                    .rollback_failed_guest_irq_activation_without_storage(activation_error.into());
+            }
+            return Ok(());
+        };
+        if let Err(commit_error) = axvm::commit_host_storage_handoff_to_guest(&mut handoff) {
+            self.host_storage_handoff = Some(handoff);
+            return Err(commit_error).context(
+                "commit detached host storage to the guest; controller ownership remains \
+                fail-closed",
+            );
+        }
+        let mut route_lease = axvm::GuestIrqRouteLease::new();
+        let activation = axvm::activate_guest_storage_routes(Some(&handoff), &mut route_lease);
+        self.guest_irq_route_lease = Some(route_lease);
+        if let Err(activation_error) = activation {
+            return self.rollback_failed_guest_storage_activation(handoff, activation_error.into());
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Err(preparation_error) =
+            crate::config::prepare_x86_host_storage_passthrough(&handoff)
+        {
+            return self.rollback_failed_guest_storage_activation(handoff, preparation_error);
+        }
+        self.host_storage_handoff = Some(handoff);
+        info!("Host storage cleanly detached before guest passthrough devices start");
+        Ok(())
+    }
+
+    #[cfg(feature = "fs")]
+    fn rollback_failed_guest_irq_activation_without_storage(
+        &mut self,
+        activation_error: anyhow::Error,
+    ) -> Result<()> {
+        match self.ensure_default_guest_irq_routes_revoked() {
+            Ok(()) => {
+                self.guest_irq_routes_revoked = None;
+                Err(activation_error).context(
+                "activate guest IRQ routes after storage selection; partial routes were revoked",
+                )
+            }
+            Err(revoke_error) => Err(activation_error).context(format!(
+                "activate guest IRQ routes after storage selection; route revocation failed and \
+                 the retained lease remains fail-closed: {revoke_error}"
+            )),
+        }
+    }
+
+    #[cfg(feature = "fs")]
+    fn rollback_failed_guest_storage_activation(
+        &mut self,
+        mut handoff: axvm::HostStorageHandoff,
+        activation_error: anyhow::Error,
+    ) -> Result<()> {
+        if let Err(route_revoke_error) = self.ensure_default_guest_irq_routes_revoked() {
+            self.host_storage_handoff = Some(handoff);
+            return Err(activation_error).context(format!(
+                "activate guest passthrough routes after controller commit; post-selection route \
+                 revocation failed and ownership remains fail-closed: {route_revoke_error}"
+            ));
+        }
+        let routes_revoked = self
+            .guest_irq_routes_revoked
+            .as_ref()
+            .expect("successful route revocation publishes its retained proof");
+        let revoked = match axvm::revoke_guest_storage_routes(&handoff, routes_revoked) {
+            Ok(revoked) => revoked,
+            Err(revoke_error) => {
+                self.host_storage_handoff = Some(handoff);
+                return Err(activation_error).context(format!(
+                    "activate guest passthrough routes after controller commit; guest \
+                     route revocation failed and host storage remains fail-closed: {revoke_error}"
+                ));
+            }
+        };
+        match axvm::return_host_storage_from_guest(&mut handoff, revoked) {
+            Ok(()) => {
+                self.guest_irq_routes_revoked = None;
+                Err(activation_error).context(
+                    "activate guest passthrough routes after controller commit; controller \
+                     reinitialization and host filesystem remount completed",
+                )
+            }
+            Err(return_error) => {
+                self.host_storage_handoff = Some(handoff);
+                Err(activation_error).context(format!(
+                    "activate guest passthrough routes after controller commit; host \
+                     storage return failed closed: {return_error}"
+                ))
+            }
+        }
+    }
+
+    #[cfg(feature = "fs")]
+    fn ensure_default_guest_irq_routes_revoked(&mut self) -> Result<()> {
+        if self.guest_irq_routes_revoked.is_some() {
+            return Ok(());
+        }
+        let Some(route_lease) = self.guest_irq_route_lease.as_mut() else {
+            return Err(anyhow::anyhow!(
+                "default-guest passthrough route lease is missing"
+            ));
+        };
+        let routes_revoked = axvm::revoke_guest_irq_route_lease(route_lease)
+            .context("revoke retained default-guest IRQ route lease")?;
+        self.guest_irq_route_lease = None;
+        self.guest_irq_routes_revoked = Some(routes_revoked);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "fs"))]
+    fn release_host_storage_for_guest_passthrough(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(feature = "fs")]
+    fn return_host_storage_after_guest_exit(&mut self) -> Result<()> {
+        let Some(handoff) = self.host_storage_handoff.as_mut() else {
+            self.guest_irq_routes_revoked = None;
+            return Ok(());
+        };
+        let routes_revoked = self
+            .guest_irq_routes_revoked
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("guest IRQ routes have not been revoked"))?;
+        let revoked = axvm::revoke_guest_storage_routes(handoff, routes_revoked)
+            .context("revoke and drain stopped guest storage routes")?;
+        axvm::return_host_storage_from_guest(handoff, revoked)
+            .context("return block controllers and remount the host filesystem")?;
+        self.host_storage_handoff = None;
+        self.guest_irq_routes_revoked = None;
+        info!("Host storage returned and remounted after all default guests stopped");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "fs"))]
+    fn return_host_storage_after_guest_exit(&mut self) -> Result<()> {
+        Ok(())
+    }
 
     /// Read VM config files from an Axvisor-owned directory.
     #[cfg(feature = "fs")]
@@ -178,14 +365,16 @@ impl AxvmManager {
     #[cfg(feature = "fs")]
     fn open_file(file_name: &str) -> Result<ax_std::fs::File> {
         ax_std::fs::File::open(file_name)
-            .map_err(|error| anyhow!("open guest image file `{file_name}`: {error}"))
+            .map_err(|error| anyhow::anyhow!("open guest image file `{file_name}`: {error}"))
     }
 
     #[cfg(feature = "fs")]
     pub fn file_size(file_name: &str) -> Result<usize> {
         Self::open_file(file_name)?
             .metadata()
-            .map_err(|error| anyhow!("read metadata for guest image file `{file_name}`: {error}"))
+            .map_err(|error| {
+                anyhow::anyhow!("read metadata for guest image file `{file_name}`: {error}")
+            })
             .map(|metadata| metadata.size() as usize)
     }
 
@@ -196,7 +385,7 @@ impl AxvmManager {
         let mut file = Self::open_file(file_name)?;
         let mut buffer = vec![0u8; read_size];
         file.read_exact(&mut buffer).map_err(|error| {
-            anyhow!("read {read_size} bytes from guest image file `{file_name}`: {error}")
+            anyhow::anyhow!("read {read_size} bytes from guest image file `{file_name}`: {error}")
         })?;
         Ok(buffer)
     }
@@ -208,37 +397,28 @@ impl AxvmManager {
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
-pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
-    let routes = axvm::boot::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
-    if routes.is_empty() {
-        if let Some(vm) = axvm::get_vm_by_id(vm_id) {
-            let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
-            if passthrough {
-                warn!(
-                    "VM[{vm_id}] has passthrough devices but no LoongArch guest IRQ route parsed"
-                );
-            }
+fn finish_default_vm_run(report: DefaultVmRunReport, cleanup_result: Result<()>) -> Result<()> {
+    let start_failures = format_default_vm_start_failures(&report);
+    match (cleanup_result, start_failures) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(failures)) => Err(anyhow::anyhow!("default VM startup failed: {failures}")),
+        (Err(cleanup_error), None) => Err(cleanup_error),
+        (Err(cleanup_error), Some(failures)) => {
+            Err(cleanup_error).context(format!("default VM startup also failed: {failures}"))
         }
-        return;
-    }
-
-    let vcpu_id = 0usize;
-    info!(
-        "Registering {} LoongArch passthrough IRQ route(s) for VM[{vm_id}]",
-        routes.len()
-    );
-    for route in routes {
-        axvm::register_loongarch_guest_irq_route(
-            route.physical_irq,
-            vm_id,
-            vcpu_id,
-            route.guest_vector,
-        );
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
-fn unregister_loongarch_passthrough_irq_routes(vm_id: VMId) {
-    axvm::unregister_loongarch_guest_irq_routes(vm_id);
+fn format_default_vm_start_failures(report: &DefaultVmRunReport) -> Option<String> {
+    if report.all_started() {
+        return None;
+    }
+    Some(
+        report
+            .start_failures()
+            .iter()
+            .map(|failure| format!("VM[{}]: {}", failure.vm_id(), failure.error()))
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
 }

@@ -1,6 +1,8 @@
 //! ArceOS ownership and trait-FFI glue for the OS-independent task system.
 
 use alloc::{boxed::Box, string::String};
+#[cfg(feature = "uspace")]
+use core::marker::PhantomData;
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
@@ -18,8 +20,8 @@ use ax_lazyinit::LazyInit;
 pub use ax_task::{
     CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqWaitCell,
     IrqWaitRegistration, IrqWakeHandle, Nice, RtPriority, SchedulePolicy, SwitchReason, TaskError,
-    ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState, ThreadWakeHandle,
-    WaitQueue, WakeResult, current_cpu_needs_resched, current_thread_extension,
+    ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadPolicyApplied, ThreadState,
+    ThreadWakeHandle, WaitQueue, WakeResult, current_cpu_needs_resched, current_thread_extension,
     current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
     runtime::SchedSwitchRecord, schedule_current_cpu, set_current_thread_affinity,
     set_thread_affinity, set_thread_policy, sleep, sleep_until, thread_affinity, thread_handle,
@@ -79,15 +81,7 @@ static KERNEL_ADDRESS_SPACE_ROOT: usize = 0;
 
 #[cfg(feature = "irq")]
 #[ax_percpu::def_percpu]
-static LAST_TASK_ACCOUNT_NS: u64 = 0;
-
-#[cfg(feature = "irq")]
-#[ax_percpu::def_percpu]
 static NEXT_TASK_TIMER_DEADLINE_NS: u64 = 0;
-
-#[cfg(feature = "irq")]
-#[ax_percpu::def_percpu]
-static PROGRAMMED_TASK_TIMER_DEADLINE_NS: u64 = 0;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -111,6 +105,247 @@ impl TaskAddressSpace {
 
 /// Allocation-free scheduler-switch diagnostic hook installed by an OS layer.
 pub type SchedSwitchTraceHook = fn(SchedSwitchRecord);
+
+/// Execution domain charged by a user-context boundary transition.
+#[cfg(feature = "uspace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserExecutionState {
+    /// The thread is about to execute its user register context.
+    User,
+    /// The thread returned to the kernel through an exception boundary.
+    Kernel,
+}
+
+/// Runtime-owned notification level checked at the final user-entry boundary.
+///
+/// Producers first publish the underlying OS work, then call [`Self::publish`]
+/// with Release ordering, and finally wake the owning scheduler thread. The
+/// owner snapshots an epoch before draining that work and acknowledges only
+/// the captured epoch afterwards. Consequently, a concurrent producer always
+/// leaves `produced != acknowledged` even when an older drain completes later.
+///
+/// This object is intentionally concrete: [`run_user_context`] reads its two
+/// atomics directly while raw IRQs are masked and never invokes an OS callback.
+#[cfg(feature = "uspace")]
+#[derive(Debug)]
+pub struct UserEntryNotification {
+    produced: AtomicU64,
+    acknowledged: AtomicU64,
+}
+
+#[cfg(feature = "uspace")]
+impl UserEntryNotification {
+    /// Creates an empty notification level.
+    pub const fn new() -> Self {
+        Self {
+            produced: AtomicU64::new(0),
+            acknowledged: AtomicU64::new(0),
+        }
+    }
+
+    /// Publishes work before the caller wakes the owning scheduler thread.
+    ///
+    /// This operation is allocation-free, lock-free, and hard-IRQ-safe. Epoch
+    /// exhaustion is a fatal runtime invariant violation. The terminal
+    /// `u64::MAX` epoch is a permanently pending poison value and is never
+    /// acknowledged, so exhaustion cannot wrap into an apparently drained
+    /// state.
+    pub fn publish(&self) {
+        let advanced =
+            self.produced
+                .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                });
+        match advanced {
+            Ok(previous) if previous + 1 != u64::MAX => {}
+            Ok(_) | Err(_) => panic!("user-entry notification epoch exhausted"),
+        }
+    }
+
+    /// Captures the newest publication that the owner is about to drain.
+    pub fn snapshot(&self) -> UserEntryTicket<'_> {
+        UserEntryTicket {
+            notification: self,
+            epoch: self.produced.load(Ordering::Acquire),
+            _not_send_or_sync: PhantomData,
+        }
+    }
+
+    /// Reports whether this notification advanced after `ticket` was issued.
+    pub fn changed_since(&self, ticket: &UserEntryTicket<'_>) -> bool {
+        assert!(
+            core::ptr::eq(self, ticket.notification),
+            "user-entry ticket belongs to another notification"
+        );
+        self.produced.load(Ordering::Acquire) != ticket.epoch
+    }
+
+    /// Acknowledges all work through `ticket` without clearing newer work.
+    pub fn acknowledge(&self, ticket: UserEntryTicket<'_>) -> UserEntryAck {
+        assert!(
+            core::ptr::eq(self, ticket.notification),
+            "user-entry ticket belongs to another notification"
+        );
+        self.acknowledge_epoch(ticket.epoch)
+    }
+
+    /// Tests the coalesced level without consuming any publication.
+    pub fn pending(&self) -> bool {
+        self.pending_irqoff()
+    }
+
+    fn pending_irqoff(&self) -> bool {
+        let acknowledged = self.acknowledged.load(Ordering::Acquire);
+        self.produced.load(Ordering::Acquire) != acknowledged
+    }
+
+    fn acknowledge_epoch(&self, epoch: u64) -> UserEntryAck {
+        if epoch == u64::MAX {
+            return UserEntryAck::Pending;
+        }
+        self.acknowledged.fetch_max(epoch, Ordering::AcqRel);
+        if self.pending() {
+            UserEntryAck::Pending
+        } else {
+            UserEntryAck::Stable
+        }
+    }
+}
+
+#[cfg(feature = "uspace")]
+impl Default for UserEntryNotification {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Linear snapshot of one [`UserEntryNotification`] publication epoch.
+///
+/// The ticket is deliberately neither `Send` nor `Sync`: only the owning
+/// kernel thread may decide that its user-return work has been drained. A
+/// baseline observer may borrow it repeatedly through
+/// [`UserEntryNotification::changed_since`], while
+/// [`UserEntryNotification::acknowledge`] consumes it exactly once.
+#[cfg(feature = "uspace")]
+#[derive(Debug)]
+#[must_use = "a user-entry ticket must be observed or acknowledged by its owner"]
+pub struct UserEntryTicket<'notification> {
+    notification: &'notification UserEntryNotification,
+    epoch: u64,
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+/// Result of acknowledging one user-entry work snapshot.
+#[cfg(feature = "uspace")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "pending user-entry work must be retried before architectural entry"]
+pub enum UserEntryAck {
+    /// No newer producer is visible; the OS drain reached a stable point.
+    Stable,
+    /// A producer published after the snapshot; the OS drain must retry.
+    Pending,
+}
+
+/// Result of one runtime-owned attempt to enter a user register context.
+#[cfg(feature = "uspace")]
+#[derive(Debug)]
+#[must_use = "deferred user entry must drain work; an exit must be dispatched"]
+pub enum RunUserContextOutcome {
+    /// Pending OS work prevented architectural user entry.
+    Deferred,
+    /// The architecture entered user mode and returned through this exit.
+    Exited(ax_hal::cpu::uspace::UserExitReason),
+}
+
+/// Bounded CPU-accounting capability used by the raw user-context boundary.
+///
+/// # Safety
+///
+/// [`UserContextAccounting::transition_irqoff`] is called with raw local IRQs
+/// disabled and before ordinary task context has been restored. Implementors
+/// must perform bounded, non-faulting atomic work only. They must not allocate,
+/// acquire a lock, block, schedule, invoke an arbitrary callback, enable IRQs,
+/// or retain a reference to boundary-owned state.
+#[cfg(feature = "uspace")]
+pub unsafe trait UserContextAccounting {
+    /// Charges execution up to `now_ns` and publishes the new execution state.
+    fn transition_irqoff(&self, state: UserExecutionState, now_ns: u64);
+}
+
+#[cfg(feature = "uspace")]
+fn user_boundary_result(status: RuntimeStatus) -> Result<(), TaskError> {
+    match status {
+        RuntimeStatus::Success => Ok(()),
+        RuntimeStatus::UnsafeContext => Err(TaskError::UnsafeContext),
+        status => Err(TaskError::RuntimeFailure(status as u32)),
+    }
+}
+
+#[cfg(feature = "uspace")]
+fn require_masked_user_boundary(boundary: crate::guard::UserContextBoundary) {
+    if crate::guard::validate_user_context_boundary(boundary) != RuntimeStatus::Success {
+        // The validator already emitted a fixed, allocation-free diagnostic.
+        // Reopening IRQs after a guard or baton mismatch would make corrupted
+        // CPU-local ownership observable, so every post-mask failure is fatal.
+        panic!("IRQ-masked user-context boundary invariant failed");
+    }
+}
+
+/// Runs one user context and verifies the complete runtime-owned transition.
+///
+/// The runtime masks raw IRQs before it publishes user accounting. Architecture
+/// entry returns with IRQs still masked after restoring the kernel register
+/// state, so kernel accounting is published before any timer lock, signal work,
+/// or other ordinary task-context operation can run. Each phase proves that no
+/// IRQ guard, preemption guard, hard-IRQ marker, or scheduler baton escaped. The
+/// checks reject inconsistent state; they never repair unknown nesting.
+#[cfg(feature = "uspace")]
+pub fn run_user_context(
+    context: &mut ax_hal::cpu::uspace::UserContext,
+    accounting: &impl UserContextAccounting,
+    notification: &UserEntryNotification,
+) -> Result<RunUserContextOutcome, TaskError> {
+    user_boundary_result(crate::guard::validate_user_context_boundary(
+        crate::guard::UserContextBoundary::TaskEntry,
+    ))?;
+
+    ax_hal::asm::disable_irqs();
+    require_masked_user_boundary(crate::guard::UserContextBoundary::UserEntry);
+
+    // Match Linux's exit-to-user work loop: this is the final level read after
+    // raw IRQ masking. Returning Deferred neither changes virtual-time
+    // accounting to User nor invokes the architecture entry assembly. A
+    // producer racing after this read Release-publishes before its direct wake;
+    // the pending IPI is therefore taken immediately when user IRQ state opens.
+    if notification.pending_irqoff() {
+        require_masked_user_boundary(crate::guard::UserContextBoundary::TaskReturn);
+        ax_hal::asm::enable_irqs();
+        return Ok(RunUserContextOutcome::Deferred);
+    }
+
+    let user_entry_ns = ax_hal::time::monotonic_time_nanos() as u64;
+    accounting.transition_irqoff(UserExecutionState::User, user_entry_ns);
+    let raw_exit = context.run_raw();
+
+    let user_return_ns = ax_hal::time::monotonic_time_nanos() as u64;
+    accounting.transition_irqoff(UserExecutionState::Kernel, user_return_ns);
+    require_masked_user_boundary(crate::guard::UserContextBoundary::KernelEntry);
+
+    let reason = match context.decode_raw_exit(raw_exit) {
+        ax_hal::cpu::uspace::DecodedUserExit::Interrupt(interrupt) => {
+            let _handled = interrupt.dispatch();
+            ax_hal::cpu::uspace::UserExitReason::Interrupt
+        }
+        ax_hal::cpu::uspace::DecodedUserExit::Reason(reason) => reason,
+    };
+    require_masked_user_boundary(crate::guard::UserContextBoundary::TaskReturn);
+
+    // `run_raw` and IRQ-return scheduling both preserve the runtime-owned raw
+    // mask. Reopen IRQs only after accounting, decode/dispatch, and the final
+    // guard/baton postcondition have all committed.
+    ax_hal::asm::enable_irqs();
+    Ok(RunUserContextOutcome::Exited(reason))
+}
 
 /// Installs the process-wide scheduler-switch diagnostic consumer.
 ///
@@ -212,6 +447,17 @@ struct RuntimeStack {
     base: usize,
     usable_top: usize,
     backing: StackBacking,
+}
+
+impl RuntimeStack {
+    fn usable_bounds(&self) -> Option<axbacktrace::StackBounds> {
+        let start = match &self.backing {
+            StackBacking::Heap { pointer, .. } => pointer.as_ptr().expose_provenance(),
+            #[cfg(feature = "paging")]
+            StackBacking::GuardedPages { guard_size, .. } => self.base.checked_add(*guard_size)?,
+        };
+        (start < self.usable_top).then(|| axbacktrace::StackBounds::new(start, self.usable_top))
+    }
 }
 
 enum StackBacking {
@@ -369,6 +615,35 @@ fn current_runtime_context(
         return Err(RuntimeStatus::InvalidHandle);
     }
     Ok((prefix, context))
+}
+
+/// Returns the exact mapped stack allocation owned by the current scheduler
+/// context without consulting the thread registry or a broad kernel VA range.
+pub(crate) fn current_kernel_stack_bounds() -> Option<axbacktrace::StackBounds> {
+    // Fatal diagnostics may run because LockRuntime itself is inconsistent, so
+    // this capability must not recursively enter a context-aware guard. One raw
+    // local-IRQ window pins current/header/stack validation without allocation,
+    // registry locking, or scheduler callbacks.
+    let restore_irqs = ax_hal::asm::irqs_enabled();
+    ax_hal::asm::disable_irqs();
+    let bounds = (|| {
+        // SAFETY: raw local IRQ exclusion prevents a scheduler return or CPU
+        // migration until this closure has copied the immutable bounds.
+        let cpu_pin = unsafe { CpuPin::new_unchecked() };
+        let (_prefix, context) = current_runtime_context(&cpu_pin).ok()?;
+        let stack = context.stack;
+        if stack.is_none() {
+            return None;
+        }
+        // SAFETY: the current context owns this stack handle until it is
+        // off-CPU and reaped; raw IRQ exclusion pins the validation above.
+        let stack = unsafe { &*ptr::with_exposed_provenance::<RuntimeStack>(stack.into_raw()) };
+        stack.usable_bounds()
+    })();
+    if restore_irqs {
+        ax_hal::asm::enable_irqs();
+    }
+    bounds
 }
 
 unsafe fn prepare_current_runtime_context_publish<'pin>(
@@ -533,6 +808,7 @@ impl RuntimeThreadData {
 static RUNTIME_THREAD_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: runtime_thread_switch_in_hook,
     on_switch_out: runtime_thread_switch_out_hook,
+    on_policy_applied: runtime_thread_policy_applied_hook,
     on_exit: runtime_thread_exit_hook,
     on_deadline_overrun: runtime_thread_deadline_overrun_hook,
     drop: runtime_thread_drop_hook,
@@ -556,6 +832,21 @@ unsafe extern "Rust" fn runtime_thread_switch_out_hook(
     if let Some(extension) = runtime.os_extension.as_ref() {
         // SAFETY: same composition contract as `runtime_thread_switch_in_hook`.
         unsafe { (extension.ops().on_switch_out)(extension.data(), thread, reason) };
+    }
+}
+
+unsafe extern "Rust" fn runtime_thread_policy_applied_hook(
+    data: usize,
+    thread: ThreadId,
+    event: ThreadPolicyApplied,
+) {
+    let runtime = unsafe { runtime_thread_data_from_raw(data) };
+    if let Some(extension) = runtime.os_extension.as_ref() {
+        // SAFETY: the outer runtime extension retains and serially forwards
+        // the value-only owner commit to the installed OS extension.
+        unsafe {
+            (extension.ops().on_policy_applied)(extension.data(), thread, event);
+        }
     }
 }
 
@@ -749,6 +1040,38 @@ where
 {
     // SAFETY: `None` carries no external callback ownership.
     unsafe { spawn_raw_with_extension(entry, name, stack_size, None) }
+}
+
+/// Creates one shutdown-lifetime kernel worker with its CPU affinity and fair
+/// policy installed before the scheduler publishes it as Ready.
+///
+/// This narrow runtime-only entry prevents per-CPU services from racing a
+/// post-spawn affinity or policy update. The caller remains responsible for
+/// retaining a direct wake capability and for making the entry non-returning.
+#[cfg(feature = "workqueue")]
+pub(crate) fn spawn_kernel_worker<F>(
+    entry: F,
+    name: String,
+    affinity: CpuSet,
+    policy: SchedulePolicy,
+) -> Result<ThreadHandle, TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    unsafe {
+        // SAFETY: no external extension or address-space capability is
+        // transferred. Affinity and policy are embedded in ThreadSpec before
+        // the new kernel context can enter a run queue.
+        spawn_raw_with_options(
+            entry,
+            name,
+            runtime_task_stack_size(),
+            None,
+            Some(affinity),
+            policy,
+            InitialContextState::kernel(),
+        )
+    }
 }
 
 /// Creates a kernel thread while retaining one OS-specific extension.
@@ -1158,60 +1481,51 @@ pub(crate) fn next_timer_deadline_nanos() -> Option<u64> {
     (deadline != 0).then_some(deadline)
 }
 
-/// Records the currently programmed hardware timer deadline.
-#[cfg(feature = "irq")]
-pub(crate) fn note_programmed_timer_deadline_nanos(deadline_ns: u64) {
-    // SAFETY: timer programming is serialized on the current CPU.
-    unsafe { PROGRAMMED_TASK_TIMER_DEADLINE_NS.write_current_raw(deadline_ns) };
-}
-
-/// Publishes timer accounting and a sticky reschedule request from hard IRQ.
+/// Publishes typed timer work from hard IRQ.
+///
+/// Periodic housekeeping, timer expiry, and scheduler-deadline continuation
+/// remain owner work. Only slice, RT-quota, or CBS exhaustion may publish the
+/// scheduler's distinct preemption reason.
 #[cfg(feature = "irq")]
 pub(crate) fn on_timer_irq(scheduler_tick: bool) {
     TASK_TIMER_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-    let now_ns = ax_hal::time::monotonic_time_nanos();
-    // SAFETY: this hard IRQ owns current-CPU accounting until it returns.
-    let previous_ns = unsafe { LAST_TASK_ACCOUNT_NS.read_current_raw() };
-    // SAFETY: same current-CPU IRQ serialization as the read above.
-    unsafe { LAST_TASK_ACCOUNT_NS.write_current_raw(now_ns) };
-    let elapsed_ns = if previous_ns == 0 {
-        0
-    } else {
-        now_ns.saturating_sub(previous_ns)
-    };
-    match ax_task::timer_interrupt_current_cpu(elapsed_ns, 0) {
+    match ax_task::timer_interrupt_current_cpu(scheduler_tick, 0) {
         Ok(outcome) => {
             // SAFETY: only the current CPU publishes its next task deadline.
             unsafe {
                 NEXT_TASK_TIMER_DEADLINE_NS
                     .write_current_raw(outcome.next_deadline_ns().unwrap_or(0))
             };
-            if (scheduler_tick
-                || outcome.slice_expired()
-                || outcome.deadline_overrun()
-                || outcome.expired() != 0
-                || outcome.pending())
-                // SAFETY: hard IRQ execution cannot migrate until this handler
-                // returns, and the platform CPU-local binding is already live.
-                && let Some(cpu) = unsafe { current_cpu_remote_unchecked() }
-            {
-                cpu.request_reschedule();
-            }
         }
         Err(TaskError::NotInitialized | TaskError::CpuOffline(_)) => {}
         Err(error) => panic!("task timer accounting failed: {error}"),
     }
 }
 
-/// Observes a published scheduler reason delivered by this or any coalesced IPI.
+/// Acknowledges the scheduler transport epoch carried by the shared IPI vector.
+///
+/// The producer publishes the scheduling reason before ringing the doorbell.
+/// Consequently any IPI arrival is sufficient to acknowledge a claimed
+/// transport epoch, including a callback IPI that coalesces with scheduler
+/// work. The interrupt itself must not manufacture a preemption reason.
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) fn on_scheduler_ipi() {
     // SAFETY: scheduler IPI handling is a hard-IRQ scope and therefore cannot
     // migrate during the complete CPU-ID/endpoint lookup.
-    if let Some(cpu) = unsafe { current_cpu_remote_unchecked() }
-        .filter(|cpu| cpu.is_online() && cpu.needs_reschedule())
-    {
-        cpu.request_reschedule();
+    if let Some(cpu) = unsafe { current_cpu_remote_unchecked() }.filter(|cpu| cpu.is_online()) {
+        cpu.acknowledge_scheduler_ipi();
+    }
+}
+
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+fn scheduler_ipi_target(
+    current: ax_hal::irq::CpuId,
+    destination: ax_hal::irq::CpuId,
+) -> ax_hal::irq::CpuIpiTarget {
+    if current == destination {
+        ax_hal::irq::CpuIpiTarget::Current { cpu: destination }
+    } else {
+        ax_hal::irq::CpuIpiTarget::Other { cpu: destination }
     }
 }
 
@@ -1294,13 +1608,8 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     unsafe { CPU_LOCAL_OWNER_HANDLE.write_current_raw(owner_handle) };
     #[cfg(feature = "irq")]
     {
-        let now_ns = ax_hal::time::monotonic_time_nanos();
-        // SAFETY: initialization is owner-only before CPU online publication.
-        unsafe { LAST_TASK_ACCOUNT_NS.write_current_raw(now_ns) };
         // SAFETY: no task timer is armed during bootstrap object creation.
         unsafe { NEXT_TASK_TIMER_DEADLINE_NS.write_current_raw(0) };
-        // SAFETY: hardware programming occurs after local IRQ setup.
-        unsafe { PROGRAMMED_TASK_TIMER_DEADLINE_NS.write_current_raw(0) };
     }
     crate::guard::assert_boot_guards_released();
     Ok(bootstrap_thread)
@@ -1640,6 +1949,7 @@ pub(crate) fn current_cpu_remote(cpu_pin: &CpuPin) -> Option<&'static CpuRemote>
 /// A valid CPU-local binding must be installed, and the caller must guarantee
 /// that execution cannot migrate during this complete lookup. This is intended
 /// only for hard-IRQ/trap paths that cannot hold an ordinary guard token.
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 unsafe fn current_cpu_remote_unchecked() -> Option<&'static CpuRemote> {
     // SAFETY: the caller's no-migration guarantee covers the returned token's
     // complete use inside `current_cpu_remote`.
@@ -2093,15 +2403,34 @@ impl_task_runtime! {
             }
         }
 
+        fn dispatch_expired_timer(
+            event: ax_task::runtime::RuntimeTimerEventV1,
+        ) -> RuntimeStatus {
+            #[cfg(feature = "workqueue")]
+            {
+                crate::workqueue::dispatch_expired_timer(event)
+            }
+            #[cfg(not(feature = "workqueue"))]
+            {
+                let _ = event;
+                RuntimeStatus::Unsupported
+            }
+        }
+
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
             #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
             {
                 let irq_guard = IrqGuard::new();
+                let current_cpu = ax_hal::irq::CpuId(ax_hal::percpu::this_cpu_id_pinned(
+                    irq_guard.cpu_pin(),
+                ));
+                let Ok(destination) = usize::try_from(cpu.as_u32()) else {
+                    return RuntimeStatus::InvalidArgument;
+                };
+                let destination = ax_hal::irq::CpuId(destination);
                 match ax_hal::irq::send_ipi(
                     ax_hal::irq::ipi_irq(),
-                    ax_hal::irq::CpuIpiTarget::Other {
-                        cpu: ax_hal::irq::CpuId(cpu.as_u32() as usize),
-                    },
+                    scheduler_ipi_target(current_cpu, destination),
                     &irq_guard,
                 ) {
                     ax_hal::irq::IpiSendStatus::Success => RuntimeStatus::Success,
@@ -2301,16 +2630,61 @@ impl_task_runtime! {
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "uspace")]
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
+
+    #[cfg(feature = "uspace")]
+    #[test]
+    fn user_entry_epoch_exhaustion_is_a_permanently_pending_fatal_state() {
+        let notification = UserEntryNotification {
+            produced: AtomicU64::new(u64::MAX - 1),
+            acknowledged: AtomicU64::new(u64::MAX - 1),
+        };
+
+        let exhausted = catch_unwind(AssertUnwindSafe(|| notification.publish()));
+        assert!(exhausted.is_err());
+        assert_eq!(notification.produced.load(Ordering::Acquire), u64::MAX);
+        assert!(notification.pending());
+
+        let poison = notification.snapshot();
+        assert_eq!(notification.acknowledge(poison), UserEntryAck::Pending);
+        assert_eq!(
+            notification.acknowledged.load(Ordering::Acquire),
+            u64::MAX - 1
+        );
+
+        let repeated = catch_unwind(AssertUnwindSafe(|| notification.publish()));
+        assert!(repeated.is_err());
+        assert_eq!(notification.produced.load(Ordering::Acquire), u64::MAX);
+        assert!(notification.pending());
+    }
 
     static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: ignore_extension_thread_event,
         on_switch_out: ignore_extension_switch_out,
+        on_policy_applied: ignore_extension_policy_applied,
         on_exit: ignore_extension_thread_event,
         on_deadline_overrun: ignore_extension_thread_event,
         drop: count_extension_drop,
     };
+
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+    #[test]
+    fn scheduler_doorbell_uses_the_typed_current_cpu_route() {
+        let cpu0 = ax_hal::irq::CpuId(0);
+        let cpu1 = ax_hal::irq::CpuId(1);
+
+        assert_eq!(
+            scheduler_ipi_target(cpu0, cpu0),
+            ax_hal::irq::CpuIpiTarget::Current { cpu: cpu0 }
+        );
+        assert_eq!(
+            scheduler_ipi_target(cpu0, cpu1),
+            ax_hal::irq::CpuIpiTarget::Other { cpu: cpu1 }
+        );
+    }
 
     #[test]
     fn missing_outer_runtime_extension_is_not_an_error() {
@@ -2459,6 +2833,13 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _reason: SwitchReason,
+    ) {
+    }
+
+    unsafe extern "Rust" fn ignore_extension_policy_applied(
+        _data: usize,
+        _thread: ThreadId,
+        _event: ThreadPolicyApplied,
     ) {
     }
 

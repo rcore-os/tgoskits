@@ -8,7 +8,7 @@ use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
 use super::{Aarch64Arch, npt};
 use crate::{
-    AxVmError, AxVmResult, ax_err,
+    AxVMRef, AxVmError, AxVmResult, VmStatus, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -91,37 +91,154 @@ fn build_vcpu_setup_config(
 }
 
 fn register_arch_devices(
-    vm: &AxVM,
+    _vm: &AxVM,
     config: &AxVMConfig,
     devices: &mut axdevice::AxVmDevices,
 ) -> AxVmResult {
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
-        assign_passthrough_spis(vm, config, devices)?;
+        #[cfg(not(any(feature = "fs", feature = "host-fs")))]
+        assign_passthrough_spis(config, devices)?;
     } else {
         register_virtual_timers(devices)?;
     }
     Ok(())
 }
 
-fn assign_passthrough_spis(
-    vm: &AxVM,
-    config: &AxVMConfig,
-    devices: &axdevice::AxVmDevices,
-) -> AxVmResult {
-    let cpu_id = vm.id() - 1; // FIXME: get the real CPU id.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub(crate) fn activate_guest_irq_routes(vm: &AxVMRef) -> AxVmResult {
+    if !matches!(vm.status(), VmStatus::Ready | VmStatus::Stopped) {
+        return ax_err!(
+            BadState,
+            "AArch64 guest IRQ routes can only activate before or between VM runtime generations"
+        );
+    }
+    if vm.with_config(|config| config.interrupt_mode() != VMInterruptMode::Passthrough) {
+        return Ok(());
+    }
+    if vm.with_config(|config| config.pass_through_spis().is_empty()) {
+        return Ok(());
+    }
+
+    let devices = vm.get_devices()?;
+    vm.with_config(|config| assign_passthrough_spis(config, &devices))?;
+    Ok(())
+}
+
+struct PassthroughSpiTarget {
+    logical_cpu: usize,
+    affinity: (u8, u8, u8, u8),
+}
+
+fn passthrough_spi_target(config: &AxVMConfig) -> AxVmResult<PassthroughSpiTarget> {
+    let (_, host_cpu_mask, host_mpidr) = config
+        .phys_cpu_ls
+        .get_vcpu_affinities_pcpu_ids()
+        .into_iter()
+        .find(|(vcpu_id, ..)| *vcpu_id == 0)
+        .ok_or_else(|| {
+            AxVmError::invalid_config("AArch64 passthrough SPI routing requires vCPU0")
+        })?;
+    let host_cpu_mask = host_cpu_mask.ok_or_else(|| {
+        AxVmError::invalid_config(
+            "AArch64 passthrough SPI routing requires a fixed host CPU for vCPU0",
+        )
+    })?;
+    if !host_cpu_mask.is_power_of_two() {
+        return Err(AxVmError::invalid_config(format_args!(
+            "AArch64 passthrough SPI routing requires one host CPU, got mask {host_cpu_mask:#x}"
+        )));
+    }
+
+    let mpidr = host_mpidr as u64;
+    Ok(PassthroughSpiTarget {
+        logical_cpu: host_cpu_mask.trailing_zeros() as usize,
+        affinity: (
+            ((mpidr >> 32) & 0xff) as u8,
+            ((mpidr >> 16) & 0xff) as u8,
+            ((mpidr >> 8) & 0xff) as u8,
+            (mpidr & 0xff) as u8,
+        ),
+    })
+}
+
+fn assign_passthrough_spis(config: &AxVMConfig, devices: &axdevice::AxVmDevices) -> AxVmResult {
+    let target = passthrough_spi_target(config)?;
     let Some(gicd) = devices
         .devices()
         .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
     else {
-        warn!("Failed to assign SPIs: No VGicD found in device list");
-        return Ok(());
+        if config.pass_through_spis().is_empty() {
+            return Ok(());
+        }
+        return ax_err!(
+            BadState,
+            "cannot assign passthrough SPIs without a VGIC distributor"
+        );
     };
 
     for spi in config.pass_through_spis() {
-        gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+        let irq = spi.checked_add(32).ok_or_else(|| {
+            AxVmError::invalid_input("assign passthrough SPI", "SPI number overflow")
+        })?;
+        gicd.assign_irq(irq, target.logical_cpu, target.affinity)
             .map_err(|error| AxVmError::interrupt("assign passthrough SPI", error))?;
     }
     Ok(())
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub(crate) fn revoke_guest_irq_routes(vm: &AxVMRef) -> AxVmResult {
+    const MAX_GICD_RWP_POLLS: usize = 10_000;
+
+    if !matches!(vm.status(), VmStatus::Ready | VmStatus::Stopped) {
+        return ax_err!(
+            BadState,
+            "AArch64 guest IRQ routes can only be revoked after all vCPUs stop"
+        );
+    }
+
+    let has_passthrough_spis = vm.with_config(|config| !config.pass_through_spis().is_empty());
+    let devices = vm.get_devices()?;
+    let Some(gicd) = devices
+        .devices()
+        .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
+    else {
+        if has_passthrough_spis {
+            return ax_err!(
+                BadState,
+                "cannot revoke passthrough SPIs without a VGIC distributor"
+            );
+        }
+        return Ok(());
+    };
+
+    let mut revocation = gicd
+        .begin_assigned_spi_revocation()
+        .map_err(|error| AxVmError::interrupt("begin AArch64 SPI revocation", error))?;
+    for _ in 0..MAX_GICD_RWP_POLLS {
+        match revocation
+            .poll()
+            .map_err(|error| AxVmError::interrupt("poll AArch64 SPI revocation", error))?
+        {
+            arm_vgic::v3::vgicd::SpiRevocationPoll::Pending(next) => {
+                revocation = next;
+                crate::host::task::yield_now();
+            }
+            arm_vgic::v3::vgicd::SpiRevocationPoll::Complete(proof) => {
+                debug!(
+                    "VM[{}] released {} AArch64 passthrough SPIs",
+                    vm.id(),
+                    proof.released_spi_count()
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    Err(AxVmError::interrupt(
+        "poll AArch64 SPI revocation",
+        "GICD_CTLR.RWP did not clear before the bounded retry limit",
+    ))
 }
 
 fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxVmResult {

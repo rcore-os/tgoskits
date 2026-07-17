@@ -26,6 +26,14 @@ irq = [
   "ax-driver/irq",
 ]
 multitask = ["irq", "dep:ax-task"]
+workqueue = ["multitask"]
+block = [
+  "workqueue",
+  "paging",
+  "dep:dma-api",
+  "dep:rdif-block",
+  "ax-driver/block",
+]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
@@ -38,17 +46,12 @@ tls = ["ax-hal/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
-  "irq",
-  "multitask",
-  "paging",
+  "block",
   "dep:ax-errno",
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
-  "dep:dma-api",
-  "dep:rdif-block",
-  "ax-driver/block",
 ]
 ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
@@ -109,6 +112,30 @@ rdif-intc = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
+thiserror.workspace = true
 
 [build-dependencies]
 quote = "1.0"
+
+[dev-dependencies]
+loom.workspace = true
+
+[[test]]
+name = "block_irq_only_contract"
+required-features = ["block"]
+
+[[test]]
+name = "block_request_model"
+required-features = ["block"]
+
+[[test]]
+name = "workqueue_model"
+required-features = ["workqueue"]
+
+[[test]]
+name = "workqueue_loom"
+required-features = ["workqueue"]
+
+[[test]]
+name = "user_entry_notification_loom"
+required-features = ["multitask", "uspace"]

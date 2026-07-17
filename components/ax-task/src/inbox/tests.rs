@@ -52,6 +52,7 @@ fn bounds_each_drain_and_reports_remaining_work() {
     let first = inbox.drain(2, &mut output);
     assert_eq!(first.drained(), 2);
     assert!(first.pending());
+    assert_eq!(first.remainder(), DrainRemainder::MoreReady);
     let second = inbox.drain(2, &mut output);
     assert_eq!(second.drained(), 1);
     assert!(!second.pending());
@@ -114,6 +115,10 @@ fn defers_detach_while_a_publisher_retains_the_observed_head() {
         while_observed.pending(),
         "deferred grace must remain visible to the next bounded drain"
     );
+    assert_eq!(
+        while_observed.remainder(),
+        DrainRemainder::PublisherInFlight
+    );
 }
 
 #[test]
@@ -162,6 +167,7 @@ fn new_generation_entrant_does_not_delay_retired_head_grace() {
     let next = inbox.drain(2, &mut output);
     assert_eq!(grace_started.drained(), 0);
     assert!(grace_started.pending());
+    assert_eq!(grace_started.remainder(), DrainRemainder::PublisherInFlight);
     assert_eq!(
         retired.drained(),
         2,

@@ -19,7 +19,10 @@ use super::{
     TrapFrame, gdt,
     trap::{IRQ_VECTOR_END, IRQ_VECTOR_START, LEGACY_SYSCALL_VECTOR, err_code_to_flags},
 };
-pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
+pub use crate::uspace_common::{
+    DecodedUserExit, ExceptionKind, ExceptionSyndrome, RawUserExit, RawUserInterrupt,
+    UserExitReason,
+};
 
 /// Context to enter user space.
 #[derive(Debug, Clone, Copy)]
@@ -109,8 +112,11 @@ impl UserContext {
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `rip`).
     ///
-    /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    /// This function returns an opaque context-bound token with raw local
+    /// interrupts still masked. It does not read or dispatch the captured
+    /// exception. The runtime must publish kernel accounting before calling
+    /// [`Self::decode_raw_exit`].
+    pub fn run_raw(&mut self) -> RawUserExit {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
@@ -122,28 +128,39 @@ impl UserContext {
 
         unsafe { enter_user(self) };
 
+        RawUserExit::bind(self, 0)
+    }
+
+    /// Decodes a raw exit previously returned by this context.
+    ///
+    /// The caller must keep raw local interrupts masked and publish the
+    /// user-to-kernel accounting transition before invoking this method.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `raw_exit` was produced by a different [`UserContext`].
+    pub fn decode_raw_exit(&mut self, raw_exit: RawUserExit) -> DecodedUserExit {
+        raw_exit.assert_bound_to(self);
+
         let vector = self.vector as u8;
 
         const PAGE_FAULT_VECTOR: u8 = ExceptionVector::Page as u8;
 
-        let ret = match (vector, err_code_to_flags(self.error_code)) {
-            (PAGE_FAULT_VECTOR, Ok(flags)) => {
-                ReturnReason::PageFault(va!(Cr2::read_raw() as usize), flags)
-            }
-            (LEGACY_SYSCALL_VECTOR, _) => ReturnReason::Syscall,
+        match (vector, err_code_to_flags(self.error_code)) {
+            (PAGE_FAULT_VECTOR, Ok(flags)) => DecodedUserExit::Reason(UserExitReason::PageFault(
+                va!(Cr2::read_raw() as usize),
+                flags,
+            )),
+            (LEGACY_SYSCALL_VECTOR, _) => DecodedUserExit::Reason(UserExitReason::Syscall),
             (IRQ_VECTOR_START..=IRQ_VECTOR_END, _) => {
-                crate::trap::dispatch_irq(vector as _);
-                ReturnReason::Interrupt
+                DecodedUserExit::Interrupt(RawUserInterrupt::new(vector as _))
             }
-            _ => ReturnReason::Exception(ExceptionInfo {
+            _ => DecodedUserExit::Reason(UserExitReason::Exception(ExceptionInfo {
                 vector,
                 error_code: self.error_code,
                 cr2: Cr2::read_raw() as usize,
-            }),
-        };
-
-        crate::asm::enable_irqs();
-        ret
+            })),
+        }
     }
 }
 

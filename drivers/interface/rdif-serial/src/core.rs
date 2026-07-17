@@ -7,7 +7,7 @@ use core::{
 
 use crate::{
     Config, ConfigError, InterruptMask, IrqSource, RawUart, RxFlag, RxItem, SerialCounters,
-    SerialIrqOutcome, SpscRing,
+    SerialIrqFault, SerialIrqOutcome, SpscRing,
 };
 
 pub const DEFAULT_TX_CAP: usize = 4097;
@@ -17,6 +17,10 @@ pub const RX_IRQ_BUDGET: usize = 256;
 pub const TX_IRQ_BUDGET: usize = 64;
 pub const IRQ_PASS_BUDGET: usize = 32;
 pub const TX_KICK_BUDGET: usize = 32;
+/// Maximum bytes written by one emergency ownership attempt.
+pub const EMERGENCY_TX_BUDGET: usize = 64;
+/// Maximum transmitter-idle status reads made by one emergency flush.
+pub const EMERGENCY_FLUSH_POLL_BUDGET: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OwnerId(pub usize);
@@ -65,11 +69,14 @@ impl<T> OwnerCell<T> {
     }
 
     unsafe fn access<'a>(&'a self, _lease: &'a mut OwnerLease<'_>) -> OwnerAccess<'a, T> {
-        debug_assert!(
-            !self.active.swap(true, Ordering::AcqRel),
-            "serial owner cell re-entered"
-        );
-        OwnerAccess { cell: self }
+        self.try_access().expect("serial owner cell re-entered")
+    }
+
+    fn try_access(&self) -> Option<OwnerAccess<'_, T>> {
+        self.active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| OwnerAccess { cell: self })
     }
 }
 
@@ -101,6 +108,29 @@ impl<T> Drop for OwnerAccess<'_, T> {
 pub struct TxSubmit {
     pub accepted: usize,
     pub needs_kick: bool,
+}
+
+/// Result of one bounded, non-blocking emergency UART write attempt.
+///
+/// This operation never stages bytes in the software TX queue. `Busy` means
+/// either the runtime UART register owner or the hardware transmitter cannot
+/// currently make progress. `Fault` means the runtime port is not running and
+/// therefore cannot be used as the post-handover emergency console.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum EmergencyWriteResult {
+    Written { count: usize },
+    Busy,
+    Fault,
+}
+
+/// Result of one bounded emergency transmitter-drain attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum EmergencyFlushResult {
+    Flushed,
+    Busy,
+    Fault,
 }
 
 pub struct TxState<const N: usize> {
@@ -232,6 +262,7 @@ enum PortState {
     Down,
     Polling,
     Running,
+    Faulted,
 }
 
 struct CoreInner<T: RawUart> {
@@ -256,7 +287,6 @@ bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct SerialSoftWork: u32 {
         const TX_KICK = 1 << 0;
-        const RESERVICE = 1 << 1;
     }
 }
 
@@ -327,6 +357,61 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         self.owner
     }
 
+    /// Attempts a bounded emergency write directly to the runtime UART.
+    ///
+    /// This is the panic/diagnostic capability of the already-active runtime
+    /// port. It performs one ownership CAS, does not allocate, spin, enqueue
+    /// software work, acknowledge IRQ status, or invoke callbacks. A caller
+    /// that can be interrupted by the normal UART owner should exclude that
+    /// local interrupt while making the call. Concurrent and recursive owner
+    /// attempts are rejected by the shared gate; an idle gate may be acquired
+    /// from a remote CPU.
+    pub fn try_write_emergency(&self, bytes: &[u8]) -> EmergencyWriteResult {
+        if bytes.is_empty() {
+            return EmergencyWriteResult::Written { count: 0 };
+        }
+        let Some(mut core) = self.core.try_access() else {
+            return EmergencyWriteResult::Busy;
+        };
+        if core.state != PortState::Running {
+            return EmergencyWriteResult::Fault;
+        }
+
+        let mut count = 0;
+        while count < bytes.len().min(EMERGENCY_TX_BUDGET) && core.raw.tx_ready() {
+            core.raw.write_tx(bytes[count]);
+            count += 1;
+        }
+        if count == 0 {
+            return EmergencyWriteResult::Busy;
+        }
+        self.counters.tx_bytes.fetch_add(count, Ordering::Relaxed);
+        EmergencyWriteResult::Written { count }
+    }
+
+    /// Makes one bounded attempt to drain the runtime UART transmitter.
+    ///
+    /// The owner gate is acquired once and retained across at most
+    /// [`EMERGENCY_FLUSH_POLL_BUDGET`] direct `tx_idle` status reads. This does
+    /// not sleep, allocate, invoke callbacks, service IRQ state, or retry owner
+    /// acquisition. `Busy` means either another owner is active or the
+    /// transmitter did not become idle within the fixed budget. It is a
+    /// shutdown/fatal-diagnostic drain, not a normal runtime polling path.
+    pub fn try_flush_emergency(&self) -> EmergencyFlushResult {
+        let Some(mut core) = self.core.try_access() else {
+            return EmergencyFlushResult::Busy;
+        };
+        if core.state != PortState::Running {
+            return EmergencyFlushResult::Fault;
+        }
+        for _ in 0..EMERGENCY_FLUSH_POLL_BUDGET {
+            if core.raw.tx_idle() {
+                return EmergencyFlushResult::Flushed;
+            }
+        }
+        EmergencyFlushResult::Busy
+    }
+
     pub fn startup(
         &self,
         mut lease: OwnerLease<'_>,
@@ -336,6 +421,11 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         let mut core = unsafe { self.core.access(&mut lease) };
         if core.state == PortState::Running {
             return Ok(SerialIrqOutcome::default());
+        }
+
+        if core.state == PortState::Faulted {
+            core.raw.shutdown();
+            core.state = PortState::Down;
         }
 
         core.raw.startup(config)?;
@@ -442,18 +532,25 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
 
         let mut rx_budget = RX_IRQ_BUDGET;
         let mut tx_budget = TX_IRQ_BUDGET;
+        let mut source_drained = false;
         for _ in 0..IRQ_PASS_BUDGET {
             let snapshot = core.raw.take_irq_snapshot();
             if !snapshot.claimed {
                 if !out.claimed {
                     self.counters.irq_spurious.fetch_add(1, Ordering::Relaxed);
                 }
+                source_drained = true;
                 break;
             }
             if !out.claimed {
                 self.counters.irq_total.fetch_add(1, Ordering::Relaxed);
             }
             out.claimed = true;
+
+            if snapshot.sources.is_empty() || snapshot.sources.contains(IrqSource::OTHER_ACK) {
+                quarantine_irq_source(core, &mut out, SerialIrqFault::UnknownSource);
+                break;
+            }
 
             if snapshot
                 .sources
@@ -478,12 +575,14 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
             }
 
             if rx_budget == 0 || tx_budget == 0 {
-                out.budget_exhausted = true;
-                self.counters
-                    .irq_budget_exhausted
-                    .fetch_add(1, Ordering::Relaxed);
                 break;
             }
+        }
+        if out.claimed && out.fault.is_none() && !source_drained {
+            out.budget_exhausted = true;
+            self.counters
+                .irq_budget_exhausted
+                .fetch_add(1, Ordering::Relaxed);
         }
         out
     }
@@ -550,7 +649,12 @@ impl<const TX: usize, const RX: usize> SerialIrqHandler<TX, RX> {
         budget: usize,
         out: &mut SerialIrqOutcome,
     ) -> usize {
-        let limit = budget;
+        let load_size = core.raw.tx_load_size();
+        if load_size == 0 && !self.tx.ring.is_empty() {
+            quarantine_irq_source(core, out, SerialIrqFault::InvalidTransmitLoad);
+            return 0;
+        }
+        let limit = budget.min(load_size);
         let mut sent = 0;
         while sent < limit && core.raw.tx_ready() {
             let Some(byte) = self.tx.ring.peek_copy() else {
@@ -599,13 +703,6 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         if work.contains(SerialSoftWork::TX_KICK) {
             self.service_tx(core, TX_KICK_BUDGET, &mut out);
         }
-        if work.contains(SerialSoftWork::RESERVICE) {
-            let rx = self.service_rx(core, RX_IRQ_BUDGET);
-            out.rx_pushed += rx.published;
-            let tx_sent = self.service_tx(core, TX_IRQ_BUDGET, &mut out);
-            out.budget_exhausted = rx.consumed == RX_IRQ_BUDGET
-                || (tx_sent == TX_IRQ_BUDGET && !self.tx.ring.is_empty());
-        }
         out
     }
 
@@ -671,7 +768,12 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         budget: usize,
         out: &mut SerialIrqOutcome,
     ) -> usize {
-        let limit = budget;
+        let load_size = core.raw.tx_load_size();
+        if load_size == 0 && !self.tx.ring.is_empty() {
+            quarantine_irq_source(core, out, SerialIrqFault::InvalidTransmitLoad);
+            return 0;
+        }
+        let limit = budget.min(load_size);
         let mut sent = 0;
         while sent < limit && core.raw.tx_ready() {
             let Some(byte) = self.tx.ring.peek_copy() else {
@@ -710,6 +812,18 @@ impl<const TX: usize, const RX: usize> SerialPort<TX, RX> {
         let mut core = unsafe { self.core.access(&mut lease) };
         self.service_soft_locked(&mut core, work)
     }
+}
+
+fn quarantine_irq_source(
+    core: &mut CoreInner<DynRawUart>,
+    outcome: &mut SerialIrqOutcome,
+    fault: SerialIrqFault,
+) {
+    core.raw.set_irq_mask(InterruptMask::empty());
+    core.irq_mask = InterruptMask::empty();
+    core.tx_irq_enabled = false;
+    core.state = PortState::Faulted;
+    outcome.fault = Some(fault);
 }
 
 #[derive(Default)]
@@ -778,6 +892,9 @@ mod tests {
         enabled: AtomicBool,
         irq_mask: AtomicU32,
         shutdowns: AtomicUsize,
+        tx_writes: AtomicUsize,
+        last_tx_byte: AtomicU32,
+        tx_idle_polls: AtomicUsize,
     }
 
     impl MockProbe {
@@ -786,6 +903,9 @@ mod tests {
                 enabled: AtomicBool::new(true),
                 irq_mask: AtomicU32::new(0),
                 shutdowns: AtomicUsize::new(0),
+                tx_writes: AtomicUsize::new(0),
+                last_tx_byte: AtomicU32::new(0),
+                tx_idle_polls: AtomicUsize::new(0),
             }
         }
     }
@@ -796,6 +916,7 @@ mod tests {
         tx_ready_budget: usize,
         tx_load_size: usize,
         tx_written: Vec<u8>,
+        tx_idle_after: usize,
         mask: InterruptMask,
         probe: Arc<MockProbe>,
     }
@@ -808,6 +929,7 @@ mod tests {
                 tx_ready_budget: 0,
                 tx_load_size: 16,
                 tx_written: Vec::new(),
+                tx_idle_after: 0,
                 mask: InterruptMask::empty(),
                 probe: Arc::new(MockProbe::new()),
             }
@@ -907,6 +1029,10 @@ mod tests {
             assert!(self.tx_ready_budget > 0);
             self.tx_ready_budget -= 1;
             self.tx_written.push(byte);
+            self.probe.tx_writes.fetch_add(1, Ordering::Relaxed);
+            self.probe
+                .last_tx_byte
+                .store(u32::from(byte), Ordering::Relaxed);
         }
 
         fn tx_load_size(&self) -> usize {
@@ -914,7 +1040,8 @@ mod tests {
         }
 
         fn tx_idle(&mut self) -> bool {
-            self.tx_written.is_empty()
+            let poll = self.probe.tx_idle_polls.fetch_add(1, Ordering::Relaxed);
+            poll >= self.tx_idle_after
         }
 
         fn poll_status(&mut self) -> crate::SerialEvent {
@@ -936,6 +1063,82 @@ mod tests {
         assert_eq!(submit.accepted, 3);
         assert!(submit.needs_kick);
         assert_eq!(tx.chars_in_buffer(), 3);
+    }
+
+    #[test]
+    fn emergency_write_is_bounded_and_bypasses_the_software_queue() {
+        let (mut uart, probe) = MockUart::with_probe();
+        uart.tx_ready_budget = EMERGENCY_TX_BUDGET + 8;
+        let parts = SerialPort::<128, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+        let bytes = [b'x'; EMERGENCY_TX_BUDGET + 8];
+
+        let result = parts.port.try_write_emergency(&bytes);
+
+        assert_eq!(
+            result,
+            EmergencyWriteResult::Written {
+                count: EMERGENCY_TX_BUDGET,
+            }
+        );
+        assert_eq!(probe.tx_writes.load(Ordering::Relaxed), EMERGENCY_TX_BUDGET);
+        assert_eq!(probe.last_tx_byte.load(Ordering::Relaxed), u32::from(b'x'));
+        assert_eq!(parts.tx.chars_in_buffer(), 0);
+    }
+
+    #[test]
+    fn emergency_write_returns_busy_during_owner_reentry() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = 1;
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+        let mut owner_lease = lease();
+        let _active = unsafe { parts.port.core.access(&mut owner_lease) };
+
+        assert_eq!(
+            parts.port.try_write_emergency(b"x"),
+            EmergencyWriteResult::Busy
+        );
+    }
+
+    #[test]
+    fn emergency_write_rejects_a_non_running_port() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = 1;
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+
+        assert_eq!(
+            parts.port.try_write_emergency(b"x"),
+            EmergencyWriteResult::Fault
+        );
+    }
+
+    #[test]
+    fn emergency_flush_holds_one_owner_until_the_transmitter_is_idle() {
+        let (mut uart, probe) = MockUart::with_probe();
+        uart.tx_idle_after = 3;
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        assert_eq!(
+            parts.port.try_flush_emergency(),
+            EmergencyFlushResult::Flushed
+        );
+        assert_eq!(probe.tx_idle_polls.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn emergency_flush_stops_at_the_fixed_poll_budget() {
+        let (mut uart, probe) = MockUart::with_probe();
+        uart.tx_idle_after = usize::MAX;
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        assert_eq!(parts.port.try_flush_emergency(), EmergencyFlushResult::Busy);
+        assert_eq!(
+            probe.tx_idle_polls.load(Ordering::Relaxed),
+            EMERGENCY_FLUSH_POLL_BUDGET
+        );
     }
 
     #[test]
@@ -1012,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn soft_tx_kick_uses_budget_while_hardware_ready() {
+    fn soft_tx_kick_never_exceeds_one_hardware_fifo_load() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = TX_KICK_BUDGET + 8;
         uart.tx_load_size = 1;
@@ -1024,9 +1227,9 @@ mod tests {
 
         let outcome = parts.port.service(lease(), SerialSoftWork::TX_KICK);
 
-        assert_eq!(outcome.tx_sent, TX_KICK_BUDGET);
+        assert_eq!(outcome.tx_sent, 1);
         assert!(outcome.tx_wakeup);
-        assert_eq!(tx.chars_in_buffer(), 8);
+        assert_eq!(tx.chars_in_buffer(), TX_KICK_BUDGET + 7);
     }
 
     #[test]
@@ -1146,5 +1349,35 @@ mod tests {
         assert!(outcome.claimed);
         assert_eq!(outcome.rx_pushed, 2);
         assert!(!outcome.budget_exhausted);
+    }
+
+    #[test]
+    fn pass_budget_requires_a_deferred_continuation_even_with_small_snapshots() {
+        let mut uart = MockUart::new();
+        for _ in 0..IRQ_PASS_BUDGET {
+            uart = uart.irq(IrqSource::MODEM_STATUS);
+        }
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
+
+        assert!(outcome.claimed);
+        assert!(outcome.budget_exhausted);
+    }
+
+    #[test]
+    fn unknown_irq_source_is_masked_instead_of_claimed_without_progress() {
+        let (uart, probe) = MockUart::with_probe();
+        let uart = uart.irq(IrqSource::OTHER_ACK);
+        let parts = SerialPort::<8, 8>::split(uart, OwnerId(0));
+        parts.port.startup(lease(), &Config::new()).unwrap();
+
+        let mut irq = parts.irq;
+        let outcome = irq.handle(lease());
+
+        assert!(outcome.claimed);
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
     }
 }

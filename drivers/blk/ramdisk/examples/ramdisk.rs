@@ -1,40 +1,42 @@
 use ramdisk::RamDisk;
-use rdif_block::{Interface, Request, RequestFlags, RequestOp, RequestStatus, Segment};
+use rdif_block::{
+    CompletedRequest, CompletionSink, Interface, OwnedRequest, RequestFlags, RequestId, RequestOp,
+    SubmitOutcome,
+};
+
+struct NoopSink;
+
+impl CompletionSink for NoopSink {
+    fn complete(&mut self, _completion: CompletedRequest) {
+        unreachable!("ramdisk cannot retain inline requests")
+    }
+}
 
 fn main() {
     let mut block = RamDisk::new(16, 1024);
     let mut queue = block.create_queue().expect("queue must be created");
+    let request_id = RequestId::INLINE;
 
-    let mut read = vec![0; queue.info().device.logical_block_size * 2];
-    submit(&mut *queue, RequestOp::Read, 3, &mut read);
-    println!("read: {:?}", read);
+    let outcome = queue
+        .submit_owned(
+            request_id,
+            OwnedRequest {
+                op: RequestOp::Flush,
+                lba: 0,
+                block_count: 0,
+                data: None,
+                flags: RequestFlags::NONE,
+            },
+        )
+        .expect("flush should succeed");
 
-    let size = queue.info().device.logical_block_size;
-    let mut data = vec![0xAAu8; size];
-    data.extend(vec![0xBBu8; size]);
-
-    submit(&mut *queue, RequestOp::Write, 3, &mut data);
-
-    let mut after = vec![0; queue.info().device.logical_block_size * 2];
-    submit(&mut *queue, RequestOp::Read, 3, &mut after);
-    println!("after write: {:?}", after);
-}
-
-fn submit(queue: &mut dyn rdif_block::IQueue, op: RequestOp, lba: u64, data: &mut [u8]) {
-    let block_size = queue.info().device.logical_block_size;
-    let segment =
-        unsafe { Segment::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len()) };
-    let mut segments = [segment];
-    let id = queue
-        .submit_request(Request {
-            op,
-            lba,
-            block_count: (data.len() / block_size) as u32,
-            segments: &mut segments,
-            flags: RequestFlags::NONE,
-        })
-        .expect("submit should succeed");
-    while queue.poll_request(id).expect("poll should succeed") == RequestStatus::Pending {
-        std::hint::spin_loop();
+    match outcome {
+        SubmitOutcome::Completed(completion) => {
+            println!("request {:?}: {:?}", completion.id, completion.result);
+        }
+        SubmitOutcome::Queued => unreachable!("ramdisk requests complete inline"),
     }
+    queue
+        .shutdown(&mut NoopSink)
+        .expect("shutdown should succeed");
 }

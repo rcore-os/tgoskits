@@ -3,9 +3,7 @@ use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
-use ax_net::{
-    CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
-};
+use ax_net::{CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx};
 use ax_runtime::hal::time::wall_time;
 use linux_raw_sys::{
     general::timespec,
@@ -139,7 +137,7 @@ fn send_impl(
 
         debug!("sys_send <= fd: {fd}, flags: {flags:#x}, addr: {addr:?}");
 
-        let sent = socket.send(
+        let sent = socket.send_from_user(
             &mut src,
             SendOptions {
                 to: addr,
@@ -251,7 +249,7 @@ fn recv_impl(
 
     let mut remote_addr =
         (!addr.is_null()).then(|| SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()));
-    let recv = socket.recv(
+    let recv = socket.recv_to_user(
         &mut dst,
         RecvOptions {
             from: remote_addr.as_mut(),

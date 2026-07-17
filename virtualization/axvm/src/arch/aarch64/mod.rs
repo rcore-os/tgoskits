@@ -55,7 +55,6 @@ pub(crate) enum Aarch64DeferredRunWork {
     SysReg(sysreg::DeferredRunWork),
     CpuUp(CpuUpExit),
     SendIpi(SendIpiExit),
-    ExternalInterrupt { vector: usize },
 }
 
 impl From<CommonDeferredRunWork> for Aarch64DeferredRunWork {
@@ -88,6 +87,16 @@ impl ArchOps for Aarch64Arch {
             addr.as_usize(),
             size,
         );
+    }
+
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn activate_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        vm::activate_guest_irq_routes(vm)
+    }
+
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        vm::revoke_guest_irq_routes(vm)
     }
 
     fn handle_vcpu_exit_bound<'cpu>(
@@ -143,14 +152,10 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
-            ArmVmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(
-                    Aarch64DeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
-                ))
-            }
+            ArmVmExit::ExternalInterrupt => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: false,
+                stop_reason: None,
+            })),
             ArmVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",
@@ -206,26 +211,11 @@ impl ArchOps for Aarch64Arch {
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
-            Aarch64DeferredRunWork::Common(work) => {
-                return super::finish_deferred::<Self>(vm, vcpu, work);
-            }
-            Aarch64DeferredRunWork::SysReg(work) => {
-                return sysreg::finish(vm, vcpu, work);
-            }
-            Aarch64DeferredRunWork::CpuUp(exit) => {
-                return cpu_up::finish::<Self>(vm, vcpu, exit);
-            }
-            Aarch64DeferredRunWork::SendIpi(exit) => {
-                return ipi::finish(vm, vcpu.id(), exit);
-            }
-            Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
-                ax_std::os::arceos::modules::ax_hal::irq::handle_irq(vector);
-            }
+            Aarch64DeferredRunWork::Common(work) => super::finish_deferred::<Self>(vm, vcpu, work),
+            Aarch64DeferredRunWork::SysReg(work) => sysreg::finish(vm, vcpu, work),
+            Aarch64DeferredRunWork::CpuUp(exit) => cpu_up::finish::<Self>(vm, vcpu, exit),
+            Aarch64DeferredRunWork::SendIpi(exit) => ipi::finish(vm, vcpu.id(), exit),
         }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        })
     }
 }
 
@@ -237,12 +227,26 @@ impl ArmHostOps for AxvmArmHostOps {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
-        Some(gic::fetch_irq())
+    unsafe fn handle_post_unbind_host_irq(cpu_pin: &CpuPin) -> ArmVcpuResult {
+        // SAFETY: ArmVcpu invokes this callback only after AxVM restored host
+        // anchors, unbound the backend, cleared CURRENT_VCPU, and retained the
+        // same CPU pin plus the lower-EL saved DAIF owner.
+        let permit = unsafe {
+            ax_std::os::arceos::modules::ax_hal::irq::PinnedHostIrqPermit::from_post_unbind(
+                0, cpu_pin,
+            )
+        };
+        ax_std::os::arceos::modules::ax_hal::irq::handle_pinned_host_irq(permit);
+        Ok(())
     }
 
-    fn handle_current_host_irq() {
-        gic::handle_current_irq();
+    unsafe fn handle_current_host_irq() {
+        // SAFETY: ArmHostOps invokes this unsafe callback only from the
+        // current-EL exception vector, whose frame owns the interrupted DAIF.
+        let permit = unsafe {
+            ax_std::os::arceos::modules::ax_hal::cpu::trap::TrapIrqPermit::from_arch_entry(0)
+        };
+        ax_std::os::arceos::modules::ax_hal::irq::handle_trap_irq(permit);
     }
 }
 
@@ -282,6 +286,10 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn unbind(&mut self, cpu_pin: &CpuPin) -> BackendResult {
         arm_result(self.0.unbind(cpu_pin))
+    }
+
+    fn finish_post_unbind(&mut self, cpu_pin: &CpuPin) -> BackendResult {
+        arm_result(self.0.finish_post_unbind(cpu_pin))
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
@@ -493,5 +501,24 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn get_host_gicr_base() -> PhysAddr {
         gic::host_gicr_base()
+    }
+
+    fn route_physical_spi(
+        irq: u32,
+        cpu_phys_id: usize,
+        aff3: u8,
+        aff2: u8,
+        aff1: u8,
+        aff0: u8,
+    ) -> arm_vgic::VgicResult {
+        gic::route_physical_spi(irq, cpu_phys_id, (aff3, aff2, aff1, aff0))
+    }
+
+    fn begin_physical_spi_quiesce(irq: u32) -> arm_vgic::VgicResult {
+        gic::begin_physical_spi_quiesce(irq)
+    }
+
+    fn poll_physical_distributor_write_complete() -> arm_vgic::VgicResult<bool> {
+        gic::poll_physical_distributor_write_complete()
     }
 }

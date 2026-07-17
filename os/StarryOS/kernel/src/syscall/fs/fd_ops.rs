@@ -7,7 +7,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult, current_fs_context};
-use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
+use axfs_ng_vfs::{FileNode, NodeOps, NodeType};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use starry_vm::{VmMutPtr, VmPtr, vm_load};
@@ -106,7 +106,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     if flags & O_NONBLOCK != 0
         && flags & 0b11 == O_WRONLY
         && let OpenResult::File(ref f) = result
-        && let Ok(meta) = f.location().metadata()
+        && let Ok(meta) = f.metadata()
         && meta.node_type == NodeType::Fifo
     {
         return Err(AxError::NoSuchDeviceOrAddress);
@@ -115,7 +115,7 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             // /dev/xx handling
-            if let Ok(device) = file.location().entry().downcast::<Device>() {
+            if let Some(()) = with_device(&file, |device| {
                 // Block device exclusive open (O_EXCL without O_CREAT).
                 if let Ok(meta) = device.metadata()
                     && meta.node_type == NodeType::BlockDevice
@@ -123,55 +123,85 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                 {
                     device.inner().open(true)?;
                 }
-                let inner = device.inner().as_any();
-                if crate::pseudofs::usbfs::is_usbfs_device(inner) {
-                    let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
-                    if flags & O_NONBLOCK != 0 {
-                        wrapped.set_nonblocking(true)?;
-                    }
-                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                Ok(())
+            })? {}
+
+            let usb_identity = with_device(&file, |device| {
+                Ok(crate::pseudofs::usbfs::device_identity(
+                    device.inner().as_any(),
+                ))
+            })?
+            .flatten();
+            if let Some(identity) = usb_identity {
+                let wrapped = crate::pseudofs::usbfs::open_usbfs_file(identity, file, flags)?;
+                if flags & O_NONBLOCK != 0 {
+                    wrapped.set_nonblocking(true)?;
                 }
-                if let Some(ptmx) = inner.downcast_ref::<tty::Ptmx>() {
-                    // Opening /dev/ptmx creates a new pseudo-terminal
-                    let (master, pty_number) = ptmx.create_pty()?;
-                    // TODO: this is cursed
-                    let pts = current_fs_context().lock().resolve("/dev/pts")?;
-                    let entry = DirEntry::new_file(
+                return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+            }
+
+            let allocated_pty = with_device(&file, |device| {
+                device
+                    .inner()
+                    .as_any()
+                    .downcast_ref::<tty::Ptmx>()
+                    .map(tty::Ptmx::create_pty)
+                    .transpose()
+            })?
+            .flatten();
+            if let Some((master, pty_number)) = allocated_pty {
+                let pts = current_fs_context()
+                    .lock()
+                    .resolve_unmanaged_location("/dev/pts")?;
+                let location = pts
+                    .synthetic_sibling_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
-                        Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
-                    );
-                    let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
-                } else if inner.is::<tty::CurrentTty>() {
-                    let term = current_user_task()
-                        .as_thread()
-                        .proc_data
-                        .proc
-                        .group()
-                        .session()
-                        .terminal()
-                        .ok_or(AxError::NotFound)?;
-                    let path = tty::terminal_device_path(term.as_ref()).ok_or_else(|| {
-                        warn!("unknown controlling terminal type for /dev/tty");
-                        AxError::BadState
-                    })?;
-                    let loc = current_fs_context().lock().resolve(&path)?;
-                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
-                }
+                        pty_number.to_string(),
+                    )
+                    .map_err(|_| AxError::BadState)?;
+                file = ax_fs_ng::vfs::File::from_unmanaged(
+                    FileBackend::Direct(location),
+                    file.flags(),
+                )?;
+            } else if with_device(&file, |device| {
+                Ok(device.inner().as_any().is::<tty::CurrentTty>())
+            })?
+            .unwrap_or(false)
+            {
+                let term = current_user_task()
+                    .as_thread()
+                    .proc_data
+                    .proc
+                    .group()
+                    .session()
+                    .terminal()
+                    .ok_or(AxError::NotFound)?;
+                let path = tty::terminal_device_path(term.as_ref()).ok_or_else(|| {
+                    warn!("unknown controlling terminal type for /dev/tty");
+                    AxError::BadState
+                })?;
+                let location = current_fs_context()
+                    .lock()
+                    .resolve_unmanaged_location(&path)?;
+                file = ax_fs_ng::vfs::File::from_unmanaged(
+                    FileBackend::Direct(location),
+                    file.flags(),
+                )?;
             }
             // Call open() on the final device after /dev/ptmx and /dev/tty
             // rewrites, so PTY open-count tracking (Tty) pairs the last-fd
             // close with peer POLLHUP/EOF notification. Block devices already
             // use the O_EXCL hook above, so skip them to avoid a double open().
-            if let Ok(device) = file.location().entry().downcast::<Device>() {
+            if let Some(()) = with_device(&file, |device| {
                 let is_block = device
                     .metadata()
                     .is_ok_and(|m| m.node_type == NodeType::BlockDevice);
                 if !is_block {
                     device.inner().open(flags & O_EXCL != 0)?;
                 }
-            }
+                Ok(())
+            })? {}
             Arc::new(File::new(file, flags))
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir, flags)),
@@ -180,6 +210,19 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         f.set_nonblocking(true)?;
     }
     add_file_like(f, flags & O_CLOEXEC != 0)
+}
+
+fn with_device<R>(
+    file: &ax_fs_ng::vfs::File,
+    operation: impl for<'device> FnOnce(&'device Device) -> AxResult<R>,
+) -> AxResult<Option<R>> {
+    if !matches!(
+        file.metadata()?.node_type,
+        NodeType::CharacterDevice | NodeType::BlockDevice
+    ) {
+        return Ok(None);
+    }
+    file.with_node::<Device, _>(operation).map(Some)
 }
 
 #[repr(C)]
@@ -392,15 +435,17 @@ pub fn sys_openat(
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
-        && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {
-            Ok(_) => Ok(false),
-            Err(AxError::NotFound) => Ok(true),
-            Err(err) => Err(err),
+        && with_fs(dirfd, |fs| {
+            fs.with_namespace_operation(|namespace| match namespace.resolve_path_no_follow(&path) {
+                Ok(_) => Ok(false),
+                Err(AxError::NotFound) => Ok(true),
+                Err(err) => Err(err),
+            })
         })?;
 
     // Open first, then install the file so filesystem errors propagate unchanged.
     let fd =
-        with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
+        with_fs(dirfd, |fs| fs.open(&options, path)).and_then(|it| add_to_fd(it, flags as _))?;
     if should_notify_create {
         let file = get_file_like(fd)?;
         crate::file::inotify::notify_create_path(file.path().as_ref(), false);

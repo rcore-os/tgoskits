@@ -17,8 +17,8 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    Cred, FutexKey, ProcessData, Thread, TimerState, UserTaskRef, WeakUserTaskRef,
-    current_user_task, futex_table_for_process, send_signal_thread_inner, send_signal_to_process,
+    Cred, FutexKey, ProcessData, Thread, UserTaskRef, WeakUserTaskRef, current_user_task,
+    futex_table_for_process, send_signal_thread_inner, send_signal_to_process,
     send_signal_to_thread,
 };
 
@@ -366,16 +366,6 @@ pub fn poll_process_timer(pid: Pid) {
             let _ = send_signal_to_process(pid, Some(sig));
         });
     }
-}
-
-/// Sets the timer state.
-pub fn set_timer_state(task: &UserTaskRef, state: TimerState) {
-    let thr = task.as_thread();
-    let pending = thr.time.lock().poll(&thr.cpu_time);
-    for signo in pending.into_iter() {
-        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    }
-    thr.cpu_time.set_state(state);
 }
 
 #[repr(C)]
@@ -737,7 +727,7 @@ pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) {
 /// Request a sibling thread to exit with thread-only semantics.
 ///
 /// Sets the target's `exit_request` flag and interrupts it. On its next
-/// return to user space, `check_signals` observes the flag and routes to
+/// return to user space, `process_one_signal` observes the flag and routes to
 /// `do_exit(0, false)` — no `group_exit`, no fatal-signal cascade. Used by
 /// `sys_execve` to reap siblings without dragging the calling thread (or
 /// the soon-to-be-loaded image) into a process-fatal exit.

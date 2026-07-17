@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Require the protocol's initialized-card capability before the RDIF adapter
+  can construct its interrupt-backed runtime device.
+- Migrate the RDIF adapter to the 0.12 owned interrupt contract, delegate IDMAC
+  queue constraints and typed recovery to DWMMC, and expose timed
+  initialization without a synchronous reset wrapper.
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.1...starfive-jh7110-dwmmc-v0.1.2) - 2026-07-08
 
 ### Other

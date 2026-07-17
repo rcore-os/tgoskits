@@ -149,7 +149,9 @@ unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
         },
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
-            crate::trap::dispatch_irq(irq_num);
+            // SAFETY: the LoongArch exception entry owns the interrupted CRMD
+            // state and returns through its architecture exception frame.
+            unsafe { crate::trap::dispatch_arch_irq(irq_num) };
         }
         trap => {
             let snapshot = tf.snapshot();

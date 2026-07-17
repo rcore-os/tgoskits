@@ -2,9 +2,10 @@
 //!
 //! This crate intentionally models the shared CMD/DAT bus rather than a card,
 //! block device, filesystem, or runtime queue. A host accepts one transaction
-//! at a time: a command, an optional data phase, and a task-side poll path to
-//! observe completion. Higher-level SD/MMC card protocols live in
-//! `sdmmc-protocol`.
+//! at a time: a command, an optional data phase, and a bounded state-advance
+//! path. Runtime integrations call that path only after publishing an IRQ
+//! event; initialization may additionally re-enter it at an explicit absolute
+//! deadline. Higher-level SD/MMC card protocols live in `sdmmc-protocol`.
 
 #![no_std]
 
@@ -16,7 +17,7 @@ use core::{
     num::{NonZeroU16, NonZeroU32},
 };
 
-use dma_api::{CompletedDma, DmaDirection, PreparedDma};
+use dma_api::{CompletedDma, CpuDmaBuffer, DmaDirection, PreparedDma};
 
 /// SD/SDIO/MMC command packet submitted on the CMD line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +173,8 @@ pub enum DataDirection {
 pub enum DataBuffer<'a> {
     Read(&'a mut [u8]),
     Write(&'a [u8]),
+    /// CPU-owned backing retained by an interrupt-driven PIO request.
+    OwnedCpu(CpuDmaBuffer),
     Dma(PreparedDma),
 }
 
@@ -180,6 +183,7 @@ impl DataBuffer<'_> {
         match self {
             Self::Read(buf) => buf.len(),
             Self::Write(buf) => buf.len(),
+            Self::OwnedCpu(buffer) => buffer.len().get(),
             Self::Dma(buffer) => buffer.len().get(),
         }
     }
@@ -192,6 +196,12 @@ impl DataBuffer<'_> {
         match self {
             Self::Read(_) => direction == DataDirection::Read,
             Self::Write(_) => direction == DataDirection::Write,
+            Self::OwnedCpu(buffer) => matches!(
+                (buffer.direction(), direction),
+                (DmaDirection::FromDevice, DataDirection::Read)
+                    | (DmaDirection::ToDevice, DataDirection::Write)
+                    | (DmaDirection::Bidirectional, _)
+            ),
             Self::Dma(buffer) => matches!(
                 (buffer.direction(), direction),
                 (DmaDirection::FromDevice, DataDirection::Read)
@@ -246,6 +256,49 @@ impl fmt::Display for DmaPhaseError {
 }
 
 impl core::error::Error for DmaPhaseError {}
+
+/// Error returned while constructing an owned-CPU PIO data phase.
+pub struct CpuPhaseError {
+    error: Error,
+    buffer: Box<CpuDmaBuffer>,
+}
+
+impl CpuPhaseError {
+    fn new(error: Error, buffer: CpuDmaBuffer) -> Self {
+        Self {
+            error,
+            buffer: Box::new(buffer),
+        }
+    }
+
+    pub const fn error(&self) -> Error {
+        self.error
+    }
+
+    pub fn into_buffer(self) -> CpuDmaBuffer {
+        *self.buffer
+    }
+
+    pub fn into_parts(self) -> (Error, CpuDmaBuffer) {
+        (self.error, *self.buffer)
+    }
+}
+
+impl fmt::Debug for CpuPhaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CpuPhaseError")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for CpuPhaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl core::error::Error for CpuPhaseError {}
 
 /// Optional data phase associated with a command.
 pub struct DataPhase<'a> {
@@ -305,6 +358,35 @@ impl<'a> DataPhase<'a> {
                     unreachable!("DataPhase::dma always stores a DMA buffer")
                 };
                 Err(DmaPhaseError::new(err, buffer))
+            }
+        }
+    }
+
+    /// Build a PIO phase that transfers CPU-buffer ownership to the host.
+    ///
+    /// Unlike the borrowed read/write constructors, the resulting transaction
+    /// may safely outlive its submit call. The host must return the same buffer
+    /// through [`SdioHost::take_completed_cpu`] only after its command/FIFO
+    /// engine is terminal or quiesced.
+    pub fn owned_cpu(
+        direction: DataDirection,
+        block_size: NonZeroU16,
+        block_count: NonZeroU32,
+        buffer: CpuDmaBuffer,
+    ) -> Result<Self, CpuPhaseError> {
+        let phase = Self {
+            direction,
+            block_size,
+            block_count,
+            buffer: DataBuffer::OwnedCpu(buffer),
+        };
+        match phase.validate() {
+            Ok(()) => Ok(phase),
+            Err(err) => {
+                let DataBuffer::OwnedCpu(buffer) = phase.buffer else {
+                    unreachable!("DataPhase::owned_cpu always stores a CPU buffer")
+                };
+                Err(CpuPhaseError::new(err, buffer))
             }
         }
     }
@@ -526,9 +608,10 @@ pub trait SdioHost {
     /// # Safety
     ///
     /// Callers must poll the returned request until [`RequestPoll::Ready`] or
-    /// call [`Self::abort_transaction`] before dropping it. Until one of those
-    /// terminal paths runs, the host may still access the associated data
-    /// buffer through DMA or FIFO PIO.
+    /// retain it until [`Self::abort_transaction`] reaches a terminal result.
+    /// In particular, `Error::Busy` is not terminal and requires a later retry
+    /// after controller quiescence. Until a terminal path runs, the host may
+    /// still access the associated data buffer through DMA or FIFO PIO.
     unsafe fn submit_transaction<'a>(
         &mut self,
         transaction: Transaction<'a>,
@@ -567,11 +650,12 @@ pub trait SdioHost {
 
     /// Abort a transaction.
     ///
-    /// This is part of the safe lifetime contract for borrowed transaction
-    /// buffers. Implementations may return an error to report that the
-    /// controller had to be reset or poisoned, but before returning they must
-    /// have stopped command/data engines and any DMA bus-master access that
-    /// could still touch the request buffer.
+    /// `Ok(())` is a terminal ownership transition. `Error::Busy` means the
+    /// controller cannot yet prove quiescence: the caller must retain the
+    /// request and retry only after the controller lifecycle has masked and
+    /// synchronized IRQ delivery and stopped DMA. Any other error must be
+    /// terminal with respect to borrowed memory, even when it reports that
+    /// reset or reconstruction failed.
     fn abort_transaction<'a>(
         &mut self,
         request: &mut Self::TransactionRequest<'a>,
@@ -583,6 +667,20 @@ pub trait SdioHost {
         &mut self,
         _request: &mut Self::TransactionRequest<'a>,
     ) -> Option<CompletedDma>
+    where
+        Self: 'a,
+    {
+        None
+    }
+
+    /// Return CPU ownership after an owned PIO request is terminal.
+    ///
+    /// Hosts must return `None` while their command or FIFO engine can still
+    /// consume or produce bytes for this request.
+    fn take_completed_cpu<'a>(
+        &mut self,
+        _request: &mut Self::TransactionRequest<'a>,
+    ) -> Option<CpuDmaBuffer>
     where
         Self: 'a,
     {

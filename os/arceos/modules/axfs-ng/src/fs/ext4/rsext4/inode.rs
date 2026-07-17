@@ -180,7 +180,10 @@ impl NodeOps for Inode {
             })
             .map_err(into_vfs_err)?;
         }
-        self.fs.sync_to_disk()
+        // Metadata mutations remain dirty in rsext4's caches. Like Linux,
+        // chmod/chown/timestamp updates do not imply a device flush; fsync,
+        // sync, freeze, or unmount establishes the durability boundary.
+        Ok(())
     }
 
     fn len(&self) -> VfsResult<u64> {
@@ -216,41 +219,31 @@ impl FileNodeOps for Inode {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            // Use inode-number-based write so open-unlinked regular files
-            // remain writable after their directory entry has been removed.
-            // Path-based write_file() fails with NotFound after unlink.
-            rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
-        }
-        self.fs.sync_to_disk()?;
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        // Use inode-number-based write so open-unlinked regular files remain
+        // writable after their directory entry has been removed. rsext4 keeps
+        // the resulting data and metadata dirty until an explicit sync path.
+        rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         Ok(buf.len())
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        let length = {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
-            let length = inode.size();
-            rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
-            length
-        };
-        self.fs.sync_to_disk()?;
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
+        let length = inode.size();
+        rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
         Ok((buf.len(), length + buf.len() as u64))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            // An open-unlinked regular file stays alive by inode number, not by
-            // a directory entry.  set_len must operate on the inode directly
-            // because path re-resolution would fail after unlink.
-            rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)?;
-        }
-        self.fs.sync_to_disk()
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        // An open-unlinked regular file stays alive by inode number, not by a
+        // directory entry. Keep the size update in rsext4's caches; fsync,
+        // filesystem sync, or unmount provides the durability boundary.
+        rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
@@ -340,7 +333,9 @@ impl FileNodeOps for Inode {
             .map_err(into_vfs_err)?;
         }
 
-        self.fs.sync_to_disk()
+        // Publishing the inode update is sufficient for namespace readers.
+        // Durability is provided by the explicit sync paths.
+        Ok(())
     }
 }
 
@@ -479,8 +474,6 @@ impl DirNodeOps for Inode {
             ino
         };
 
-        self.fs.sync_to_disk()?;
-
         let reference = Reference::new(
             self.this.as_ref().and_then(WeakDirEntry::upgrade),
             name.to_owned(),
@@ -587,7 +580,10 @@ impl DirNodeOps for Inode {
         if let Some(ino) = forget_file_ino.get() {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
-        self.fs.sync_to_disk()
+        // Unlink updates the in-memory namespace atomically under the ext4
+        // state lock. It does not turn a metadata mutation into an implicit
+        // full-filesystem sync.
+        Ok(())
     }
 
     fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
@@ -611,7 +607,10 @@ impl DirNodeOps for Inode {
         if let Some(ino) = replaced_file_ino {
             forget_cached_file_key(&*self.fs, ino.as_u64());
         }
-        self.fs.sync_to_disk()
+        // Rename visibility and persistence are separate contracts. The
+        // namespace change is complete here; callers that require durable
+        // ordering must use fsync/sync explicitly.
+        Ok(())
     }
 }
 

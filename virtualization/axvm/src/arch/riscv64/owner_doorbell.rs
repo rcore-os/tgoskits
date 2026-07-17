@@ -29,6 +29,19 @@ impl FixedOwnerContext {
         let context_id = self.0.load(Ordering::Acquire);
         (context_id != NO_OWNER).then_some(context_id)
     }
+
+    #[cfg(any(test, feature = "fs", feature = "host-fs"))]
+    pub(crate) fn clear(&self, context_id: usize) -> bool {
+        // Revocation may retry after the owner was already cleared. A
+        // different live owner is never treated as completion.
+        match self
+            .0
+            .compare_exchange(context_id, NO_OWNER, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => true,
+            Err(owner) => owner == NO_OWNER,
+        }
+    }
 }
 
 pub(crate) struct OwnerDoorbell(AtomicBool);
@@ -36,6 +49,11 @@ pub(crate) struct OwnerDoorbell(AtomicBool);
 impl OwnerDoorbell {
     pub(crate) const fn new() -> Self {
         Self(AtomicBool::new(false))
+    }
+
+    #[cfg(all(target_arch = "riscv64", any(feature = "fs", feature = "host-fs")))]
+    pub(crate) fn clear(&self) {
+        self.0.store(false, Ordering::Release);
     }
 
     pub(crate) fn publish_if(
@@ -109,6 +127,20 @@ mod tests {
         assert!(owner.is_owner(1));
         assert!(!owner.is_owner(3));
         assert_eq!(owner.get(), Some(1));
+    }
+
+    #[test]
+    fn fixed_owner_clear_is_retryable_but_never_clears_another_owner() {
+        let owner = FixedOwnerContext::new();
+
+        assert!(owner.install(1));
+        assert!(!owner.clear(3));
+        assert_eq!(owner.get(), Some(1));
+        assert!(owner.clear(1));
+        assert!(owner.clear(1));
+        assert_eq!(owner.get(), None);
+        assert!(owner.install(3));
+        assert_eq!(owner.get(), Some(3));
     }
 
     #[test]

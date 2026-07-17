@@ -20,7 +20,35 @@ mod dwarf;
 pub use dwarf::{DwarfReader, FrameIter};
 
 static IP_RANGE: Once<Range<usize>> = Once::new();
-static FP_RANGE: Once<Range<usize>> = Once::new();
+static STACK_BOUNDS: Once<InstalledStackBounds> = Once::new();
+const RAW_BACKTRACE_MAX_DEPTH: usize = 32;
+
+/// Exact mapped stack window for the execution context being unwound.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StackBounds {
+    start: usize,
+    end: usize,
+}
+
+impl StackBounds {
+    /// Creates one half-open stack window.
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    fn into_range(self) -> Option<Range<usize>> {
+        (self.start < self.end).then_some(self.start..self.end)
+    }
+}
+
+/// Returns the current execution context's exact mapped kernel-stack window.
+pub type StackBoundsProvider = fn() -> Option<StackBounds>;
+
+enum InstalledStackBounds {
+    Fixed(Range<usize>),
+    Provider(StackBoundsProvider),
+}
 
 #[cfg(target_arch = "x86_64")]
 const TARGET_ARCH: &str = "x86_64";
@@ -41,10 +69,33 @@ const TARGET_ARCH: &str = "loongarch64";
 )))]
 const TARGET_ARCH: &str = "unknown";
 
-/// Initializes the backtrace library.
-pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
+/// Initializes the backtrace library for one permanently fixed stack window.
+///
+/// # Safety
+///
+/// `stack_bounds` must remain mapped and readable for every later synchronous
+/// walk and must not include unmapped holes or user-controlled memory. A
+/// multitasking runtime should use [`init_with_stack_provider`] instead.
+pub unsafe fn init(ip_range: Range<usize>, stack_bounds: Range<usize>) {
+    install(ip_range, InstalledStackBounds::Fixed(stack_bounds));
+}
+
+/// Initializes the backtrace library with a current-stack capability provider.
+///
+/// # Safety
+///
+/// `stack_bounds` must return only the mapped, readable kernel-stack allocation
+/// that owns the calling context. The returned window must stay valid until the
+/// provider returns and throughout the immediately following synchronous walk;
+/// it must never include unmapped holes or user-controlled memory. The provider
+/// must remain callable until shutdown and must not allocate, block, or panic.
+pub unsafe fn init_with_stack_provider(ip_range: Range<usize>, stack_bounds: StackBoundsProvider) {
+    install(ip_range, InstalledStackBounds::Provider(stack_bounds));
+}
+
+fn install(ip_range: Range<usize>, stack_bounds: InstalledStackBounds) {
     IP_RANGE.call_once(|| ip_range);
-    FP_RANGE.call_once(|| fp_range);
+    STACK_BOUNDS.call_once(|| stack_bounds);
     #[cfg(feature = "dwarf")]
     dwarf::init();
 }
@@ -60,20 +111,29 @@ pub struct Frame {
 }
 
 impl Frame {
-    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
-    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
-    #[cfg(feature = "alloc")]
-    fn read(fp: usize) -> Option<Self> {
+    fn read_in_range(fp: usize, readable_stack: &Range<usize>) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
         }
 
-        Some(unsafe { (fp as *const Frame).sub(Self::OFFSET).read() })
+        let record_size = core::mem::size_of::<Frame>();
+        let record_offset = Self::OFFSET.checked_mul(record_size)?;
+        let record_start = fp.checked_sub(record_offset)?;
+        let record_end = record_start.checked_add(record_size)?;
+        if record_start < readable_stack.start || record_end > readable_stack.end {
+            return None;
+        }
+
+        // SAFETY: `record_start` is aligned because `fp` is aligned and the
+        // architecture offset is a multiple of Frame alignment. Bounds above
+        // cover the complete load; `init`'s provider contract guarantees that
+        // this exact current-stack window is mapped and readable for the walk.
+        Some(unsafe { (record_start as *const Frame).read() })
     }
 
     // The stored IP is the return address (instruction after the call).
@@ -160,23 +220,68 @@ impl CaptureBuf {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalkError {
+    Uninitialized,
+    StackBoundsUnavailable,
+    InvalidStackBounds,
+    InvalidFramePointer,
+}
+
 /// Core frame pointer walking logic. Calls `callback` for each valid frame.
 /// The callback returns `false` to stop unwinding (e.g., buffer full).
 #[cfg(feature = "alloc")]
-fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
-    let Some(fp_range) = FP_RANGE.get() else {
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
-        return;
+fn walk_stack(fp: usize, callback: impl FnMut(Frame) -> bool) -> Result<(), WalkError> {
+    walk_stack_with_limit(fp, max_depth(), callback)
+}
+
+#[cfg(feature = "alloc")]
+fn walk_stack_with_limit(
+    fp: usize,
+    depth_limit: usize,
+    callback: impl FnMut(Frame) -> bool,
+) -> Result<(), WalkError> {
+    let stack = resolve_installed_stack_bounds()?;
+    walk_stack_with_ranges(fp, depth_limit, Some(&stack), IP_RANGE.get(), callback)
+}
+
+fn resolve_stack_bounds(provider: Option<StackBoundsProvider>) -> Result<Range<usize>, WalkError> {
+    let provider = provider.ok_or(WalkError::Uninitialized)?;
+    provider()
+        .ok_or(WalkError::StackBoundsUnavailable)?
+        .into_range()
+        .ok_or(WalkError::InvalidStackBounds)
+}
+
+fn resolve_installed_stack_bounds() -> Result<Range<usize>, WalkError> {
+    match STACK_BOUNDS.get().ok_or(WalkError::Uninitialized)? {
+        InstalledStackBounds::Fixed(bounds) => (bounds.start < bounds.end)
+            .then(|| bounds.clone())
+            .ok_or(WalkError::InvalidStackBounds),
+        InstalledStackBounds::Provider(provider) => resolve_stack_bounds(Some(*provider)),
+    }
+}
+
+fn walk_stack_with_ranges(
+    mut fp: usize,
+    depth_limit: usize,
+    fp_range: Option<&Range<usize>>,
+    ip_range: Option<&Range<usize>>,
+    mut callback: impl FnMut(Frame) -> bool,
+) -> Result<(), WalkError> {
+    let Some(fp_range) = fp_range else {
+        return Err(WalkError::Uninitialized);
     };
+    if depth_limit == 0 {
+        return Ok(());
+    }
 
-    let ip_range = IP_RANGE.get();
     let mut depth = 0;
-    let max_depth = max_depth();
 
-    while fp_range.contains(&fp)
-        && depth < max_depth
-        && let Some(frame) = Frame::read(fp)
-    {
+    while depth < depth_limit {
+        let Some(frame) = Frame::read_in_range(fp, fp_range) else {
+            return Err(WalkError::InvalidFramePointer);
+        };
         // Skip frames whose IP is outside the kernel text range.
         // We continue unwinding rather than stopping, as a corrupted
         // IP does not necessarily mean the FP chain is broken.
@@ -186,12 +291,21 @@ fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
         // Check FP progress before IP filtering: a bad IP can be skipped, but
         // a non-advancing FP would otherwise keep revisiting the same frame.
         if next_fp != 0 && next_fp <= fp {
-            break;
+            return Err(WalkError::InvalidFramePointer);
+        }
+        if next_fp != 0
+            && let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
+            && next_fp >= large_stack_end
+        {
+            return Err(WalkError::InvalidFramePointer);
         }
 
         if let Some(ip_range) = ip_range
             && !ip_range.contains(&frame.ip)
         {
+            if next_fp == 0 {
+                break;
+            }
             fp = next_fp;
             depth += 1;
             continue;
@@ -201,18 +315,32 @@ fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
             break;
         }
 
-        if let Some(large_stack_end) = fp.checked_add(8 * 1024 * 1024)
-            && next_fp >= large_stack_end
-        {
-            break;
-        }
-
         if next_fp == 0 {
             break;
         }
 
         fp = next_fp;
         depth += 1;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "alloc")]
+fn unwind_core(fp: usize, callback: impl FnMut(Frame) -> bool) {
+    match walk_stack(fp, callback) {
+        Ok(()) => {}
+        Err(WalkError::Uninitialized) => {
+            log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
+        }
+        Err(WalkError::StackBoundsUnavailable) => {
+            log::error!("Backtrace has no current kernel-stack capability.");
+        }
+        Err(WalkError::InvalidStackBounds) => {
+            log::error!("Backtrace stack provider returned an invalid range.");
+        }
+        Err(WalkError::InvalidFramePointer) => {
+            log::error!("Backtrace stopped at an invalid frame pointer.");
+        }
     }
 }
 
@@ -243,6 +371,185 @@ pub fn max_depth() -> usize {
 /// Returns whether the backtrace feature is enabled.
 pub const fn is_enabled() -> bool {
     cfg!(feature = "alloc")
+}
+
+/// Streams a machine-readable current-task backtrace without allocating.
+///
+/// This is intended for panic and other fatal paths where heap allocation,
+/// symbol lookup, and ordinary logging are unsafe. Frame walking and formatting
+/// are bounded by [`max_depth`]. The supplied writer decides how output is
+/// transported and may stop the walk by returning [`fmt::Error`].
+pub fn write_current_raw(writer: &mut impl fmt::Write, kind: &'static str) -> fmt::Result {
+    let Some(frame_pointer) = current_frame_pointer() else {
+        writeln!(
+            writer,
+            "BACKTRACE_BEGIN kind={kind} arch={TARGET_ARCH} alloc=false dwarf=false"
+        )?;
+        writeln!(writer, "BT_ERROR unsupported")?;
+        return writeln!(writer, "BACKTRACE_END");
+    };
+    write_raw_from_frame_pointer(writer, kind, frame_pointer)
+}
+
+fn write_raw_from_frame_pointer(
+    writer: &mut impl fmt::Write,
+    kind: &'static str,
+    frame_pointer: usize,
+) -> fmt::Result {
+    let stack = match resolve_installed_stack_bounds() {
+        Ok(stack) => stack,
+        Err(error) => return write_raw_stack_error(writer, kind, error),
+    };
+    write_raw_from_frame_pointer_with_ranges(
+        writer,
+        kind,
+        frame_pointer,
+        Some(&stack),
+        IP_RANGE.get(),
+    )
+}
+
+fn write_raw_stack_error(
+    writer: &mut impl fmt::Write,
+    kind: &'static str,
+    error: WalkError,
+) -> fmt::Result {
+    writeln!(
+        writer,
+        "BACKTRACE_BEGIN kind={kind} arch={TARGET_ARCH} alloc=false dwarf=false"
+    )?;
+    let reason = match error {
+        WalkError::Uninitialized => "uninitialized",
+        WalkError::StackBoundsUnavailable => "stack_bounds_unavailable",
+        WalkError::InvalidStackBounds => "invalid_stack_bounds",
+        WalkError::InvalidFramePointer => "invalid_frame_pointer",
+    };
+    writeln!(writer, "BT_ERROR {reason}")?;
+    writeln!(writer, "BACKTRACE_END")
+}
+
+fn write_raw_from_frame_pointer_with_ranges(
+    writer: &mut impl fmt::Write,
+    kind: &'static str,
+    frame_pointer: usize,
+    fp_range: Option<&Range<usize>>,
+    ip_range: Option<&Range<usize>>,
+) -> fmt::Result {
+    writeln!(
+        writer,
+        "BACKTRACE_BEGIN kind={kind} arch={TARGET_ARCH} alloc=false dwarf=false"
+    )?;
+
+    let mut frame_index = 0usize;
+    let mut write_error = None;
+    let walk_result = walk_stack_with_ranges(
+        frame_pointer,
+        max_depth().min(RAW_BACKTRACE_MAX_DEPTH),
+        fp_range,
+        ip_range,
+        |frame| match writeln!(
+            writer,
+            "BT {frame_index} ip={:#x} fp={:#x}",
+            frame.ip, frame.fp
+        ) {
+            Ok(()) => {
+                frame_index += 1;
+                true
+            }
+            Err(error) => {
+                write_error = Some(error);
+                false
+            }
+        },
+    );
+    if let Some(error) = write_error {
+        return Err(error);
+    }
+    match walk_result {
+        Ok(()) => {}
+        Err(WalkError::Uninitialized) => writeln!(writer, "BT_ERROR uninitialized")?,
+        Err(WalkError::StackBoundsUnavailable) => {
+            writeln!(writer, "BT_ERROR stack_bounds_unavailable")?
+        }
+        Err(WalkError::InvalidStackBounds) => writeln!(writer, "BT_ERROR invalid_stack_bounds")?,
+        Err(WalkError::InvalidFramePointer) => writeln!(writer, "BT_ERROR invalid_frame_pointer")?,
+    }
+    writeln!(writer, "BACKTRACE_END")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_frame_pointer() -> Option<usize> {
+    let frame_pointer: usize;
+    // SAFETY: reading the current frame-pointer register has no side effects.
+    // The value is not dereferenced until a complete Frame record has been
+    // validated against the initialized readable-stack range.
+    unsafe {
+        core::arch::asm!(
+            "mov {frame_pointer}, rbp",
+            frame_pointer = out(reg) frame_pointer,
+            options(nomem, nostack, preserves_flags)
+        )
+    };
+    Some(frame_pointer)
+}
+
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+fn current_frame_pointer() -> Option<usize> {
+    let frame_pointer: usize;
+    // SAFETY: reading the current frame-pointer register has no side effects.
+    // The value is checked against the initialized readable-stack range before
+    // any memory access.
+    unsafe {
+        core::arch::asm!(
+            "mv {frame_pointer}, s0",
+            frame_pointer = out(reg) frame_pointer,
+            options(nomem, nostack)
+        )
+    };
+    Some(frame_pointer)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn current_frame_pointer() -> Option<usize> {
+    let frame_pointer: usize;
+    // SAFETY: reading the current frame-pointer register has no side effects.
+    // The value is checked against the initialized readable-stack range before
+    // any memory access.
+    unsafe {
+        core::arch::asm!(
+            "mov {frame_pointer}, x29",
+            frame_pointer = out(reg) frame_pointer,
+            options(nomem, nostack)
+        )
+    };
+    Some(frame_pointer)
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn current_frame_pointer() -> Option<usize> {
+    let frame_pointer: usize;
+    // SAFETY: reading the current frame-pointer register has no side effects.
+    // The value is checked against the initialized readable-stack range before
+    // any memory access.
+    unsafe {
+        core::arch::asm!(
+            "move {frame_pointer}, $fp",
+            frame_pointer = out(reg) frame_pointer,
+            options(nomem, nostack)
+        )
+    };
+    Some(frame_pointer)
+}
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv32",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
+fn current_frame_pointer() -> Option<usize> {
+    None
 }
 
 #[allow(dead_code)]
@@ -456,9 +763,36 @@ mod tests {
 
     use super::*;
 
+    fn test_stack_bounds() -> Option<StackBounds> {
+        Some(StackBounds::new(0, usize::MAX))
+    }
+
     fn init_for_tests() {
-        init(0..usize::MAX, 0..usize::MAX);
+        // SAFETY: tests construct live frame chains in process memory and keep
+        // their allocations alive for every unwind operation.
+        unsafe { init_with_stack_provider(0..usize::MAX, test_stack_bounds) };
         set_max_depth(32);
+    }
+
+    #[test]
+    fn stack_bounds_are_resolved_for_each_walk() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static START: AtomicUsize = AtomicUsize::new(0x1000);
+        fn moving_bounds() -> Option<StackBounds> {
+            let start = START.load(Ordering::Acquire);
+            Some(StackBounds::new(start, start + 0x1000))
+        }
+
+        assert_eq!(
+            resolve_stack_bounds(Some(moving_bounds)),
+            Ok(0x1000..0x2000)
+        );
+        START.store(0x3000, Ordering::Release);
+        assert_eq!(
+            resolve_stack_bounds(Some(moving_bounds)),
+            Ok(0x3000..0x4000)
+        );
     }
 
     fn boxed_frame_chain(ips: &[usize]) -> (Box<[Frame]>, usize) {
@@ -548,6 +882,72 @@ mod tests {
     }
 
     #[test]
+    fn raw_writer_streams_frames_without_building_a_backtrace_object() {
+        init_for_tests();
+        let (_chain, start_fp) = boxed_frame_chain(&[0x1111, 0x2222]);
+        let mut output = alloc::string::String::new();
+
+        write_raw_from_frame_pointer(&mut output, "panic", start_fp).unwrap();
+
+        assert!(output.contains("BACKTRACE_BEGIN kind=panic"));
+        assert!(output.contains("BT 0 ip=0x1111"));
+        assert!(output.contains("BT 1 ip=0x2222"));
+        assert!(output.ends_with("BACKTRACE_END\n"));
+    }
+
+    #[test]
+    fn raw_writer_caps_fatal_path_depth() {
+        init_for_tests();
+        set_max_depth(RAW_BACKTRACE_MAX_DEPTH * 2);
+        let ips = (0..RAW_BACKTRACE_MAX_DEPTH + 8)
+            .map(|index| 0x4000 + index)
+            .collect::<Vec<_>>();
+        let (_chain, start_fp) = boxed_frame_chain(&ips);
+        let mut output = alloc::string::String::new();
+
+        write_raw_from_frame_pointer(&mut output, "panic", start_fp).unwrap();
+
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.starts_with("BT "))
+                .count(),
+            32
+        );
+        set_max_depth(32);
+    }
+
+    #[test]
+    fn raw_writer_reports_uninitialized_without_reading_the_frame_pointer() {
+        let mut output = alloc::string::String::new();
+
+        write_raw_from_frame_pointer_with_ranges(&mut output, "panic", usize::MAX, None, None)
+            .unwrap();
+
+        assert!(output.contains("BT_ERROR uninitialized"));
+        assert!(!output.lines().any(|line| line.starts_with("BT ")));
+        assert!(output.ends_with("BACKTRACE_END\n"));
+    }
+
+    #[test]
+    fn raw_writer_rejects_a_frame_record_outside_the_readable_stack_range() {
+        let mut output = alloc::string::String::new();
+        let readable_stack = 0x1000..0x2000;
+
+        write_raw_from_frame_pointer_with_ranges(
+            &mut output,
+            "panic",
+            0x2000,
+            Some(&readable_stack),
+            Some(&(0..usize::MAX)),
+        )
+        .unwrap();
+
+        assert!(output.contains("BT_ERROR invalid_frame_pointer"));
+        assert!(!output.lines().any(|line| line.starts_with("BT ")));
+    }
+
+    #[test]
     fn unwind_stack_stops_on_non_advancing_frame_pointer() {
         init_for_tests();
         let mut frames = [Frame { fp: 0, ip: 0x1111 }, Frame { fp: 0, ip: 0x2222 }];
@@ -561,9 +961,10 @@ mod tests {
 
     #[test]
     fn frame_read_rejects_null_and_misaligned() {
-        assert!(Frame::read(0).is_none());
-        assert!(Frame::read(1).is_none());
-        assert!(Frame::read(3).is_none());
+        let readable = 0..usize::MAX;
+        assert!(Frame::read_in_range(0, &readable).is_none());
+        assert!(Frame::read_in_range(1, &readable).is_none());
+        assert!(Frame::read_in_range(3, &readable).is_none());
     }
 
     // --- capture_trap with Inner::Captured verification ---
@@ -750,11 +1151,11 @@ mod tests {
         // All valid FP values must be multiples of the alignment
         for offset in 1..align {
             assert!(
-                Frame::read(offset).is_none(),
+                Frame::read_in_range(offset, &(0..usize::MAX)).is_none(),
                 "misaligned {offset} should fail"
             );
         }
         // Zero is always rejected
-        assert!(Frame::read(0).is_none());
+        assert!(Frame::read_in_range(0, &(0..usize::MAX)).is_none());
     }
 }

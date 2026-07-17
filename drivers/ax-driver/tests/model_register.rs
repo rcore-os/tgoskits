@@ -30,6 +30,14 @@ impl_trait! {
             Err(AxError::Unsupported)
         }
 
+        // The host integration-test DMA model is cache-coherent. Define the
+        // symbols required by trait-FFI without simulating non-coherent cache.
+        fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
+
         fn dma_alloc_pages(
             _dma_mask: u64,
             _num_pages: usize,

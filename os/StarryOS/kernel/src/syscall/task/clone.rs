@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
+use ax_fs_ng::vfs::current_fs_context;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use bitflags::bitflags;
@@ -16,11 +16,11 @@ use crate::task::spawn_user_thread_with_fp_state_and_policy;
 #[cfg(not(target_arch = "riscv64"))]
 use crate::task::spawn_user_thread_with_policy;
 use crate::{
-    file::{FD_TABLE, FileLike, PidFd, close_file_like, current_fd_table},
+    file::{FileLike, PidFd, PreparedProcessScope, close_file_like, current_fd_table},
     mm::copy_from_kernel,
     task::{
-        ProcessData, ProcessImage, Thread, add_task_to_table, allocate_user_tid, current_user_task,
-        new_user_task,
+        ProcessData, ProcessDataInit, Thread, add_task_to_table, allocate_user_tid,
+        current_user_task, new_user_task,
     },
 };
 
@@ -265,24 +265,50 @@ impl CloneArgs {
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
                 Arc::new(SpinNoIrq::new(Default::default()))
             } else {
-                Arc::new(SpinNoIrq::new(
-                    old_proc_data.signal.actions().lock().clone(),
-                ))
+                let parent_actions = old_proc_data.signal.actions();
+                let actions = parent_actions.lock().clone();
+                Arc::new(SpinNoIrq::new(actions))
             };
 
-            let proc_data = ProcessData::new(
-                proc,
-                ProcessImage::new(
-                    old_proc_data.exe_path.read().clone(),
-                    old_proc_data.cmdline.read().clone(),
-                    old_proc_data.auxv.read().clone(),
-                ),
+            let process_image = old_proc_data.image_snapshot();
+            let child_fd_table = {
+                let current_files = current_fd_table();
+                if flags.contains(CloneFlags::FILES) {
+                    // Synchronize with close_all_fds: holding a read lock while
+                    // cloning the owner ensures teardown observes the new
+                    // strong reference or finishes before publication.
+                    let table = current_files.read();
+                    let shared = current_files.clone();
+                    drop(table);
+                    shared
+                } else {
+                    let snapshot = current_files.read().clone();
+                    Arc::new(ax_kspin::SpinRwLock::new(snapshot))
+                }
+            };
+            let child_fs_context = if flags.contains(CloneFlags::FS) {
+                current_fs_context()
+            } else {
+                let current_fs = current_fs_context();
+                let mut fs_context = current_fs.lock().clone();
+                if flags.contains(CloneFlags::NEWNS) {
+                    fs_context.unshare_mount_namespace()?;
+                }
+                Arc::new(ax_sync::PiMutex::new(fs_context))
+            };
+            let prepared_scope =
+                PreparedProcessScope::from_resources(child_fd_table, child_fs_context);
+
+            let mut proc_data = ProcessData::new(ProcessDataInit {
+                process: proc,
+                image: process_image,
                 aspace,
                 signal_actions,
                 exit_signal,
-                curr_thread.tid(),
-                flags.contains(CloneFlags::VM),
-            );
+                wait_parent_tid: curr_thread.tid(),
+                vm_aspace_shared: flags.contains(CloneFlags::VM),
+                prepared_scope,
+            });
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
@@ -334,39 +360,9 @@ impl CloneArgs {
                 }
             }
 
-            *proc_data.nsproxy.lock() = new_nsproxy;
-
-            {
-                let mut scope = proc_data.scope.write();
-                let current_files = current_fd_table();
-                if flags.contains(CloneFlags::FILES) {
-                    // Synchronize with close_all_fds: holding a read lock
-                    // ensures close_all_fds either observes our strong_count
-                    // increment or blocks on write lock until we release.
-                    let _guard = current_files.read();
-                    FD_TABLE
-                        .scope_cell_mut(&mut scope)
-                        .clone_from(&current_files);
-                } else {
-                    FD_TABLE
-                        .scope_cell_mut(&mut scope)
-                        .write()
-                        .clone_from(&current_files.read());
-                }
-
-                if flags.contains(CloneFlags::FS) {
-                    FS_CONTEXT
-                        .scope_cell_mut(&mut scope)
-                        .clone_from(&current_fs_context());
-                } else {
-                    let current_fs = current_fs_context();
-                    let mut fs_context = current_fs.lock().clone();
-                    if flags.contains(CloneFlags::NEWNS) {
-                        fs_context.unshare_mount_namespace()?;
-                    }
-                    *FS_CONTEXT.scope_cell_mut(&mut scope).lock() = fs_context;
-                }
-            }
+            let proc_data_mut = Arc::get_mut(&mut proc_data)
+                .expect("fresh child ProcessData must remain uniquely owned before publication");
+            *proc_data_mut.nsproxy.get_mut() = new_nsproxy;
 
             (proc_data, page_table_root)
         };

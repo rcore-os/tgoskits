@@ -16,11 +16,10 @@ log = "0.4"
 mmio-api.workspace = true
 mbarrier = "0.1"
 rdif-block.workspace = true
-spin.workspace = true
 tock-registers = "0.10"
 
 [lib]
-test = false
+test = true
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

@@ -24,6 +24,30 @@ fn invalid_vgic_access_converts_to_device_input_error() {
     assert!(device.to_string().contains("0x80"));
 }
 
+#[test]
+fn ownership_transition_errors_preserve_device_domain_semantics() {
+    let not_spi: DeviceError = VgicError::NotSpi { irq: 17 }.into();
+    assert!(matches!(not_spi, DeviceError::InvalidInput { .. }));
+
+    let busy: DeviceError = VgicError::Busy {
+        operation: "begin SPI revocation",
+    }
+    .into();
+    assert!(matches!(busy, DeviceError::ResourceBusy { .. }));
+}
+
+#[cfg(feature = "vgicv3")]
+#[test]
+fn spi_ownership_is_private_and_released_only_by_typed_revocation() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(crate_dir.join("src/v3/vgicd.rs")).unwrap();
+
+    assert!(!source.contains("pub assigned_irqs"));
+    assert!(source.contains("pub fn begin_assigned_spi_revocation"));
+    assert!(source.contains("pub enum SpiRevocationPoll"));
+    assert!(source.contains("finish_revocation(self.batch)"));
+}
+
 #[cfg(feature = "vgicv3")]
 #[test]
 fn vgic_rejects_out_of_range_irq_without_panicking() {

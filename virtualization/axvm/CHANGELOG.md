@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Report synchronous and first-vCPU preparation failures only after all
+  successfully started default guests have stopped, so exclusive host-device
+  cleanup can finish without losing the original VM identity and error.
+- Move AArch64 physical SPI assignment out of host-filesystem VM construction
+  into the common post-storage-selection activation stage.
+- Return an explicit IRQ-route lease from that stage so routes for passthrough
+  guests without a selected block controller still have a retained owner.
+- Require an explicit guest IRQ/MMIO/DMA route-revocation proof before block
+  controllers can reinitialize and the retained host filesystem can remount.
+- Split x86 IOAPIC passthrough forwarding into explicit route-state,
+  activation, hard-IRQ delivery, and revocation modules while preserving
+  transaction-scoped activation rollback.
+
+### Fixed
+
+- Reserve the running-VM count before spawning a vCPU task, closing the race in
+  which an early guest exit could decrement the count before publication.
+- Pair every x86 IOAPIC device-endpoint activation with an idempotent revoke
+  callback so host IRQ enable failures and batch rollback restore the endpoint
+  mask; failed revocation now quarantines the route instead of reactivating it.
+- Reserve required x86 forwarding actions before guest startup and unregister
+  them after mask, drain, and endpoint revocation so host IRQ ownership can be
+  reattached without a dormant guest action retaining the descriptor.
+- Register required x86 passthrough actions as exclusive and disabled, making
+  any surviving host action fail the ownership transfer before guest startup.
+- Route AArch64 passthrough SPIs from vCPU0's fixed host placement and complete
+  MPIDR affinity instead of deriving a target CPU from the unrelated VM ID.
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.22...axvm-v0.5.23) - 2026-07-10
 
 ### Other

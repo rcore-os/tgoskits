@@ -3,7 +3,7 @@
 mod heap;
 mod node;
 
-pub use node::{ExpiredTimer, TimerNode, TimerToken};
+pub use node::{ExpiredTimer, RuntimeTimerOwner, TimerNode, TimerToken};
 
 use self::heap::{TimerEntry, TimerHeap};
 
@@ -16,6 +16,9 @@ pub enum TimerError {
     /// The node's generation space has been exhausted.
     #[error("timer generation space is exhausted")]
     GenerationExhausted,
+    /// The runtime identity is zero or the node belongs to a scheduler sleep timer.
+    #[error("timer node ownership is incompatible with the requested arm")]
+    InvalidOwner,
 }
 
 /// Bounded timer-IRQ expiration request.
@@ -106,12 +109,64 @@ impl TimerQueue {
         node: core::pin::Pin<&TimerNode>,
         deadline_ns: u64,
     ) -> Result<TimerToken, TimerError> {
+        unsafe {
+            // SAFETY: forwarded caller contract keeps `node` pinned until the
+            // entry is removed. Class zero preserves caller-drained semantics.
+            self.arm_entry(node, deadline_ns, node.owner(), 0)
+        }
+    }
+
+    /// Arms an embedded node whose expiration belongs to the OS runtime.
+    ///
+    /// Unlike class-zero timers, this expiration is forwarded through the
+    /// value-only TaskRuntime hook at the next scheduler safe point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimerError::InvalidOwner`] when the runtime identity is zero
+    /// or `node` is reserved for a scheduler-thread sleep timer. Capacity and
+    /// generation failures have the same meaning as [`Self::arm`].
+    ///
+    /// # Safety
+    ///
+    /// In addition to [`Self::arm`]'s pinning and owner-CPU requirements,
+    /// `owner` must satisfy [`RuntimeTimerOwner::new`]'s lifetime and type
+    /// contract until cancellation and safe-point delivery are complete.
+    pub unsafe fn arm_runtime(
+        &mut self,
+        node: core::pin::Pin<&TimerNode>,
+        deadline_ns: u64,
+        owner: RuntimeTimerOwner,
+    ) -> Result<TimerToken, TimerError> {
+        if !owner.is_valid() || node.is_thread_owned() {
+            return Err(TimerError::InvalidOwner);
+        }
+        unsafe {
+            // SAFETY: the caller supplies both the pinned node lifetime and
+            // runtime-owner lifetime required by the new heap entry.
+            self.arm_entry(node, deadline_ns, owner.owner(), owner.owner_class())
+        }
+    }
+
+    unsafe fn arm_entry(
+        &mut self,
+        node: core::pin::Pin<&TimerNode>,
+        deadline_ns: u64,
+        owner: usize,
+        owner_class: u64,
+    ) -> Result<TimerToken, TimerError> {
         if self.heap.is_full() {
             return Err(TimerError::Capacity);
         }
         let token = node.next_token()?;
         node.activate(token);
-        let entry = TimerEntry::new(deadline_ns, token, node.get_ref() as *const TimerNode);
+        let entry = TimerEntry::new(
+            deadline_ns,
+            token,
+            node.get_ref() as *const TimerNode,
+            owner,
+            owner_class,
+        );
         self.heap.push(entry);
         Ok(token)
     }
@@ -163,7 +218,12 @@ impl TimerQueue {
             let event = unsafe {
                 // The popped entry still owns its pinned pointer; `try_expire`
                 // atomically rejects a concurrent cancellation or rearm.
-                (*entry.node()).try_expire(entry.token(), entry.deadline_ns())
+                (*entry.node()).try_expire(
+                    entry.token(),
+                    entry.deadline_ns(),
+                    entry.owner(),
+                    entry.owner_class(),
+                )
             };
             if let Some(event) = event {
                 output[expired] = event;
@@ -195,19 +255,26 @@ impl TimerQueue {
         self.heap.is_empty()
     }
 
-    fn next_wakeup(&self, request: ExpireRequest) -> (bool, Option<u64>) {
+    /// Reports whether the heap root still requires immediate owner service.
+    pub(crate) fn has_immediately_actionable(&self, now_ns: u64) -> bool {
         let Some(entry) = self.heap.peek() else {
-            return (false, None);
+            return false;
         };
         let live = unsafe {
             // Entries retain valid pinned nodes until removal from the heap.
             (*entry.node()).is_active(entry.token())
         };
-        let immediately_actionable = !live || entry.deadline_ns() <= request.now_ns;
+        !live || entry.deadline_ns() <= now_ns
+    }
+
+    fn next_wakeup(&self, request: ExpireRequest) -> (bool, Option<u64>) {
+        let Some(entry) = self.heap.peek() else {
+            return (false, None);
+        };
         let earliest = request
             .now_ns
             .saturating_add(request.timer_resolution_ns.max(1));
-        if immediately_actionable {
+        if self.has_immediately_actionable(request.now_ns) {
             (true, Some(earliest))
         } else {
             (false, Some(entry.deadline_ns().max(earliest)))

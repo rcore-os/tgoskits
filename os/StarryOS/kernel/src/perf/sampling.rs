@@ -47,7 +47,7 @@ use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kspin::{IrqGuard, PreemptIrqGuard};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
-use crate::task::future::IrqNotify;
+use crate::task::{future::IrqNotify, try_current_user_irq_view};
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
@@ -318,14 +318,22 @@ fn service_overflowed_slots(
         let ring_len = slot.ring_len;
         let cur_period = slot.period;
 
-        let tid = ax_std::os::arceos::task::current_thread_id()
-            .map_or(0, |thread| thread.as_u64() as u32);
+        // PERF_SAMPLE_TID carries Linux pid/tid, not the scheduler's private
+        // generation-bearing ThreadId. Kernel workers deliberately have no
+        // Starry user extension and therefore use the neutral (0, 0)
+        // identity. The bounded per-CPU view is safe in this hard-IRQ path and
+        // is dropped before the ring write below.
+        let (pid, tid) = try_current_user_irq_view().map_or((0, 0), |task| {
+            let identity = (task.tgid(), task.tid());
+            drop(task);
+            identity
+        });
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
-            pid: tid,
+            pid,
             tid,
             time,
             addr: 0,

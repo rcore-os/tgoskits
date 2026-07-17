@@ -18,6 +18,29 @@ pub enum VgicError {
         /// The exclusive upper bound for valid IRQ identifiers.
         max: usize,
     },
+    /// An operation requiring an SPI received an SGI, PPI, or special INTID.
+    #[error("VGIC IRQ {irq} is not a shared peripheral interrupt")]
+    NotSpi {
+        /// The rejected interrupt identifier.
+        irq: usize,
+    },
+    /// Another ownership transition prevents this operation from starting.
+    #[error("VGIC resource is busy during {operation}")]
+    Busy {
+        /// The operation that could not start.
+        operation: &'static str,
+    },
+    /// A revocation token no longer names the active ownership generation.
+    #[error(
+        "stale VGIC SPI revocation generation {generation}; active generation is \
+         {active_generation}"
+    )]
+    StaleRevocation {
+        /// Generation carried by the revocation token.
+        generation: u64,
+        /// Currently active generation, or zero when no revocation is active.
+        active_generation: u64,
+    },
     /// A register access has an invalid address or width.
     #[error("invalid VGIC {operation} at offset {offset:#x} with width {width:?}")]
     InvalidAccess {
@@ -49,8 +72,18 @@ pub enum VgicError {
 impl From<VgicError> for DeviceError {
     fn from(error: VgicError) -> Self {
         match error {
-            VgicError::InvalidIrq { .. } | VgicError::InvalidAccess { .. } => Self::InvalidInput {
+            VgicError::InvalidIrq { .. }
+            | VgicError::NotSpi { .. }
+            | VgicError::InvalidAccess { .. } => Self::InvalidInput {
                 operation: "access ARM VGIC",
+                detail: alloc::format!("{error}"),
+            },
+            VgicError::Busy { operation } => Self::ResourceBusy {
+                operation,
+                resource: "VGIC SPI ownership".into(),
+            },
+            VgicError::StaleRevocation { .. } => Self::InvalidState {
+                operation: "revoke ARM VGIC SPI ownership",
                 detail: alloc::format!("{error}"),
             },
             VgicError::Unsupported { .. } => Self::Unsupported {

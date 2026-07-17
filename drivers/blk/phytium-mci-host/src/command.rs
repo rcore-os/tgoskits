@@ -1,7 +1,7 @@
 use sdmmc_protocol::{
     CommandPoll, CommandResponsePoll,
     cmd::{Command as ProtoCmd, DataDirection},
-    error::{Error, ErrorContext, Phase},
+    error::{Error, Phase},
     response::{
         IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType,
         SdioOcrResponse, SdioRwResponse,
@@ -9,7 +9,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    host::PhytiumMci,
+    host::{PhytiumMci, RegisterOwner},
     regs::{Cmd, RIntSts, RegisterBlockVolatileFieldAccess},
 };
 
@@ -19,15 +19,16 @@ pub(crate) enum CommandState {
     WaitingInhibit {
         cmd: ProtoCmd,
         data: Option<crate::host::PendingData>,
-        polls: u32,
     },
     WaitingStart {
         cmd: ProtoCmd,
-        polls: u32,
     },
     Issued {
         cmd: ProtoCmd,
-        polls: u32,
+    },
+    WaitingBusy {
+        cmd: ProtoCmd,
+        response: Response,
     },
     Complete {
         response: Response,
@@ -55,16 +56,43 @@ impl PhytiumMci {
     }
 
     pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+        let irq = self.irq.clone();
+        let register_owner = irq.state.try_begin_task_update().ok_or(Error::Busy)?;
+        self.submit_command_while_registers_owned(cmd, &register_owner)
+    }
+
+    pub(crate) fn ensure_runtime_data_command_can_issue(&self) -> Result<(), Error> {
+        if !self.completion_irq_enabled() {
+            return Err(Error::Busy);
+        }
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
+        if !self.command_can_issue(true) {
+            return Err(Error::Busy);
+        }
+        Ok(())
+    }
+
+    /// Stage and activate a command while the caller owns the controller's
+    /// task-side register gate.
+    pub(crate) fn submit_command_while_registers_owned(
+        &mut self,
+        cmd: &ProtoCmd,
+        _register_owner: &RegisterOwner<'_>,
+    ) -> Result<(), Error> {
+        if !self.completion_irq_enabled() {
+            return Err(Error::Busy);
+        }
+        if !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
+        if !self.command_can_issue(self.pending_data.is_some()) {
+            return Err(Error::Busy);
+        }
         let data = self.pending_data.take();
         self.prepare_irq_for_request();
-        self.command_state = CommandState::WaitingInhibit {
-            cmd: *cmd,
-            data,
-            polls: 0,
-        };
+        self.command_state = CommandState::WaitingInhibit { cmd: *cmd, data };
         if let Err(err) = self.poll_command() {
             self.command_state = CommandState::Idle;
             return Err(err);
@@ -72,50 +100,48 @@ impl PhytiumMci {
         Ok(())
     }
 
+    /// Activate a data command after its DMA engine owns the request backing.
+    ///
+    /// Every fallible admission check must happen before this transition.
+    /// Holding `register_owner` excludes the IRQ endpoint until the request
+    /// generation and command doorbell have both been published.
+    pub(crate) fn activate_admitted_data_command(
+        &mut self,
+        cmd: &ProtoCmd,
+        data: crate::host::PendingData,
+        _register_owner: &RegisterOwner<'_>,
+    ) {
+        debug_assert!(matches!(self.command_state, CommandState::Idle));
+        debug_assert!(self.pending_data.is_none());
+        self.prepare_irq_for_request();
+        self.program_command(cmd, Some(data));
+    }
+
     pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
         match self.command_state {
-            CommandState::WaitingInhibit { cmd, data, polls } => {
+            CommandState::WaitingInhibit { cmd, data } => {
                 if !self.command_can_issue(data.is_some()) {
-                    if polls >= COMMAND_WAIT_POLLS {
-                        let err =
-                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
-                        self.command_state = CommandState::Failed { error: err };
-                        return Err(err);
-                    }
-                    self.command_state = CommandState::WaitingInhibit {
-                        cmd,
-                        data,
-                        polls: polls + 1,
-                    };
                     return Ok(CommandPoll::Pending);
                 }
                 self.program_command(&cmd, data);
                 return Ok(CommandPoll::Pending);
             }
-            CommandState::WaitingStart { cmd, polls } => {
+            CommandState::WaitingStart { cmd } => {
                 if self.regs.cmd().read().start_cmd() {
-                    if polls >= COMMAND_WAIT_POLLS {
-                        let err =
-                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
-                        self.command_state = CommandState::Failed { error: err };
-                        return Err(err);
-                    }
-                    self.command_state = CommandState::WaitingStart {
-                        cmd,
-                        polls: polls + 1,
-                    };
                     return Ok(CommandPoll::Pending);
                 }
-                self.command_state = CommandState::Issued { cmd, polls: 0 };
-                return Ok(CommandPoll::Pending);
+                self.command_state = CommandState::Issued { cmd };
             }
             CommandState::Issued { .. } => {}
+            CommandState::WaitingBusy { cmd, response } => {
+                return self.poll_r1b_busy(cmd, response);
+            }
             CommandState::Complete { .. } => return Ok(CommandPoll::Complete),
             CommandState::Failed { error } => return Err(error),
             CommandState::Idle => return Err(Error::InvalidArgument),
         }
 
-        let CommandState::Issued { cmd, polls } = self.command_state else {
+        let CommandState::Issued { cmd } = self.command_state else {
             unreachable!();
         };
         let raw_status = self.take_command_irq_status();
@@ -137,18 +163,28 @@ impl PhytiumMci {
                     return Err(err);
                 }
             };
+            if matches!(cmd.response, ResponseType::R1b) {
+                self.command_state = CommandState::WaitingBusy { cmd, response };
+                return self.poll_r1b_busy(cmd, response);
+            }
             self.command_state = CommandState::Complete { response };
             return Ok(CommandPoll::Complete);
         }
-        if polls >= COMMAND_WAIT_POLLS {
-            let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
-            self.command_state = CommandState::Failed { error: err };
-            return Err(err);
+        Ok(CommandPoll::Pending)
+    }
+
+    fn poll_r1b_busy(&mut self, cmd: ProtoCmd, response: Response) -> Result<CommandPoll, Error> {
+        let raw_status = self.take_busy_irq_status();
+        let status = RIntSts::from_bits(raw_status);
+        if status.error() {
+            let error = self.translate_int_error(status, Phase::ResponseWait, cmd.index);
+            self.command_state = CommandState::Failed { error };
+            return Err(error);
         }
-        self.command_state = CommandState::Issued {
-            cmd,
-            polls: polls + 1,
-        };
+        if status.data_transfer_over() {
+            self.command_state = CommandState::Complete { response };
+            return Ok(CommandPoll::Complete);
+        }
         Ok(CommandPoll::Pending)
     }
 
@@ -169,7 +205,8 @@ impl PhytiumMci {
             CommandState::Idle
             | CommandState::WaitingInhibit { .. }
             | CommandState::WaitingStart { .. }
-            | CommandState::Issued { .. } => Err(Error::InvalidArgument),
+            | CommandState::Issued { .. }
+            | CommandState::WaitingBusy { .. } => Err(Error::InvalidArgument),
         }
     }
 
@@ -196,60 +233,36 @@ impl PhytiumMci {
             encoded = encoded.with_transfer_mode(true);
         }
         self.regs.cmd().write(encoded);
-        self.command_state = CommandState::WaitingStart {
-            cmd: *cmd,
-            polls: 0,
-        };
+        self.command_state = CommandState::WaitingStart { cmd: *cmd };
     }
 
     fn take_command_irq_status(&mut self) -> u32 {
-        if self.completion_irq_enabled() {
-            return self
-                .irq
-                .state
-                .take_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        }
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let consume = raw_status & (crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        if consume != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(consume));
-        }
-        raw_status
+        self.irq
+            .state
+            .take_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK)
+    }
+
+    fn take_busy_irq_status(&mut self) -> u32 {
+        self.irq
+            .state
+            .take_status(crate::MCI_INT_DATA_TRANSFER_OVER | crate::MCI_INT_ERROR_MASK)
     }
 
     fn clear_command_int_status(&mut self) {
-        let raw_status = self.regs.rintsts().read().into_bits()
-            & (crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        if raw_status != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(raw_status));
-        }
         self.irq
             .state
             .clear_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
     }
 
     fn prepare_irq_for_request(&mut self) {
-        self.clear_all_int_status();
-        self.regs.idsts().write(u32::MAX);
         self.irq.state.begin_request();
     }
 
     pub(crate) fn abort_command(&mut self) -> Result<(), Error> {
-        self.clear_command_int_status();
-        for _ in 0..COMMAND_WAIT_POLLS {
-            if !self.regs.cmd().read().start_cmd() {
-                self.clear_all_int_status();
-                self.reset_fifo(Phase::CommandSend)?;
-                self.reset_dma(Phase::CommandSend)?;
-                self.pending_data = None;
-                self.data_blocks_remaining = 0;
-                self.data_cmd_index = 0;
-                self.command_state = CommandState::Idle;
-                return Ok(());
-            }
-            core::hint::spin_loop();
+        if !self.recovery_quiesced {
+            return Err(Error::Busy);
         }
-        self.reset_and_init_preserving_irq()?;
+        self.clear_command_int_status();
         self.pending_data = None;
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
@@ -257,8 +270,6 @@ impl PhytiumMci {
         Ok(())
     }
 }
-
-const COMMAND_WAIT_POLLS: u32 = 1_000_000;
 
 pub(crate) fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
     let mut c = Cmd::new()
@@ -329,4 +340,67 @@ fn read_r2(resp: [u32; 4]) -> [u8; 16] {
     bytes[8..12].copy_from_slice(&resp[1].to_be_bytes());
     bytes[12..16].copy_from_slice(&resp[0].to_be_bytes());
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use core::ptr::NonNull;
+
+    use sdmmc_protocol::{CommandPoll, cmd::CMD12};
+
+    use super::*;
+
+    #[test]
+    fn runtime_request_setup_does_not_ack_raw_irq_status() {
+        const RINTSTS_WORD: usize = 17;
+        const IDSTS_WORD: usize = 36;
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        let pending = crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_DATA_TRANSFER_OVER;
+        let pending_idmac = crate::MCI_IDSTS_RECEIVE;
+        mmio[RINTSTS_WORD] = pending;
+        mmio[IDSTS_WORD] = pending_idmac;
+        host.enable_completion_irq();
+
+        host.prepare_irq_for_request();
+
+        assert_eq!(mmio[RINTSTS_WORD], pending);
+        assert_eq!(mmio[IDSTS_WORD], pending_idmac);
+        assert_ne!(host.irq.state.generation(), 0);
+    }
+
+    #[test]
+    fn r1b_command_done_without_busy_release_remains_pending() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.enable_completion_irq();
+        host.irq.state.begin_request();
+        host.command_state = CommandState::Issued { cmd: CMD12 };
+        let generation = host.irq.state.generation();
+        host.irq
+            .state
+            .cache_if_current(generation, crate::MCI_INT_COMMAND_DONE, 0);
+
+        assert_eq!(host.poll_command(), Ok(CommandPoll::Pending));
+    }
+
+    #[test]
+    fn merged_r1b_command_and_busy_release_complete_in_one_irq_snapshot() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.enable_completion_irq();
+        host.irq.state.begin_request();
+        host.command_state = CommandState::Issued { cmd: CMD12 };
+        let generation = host.irq.state.generation();
+        host.irq.state.cache_if_current(
+            generation,
+            crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_DATA_TRANSFER_OVER,
+            0,
+        );
+
+        assert_eq!(host.poll_command(), Ok(CommandPoll::Complete));
+    }
 }

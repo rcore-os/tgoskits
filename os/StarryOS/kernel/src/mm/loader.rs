@@ -4,14 +4,13 @@ use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Ve
 use core::{ffi::CStr, iter, mem::size_of};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{CachedFile, FileBackend, current_fs_context};
+use ax_fs_ng::vfs::{CachedFile, FileBackend, FileLocation, current_fs_context};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     mem::virt_to_phys,
     paging::{MappingFlags, PageSize},
 };
 use ax_sync::PiMutex;
-use axfs_ng_vfs::Location;
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
@@ -157,9 +156,9 @@ fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
     entry: &'a ElfCacheEntry,
+    cache: &CachedFile,
 ) -> AxResult<ELFParser<'a>> {
     let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
-    let cache = entry.borrow_cache();
 
     // PT_TLS init image may extend beyond the last PT_LOAD's file range.
     // This assumes the PT_TLS file data is contiguous with and immediately
@@ -252,7 +251,7 @@ fn map_elf<'a>(
                     uspace.populate_area(seg_start, seg_size, mapping_flags(seg.flags))?;
                 }
             }
-            apply_relocations(uspace, base, entry.borrow_cache(), &elf_parser.headers().ph)?;
+            apply_relocations(uspace, base, cache, &elf_parser.headers().ph)?;
         }
     }
 
@@ -308,7 +307,7 @@ fn apply_relocations(
     let dyn_offset = dynamic_ph.offset as usize;
     let dyn_size = dynamic_ph.file_size as usize;
 
-    if dyn_offset + dyn_size > (cache.location().len().unwrap_or(0) as usize) {
+    if dyn_offset + dyn_size > (cache.file_len().unwrap_or(0) as usize) {
         debug!("Dynamic section extends beyond file");
         return Err(AxError::InvalidData);
     }
@@ -357,7 +356,7 @@ fn apply_relocations(
 
         for i in 0..rela_count {
             let entry_offset = rela_offset + i * rela_entry_size;
-            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+            if entry_offset + rela_entry_size > (cache.file_len().unwrap_or(0) as usize) {
                 break;
             }
 
@@ -390,7 +389,7 @@ fn apply_relocations(
                     let sym_file_offset =
                         vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
-                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    let file_len = cache.file_len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
                         continue;
                     }
@@ -430,7 +429,7 @@ fn apply_relocations(
 
         for i in 0..jmprel_count {
             let entry_offset = jmprel_offset + i * rela_entry_size;
-            if entry_offset + rela_entry_size > (cache.location().len().unwrap_or(0) as usize) {
+            if entry_offset + rela_entry_size > (cache.file_len().unwrap_or(0) as usize) {
                 break;
             }
 
@@ -458,7 +457,7 @@ fn apply_relocations(
                     let sym_file_offset =
                         vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
-                    let file_len = cache.location().len().unwrap_or(0) as usize;
+                    let file_len = cache.file_len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
                         continue;
                     }
@@ -501,7 +500,14 @@ fn map_elf_error(err: &'static str) -> AxError {
 
 #[self_referencing]
 struct ElfCacheEntry {
-    cache: CachedFile,
+    /// Lease-free identity retained by the parse cache.
+    ///
+    /// A `CachedFile` is a behavior handle and therefore carries a counted
+    /// filesystem-generation lease. Keeping one in this process-global LRU
+    /// would prevent a filesystem freeze even when no file descriptor or
+    /// mapping remains. Mapping promotes this identity to a fresh behavior
+    /// handle instead.
+    location: FileLocation,
     data: Vec<u8>,
     #[borrows(data)]
     #[covariant]
@@ -509,13 +515,14 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc)?;
+    fn load(loc: FileLocation) -> AxResult<Result<Self, Vec<u8>>> {
+        let cache = current_fs_context().lock().open_cached_location(loc)?;
+        let loc = cache.file_location();
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
+        match ElfCacheEntry::try_new_or_recover::<AxError>(loc, data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -542,8 +549,16 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> AxResult<LoadResult> {
-        if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
+    fn load(&mut self, uspace: &mut AddrSpace, loc: FileLocation) -> AxResult<LoadResult> {
+        let cached = loc.with_operation(|location_view| {
+            Ok(self.0.touch(|entry| {
+                entry
+                    .borrow_location()
+                    .with_operation(|entry_view| Ok(entry_view.ptr_eq(&location_view)))
+                    .unwrap_or(false)
+            }))
+        })?;
+        if !cached {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
                     self.0.insert(e);
@@ -558,15 +573,17 @@ impl ElfLoader {
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();
+        let main_cache = current_fs_context()
+            .lock()
+            .open_cached_location(entry.borrow_location().clone())?;
         let ldso = if let Some(header) = entry
             .borrow_elf()
             .ph
             .iter()
             .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
         {
-            let cache = entry.borrow_cache();
             let mut data = vec![0; header.file_size as usize];
-            let read = cache.read_at(&mut data[..], header.offset)?;
+            let read = main_cache.read_at(&mut data[..], header.offset)?;
             assert_eq!(data.len(), read);
 
             let ldso = CStr::from_bytes_with_nul(&data)
@@ -580,8 +597,16 @@ impl ElfLoader {
         };
 
         let (elf, ldso) = if let Some(ldso) = ldso {
-            let loc = current_fs_context().lock().resolve(ldso)?;
-            if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
+            let loc = current_fs_context().lock().resolve_file_location(ldso)?;
+            let cached = loc.with_operation(|location_view| {
+                Ok(self.0.touch(|entry| {
+                    entry
+                        .borrow_location()
+                        .with_operation(|entry_view| Ok(entry_view.ptr_eq(&location_view)))
+                        .unwrap_or(false)
+                }))
+            })?;
+            if !cached {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| AxError::InvalidInput)?;
                 self.0.insert(e);
             }
@@ -594,16 +619,22 @@ impl ElfLoader {
             (entry, None)
         };
 
-        let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
-        let ldso = if ldso.is_some() {
+        let ldso_cache = ldso
+            .map(|entry| {
+                current_fs_context()
+                    .lock()
+                    .open_cached_location(entry.borrow_location().clone())
+            })
+            .transpose()?;
+        let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf, &main_cache)?;
+        let ldso = if let (Some(ldso), Some(ldso_cache)) = (ldso, ldso_cache.as_ref()) {
             let max_end = uspace
                 .areas()
                 .map(|area| area.end().as_usize())
                 .max()
                 .unwrap_or(crate::config::USER_SPACE_BASE);
             let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
-            ldso.map(|elf| map_elf(uspace, interp_base, elf))
-                .transpose()?
+            Some(map_elf(uspace, interp_base, ldso, ldso_cache)?)
         } else {
             None
         };
@@ -652,7 +683,7 @@ pub fn clear_elf_cache() {
 
 /// Load the user app to the user address space.
 ///
-/// The executable is identified by an already-resolved [`Location`] — the
+/// The executable is identified by an already-resolved [`FileLocation`] — the
 /// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
 /// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
 /// re-resolves the main executable from its pathname. Interpreters reached
@@ -672,7 +703,7 @@ pub fn clear_elf_cache() {
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     uspace: &mut AddrSpace,
-    loc: Location,
+    loc: FileLocation,
     path: &str,
     args: &[String],
     envs: &[String],
@@ -684,7 +715,9 @@ pub fn load_user_app(
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
             .collect();
-        let sh = current_fs_context().lock().resolve("/bin/sh")?;
+        let sh = current_fs_context()
+            .lock()
+            .resolve_file_location("/bin/sh")?;
         return load_user_app(uspace, sh, "/bin/sh", &new_args, envs);
     }
 
@@ -705,7 +738,9 @@ pub fn load_user_app(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let interp = current_fs_context().lock().resolve(&new_args[0])?;
+                let interp = current_fs_context()
+                    .lock()
+                    .resolve_file_location(&new_args[0])?;
                 return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
             }
             return Err(AxError::InvalidExecutable);

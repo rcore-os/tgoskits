@@ -684,6 +684,32 @@ fn load_cargo_config_rejects_std_compat_for_freestanding_kernel() {
 }
 
 #[test]
+fn load_cargo_config_rejects_kernel_tls_register_mode() {
+    for feature in [
+        "tls",
+        "ax-std/tls",
+        "ax-runtime/tls",
+        "ax-hal/tls",
+        "ax-cpu-local/tls",
+        "someboot/tls",
+    ] {
+        let target = "x86_64-unknown-none";
+        let mut request = request(PathBuf::from("/tmp/.build.toml"), "x86_64", target);
+        request.build_info_override = Some(StarryBuildInfo {
+            features: vec![feature.to_string()],
+            ..default_starry_build_info_for_target(target)
+        });
+
+        let err = load_cargo_config(&request).unwrap_err();
+
+        assert!(
+            err.to_string().contains("Starry LinuxCurrent"),
+            "unexpected error for {feature}: {err:#}"
+        );
+    }
+}
+
+#[test]
 fn starry_kernel_entry_is_freestanding_c_abi() {
     let source = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/StarryOS/starryos/src/main.rs"),
@@ -694,6 +720,63 @@ fn starry_kernel_entry_is_freestanding_c_abi() {
     assert!(source.contains("#![no_main]"));
     assert!(source.contains("extern \"C\" fn main()"));
     assert!(!source.contains("cfg_attr(target_os"));
+}
+
+#[test]
+fn freestanding_elf_audit_accepts_a_bare_dynamic_image() {
+    let elf = minimal_elf64_with_program_header(object::elf::PT_LOAD);
+
+    audit_freestanding_starry_elf_bytes(&elf, Path::new("bare-starry.elf")).unwrap();
+}
+
+#[test]
+fn freestanding_elf_audit_rejects_a_tls_program_header() {
+    let elf = minimal_elf64_with_program_header(object::elf::PT_TLS);
+
+    let error = audit_freestanding_starry_elf_bytes(&elf, Path::new("tls-starry.elf")).unwrap_err();
+
+    assert!(error.to_string().contains("PT_TLS"));
+}
+
+#[test]
+fn freestanding_elf_audit_rejects_tls_sections_and_std_symbols() {
+    for section in [".tdata", ".tbss"] {
+        assert!(is_forbidden_starry_section(section));
+    }
+    for symbol in [
+        "std::rt::lang_start_internal",
+        "std::panicking::LOCAL_PANIC_COUNT",
+        "_ZN3std9panicking17LOCAL_PANIC_COUNT17h1234567890abcdefE",
+    ] {
+        assert!(is_forbidden_starry_symbol(symbol));
+    }
+    assert!(!is_forbidden_starry_section(".data"));
+    assert!(!is_forbidden_starry_symbol("core::panicking::panic_fmt"));
+}
+
+#[test]
+fn final_freestanding_elf_is_audited_after_kallsyms_before_binary_refresh() {
+    let source = include_str!("../build.rs");
+    let postprocess = source
+        .split_once("pub(crate) fn postprocess_starry_artifact")
+        .expect("Starry artifact post-processing must remain explicit")
+        .1
+        .split_once("fn audit_freestanding_starry_elf")
+        .expect("the final ELF audit must remain a focused helper")
+        .0;
+    let kallsyms = postprocess
+        .find("generate_kallsyms(elf)")
+        .expect("kallsyms must be generated into the final ELF");
+    let audit = postprocess
+        .find("audit_freestanding_starry_elf(elf)")
+        .expect("the final ELF must be audited");
+    let refresh = postprocess
+        .find("refresh_bin_if_present(elf)")
+        .expect("binary conversion must consume the audited final ELF");
+    assert!(
+        kallsyms < audit && audit < refresh,
+        "the audit must inspect the post-kallsyms image that is converted and executed"
+    );
 }
 
 #[test]
@@ -768,4 +851,24 @@ fn ensure_starry_bin_arg_keeps_existing_bin_arg() {
     ensure_starry_bin_arg(&mut args, STARRY_PACKAGE, &metadata).unwrap();
 
     assert_eq!(args, vec!["--bin".to_string(), "starryos".to_string()]);
+}
+
+fn minimal_elf64_with_program_header(program_type: u32) -> Vec<u8> {
+    const ELF_HEADER_SIZE: usize = 64;
+    const PROGRAM_HEADER_SIZE: usize = 56;
+    let mut elf = vec![0_u8; ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE];
+    elf[..16].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    elf[16..18].copy_from_slice(&object::elf::ET_DYN.to_le_bytes());
+    elf[18..20].copy_from_slice(&object::elf::EM_X86_64.to_le_bytes());
+    elf[20..24].copy_from_slice(&1_u32.to_le_bytes());
+    elf[32..40].copy_from_slice(&(ELF_HEADER_SIZE as u64).to_le_bytes());
+    elf[52..54].copy_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes());
+    elf[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_le_bytes());
+    elf[56..58].copy_from_slice(&1_u16.to_le_bytes());
+    elf[58..60].copy_from_slice(&64_u16.to_le_bytes());
+
+    elf[ELF_HEADER_SIZE..ELF_HEADER_SIZE + 4].copy_from_slice(&program_type.to_le_bytes());
+    elf[ELF_HEADER_SIZE + 4..ELF_HEADER_SIZE + 8].copy_from_slice(&object::elf::PF_R.to_le_bytes());
+    elf[ELF_HEADER_SIZE + 48..ELF_HEADER_SIZE + 56].copy_from_slice(&8_u64.to_le_bytes());
+    elf
 }

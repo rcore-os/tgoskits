@@ -52,7 +52,11 @@ fn bind_current_cpu(binding: CpuBindingV1) -> Result<(), CpuBindError> {
     // masked and no scheduler capable of migrating this execution. Someboot
     // owns the mapped area for the CPU's complete lifetime.
     unsafe { ax_cpu_local::raw::install_binding(binding) }.map_err(|_| CpuBindError::Register)?;
-    if ax_cpu_local::platform::current_cpu_binding() != Ok(binding) {
+    // SAFETY: this is the same offline, trap-free binding window. Validate the
+    // architecture trust root directly; calling the linked platform facade
+    // here would re-enter the provider that this module itself implements.
+    let pin = unsafe { ax_cpu_local::CpuPin::new_unchecked() };
+    if ax_cpu_local::raw::current_binding(&pin) != Ok(binding) {
         return Err(CpuBindError::Register);
     }
     Ok(())

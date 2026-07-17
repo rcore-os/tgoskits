@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use axklib::irq::{legacy_irq_raw, try_legacy_irq};
 use irq_framework::{AcpiGsiRoute, IrqId, IrqSource};
@@ -7,6 +7,53 @@ use rdrive::DeviceId;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingInfo {
     irqs: Vec<BindingIrqBinding>,
+    locator: BindingLocator,
+    host_mmio_ranges: Vec<HostMmioRange>,
+}
+
+/// Stable description of the firmware or bus object that produced a binding.
+///
+/// The locator is diagnostic identity, not an ownership proof. In particular,
+/// interrupt numbers are deliberately excluded because shared and remapped IRQs
+/// do not identify a device.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum BindingLocator {
+    /// Device-tree node path in the final firmware tree.
+    Fdt { path: String },
+    /// ACPI namespace path.
+    Acpi { path: String },
+    /// PCI segment, bus, device, and function address.
+    Pci {
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    },
+    /// Device was declared by a static platform table.
+    Static,
+    /// The registration path did not provide a stable locator.
+    #[default]
+    Unknown,
+}
+
+/// A validated host physical MMIO interval owned by a device.
+///
+/// The interval is half-open: `[base, end_exclusive)`. Construction rejects a
+/// zero length and arithmetic overflow, so callers may use the accessors
+/// without repeating those checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostMmioRange {
+    base: u64,
+    length: u64,
+}
+
+/// Validation failure while constructing a [`HostMmioRange`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostMmioRangeError {
+    /// A resource descriptor declared no addressable bytes.
+    ZeroLength,
+    /// `base + length` cannot be represented as a `u64` exclusive end.
+    EndOverflow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,7 +91,11 @@ pub enum PciIrqRequirement {
 
 impl BindingInfo {
     pub const fn empty() -> Self {
-        Self { irqs: Vec::new() }
+        Self {
+            irqs: Vec::new(),
+            locator: BindingLocator::Unknown,
+            host_mmio_ranges: Vec::new(),
+        }
     }
 
     pub fn with_irq(irq: Option<usize>) -> Result<Self, irq_framework::IrqError> {
@@ -70,7 +121,32 @@ impl BindingInfo {
                 .into_iter()
                 .map(|(source_id, irq)| BindingIrqBinding { source_id, irq })
                 .collect(),
+            ..Self::empty()
         }
+    }
+
+    /// Attaches a stable locator and already validated host MMIO ranges.
+    ///
+    /// This builder is useful for static platform registration. FDT, ACPI, and
+    /// PCI probe adapters populate the same metadata automatically.
+    pub fn with_host_resources(
+        mut self,
+        locator: BindingLocator,
+        host_mmio_ranges: Vec<HostMmioRange>,
+    ) -> Self {
+        self.locator = locator;
+        self.host_mmio_ranges = host_mmio_ranges;
+        self
+    }
+
+    /// Returns the firmware or bus locator retained at probe time.
+    pub const fn locator(&self) -> &BindingLocator {
+        &self.locator
+    }
+
+    /// Returns every validated host MMIO interval declared for this device.
+    pub fn host_mmio_ranges(&self) -> &[HostMmioRange] {
+        &self.host_mmio_ranges
     }
 
     pub fn irq(&self) -> Option<&BindingIrq> {
@@ -106,6 +182,49 @@ impl BindingInfo {
             .and_then(BindingIrq::legacy_num)
     }
 }
+
+impl HostMmioRange {
+    /// Constructs a non-empty, non-wrapping host MMIO interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HostMmioRangeError::ZeroLength`] when `length` is zero and
+    /// [`HostMmioRangeError::EndOverflow`] when the exclusive end overflows.
+    pub fn try_new(base: u64, length: u64) -> Result<Self, HostMmioRangeError> {
+        if length == 0 {
+            return Err(HostMmioRangeError::ZeroLength);
+        }
+        base.checked_add(length)
+            .ok_or(HostMmioRangeError::EndOverflow)?;
+        Ok(Self { base, length })
+    }
+
+    /// Returns the first host physical byte in the interval.
+    pub const fn base(self) -> u64 {
+        self.base
+    }
+
+    /// Returns the number of bytes in the interval.
+    pub const fn length(self) -> u64 {
+        self.length
+    }
+
+    /// Returns the validated exclusive end of the interval.
+    pub const fn end_exclusive(self) -> u64 {
+        self.base + self.length
+    }
+}
+
+impl core::fmt::Display for HostMmioRangeError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ZeroLength => formatter.write_str("host MMIO range has zero length"),
+            Self::EndOverflow => formatter.write_str("host MMIO range end overflows u64"),
+        }
+    }
+}
+
+impl core::error::Error for HostMmioRangeError {}
 
 impl BindingIrq {
     pub const fn id(id: IrqId) -> Self {

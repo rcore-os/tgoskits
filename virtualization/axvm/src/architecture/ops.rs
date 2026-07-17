@@ -1,5 +1,7 @@
 //! Core vCPU and nested-paging contract implemented by every target architecture.
 
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use alloc::format;
 use alloc::vec::Vec;
 
 use ax_kspin::PreemptGuard;
@@ -8,6 +10,8 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps};
 
 use super::{BoundVcpuExit, CommonDeferredRunWork, VcpuRunAction};
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use crate::ax_err;
 use crate::{
     AxVmResult,
     vcpu::{BoundVcpu, PinnedCpuContext},
@@ -85,6 +89,34 @@ pub(crate) trait ArchOps {
 
     fn on_last_vcpu_exit(_vm_id: usize) {}
 
+    /// Activates architecture IRQ routes after host storage selection commits.
+    ///
+    /// Architectures whose passthrough routes are activated by another
+    /// fallible post-commit stage may keep the default no-op. This hook must
+    /// never run from VM construction because image loading can still depend
+    /// on the host block controller at that point.
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn activate_guest_irq_routes(_vm: &crate::AxVMRef) -> AxVmResult {
+        Ok(())
+    }
+
+    /// Revokes and drains every architecture IRQ route owned by a stopped VM.
+    ///
+    /// Implementations must leave no callback or direct-injection path that
+    /// can reach the guest before returning success. The default deliberately
+    /// fails closed so a newly added architecture cannot fabricate storage
+    /// return safety.
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        ax_err!(
+            Unsupported,
+            format!(
+                "VM[{}] architecture does not implement passthrough IRQ revocation",
+                vm.id()
+            )
+        )
+    }
+
     fn after_mmio_read(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -144,7 +176,7 @@ fn run_vcpu_pinned<A: ArchOps>(
 ) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
     let preempt_guard = PreemptGuard::new();
     let pinned_cpu = PinnedCpuContext::new(preempt_guard.cpu_pin());
-    let _current_vcpu = vcpu.enter_pinned(&pinned_cpu);
+    let current_vcpu = vcpu.enter_pinned(&pinned_cpu);
 
     // Every run acquires a fresh CPU binding. A previous `Ready` state can no
     // longer be resumed on an unverified CPU.
@@ -177,8 +209,10 @@ fn run_vcpu_pinned<A: ArchOps>(
         }
     };
 
-    // Backend unbind restores host-owned CPU state before CURRENT_VCPU is
-    // cleared by `_current_vcpu` and preemption is restored by `preempt_guard`.
+    // Backend unbind restores host register anchors before CURRENT_VCPU is
+    // cleared. Architecture state such as an AArch64 lower-EL saved DAIF owner
+    // is completed only after that publication is gone, but before the outer
+    // preemption pin is released.
     if let Err(error) = vcpu.unbind(&pinned_cpu) {
         panic!(
             "fatal vCPU cleanup invariant: VM[{}] VCpu[{}] could not restore host state: {error:?}",
@@ -186,6 +220,8 @@ fn run_vcpu_pinned<A: ArchOps>(
             vcpu.id()
         );
     }
+    drop(current_vcpu);
+    vcpu.finish_post_unbind(&pinned_cpu)?;
     run_result
 }
 

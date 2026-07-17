@@ -53,11 +53,17 @@ mod mp;
 mod guard;
 mod klib;
 
+pub mod console;
+
+#[cfg(feature = "block")]
+pub mod block;
 mod devices;
 mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
+
+pub mod workqueue;
 
 #[cfg(feature = "multitask")]
 pub mod task;
@@ -69,6 +75,22 @@ mod unix_ns;
 mod wifi_glue;
 
 pub use ax_hal as hal;
+
+fn current_backtrace_stack_bounds() -> Option<axbacktrace::StackBounds> {
+    #[cfg(feature = "multitask")]
+    if let Some(bounds) = task::current_kernel_stack_bounds() {
+        return Some(bounds);
+    }
+
+    #[cfg(feature = "smp")]
+    let cpu = ax_hal::percpu::this_cpu_id();
+    #[cfg(not(feature = "smp"))]
+    let cpu = 0;
+    let (base, size) = ax_hal::mem::boot_stack_bounds(cpu);
+    let start = base.as_usize();
+    let end = start.checked_add(size)?;
+    (start < end).then(|| axbacktrace::StackBounds::new(start, end))
+}
 
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
@@ -86,11 +108,6 @@ pub const CPU_CAPACITY: usize = 1;
 pub use self::mp::rust_main_secondary;
 
 extern crate alloc;
-
-#[cfg(feature = "fs")]
-pub(crate) fn runtime_default_task_stack_size() -> usize {
-    build_info::TASK_STACK_SIZE
-}
 
 #[cfg(feature = "irq")]
 fn ticks_per_sec() -> u64 {
@@ -133,7 +150,7 @@ fn runtime_page_fault_handler(
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
-        ax_hal::console::write_text_bytes(s.as_bytes());
+        console::write_text_bytes(s.as_bytes());
     }
 
     fn current_time() -> core::time::Duration {
@@ -165,13 +182,68 @@ impl ax_log::LogIf for LogIfImpl {
     }
 }
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// Number of CPUs that have completed initialization.
-static INITED_CPUS: AtomicUsize = AtomicUsize::new(0);
+/// CPUs whose scheduler and local IRQ paths are ready for blocking services.
+static CPU_RUNTIME_ONLINE: [AtomicBool; CPU_CAPACITY] =
+    [const { AtomicBool::new(false) }; CPU_CAPACITY];
+static ONLINE_RUNTIME_CPUS: AtomicUsize = AtomicUsize::new(0);
+
+/// Global device/filesystem initialization boundary observed by applications.
+static SYSTEM_READY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(feature = "smp", feature = "workqueue", test))]
+const fn configured_runtime_cpu_count(
+    discovered_cpus: usize,
+    cpu_capacity: usize,
+    smp_enabled: bool,
+) -> usize {
+    assert!(cpu_capacity > 0, "runtime CPU capacity must be non-zero");
+    if smp_enabled {
+        let bounded = if discovered_cpus < cpu_capacity {
+            discovered_cpus
+        } else {
+            cpu_capacity
+        };
+        if bounded == 0 { 1 } else { bounded }
+    } else {
+        1
+    }
+}
+
+#[cfg(any(feature = "smp", feature = "workqueue"))]
+pub(crate) fn runtime_cpu_count() -> usize {
+    configured_runtime_cpu_count(ax_hal::cpu_num(), CPU_CAPACITY, cfg!(feature = "smp"))
+}
+
+#[cfg(feature = "fs")]
+/// Returns whether one CPU has scheduler and local IRQ service available.
+pub fn cpu_runtime_online(cpu: usize) -> bool {
+    CPU_RUNTIME_ONLINE
+        .get(cpu)
+        .is_some_and(|online| online.load(Ordering::Acquire))
+}
+
+fn mark_current_cpu_runtime_online(cpu: usize) {
+    let online = CPU_RUNTIME_ONLINE
+        .get(cpu)
+        .unwrap_or_else(|| panic!("runtime CPU {cpu} exceeds capacity {CPU_CAPACITY}"));
+    assert!(
+        !online.swap(true, Ordering::AcqRel),
+        "runtime CPU {cpu} published online twice"
+    );
+    ONLINE_RUNTIME_CPUS.fetch_add(1, Ordering::Release);
+}
+
+#[cfg(feature = "fs")]
+/// Returns whether the caller may enter a scheduler-backed blocking service.
+pub fn current_cpu_can_block() -> bool {
+    let cpu = ax_hal::percpu::this_cpu_id();
+    cpu_runtime_online(cpu) && !guard::in_atomic_context() && task::current_thread_id().is_ok()
+}
 
 fn is_init_ok() -> bool {
-    INITED_CPUS.load(Ordering::Acquire) == ax_hal::cpu_num()
+    SYSTEM_READY.load(Ordering::Acquire)
 }
 
 /// The main entry point of the ArceOS runtime.
@@ -247,18 +319,19 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
             safe static _etext: [u8; 0];
         }
 
-        let fp_range_start = kernel_space_start.as_usize();
-        let fp_range_end = fp_range_start.saturating_add(kernel_space_size);
-        axbacktrace::init(
-            Range {
-                start: _stext.as_ptr() as usize,
-                end: _etext.as_ptr() as usize,
-            },
-            Range {
-                start: fp_range_start,
-                end: fp_range_end,
-            },
-        );
+        // SAFETY: the provider returns either the current RuntimeStack's exact
+        // usable allocation or this CPU's exact someboot stack. Both remain
+        // mapped for the synchronous walk and exclude guard pages, unrelated
+        // kernel VA holes, and user-controlled ranges.
+        unsafe {
+            axbacktrace::init_with_stack_provider(
+                Range {
+                    start: _stext.as_ptr() as usize,
+                    end: _etext.as_ptr() as usize,
+                },
+                current_backtrace_stack_bounds,
+            )
+        };
     }
 
     info!(
@@ -316,6 +389,14 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     task::start_deferred_task_work_service()
         .expect("failed to start deferred scheduler task-work service");
 
+    mark_current_cpu_runtime_online(cpu_id);
+
+    #[cfg(feature = "smp")]
+    self::mp::start_secondary_cpus(cpu_id);
+
+    #[cfg(feature = "workqueue")]
+    workqueue::initialize().expect("failed to initialize shared per-CPU worker pools");
+
     // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
     // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
     // brings the chip up and that needs timing/task capabilities. The cores
@@ -346,17 +427,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "vsock")]
     devices::init_vsock();
 
-    #[cfg(feature = "smp")]
-    self::mp::start_secondary_cpus(cpu_id);
-
     ax_ctor_bare::call_ctors();
 
     info!("Primary CPU {cpu_id} init OK.");
-    INITED_CPUS.fetch_add(1, Ordering::Release);
-
-    while !is_init_ok() {
-        core::hint::spin_loop();
-    }
+    SYSTEM_READY.store(true, Ordering::Release);
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::wait_for_all_cpus_ready();
@@ -466,6 +540,60 @@ fn periodic_interval_nanos() -> u64 {
 #[ax_percpu::def_percpu]
 static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
+#[cfg(any(feature = "irq", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimerArmState {
+    Disarmed,
+    Armed { deadline_ns: u64 },
+}
+
+#[cfg(any(feature = "irq", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeTimerMuxState {
+    arm: TimerArmState,
+}
+
+#[cfg(any(feature = "irq", test))]
+impl RuntimeTimerMuxState {
+    const fn new() -> Self {
+        Self {
+            arm: TimerArmState::Disarmed,
+        }
+    }
+
+    fn claim_interrupt(&mut self) -> Option<u64> {
+        match core::mem::replace(&mut self.arm, TimerArmState::Disarmed) {
+            TimerArmState::Disarmed => None,
+            TimerArmState::Armed { deadline_ns } => Some(deadline_ns),
+        }
+    }
+
+    const fn next_programming(self, desired_deadline_ns: u64) -> Option<u64> {
+        if desired_deadline_ns == 0 {
+            return None;
+        }
+        match self.arm {
+            TimerArmState::Disarmed => Some(desired_deadline_ns),
+            TimerArmState::Armed { deadline_ns } if desired_deadline_ns < deadline_ns => {
+                Some(desired_deadline_ns)
+            }
+            TimerArmState::Armed { .. } => None,
+        }
+    }
+
+    fn commit_programming(&mut self, deadline_ns: u64) {
+        assert_ne!(
+            deadline_ns, 0,
+            "a one-shot deadline must not use the disarmed sentinel"
+        );
+        self.arm = TimerArmState::Armed { deadline_ns };
+    }
+}
+
+#[cfg(feature = "irq")]
+#[ax_percpu::def_percpu]
+static RUNTIME_TIMER_MUX: RuntimeTimerMuxState = RuntimeTimerMuxState::new();
+
 #[cfg(feature = "irq")]
 fn init_timer() {
     ax_hal::time::enable_timer_irq();
@@ -562,14 +690,38 @@ fn program_next_timer() {
     let task_deadline = None;
     let deadline = select_next_timer_deadline(periodic_deadline, task_deadline);
 
+    // SAFETY: every caller holds the current CPU's raw IRQ exclusion, so the
+    // software arm state and the hardware clockevent form one transaction.
+    let timer_mux = unsafe {
+        // SAFETY: raw local-IRQ exclusion pins this execution context and is
+        // the sole mutation authority for the current CPU's timer mux.
+        RUNTIME_TIMER_MUX.current_ref_mut_raw()
+    };
+    let Some(deadline) = timer_mux.next_programming(deadline) else {
+        return;
+    };
+
     ax_hal::time::set_oneshot_timer(deadline);
-    #[cfg(feature = "multitask")]
-    task::note_programmed_timer_deadline_nanos(deadline);
+    timer_mux.commit_programming(deadline);
+}
+
+#[cfg(feature = "irq")]
+fn claim_timer_interrupt() {
+    // SAFETY: the timer handler runs with local IRQs masked. Consuming Armed
+    // before accounting lets exactly one delivery re-evaluate the desired
+    // periodic/task deadline set; a spurious delivery is a harmless no-op.
+    let timer_mux = unsafe {
+        // SAFETY: hard-IRQ entry pins this CPU and excludes every other local
+        // mux transition until this handler returns.
+        RUNTIME_TIMER_MUX.current_ref_mut_raw()
+    };
+    let _claimed_deadline = timer_mux.claim_interrupt();
 }
 
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
+    claim_timer_interrupt();
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(not(feature = "multitask"))]
@@ -609,8 +761,16 @@ fn init_tls() {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_periodic_deadline, select_next_timer_deadline, timer_resolution_from_frequency,
+        RuntimeTimerMuxState, TimerArmState, configured_runtime_cpu_count, next_periodic_deadline,
+        select_next_timer_deadline, timer_resolution_from_frequency,
     };
+
+    #[test]
+    fn non_smp_runtime_exposes_only_the_boot_cpu_to_worker_services() {
+        assert_eq!(configured_runtime_cpu_count(8, 8, false), 1);
+        assert_eq!(configured_runtime_cpu_count(1, 8, false), 1);
+        assert_eq!(configured_runtime_cpu_count(8, 4, true), 4);
+    }
 
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
@@ -631,6 +791,50 @@ mod tests {
     fn zero_periodic_sentinel_uses_task_or_reports_unarmed() {
         assert_eq!(select_next_timer_deadline(0, Some(10)), 10);
         assert_eq!(select_next_timer_deadline(0, None), 0);
+    }
+
+    #[test]
+    fn timer_irq_rearms_a_future_task_deadline_without_a_scheduler_entry() {
+        let mut timer_mux = RuntimeTimerMuxState::new();
+        timer_mux.commit_programming(10);
+
+        assert_eq!(timer_mux.claim_interrupt(), Some(10));
+
+        let next = select_next_timer_deadline(100, Some(40));
+        assert_eq!(timer_mux.next_programming(next), Some(40));
+        timer_mux.commit_programming(next);
+        assert_eq!(timer_mux.arm, TimerArmState::Armed { deadline_ns: 40 });
+    }
+
+    #[test]
+    fn cancelled_earlier_arm_becomes_one_stale_irq_before_later_rearm() {
+        let mut timer_mux = RuntimeTimerMuxState::new();
+        timer_mux.commit_programming(40);
+
+        assert_eq!(timer_mux.next_programming(40), None);
+        assert_eq!(timer_mux.next_programming(50), None);
+        assert_eq!(timer_mux.claim_interrupt(), Some(40));
+        assert_eq!(timer_mux.next_programming(50), Some(50));
+        timer_mux.commit_programming(50);
+        assert_eq!(timer_mux.arm, TimerArmState::Armed { deadline_ns: 50 });
+    }
+
+    #[test]
+    fn timer_mux_rewrites_an_armed_clockevent_for_an_earlier_deadline() {
+        let mut timer_mux = RuntimeTimerMuxState::new();
+        timer_mux.commit_programming(50);
+
+        assert_eq!(timer_mux.next_programming(30), Some(30));
+    }
+
+    #[test]
+    fn spurious_timer_irq_leaves_the_mux_ready_for_the_next_real_deadline() {
+        let mut timer_mux = RuntimeTimerMuxState::new();
+
+        assert_eq!(timer_mux.claim_interrupt(), None);
+        assert_eq!(timer_mux.next_programming(25), Some(25));
+        timer_mux.commit_programming(25);
+        assert_eq!(timer_mux.arm, TimerArmState::Armed { deadline_ns: 25 });
     }
 
     #[test]

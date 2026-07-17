@@ -7,10 +7,13 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
+use ax_fs_ng::vfs::{
+    FileBackend, FileFlags, FileLocation, FsContext, FsContextOperationView, LocationOperationView,
+    OpenedDirectory, current_fs_context,
+};
 use ax_io::{Seek, SeekFrom};
 use ax_sync::PiMutex;
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{FsIoEvents, FsPollable, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
 use starry_vm::VmPtr;
@@ -28,33 +31,45 @@ use crate::{
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
+pub fn with_fs<R>(
+    dirfd: c_int,
+    operation: impl for<'operation> FnOnce(FsContextOperationView<'operation>) -> AxResult<R>,
+) -> AxResult<R> {
     let fs_context = current_fs_context();
-    let mut fs = fs_context.lock();
     if dirfd == AT_FDCWD {
-        f(&mut fs)
+        fs_context.lock().with_operation_scope(operation)
     } else {
-        let dir = Directory::from_fd(dirfd)?.inner.clone();
-        f(&mut fs.with_current_dir(dir)?)
+        let directory = Directory::from_fd(dirfd)?;
+        let fs = fs_context.lock();
+        directory.with_fs_context(&fs, operation)
     }
 }
 
 pub enum ResolveAtResult {
-    File(Location),
+    File(FileLocation),
+    Directory(Arc<Directory>),
     Other(Arc<dyn FileLike>),
 }
 
 impl ResolveAtResult {
-    pub fn into_file(self) -> Option<Location> {
+    /// Runs one restricted operation while retaining the exact generation lease.
+    pub fn with_operation<T>(
+        &self,
+        operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> AxResult<T>,
+    ) -> AxResult<T> {
         match self {
-            Self::File(file) => Some(file),
-            Self::Other(_) => None,
+            Self::File(location) => location.with_operation(operation),
+            Self::Directory(directory) => directory.with_operation(operation),
+            Self::Other(_) => Err(AxError::BadFileDescriptor),
         }
     }
 
     pub fn stat(&self) -> AxResult<Kstat> {
         match self {
-            Self::File(file) => file.metadata().map(|it| metadata_to_kstat(&it)),
+            Self::File(file) => file.with_operation(|view| {
+                view.metadata().map(|metadata| metadata_to_kstat(&metadata))
+            }),
+            Self::Directory(directory) => directory.stat(),
             Self::Other(file_like) => file_like.stat(),
         }
     }
@@ -67,15 +82,14 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
                 return Err(AxError::NotFound);
             }
             let file_like = get_file_like(dirfd)?;
-            let f = file_like.clone();
-            Ok(if let Some(file) = f.downcast_ref::<File>() {
+            Ok(if let Ok(file) = file_like.clone().downcast_arc::<File>() {
                 // Use location() directly: backend() rejects PATH-only fds
                 // (BadFileDescriptor) which would break fstat(O_PATH-fd).
                 // man "O_PATH": fstat(2) is in the allowed-operations list.
                 // Fixes bug-open-path-fstat-ebadf.
-                ResolveAtResult::File(file.inner().location().clone())
-            } else if let Some(dir) = f.downcast_ref::<Directory>() {
-                ResolveAtResult::File(dir.inner().clone())
+                ResolveAtResult::File(file.inner().file_location())
+            } else if let Ok(directory) = file_like.clone().downcast_arc::<Directory>() {
+                ResolveAtResult::Directory(directory)
             } else {
                 ResolveAtResult::Other(file_like)
             })
@@ -88,9 +102,9 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
             };
             with_fs(dirfd, |fs| {
                 if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow(path)
+                    fs.resolve_file_location_no_follow(path)
                 } else {
-                    fs.resolve(path)
+                    fs.resolve_file_location(path)
                 }
                 .map(ResolveAtResult::File)
             })
@@ -144,21 +158,25 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
-            device.inner().close(self.open_flags & O_EXCL != 0);
-        }
+        let exclusive = self.open_flags & O_EXCL != 0;
+        let _ = self.inner.with_node::<Device, _>(|device| {
+            device.inner().close(exclusive);
+            Ok(())
+        });
     }
 }
 
 impl File {
     fn is_blocking(&self) -> bool {
-        self.inner.location().flags().contains(NodeFlags::BLOCKING)
+        self.inner
+            .node_flags()
+            .is_ok_and(|flags| flags.contains(NodeFlags::BLOCKING))
     }
 }
 
-fn path_for(loc: &Location) -> Cow<'static, str> {
-    loc.absolute_path()
-        .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
+fn path_for(file: &ax_fs_ng::File) -> Cow<'static, str> {
+    file.absolute_path()
+        .map_or_else(|_| "<error>".into(), |path| Cow::Owned(path.to_string()))
 }
 
 fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
@@ -204,29 +222,28 @@ impl FileLike for File {
         if let Ok(bytes) = result
             && bytes > 0
         {
-            let path = path_for(inner.location()).into_owned();
+            let path = path_for(inner).into_owned();
             crate::file::inotify::notify_modify_path(&path);
         }
         result
     }
 
     fn stat(&self) -> AxResult<Kstat> {
-        Ok(metadata_to_kstat(&self.inner().location().metadata()?))
+        Ok(metadata_to_kstat(&self.inner().metadata()?))
     }
 
     fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner().location().metadata().ok()?;
+        let m = self.inner().metadata().ok()?;
         Some((m.device, m.inode))
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        let loc = self.inner().backend()?.location();
         match cmd {
             DFS_IOCTL_ATOMIC_WRITE_SET => {
                 let _enabled: u32 = (arg as *const u32).vm_read()?;
                 Ok(0)
             }
-            _ => loc.ioctl(cmd, arg),
+            _ => self.inner().backend()?.ioctl(cmd, arg),
         }
     }
 
@@ -258,7 +275,7 @@ impl FileLike for File {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        path_for(self.inner.location())
+        path_for(&self.inner)
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
@@ -286,19 +303,17 @@ impl FileLike for File {
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(self.inner().location().poll())
+        fs_events_to_io(self.inner().poll())
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner()
-            .location()
-            .register(context, io_events_to_fs(events));
+        self.inner().register(context, io_events_to_fs(events));
     }
 }
 
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
-    inner: Location,
+    inner: OpenedDirectory,
     pub offset: PiMutex<u64>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
@@ -307,7 +322,7 @@ pub struct Directory {
 }
 
 impl Directory {
-    pub fn new(inner: Location, open_flags: u32) -> Self {
+    pub fn new(inner: OpenedDirectory, open_flags: u32) -> Self {
         Self {
             inner,
             offset: PiMutex::new(0),
@@ -315,9 +330,24 @@ impl Directory {
         }
     }
 
-    /// Get the inner node of the directory.
-    pub fn inner(&self) -> &Location {
-        &self.inner
+    fn with_fs_context<T>(
+        &self,
+        context: &FsContext,
+        operation: impl for<'operation> FnOnce(FsContextOperationView<'operation>) -> AxResult<T>,
+    ) -> AxResult<T> {
+        self.inner.with_fs_context(context, operation)
+    }
+
+    pub fn set_context_current_dir(&self, context: &mut FsContext) -> AxResult<()> {
+        self.inner.set_context_current_dir(context)
+    }
+
+    /// Runs one restricted operation while retaining the directory generation lease.
+    pub fn with_operation<T>(
+        &self,
+        operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> AxResult<T>,
+    ) -> AxResult<T> {
+        self.inner.with_operation(operation)
     }
 }
 
@@ -334,12 +364,15 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> AxResult<Kstat> {
-        Ok(metadata_to_kstat(&self.inner.metadata()?))
+        self.with_operation(|view| Ok(metadata_to_kstat(&view.metadata()?)))
     }
 
     fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner.metadata().ok()?;
-        Some((m.device, m.inode))
+        self.with_operation(|view| {
+            let metadata = view.metadata()?;
+            Ok((metadata.device, metadata.inode))
+        })
+        .ok()
     }
 
     fn open_flags(&self) -> u32 {
@@ -347,7 +380,13 @@ impl FileLike for Directory {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        path_for(&self.inner)
+        self.with_operation(|view| {
+            Ok(view
+                .absolute_path()
+                .map_or_else(|_| "<error>".to_string(), |path| path.to_string()))
+        })
+        .map(Cow::Owned)
+        .unwrap_or(Cow::Borrowed("<error>"))
     }
 
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {

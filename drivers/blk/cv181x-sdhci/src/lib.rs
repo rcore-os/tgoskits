@@ -6,11 +6,15 @@
 
 #![no_std]
 
-use core::ptr::NonNull;
+use core::{num::NonZeroU32, ptr::NonNull};
 
+use dma_api::DeviceDma;
 use sdhci_host::Sdhci;
 use sdio_host2::{BusWidth, ClockHz, ClockSpeed, RequestPoll, SignalVoltage};
-use sdmmc_protocol::{Error as ProtocolError, sdio::host2::SdioHost2Irq};
+use sdmmc_protocol::{
+    Error as ProtocolError,
+    sdio::host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+};
 
 pub mod rdif;
 
@@ -67,26 +71,49 @@ const PHY_TX_RX_DLY_DS_HS: u32 = 0x0100_0100;
 const PHY_CONFIG_DS_HS: u32 = 1;
 
 /// Already-mapped MMIO regions required by the portable CV181x wrapper.
-#[derive(Clone, Copy)]
+///
+/// The capability is move-only so one mapping cannot be installed into two
+/// independently movable host objects:
+///
+/// ```compile_fail
+/// use cv181x_sdhci::Cv181xMmio;
+///
+/// fn duplicate_mapping(mmio: Cv181xMmio) {
+///     let first_owner = mmio;
+///     let second_owner = mmio;
+///     drop((first_owner, second_owner));
+/// }
+/// ```
 pub struct Cv181xMmio {
     core: NonNull<u8>,
     syscon: NonNull<u8>,
 }
 
 impl Cv181xMmio {
-    pub const fn new(core: NonNull<u8>, syscon: NonNull<u8>) -> Self {
+    /// Create an exclusive mapped-register capability.
+    ///
+    /// # Safety
+    ///
+    /// `core` must point to a naturally aligned, exclusively owned CV181x
+    /// SDHCI register block. `syscon` must be naturally aligned and cover
+    /// TOP_BASE including the pinmux block. Both mappings must remain valid and
+    /// accessible from every CPU to which the resulting host may move, until
+    /// the host and its registered IRQ endpoint have been destroyed. The
+    /// caller must not access either mapping through another pointer while the
+    /// capability is alive.
+    pub const unsafe fn new(core: NonNull<u8>, syscon: NonNull<u8>) -> Self {
         Self { core, syscon }
     }
 
-    pub const fn core(self) -> NonNull<u8> {
+    const fn core(&self) -> NonNull<u8> {
         self.core
     }
 
-    pub const fn syscon(self) -> NonNull<u8> {
+    const fn syscon(&self) -> NonNull<u8> {
         self.syscon
     }
 
-    fn pinmux(self) -> NonNull<u8> {
+    fn pinmux(&self) -> NonNull<u8> {
         // SAFETY: OS glue maps the CV181x syscon window. The documented
         // pinmux block lives at TOP_BASE + 0x1000 inside that mapping.
         unsafe { NonNull::new_unchecked(self.syscon.as_ptr().add(SYSCON_PINMUX_OFFSET)) }
@@ -163,67 +190,64 @@ pub struct Cv181xSdhci {
     config: Cv181xConfig,
 }
 
-// SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
-// board-level syscon/pinmux window for the controller lifetime. It does not
-// expose shared mutable access; IRQ extraction uses the cloned SDHCI IRQ core.
+// SAFETY: `Cv181xMmio::new` requires both mappings to remain valid and
+// accessible after a move to another CPU. The wrapper does not expose its
+// mutable register endpoints; IRQ extraction uses the pre-registered SDHCI IRQ
+// core.
 unsafe impl Send for Cv181xSdhci {}
 
 impl Cv181xSdhci {
-    /// Construct a CV181x SD-card host over already-mapped MMIO.
+    /// Construct a discovery-stage CV181x SD-card host over mapped MMIO.
     ///
-    /// # Safety
-    ///
-    /// `mmio.core` must point to an exclusively-owned CV181x SDHCI register
-    /// block and `mmio.syscon` must cover TOP_BASE including the pinmux block.
-    pub unsafe fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
-        let inner = unsafe { Sdhci::new(mmio.core()) };
-        let mut this = Self {
+    /// Construction does not touch controller or board registers. The staged
+    /// initializer binds and enables the IRQ endpoint before ResetAll or
+    /// PowerOn applies the platform configuration.
+    pub fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
+        let config = config.normalized();
+        // SAFETY: `Cv181xMmio` can only be constructed under the mapping,
+        // alignment, exclusivity, and lifetime contract required by SDHCI.
+        let mut inner = unsafe { Sdhci::new(mmio.core()) };
+        inner.set_base_clock_hz(
+            NonZeroU32::new(config.src_frequency_hz)
+                .expect("normalized CV181x source frequency is non-zero"),
+        );
+        Self {
             inner,
             mmio,
-            config: config.normalized(),
-        };
-        this.restore_ds_hs_phy();
-        this
+            config,
+        }
     }
 
     pub const fn config(&self) -> Cv181xConfig {
         self.config
     }
 
-    pub fn inner(&self) -> &Sdhci {
-        &self.inner
+    pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.inner.set_dma(dma);
     }
 
-    pub fn inner_mut(&mut self) -> &mut Sdhci {
-        &mut self.inner
-    }
-
-    pub fn into_inner(self) -> Sdhci {
-        self.inner
-    }
-
-    pub fn configure_sd_power_on(&mut self) {
+    fn configure_sd_power_on(&mut self) {
         self.restore_3v3_power();
         self.setup_sd_pad(false);
         self.setup_sd_io(false);
         self.restore_ds_hs_phy();
     }
 
-    pub fn configure_sd_power_off(&mut self) {
+    fn configure_sd_power_off(&mut self) {
         self.setup_sd_pad(true);
         self.setup_sd_io(true);
         self.close_power();
     }
 
-    pub fn restore_3v3_power(&mut self) {
+    fn restore_3v3_power(&mut self) {
         self.update_top_power(TOP_SD_PWRSW_3V3);
     }
 
-    pub fn close_power(&mut self) {
+    fn close_power(&mut self) {
         self.update_top_power(TOP_SD_PWRSW_OFF);
     }
 
-    pub fn setup_sd_pad(&mut self, unplug: bool) {
+    fn setup_sd_pad(&mut self, unplug: bool) {
         let pinmux = self.mmio.pinmux();
         let active_cd_func = if self.config.has_card_detect_gpio {
             PINMUX_FUNC_XGPIO
@@ -253,7 +277,7 @@ impl Cv181xSdhci {
         }
     }
 
-    pub fn setup_sd_io(&mut self, reset: bool) {
+    fn setup_sd_io(&mut self, reset: bool) {
         let pinmux = self.mmio.pinmux();
         set_pull(pinmux, IO_SDIO0_CD, IO_PULL_UP, IO_PULL_DOWN);
         set_pull(pinmux, IO_SDIO0_PWR_EN, IO_PULL_DOWN, IO_PULL_UP);
@@ -275,7 +299,7 @@ impl Cv181xSdhci {
         }
     }
 
-    pub fn restore_ds_hs_phy(&mut self) {
+    fn restore_ds_hs_phy(&mut self) {
         let core = self.mmio.core();
         let mshc = read_u32(core, CVI_VENDOR_MSHC_CTRL) | MSHC_CTRL_DS_HS_BITS;
         write_u32(core, CVI_VENDOR_MSHC_CTRL, mshc);
@@ -292,30 +316,23 @@ impl Cv181xSdhci {
         );
     }
 
-    fn program_clock(
-        &mut self,
-        target_hz: u32,
-        high_speed: bool,
-        uhs_mode: u16,
-    ) -> Result<(), sdio_host2::Error> {
-        let target_hz = self.config.clamp_clock(target_hz);
-        self.set_host_timing_bits(high_speed, uhs_mode);
-        self.inner
-            .enable_clock(self.config.src_frequency_hz, target_hz)
-            .map_err(map_protocol_error)
-    }
-
-    fn set_clock_speed(&mut self, speed: ClockSpeed) -> Result<(), sdio_host2::Error> {
+    fn clock_plan(&self, speed: ClockSpeed) -> Result<Cv181xClockPlan, sdio_host2::Error> {
         match speed {
-            ClockSpeed::Identification => {
-                self.program_clock(self.config.min_frequency_hz, false, HOST_CTRL2_UHS_SDR12)
-            }
-            ClockSpeed::Default | ClockSpeed::Sdr12 => {
-                self.program_clock(25_000_000, false, HOST_CTRL2_UHS_SDR12)
-            }
-            ClockSpeed::HighSpeed | ClockSpeed::Sdr25 => {
-                self.program_clock(50_000_000, true, HOST_CTRL2_UHS_SDR25)
-            }
+            ClockSpeed::Identification => Ok(Cv181xClockPlan::new(
+                self.config.clamp_clock(self.config.min_frequency_hz),
+                false,
+                HOST_CTRL2_UHS_SDR12,
+            )),
+            ClockSpeed::Default | ClockSpeed::Sdr12 => Ok(Cv181xClockPlan::new(
+                self.config.clamp_clock(25_000_000),
+                false,
+                HOST_CTRL2_UHS_SDR12,
+            )),
+            ClockSpeed::HighSpeed | ClockSpeed::Sdr25 => Ok(Cv181xClockPlan::new(
+                self.config.clamp_clock(50_000_000),
+                true,
+                HOST_CTRL2_UHS_SDR25,
+            )),
             ClockSpeed::Sdr50 | ClockSpeed::Sdr104 | ClockSpeed::Ddr50 | ClockSpeed::Hs200
                 if self.config.no_1v8 =>
             {
@@ -351,6 +368,20 @@ impl Cv181xSdhci {
                 Ok(())
             }
         }
+    }
+
+    unsafe fn submit_clock_plan(
+        &mut self,
+        plan: Cv181xClockPlan,
+    ) -> Result<BusRequest, sdio_host2::Error> {
+        let request = unsafe {
+            sdio_host2::SdioHost::submit_bus_op(
+                &mut self.inner,
+                sdio_host2::BusOp::SetClockHz(ClockHz(plan.target_hz)),
+            )?
+        };
+        self.set_host_timing_bits(plan.high_speed, plan.uhs_mode);
+        Ok(BusRequest::inner(request, AfterBusOp::None))
     }
 }
 
@@ -444,8 +475,8 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                 Ok(BusRequest::inner(request, AfterBusOp::PowerOn))
             }
             sdio_host2::BusOp::PowerOff => {
-                self.configure_sd_power_off();
                 let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
+                self.configure_sd_power_off();
                 Ok(BusRequest::inner(request, AfterBusOp::None))
             }
             sdio_host2::BusOp::ResetAll => {
@@ -453,11 +484,16 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                 Ok(BusRequest::inner(request, AfterBusOp::ResetAll))
             }
             sdio_host2::BusOp::SetClock(speed) => {
-                Ok(BusRequest::ready(self.set_clock_speed(speed)))
+                let plan = self.clock_plan(speed)?;
+                unsafe { self.submit_clock_plan(plan) }
             }
-            sdio_host2::BusOp::SetClockHz(ClockHz(hz)) => Ok(BusRequest::ready(
-                self.program_clock(hz, hz > DEFAULT_MAX_FREQUENCY_HZ, HOST_CTRL2_UHS_SDR12),
-            )),
+            sdio_host2::BusOp::SetClockHz(ClockHz(hz)) => unsafe {
+                self.submit_clock_plan(Cv181xClockPlan::new(
+                    self.config.clamp_clock(hz),
+                    hz > DEFAULT_MAX_FREQUENCY_HZ,
+                    HOST_CTRL2_UHS_SDR12,
+                ))
+            },
             sdio_host2::BusOp::SetBusWidth(width) if !self.config.supports_bus_width(width) => {
                 Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
             }
@@ -465,8 +501,8 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                 Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
             }
             sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V330) => {
-                self.restore_3v3_power();
                 let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
+                self.restore_3v3_power();
                 Ok(BusRequest::inner(request, AfterBusOp::None))
             }
             _ => {
@@ -522,6 +558,105 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
     }
 }
 
+impl SdioHost2Timed for Cv181xSdhci {
+    fn poll_transaction_at<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        now_ns: u64,
+    ) -> Result<RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
+    where
+        Self: 'a,
+    {
+        SdioHost2Timed::poll_transaction_at(&mut self.inner, request, now_ns)
+    }
+
+    fn transaction_wake_at<'a>(&self, request: &Self::TransactionRequest<'a>) -> Option<u64>
+    where
+        Self: 'a,
+    {
+        SdioHost2Timed::transaction_wake_at(&self.inner, request)
+    }
+
+    fn poll_bus_op_at(
+        &mut self,
+        bus_request: &mut Self::BusRequest,
+        now_ns: u64,
+    ) -> Result<RequestPoll<()>, sdio_host2::PollRequestError> {
+        match &mut bus_request.state {
+            BusRequestState::Ready(result) => {
+                let result = result
+                    .take()
+                    .ok_or(sdio_host2::PollRequestError::AlreadyCompleted)?;
+                bus_request.state = BusRequestState::Done;
+                Ok(RequestPoll::Ready(result))
+            }
+            BusRequestState::Inner {
+                request: inner,
+                after,
+            } => match SdioHost2Timed::poll_bus_op_at(&mut self.inner, inner, now_ns)? {
+                RequestPoll::Pending => Ok(RequestPoll::Pending),
+                RequestPoll::Ready(result) => {
+                    let result = result.and_then(|()| self.apply_after(*after));
+                    bus_request.state = BusRequestState::Done;
+                    Ok(RequestPoll::Ready(result))
+                }
+            },
+            BusRequestState::Done => Err(sdio_host2::PollRequestError::AlreadyCompleted),
+        }
+    }
+
+    fn bus_op_wake_at(&self, request: &Self::BusRequest) -> Option<u64> {
+        match &request.state {
+            BusRequestState::Inner { request, .. } => {
+                SdioHost2Timed::bus_op_wake_at(&self.inner, request)
+            }
+            BusRequestState::Ready(_) | BusRequestState::Done => None,
+        }
+    }
+}
+
+/// Recovery state retained while the CV181x controller is detached from I/O.
+pub struct Cv181xRecoveryState {
+    inner: sdhci_host::SdhciRecoveryState,
+}
+
+impl SdioHost2Lifecycle for Cv181xSdhci {
+    type RecoveryState = Cv181xRecoveryState;
+
+    fn begin_recovery(
+        &mut self,
+        cause: rdif_block::RecoveryCause,
+    ) -> Result<Self::RecoveryState, ProtocolError> {
+        SdioHost2Lifecycle::begin_recovery(&mut self.inner, cause)
+            .map(|inner| Cv181xRecoveryState { inner })
+    }
+
+    fn poll_dma_quiesce(
+        &mut self,
+        state: &mut Self::RecoveryState,
+        input: rdif_block::InitInput,
+    ) -> rdif_block::InitPoll<()> {
+        SdioHost2Lifecycle::poll_dma_quiesce(&mut self.inner, &mut state.inner, input)
+    }
+
+    fn begin_reinitialize(&mut self, state: &mut Self::RecoveryState) -> Result<(), ProtocolError> {
+        SdioHost2Lifecycle::begin_reinitialize(&mut self.inner, &mut state.inner)
+    }
+
+    fn poll_reinitialize(
+        &mut self,
+        state: &mut Self::RecoveryState,
+        input: rdif_block::InitInput,
+    ) -> rdif_block::InitPoll<()> {
+        let progress =
+            SdioHost2Lifecycle::poll_reinitialize(&mut self.inner, &mut state.inner, input);
+        if matches!(progress, rdif_block::InitPoll::Ready(())) {
+            self.configure_sd_power_on();
+        }
+        progress
+    }
+}
+
 pub struct BusRequest {
     state: BusRequestState,
 }
@@ -556,21 +691,20 @@ enum AfterBusOp {
     ResetAll,
 }
 
-fn map_protocol_error(err: ProtocolError) -> sdio_host2::Error {
-    match err {
-        ProtocolError::Timeout(_) => sdio_host2::Error::Timeout,
-        ProtocolError::Crc(_) => sdio_host2::Error::Crc,
-        ProtocolError::NoCard => sdio_host2::Error::NoCard,
-        ProtocolError::Busy => sdio_host2::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdio_host2::Error::Unsupported,
-        ProtocolError::Misaligned => sdio_host2::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdio_host2::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdio_host2::Error::Bus,
-        ProtocolError::ReadError(_)
-        | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdio_host2::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdio_host2::Error::Controller,
-        _ => sdio_host2::Error::Controller,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cv181xClockPlan {
+    target_hz: u32,
+    high_speed: bool,
+    uhs_mode: u16,
+}
+
+impl Cv181xClockPlan {
+    const fn new(target_hz: u32, high_speed: bool, uhs_mode: u16) -> Self {
+        Self {
+            target_hz,
+            high_speed,
+            uhs_mode,
+        }
     }
 }
 
@@ -610,195 +744,4 @@ fn write_u32(base: NonNull<u8>, off: usize, val: u32) {
 }
 
 #[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use super::*;
-
-    #[repr(align(4))]
-    struct FakeMmio<const N: usize>([u8; N]);
-
-    impl<const N: usize> FakeMmio<N> {
-        fn new() -> Self {
-            Self([0; N])
-        }
-
-        fn base(&mut self) -> NonNull<u8> {
-            NonNull::new(self.0.as_mut_ptr()).unwrap()
-        }
-    }
-
-    fn new_host<'a>(
-        core: &'a mut FakeMmio<0x400>,
-        syscon: &'a mut FakeMmio<0x2000>,
-        config: Cv181xConfig,
-    ) -> Cv181xSdhci {
-        let mmio = Cv181xMmio::new(core.base(), syscon.base());
-        unsafe { Cv181xSdhci::new(mmio, config) }
-    }
-
-    fn poll_ready_bus_op(
-        host: &mut Cv181xSdhci,
-        request: &mut BusRequest,
-    ) -> Result<(), sdio_host2::Error> {
-        match sdio_host2::SdioHost::poll_bus_op(host, request).unwrap() {
-            RequestPoll::Ready(result) => result,
-            RequestPoll::Pending => panic!("test bus op should complete synchronously"),
-        }
-    }
-
-    #[test]
-    fn power_on_sequence_configures_3v3_pads_io_and_ds_hs_phy() {
-        let mut core = FakeMmio::new();
-        let mut syscon = FakeMmio::new();
-        write_u32(syscon.base(), TOP_SD_PWRSW_CTRL, 0xa5a5_a5a0);
-        write_u8(
-            unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) },
-            PINMUX_SDIO0_PWR_EN,
-            0x7,
-        );
-
-        let mut host = new_host(
-            &mut core,
-            &mut syscon,
-            Cv181xConfig {
-                has_card_detect_gpio: true,
-                ..Cv181xConfig::default()
-            },
-        );
-        host.configure_sd_power_on();
-
-        let pinmux =
-            unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) };
-        assert_eq!(
-            read_u32(syscon.base(), TOP_SD_PWRSW_CTRL),
-            0xa5a5_a5a0 | TOP_SD_PWRSW_3V3
-        );
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CD), PINMUX_FUNC_XGPIO);
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CLK), PINMUX_FUNC_SDIO0);
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CMD), PINMUX_FUNC_SDIO0);
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_D3), PINMUX_FUNC_SDIO0);
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_PWR_EN), 0x7);
-        assert_eq!(read_u8(pinmux, IO_SDIO0_CMD) & IO_PULL_UP, IO_PULL_UP);
-        assert_eq!(read_u8(pinmux, IO_SDIO0_CMD) & IO_PULL_DOWN, 0);
-        assert_eq!(
-            read_u32(core.base(), CVI_PHY_TX_RX_DLY),
-            PHY_TX_RX_DLY_DS_HS
-        );
-        assert_eq!(read_u32(core.base(), CVI_PHY_CONFIG), PHY_CONFIG_DS_HS);
-        assert_eq!(
-            read_u32(core.base(), CVI_VENDOR_MSHC_CTRL) & MSHC_CTRL_DS_HS_BITS,
-            MSHC_CTRL_DS_HS_BITS
-        );
-    }
-
-    #[test]
-    fn power_off_switches_sd_pads_to_gpio_and_closes_power() {
-        let mut core = FakeMmio::new();
-        let mut syscon = FakeMmio::new();
-        let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
-
-        host.configure_sd_power_off();
-
-        let pinmux =
-            unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) };
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CLK), PINMUX_FUNC_XGPIO);
-        assert_eq!(read_u8(pinmux, PINMUX_SDIO0_D0), PINMUX_FUNC_XGPIO);
-        assert_eq!(read_u8(pinmux, IO_SDIO0_D0) & IO_PULL_DOWN, IO_PULL_DOWN);
-        assert_eq!(
-            read_u32(syscon.base(), TOP_SD_PWRSW_CTRL) & TOP_SD_PWRSW_LOW_MASK,
-            TOP_SD_PWRSW_OFF
-        );
-    }
-
-    #[test]
-    fn config_normalization_keeps_clock_bounds_valid() {
-        let config = Cv181xConfig {
-            src_frequency_hz: 0,
-            min_frequency_hz: 50_000_000,
-            max_frequency_hz: 25_000_000,
-            ..Cv181xConfig::default()
-        }
-        .normalized();
-
-        assert_eq!(config.src_frequency_hz, DEFAULT_SRC_FREQUENCY_HZ);
-        assert_eq!(config.max_frequency_hz, 50_000_000);
-    }
-
-    #[test]
-    fn bus_width_limit_rejects_width_above_board_wiring() {
-        let mut core = FakeMmio::new();
-        let mut syscon = FakeMmio::new();
-        let mut host = new_host(
-            &mut core,
-            &mut syscon,
-            Cv181xConfig {
-                max_bus_width: BusWidth::Bit1,
-                ..Cv181xConfig::default()
-            },
-        );
-
-        let mut request = unsafe {
-            sdio_host2::SdioHost::submit_bus_op(
-                &mut host,
-                sdio_host2::BusOp::SetBusWidth(BusWidth::Bit4),
-            )
-        }
-        .unwrap();
-
-        assert_eq!(
-            poll_ready_bus_op(&mut host, &mut request),
-            Err(sdio_host2::Error::Unsupported)
-        );
-    }
-
-    #[test]
-    fn no_1v8_rejects_uhs_clock_and_voltage_paths() {
-        let mut core = FakeMmio::new();
-        let mut syscon = FakeMmio::new();
-        let mut host = new_host(
-            &mut core,
-            &mut syscon,
-            Cv181xConfig {
-                no_1v8: true,
-                ..Cv181xConfig::default()
-            },
-        );
-
-        assert_eq!(
-            host.set_clock_speed(ClockSpeed::Sdr50),
-            Err(sdio_host2::Error::Unsupported)
-        );
-
-        let mut request = unsafe {
-            sdio_host2::SdioHost::submit_bus_op(
-                &mut host,
-                sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V180),
-            )
-        }
-        .unwrap();
-
-        assert_eq!(
-            poll_ready_bus_op(&mut host, &mut request),
-            Err(sdio_host2::Error::Unsupported)
-        );
-    }
-
-    #[test]
-    fn high_speed_mode_sets_host_timing_even_when_clock_is_capped() {
-        let mut core = FakeMmio::new();
-        let mut syscon = FakeMmio::new();
-        let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
-
-        let _ = host.set_clock_speed(ClockSpeed::HighSpeed);
-
-        assert_eq!(
-            read_u8(core.base(), REG_HOST_CONTROL1) & HOST_CTRL1_HIGH_SPEED,
-            HOST_CTRL1_HIGH_SPEED
-        );
-        assert_eq!(
-            read_u16(core.base(), REG_HOST_CONTROL2) & HOST_CTRL2_UHS_MODE_MASK,
-            HOST_CTRL2_UHS_SDR25
-        );
-    }
-}
+mod tests;

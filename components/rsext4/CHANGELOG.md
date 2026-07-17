@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Make extent-file growth create a sparse range instead of allocating and
+  zeroing every physical block during `truncate`, matching Linux `i_size`
+  semantics and keeping `i_blocks` unchanged until data is written.
+- Allocate and write contiguous missing extent runs in one multi-block I/O
+  during buffered writeback, rather than issuing one allocation and one device
+  write per filesystem block inside an existing sparse `i_size` range.
+- Treat unwritten extents as allocated mapping boundaries and reject unsupported
+  conversion without inserting an overlapping initialized extent.
+- Include unwritten mappings when shrinking an extent file so truncate frees
+  their physical blocks and keeps `i_blocks` consistent.
+- Zero the retained partial block beyond a shrunken EOF so a later sparse
+  extension cannot expose truncated file contents.
+- Preserve logical holes in whole-file reads instead of concatenating only the
+  mapped physical extents and returning shifted, short contents.
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.4...rsext4-v0.7.5) - 2026-07-08
 
 ### Other

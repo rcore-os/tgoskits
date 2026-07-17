@@ -588,7 +588,7 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
     match crate::manager::AxvmManager::remove_vm(vm_id) {
-        Some(vm) => {
+        Ok(Some(vm)) => {
             if let Err(err) = vm.destroy() {
                 println!("⚠ VM[{vm_id}] destroy failed: {err}");
             }
@@ -605,11 +605,14 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
                 // - Remove log files
             }
         }
-        None => {
+        Ok(None) => {
             println!(
                 "✗ Failed to remove VM[{}] from list (may have been removed already)",
                 vm_id
             );
+        }
+        Err(error) => {
+            println!("✗ VM[{vm_id}] remains registered because route revocation failed: {error}");
         }
     }
 

@@ -36,3 +36,27 @@ fn final_preempt_exit_transfers_the_baton_before_irqs_can_be_reenabled() {
         "both guard-exit entries must arrive with raw IRQs disabled",
     );
 }
+
+#[test]
+fn unsafe_schedule_context_reports_the_complete_cpu_local_snapshot() {
+    for field in [
+        "raw_irqs_enabled",
+        "hard_irq",
+        "irq_depth",
+        "preempt_lock_depth",
+        "scheduler_baton",
+    ] {
+        assert!(
+            GUARD.contains(field),
+            "unsafe scheduling diagnostics must retain the `{field}` state",
+        );
+    }
+    assert!(
+        GUARD.contains("ScheduleContextSnapshot"),
+        "schedule-context validation must classify one typed snapshot",
+    );
+    assert!(
+        GUARD.contains("report_unsafe_schedule_context"),
+        "an unsafe context must emit one fixed-capacity, allocation-free diagnostic",
+    );
+}

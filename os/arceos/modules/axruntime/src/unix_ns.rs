@@ -5,40 +5,61 @@ pub(crate) struct AxFsUnixNamespace;
 impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     fn resolve(&self, path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_errno::AxError;
-        use ax_fs_ng::vfs::current_fs_context;
+        use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
         use axfs_ng_vfs::NodeType;
 
         let fs_context = current_fs_context();
-        let loc = fs_context.lock().resolve(path)?;
-        if loc.metadata()?.node_type != NodeType::Socket {
-            return Err(AxError::NotASocket);
-        }
-        loc.user_data()
-            .get::<ax_net::unix::BindSlot>()
-            .ok_or(ax_errno::AxError::ConnectionRefused)
+        let opened = OpenOptions::new()
+            .read(true)
+            .path(true)
+            .open(&fs_context.lock(), path)?;
+        opened.with_operation(|node| {
+            if node.metadata()?.node_type != NodeType::Socket {
+                return Err(AxError::NotASocket);
+            }
+            node.get_user_data::<ax_net::unix::BindSlot>()
+                .ok_or(AxError::ConnectionRefused)
+        })
     }
 
-    fn bind(&self, path: &str) -> ax_errno::AxResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
+    fn reserve_bind(&self, path: &str) -> ax_errno::AxResult<ax_net::unix::NamespaceBindSlot> {
         use ax_errno::AxError;
         use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
         use axfs_ng_vfs::NodeType;
 
         let fs_context = current_fs_context();
-        let loc = OpenOptions::new()
+        let created = OpenOptions::new()
             .write(true)
-            .create(true)
+            .create_new(true)
             .node_type(NodeType::Socket)
-            .open(&fs_context.lock(), path)?
-            .into_location();
+            .open(&fs_context.lock(), path);
+        let (opened, created) = match created {
+            Ok(opened) => (opened, true),
+            Err(AxError::AlreadyExists) => (
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .node_type(NodeType::Socket)
+                    .open(&fs_context.lock(), path)?,
+                false,
+            ),
+            Err(error) => return Err(error),
+        };
 
-        if loc.metadata()?.node_type != NodeType::Socket {
-            return Err(AxError::NotASocket);
-        }
-
-        Ok(loc.user_data().get_or_insert_with(Default::default))
+        opened.with_operation(|node| {
+            if node.metadata()?.node_type != NodeType::Socket {
+                return Err(AxError::NotASocket);
+            }
+            let slot = node.get_or_insert_user_data_with(Default::default);
+            Ok(if created {
+                ax_net::unix::NamespaceBindSlot::created(slot)
+            } else {
+                ax_net::unix::NamespaceBindSlot::preexisting(slot)
+            })
+        })
     }
 
-    fn unbind(&self, path: &str) -> ax_errno::AxResult<()> {
+    fn rollback_bind(&self, path: &str) -> ax_errno::AxResult<()> {
         use ax_fs_ng::vfs::current_fs_context;
 
         let fs_context = current_fs_context();

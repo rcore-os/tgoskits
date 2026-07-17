@@ -16,7 +16,7 @@ pub use irq_framework::{
 use rdrive::{Device, DeviceId};
 
 #[cfg(target_arch = "riscv64")]
-pub use crate::arch::RiscvPlicIrqEndpoint;
+pub use crate::arch::{RiscvPlicIrqEndpoint, RiscvPlicLeaseId};
 use crate::{arch::Plat, common::PlatOp};
 
 /// CPU-local interrupt domain for architecture trap causes such as timers/IPIs.
@@ -438,6 +438,12 @@ pub fn lease_riscv_plic_irq_endpoints(
         parents.push(parent_irq_for_leaf(irq).unwrap_or(irq));
     }
     crate::arch::lease_riscv_plic_irq_endpoints(&parents, affinity)
+}
+
+/// Atomically releases a complete generation-checked RISC-V PLIC lease batch.
+#[cfg(target_arch = "riscv64")]
+pub fn release_riscv_plic_irq_endpoints(leases: &[RiscvPlicLeaseId]) -> Result<(), IrqError> {
+    crate::arch::release_riscv_plic_irq_endpoints(leases)
 }
 
 /// Sends an IPI while local IRQ nesting excludes every nested sender.

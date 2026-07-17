@@ -1,0 +1,60 @@
+args = [
+    "-nographic",
+    "-monitor",
+    "unix:/tmp/starry-dir-cookie-monitor.sock,server,nowait",
+    "-cpu",
+    "Haswell,+avx",
+    "-m",
+    "512M",
+    "-smp",
+    "1",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+    "-device",
+    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "-audiodev",
+    "none,id=audio0",
+    "-device",
+    "usb-audio,bus=xhci.0,audiodev=audio0",
+    "-drive",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-busybox.img",
+    "-device",
+    "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+test_commands = [
+    '''
+echo "STARRY_DIR_COOKIE_DIAG_BEGIN"
+i=1
+while [ "$i" -le 20 ]; do
+    echo "STARRY_DIR_COOKIE_DIAG_ITERATION_BEGIN: $i"
+    /usr/bin/starry-test-suit/diag-dir-cookie-boundary
+    echo "DIR_COOKIE_ITERATION_COMPLETE: $i"
+    i=$((i + 1))
+done
+echo "STARRY_DIR_COOKIE_20_ITERATIONS_PASSED"
+''',
+]
+success_regex = ["(?m)^STARRY_DIR_COOKIE_20_ITERATIONS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 600
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18380
+body_size = 20971520
+body_byte = 97

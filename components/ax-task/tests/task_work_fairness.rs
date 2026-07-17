@@ -2,7 +2,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_task::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, SchedulePolicy, TaskError, TaskSystem,
-    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState,
+    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadPolicyApplied,
+    ThreadSpec, ThreadState,
 };
 
 mod support;
@@ -160,6 +161,7 @@ fn create_detached_extended_thread(system: &TaskSystem, marker: usize) -> Thread
 static EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_thread_event,
     on_switch_out: ignore_switch_out,
+    on_policy_applied: ignore_policy_applied,
     on_exit: record_exit_marker,
     on_deadline_overrun: ignore_thread_event,
     drop: ignore_drop,
@@ -171,6 +173,13 @@ unsafe extern "Rust" fn ignore_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: ax_task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn ignore_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ThreadPolicyApplied,
 ) {
 }
 

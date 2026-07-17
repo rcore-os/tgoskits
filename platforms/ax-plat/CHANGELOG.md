@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expose explicit release of an action-owned emergency IRQ-line quench after
+  device-side masking succeeds.
+
+### Fixed
+
+- Preserve the auto-enabled semantics of shared and per-CPU convenience IRQ
+  requests after low-level requests became disabled by default, while enabling
+  each registered action exactly once and rolling back failed activation.
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.11.0...ax-plat-v0.12.0) - 2026-07-10
 
 ### Added

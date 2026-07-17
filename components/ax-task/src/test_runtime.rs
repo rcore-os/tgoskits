@@ -21,6 +21,7 @@ std::thread_local! {
     static ALLOW_CONTEXT_SWITCH: Cell<bool> = const { Cell::new(false) };
     static SCHEDULE_CONTEXT_SAFE: Cell<bool> = const { Cell::new(true) };
     static SCHEDULER_FRAME_ENTER_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static SCHEDULER_FRAME_TASK_RETURN_SAFE: Cell<bool> = const { Cell::new(true) };
     static SCHEDULER_IPI_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static SCHEDULER_IPI_BUSY_REMAINING: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_IPI_SEND_COUNT: Cell<usize> = const { Cell::new(0) };
@@ -33,6 +34,11 @@ std::thread_local! {
     static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
     static IRQ_EXIT_SCHEDULE_REMAINING: Cell<usize> = const { Cell::new(0) };
     static IRQ_EXIT_SCHEDULE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static RUNTIME_TIMER_EVENTS: RefCell<std::vec::Vec<RuntimeTimerEventV1>> = const { RefCell::new(std::vec::Vec::new()) };
+    static RUNTIME_TIMER_DISPATCH_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static PROGRAM_ONESHOT_TIMER_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static PROGRAM_ONESHOT_TIMER_COUNT: Cell<usize> = const { Cell::new(0) };
+    static LAST_PROGRAMMED_ONESHOT_NS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[derive(Clone, Copy)]
@@ -172,14 +178,21 @@ impl TaskRuntime for UnitTestRuntime {
         RuntimeStatus::Success
     }
 
-    fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool {
+    fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool {
         let scheduler_clear = SCHEDULER_FRAME_DEPTH.with(|depth| {
             let current = depth.get();
             assert!(current > 0, "unbalanced test scheduler frame exit");
             depth.set(current - 1);
             current == 1
         });
-        scheduler_clear && ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
+        let context_clear =
+            scheduler_clear && ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty());
+        match return_to {
+            RuntimeSchedulerReturn::Task => {
+                context_clear && SCHEDULER_FRAME_TASK_RETURN_SAFE.with(Cell::get)
+            }
+            RuntimeSchedulerReturn::PreemptExit | RuntimeSchedulerReturn::IrqReturn => false,
+        }
     }
 
     fn in_hard_irq() -> bool {
@@ -199,9 +212,18 @@ impl TaskRuntime for UnitTestRuntime {
     fn timer_resolution_ns() -> u64 {
         1
     }
-    fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus {
+    fn program_oneshot_timer(deadline_ns: u64) -> RuntimeStatus {
         run_hook_reentry_query();
-        RuntimeStatus::Success
+        PROGRAM_ONESHOT_TIMER_COUNT.with(|count| count.set(count.get() + 1));
+        LAST_PROGRAMMED_ONESHOT_NS.with(|deadline| deadline.set(deadline_ns));
+        PROGRAM_ONESHOT_TIMER_STATUS.with(Cell::get)
+    }
+    fn dispatch_expired_timer(event: RuntimeTimerEventV1) -> RuntimeStatus {
+        let status = RUNTIME_TIMER_DISPATCH_STATUS.with(Cell::get);
+        if status == RuntimeStatus::Success {
+            RUNTIME_TIMER_EVENTS.with(|events| events.borrow_mut().push(event));
+        }
+        status
     }
     fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus {
         run_hook_reentry_query();
@@ -316,6 +338,7 @@ pub(crate) fn reset_scheduler_frame_state() {
     MAX_SCHEDULER_FRAME_DEPTH.with(|depth| depth.set(0));
     IRQ_ENTER_SCHEDULER_FRAME_DEPTH.with(|depth| depth.set(0));
     IRQ_GUARDS_AT_CONTEXT_SWITCH.with(|count| count.set(usize::MAX));
+    SCHEDULER_FRAME_TASK_RETURN_SAFE.with(|safe| safe.set(true));
 }
 
 pub(crate) fn set_schedule_context_safe(safe: bool) {
@@ -324,6 +347,10 @@ pub(crate) fn set_schedule_context_safe(safe: bool) {
 
 pub(crate) fn set_scheduler_frame_enter_status(status: RuntimeStatus) {
     SCHEDULER_FRAME_ENTER_STATUS.with(|state| state.set(status));
+}
+
+pub(crate) fn set_scheduler_frame_task_return_safe(safe: bool) {
+    SCHEDULER_FRAME_TASK_RETURN_SAFE.with(|state| state.set(safe));
 }
 
 pub(crate) fn set_hard_irq(active: bool) {
@@ -392,4 +419,29 @@ pub(crate) fn install_task_handles(task_system: usize, cpu_local: usize) {
 
 pub(crate) fn clear_task_handles() {
     install_task_handles(0, 0);
+}
+
+pub(crate) fn clear_runtime_timer_events() {
+    RUNTIME_TIMER_EVENTS.with(|events| events.borrow_mut().clear());
+    set_runtime_timer_dispatch_status(RuntimeStatus::Success);
+}
+
+pub(crate) fn runtime_timer_events() -> std::vec::Vec<RuntimeTimerEventV1> {
+    RUNTIME_TIMER_EVENTS.with(|events| events.borrow().clone())
+}
+
+pub(crate) fn set_runtime_timer_dispatch_status(status: RuntimeStatus) {
+    RUNTIME_TIMER_DISPATCH_STATUS.with(|current| current.set(status));
+}
+
+pub(crate) fn set_program_oneshot_timer_status(status: RuntimeStatus) {
+    PROGRAM_ONESHOT_TIMER_STATUS.with(|current| current.set(status));
+}
+
+pub(crate) fn programmed_oneshot_timer_count() -> usize {
+    PROGRAM_ONESHOT_TIMER_COUNT.with(Cell::get)
+}
+
+pub(crate) fn last_programmed_oneshot_ns() -> u64 {
+    LAST_PROGRAMMED_ONESHOT_NS.with(Cell::get)
 }

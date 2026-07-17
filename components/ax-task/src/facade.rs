@@ -16,7 +16,7 @@ use crate::{
         RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
         task_runtime,
     },
-    timer::{ExpiredTimer, TimerToken},
+    timer::{ExpiredTimer, RuntimeTimerOwner, TimerError, TimerNode, TimerToken},
 };
 
 /// Returns a strong handle for the calling scheduler thread.
@@ -189,8 +189,7 @@ pub fn thread_nice(thread: ThreadId) -> Result<Option<Nice>, TaskError> {
 
 /// Tests the sticky reschedule state of the calling CPU.
 pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
-    let local_request = runtime_current_cpu()?.needs_reschedule();
-    Ok(local_request || runtime_task_system()?.scheduler_ipi_retry_pending())
+    Ok(runtime_current_cpu()?.needs_reschedule())
 }
 
 /// Acknowledges the current CPU's coalesced scheduler IPI epoch.
@@ -246,8 +245,13 @@ pub unsafe fn finish_initial_context_switch() -> Result<(), TaskError> {
 }
 
 /// Performs bounded timer-IRQ accounting without allocation or callbacks.
+///
+/// `periodic_tick` requests one typed owner-work safe point for balancing and
+/// housekeeping. Slice, RT quota, and CBS accounting publish a separate
+/// preemption reason internally; runtimes must not promote the returned expiry
+/// counters into an unconditional reschedule request.
 pub fn timer_interrupt_current_cpu(
-    _elapsed_runtime_ns: u64,
+    periodic_tick: bool,
     reclaimed_ns: u64,
 ) -> Result<TimerInterruptOutcome, TaskError> {
     let system = runtime_task_system()?;
@@ -255,20 +259,24 @@ pub fn timer_interrupt_current_cpu(
     let now_ns = task_runtime::monotonic_ns();
     let timer_resolution_ns = task_runtime::timer_resolution_ns();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if periodic_tick {
+        // Periodic housekeeping needs one owner safe point, not a forced
+        // context switch. The IRQ-return path is its local transport.
+        cpu.request_scheduler_work();
+    }
+    // Claim the typed one-shot causes before runtime accounting refreshes the
+    // next deadline set. In particular, RT-period replenishment must remain a
+    // preemption cause even though charging at the boundary advances its
+    // bandwidth period.
+    let scheduler_due = cpu.take_due_scheduler_deadlines(now_ns);
     let charge = system.charge_current_until(cpu.as_mut(), now_ns, reclaimed_ns)?;
     let batch = cpu.as_mut().expire_timers(now_ns, timer_resolution_ns);
-    let scheduler_due = cpu.take_due_scheduler_deadline(now_ns);
-    let next_deadline_ns = match (batch.next_deadline_ns(), cpu.scheduler_deadline_ns()) {
-        (Some(timer), Some(scheduler)) => Some(timer.min(scheduler)),
-        (Some(timer), None) => Some(timer),
-        (None, Some(scheduler)) => Some(scheduler),
-        (None, None) => None,
-    };
+    let next_deadline_ns = cpu.next_oneshot_deadline_ns(now_ns, timer_resolution_ns);
     Ok(TimerInterruptOutcome {
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
         expired: batch.expired(),
-        pending: batch.pending() || scheduler_due,
+        pending: batch.pending() || scheduler_due.any(),
         next_deadline_ns,
     })
 }
@@ -280,7 +288,100 @@ pub fn take_current_expired_timers(output: &mut [ExpiredTimer]) -> Result<usize,
     }
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    Ok(cpu.as_mut().take_expired_timers(output))
+    let copied = cpu.as_mut().take_expired_timers(output);
+    if copied != 0 {
+        // Class-zero events are caller-owned rather than scheduler-delivered.
+        // Once the caller releases the delivery latch, it also owns the
+        // reprogram step that exposes any due heap continuation.
+        let now_ns = task_runtime::monotonic_ns();
+        let resolution_ns = task_runtime::timer_resolution_ns();
+        if let Some(deadline_ns) = cpu.next_oneshot_deadline_ns(now_ns, resolution_ns) {
+            runtime_status_result(task_runtime::program_oneshot_timer(deadline_ns))?;
+        }
+    }
+    Ok(copied)
+}
+
+/// Arms one shutdown-lifetime runtime timer on the calling CPU.
+///
+/// This operation is intended for owner-CPU deferred-work control callbacks,
+/// not hard IRQ producers. Remote and IRQ callers must publish a command to a
+/// preallocated owner-CPU work item first.
+///
+/// The caller must prevent scheduler safe-point delivery until it has
+/// published the returned token in the runtime-owned object. A preemption
+/// guard around this call and that publication is sufficient; timer IRQ may
+/// fill fixed storage meanwhile, but IRQ-return scheduling remains deferred.
+///
+/// # Errors
+///
+/// Returns [`TaskError::UnsafeContext`] from hard IRQ context,
+/// [`TaskError::InvalidConfiguration`] for an invalid owner/node pairing,
+/// [`TaskError::TimerCapacity`] when fixed timer storage or its generation is
+/// exhausted, and [`TaskError::RuntimeFailure`] when one-shot programming
+/// fails.
+pub fn arm_current_runtime_timer(
+    node: Pin<&'static TimerNode>,
+    deadline_ns: u64,
+    owner: RuntimeTimerOwner,
+) -> Result<TimerToken, TaskError> {
+    if task_runtime::in_hard_irq() {
+        return Err(TaskError::UnsafeContext);
+    }
+    if !owner.is_valid() {
+        return Err(TaskError::InvalidConfiguration);
+    }
+    let mut irq = RuntimeIrqGuard::enter();
+    let now_ns = task_runtime::monotonic_ns();
+    let resolution_ns = task_runtime::timer_resolution_ns();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    let token = unsafe {
+        // SAFETY: the API requires a shutdown-lifetime pinned node and the
+        // RuntimeTimerOwner constructor carries the runtime-owner contract.
+        cpu.as_mut()
+            .timer_queue()
+            .arm_runtime(node, deadline_ns, owner)
+    }
+    .map_err(|error| match error {
+        TimerError::InvalidOwner => TaskError::InvalidConfiguration,
+        TimerError::Capacity | TimerError::GenerationExhausted => TaskError::TimerCapacity,
+    })?;
+    let next = cpu
+        .as_mut()
+        .timer_queue()
+        .next_deadline_ns(now_ns, resolution_ns);
+    drop(cpu);
+    if let Some(next) = next {
+        let status = task_runtime::program_oneshot_timer(next);
+        if status != RuntimeStatus::Success {
+            let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+            let _removed = cpu.as_mut().timer_queue().cancel(node, token);
+            return Err(TaskError::RuntimeFailure(status as u32));
+        }
+    }
+    Ok(token)
+}
+
+/// Cancels a runtime timer from the CPU that owns its heap entry.
+///
+/// A `false` result means the generation already expired or was superseded;
+/// an already-buffered expiration may still reach the runtime hook and must be
+/// rejected there using the generation stored in its pinned owner.
+///
+/// # Errors
+///
+/// Returns [`TaskError::UnsafeContext`] from hard IRQ context and runtime
+/// object-handle errors when the current CPU has not been initialized.
+pub fn cancel_current_runtime_timer(
+    node: Pin<&'static TimerNode>,
+    token: TimerToken,
+) -> Result<bool, TaskError> {
+    if task_runtime::in_hard_irq() {
+        return Err(TaskError::UnsafeContext);
+    }
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    Ok(cpu.as_mut().timer_queue().cancel(node, token))
 }
 
 pub(crate) fn prepare_current_park(_permit: &BlockingPermit) -> Result<ParkPrepare, TaskError> {
@@ -686,29 +787,83 @@ fn drain_current_expired_timers(
     system: &TaskSystem,
     pin: &mut impl RuntimeCpuPin,
 ) -> Result<usize, TaskError> {
+    let batch_limit = {
+        let cpu = runtime_current_cpu_mut(pin)?;
+        cpu.batch_limit()
+    };
     let mut drained = 0;
-    loop {
+    while drained < batch_limit {
         let event = {
             let mut cpu = runtime_current_cpu_mut(pin)?;
-            cpu.as_mut().take_thread_expired_timer()
+            cpu.as_mut().take_dispatchable_expired_timer()
         };
         let Some(event) = event else {
             break;
         };
-        let Some(thread) = event.owner_thread() else {
-            continue;
-        };
-        match system.thread_handle(thread) {
-            Ok(handle) => {
-                handle.core.complete_sleep_timer(event.token().generation());
-                let _wake_result = handle.wake_handle().wake();
+        if let Err(error) = deliver_expired_timer(system, event) {
+            let mut cpu = runtime_current_cpu_mut(pin)?;
+            if let Err(undelivered) = cpu.as_mut().restore_dispatchable_expired_timer(event) {
+                task_runtime::fatal_invariant(0x4558_0032, undelivered.owner());
             }
-            Err(TaskError::StaleThreadId) => {}
-            Err(error) => return Err(error),
+            return Err(error);
         }
         drained += 1;
     }
+    let pending = {
+        let cpu = runtime_current_cpu_mut(pin)?;
+        cpu.has_dispatchable_expired_timer()
+    };
+    if pending {
+        let now_ns = task_runtime::monotonic_ns();
+        let resolution_ns = task_runtime::timer_resolution_ns().max(1);
+        let continuation_ns = now_ns
+            .checked_add(resolution_ns)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        let next_deadline_ns = {
+            let cpu = runtime_current_cpu_mut(pin)?;
+            cpu.defer_scheduler_work();
+            cpu.arm_deferred_owner_deadline(continuation_ns);
+            cpu.next_oneshot_deadline_ns(now_ns, resolution_ns)
+        };
+        if let Some(deadline_ns) = next_deadline_ns {
+            runtime_status_result(task_runtime::program_oneshot_timer(deadline_ns))?;
+        }
+    }
     Ok(drained)
+}
+
+fn deliver_expired_timer(system: &TaskSystem, event: ExpiredTimer) -> Result<(), TaskError> {
+    let Some(thread) = event.owner_thread() else {
+        debug_assert_ne!(event.owner_class(), 0);
+        return runtime_status_result(task_runtime::dispatch_expired_timer(
+            crate::runtime::RuntimeTimerEventV1 {
+                owner: event.owner(),
+                node: event.node(),
+                owner_class: event.owner_class(),
+                token_generation: event.token().generation(),
+                deadline_ns: event.deadline_ns(),
+            },
+        ));
+    };
+    let handle = match system.thread_handle(thread) {
+        Ok(handle) => handle,
+        Err(TaskError::StaleThreadId) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let generation = event.token().generation();
+    let Some(owner_cpu) = handle.core.sleep_timer_cpu_for(generation) else {
+        return Ok(());
+    };
+    if !handle.core.complete_sleep_timer(generation) {
+        return Ok(());
+    }
+    match handle.wake_handle().wake() {
+        WakeResult::Notified | WakeResult::AlreadyPending | WakeResult::Exited => Ok(()),
+        WakeResult::Unavailable => {
+            handle.core.register_sleep_timer(owner_cpu, generation);
+            Err(TaskError::NotInitialized)
+        }
+    }
 }
 
 /// Yields the calling thread and executes the resulting context switch.
@@ -987,6 +1142,14 @@ fn validate_schedule_context(origin: RuntimeScheduleOrigin) -> Result<(), TaskEr
     }
 }
 
+fn runtime_status_result(status: RuntimeStatus) -> Result<(), TaskError> {
+    match status {
+        RuntimeStatus::Success => Ok(()),
+        RuntimeStatus::UnsafeContext => Err(TaskError::UnsafeContext),
+        status => Err(TaskError::RuntimeFailure(status as u32)),
+    }
+}
+
 pub(crate) struct RuntimeIrqGuard {
     token: IrqGuardToken,
     _not_send: PhantomData<*mut ()>,
@@ -1032,9 +1195,8 @@ impl RuntimeSchedulerFrameGuard {
             });
         }
         let return_to = match entry {
-            RuntimeSchedulerEntry::Task | RuntimeSchedulerEntry::PreemptExit => {
-                RuntimeSchedulerReturn::Task
-            }
+            RuntimeSchedulerEntry::Task => RuntimeSchedulerReturn::Task,
+            RuntimeSchedulerEntry::PreemptExit => RuntimeSchedulerReturn::PreemptExit,
             RuntimeSchedulerEntry::IrqReturn => RuntimeSchedulerReturn::IrqReturn,
         };
         Ok(Self {
@@ -1046,7 +1208,11 @@ impl RuntimeSchedulerFrameGuard {
 
 impl Drop for RuntimeSchedulerFrameGuard {
     fn drop(&mut self) {
-        let _task_context_safe = task_runtime::scheduler_frame_guard_exit(self.return_to);
+        let task_context_safe = task_runtime::scheduler_frame_guard_exit(self.return_to);
+        let expected_safe = matches!(self.return_to, RuntimeSchedulerReturn::Task);
+        if task_context_safe != expected_safe {
+            task_runtime::fatal_invariant(0x4558_0040, self.return_to as usize);
+        }
     }
 }
 
@@ -1057,10 +1223,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        CpuId, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadSpec,
+        CpuId, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps,
+        ThreadPolicyApplied, ThreadSpec,
         inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
         runtime::AddressSpaceHandle,
         test_runtime,
+        timer::{RuntimeTimerOwner, TimerNode},
     };
 
     static PARKING_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
@@ -1070,6 +1238,7 @@ mod tests {
     static ORDERING_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: assert_address_space_installed,
         on_switch_out: ignore_switch_out,
+        on_policy_applied: ignore_policy_applied,
         on_exit: ignore_thread_event,
         on_deadline_overrun: ignore_thread_event,
         drop: ignore_drop,
@@ -1078,6 +1247,7 @@ mod tests {
     static PARKING_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: ignore_thread_event,
         on_switch_out: ignore_switch_out,
+        on_policy_applied: ignore_policy_applied,
         on_exit: count_parking_exit,
         on_deadline_overrun: ignore_thread_event,
         drop: ignore_drop,
@@ -1086,6 +1256,7 @@ mod tests {
     static REENTRANT_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: ignore_thread_event,
         on_switch_out: ignore_switch_out,
+        on_policy_applied: ignore_policy_applied,
         on_exit: count_reentrant_exit,
         on_deadline_overrun: ignore_thread_event,
         drop: ignore_drop,
@@ -1125,7 +1296,7 @@ mod tests {
         let _ = permit;
         let timer = arm_current_sleep_timer(&running, 0).unwrap();
 
-        assert_eq!(timer_interrupt_current_cpu(0, 0).unwrap().expired(), 1);
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
         let mut irq = RuntimeIrqGuard::enter();
         assert_eq!(
             drain_current_expired_timers(system.as_ref().get_ref(), &mut irq).unwrap(),
@@ -1170,6 +1341,215 @@ mod tests {
         assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
         assert!(system.snapshot(cpu.as_ref()).need_resched());
         assert!(!cancel_current_sleep_timer(&running, timer).unwrap());
+    }
+
+    #[test]
+    fn runtime_timer_is_delivered_only_from_the_scheduler_safe_point() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let timer = Box::leak(Box::new(TimerNode::new(0)));
+        let timer = unsafe {
+            // SAFETY: the leaked node has a stable shutdown-lifetime address.
+            Pin::new_unchecked(&*timer)
+        };
+        let owner = unsafe {
+            // SAFETY: this test uses an opaque scalar only; the fake runtime
+            // records it without dereferencing it.
+            RuntimeTimerOwner::new(0x1234, 0x5678)
+        };
+        test_runtime::clear_runtime_timer_events();
+
+        let token = arm_current_runtime_timer(timer, 0, owner).unwrap();
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
+        assert!(test_runtime::runtime_timer_events().is_empty());
+        let mut caller_events = [ExpiredTimer::EMPTY; 1];
+        assert_eq!(take_current_expired_timers(&mut caller_events).unwrap(), 0);
+
+        let _outcome = schedule_current_cpu().unwrap();
+        assert_eq!(
+            test_runtime::runtime_timer_events(),
+            alloc::vec![crate::runtime::RuntimeTimerEventV1 {
+                owner: 0x1234,
+                node: (timer.get_ref() as *const TimerNode).expose_provenance(),
+                owner_class: 0x5678,
+                token_generation: token.generation(),
+                deadline_ns: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn full_expired_buffer_does_not_rearm_the_same_due_heap_root_before_safe_point() {
+        let system = Box::pin(
+            TaskSystem::new(
+                crate::TaskSystemConfig::new(1)
+                    .with_timer_capacity(2)
+                    .with_batch_limit(1),
+            )
+            .unwrap(),
+        );
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let first = Box::leak(Box::new(TimerNode::new(0)));
+        let second = Box::leak(Box::new(TimerNode::new(0)));
+        let first = unsafe {
+            // SAFETY: leaked nodes have stable shutdown-lifetime addresses.
+            Pin::new_unchecked(&*first)
+        };
+        let second = unsafe {
+            // SAFETY: leaked nodes have stable shutdown-lifetime addresses.
+            Pin::new_unchecked(&*second)
+        };
+        let first_owner = unsafe {
+            // SAFETY: fake runtime records these opaque identities only.
+            RuntimeTimerOwner::new(0x1001, 0x7001)
+        };
+        let second_owner = unsafe {
+            // SAFETY: fake runtime records these opaque identities only.
+            RuntimeTimerOwner::new(0x1002, 0x7001)
+        };
+        test_runtime::clear_runtime_timer_events();
+        arm_current_runtime_timer(first, 0, first_owner).unwrap();
+        arm_current_runtime_timer(second, 0, second_owner).unwrap();
+
+        let first_irq = timer_interrupt_current_cpu(false, 0).unwrap();
+        assert_eq!(first_irq.expired(), 1);
+        assert!(first_irq.pending());
+        assert_eq!(
+            first_irq.next_deadline_ns(),
+            Some(crate::DEFAULT_FAIR_SLICE_NS),
+            "the delivery latch must hide only the due heap root, not an unrelated future slice"
+        );
+
+        let duplicate_irq = timer_interrupt_current_cpu(false, 0).unwrap();
+        assert_eq!(duplicate_irq.expired(), 0);
+        assert!(duplicate_irq.pending());
+        assert_eq!(
+            duplicate_irq.next_deadline_ns(),
+            Some(crate::DEFAULT_FAIR_SLICE_NS)
+        );
+        assert!(test_runtime::runtime_timer_events().is_empty());
+
+        let programs_before_safe_point = test_runtime::programmed_oneshot_timer_count();
+        assert!(schedule_current_cpu().unwrap().is_quiescent());
+        assert_eq!(test_runtime::runtime_timer_events().len(), 1);
+        assert!(
+            test_runtime::programmed_oneshot_timer_count() > programs_before_safe_point,
+            "the safe-point tail must reprogram the exposed heap continuation"
+        );
+        assert_eq!(test_runtime::last_programmed_oneshot_ns(), 1);
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
+        assert!(schedule_current_cpu().unwrap().is_quiescent());
+        assert_eq!(test_runtime::runtime_timer_events().len(), 2);
+    }
+
+    #[test]
+    fn periodic_tick_requests_owner_work_without_forcing_a_switch() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+        test_runtime::set_hard_irq(true);
+
+        let outcome = timer_interrupt_current_cpu(true, 0).unwrap();
+
+        test_runtime::set_hard_irq(false);
+        assert!(!outcome.slice_expired());
+        assert!(!outcome.deadline_overrun());
+        assert_eq!(test_runtime::scheduler_ipi_send_count(), 0);
+        assert!(current_cpu_needs_resched().unwrap());
+        assert!(schedule_current_cpu().unwrap().is_quiescent());
+        assert!(!current_cpu_needs_resched().unwrap());
+    }
+
+    #[test]
+    fn transient_runtime_timer_backpressure_preserves_the_expiration() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let timer = Box::leak(Box::new(TimerNode::new(0)));
+        let timer = unsafe {
+            // SAFETY: the leaked node has a stable shutdown-lifetime address.
+            Pin::new_unchecked(&*timer)
+        };
+        let owner = unsafe {
+            // SAFETY: this fake owner remains an opaque scalar for the test.
+            RuntimeTimerOwner::new(0x9abc, 0xdef0)
+        };
+        test_runtime::clear_runtime_timer_events();
+
+        let token = arm_current_runtime_timer(timer, 0, owner).unwrap();
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
+        test_runtime::set_runtime_timer_dispatch_status(RuntimeStatus::Busy);
+        assert!(matches!(
+            schedule_current_cpu(),
+            Err(TaskError::RuntimeFailure(code)) if code == RuntimeStatus::Busy as u32
+        ));
+        assert!(test_runtime::runtime_timer_events().is_empty());
+
+        test_runtime::set_runtime_timer_dispatch_status(RuntimeStatus::Success);
+        schedule_current_cpu().unwrap();
+        assert_eq!(
+            test_runtime::runtime_timer_events(),
+            alloc::vec![crate::runtime::RuntimeTimerEventV1 {
+                owner: 0x9abc,
+                node: (timer.get_ref() as *const TimerNode).expose_provenance(),
+                owner_class: 0xdef0,
+                token_generation: token.generation(),
+                deadline_ns: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn stale_buffered_sleep_expiration_cannot_wake_a_new_generation() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let bootstrap = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        let stale = arm_current_sleep_timer(&bootstrap, 0).unwrap();
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
+        let current = arm_current_sleep_timer(&bootstrap, 100).unwrap();
+
+        let mut irq = RuntimeIrqGuard::enter();
+        assert_eq!(
+            drain_current_expired_timers(system.as_ref().get_ref(), &mut irq).unwrap(),
+            1
+        );
+        assert_ne!(stale, current);
+        assert!(
+            bootstrap
+                .core
+                .sleep_timer_cpu_for(current.generation())
+                .is_some()
+        );
+        assert!(
+            !bootstrap.core.take_park_notification(),
+            "a stale expiration must not publish a wake for the new timer generation"
+        );
+        drop(irq);
+        assert!(cancel_current_sleep_timer(&bootstrap, current).unwrap());
     }
 
     #[test]
@@ -1234,9 +1614,10 @@ mod tests {
             "one owner-work batch must remain pending"
         );
         assert!(
-            cpu.needs_reschedule(),
-            "remaining work must retain its doorbell"
+            !cpu.needs_reschedule(),
+            "a retained bounded suffix must not spin the same IRQ-return safe point"
         );
+        assert!(cpu.has_deferred_scheduler_work());
         assert_eq!(
             PARKING_EXIT_CALLBACKS.load(Ordering::Acquire),
             0,
@@ -1262,6 +1643,44 @@ mod tests {
             (0, 1, 0),
             "an empty safe point needs only the scheduler baton"
         );
+    }
+
+    #[test]
+    fn preempt_exit_accepts_runtime_reported_disabled_irq_continuation() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_scheduler_frame_state();
+        test_runtime::set_scheduler_frame_task_return_safe(false);
+
+        let outcome = unsafe {
+            schedule_current_cpu_from_preempt_exit(RuntimeSchedulerEntry::PreemptExit).unwrap()
+        };
+        test_runtime::reset_scheduler_frame_state();
+
+        assert!(matches!(outcome, SchedulerOutcome::Quiescent));
+    }
+
+    #[test]
+    fn irq_return_accepts_runtime_reported_disabled_irq_continuation() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_scheduler_frame_state();
+
+        let outcome = unsafe {
+            schedule_current_cpu_from_preempt_exit(RuntimeSchedulerEntry::IrqReturn).unwrap()
+        };
+
+        assert!(matches!(outcome, SchedulerOutcome::Quiescent));
     }
 
     #[test]
@@ -1347,11 +1766,12 @@ mod tests {
         assert!(cpu.has_remote_work());
         assert!(cpu.needs_reschedule());
 
-        // Forced schedule paths used to consume the sticky bit without first
-        // draining owner work. Claiming scheduler entry must re-observe the
-        // published inbox and preserve a doorbell for the next bounded drain.
-        cpu.as_mut().scheduler_enter();
-        assert!(cpu.needs_reschedule());
+        // Reason consumption and inbox ownership are independent. Even after
+        // the transport reason is claimed, published owner work remains a
+        // sufficient reason for an explicit safe point to enter and drain.
+        cpu.as_mut().scheduler_enter().finish();
+        assert!(!cpu.needs_reschedule());
+        assert!(cpu.has_remote_work());
 
         assert!(matches!(
             schedule_current_cpu().unwrap(),
@@ -1360,6 +1780,55 @@ mod tests {
         assert!(
             !cpu.has_remote_work(),
             "pending owner work must be sufficient to enter the scheduler safe point"
+        );
+    }
+
+    #[test]
+    fn remote_ipi_retry_does_not_become_a_local_reschedule_reason() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(2)).unwrap());
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        system
+            .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system
+            .install_bootstrap_thread(cpu1.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu0.as_mut()).unwrap();
+        system.bring_cpu_online(cpu1.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+        let node = Box::leak(Box::new(InboxNode::new(InboxKind::RemoteWake)));
+        let node = unsafe {
+            // SAFETY: the leaked fixture has a stable shutdown-lifetime address.
+            Pin::new_unchecked(&*node)
+        };
+        test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 1);
+
+        assert_eq!(
+            system
+                .cpu_remote(CpuId::new(1))
+                .unwrap()
+                .publish_remote_wake(
+                    node,
+                    InboxMessage::remote_wake(ThreadId::from_parts(90, 1), CpuId::new(1)),
+                ),
+            PublishResult::Published
+        );
+        assert!(system.scheduler_ipi_retry_pending());
+
+        assert!(
+            !current_cpu_needs_resched().unwrap(),
+            "another CPU's failed transport must not become this CPU's scheduler reason"
+        );
+
+        test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+        assert_eq!(system.service_scheduler_ipi_retries(64), Ok(1));
+        assert_eq!(
+            system
+                .drain_remote_wakes(cpu1.as_mut(), 0)
+                .unwrap()
+                .drained(),
+            1
         );
     }
 
@@ -1429,6 +1898,13 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _reason: SwitchReason,
+    ) {
+    }
+
+    unsafe extern "Rust" fn ignore_policy_applied(
+        _data: usize,
+        _thread: ThreadId,
+        _event: ThreadPolicyApplied,
     ) {
     }
 

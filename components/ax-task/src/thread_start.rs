@@ -8,7 +8,7 @@ use core::{
 
 use crate::{
     CpuSet, SchedulePolicy, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
-    ThreadHandle, ThreadId, ThreadResources, ThreadSpec, WaitQueue,
+    ThreadHandle, ThreadId, ThreadPolicyApplied, ThreadResources, ThreadSpec, WaitQueue,
     facade::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system},
     lock::IrqTicketLock,
     runtime::{
@@ -320,6 +320,7 @@ impl KernelThreadData {
 static KERNEL_THREAD_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: kernel_thread_switch_in,
     on_switch_out: kernel_thread_switch_out,
+    on_policy_applied: kernel_thread_policy_applied,
     on_exit: kernel_thread_exit,
     on_deadline_overrun: kernel_thread_deadline_overrun,
     drop: kernel_thread_drop,
@@ -342,6 +343,21 @@ unsafe extern "Rust" fn kernel_thread_switch_out(
     if let Some(extension) = data.os_extension.as_ref() {
         // SAFETY: the outer extension owns and forwards the inner callback.
         unsafe { (extension.ops().on_switch_out)(extension.data(), thread, reason) };
+    }
+}
+
+unsafe extern "Rust" fn kernel_thread_policy_applied(
+    data: usize,
+    thread: ThreadId,
+    event: ThreadPolicyApplied,
+) {
+    let data = unsafe { kernel_thread_data_from_raw(data) };
+    if let Some(extension) = data.os_extension.as_ref() {
+        // SAFETY: the outer extension retains and serially forwards the
+        // value-only owner commit to the installed OS extension.
+        unsafe {
+            (extension.ops().on_policy_applied)(extension.data(), thread, event);
+        }
     }
 }
 
@@ -539,6 +555,7 @@ mod tests {
     static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: test_extension_hook,
         on_switch_out: test_extension_switch_out,
+        on_policy_applied: test_extension_policy_applied,
         on_exit: test_extension_hook,
         on_deadline_overrun: test_extension_hook,
         drop: test_extension_drop,
@@ -593,6 +610,13 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _reason: SwitchReason,
+    ) {
+    }
+
+    unsafe extern "Rust" fn test_extension_policy_applied(
+        _data: usize,
+        _thread: ThreadId,
+        _event: ThreadPolicyApplied,
     ) {
     }
 

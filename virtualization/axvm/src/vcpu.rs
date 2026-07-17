@@ -140,6 +140,8 @@ enum VcpuLifecycleState {
     Bound(HostCpuIdentity),
     Running(HostCpuIdentity),
     Unbinding(HostCpuIdentity),
+    PostUnbind(HostCpuIdentity),
+    FinishingPostUnbind(HostCpuIdentity),
 }
 
 impl VcpuLifecycleState {
@@ -148,7 +150,11 @@ impl VcpuLifecycleState {
             Self::Invalid => VmVcpuState::Invalid,
             Self::Created | Self::Initializing => VmVcpuState::Created,
             Self::Free => VmVcpuState::Free,
-            Self::Binding(_) | Self::Bound(_) | Self::Unbinding(_) => VmVcpuState::Ready,
+            Self::Binding(_)
+            | Self::Bound(_)
+            | Self::Unbinding(_)
+            | Self::PostUnbind(_)
+            | Self::FinishingPostUnbind(_) => VmVcpuState::Ready,
             Self::Running(_) => VmVcpuState::Running,
         }
     }
@@ -441,6 +447,36 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         let result = result.map_err(|error| map_vcpu_backend_error("unbind vCPU", error));
         self.finish_reserved_state(
             VcpuLifecycleState::Unbinding(identity),
+            if result.is_ok() {
+                VcpuLifecycleState::PostUnbind(identity)
+            } else {
+                VcpuLifecycleState::Invalid
+            },
+        );
+        result
+    }
+
+    /// Finishes CPU-owned state retained until after unbind/current removal.
+    pub(crate) fn finish_post_unbind(&self, pinned_cpu: &PinnedCpuContext<'_>) -> AxVmResult {
+        pinned_cpu.assert_host_cpu_binding("before vCPU post-unbind completion");
+        assert!(
+            load_current_vcpu_header(pinned_cpu).is_null(),
+            "vCPU post-unbind completion requires CURRENT_VCPU to be cleared"
+        );
+        let identity = pinned_cpu.identity();
+        self.reserve_state(
+            VcpuLifecycleState::PostUnbind(identity),
+            VcpuLifecycleState::FinishingPostUnbind(identity),
+        )?;
+        // SAFETY: `FinishingPostUnbind(identity)` exclusively reserves the
+        // backend after unbind, while the matching CPU pin remains live and
+        // CURRENT_VCPU has already been removed.
+        let result =
+            unsafe { self.arch_vcpu_mut_reserved() }.finish_post_unbind(pinned_cpu.cpu_pin());
+        pinned_cpu.assert_host_cpu_binding("after vCPU post-unbind completion");
+        let result = result.map_err(|error| map_vcpu_backend_error("finish vCPU unbind", error));
+        self.finish_reserved_state(
+            VcpuLifecycleState::FinishingPostUnbind(identity),
             if result.is_ok() {
                 VcpuLifecycleState::Free
             } else {
@@ -791,6 +827,7 @@ mod tests {
         bind_calls: AtomicUsize,
         run_calls: AtomicUsize,
         unbind_calls: AtomicUsize,
+        finish_post_unbind_calls: AtomicUsize,
     }
 
     struct FailingRunBackend {
@@ -860,6 +897,13 @@ mod tests {
 
         fn unbind(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
             self.trace.unbind_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn finish_post_unbind(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
+            self.trace
+                .finish_post_unbind_calls
+                .fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
@@ -936,16 +980,21 @@ mod tests {
         .unwrap();
         let test_cpu = InstalledTestCpu::install();
         let pinned_cpu = PinnedCpuContext::new(&test_cpu.pin);
-        let _current_vcpu = vcpu.enter_pinned(&pinned_cpu);
+        let current_vcpu = vcpu.enter_pinned(&pinned_cpu);
 
         vcpu.bind(&pinned_cpu).unwrap();
         assert!(vcpu.run(&pinned_cpu).is_err());
         vcpu.unbind(&pinned_cpu)
             .expect("run failure must leave the backend eligible for host cleanup");
+        assert_eq!(vcpu.state(), VmVcpuState::Ready);
+        drop(current_vcpu);
+        vcpu.finish_post_unbind(&pinned_cpu)
+            .expect("run failure must finish retained host state after current-vCPU removal");
 
         assert_eq!(trace.bind_calls.load(Ordering::Relaxed), 1);
         assert_eq!(trace.run_calls.load(Ordering::Relaxed), 1);
         assert_eq!(trace.unbind_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(trace.finish_post_unbind_calls.load(Ordering::Relaxed), 1);
         assert_eq!(vcpu.state(), VmVcpuState::Free);
     }
 

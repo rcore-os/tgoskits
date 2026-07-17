@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context as _, anyhow, bail};
 use cargo_metadata::Metadata;
-use object::{Object as _, ObjectSection as _};
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _, read::elf::ProgramHeader as _};
 use ostool::build::config::Cargo;
 
 use super::{Starry, board};
@@ -117,6 +117,7 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     );
     enable_starry_smp_capability(&mut build_info.features);
     normalize_starry_platform_features(&mut build_info.features);
+    reject_starry_kernel_tls(&build_info.features)?;
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
@@ -142,6 +143,16 @@ fn enable_starry_smp_capability(features: &mut Vec<String>) {
 fn normalize_starry_platform_features(features: &mut Vec<String>) {
     features.sort();
     features.dedup();
+}
+
+fn reject_starry_kernel_tls(features: &[String]) -> anyhow::Result<()> {
+    if let Some(feature) = features
+        .iter()
+        .find(|feature| feature.rsplit('/').next() == Some("tls"))
+    {
+        bail!("Starry LinuxCurrent register mode cannot enable kernel TLS through `{feature}`");
+    }
+    Ok(())
 }
 
 fn patch_starry_cargo_config(
@@ -193,6 +204,7 @@ pub(crate) fn postprocess_starry_artifact(
     let elf = build_output.elf_path();
     println!("[axbuild] starry artifact elf={}", elf.display());
     generate_kallsyms(elf)?;
+    audit_freestanding_starry_elf(elf)?;
     refresh_bin_if_present(elf)?;
 
     if let Some(plan) = uimage_generation_plan(
@@ -205,6 +217,88 @@ pub(crate) fn postprocess_starry_artifact(
     }
 
     Ok(())
+}
+
+fn audit_freestanding_starry_elf(kernel_elf: &Path) -> anyhow::Result<()> {
+    let data =
+        fs::read(kernel_elf).with_context(|| format!("failed to read {}", kernel_elf.display()))?;
+    audit_freestanding_starry_elf_bytes(&data, kernel_elf)
+}
+
+fn audit_freestanding_starry_elf_bytes(data: &[u8], path: &Path) -> anyhow::Result<()> {
+    let file =
+        object::File::parse(data).with_context(|| format!("failed to parse {}", path.display()))?;
+    if file.format() != object::BinaryFormat::Elf {
+        bail!("Starry freestanding image {} is not ELF", path.display());
+    }
+    if file.kind() != object::ObjectKind::Dynamic {
+        bail!(
+            "Starry freestanding image {} is not an ET_DYN PIE",
+            path.display()
+        );
+    }
+    if elf_has_tls_segment(&file) {
+        bail!(
+            "Starry freestanding image {} contains a forbidden PT_TLS segment",
+            path.display()
+        );
+    }
+
+    for section in file.sections() {
+        let name = section
+            .name()
+            .with_context(|| format!("invalid section name in {}", path.display()))?;
+        if is_forbidden_starry_section(name) {
+            bail!(
+                "Starry freestanding image {} contains forbidden TLS section {name}",
+                path.display()
+            );
+        }
+    }
+
+    for symbol in file.symbols().chain(file.dynamic_symbols()) {
+        let name = symbol
+            .name()
+            .with_context(|| format!("invalid symbol name in {}", path.display()))?;
+        if is_forbidden_starry_symbol(name) {
+            bail!(
+                "Starry freestanding image {} contains forbidden std runtime symbol {name}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn elf_has_tls_segment(file: &object::File<'_>) -> bool {
+    match file {
+        object::File::Elf32(file) => file
+            .elf_program_headers()
+            .iter()
+            .any(|header| header.p_type(file.endian()) == object::elf::PT_TLS),
+        object::File::Elf64(file) => file
+            .elf_program_headers()
+            .iter()
+            .any(|header| header.p_type(file.endian()) == object::elf::PT_TLS),
+        _ => false,
+    }
+}
+
+fn is_forbidden_starry_section(name: &str) -> bool {
+    matches!(name, ".tdata" | ".tbss") || name.starts_with(".tdata.") || name.starts_with(".tbss.")
+}
+
+fn is_forbidden_starry_symbol(name: &str) -> bool {
+    const FORBIDDEN: [&str; 3] = [
+        "std::rt::lang_start_internal",
+        "std::panicking",
+        "LOCAL_PANIC_COUNT",
+    ];
+
+    let demangled = rustc_demangle::demangle(name).to_string();
+    FORBIDDEN
+        .iter()
+        .any(|pattern| name.contains(pattern) || demangled.contains(pattern))
 }
 
 fn generate_kallsyms(kernel_elf: &Path) -> anyhow::Result<()> {

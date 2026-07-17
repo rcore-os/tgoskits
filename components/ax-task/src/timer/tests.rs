@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use core::pin::Pin;
 
 use super::*;
+use crate::ThreadId;
 
 #[test]
 fn expires_in_deadline_order_without_exceeding_the_batch() {
@@ -81,6 +82,22 @@ fn cancellation_can_physically_remove_a_rearmed_generation_tombstone() {
     assert!(timers.cancel(node.as_ref(), stale));
     assert_eq!(timers.len(), 1);
     assert!(timers.cancel(node.as_ref(), live));
+    assert!(timers.is_empty());
+}
+
+#[test]
+fn runtime_timer_rejects_a_scheduler_sleep_node() {
+    let node = Box::pin(TimerNode::for_thread(ThreadId::from_parts(7, 1)));
+    let owner = unsafe {
+        // SAFETY: the opaque scalar is never dereferenced by this queue test.
+        RuntimeTimerOwner::new(0x1000, 1)
+    };
+    let mut timers = TimerQueue::new(1);
+
+    assert_eq!(
+        unsafe { timers.arm_runtime(node.as_ref(), 10, owner) },
+        Err(TimerError::InvalidOwner)
+    );
     assert!(timers.is_empty());
 }
 

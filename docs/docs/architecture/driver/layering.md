@@ -14,11 +14,12 @@ sidebar_label: "分层模型"
 | Driver Core | `drivers/<type>/<device>` | `no_std`、寄存器/队列/描述符、`mmio-api`、`dma-api` 小边界 | `ax-driver`、`ax-hal`、`axplat-dyn`、`rdrive::PlatformDevice` |
 | Capability Boundary | `drivers/interface/rdif-*` | `rdif-base`、小型错误和事件类型 | 平台、runtime、任务调度 |
 | OS Glue | `drivers/ax-driver` 或平台 crate | `rdrive::module_driver!`、FDT/PCI probe、显式 Static probe、iomap、IRQ setup、DMA op | 上层 FS/NET 策略 |
-| Runtime | `drivers/*/rd-*`，块设备除外 | `rdif-*`、waker、poll/blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
+| Runtime | `drivers/*/rd-*`；块设备为 `ax-runtime::block` | `rdif-*`、shared workqueue、tag/waiter、watchdog、blocking wrapper、buffer pool | probe、设备树、ACPI、平台选择 |
 
 ```mermaid
 flowchart TB
     subgraph Runtime["Runtime (rd-*)"]
+        AxBlock["ax-runtime::block<br/>ctx / hctx / tag / watchdog"]
         RdNet["rd-net<br/>waker / poll / buffer pool"]
         RdDisplay["rd-display"]
         RdInput["rd-input"]
@@ -114,19 +115,24 @@ OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::
 
 ## Runtime
 
-除块设备外，Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用；块设备服务直接基于 `rdif-block` 的 submit/poll 能力边界组织 volume 和文件系统入口。
+Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用。块设备 runtime 位于 `ax-runtime::block`：它从 `rdif-block` 的 owned-request/IRQ/lifecycle 能力构建 per-CPU software ctx 和 hardware queue，不再放在文件系统内。
 
 Runtime wrapper 职责：
 
-- **waker / poll**：把 `rdif-*::Interface` 的同步能力包装成异步或阻塞 API。
+- **waker / blocking facade**：把 `rdif-*::Interface` 的能力包装成异步或阻塞 API。
 - **buffer pool**：管理收发 buffer（如 `rd-net` 的 RX/TX queue）。
 - **事件分发**：把 IRQ 事件转换成上层可消费的事件流。
+- **block hctx**：在提交前发布 generation tag，管理 direct/serialized dispatch、固定 event ring、定向 completion 和 watchdog。
+- **恢复与移交**：关闭 IRQ action、证明 DMA quiescence、增加 controller epoch，并在 guest 归还后运行相同初始化状态机。
 
 典型 Runtime crate：
 
 | crate | 说明 |
 | --- | --- |
+| `os/arceos/modules/axruntime/src/block/` | 块设备 runtime：共享 worker、ctx/hctx、tag、watchdog、recovery/handoff |
 | `drivers/net/rd-net/` | 网卡 runtime：waker、buffer pool、IRQ 适配 |
+
+块设备的 worker 使用 Linux 风格逻辑隔离而非一 queue 一线程：每个 hardware queue 拥有一个固定、可合并、串行的 `service_work`，所有 work item 由 per-CPU shared pool 执行。hard IRQ 只确认并发布事件；worker 以固定 batch 执行 IRQ/error、timeout/cancel、completion/wake 和 dispatch。任何 completion polling、定时 repoll 或 IRQ 注册失败后的降级路径都不属于这一层。
 
 ## 文件拆分约束
 

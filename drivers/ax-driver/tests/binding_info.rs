@@ -6,8 +6,8 @@ use ax_driver::PciIrqRequirement;
 #[cfg(feature = "pci")]
 use ax_driver::binding_info_from_pci;
 use ax_driver::{
-    BindingIrq, BindingIrqSource, binding_info_from_acpi_route, binding_info_from_fdt,
-    binding_irq_from_named_fdt_interrupt,
+    BindingInfo, BindingIrq, BindingIrqSource, BindingLocator, HostMmioRange, HostMmioRangeError,
+    binding_info_from_acpi_route, binding_info_from_fdt, binding_irq_from_named_fdt_interrupt,
 };
 use ax_kspin_test_runtime as _;
 use axklib::{
@@ -27,6 +27,7 @@ use rdrive::{
 };
 
 static CAPTURED_IRQ: Mutex<Option<Option<BindingIrq>>> = Mutex::new(None);
+static CAPTURED_BINDING: Mutex<Option<BindingInfo>> = Mutex::new(None);
 static SETUP_SPECIFIER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 static SETUP_ACPI_ROUTE: Mutex<Option<AcpiGsiRoute>> = Mutex::new(None);
 static RDRIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -62,6 +63,14 @@ impl_trait! {
         fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
             Err(AxError::Unsupported)
         }
+
+        // The host integration-test DMA model is cache-coherent. Define the
+        // symbols required by trait-FFI without simulating non-coherent cache.
+        fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
 
         fn dma_alloc_pages(_dma_mask: u64, _num_pages: usize, _align: usize) -> AxResult<VirtAddr> {
             Err(AxError::Unsupported)
@@ -134,6 +143,33 @@ fn optional_pci_binding_info_can_be_empty() {
     .unwrap();
 
     assert_eq!(info.irq_num(), None);
+    assert_eq!(
+        info.locator(),
+        &BindingLocator::Pci {
+            segment: 0,
+            bus: 0,
+            device: 0,
+            function: 0,
+        }
+    );
+    assert!(info.host_mmio_ranges().is_empty());
+}
+
+#[test]
+fn host_mmio_range_rejects_zero_length_and_wrapping_end() {
+    assert_eq!(
+        HostMmioRange::try_new(0x1000, 0),
+        Err(HostMmioRangeError::ZeroLength)
+    );
+    assert_eq!(
+        HostMmioRange::try_new(u64::MAX - 0xff, 0x100),
+        Err(HostMmioRangeError::EndOverflow)
+    );
+
+    let range = HostMmioRange::try_new(0x1000, 0x200).unwrap();
+    assert_eq!(range.base(), 0x1000);
+    assert_eq!(range.length(), 0x200);
+    assert_eq!(range.end_exclusive(), 0x1200);
 }
 
 #[test]
@@ -154,9 +190,10 @@ fn required_pci_binding_info_reports_unresolved_irq() {
 }
 
 #[test]
-fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
+fn fdt_binding_info_carries_every_irq_specifier_without_setup() {
     let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
     *CAPTURED_IRQ.lock().unwrap() = None;
+    *CAPTURED_BINDING.lock().unwrap() = None;
     *SETUP_SPECIFIER.lock().unwrap() = None;
 
     ensure_rdrive_test_intc();
@@ -176,6 +213,26 @@ fn fdt_binding_info_carries_first_irq_specifier_without_setup() {
     let controller = rdrive::fdt_phandle_to_device_id(Phandle::from(1)).unwrap();
     assert_eq!(spec.controller, controller);
     assert_eq!(*SETUP_SPECIFIER.lock().unwrap(), None);
+
+    let captured = CAPTURED_BINDING.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        captured.locator(),
+        &BindingLocator::Fdt {
+            path: "/device@1000".into(),
+        }
+    );
+    assert_eq!(
+        captured.host_mmio_ranges(),
+        &[HostMmioRange::try_new(0x1000, 0x100).unwrap()]
+    );
+    assert_eq!(captured.irq_sources().len(), 2);
+    assert_eq!(captured.irq_sources()[0].source_id, 0);
+    assert_eq!(captured.irq_sources()[1].source_id, 1);
+    let BindingIrq::Source(BindingIrqSource::FdtInterrupt(backup)) = &captured.irq_sources()[1].irq
+    else {
+        panic!("expected second FDT interrupt binding");
+    };
+    assert_eq!(backup.cells, vec![0, 43, 4]);
 }
 
 #[test]
@@ -213,6 +270,12 @@ fn acpi_binding_info_preserves_route_without_setup() {
 
     assert_eq!(info.irq_num(), None);
     assert_eq!(*SETUP_ACPI_ROUTE.lock().unwrap(), None);
+    assert_eq!(
+        info.locator(),
+        &BindingLocator::Acpi {
+            path: "\\_SB.TEST".into(),
+        }
+    );
     assert_eq!(
         info.irq(),
         Some(&BindingIrq::Source(BindingIrqSource::AcpiGsiRoute(
@@ -302,7 +365,9 @@ fn ensure_rdrive_test_intc() {
 }
 
 fn capture_binding_info(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
-    *CAPTURED_IRQ.lock().unwrap() = Some(binding_info_from_fdt(probe.info())?.irq_cloned());
+    let binding = binding_info_from_fdt(probe.info())?;
+    *CAPTURED_IRQ.lock().unwrap() = Some(binding.irq_cloned());
+    *CAPTURED_BINDING.lock().unwrap() = Some(binding);
     Ok(())
 }
 
@@ -331,7 +396,7 @@ fn minimal_irq_fdt() -> Fdt {
         .unwrap()
         .set_property(prop_u32s("#interrupt-cells", &[3]));
 
-    let dev = fdt.add_node(root, Node::new("device@0"));
+    let dev = fdt.add_node(root, Node::new("device@1000"));
     fdt.node_mut(dev).unwrap().set_property(prop_strs(
         "compatible",
         &["test,binding-info", "test,binding-info-fallback"],
@@ -345,6 +410,9 @@ fn minimal_irq_fdt() -> Fdt {
     fdt.node_mut(dev)
         .unwrap()
         .set_property(prop_strs("interrupt-names", &["main", "backup"]));
+    fdt.node_mut(dev)
+        .unwrap()
+        .set_property(prop_u32s("reg", &[0x1000, 0x100]));
 
     fdt
 }

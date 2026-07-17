@@ -5,15 +5,18 @@ use core::{
 };
 
 use ax_driver::serial::{
-    self as ax_serial, Config, ConfigError, DataBits, OwnerId, Parity, RxFlag, RxItem, RxQueue,
-    SerialDevice, SerialIrqHandler, SerialIrqOutcome, SerialPort, SerialSoftWork, StopBits,
-    TxQueue,
+    self as ax_serial, Config, ConfigError, DataBits, EmergencyFlushResult, EmergencyWriteResult,
+    OwnerId, Parity, RxFlag, RxItem, RxQueue, SerialDevice, SerialIrqHandler, SerialIrqOutcome,
+    SerialPort, SerialSoftWork, StopBits, TxQueue,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_runtime::hal::{
-    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-    irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
+use ax_runtime::{
+    console::{RuntimeOutputFlushResultV1, RuntimeOutputResultV1, RuntimeOutputSinkV1},
+    hal::{
+        console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
+        irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
+    },
 };
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
@@ -72,33 +75,69 @@ enum PortStartError {
 impl PreparedConsoleHandover {
     /// Irreversibly transfers console output ownership to the runtime TTY.
     ///
-    /// Construction performs no UART access. Commit first pauses early output,
-    /// starts the runtime port without recomputing the line rate, and then
-    /// permanently retires the early path. Any startup error drops the platform
-    /// token and restores boot polling after the runtime driver masks its IRQs.
+    /// Construction performs no UART access. Commit first publishes a prepared
+    /// runtime route, pauses early output, and starts the runtime port without
+    /// recomputing the line rate. The final IRQ-off boundary retires the early
+    /// path before publishing the runtime route as committed. A recoverable
+    /// startup error restores boot polling; an unprovable rollback fails closed
+    /// and never re-enters the early register owner.
     pub fn commit(mut self) -> AxResult<()> {
+        // SAFETY: the registry retains this backend until shutdown. Both
+        // callbacks are bounded, use only preallocated queues, and never call
+        // the retired platform console.
+        let runtime_output = unsafe {
+            ax_runtime::console::prepare_runtime_output_sink(self.backend.runtime_output_sink())
+        }
+        .map_err(|_| AxError::ResourceBusy)?;
         let platform_handover = ax_runtime::hal::console::prepare_runtime_output_handover()
             .map_err(|_| AxError::ResourceBusy)?;
         match self.backend.commit_console_handover() {
             Ok(()) => {}
             Err(PortStartError::Failed) => {
                 drop(platform_handover);
+                drop(runtime_output);
                 warn!("{} console takeover failed", self.backend.tty_name);
                 return Err(AxError::Unsupported);
             }
             Err(PortStartError::RecoveryFailed) => {
-                // The device may still have live runtime IRQ state. Permanently
-                // suppress early access before reporting the fatal invariant;
-                // restoring boot polling here could create two register owners.
-                platform_handover.commit().map_err(|_| AxError::BadState)?;
+                // The device may still have live runtime IRQ state. The
+                // platform token cannot restore polling without creating two
+                // register owners, while the runtime writer is not proven
+                // usable. Retire early access and publish a fail-closed route
+                // as one local IRQ-off transition.
+                let _platform_result = with_local_irqs_disabled(|| {
+                    let platform_result = platform_handover.commit();
+                    runtime_output.fail_closed();
+                    platform_result
+                });
                 return Err(AxError::BadState);
             }
         }
-        platform_handover.commit().map_err(|_| AxError::BadState)?;
+        let (platform_result, runtime_result) = with_local_irqs_disabled(|| {
+            // PREPARED already routes output to the now-writable runtime
+            // backend. Retire the paused early owner first, then Release-publish
+            // COMMITTED; no intermediate state can fall back to early MMIO.
+            let platform_result = platform_handover.commit();
+            let runtime_result = runtime_output.commit();
+            (platform_result, runtime_result)
+        });
+        if platform_result.is_err() || runtime_result.is_err() {
+            return Err(AxError::BadState);
+        }
         self.backend.complete_console_handover();
         self.committed = true;
         Ok(())
     }
+}
+
+fn with_local_irqs_disabled<R>(operation: impl FnOnce() -> R) -> R {
+    let restore_irqs = ax_runtime::hal::asm::irqs_enabled();
+    ax_runtime::hal::asm::disable_irqs();
+    let result = operation();
+    if restore_irqs {
+        ax_runtime::hal::asm::enable_irqs();
+    }
+    result
 }
 
 impl Drop for PreparedConsoleHandover {
@@ -149,6 +188,72 @@ struct SerialBackend {
 struct SerialEvents {
     pending: AtomicU32,
     notify: IrqNotify,
+}
+
+unsafe extern "C" fn runtime_normal_output(
+    context: usize,
+    bytes: *const u8,
+    len: usize,
+) -> RuntimeOutputResultV1 {
+    // SAFETY: descriptor publication guarantees a live SerialBackend and a
+    // readable callback slice for this call.
+    let backend = unsafe { &*(context as *const SerialBackend) };
+    let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
+    let written = backend.try_submit_runtime_output(bytes);
+    if written == 0 {
+        RuntimeOutputResultV1::busy()
+    } else {
+        RuntimeOutputResultV1::progress(written)
+    }
+}
+
+unsafe extern "C" fn runtime_emergency_output(
+    context: usize,
+    bytes: *const u8,
+    len: usize,
+) -> RuntimeOutputResultV1 {
+    // SAFETY: descriptor publication guarantees a live SerialBackend and a
+    // readable callback slice for this call.
+    let backend = unsafe { &*(context as *const SerialBackend) };
+    let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
+
+    // The portable owner gate accepts any CPU only while the UART is idle and
+    // rejects concurrent or recursive access. Excluding local IRQ delivery
+    // closes the same-CPU normal-owner reentry window without entering
+    // LockRuntime, the scheduler, or the normal TX queue.
+    let restore_irqs = ax_runtime::hal::asm::irqs_enabled();
+    ax_runtime::hal::asm::disable_irqs();
+    let result = backend.port.try_write_emergency(bytes);
+    if restore_irqs {
+        ax_runtime::hal::asm::enable_irqs();
+    }
+
+    match result {
+        EmergencyWriteResult::Written { count } if count > 0 => {
+            RuntimeOutputResultV1::progress(count)
+        }
+        EmergencyWriteResult::Written { .. } | EmergencyWriteResult::Busy => {
+            RuntimeOutputResultV1::busy()
+        }
+        EmergencyWriteResult::Fault => RuntimeOutputResultV1::failed(),
+    }
+}
+
+unsafe extern "C" fn runtime_emergency_flush(context: usize) -> RuntimeOutputFlushResultV1 {
+    // SAFETY: descriptor publication guarantees a live SerialBackend.
+    let backend = unsafe { &*(context as *const SerialBackend) };
+    let restore_irqs = ax_runtime::hal::asm::irqs_enabled();
+    ax_runtime::hal::asm::disable_irqs();
+    let result = backend.port.try_flush_emergency();
+    if restore_irqs {
+        ax_runtime::hal::asm::enable_irqs();
+    }
+
+    match result {
+        EmergencyFlushResult::Flushed => RuntimeOutputFlushResultV1::flushed(),
+        EmergencyFlushResult::Busy => RuntimeOutputFlushResultV1::busy(),
+        EmergencyFlushResult::Fault => RuntimeOutputFlushResultV1::failed(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -453,6 +558,31 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
 }
 
 impl SerialBackend {
+    fn runtime_output_sink(&self) -> RuntimeOutputSinkV1 {
+        RuntimeOutputSinkV1::new(
+            self as *const Self as usize,
+            runtime_normal_output,
+            runtime_emergency_output,
+            runtime_emergency_flush,
+        )
+    }
+
+    fn try_submit_runtime_output(&self, bytes: &[u8]) -> usize {
+        if bytes.is_empty() || !self.started.load(Ordering::Acquire) {
+            return 0;
+        }
+        let Some(mut tx) = self.tx.try_lock() else {
+            return 0;
+        };
+        let submitted = tx.submit(bytes);
+        drop(tx);
+
+        if submitted.accepted > 0 {
+            self.events.publish_irq(SerialEventBits::RESERVICE);
+        }
+        submitted.accepted
+    }
+
     fn register_irq(self: &Arc<Self>, mut irq: SerialIrqHandler) -> AxResult<()> {
         let backend = self.clone();
         let request = IrqRequest::new(move |ctx| {

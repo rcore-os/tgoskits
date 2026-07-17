@@ -10,6 +10,8 @@ use ax_task::{
     timer::{ExpireRequest, ExpiredTimer, TimerNode, TimerQueue},
 };
 
+mod support;
+
 #[test]
 fn timer_irq_work_is_bounded() {
     let timers = [timer(0), timer(1), timer(2)];
@@ -112,9 +114,4 @@ unsafe fn count_wake(data: usize) {
         &*(data as *const AtomicUsize)
     };
     wakes.fetch_add(1, Ordering::Relaxed);
-}
-
-#[unsafe(no_mangle)]
-extern "Rust" fn __ax_task_0_7_fatal_invariant(code: u32, argument: usize) -> ! {
-    panic!("bounded IRQ fixture hit ax-task invariant {code:#x} ({argument:#x})")
 }

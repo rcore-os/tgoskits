@@ -11,17 +11,33 @@
 //! producers in the new generation cannot delay old-head reclamation.
 
 use core::{
+    marker::PhantomData,
     ptr,
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering, fence},
 };
 
-use crate::runtime::task_runtime;
+use crate::runtime::{IrqGuardToken, task_runtime};
 
 const SLOT_COUNT: usize = 2;
 const NO_RETIRING_GENERATION: usize = usize::MAX;
 const PUBLISHER_OVERFLOW_INVARIANT: u32 = 0x494e_0002;
 const PUBLISHER_UNDERFLOW_INVARIANT: u32 = 0x494e_0003;
 const GENERATION_EXHAUSTED_INVARIANT: u32 = 0x494e_0004;
+
+/// Consumer-visible progress of one publication epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EpochRemainder {
+    Empty,
+    Ready,
+    PublisherInFlight,
+}
+
+/// Result of attempting to detach one epoch-graced producer stack.
+pub(crate) enum EpochSnapshot<Node> {
+    Empty,
+    Ready(*mut Node),
+    PublisherInFlight,
+}
 
 /// Two-slot intrusive publication state shared by one MPSC inbox.
 #[derive(Debug)]
@@ -55,9 +71,28 @@ impl<Node> EpochMpscQueue<Node> {
 
     /// Reports whether a published or grace-period-protected head remains.
     pub(crate) fn is_empty(&self) -> bool {
-        self.retiring_generation.load(Ordering::Acquire) == NO_RETIRING_GENERATION
-            && self.heads[0].load(Ordering::Acquire).is_null()
-            && self.heads[1].load(Ordering::Acquire).is_null()
+        self.remainder() == EpochRemainder::Empty
+    }
+
+    /// Classifies pending data separately from an epoch grace wait.
+    pub(crate) fn remainder(&self) -> EpochRemainder {
+        let retiring = self.retiring_generation.load(Ordering::Acquire);
+        if retiring != NO_RETIRING_GENERATION {
+            let slot = generation_slot(retiring);
+            if self.slot_publishers[slot].load(Ordering::Acquire) != 0 {
+                return EpochRemainder::PublisherInFlight;
+            }
+            return EpochRemainder::Ready;
+        }
+        if self
+            .heads
+            .iter()
+            .any(|head| !head.load(Ordering::Acquire).is_null())
+        {
+            EpochRemainder::Ready
+        } else {
+            EpochRemainder::Empty
+        }
     }
 
     /// Publishes `node` and reports an empty-to-nonempty transition in its slot.
@@ -69,6 +104,10 @@ impl<Node> EpochMpscQueue<Node> {
     /// `node`, be exclusively producer-owned until publication completes, and
     /// `node` must be absent from both heads before this call.
     pub(crate) unsafe fn publish(&self, node: *mut Node, next: &AtomicPtr<Node>) -> bool {
+        // A same-CPU IRQ-return consumer must not retire the generation while
+        // this publisher retains either the sampled generation or head pointer.
+        // The runtime nesting service makes this also safe for hard-IRQ callers.
+        let _irq_pin = PublicationIrqPin::enter();
         let publisher = GenerationPublisher::enter_stable(self);
         let head = &self.heads[publisher.slot];
         let mut observed = head.load(Ordering::Acquire);
@@ -97,13 +136,13 @@ impl<Node> EpochMpscQueue<Node> {
     /// Only the queue's single consumer may call this function. The returned
     /// stack is exclusively consumer-owned, and the consumer must preserve every
     /// node's queue lifetime until it removes that node from the detached stack.
-    pub(crate) unsafe fn take_graced_stack(&self) -> *mut Node {
+    pub(crate) unsafe fn take_graced_stack(&self) -> EpochSnapshot<Node> {
         let mut retiring = self.retiring_generation.load(Ordering::SeqCst);
         if retiring == NO_RETIRING_GENERATION {
             let active = self.active_generation.load(Ordering::SeqCst);
             let active_slot = generation_slot(active);
             if self.heads[active_slot].load(Ordering::Acquire).is_null() {
-                return ptr::null_mut();
+                return EpochSnapshot::Empty;
             }
 
             let Some(next) = active.checked_add(1) else {
@@ -123,13 +162,13 @@ impl<Node> EpochMpscQueue<Node> {
 
         let retiring_slot = generation_slot(retiring);
         if self.slot_publishers[retiring_slot].load(Ordering::SeqCst) != 0 {
-            return ptr::null_mut();
+            return EpochSnapshot::PublisherInFlight;
         }
 
         let stack = self.heads[retiring_slot].swap(ptr::null_mut(), Ordering::AcqRel);
         self.retiring_generation
             .store(NO_RETIRING_GENERATION, Ordering::SeqCst);
-        stack
+        EpochSnapshot::Ready(stack)
     }
 
     #[cfg(test)]
@@ -170,6 +209,30 @@ impl<Node> EpochMpscQueue<Node> {
     #[cfg(test)]
     fn pause_test_publisher_after_generation_load(&self) {
         pause_test_point(&self.generation_publish_test_stage);
+    }
+}
+
+/// Non-migratable local publication pin for the complete generation/head CAS.
+struct PublicationIrqPin {
+    token: IrqGuardToken,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl PublicationIrqPin {
+    fn enter() -> Self {
+        Self {
+            token: task_runtime::irq_guard_enter(),
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for PublicationIrqPin {
+    fn drop(&mut self) {
+        // SAFETY: construction obtained this token on the current CPU and this
+        // non-Send guard consumes it exactly once after publisher registration
+        // and head-pointer retention have ended.
+        unsafe { task_runtime::irq_guard_exit(self.token) };
     }
 }
 

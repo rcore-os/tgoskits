@@ -81,7 +81,10 @@ fn raw_disk_fallback_covers_entire_reader() {
 
 #[test]
 fn reader_error_variant_is_available_to_runtime_adapters() {
-    assert_eq!(Error::Reader, Error::Reader);
+    assert_eq!(
+        Error::Reader(ax_errno::AxError::Io),
+        Error::Reader(ax_errno::AxError::Io)
+    );
 }
 
 #[test]

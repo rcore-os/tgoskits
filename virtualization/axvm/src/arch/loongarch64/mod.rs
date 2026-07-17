@@ -68,6 +68,29 @@ impl ArchOps for LoongArch64Arch {
         irq::register_platform_irq_injector();
     }
 
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn activate_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        let routes = boot::get_guest_irq_routes(vm.id());
+        if routes.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Registering {} LoongArch passthrough IRQ route(s) for VM[{}]",
+            routes.len(),
+            vm.id()
+        );
+        for route in routes {
+            irq::register_guest_irq_route(route.physical_irq, vm.id(), 0, route.guest_vector)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        irq::revoke_guest_irq_routes(vm.id())
+    }
+
     fn inject_pending_interrupt(
         vm: &crate::AxVMRef,
         vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>,
@@ -206,7 +229,7 @@ impl ArchOps for LoongArch64Arch {
                 return handle_loongarch_nested_page_fault(vm, vcpu, addr, access_flags);
             }
             LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
-                ax_std::os::arceos::modules::ax_hal::irq::handle_irq(vector);
+                ax_std::os::arceos::modules::ax_hal::irq::handle_irq_from_task(vector);
             }
             LoongArchDeferredRunWork::Idle => idle::wait(vcpu),
         }

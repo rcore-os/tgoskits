@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LocalItem::Deref` with non-escaping closure access. `clone_current` keeps
   pins short for owned values, while `try_with_pinned` provides a
   non-allocating IRQ path after task-context initialization.
+- Add construction-only `ScopeCell` item initialization that requires an
+  exclusive, unpublished cell and never enters a preemption context. This lets
+  runtimes prepare allocating process resources before scheduler publication.
 
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.1...scope-local-v0.4.2) - 2026-07-07
 

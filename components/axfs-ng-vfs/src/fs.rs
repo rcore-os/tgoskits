@@ -4,6 +4,19 @@ use inherit_methods_macro::inherit_methods;
 
 use crate::{DirEntry, VfsResult};
 
+/// Describes whether open locations survive a root-filesystem handoff.
+///
+/// Disk-backed and overlay filesystems are detachable by default. Synthetic
+/// kernel filesystems may opt into [`Self::NonDetachable`] when their nodes do
+/// not depend on a controller, mount recipe, or detachable backing store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilesystemDetachPolicy {
+    /// Locations must remain tied to the publishing filesystem generation.
+    Detachable,
+    /// The filesystem is kernel-owned and remains valid across root handoff.
+    NonDetachable,
+}
+
 pub struct StatFs {
     pub fs_type: u32,
     pub block_size: u32,
@@ -29,6 +42,11 @@ pub trait FilesystemOps: Send + Sync {
         false
     }
 
+    /// Returns the handoff policy for locations created by this filesystem.
+    fn detach_policy(&self) -> FilesystemDetachPolicy {
+        FilesystemDetachPolicy::Detachable
+    }
+
     /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry;
 
@@ -51,6 +69,8 @@ impl Filesystem {
     pub fn name(&self) -> &str;
 
     pub fn is_readonly(&self) -> bool;
+
+    pub fn detach_policy(&self) -> FilesystemDetachPolicy;
 
     pub fn root_dir(&self) -> DirEntry;
 

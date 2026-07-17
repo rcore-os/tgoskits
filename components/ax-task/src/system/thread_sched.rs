@@ -20,6 +20,155 @@ pub enum DeadlineActivity {
     Inactive,
 }
 
+/// Scheduler-owned runqueue/current placement, equivalent to Linux `on_rq`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunPlacement {
+    Off,
+    Queued(CpuId),
+    Running(CpuId),
+}
+
+/// Architecture execution ownership, equivalent to Linux `on_cpu`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionOwner {
+    OffCpu,
+    OnCpu(CpuId),
+}
+
+/// Orthogonal scheduler and architecture ownership for one thread.
+///
+/// `Queued + OnCpu` is intentionally representable: an outgoing thread may be
+/// requeued before switch tail releases its old stack. No other code may
+/// synthesize placement by updating independent optional CPU fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ThreadPlacement {
+    run: RunPlacement,
+    execution: ExecutionOwner,
+}
+
+impl ThreadPlacement {
+    pub(super) const DETACHED: Self = Self {
+        run: RunPlacement::Off,
+        execution: ExecutionOwner::OffCpu,
+    };
+
+    const fn queued_cpu(self) -> Option<CpuId> {
+        match self.run {
+            RunPlacement::Queued(cpu) => Some(cpu),
+            RunPlacement::Off | RunPlacement::Running(_) => None,
+        }
+    }
+
+    const fn running_cpu(self) -> Option<CpuId> {
+        match self.run {
+            RunPlacement::Running(cpu) => Some(cpu),
+            RunPlacement::Off | RunPlacement::Queued(_) => None,
+        }
+    }
+
+    const fn run_cpu(self) -> Option<CpuId> {
+        match self.run {
+            RunPlacement::Off => None,
+            RunPlacement::Queued(cpu) | RunPlacement::Running(cpu) => Some(cpu),
+        }
+    }
+
+    const fn on_cpu(self) -> Option<CpuId> {
+        match self.execution {
+            ExecutionOwner::OffCpu => None,
+            ExecutionOwner::OnCpu(cpu) => Some(cpu),
+        }
+    }
+
+    const fn run_is_off(self) -> bool {
+        matches!(self.run, RunPlacement::Off)
+    }
+
+    const fn execution_is_off(self) -> bool {
+        matches!(self.execution, ExecutionOwner::OffCpu)
+    }
+
+    fn mark_queued(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if !self.run_is_off() {
+            return Err(TaskError::AlreadyQueued);
+        }
+        if let ExecutionOwner::OnCpu(owner) = self.execution
+            && owner != cpu
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.run = RunPlacement::Queued(cpu);
+        Ok(())
+    }
+
+    fn clear_queued(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.run != RunPlacement::Queued(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.run = RunPlacement::Off;
+        Ok(())
+    }
+
+    fn start_running_from_queue(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.run != RunPlacement::Queued(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        if let ExecutionOwner::OnCpu(owner) = self.execution
+            && owner != cpu
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.run = RunPlacement::Running(cpu);
+        Ok(())
+    }
+
+    fn start_running_detached(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if !self.run_is_off() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        if let ExecutionOwner::OnCpu(owner) = self.execution
+            && owner != cpu
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.run = RunPlacement::Running(cpu);
+        Ok(())
+    }
+
+    fn stop_running(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.run != RunPlacement::Running(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.run = RunPlacement::Off;
+        Ok(())
+    }
+
+    fn mark_on_cpu(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.run != RunPlacement::Running(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        match self.execution {
+            ExecutionOwner::OffCpu => self.execution = ExecutionOwner::OnCpu(cpu),
+            ExecutionOwner::OnCpu(owner) if owner == cpu => {}
+            ExecutionOwner::OnCpu(_) => return Err(TaskError::InvalidConfiguration),
+        }
+        Ok(())
+    }
+
+    fn clear_on_cpu(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.execution != ExecutionOwner::OnCpu(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.execution = ExecutionOwner::OffCpu;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn force_on_cpu(&mut self, cpu: CpuId) {
+        self.execution = ExecutionOwner::OnCpu(cpu);
+    }
+}
+
 /// Stable scheduler ownership anchor retained by every runnable reference.
 ///
 /// Owner CPUs operate on this cell through queued, current, and inbox-held
@@ -71,9 +220,7 @@ impl ThreadSchedCell {
                 active_deadline_reservation: 0,
                 desired_deadline_reservation: 0,
                 deadline_zero_lag_ns: 0,
-                queued_cpu: None,
-                running_cpu: None,
-                on_cpu: None,
+                placement: ThreadPlacement::DETACHED,
                 migration_target: None,
                 blocked_pi_waiters: 0,
                 pi_donor: None,
@@ -112,9 +259,7 @@ pub(super) struct ThreadSchedState {
     pub(super) active_deadline_reservation: u64,
     pub(super) desired_deadline_reservation: u64,
     pub(super) deadline_zero_lag_ns: u64,
-    pub(super) queued_cpu: Option<CpuId>,
-    pub(super) running_cpu: Option<CpuId>,
-    pub(super) on_cpu: Option<CpuId>,
+    pub(super) placement: ThreadPlacement,
     pub(super) migration_target: Option<CpuId>,
     pub(super) blocked_pi_waiters: usize,
     pub(super) pi_donor: Option<ThreadId>,
@@ -131,6 +276,63 @@ pub(super) struct ThreadSchedState {
 }
 
 impl ThreadSchedState {
+    pub(super) const fn queued_cpu(&self) -> Option<CpuId> {
+        self.placement.queued_cpu()
+    }
+
+    pub(super) const fn running_cpu(&self) -> Option<CpuId> {
+        self.placement.running_cpu()
+    }
+
+    pub(super) const fn run_cpu(&self) -> Option<CpuId> {
+        self.placement.run_cpu()
+    }
+
+    pub(super) const fn on_cpu(&self) -> Option<CpuId> {
+        self.placement.on_cpu()
+    }
+
+    pub(super) const fn run_is_off(&self) -> bool {
+        self.placement.run_is_off()
+    }
+
+    pub(super) const fn execution_is_off(&self) -> bool {
+        self.placement.execution_is_off()
+    }
+
+    pub(super) fn mark_queued(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.mark_queued(cpu)
+    }
+
+    pub(super) fn clear_queued(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.clear_queued(cpu)
+    }
+
+    pub(super) fn start_running_from_queue(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.start_running_from_queue(cpu)
+    }
+
+    pub(super) fn start_running_detached(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.start_running_detached(cpu)
+    }
+
+    pub(super) fn stop_running(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.stop_running(cpu)
+    }
+
+    pub(super) fn mark_on_cpu(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.mark_on_cpu(cpu)
+    }
+
+    pub(super) fn clear_on_cpu(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        self.placement.clear_on_cpu(cpu)
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_on_cpu(&mut self, cpu: CpuId) {
+        self.placement.force_on_cpu(cpu);
+    }
+
     pub(super) fn transition(
         &mut self,
         core: &ThreadCore,
@@ -152,5 +354,43 @@ impl ThreadSchedState {
 
     pub(super) const fn is_pi_boosted(&self) -> bool {
         self.pi_donor.is_some()
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    #[test]
+    fn outgoing_self_requeue_remains_on_cpu_until_switch_tail() {
+        let cpu = CpuId::new(0);
+        let mut placement = ThreadPlacement::DETACHED;
+        placement.start_running_detached(cpu).unwrap();
+        placement.mark_on_cpu(cpu).unwrap();
+
+        placement.stop_running(cpu).unwrap();
+        placement.mark_queued(cpu).unwrap();
+
+        assert_eq!(placement.queued_cpu(), Some(cpu));
+        assert_eq!(placement.on_cpu(), Some(cpu));
+        placement.clear_on_cpu(cpu).unwrap();
+        assert_eq!(placement.on_cpu(), None);
+    }
+
+    #[test]
+    fn outgoing_context_cannot_be_queued_on_another_cpu() {
+        let source = CpuId::new(0);
+        let target = CpuId::new(1);
+        let mut placement = ThreadPlacement::DETACHED;
+        placement.start_running_detached(source).unwrap();
+        placement.mark_on_cpu(source).unwrap();
+        placement.stop_running(source).unwrap();
+
+        assert_eq!(
+            placement.mark_queued(target),
+            Err(TaskError::InvalidConfiguration)
+        );
+        assert!(placement.run_is_off());
+        assert_eq!(placement.on_cpu(), Some(source));
     }
 }

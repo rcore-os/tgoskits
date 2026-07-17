@@ -8,7 +8,10 @@ use core::{
 use ax_kspin::PreemptGuard;
 use ax_percpu::CpuPin;
 
-use crate::scope::{ActiveScope, Scope, ScopeCellReadGuard, ScopeCellWriteGuard, ScopeItemLease};
+use crate::{
+    ScopeCell,
+    scope::{ActiveScope, Scope, ScopeCellReadGuard, ScopeCellWriteGuard, ScopeItemLease},
+};
 
 #[doc(hidden)]
 pub struct Item {
@@ -188,6 +191,23 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     ) -> ScopeItemMut<'scope, T> {
         ScopeItemMut {
             item: scope.get_mut(self.item),
+            _p: PhantomData,
+        }
+    }
+
+    /// Initializes or mutates this item before a [`ScopeCell`] is published.
+    ///
+    /// The exclusive cell reference proves that ordinary readers cannot exist,
+    /// and the cell additionally rejects scheduler-active bindings. Unlike
+    /// [`Self::scope_cell_mut`], this construction-only path does not enter a
+    /// preemption context or acquire the scope gate. Initializers may allocate;
+    /// callers must finish all such work before publishing the cell to a task.
+    pub fn scope_cell_mut_unpublished<'scope>(
+        &self,
+        scope: &'scope mut ScopeCell,
+    ) -> ScopeItemMut<'scope, T> {
+        ScopeItemMut {
+            item: scope.get_mut_unpublished(self.item),
             _p: PhantomData,
         }
     }

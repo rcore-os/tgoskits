@@ -5,6 +5,8 @@ use core::time::Duration;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
+use crate::VgicResult;
+
 /// Host operations required by ARM VGIC and virtual timer components.
 #[ax_crate_interface::def_interface]
 pub trait ArmVgicHostIf {
@@ -52,6 +54,22 @@ pub trait ArmVgicHostIf {
 
     /// Return host GICR base.
     fn get_host_gicr_base() -> PhysAddr;
+
+    /// Routes one physical SPI to a host CPU using the active GIC version.
+    fn route_physical_spi(
+        irq: u32,
+        cpu_phys_id: usize,
+        aff3: u8,
+        aff2: u8,
+        aff1: u8,
+        aff0: u8,
+    ) -> VgicResult;
+
+    /// Disables one physical SPI and clears its pending and active state.
+    fn begin_physical_spi_quiesce(irq: u32) -> VgicResult;
+
+    /// Polls the host distributor write-completion condition once.
+    fn poll_physical_distributor_write_complete() -> VgicResult<bool>;
 }
 
 #[cfg(feature = "vgicv3")]
@@ -123,4 +141,30 @@ pub fn get_host_gicd_base() -> PhysAddr {
 
 pub fn get_host_gicr_base() -> PhysAddr {
     ax_crate_interface::call_interface!(ArmVgicHostIf::get_host_gicr_base())
+}
+
+#[cfg(all(feature = "vgicv3", target_arch = "aarch64"))]
+pub(crate) fn route_physical_spi(
+    irq: u32,
+    cpu_phys_id: usize,
+    affinity: (u8, u8, u8, u8),
+) -> VgicResult {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::route_physical_spi(
+        irq,
+        cpu_phys_id,
+        affinity.0,
+        affinity.1,
+        affinity.2,
+        affinity.3,
+    ))
+}
+
+#[cfg(all(feature = "vgicv3", target_arch = "aarch64"))]
+pub(crate) fn begin_physical_spi_quiesce(irq: u32) -> VgicResult {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::begin_physical_spi_quiesce(irq))
+}
+
+#[cfg(all(feature = "vgicv3", target_arch = "aarch64"))]
+pub(crate) fn poll_physical_distributor_write_complete() -> VgicResult<bool> {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::poll_physical_distributor_write_complete())
 }

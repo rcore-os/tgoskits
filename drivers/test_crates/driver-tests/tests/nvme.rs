@@ -7,8 +7,6 @@ extern crate bare_test;
 
 #[bare_test::tests]
 mod tests {
-    use alloc::vec;
-
     use bare_test::{
         os::{
             mem::{dma::kernel_dma_op, mmio::kernel_mmio_op, page_size},
@@ -17,12 +15,12 @@ mod tests {
         *,
     };
     use fdt_edit::{Fdt, NodeType, PciSpace};
-    use nvme_driver::{Config, Nvme, NvmeBlockDriver};
+    use nvme_driver::{Config, NvmeBlockDriver};
     use pcie::{
         CommandRegister, DeviceType, PciMem32, PciMem64, PcieController, PcieGeneric,
         enumerate_by_controller,
     };
-    use rdif_block::{Interface, Request, RequestFlags, RequestOp, RequestStatus, Segment};
+    use rdif_block::{ControllerInitEndpoint, Interface};
 
     #[test]
     fn test_framework_boot() {
@@ -37,78 +35,31 @@ mod tests {
 
     #[test]
     #[timeout = 10000]
-    fn test_nvme_end_to_end() {
+    fn test_nvme_discovery_and_queue_contract() {
         println!("nvme discovery start");
 
-        let mut nvme = get_nvme();
+        let mut block = discover_nvme();
 
-        println!("nvme init ok");
-
-        let namespace_list = nvme.namespace_list().unwrap();
-
-        println!("namespace count: {}", namespace_list.len());
-        assert!(!namespace_list.is_empty(), "namespace list is empty");
-
-        for ns in &namespace_list {
-            println!(
-                "namespace id={} lba_size={} lba_count={}",
-                ns.id, ns.lba_size, ns.lba_count
-            );
-        }
-
-        println!("namespace query ok");
-
-        let ns = namespace_list[0];
-        let mut block =
-            NvmeBlockDriver::with_namespace_and_queue_depth("nvme", nvme, ns, 64).into_interface();
-        let mut queue = block.create_queue().unwrap();
-
-        assert_eq!(queue.info().device.logical_block_size, ns.lba_size);
-        assert_eq!(queue.info().device.num_blocks, ns.lba_count as u64);
-
-        for block in 0..128 {
-            let mut write_buf = vec![0u8; ns.lba_size];
-            let message = alloc::format!("hello world! block {block}");
-            let message_bytes = message.as_bytes();
-
-            write_buf[..message_bytes.len()].copy_from_slice(message_bytes);
-
-            submit(&mut *queue, RequestOp::Write, block, &mut write_buf);
-
-            let mut read_buf = vec![0u8; ns.lba_size];
-            submit(&mut *queue, RequestOp::Read, block, &mut read_buf);
-
-            assert_eq!(&read_buf[..message_bytes.len()], message_bytes);
-
-            if block == 0 || block == 127 {
-                println!("block {} io ok", block);
-            }
-        }
-
-        println!("nvme io ok");
-    }
-
-    fn submit(queue: &mut dyn rdif_block::IQueue, op: RequestOp, lba: usize, data: &mut [u8]) {
-        let block_size = queue.info().device.logical_block_size;
-        let segment = unsafe {
-            Segment::from_raw_parts(data.as_mut_ptr(), data.as_mut_ptr() as u64, data.len())
+        assert!(block.namespace_if_ready().is_none());
+        let ControllerInitEndpoint::Pending(initializer) = block.controller_init() else {
+            panic!("hardware discovery must return a pending initializer")
         };
-        let mut segments = [segment];
-        let id = queue
-            .submit_request(Request {
-                op,
-                lba: lba as u64,
-                block_count: (data.len() / block_size) as u32,
-                segments: &mut segments,
-                flags: RequestFlags::NONE,
-            })
-            .expect("submit should succeed");
-        while queue.poll_request(id).expect("poll should succeed") == RequestStatus::Pending {
-            core::hint::spin_loop();
-        }
+        assert!(
+            !initializer.irq_sources().is_empty(),
+            "NVMe initialization requires an IRQ action"
+        );
+        assert!(
+            block.create_queue().is_none(),
+            "normal queues must not be published before initialization"
+        );
+
+        // Driver-only bare tests do not own an IRQ runtime. Data I/O belongs in
+        // the Starry/ArceOS runtime tests, where the queue is activated only
+        // after its IRQ action and shared worker are installed.
+        println!("nvme IRQ queue contract ok");
     }
 
-    fn get_nvme() -> Nvme {
+    fn discover_nvme() -> NvmeBlockDriver {
         let PlatformDescriptor::DeviceTree(dtb) = get_platform_descriptor() else {
             panic!("device tree not found");
         };
@@ -177,13 +128,14 @@ mod tests {
                     cmd
                 });
 
-                return Nvme::new(
+                return NvmeBlockDriver::discover(
+                    "nvme",
                     bar.start as u64,
                     bar.count(),
                     u64::MAX,
                     kernel_dma_op(),
                     kernel_mmio_op(),
-                    Config::new(page_size, 1),
+                    Config::new(page_size, 1).with_intx_irq(),
                 )
                 .unwrap();
             }

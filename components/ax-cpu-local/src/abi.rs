@@ -134,12 +134,22 @@ impl CpuBindingV1 {
 
     /// Validates a value received from an untrusted scalar ABI boundary.
     pub const fn validated(self) -> Option<Self> {
+        let expected_boot_thread = match self
+            .area_base
+            .checked_add(crate::CPU_AREA_BOOT_THREAD_OFFSET)
+        {
+            Some(address) => address,
+            None => return None,
+        };
         if self.abi_version != CPU_LOCAL_ABI_VERSION
             || CpuIndex::from_u32(self.cpu_index).is_none()
             || RegisterModeV1::try_from_raw(self.register_mode).is_none()
             || HostLevelV1::try_from_raw(self.host_level).is_none()
             || self.area_base == 0
-            || self.boot_thread == 0
+            || !self
+                .area_base
+                .is_multiple_of(align_of::<crate::CpuAreaPrefixV2>())
+            || expected_boot_thread != self.boot_thread
             || self.cookie == 0
             || self.generation == 0
         {
@@ -255,4 +265,40 @@ pub trait CpuLocalPlatformV1 {
 
     /// Returns the raw pinned [`crate::CurrentThreadHeader`] pointer.
     fn current_thread() -> usize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CPU_AREA_BOOT_THREAD_OFFSET;
+
+    fn binding(area_base: usize, boot_thread: usize) -> CpuBindingV1 {
+        CpuBindingV1::new(
+            image_register_mode(),
+            HostLevelV1::Supervisor,
+            CpuIndex::from_u32(0).expect("CPU zero must be representable"),
+            1,
+            area_base,
+            boot_thread,
+            0x55aa,
+        )
+    }
+
+    #[test]
+    fn scalar_validation_rejects_misaligned_cpu_area() {
+        let area_base = 0x1001;
+        assert_eq!(
+            binding(area_base, area_base + CPU_AREA_BOOT_THREAD_OFFSET).validated(),
+            None
+        );
+    }
+
+    #[test]
+    fn scalar_validation_rejects_wrong_or_wrapping_boot_header() {
+        assert_eq!(binding(0x1000, 0x1040).validated(), None);
+
+        let wrapping_base = usize::MAX - 63;
+        assert!(wrapping_base.is_multiple_of(64));
+        assert_eq!(binding(wrapping_base, 0x80).validated(), None);
+    }
 }

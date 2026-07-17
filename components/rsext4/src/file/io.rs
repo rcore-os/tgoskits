@@ -64,12 +64,14 @@ pub fn truncate_inode<B: BlockDevice>(
             let del_start_lbn = new_blocks as u32;
 
             loop {
-                let blocks_map = resolve_inode_block_allextend(fs, device, &mut inode)?;
-                let del_len = if truncate_size == 0 {
-                    blocks_map.len() as u32
-                } else {
-                    blocks_map.range(del_start_lbn..).count() as u32
-                };
+                let mapped_runs = ExtentTree::new(&mut inode).mapped_runs_in_range(
+                    device,
+                    del_start_lbn,
+                    u32::MAX,
+                )?;
+                let del_len = mapped_runs
+                    .iter()
+                    .fold(0u64, |total, run| total.saturating_add(u64::from(run.len)));
 
                 if del_len == 0 {
                     break;
@@ -78,73 +80,54 @@ pub fn truncate_inode<B: BlockDevice>(
                 let start_lbn = if truncate_size == 0 {
                     // Start from the first mapped logical block to avoid
                     // rescanning from zero on sparse files.
-                    let Some((&first_lbn, _)) = blocks_map.iter().next() else {
+                    let Some(first_run) = mapped_runs.first() else {
                         break;
                     };
-                    first_lbn
+                    first_run.logical_start
                 } else {
                     del_start_lbn
                 };
 
-                let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u32);
+                let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u64) as u32;
                 {
                     let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
                     tree.remove_extend(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
                 }
             }
-        }
 
-        if new_blocks > old_blocks {
-            let mut new_blocks_map: Vec<(u32, AbsoluteBN)> = Vec::new();
-            for lbn in old_blocks as u32..new_blocks as u32 {
-                let phys = fs.alloc_block(device)?;
-                fs.datablock_cache.modify_new(device, phys, |data| {
-                    for b in data.iter_mut() {
-                        *b = 0;
-                    }
-                })?;
-                new_blocks_map.push((lbn, phys));
-            }
-
-            let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
-            if !new_blocks_map.is_empty() {
-                let mut idx = 0usize;
-                while idx < new_blocks_map.len() {
-                    let (start_lbn, start_phys) = new_blocks_map[idx];
-                    let mut run_len: u32 = 1;
-                    let mut last_lbn = start_lbn;
-                    let mut last_phys = start_phys;
-                    idx += 1;
-                    while idx < new_blocks_map.len() {
-                        let (cur_lbn, cur_phys) = new_blocks_map[idx];
-                        if cur_lbn == last_lbn + 1
-                            && last_phys.checked_add(1).ok() == Some(cur_phys)
-                        {
-                            run_len = run_len.saturating_add(1);
-                            last_lbn = cur_lbn;
-                            last_phys = cur_phys;
-                            idx += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    let ext = Ext4Extent::new(start_lbn, start_phys.raw(), run_len as u16);
-                    tree.insert_extent(fs, ext, device)?;
+            // Linux truncate semantics require the retained partial block tail to read as zero
+            // after a later extension. Keep the initialized extent but clear bytes beyond the
+            // new EOF before publishing the smaller i_size. Unwritten extents already read as
+            // zero and therefore need no data write here.
+            let tail_offset = (truncate_size % block_bytes) as usize;
+            if tail_offset != 0 {
+                let tail_lbn = (truncate_size / block_bytes) as u32;
+                if let Some(phys) = resolve_inode_block(device, &mut inode, tail_lbn)? {
+                    fs.datablock_cache.modify(device, phys, |block| {
+                        block[tail_offset..].fill(0);
+                    })?;
                 }
             }
         }
 
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
-        // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
-        let alloc_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?.len() as u64;
-        let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
-            .external_node_blocks(device)?
-            .len() as u64;
-        let iblocks_used =
-            alloc_blocks.saturating_add(extent_tree_blocks) * (BLOCK_SIZE as u64 / 512);
-        inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
-        inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+        if truncate_size < old_size {
+            // Shrink may remove both data extents and extent-tree blocks, so
+            // recompute the physical allocation count after the tree edit.
+            let alloc_blocks = ExtentTree::new(&mut inode)
+                .mapped_runs_in_range(device, 0, u32::MAX)?
+                .iter()
+                .fold(0u64, |total, run| total.saturating_add(u64::from(run.len)));
+            let extent_tree_blocks =
+                ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
+                    .external_node_blocks(device)?
+                    .len() as u64;
+            let iblocks_used =
+                alloc_blocks.saturating_add(extent_tree_blocks) * (BLOCK_SIZE as u64 / 512);
+            inode.i_blocks_lo = (iblocks_used & 0xffff_ffff) as u32;
+            inode.l_i_blocks_high = ((iblocks_used >> 32) & 0xffff) as u16;
+        }
 
         fs.finalize_inode_update(
             device,
@@ -182,6 +165,20 @@ pub fn truncate_inode<B: BlockDevice>(
                 fs.free_block(device, phys)?;
             }
             inode.i_block[lbn as usize] = 0;
+        }
+    }
+
+    if truncate_size < old_size {
+        let tail_offset = (truncate_size % block_bytes) as usize;
+        if tail_offset != 0 {
+            let tail_lbn = (truncate_size / block_bytes) as usize;
+            let phys = inode.i_block[tail_lbn];
+            if phys != 0 {
+                fs.datablock_cache
+                    .modify(device, AbsoluteBN::from(phys), |block| {
+                        block[tail_offset..].fill(0);
+                    })?;
+            }
         }
     }
 
@@ -305,44 +302,21 @@ fn read_file_follow<B: BlockDevice>(
         });
     }
 
-    let size = inode.size() as usize;
+    let size = usize::try_from(inode.size()).map_err(|_| Ext4Error::from(Errno::EOVERFLOW))?;
     if size == 0 {
         fs.touch_inode_atime_if_needed(device, inode_num)?;
         return Ok(Vec::new());
     }
 
-    let block_bytes = BLOCK_SIZE;
-    let total_blocks = size.div_ceil(block_bytes);
-
-    let mut buf = Vec::with_capacity(size);
-
-    if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(fs, device, &mut inode)?;
-        for &phys in blocks.values() {
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
-            if buf.len() >= size {
-                break;
-            }
-        }
-    } else {
-        for lbn in 0..total_blocks {
-            let phys = match resolve_inode_block(device, &mut inode, lbn as u32)? {
-                Some(b) => b,
-                None => break,
-            };
-
-            let cached = fs.datablock_cache.get_or_load(device, phys)?;
-            let data = &cached.data[..block_bytes];
-            buf.extend_from_slice(data);
-        }
+    // Keep logical block positions intact. Iterating only mapped physical
+    // blocks compresses holes and returns a short, shifted file for sparse
+    // inodes. The range reader already overlays initialized extents and fills
+    // every unmapped or unwritten range with zeroes.
+    let mut buf = alloc::vec![0; size];
+    let read = read_inode_data_into(device, fs, inode_num, 0, &mut buf)?;
+    if read != size {
+        return Err(Ext4Error::corrupted().with_operation("read_file:sparse_range"));
     }
-
-    buf.truncate(size);
-
-    fs.touch_inode_atime_if_needed(device, inode_num)?;
-
     Ok(buf)
 }
 
@@ -578,7 +552,7 @@ fn write_full_block_run<B: BlockDevice>(
 }
 
 fn existing_full_block_run(
-    runs: &[ExtentRun],
+    runs: &[ExtentMappingRun],
     start_lbn: u64,
     offset: u64,
     end: u64,
@@ -592,7 +566,9 @@ fn existing_full_block_run(
     let run = runs.iter().find(|run| {
         let run_start = u64::from(run.logical_start);
         let run_end = run_start + u64::from(run.len);
-        start_lbn >= run_start && start_lbn < run_end
+        run.state == ExtentMappingState::Initialized
+            && start_lbn >= run_start
+            && start_lbn < run_end
     })?;
     let run_offset = start_lbn.saturating_sub(u64::from(run.logical_start));
     let start_phys = run.physical_start.checked_add(run_offset as u32).ok()?;
@@ -601,11 +577,36 @@ fn existing_full_block_run(
         return None;
     };
     let max_blocks_by_write = (end - block_start) / block_bytes;
-    let run_len = available_blocks.min(max_blocks_by_write as u32);
+    let max_run_blocks = (MAX_RUN_IO_BYTES / BLOCK_SIZE).max(1) as u32;
+    let run_len = available_blocks
+        .min(max_blocks_by_write as u32)
+        .min(max_run_blocks);
     if run_len <= 1 {
         return None;
     }
     Some((start_phys, run_len))
+}
+
+fn missing_extent_run_len(runs: &[ExtentMappingRun], start_lbn: u64, end_lbn: u64) -> u64 {
+    let end_exclusive = end_lbn.saturating_add(1);
+    let next_mapped = runs
+        .iter()
+        .map(|run| u64::from(run.logical_start))
+        .filter(|logical_start| *logical_start > start_lbn)
+        .min()
+        .unwrap_or(end_exclusive);
+    next_mapped
+        .min(end_exclusive)
+        .saturating_sub(start_lbn)
+        .max(1)
+}
+
+fn mapping_at(runs: &[ExtentMappingRun], lbn: u64) -> Option<&ExtentMappingRun> {
+    runs.iter().find(|run| {
+        let run_start = u64::from(run.logical_start);
+        let run_end = run_start.saturating_add(u64::from(run.len));
+        lbn >= run_start && lbn < run_end
+    })
 }
 
 fn alloc_contiguous_run_best_effort<B: BlockDevice>(
@@ -673,21 +674,16 @@ pub fn write_inode_data<B: BlockDevice>(
         old_size.div_ceil(block_bytes)
     };
     let write = WriteSlice { offset, end, data };
-    let use_existing_run_map = end <= old_size
-        && offset.is_multiple_of(block_bytes)
-        && end.is_multiple_of(block_bytes)
-        && start_lbn < end_lbn
-        && inode.have_extend_header_and_use_extend();
-    let existing_runs = if use_existing_run_map {
+    let extent_runs = if inode.have_extend_header_and_use_extend() {
         let mut tree = ExtentTree::new(&mut inode);
-        Some(tree.initialized_runs_in_range(device, start_lbn as u32, end_lbn as u32)?)
+        Some(tree.mapped_runs_in_range(device, start_lbn as u32, end_lbn as u32)?)
     } else {
         None
     };
 
     let mut lbn = start_lbn;
     while lbn <= end_lbn {
-        if let Some(runs) = existing_runs.as_ref()
+        if let Some(runs) = extent_runs.as_ref()
             && let Some((start_phys, run_len)) = existing_full_block_run(runs, lbn, offset, end)
             && run_len > 1
         {
@@ -700,12 +696,28 @@ pub fn write_inode_data<B: BlockDevice>(
             match resolve_inode_block(device, &mut inode, lbn as u32)? {
                 Some(b) => b,
                 None => {
-                    let missing_len = if lbn >= old_blocks {
+                    if extent_runs
+                        .as_ref()
+                        .and_then(|runs| mapping_at(runs, lbn))
+                        .is_some_and(|run| run.state == ExtentMappingState::Unwritten)
+                    {
+                        // Converting an unwritten extent requires atomically splitting the
+                        // mapping and publishing initialized sub-ranges. Until that operation is
+                        // implemented, reject the write instead of inserting an overlapping
+                        // initialized extent and corrupting the tree.
+                        return Err(Ext4Error::unsupported()
+                            .with_operation("write_inode_data:unwritten_extent"));
+                    }
+                    let missing_len = if let Some(runs) = extent_runs.as_ref() {
+                        missing_extent_run_len(runs, lbn, end_lbn)
+                    } else if lbn >= old_blocks {
                         end_lbn - lbn + 1
                     } else {
                         1
                     };
+                    let max_run_blocks = (MAX_RUN_IO_BYTES / BLOCK_SIZE).max(1) as u64;
                     let requested = core::cmp::min(missing_len, Ext4Extent::EXT_INIT_MAX_LEN as u64)
+                        .min(max_run_blocks)
                         .min(u32::MAX as u64) as u32;
                     let blocks = alloc_contiguous_run_best_effort(device, fs, requested)?;
                     let first_phys = *blocks.first().ok_or(Ext4Error::no_space())?;

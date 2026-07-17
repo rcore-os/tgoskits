@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Re-export the bounded runtime serial emergency-write capability for OS glue.
+- Require every VirtIO transport crossing discovery, registration, or RDIF
+  ownership boundaries to implement `Send`; driver wrappers can no longer make
+  an arbitrary upstream `Transport` cross CPUs through an unsafe blanket.
+- Pass the move-only initialized-card capability through every SD/MMC staged
+  probe so platform glue cannot publish a queue before card identification.
+- Preserve controller bundles through driver-core registration instead of
+  collapsing every controller to one device interface, and register AHCI HBAs
+  once while exposing each identified port as an independent logical disk.
+- Defer SD/MMC card initialization to the runtime controller-activation state
+  machine, and remove platform-side busy loops and synchronous phase-probe I/O.
+- Stage Rockchip regulator, clock, and phase setup behind the initialization
+  IRQ/worker binding; power-settle delays now use an absolute runtime deadline.
+- Fail CV181x and StarFive FIFO-only block probes before touching hardware;
+  these backends remain unpublished until they provide owned IRQ-only normal
+  I/O queues.
+- Migrate virtio-blk to IRQ-driven rdif-block 0.12 owned requests and restore
+  exact DMA-buffer ownership on completion, rejection, and shutdown.
+- Preallocate virtio-blk's single descriptor request/response storage during
+  discovery so staged submit and IRQ service perform no per-request allocation
+  or release, while unquiesced descriptors retain the same bounded quarantine.
+- Use the blk-mq direct-dispatch fast path for virtio-blk behind hctx queue
+  ownership, while contended transport acknowledgements become a typed,
+  coalesced worker continuation before the used ring is inspected.
+- Reject VirtIO controller initialization until its IRQ endpoint has been
+  transferred and enabled, and mask device notifications before publishing the
+  software-disabled IRQ state so the final shared or remote edge can still be
+  acknowledged.
+- Route contended VirtIO initialization acknowledgements through the same
+  typed, bounded task-side continuation used by normal queue service.
+- Reset a VirtIO controller and wait for status-zero acknowledgement before an
+  initialization error becomes terminal; if reset cannot be proven, retain its
+  bounded queue/request DMA storage in a fail-closed quarantine.
+- Keep virtio-blk `EVENT_IDX` unnegotiated until the public queue API can
+  suppress indexed used notifications, so device-side IRQ masking remains a
+  real reset precondition rather than a no-op.
+- Split virtio-blk discovery from reset, feature negotiation, stable capacity
+  capture, queue installation, and DRIVER_OK publication. The bounded init FSM
+  starts only after the runtime binds its IRQ action; capacity and queues stay
+  unpublished until Ready.
+- Build the block path from the public virtio-drivers `Transport` and
+  `VirtQueue` APIs to avoid the eager, internally retrying `VirtIOBlk::new`
+  constructor. Recovery now waits for an acknowledged device-status reset,
+  discards the old queue only after it is no longer live, and reuses the staged
+  feature/configuration/queue initializer for host recovery and guest return.
+- Capture every VirtIO PCI memory BAR before transport construction mutates the
+  endpoint, preserving exact host-controller identity for passthrough handoff.
+- Preserve staged controller initialization through platform IRQ-lease
+  wrappers, and order activation as OS action, transport/vector lease, then
+  device source with rollback when device unmasking fails.
+- Make IRQ-binding transitions return typed failures. MSI-X multi-vector enable
+  is transactional, disable attempts every table/provider operation, and a
+  failed binding can no longer be logged and published as an active block
+  runtime. Teardown masks the device source before withdrawing its binding;
+  failed masking keeps the binding live, while an unrecoverable MSI-X lease
+  drop retains its vector token and table mapping.
+- Register NVMe as a command-free discovery object; reset, Identify, queue
+  creation, and capacity publication now run only through the runtime-bound
+  initialization IRQ action. Any post-enable initialization failure disables
+  the controller and waits for RDY=0 before becoming terminal; a disable
+  timeout remains in shutdown-lifetime quarantine with DMA storage retained.
+- Retain each block controller's stable `rdrive` device ID, firmware or PCI
+  locator, and validated host MMIO/BAR ranges so passthrough handoff can select
+  the exact device without inferring identity from an IRQ number.
+- Reject a block controller before registry publication when either its normal
+  queue endpoint or initialization state machine declares an IRQ source that
+  firmware did not bind.
+- Preserve every FDT interrupt specifier by its logical source index instead of
+  silently retaining only source zero, allowing multi-source controller
+  activation to validate the complete firmware binding.
+- Retain a move-only PCI INTx endpoint-gate lease across AHCI, NVMe, and
+  virtio-blk discovery; INTx remains masked until the runtime owns the IRQ
+  action and is masked again during teardown.
+- Allow NVMe to fall back from MSI-X to INTx only when MSI-X is unsupported;
+  a programming or rollback failure now aborts probe with the endpoint kept
+  masked instead of activating a second interrupt mode on unproven state.
+- Retain the NVMe PCI endpoint inside its MSI-X lease through shutdown; if
+  vector disable cannot be proven, quarantine the endpoint with the vector
+  allocation and table mapping instead of releasing partial ownership.
+- Move StarFive clock, reset, and regulator activation behind the bound IRQ
+  action while retaining those resource capabilities in the staged controller
+  through initialization, recovery, and ownership handoff.
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.11.3...ax-driver-v0.12.0) - 2026-07-10
 
 ### Added

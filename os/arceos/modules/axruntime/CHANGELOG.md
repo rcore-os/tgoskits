@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Gate architectural user entry on a runtime-owned produced/acknowledged epoch
+  after raw IRQ masking, so OS work published during exit-to-user processing is
+  either drained before entry or retained behind the scheduler doorbell.
+- Preserve ax-task's typed scheduler reasons at timer IRQ return: periodic
+  housekeeping, expired timers, and bounded continuations no longer become an
+  unconditional preemption request in the runtime adapter.
+- Supply backtrace walking with the current runtime stack allocation or exact
+  per-CPU boot stack, rather than assuming the entire kernel virtual-address
+  range is mapped and readable during a panic.
+- Treat the shared hardware IPI as a transport doorbell: acknowledge published
+  scheduler epochs on any arrival without converting the interrupt itself into
+  a preemption request.
+- Route logs through a one-shot runtime output sink after early-console
+  handover, and stream panic diagnostics through a bounded emergency callback
+  plus one shutdown-only bounded transmitter drain, without allocation,
+  sleeping locks, or fallback to the retired UART owner.
+- Limit the worker-service topology to the boot CPU when the final image has
+  SMP disabled, even if firmware describes additional physical CPUs.
+- Materialize every logical device in a controller bundle after initialization,
+  keep queue selection device-scoped, and retain recovery and passthrough as
+  controller-wide lifecycle transitions.
+- Drive staged block-controller initialization on the shared high-priority
+  workqueue after binding IRQ actions, and publish queues only after Ready.
+- Retain deferred initialization IRQ sources in a fixed bitmap and acknowledge
+  them in the bounded worker before advancing the controller state machine.
+- Replace destructive multi-controller detach with typed prepare, commit,
+  quarantine, guest-return, and host-running ownership permits. Retain driver
+  queues and IRQ registrations across passthrough for proof-gated recovery.
+- Publish delayed-work deadline and generation as one atomic command so
+  concurrent task/IRQ producers cannot pair one update's ordering token with
+  another update's deadline.
+- Keep synchronous delayed-work cancellation behind the expiration publication
+  baton until an old timer generation is either restored and cancelled or its
+  queued activation is visible to `cancel_work_sync`.
+- Republish the delayed-work cancel command on every baton retry so one
+  concurrent deadline modification cannot leave synchronous cancellation
+  repeatedly re-arming the replacement timer.
+- Linearize every delayed-work schedule or deadline modification through the
+  logical queue's packed admission state; a new timer retains that reservation,
+  while an existing timer releases its temporary permit only after publishing
+  the replacement command, so drain cannot admit a late deadline extension.
+- Keep synchronous delayed-work flushing behind the same expiration publication
+  baton so it cannot snapshot an idle user item before the timer path queues it.
+- Order intrusive incoming publication and the worker doorbell in one
+  sequentially consistent handshake so a concurrent producer is either
+  detached by the consumer or leaves a pending doorbell; a cross-atomic weak
+  ordering can no longer lose both indications.
+- Consume detached MPSC snapshots one node at a time instead of reversing an
+  unbounded list, and reject caller-selected passes above the fixed 64-node
+  latency budget.
+- Add a task-context logical-workqueue drain boundary that closes admission and
+  waits for every previously accepted item without tearing down shared workers.
+- Pack logical-workqueue admission, active-item count, and drain state into one
+  atomic transition, and defer the final drain wake through a fixed worker item
+  so a hard-IRQ reservation rollback never scans a task-context wait queue.
+- Validate synchronous drain context before closing logical queue admission, so
+  an IRQ or shared-worker misuse returns without destructively starting drain.
+- Keep OS IRQ acknowledgement actions live until device-side masking commits
+  during activation rollback, recovery, and passthrough handoff.
+- Keep a failed block IRQ's complete backing line quenched until recovery has
+  successfully masked the device source and explicitly releases the owning
+  action, so a shared line cannot spin on an asserted failed source.
+- Detach drained host IRQ actions from their descriptors into linear callback
+  tokens before guest ownership, then reattach them disabled after guest route
+  revocation and before IRQ-capable controller reinitialization.
+- Separate completion and watchdog claims so only returned DMA ownership can
+  publish a timed-out request as terminal.
+- Quarantine the DMA backing carried by a stale or duplicate driver completion
+  instead of dropping memory whose hardware ownership epoch cannot be proven.
+- Serialize request cancellation through the hctx worker: staged ownership is
+  returned directly, while in-flight cancellation waits for DMA-quiesced
+  controller recovery before publishing its terminal result.
+- Split block controller, hctx, and passthrough logic by owned lifecycle,
+  request-table, service-loop, resource-identity, and transaction invariants.
+- Use one directory module entry for workqueue state, runtime workers, and
+  delayed-timer fragments instead of splitting the parent entry from its files.
+- Keep inline software queues preemption-pinned without disabling interrupts
+  across their synchronous memory-copy submission path.
+- Keep controller, hctx, request-table, and recovery worker locks
+  preemption-safe while leaving hardware IRQ delivery enabled; hard IRQ paths
+  communicate only through preallocated atomic event bridges.
+- Keep inline and activation completion sinks fixed-capacity, release queue
+  locks before returning request ownership, and quarantine a driver that emits
+  more terminal completions than one bounded hctx pass can retain.
+- Charge IRQ continuation work before deciding whether to call the driver
+  again, and defer a full completion batch or remaining event-ring snapshots
+  to the next shared-worker pass.
+
 ## [0.10.4](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.3...ax-runtime-v0.10.4) - 2026-07-10
 
 ### Added

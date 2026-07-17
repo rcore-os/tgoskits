@@ -26,10 +26,11 @@ pub fn sys_inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> AxRes
     let path = vm_load_path_string(path)?;
     debug!("sys_inotify_add_watch <= fd: {fd}, path: {path}, mask: {mask}");
 
-    let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?
-        .into_file()
-        .and_then(|loc| loc.absolute_path().ok().map(|path| path.to_string()))
-        .ok_or(AxError::InvalidInput)?;
+    let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?.with_operation(|view| {
+        view.absolute_path()
+            .map(|path| path.to_string())
+            .map_err(|_| AxError::InvalidInput)
+    })?;
 
     let inotify = get_file_like(fd)?
         .downcast_arc::<Inotify>()

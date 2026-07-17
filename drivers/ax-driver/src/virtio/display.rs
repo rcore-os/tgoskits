@@ -6,13 +6,13 @@ use rdif_display::{DisplayError, DisplayInfo, Event, FrameBuffer, PixelFormat};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::{
-    Error as VirtIoError,
-    device::gpu::VirtIOGpu,
-    transport::{InterruptStatus, Transport},
-};
+use virtio_drivers::{Error as VirtIoError, device::gpu::VirtIOGpu, transport::InterruptStatus};
 
-use crate::{BindingInfo, display::PlatformDeviceDisplay, virtio::VirtIoHalImpl};
+use crate::{
+    BindingInfo,
+    display::PlatformDeviceDisplay,
+    virtio::{VirtIoHalImpl, VirtIoTransport},
+};
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
@@ -34,14 +34,14 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
-pub fn register_transport<T: Transport + 'static>(
+pub fn register_transport<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
     register_transport_with_info(plat_dev, transport, BindingInfo::empty())
 }
 
-pub fn register_transport_with_info<T: Transport + 'static>(
+pub fn register_transport_with_info<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
     info: BindingInfo,
@@ -54,7 +54,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     Ok(())
 }
 
-struct VirtIoDisplay<T: Transport + 'static> {
+struct VirtIoDisplay<T: VirtIoTransport> {
     raw: VirtIOGpu<VirtIoHalImpl, T>,
     info: DisplayInfo,
     fb_base: *mut u8,
@@ -62,9 +62,12 @@ struct VirtIoDisplay<T: Transport + 'static> {
     irq_enabled: bool,
 }
 
-unsafe impl<T: Transport + 'static> Send for VirtIoDisplay<T> {}
+// SAFETY: `T: VirtIoTransport` proves the transport is movable. The raw
+// framebuffer pointer refers to DMA storage owned by `raw` and all device
+// operations require exclusive `&mut self` access after registration.
+unsafe impl<T: VirtIoTransport> Send for VirtIoDisplay<T> {}
 
-impl<T: Transport + 'static> VirtIoDisplay<T> {
+impl<T: VirtIoTransport> VirtIoDisplay<T> {
     fn new(transport: T, irq_num: Option<usize>) -> Result<Self, VirtIoError> {
         let mut raw = VirtIOGpu::new(transport)?;
         let framebuffer = raw.setup_framebuffer()?;
@@ -89,13 +92,13 @@ impl<T: Transport + 'static> VirtIoDisplay<T> {
     }
 }
 
-impl<T: Transport + 'static> DriverGeneric for VirtIoDisplay<T> {
+impl<T: VirtIoTransport> DriverGeneric for VirtIoDisplay<T> {
     fn name(&self) -> &str {
         "virtio-gpu"
     }
 }
 
-impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
+impl<T: VirtIoTransport> rdif_display::Interface for VirtIoDisplay<T> {
     fn info(&self) -> DisplayInfo {
         self.info
     }

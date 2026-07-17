@@ -12,10 +12,13 @@ use virtio_drivers::{
         DisconnectReason, VirtIOSocket, VsockAddr, VsockConnectionManager,
         VsockEvent as RawVsockEvent, VsockEventType,
     },
-    transport::Transport,
 };
 
-use crate::{BindingInfo, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
+use crate::{
+    BindingInfo,
+    virtio::{VirtIoHalImpl, VirtIoTransport},
+    vsock::PlatformDeviceVsock,
+};
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
@@ -39,14 +42,14 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
-pub fn register_transport<T: Transport + 'static>(
+pub fn register_transport<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
     register_transport_with_info(plat_dev, transport, BindingInfo::empty())
 }
 
-pub fn register_transport_with_info<T: Transport + 'static>(
+pub fn register_transport_with_info<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
     info: BindingInfo,
@@ -59,13 +62,16 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     Ok(())
 }
 
-struct VirtIoVsock<T: Transport + 'static> {
+struct VirtIoVsock<T: VirtIoTransport> {
     inner: VsockConnectionManager<VirtIoHalImpl, T>,
 }
 
-unsafe impl<T: Transport + 'static> Send for VirtIoVsock<T> {}
+// SAFETY: `T: VirtIoTransport` proves the transport is movable. The connection
+// manager and its queue storage move together and all RDIF operations require
+// exclusive `&mut self` access.
+unsafe impl<T: VirtIoTransport> Send for VirtIoVsock<T> {}
 
-impl<T: Transport + 'static> VirtIoVsock<T> {
+impl<T: VirtIoTransport> VirtIoVsock<T> {
     fn new(transport: T) -> Result<Self, VirtIoError> {
         let socket = VirtIOSocket::<VirtIoHalImpl, _>::new(transport)?;
         Ok(Self {
@@ -74,13 +80,13 @@ impl<T: Transport + 'static> VirtIoVsock<T> {
     }
 }
 
-impl<T: Transport + 'static> DriverGeneric for VirtIoVsock<T> {
+impl<T: VirtIoTransport> DriverGeneric for VirtIoVsock<T> {
     fn name(&self) -> &str {
         "virtio-socket"
     }
 }
 
-impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
+impl<T: VirtIoTransport> rdif_vsock::Interface for VirtIoVsock<T> {
     fn guest_cid(&self) -> u64 {
         self.inner.guest_cid()
     }

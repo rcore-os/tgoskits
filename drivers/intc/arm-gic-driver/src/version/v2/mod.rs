@@ -1,5 +1,6 @@
 use core::ptr::NonNull;
 
+#[cfg(target_arch = "aarch64")]
 use aarch64_cpu::asm::barrier;
 use log::trace;
 use tock_registers::{LocalRegisterCopy, interfaces::*};
@@ -215,6 +216,36 @@ impl Gic {
         } else {
             self.gicd().ICPENDR.set_irq_bit(id.into());
         }
+    }
+
+    /// Starts quiescing one SPI before its ownership is transferred.
+    ///
+    /// The interrupt is disabled before its pending and active state is
+    /// cleared. A distributor synchronization barrier completes the MMIO
+    /// writes before this method returns because GICv2 has no distributor RWP
+    /// bit for software to poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SpiIntIdRequired`] when `id` is an SGI or PPI.
+    pub fn begin_spi_quiesce(&self, id: IntId) -> Result<(), crate::SpiIntIdRequired> {
+        if id.is_private() {
+            return Err(crate::SpiIntIdRequired);
+        }
+        self.set_irq_enable(id, false);
+        self.set_pending(id, false);
+        self.set_active(id, false);
+        synchronize_distributor_writes();
+        Ok(())
+    }
+
+    /// Reports completion of a GICv2 distributor write sequence.
+    ///
+    /// [`Self::begin_spi_quiesce`] performs the required completion barrier,
+    /// so there is no asynchronous RWP state left to observe on GICv2.
+    pub fn poll_distributor_write_complete(&self) -> bool {
+        synchronize_distributor_writes();
+        true
     }
 
     pub fn is_pending(&self, id: IntId) -> bool {
@@ -596,7 +627,7 @@ impl CpuInterface {
 
         // Complete normal-memory doorbell/inbox publication before the SGI
         // becomes observable at a target CPU.
-        barrier::dsb(barrier::ISHST);
+        publish_sgi_writes();
         self.gicd().SGIR.write(
             gicd::SGIR::SGIINTID.val(sgi_id) + gicd::SGIR::CPUTargetList.val(target_list) + filter,
         );
@@ -614,6 +645,22 @@ impl CpuInterface {
     pub const fn trap_operations(&self) -> TrapOp {
         TrapOp::new(self.gicc as *mut u8)
     }
+}
+
+#[inline]
+fn synchronize_distributor_writes() {
+    #[cfg(target_arch = "aarch64")]
+    barrier::dsb(barrier::SY);
+    #[cfg(not(target_arch = "aarch64"))]
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+}
+
+#[inline]
+fn publish_sgi_writes() {
+    #[cfg(target_arch = "aarch64")]
+    barrier::dsb(barrier::ISHST);
+    #[cfg(not(target_arch = "aarch64"))]
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 }
 
 pub struct TrapOp {
@@ -1074,6 +1121,25 @@ mod tests {
 
         gic.gicd().ITARGETSR[7].set(0x02);
         assert_eq!(gic.cpu_interface().current_cpu_target_mask(), 0x0a);
+    }
+
+    #[test]
+    fn spi_quiesce_writes_disable_pending_and_active_before_completion() {
+        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
+        let gic = unsafe { Gic::new(VirtAddr::from(regs.as_mut_ptr()), VirtAddr::new(0), None) };
+        let intid = IntId::spi(8);
+
+        gic.begin_spi_quiesce(intid).unwrap();
+
+        let registers = gic.gicd();
+        assert_eq!(registers.ICENABLER[1].get(), 1 << 8);
+        assert_eq!(registers.ICPENDR[1].get(), 1 << 8);
+        assert_eq!(registers.ICACTIVER[1].get(), 1 << 8);
+        assert!(gic.poll_distributor_write_complete());
+        assert_eq!(
+            gic.begin_spi_quiesce(IntId::ppi(0)),
+            Err(crate::SpiIntIdRequired)
+        );
     }
 
     #[test]

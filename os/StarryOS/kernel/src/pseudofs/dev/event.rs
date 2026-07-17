@@ -63,12 +63,36 @@ const IRQ_SERVICE_STOPPED: u8 = 0;
 const IRQ_SERVICE_STARTING: u8 = 1;
 const IRQ_SERVICE_STARTED: u8 = 2;
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IrqActivationState {
+    Unbound     = 0,
+    Binding     = 1,
+    Active      = 2,
+    Fallback    = 3,
+    Quarantined = 4,
+}
+
 struct Inner {
-    device: ErasedInputDevice,
+    /// Absent only while IRQ activation owns the device exclusively. The OS
+    /// action is disabled and polling has not started during that phase.
+    device: Option<ErasedInputDevice>,
     read_ahead: VecDeque<(Duration, Event)>,
     key_state: Bitmap<KEY_CNT>,
 }
 impl Inner {
+    fn device(&self) -> &ErasedInputDevice {
+        self.device
+            .as_ref()
+            .expect("evdev device escaped its exclusive activation phase")
+    }
+
+    fn device_mut(&mut self) -> &mut ErasedInputDevice {
+        self.device
+            .as_mut()
+            .expect("evdev device escaped its exclusive activation phase")
+    }
+
     /// Drain everything the driver currently has buffered into `read_ahead`,
     /// updating cached key state along the way. Stops at the first
     /// `InputError::Again` (driver queue empty) or after a hard ceiling of
@@ -77,7 +101,7 @@ impl Inner {
     /// Returns `true` if at least one event is now queued for userspace.
     fn drain_into_queue(&mut self) -> bool {
         for _ in 0..READ_AHEAD_CAP {
-            match self.device.read_event() {
+            match self.device_mut().read_event() {
                 Ok(event) => {
                     if event.event_type == EventType::Key as u16 {
                         if event.value == 0 {
@@ -140,7 +164,10 @@ pub struct EventDev {
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
+    /// Retains the committed action, or a disabled action whose rollback
+    /// could not release handler ownership, for the shutdown lifetime.
     irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    irq_activation: AtomicU8,
     irq_notify: IrqWaitCell,
     irq_service_park: WaitQueue,
     irq_service_state: AtomicU8,
@@ -206,13 +233,14 @@ impl EventDev {
         let irq = device.irq_id();
         Self {
             inner: Mutex::new(Inner {
-                device,
+                device: Some(device),
                 read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
                 key_state: Bitmap::new(),
             }),
             waiters: PollSet::new(),
             irq,
             irq_handle: spin::Once::new(),
+            irq_activation: AtomicU8::new(IrqActivationState::Unbound as u8),
             irq_notify: IrqWaitCell::new(),
             irq_service_park: WaitQueue::new(),
             irq_service_state: AtomicU8::new(IRQ_SERVICE_STOPPED),
@@ -240,7 +268,7 @@ impl EventDev {
             let mut kernel_bits = vec![0; size];
             {
                 let mut inner = self.inner.lock();
-                match inner.device.get_event_bits(ty, &mut kernel_bits) {
+                match inner.device_mut().get_event_bits(ty, &mut kernel_bits) {
                     Ok(true) => {}
                     Ok(false) => {
                         debug!("No events for {ty:?}");
@@ -257,35 +285,105 @@ impl EventDev {
     }
 
     fn register_irq(self: &Arc<Self>) {
-        self.start_polling();
+        self.irq_activation
+            .compare_exchange(
+                IrqActivationState::Unbound as u8,
+                IrqActivationState::Binding as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .expect("evdev IRQ activation may only run once");
 
-        let Some(irq) = self.irq else {
-            return;
-        };
-        let event_dev = Arc::clone(self);
-        let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
-            .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-            .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(irq, request) {
-            Ok(handle) => {
-                if !self.start_irq_service() {
-                    warn!("failed to start evdev IRQ service for irq {irq:?}");
-                    return;
-                }
-                self.irq_handle.call_once(|| handle);
-                self.inner.lock().device.enable_irq();
-                if let Some(handle) = self.irq_handle.get().copied()
-                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
-                {
-                    warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
-                    self.inner.lock().device.disable_irq();
+        let activation = if let Some(irq) = self.irq {
+            let event_dev = Arc::clone(self);
+            let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
+                .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+                .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+            match ax_runtime::hal::irq::request_irq(irq, request) {
+                Ok(handle) => self.activate_requested_irq(irq, handle),
+                Err(err) => {
+                    warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
+                    self.with_activation_device(|device| device.disable_irq());
+                    IrqActivationState::Fallback
                 }
             }
+        } else {
+            IrqActivationState::Fallback
+        };
+
+        self.irq_activation
+            .store(activation as u8, Ordering::Release);
+        // Polling may access the device immediately, so start it only after
+        // activation has either committed or restored device ownership.
+        self.start_polling();
+    }
+
+    fn activate_requested_irq(
+        self: &Arc<Self>,
+        irq: IrqId,
+        handle: ax_runtime::hal::irq::IrqHandle,
+    ) -> IrqActivationState {
+        self.with_activation_device(|device| device.enable_irq());
+
+        if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
+            warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
+            return self.rollback_requested_irq(irq, handle, false);
+        }
+        if !self.start_irq_service() {
+            warn!("failed to start evdev IRQ service for irq {irq:?}");
+            return self.rollback_requested_irq(irq, handle, true);
+        }
+
+        self.irq_handle.call_once(|| handle);
+        IrqActivationState::Active
+    }
+
+    fn rollback_requested_irq(
+        &self,
+        irq: IrqId,
+        handle: ax_runtime::hal::irq::IrqHandle,
+        action_enabled: bool,
+    ) -> IrqActivationState {
+        if action_enabled && let Err(err) = ax_runtime::hal::irq::disable_irq(handle) {
+            warn!("failed to disable evdev irq handler for irq {irq:?}: {err:?}");
+        }
+        if let Err(err) = ax_runtime::hal::irq::synchronize_irq(handle) {
+            warn!("failed to synchronize evdev irq handler for irq {irq:?}: {err:?}");
+        }
+        self.with_activation_device(|device| device.disable_irq());
+        match ax_runtime::hal::irq::free_irq(handle) {
+            Ok(()) => IrqActivationState::Fallback,
             Err(err) => {
-                warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
-                self.inner.lock().device.disable_irq();
+                // The registry still owns the handler. Retain its lifecycle
+                // token instead of orphaning an action that may need explicit
+                // shutdown recovery.
+                self.irq_handle.call_once(|| handle);
+                warn!("quarantined evdev irq handler for irq {irq:?}: {err:?}");
+                IrqActivationState::Quarantined
             }
         }
+    }
+
+    /// Runs a driver activation callback without holding the evdev state lock.
+    ///
+    /// This is valid only while the requested OS action is disabled and before
+    /// polling starts, so no task or IRQ path can observe the absent device.
+    fn with_activation_device<R>(&self, callback: impl FnOnce(&mut ErasedInputDevice) -> R) -> R {
+        assert_eq!(
+            self.irq_activation.load(Ordering::Acquire),
+            IrqActivationState::Binding as u8,
+            "evdev device exclusivity is restricted to IRQ activation"
+        );
+        let mut device = self
+            .inner
+            .lock()
+            .device
+            .take()
+            .expect("evdev activation already owns the device");
+        let result = callback(&mut device);
+        let replaced = self.inner.lock().device.replace(device);
+        assert!(replaced.is_none(), "evdev device restored more than once");
+        result
     }
 
     fn request_polling(&self) {
@@ -413,7 +511,7 @@ impl EventDev {
         // ack, a level-triggered shared IRQ line stays asserted and can starve
         // other devices on the same line.
         let mut inner = self.inner.lock();
-        let event = inner.device.handle_irq();
+        let event = inner.device_mut().handle_irq();
         drop(inner);
         if event.input_ready {
             let _result = self.irq_notify.notify();
@@ -589,7 +687,7 @@ impl DeviceOps for EventDev {
                 Ok(0)
             }
             EVIOCGID => {
-                let device_id = self.inner.lock().device.device_id();
+                let device_id = self.inner.lock().device().device_id();
                 let user = UserPtr::<InputDeviceId>::from(arg);
                 user.write_field(offset_of!(InputDeviceId, bus_type), device_id.bus_type)?;
                 user.write_field(offset_of!(InputDeviceId, vendor), device_id.vendor)?;
@@ -623,18 +721,18 @@ impl DeviceOps for EventDev {
                         match nr {
                             // EVIOCGNAME
                             0x06 => {
-                                let name = self.inner.lock().device.name().to_string();
+                                let name = self.inner.lock().device().name().to_string();
                                 return return_str(arg, size, &name);
                             }
                             // EVIOCGPHYS
                             0x07 => {
                                 let location =
-                                    self.inner.lock().device.physical_location().to_string();
+                                    self.inner.lock().device().physical_location().to_string();
                                 return return_str(arg, size, &location);
                             }
                             // EVIOCGUNIQ
                             0x08 => {
-                                let unique_id = self.inner.lock().device.unique_id().to_string();
+                                let unique_id = self.inner.lock().device().unique_id().to_string();
                                 return return_str(arg, size, &unique_id);
                             }
                             // EVIOCGPROP — device property bitmap. libinput
@@ -692,7 +790,7 @@ impl DeviceOps for EventDev {
                             if !self.axis_supported(axis) {
                                 return Err(AxError::InvalidInput);
                             }
-                            let info = match self.inner.lock().device.get_abs_info(axis) {
+                            let info = match self.inner.lock().device_mut().get_abs_info(axis) {
                                 Ok(info) => info,
                                 Err(err) => return Err(input_error_to_ax_error(err)),
                             };

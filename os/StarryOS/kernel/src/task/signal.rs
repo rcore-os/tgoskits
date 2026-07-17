@@ -15,7 +15,7 @@ use super::{
     ProcessData, RttimeLimitAction, Thread, UserTaskRef, current_user_task, do_exit,
     get_process_data, get_process_group, get_task, is_zombie_pid,
 };
-use crate::task::future::{block_on, block_on_user, interruptible_for};
+use crate::task::future::{block_on, block_on_user_since, interruptible_for_since};
 
 /// Information needed to restart a syscall if SA_RESTART applies.
 pub struct SyscallRestartInfo {
@@ -204,11 +204,13 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
     let task = current_user_task();
-    task.clear_interrupt();
-    let wait_result = block_on_user(
+    let interrupt_baseline = task.interrupt_snapshot();
+    let wait_result = block_on_user_since(
         &task,
-        interruptible_for(
+        &interrupt_baseline,
+        interruptible_for_since(
             &task,
+            &interrupt_baseline,
             poll_fn(|cx| {
                 if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
                     Poll::Ready(())
@@ -298,12 +300,34 @@ fn notify_ptrace_waiter(thr: &Thread, signo: Signo) {
     }
 }
 
-pub fn check_signals(
+/// Result of one bounded signal-state transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "signal work must be accounted against its caller's transition budget"]
+pub(crate) enum SignalWorkStep {
+    /// No deliverable signal or thread-exit request was found.
+    Idle,
+    /// Exactly one signal or thread-exit request was handled.
+    Processed,
+}
+
+impl SignalWorkStep {
+    /// Reports whether this call consumed one unit of bounded work.
+    pub(crate) const fn processed(self) -> bool {
+        matches!(self, Self::Processed)
+    }
+}
+
+/// Processes at most one signal or thread-exit state transition.
+///
+/// Callers that drain more than one transition must impose their own explicit
+/// budget. In particular, exit-to-user work uses a fixed batch and yields in
+/// kernel mode before retrying, so a producer flood cannot monopolize one CPU.
+pub(crate) fn process_one_signal(
     thr: &Thread,
     uctx: &mut UserContext,
     restore_blocked: Option<SignalSet>,
     restart_info: Option<&SyscallRestartInfo>,
-) -> bool {
+) -> SignalWorkStep {
     queue_rttime_limit_signal(thr);
     if current_user_task().take_deadline_overrun() {
         let _result = thr
@@ -315,14 +339,13 @@ pub fn check_signals(
     // performing `execve` set this flag, and we must do a thread-only
     // exit (no `group_exit`) so the new image is left intact.
     //
-    // `take_exit_request` consumes the flag atomically so the outer
-    // `while check_signals(...)` drain loop (see `task/user.rs`) doesn't
-    // re-enter `do_exit` for the same zap. After `do_exit` runs, the
-    // task's `exit` flag is set; control returns through the drain loop
-    // and the user-task outer loop bails on `pending_exit()`.
+    // `take_exit_request` consumes the flag atomically so a later bounded
+    // signal step does not re-enter `do_exit` for the same zap. After
+    // `do_exit` runs, the task's `exit` flag is set; control returns through
+    // the exit-to-user loop, which bails on `pending_exit()`.
     if thr.take_exit_request() {
         do_exit(0, false);
-        return true;
+        return SignalWorkStep::Processed;
     }
 
     let Some((sig, os_action)) =
@@ -351,7 +374,7 @@ pub fn check_signals(
                 }
             })
     else {
-        return false;
+        return SignalWorkStep::Idle;
     };
 
     let signo = sig.signo();
@@ -363,12 +386,12 @@ pub fn check_signals(
         && let Some(resume_signo) = ptrace_stop_current(thr, signo, uctx)
     {
         match resume_signo {
-            None => return true,
+            None => return SignalWorkStep::Processed,
             Some(new_signo) if new_signo != signo => {
                 thr.proc_data
                     .set_ptrace_resume_signal_bypass_for(thr.tid(), new_signo);
                 let _ = thr.signal.send_signal(SignalInfo::new_kernel(new_signo));
-                return true;
+                return SignalWorkStep::Processed;
             }
             Some(_) => {}
         }
@@ -410,7 +433,7 @@ pub fn check_signals(
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
     }
-    true
+    SignalWorkStep::Processed
 }
 
 fn queue_rttime_limit_signal(thr: &Thread) {
@@ -624,7 +647,15 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
                         .lock()
                         .is_some_and(|s| s.has(signo))
                 {
-                    let _result = task.wake_handle().wake();
+                    // `block_on_user` parks a LocalExecutor root coroutine.
+                    // Waking only the scheduler thread does not publish the
+                    // abort predicate that makes that coroutine poll again;
+                    // the WaitQueue predicate can therefore put the thread
+                    // straight back to sleep. Publish the interruption level
+                    // before the direct thread wake, matching Linux's rule
+                    // that a pending waited-for signal wakes an
+                    // interruptible task.
+                    task.interrupt();
                 }
             }
         }
@@ -716,7 +747,7 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     }
 
     // Tag the dump request with the specific fault signo so a later
-    // `check_signals` only consumes it when that signal is the one
+    // `process_one_signal` only consumes it when that signal is the one
     // being delivered. Group-exit SIGKILLs sent to peers via
     // `send_signal_to_process` skip this path and leave the slot at
     // zero, so peers terminate silently. Storing 0 elsewhere is the

@@ -1,6 +1,3 @@
-use core::hint::spin_loop;
-
-use log::debug;
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
@@ -129,6 +126,10 @@ register_bitfields! [
         // Command Sets Supported (CSS)
         CSS OFFSET(37) NUMBITS(8) [],
 
+        // Minimum/maximum host memory page-size exponents above 4 KiB.
+        MPSMIN OFFSET(48) NUMBITS(4) [],
+        MPSMAX OFFSET(52) NUMBITS(4) [],
+
         // Controller Memory Buffer Supported
         CMBS OFFSET(57) NUMBITS(1) [],
     ],
@@ -137,14 +138,7 @@ register_bitfields! [
 
 impl NvmeReg {
     const QUEUE_BASE_MASK: u64 = !0xfff;
-
-    pub fn version(&self) -> (usize, usize, usize) {
-        let major = self.version.read(VS::Major);
-        let minor = self.version.read(VS::Minor);
-        let tertiary = self.version.read(VS::Tertiary);
-
-        (major as _, minor as _, tertiary as _)
-    }
+    const TIMEOUT_UNIT_NS: u64 = 500_000_000;
 
     pub fn set_admin_submission_queue_base_address(&self, addr: u64) {
         let addr = addr & Self::QUEUE_BASE_MASK;
@@ -167,37 +161,57 @@ impl NvmeReg {
         );
     }
 
-    pub fn reset(&self) {
+    pub fn begin_disable(&self) {
         self.controller_configuration.write(CC::Enable::CLEAR);
-        debug!("Waiting for reset...");
-        spin_for_true(|| !self.controller_status.is_set(CSTS::RDY));
-        debug!("Reset complete!")
     }
 
-    pub fn setup_cc(&self, sqes: u32, cqes: u32) {
+    pub fn begin_enable(&self, sqes: u32, cqes: u32, page_size: usize) {
+        let memory_page_size = page_size_to_mps(page_size)
+            .expect("validated NVMe page size must have a controller MPS encoding");
         self.controller_configuration.write(
             CC::Enable::SET
                 + CC::IOCommandSetSelected::NVMCommandSet
                 + CC::ArbitrationMechanismSelected::RoundRobin
                 + CC::ShutdownNotification::None
+                + CC::MemoryPageSize.val(memory_page_size)
                 + CC::IOSubmissionQueueEntrySize.val(sqes)
                 + CC::IOCompletionQueueEntrySize.val(cqes),
         );
-        debug!("Waiting for ready...");
-        spin_for_true(|| self.controller_status.is_set(CSTS::RDY));
-        debug!("Ready!");
     }
 
-    pub fn ready_for_read_controller_info(&self) {
-        self.controller_configuration.write(
-            CC::Enable::SET
-                + CC::IOCommandSetSelected::NVMCommandSet
-                + CC::ArbitrationMechanismSelected::RoundRobin
-                + CC::ShutdownNotification::None,
-        );
-        debug!("Waiting for ready...");
-        spin_for_true(|| self.controller_status.is_set(CSTS::RDY));
-        debug!("Ready!");
+    pub fn is_ready(&self) -> bool {
+        self.controller_status.is_set(CSTS::RDY)
+    }
+
+    pub fn is_fatal(&self) -> bool {
+        self.controller_status.is_set(CSTS::CFS)
+    }
+
+    pub fn timeout_ns(&self) -> u64 {
+        let units = self.controller_capabilities.read(CAP::TO);
+        units
+            .saturating_add(1)
+            .saturating_mul(Self::TIMEOUT_UNIT_NS)
+    }
+
+    pub fn max_queue_entries(&self) -> usize {
+        self.controller_capabilities
+            .read(CAP::MQES)
+            .saturating_add(1) as usize
+    }
+
+    pub fn supports_nvm_command_set(&self) -> bool {
+        self.controller_capabilities.read(CAP::CSS) & 1 != 0
+    }
+
+    pub fn supports_page_size(&self, page_size: usize) -> bool {
+        let Some(memory_page_size) = page_size_to_mps(page_size) else {
+            return false;
+        };
+        let minimum = self.controller_capabilities.read(CAP::MPSMIN);
+        let maximum = self.controller_capabilities.read(CAP::MPSMAX);
+        let memory_page_size = u64::from(memory_page_size);
+        minimum <= memory_page_size && memory_page_size <= maximum
     }
 
     pub fn mask_interrupt_vector(&self, vector: u32) {
@@ -233,11 +247,22 @@ impl NvmeReg {
     }
 }
 
-fn spin_for_true<F>(f: F)
-where
-    F: Fn() -> bool,
-{
-    while !f() {
-        spin_loop();
+fn page_size_to_mps(page_size: usize) -> Option<u32> {
+    if page_size < 4096 || !page_size.is_power_of_two() {
+        return None;
+    }
+    page_size.trailing_zeros().checked_sub(12)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_size_to_mps;
+
+    #[test]
+    fn controller_page_size_encoding_is_relative_to_four_kibibytes() {
+        assert_eq!(page_size_to_mps(4096), Some(0));
+        assert_eq!(page_size_to_mps(8192), Some(1));
+        assert_eq!(page_size_to_mps(65536), Some(4));
+        assert_eq!(page_size_to_mps(6144), None);
     }
 }

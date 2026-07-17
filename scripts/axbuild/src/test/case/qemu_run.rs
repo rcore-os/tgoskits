@@ -8,15 +8,18 @@ use super::{
 };
 use crate::{context::AppContext, test::timing};
 
+const QEMU_EXTERNAL_TERMINATION_FAIL_REGEX: &str = r"(?m)^qemu-system-[^:\r\n]+: terminating on signal [0-9]+(?: from pid [0-9]+ \([^\r\n]*\))?\r?$";
+
 pub(crate) async fn run_qemu_with_prepared_case_assets(
     app: &mut AppContext,
     cargo: &Cargo,
-    qemu: QemuConfig,
+    mut qemu: QemuConfig,
     capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     qemu_config_path: &Path,
     prepared_assets: PreparedCaseAssets,
     options: RunPreparedQemuCaseOptions,
 ) -> anyhow::Result<()> {
+    require_qemu_success_match_before_guest_shutdown(&mut qemu);
     println!(
         "  prepare assets: {:.2?} (pipeline={}, cache={})",
         options.prepare_elapsed,
@@ -48,4 +51,26 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
     remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
     remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
     result
+}
+
+pub(crate) fn require_qemu_success_match_before_guest_shutdown(qemu: &mut QemuConfig) {
+    if qemu.success_regex.is_empty() {
+        return;
+    }
+
+    // ostool 0.24 accepts a zero-status QEMU exit even when no output matcher
+    // fired. Keep guest shutdown from exiting and classify QEMU's zero-status
+    // external-signal exit as a failure. With non-zero exits already rejected by
+    // ostool, every remaining successful termination has matcher evidence.
+    if !qemu.args.iter().any(|arg| arg == "-no-shutdown") {
+        qemu.args.push("-no-shutdown".to_string());
+    }
+    if !qemu
+        .fail_regex
+        .iter()
+        .any(|pattern| pattern == QEMU_EXTERNAL_TERMINATION_FAIL_REGEX)
+    {
+        qemu.fail_regex
+            .push(QEMU_EXTERNAL_TERMINATION_FAIL_REGEX.to_string());
+    }
 }

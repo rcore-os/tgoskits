@@ -1,9 +1,140 @@
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+
 use ax_task::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy, TaskError,
-    TaskSystem, TaskSystemConfig, ThreadSpec,
+    TaskSystem, TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId,
+    ThreadPolicyApplied, ThreadPolicyClass, ThreadSpec,
 };
 
 mod support;
+
+static POLICY_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static POLICY_CALLBACK_THREAD: AtomicU64 = AtomicU64::new(0);
+static POLICY_CALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+static POLICY_CALLBACK_NOW_NS: AtomicU64 = AtomicU64::new(0);
+static POLICY_CALLBACK_PREVIOUS: AtomicU8 = AtomicU8::new(0);
+static POLICY_CALLBACK_CURRENT: AtomicU8 = AtomicU8::new(0);
+
+static POLICY_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+    on_switch_in: ignore_switch_in,
+    on_switch_out: ignore_switch_out,
+    on_policy_applied: record_policy_applied,
+    on_exit: ignore_thread,
+    on_deadline_overrun: ignore_thread,
+    drop: ignore_drop,
+};
+
+unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_switch_out(
+    _data: usize,
+    _thread: ThreadId,
+    _reason: ax_task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn record_policy_applied(
+    data: usize,
+    thread: ThreadId,
+    event: ThreadPolicyApplied,
+) {
+    assert_eq!(data, 0x504F_4C49);
+    POLICY_CALLBACK_THREAD.store(thread.as_u64(), Ordering::Relaxed);
+    POLICY_CALLBACK_GENERATION.store(event.generation(), Ordering::Relaxed);
+    POLICY_CALLBACK_NOW_NS.store(event.now_ns(), Ordering::Relaxed);
+    POLICY_CALLBACK_PREVIOUS.store(event.previous_class() as u8, Ordering::Relaxed);
+    POLICY_CALLBACK_CURRENT.store(event.current_class() as u8, Ordering::Relaxed);
+    POLICY_CALLBACK_COUNT.fetch_add(1, Ordering::Release);
+}
+
+unsafe extern "Rust" fn ignore_thread(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_drop(_data: usize) {}
+
+fn reset_policy_callback_record() {
+    POLICY_CALLBACK_COUNT.store(0, Ordering::Relaxed);
+    POLICY_CALLBACK_THREAD.store(0, Ordering::Relaxed);
+    POLICY_CALLBACK_GENERATION.store(0, Ordering::Relaxed);
+    POLICY_CALLBACK_NOW_NS.store(0, Ordering::Relaxed);
+    POLICY_CALLBACK_PREVIOUS.store(0, Ordering::Relaxed);
+    POLICY_CALLBACK_CURRENT.store(0, Ordering::Relaxed);
+}
+
+fn assert_policy_callback(
+    expected_count: usize,
+    thread: ThreadId,
+    generation: u64,
+    now_ns: u64,
+    previous: ThreadPolicyClass,
+    current: ThreadPolicyClass,
+) {
+    assert_eq!(
+        POLICY_CALLBACK_COUNT.load(Ordering::Acquire),
+        expected_count
+    );
+    assert_eq!(
+        POLICY_CALLBACK_THREAD.load(Ordering::Relaxed),
+        thread.as_u64()
+    );
+    assert_eq!(
+        POLICY_CALLBACK_GENERATION.load(Ordering::Relaxed),
+        generation
+    );
+    assert_eq!(POLICY_CALLBACK_NOW_NS.load(Ordering::Relaxed), now_ns);
+    assert_eq!(
+        POLICY_CALLBACK_PREVIOUS.load(Ordering::Relaxed),
+        previous as u8
+    );
+    assert_eq!(
+        POLICY_CALLBACK_CURRENT.load(Ordering::Relaxed),
+        current as u8
+    );
+}
+
+#[test]
+fn queued_and_running_owner_policy_commits_notify_once_with_commit_epoch() {
+    reset_policy_callback_record();
+    let (system, mut cpu) = online_system(1);
+    // SAFETY: the integer marker has no referent and every callback treats it
+    // only as the fixed identity value documented by this test table.
+    let extension = unsafe { ThreadExtension::new(0x504F_4C49, &POLICY_EXTENSION_OPS) };
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_extension(extension))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+
+    let fifo = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    system.set_thread_policy(thread.id(), fifo).unwrap();
+    assert_eq!(POLICY_CALLBACK_COUNT.load(Ordering::Acquire), 0);
+    system.drain_policy_updates(cpu.as_mut(), 37).unwrap();
+    assert_policy_callback(
+        1,
+        thread.id(),
+        2,
+        37,
+        ThreadPolicyClass::Fair,
+        ThreadPolicyClass::Realtime,
+    );
+
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 38).unwrap().next(),
+        thread.id()
+    );
+    let fair = SchedulePolicy::fair(Nice::new(5).unwrap(), FairMode::Batch);
+    system.set_thread_policy(thread.id(), fair).unwrap();
+    assert_eq!(POLICY_CALLBACK_COUNT.load(Ordering::Acquire), 1);
+    system.drain_policy_updates(cpu.as_mut(), 61).unwrap();
+    assert_policy_callback(
+        2,
+        thread.id(),
+        3,
+        61,
+        ThreadPolicyClass::Realtime,
+        ThreadPolicyClass::Fair,
+    );
+    assert_eq!(thread.effective_policy(), fair);
+}
 
 #[test]
 fn queued_policy_update_is_applied_by_the_runqueue_owner() {
@@ -30,6 +161,32 @@ fn queued_policy_update_is_applied_by_the_runqueue_owner() {
         system.schedule(cpu.as_mut(), 1).unwrap().next(),
         promoted.id()
     );
+}
+
+#[test]
+fn less_urgent_queued_policy_update_does_not_force_preemption() {
+    let (system, mut cpu) = online_system(1);
+    let running = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(80).unwrap()));
+    let queued = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(70).unwrap()));
+    system.enqueue(cpu.as_mut(), running.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        running.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    system.enqueue(cpu.as_mut(), queued.id(), 0).unwrap();
+
+    let lower = SchedulePolicy::fifo(RtPriority::new(60).unwrap());
+    system.set_thread_policy(queued.id(), lower).unwrap();
+
+    assert!(
+        system
+            .schedule_if_requested(cpu.as_mut(), 1)
+            .unwrap()
+            .is_quiescent()
+    );
+    assert_eq!(cpu.current(), Some(running.id()));
+    assert_eq!(queued.effective_policy(), lower);
 }
 
 #[test]

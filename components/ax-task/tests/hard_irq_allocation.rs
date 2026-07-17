@@ -103,7 +103,12 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     support::set_hard_irq(true);
     let thread_wake_audit = audit(|| wake.wake());
     assert_zero_allocator_activity(thread_wake_audit);
-    assert_eq!(support::ipi_count(0), 1);
+    assert_eq!(
+        support::ipi_count(0),
+        0,
+        "local hard IRQ wake must use IRQ return instead of a self-IPI"
+    );
+    assert!(cpu.needs_reschedule());
 
     let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
     let inbox_node = OwnedInboxNode::new(InboxKind::RemoteWake);

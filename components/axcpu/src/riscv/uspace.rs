@@ -13,7 +13,10 @@ use riscv::{
     register::{scause, sstatus::Sstatus, stval},
 };
 
-pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
+pub use crate::uspace_common::{
+    DecodedUserExit, ExceptionKind, ExceptionSyndrome, RawUserExit, RawUserInterrupt,
+    UserExitReason,
+};
 use crate::{GeneralRegisters, TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
@@ -83,49 +86,68 @@ impl UserContext {
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `sepc`).
     ///
-    /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    /// This function returns an opaque context-bound token with raw local
+    /// interrupts still masked. It does not read or dispatch the captured
+    /// exception. The runtime must publish kernel accounting before calling
+    /// [`Self::decode_raw_exit`].
+    pub fn run_raw(&mut self) -> RawUserExit {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
-        // Refresh all instruction caches before entering the user program space to resolve user program errors
-        riscv::asm::fence_i();
-
         crate::asm::disable_irqs();
         unsafe { enter_user(self) };
 
+        RawUserExit::bind(self, 0)
+    }
+
+    /// Decodes a raw exit previously returned by this context.
+    ///
+    /// The caller must keep raw local interrupts masked and publish the
+    /// user-to-kernel accounting transition before invoking this method.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `raw_exit` was produced by a different [`UserContext`].
+    pub fn decode_raw_exit(&mut self, raw_exit: RawUserExit) -> DecodedUserExit {
+        raw_exit.assert_bound_to(self);
+
         let scause = scause::read();
-        let ret = if let Ok(cause) = scause.cause().try_into::<I, E>() {
+        if let Ok(cause) = scause.cause().try_into::<I, E>() {
             let stval = stval::read();
             match cause {
                 Trap::Interrupt(_) => {
-                    crate::trap::dispatch_irq(scause.bits());
-                    ReturnReason::Interrupt
+                    DecodedUserExit::Interrupt(RawUserInterrupt::new(scause.bits()))
                 }
                 Trap::Exception(E::UserEnvCall) => {
                     self.sepc += 4;
-                    ReturnReason::Syscall
+                    DecodedUserExit::Reason(UserExitReason::Syscall)
                 }
                 Trap::Exception(E::LoadPageFault) => {
-                    ReturnReason::PageFault(va!(stval), PageFaultFlags::READ | PageFaultFlags::USER)
+                    DecodedUserExit::Reason(UserExitReason::PageFault(
+                        va!(stval),
+                        PageFaultFlags::READ | PageFaultFlags::USER,
+                    ))
                 }
-                Trap::Exception(E::StorePageFault) => ReturnReason::PageFault(
-                    va!(stval),
-                    PageFaultFlags::WRITE | PageFaultFlags::USER,
-                ),
-                Trap::Exception(E::InstructionPageFault) => ReturnReason::PageFault(
-                    va!(stval),
-                    PageFaultFlags::EXECUTE | PageFaultFlags::USER,
-                ),
-                Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo { e, stval }),
+                Trap::Exception(E::StorePageFault) => {
+                    DecodedUserExit::Reason(UserExitReason::PageFault(
+                        va!(stval),
+                        PageFaultFlags::WRITE | PageFaultFlags::USER,
+                    ))
+                }
+                Trap::Exception(E::InstructionPageFault) => {
+                    DecodedUserExit::Reason(UserExitReason::PageFault(
+                        va!(stval),
+                        PageFaultFlags::EXECUTE | PageFaultFlags::USER,
+                    ))
+                }
+                Trap::Exception(e) => {
+                    DecodedUserExit::Reason(UserExitReason::Exception(ExceptionInfo { e, stval }))
+                }
             }
         } else {
-            ReturnReason::Unknown
-        };
-
-        crate::asm::enable_irqs();
-        ret
+            DecodedUserExit::Reason(UserExitReason::Unknown)
+        }
     }
 
     /// Sets the sstatus register.

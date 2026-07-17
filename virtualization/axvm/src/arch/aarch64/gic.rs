@@ -4,6 +4,7 @@ use arm_gic_driver::v3::{
     ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
     ich_lr_el2_write,
 };
+use arm_vgic::{VgicError, VgicResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::host::{HostMemory, default_host};
@@ -14,6 +15,113 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
         .lock()
         .expect("failed to lock GIC driver");
     f(&mut gic)
+}
+
+fn try_with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> VgicResult<T>) -> VgicResult<T> {
+    let device = rdrive::get_one::<rdif_intc::Intc>().ok_or_else(|| VgicError::Backend {
+        operation: "access host GIC",
+        detail: "GIC driver is unavailable".into(),
+    })?;
+    let mut gic = device.lock().map_err(|error| VgicError::Backend {
+        operation: "lock host GIC",
+        detail: alloc::format!("{error}"),
+    })?;
+    f(&mut gic)
+}
+
+fn checked_physical_spi(raw_irq: u32, max_intid: u32) -> VgicResult<arm_gic_driver::IntId> {
+    let intid =
+        arm_gic_driver::checked_intid(raw_irq, max_intid).map_err(|_| VgicError::InvalidIrq {
+            irq: raw_irq as usize,
+            max: max_intid as usize,
+        })?;
+    if intid.is_private() {
+        return Err(VgicError::NotSpi {
+            irq: raw_irq as usize,
+        });
+    }
+    Ok(intid)
+}
+
+pub(crate) fn route_physical_spi(
+    irq: u32,
+    cpu_phys_id: usize,
+    affinity: (u8, u8, u8, u8),
+) -> VgicResult {
+    try_with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            let intid = checked_physical_spi(irq, gic.max_intid())?;
+            let cpu_bit = u32::try_from(cpu_phys_id)
+                .ok()
+                .and_then(|cpu| 1u8.checked_shl(cpu))
+                .and_then(arm_gic_driver::v2::TargetList::from_one_hot)
+                .ok_or_else(|| VgicError::Unsupported {
+                    operation: "route physical SPI on GICv2",
+                    detail: alloc::format!(
+                        "CPU interface {cpu_phys_id} cannot be represented by ITARGETSR"
+                    ),
+                })?;
+            gic.set_target_cpu(intid, cpu_bit);
+            return Ok(());
+        }
+
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            let intid = checked_physical_spi(irq, gic.max_intid())?;
+            gic.set_target_cpu(
+                intid,
+                Some(arm_gic_driver::v3::Affinity {
+                    aff3: affinity.0,
+                    aff2: affinity.1,
+                    aff1: affinity.2,
+                    aff0: affinity.3,
+                }),
+            );
+            return Ok(());
+        }
+
+        Err(VgicError::Unsupported {
+            operation: "route physical SPI",
+            detail: "registered interrupt controller is not GICv2 or GICv3".into(),
+        })
+    })
+}
+
+pub(crate) fn begin_physical_spi_quiesce(irq: u32) -> VgicResult {
+    try_with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            let intid = checked_physical_spi(irq, gic.max_intid())?;
+            gic.begin_spi_quiesce(intid)
+                .map_err(|_| VgicError::NotSpi { irq: irq as usize })?;
+            return Ok(());
+        }
+
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            let intid = checked_physical_spi(irq, gic.max_intid())?;
+            gic.begin_spi_quiesce(intid)
+                .map_err(|_| VgicError::NotSpi { irq: irq as usize })?;
+            return Ok(());
+        }
+
+        Err(VgicError::Unsupported {
+            operation: "quiesce physical SPI",
+            detail: "registered interrupt controller is not GICv2 or GICv3".into(),
+        })
+    })
+}
+
+pub(crate) fn poll_physical_distributor_write_complete() -> VgicResult<bool> {
+    try_with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            return Ok(gic.poll_distributor_write_complete());
+        }
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            return Ok(gic.poll_distributor_write_complete());
+        }
+        Err(VgicError::Unsupported {
+            operation: "poll physical distributor write completion",
+            detail: "registered interrupt controller is not GICv2 or GICv3".into(),
+        })
+    })
 }
 
 pub(crate) fn inject_interrupt(irq: usize) {
@@ -134,15 +242,4 @@ pub(crate) fn host_gicr_base() -> PhysAddr {
         }
         panic!("no GICv3 driver found");
     })
-}
-
-pub(crate) fn handle_current_irq() -> Option<usize> {
-    // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
-    // internally. The raw vector argument is ignored by current GIC-backed
-    // platforms, so keep the ack/EOI ownership inside the platform handler.
-    ax_std::os::arceos::modules::ax_hal::irq::handle_irq(0).then_some(0)
-}
-
-pub(crate) fn fetch_irq() -> usize {
-    handle_current_irq().unwrap_or(0)
 }

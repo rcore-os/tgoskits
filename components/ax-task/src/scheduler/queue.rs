@@ -32,6 +32,26 @@ pub(crate) struct QueuedThread {
     sequence: u64,
 }
 
+/// One owner-local runqueue insertion awaiting its external class commit.
+///
+/// The owner must either commit this token or roll it back before another
+/// insertion. That rule lets rollback restore the exact sequence domain rather
+/// than merely removing the physical queue entry.
+#[derive(Debug)]
+#[must_use = "a prepared runqueue insertion must be committed or rolled back"]
+pub(crate) struct PreparedEnqueue {
+    id: ThreadId,
+    entity: SchedulingEntity,
+    sequence: u64,
+    len_before: usize,
+}
+
+impl PreparedEnqueue {
+    pub(crate) const fn commit(self) -> SchedulingEntity {
+        self.entity
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct RunQueue {
     deadline: Vec<QueuedThread>,
@@ -67,6 +87,11 @@ impl RunQueue {
     #[cfg(test)]
     pub(crate) const fn virtual_time(&self) -> u64 {
         self.virtual_time
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn next_sequence(&self) -> u64 {
+        self.next_sequence
     }
 
     pub(crate) const fn virtual_time_for_mode(&self, mode: FairMode) -> u64 {
@@ -168,6 +193,7 @@ impl RunQueue {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &mut self,
         id: ThreadId,
@@ -177,18 +203,30 @@ impl RunQueue {
         now_ns: u64,
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
+        Ok(self
+            .prepare_enqueue(id, policy, entity, core, now_ns, reason)?
+            .commit())
+    }
+
+    pub(crate) fn prepare_enqueue(
+        &mut self,
+        id: ThreadId,
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+        core: Arc<ThreadCore>,
+        now_ns: u64,
+        reason: EnqueueReason,
+    ) -> Result<PreparedEnqueue, TaskError> {
+        // ThreadPlacement is the production membership authority. Retain this
+        // O(n) structural cross-check only in debug/test builds; a release
+        // owner hot path must never scan every scheduling class to rediscover
+        // state already committed in the thread scheduler cell.
+        #[cfg(debug_assertions)]
         if self.contains(id) {
             return Err(TaskError::AlreadyQueued);
         }
-        let sequence = self.allocate_sequence();
-        let mut entry = QueuedThread {
-            id,
-            policy,
-            entity,
-            core,
-            sequence,
-        };
-        if let SchedulingEntity::Fair(fair) = &mut entry.entity {
+        let mut entity = entity;
+        if let SchedulingEntity::Fair(fair) = &mut entity {
             let virtual_time = self.virtual_time_for_mode(fair.mode());
             fair.place_at_least(virtual_time);
             if matches!(reason, EnqueueReason::Yield) {
@@ -198,25 +236,39 @@ impl RunQueue {
             }
         }
         let reason = if matches!(reason, EnqueueReason::Yield)
-            || (matches!(reason, EnqueueReason::Preempted)
-                && entry.entity.round_robin_quantum_expired())
+            || (matches!(reason, EnqueueReason::Preempted) && entity.round_robin_quantum_expired())
         {
-            entry.entity.reset_round_robin_quantum(policy);
+            entity.reset_round_robin_quantum(policy);
             EnqueueReason::Yield
         } else {
             reason
         };
+        if matches!(policy, SchedulePolicy::Deadline(_)) {
+            if reason == EnqueueReason::Wake {
+                entity.activate_deadline(now_ns);
+            }
+            if entity.deadline().is_none_or(|deadline| {
+                deadline.absolute_deadline_ns() == 0 || deadline.is_throttled()
+            }) {
+                return Err(TaskError::NotReady);
+            }
+        }
+
+        // Sequence allocation is the first transaction commit. Every typed
+        // validation above must finish before this point so an `Err` cannot
+        // perturb FIFO tie-breaking for later runnable threads.
+        let len_before = self.len;
+        let sequence = self.allocate_sequence();
+        let entry = QueuedThread {
+            id,
+            policy,
+            entity,
+            core,
+            sequence,
+        };
         let queued_entity = entry.entity;
         match policy {
             SchedulePolicy::Deadline(_) => {
-                if reason == EnqueueReason::Wake {
-                    entry.entity.activate_deadline(now_ns);
-                }
-                if entry.entity.deadline().is_none_or(|deadline| {
-                    deadline.absolute_deadline_ns() == 0 || deadline.is_throttled()
-                }) {
-                    return Err(TaskError::NotReady);
-                }
                 self.deadline.push(entry);
                 self.recompute_earliest_deadline_event();
             }
@@ -235,7 +287,32 @@ impl RunQueue {
             SchedulePolicy::Fair { .. } => self.fair.push(entry),
         }
         self.len += 1;
-        Ok(queued_entity)
+        Ok(PreparedEnqueue {
+            id,
+            entity: queued_entity,
+            sequence,
+            len_before,
+        })
+    }
+
+    pub(crate) fn rollback_enqueue(
+        &mut self,
+        prepared: PreparedEnqueue,
+    ) -> Result<QueuedThread, TaskError> {
+        if self.next_sequence != prepared.sequence.wrapping_add(1)
+            || prepared.len_before.checked_add(1) != Some(self.len)
+            || self.sequence_for(prepared.id) != Some(prepared.sequence)
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        // The exclusive owner validated the exact latest insertion before
+        // mutation, so dequeue cannot expose a recoverable partial rollback.
+        let removed = self
+            .dequeue(prepared.id)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        debug_assert_eq!(removed.sequence, prepared.sequence);
+        self.next_sequence = prepared.sequence;
+        Ok(removed)
     }
 
     #[cfg(test)]
@@ -361,6 +438,7 @@ impl RunQueue {
             .min();
     }
 
+    #[cfg(debug_assertions)]
     fn contains(&self, id: ThreadId) -> bool {
         self.deadline.iter().any(|entry| entry.id == id)
             || self
@@ -369,6 +447,20 @@ impl RunQueue {
                 .any(|queue| queue.iter().any(|entry| entry.id == id))
             || self.fair.iter().any(|entry| entry.id == id)
             || self.idle_fair.iter().any(|entry| entry.id == id)
+    }
+
+    fn sequence_for(&self, id: ThreadId) -> Option<u64> {
+        self.deadline
+            .iter()
+            .find(|entry| entry.id == id)
+            .or_else(|| {
+                self.rt
+                    .iter()
+                    .find_map(|queue| queue.iter().find(|entry| entry.id == id))
+            })
+            .or_else(|| self.fair.iter().find(|entry| entry.id == id))
+            .or_else(|| self.idle_fair.iter().find(|entry| entry.id == id))
+            .map(|entry| entry.sequence)
     }
 
     fn allocate_sequence(&mut self) -> u64 {
@@ -586,5 +678,48 @@ mod tests {
         let deadline = queue.dequeue(thread).unwrap().entity.deadline().unwrap();
         assert_eq!(deadline.absolute_deadline_ns(), 8);
         assert_eq!(deadline.remaining_runtime_ns(), 3);
+    }
+
+    #[test]
+    fn inactive_deadline_rejection_does_not_consume_queue_sequence() {
+        let mut queue = RunQueue::new();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap());
+        let sequence_before = queue.next_sequence();
+
+        assert_eq!(
+            queue.enqueue_test(
+                ThreadId::from_parts(0, 1),
+                policy,
+                SchedulingEntity::new(policy, 1, 0),
+                0,
+                EnqueueReason::Replenished,
+            ),
+            Err(TaskError::NotReady),
+        );
+        assert_eq!(queue.next_sequence(), sequence_before);
+    }
+
+    #[test]
+    fn throttled_deadline_rejection_does_not_consume_queue_sequence() {
+        let mut queue = RunQueue::new();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap());
+        let mut entity = SchedulingEntity::new(policy, 1, 0);
+        entity.activate_deadline(0);
+        assert!(entity.charge(4, 0, 0));
+        let sequence_before = queue.next_sequence();
+
+        assert_eq!(
+            queue.enqueue_test(
+                ThreadId::from_parts(0, 1),
+                policy,
+                entity,
+                4,
+                EnqueueReason::Preempted,
+            ),
+            Err(TaskError::NotReady),
+        );
+        assert_eq!(queue.next_sequence(), sequence_before);
     }
 }

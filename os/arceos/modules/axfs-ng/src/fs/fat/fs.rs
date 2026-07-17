@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use core::marker::PhantomPinned;
 
 use axfs_ng_vfs::{
@@ -8,7 +8,7 @@ use slab::Slab;
 
 use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
 use crate::{
-    block::{BlockRegion, FsBlockDevice},
+    block::{BlockDevice, BlockRegion},
     os::sync::{PiMutex, PiMutexGuard, SpinMutex},
 };
 
@@ -34,8 +34,8 @@ pub struct FatFilesystem {
 }
 
 impl FatFilesystem {
-    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
-        let disk = SeekableDisk::new(dev, region);
+    pub fn new(dev: Arc<dyn BlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
+        let disk = SeekableDisk::new(dev, region)?;
         let mut inner = FatFilesystemInner {
             inner: ff::FileSystem::new(disk, fatfs::FsOptions::new())
                 .expect("failed to initialize FAT filesystem"),

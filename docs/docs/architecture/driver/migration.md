@@ -49,6 +49,15 @@ sidebar_label: "迁移与验收"
 - `ax-runtime` 中旧 `ax-driver/virtio-*`、`driver-*`、`bus-*` 映射到 rdrive probe feature。
 - legacy `ax-driver` feature 只保留给未迁移代码，不作为新宿主路径入口。
 
+### Phase 8: block IRQ-only 与 staged lifecycle
+
+- `rdif-block` 只保留 owned request、`Inline`/`Interrupt` queue、IRQ event、init FSM 和 typed DMA lifecycle。
+- `ax-runtime::block` 建立 per-CPU software ctx、per-hardware-queue hctx、generation tag、shared work item 和 watchdog。
+- ramdisk 在 submit 中 inline completion；VirtIO/NVMe/SD/MMC/AHCI 等硬件只有 IRQ completion，不提供 timer polling fallback。
+- discovery 不发硬件命令；worker 与 IRQ action live 后才运行 `ControllerInitEndpoint`，capacity/queue 只在 Ready 后发布。
+- ax-fs-ng 删除 IRQ/completion runtime，使用 generation-based freeze/detach/remount。
+- Axvisor passthrough 以 typed permit 证明 host quiescence、guest route ownership 和 return/reinit；无法证明时 fail closed。
+
 ## 验收标准
 
 ### 文档验收
@@ -72,6 +81,8 @@ cargo xtask clippy --package starry-kernel
 cargo xtask clippy --package axvisor
 ```
 
+块设备迁移还必须执行 source gate，排除 normal-I/O polling API、周期 completion retry 和 `irq_driven` 降级开关；USB/网络领域自己的 poll API不属于该 gate。
+
 ### 搜索验收
 
 ```bash
@@ -88,3 +99,4 @@ rg "rdrive::get_|rdrive::get_one|rdrive::get_list" os/arceos/modules os/StarryOS
 - `net` / DHCP。
 - aarch64 QEMU 动态平台配置。
 - Axvisor QEMU / GIC / `rdif-intc` 路径。
+- block lost-IRQ watchdog/reinit、combined error-first、remote IRQ wake 与 passthrough return/remount。

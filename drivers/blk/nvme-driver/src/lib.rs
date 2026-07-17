@@ -5,6 +5,8 @@ extern crate alloc;
 mod block;
 mod command;
 pub mod err;
+mod initialization;
+mod lifecycle;
 mod nvme;
 mod queue;
 mod registers;
@@ -12,7 +14,7 @@ mod registers;
 use core::{alloc::Layout, ptr::NonNull};
 
 pub use block::NvmeBlockDriver;
-pub use nvme::{Config, Namespace, Nvme};
+pub use nvme::{Config, Namespace};
 
 #[derive(Clone, Copy)]
 pub struct DMAMem {

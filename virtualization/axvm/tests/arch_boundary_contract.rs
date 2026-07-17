@@ -86,6 +86,82 @@ fn every_architecture_owns_vm_resource_creation_and_initialization() {
 }
 
 #[test]
+fn every_architecture_owns_a_fail_closed_guest_irq_revocation_path() {
+    for (architecture, source) in [
+        ("AArch64", include_str!("../src/arch/aarch64/mod.rs")),
+        (
+            "LoongArch64",
+            include_str!("../src/arch/loongarch64/mod.rs"),
+        ),
+        ("RISC-V", include_str!("../src/arch/riscv64/mod.rs")),
+        ("x86_64", include_str!("../src/arch/x86_64/mod.rs")),
+    ] {
+        assert!(
+            source.contains("fn revoke_guest_irq_routes"),
+            "{architecture} must synchronize and revoke its own direct guest IRQ routes"
+        );
+    }
+}
+
+#[test]
+fn loongarch_route_revocation_masks_then_drains_the_old_publication() {
+    let platform = include_str!("../../../platforms/axplat-dyn/src/irq/loongarch64_hv.rs");
+    let adapter = include_str!("../src/arch/loongarch64/irq.rs");
+
+    assert!(platform.contains("GUEST_IRQ_IN_FLIGHT"));
+    assert!(platform.contains("begin_guest_irq_route_revocation"));
+    assert!(platform.contains("poll_guest_irq_route_revocation"));
+    assert!(platform.contains("set_physical_irq_enabled(physical_irq, false)?"));
+    assert!(platform.contains("GUEST_IRQ_ROUTES[physical_irq].store(IRQ_ROUTE_NONE"));
+    assert!(
+        platform.contains("A target without a route is in the mask-and-drain phase"),
+        "a revoking guest route must consume stale claims instead of falling through to host I/O"
+    );
+    assert!(adapter.contains("crate::host::task::yield_now()"));
+}
+
+#[test]
+fn x86_route_revocation_keeps_host_lines_masked_until_controller_return() {
+    let host_irq = include_str!("../src/arch/x86_64/host_irq.rs");
+    let revocation = include_str!("../src/arch/x86_64/irq/revocation.rs");
+    let revoke = revocation
+        .split_once("pub fn revoke_ioapic_irq_forwarding_for_vm")
+        .expect("x86 must expose checked forwarding revocation")
+        .1;
+
+    let mask = revoke
+        .find("mask_active_ioapic_forwarding_routes")
+        .expect("x86 revocation must mask active host lines");
+    let unpublish = revoke
+        .find("IOAPIC_IRQ_FORWARD_VM_ID.store(usize::MAX")
+        .expect("x86 revocation must unpublish the guest owner");
+    let synchronize = revoke
+        .find("drain_disabled_ioapic_forwarding()")
+        .expect("x86 revocation must drain callbacks that observed the old owner");
+    let revoke_endpoint = revoke
+        .find("revoke_ioapic_forwarding_routes")
+        .expect("x86 revocation must remask the device-owned endpoint");
+    let release_action = revoke
+        .find("release_ioapic_forwarding_actions")
+        .expect("x86 revocation must unregister every guest IRQ action");
+    assert!(mask < unpublish && unpublish < synchronize);
+    assert!(
+        synchronize < revoke_endpoint && revoke_endpoint < release_action,
+        "the device endpoint and guest IRQ action must be revoked before host storage can return"
+    );
+    assert!(
+        !revoke.contains("set_forwarded_host_gsi_enabled(gsi, true)"),
+        "controller return, not route revocation, owns reopening the host IRQ"
+    );
+    assert!(
+        host_irq.contains("pub(crate) fn free_irq")
+            && revocation.contains("irq::free_irq(handle)")
+            && revocation.contains("irq::synchronize_irq(handle)"),
+        "guest forwarding teardown must release descriptor ownership, not merely disable it"
+    );
+}
+
+#[test]
 fn riscv_guest_paging_selection_returns_the_unwrapped_common_level() {
     let riscv_vm = include_str!("../src/arch/riscv64/vm.rs");
 
@@ -166,7 +242,7 @@ fn vcpu_backend_entry_requires_one_pinned_cpu_scope() {
             "AxVM current-vCPU state must use the CpuPin-aware per-CPU API: {unpinned_access}"
         );
     }
-    for operation in ["fn bind", "fn run", "fn unbind"] {
+    for operation in ["fn bind", "fn run", "fn unbind", "fn finish_post_unbind"] {
         let signature = vcpu
             .split_once(operation)
             .unwrap_or_else(|| panic!("missing AxVCpu operation: {operation}"))
@@ -184,6 +260,7 @@ fn vcpu_backend_entry_requires_one_pinned_cpu_scope() {
     assert!(architecture_ops.contains("PinnedCpuContext::new(preempt_guard.cpu_pin())"));
     assert!(architecture_ops.contains("vcpu.enter_pinned(&pinned_cpu)"));
     assert!(architecture_ops.contains("vcpu.unbind(&pinned_cpu)"));
+    assert!(vcpu.contains("PostUnbind(HostCpuIdentity)"));
 
     for backend_call in [
         ".bind(pinned_cpu.cpu_pin())",
@@ -220,7 +297,20 @@ fn vcpu_backend_entry_requires_one_pinned_cpu_scope() {
     let unbind = pinned_runner
         .find("vcpu.unbind(&pinned_cpu)")
         .expect("host restoration must use the pinned context");
-    assert!(publish < bind && bind < run && run < handle && handle < unbind);
+    let clear_current = pinned_runner
+        .find("drop(current_vcpu)")
+        .expect("CURRENT_VCPU must be cleared explicitly before post-unbind work");
+    let finish_post_unbind = pinned_runner
+        .find("vcpu.finish_post_unbind(&pinned_cpu)")
+        .expect("the pinned owner must finish retained host state after unbind");
+    assert!(
+        publish < bind
+            && bind < run
+            && run < handle
+            && handle < unbind
+            && unbind < clear_current
+            && clear_current < finish_post_unbind
+    );
     assert!(
         !pinned_runner.contains("finish_bound_exit"),
         "the typed backend exit must restore through RAII rather than a forgettable finish call"
@@ -338,8 +428,8 @@ fn device_and_hypercall_exit_work_runs_only_after_vcpu_unbind() {
 
 #[test]
 fn x86_deferred_interrupts_cross_the_runtime_inbox_before_backend_injection() {
-    let x86_irq = include_str!("../src/arch/x86_64/irq.rs");
-    let deferred_publishers = x86_irq
+    let x86_handler = include_str!("../src/arch/x86_64/irq/handler.rs");
+    let deferred_publishers = x86_handler
         .split_once("pub fn queue_due_pit_irq0")
         .expect("x86 PIT publication must exist")
         .1
@@ -678,8 +768,8 @@ fn riscv_vm_target_install_leases_unclaimed_passthrough_sources() {
         "the control plane must atomically lease the complete source-owned endpoint batch"
     );
     assert!(
-        prepare.contains("VIRTUAL_IRQ_ENDPOINTS[source].call_once"),
-        "every validated endpoint must be published once while still masked"
+        prepare.contains("VIRTUAL_IRQ_ENDPOINTS[source].install("),
+        "every validated endpoint must be installed while still masked"
     );
     for forbidden in ["irq_set_affinity", "irq_set_enable", ".endpoint.unmask()"] {
         assert!(
@@ -693,16 +783,35 @@ fn riscv_vm_target_install_leases_unclaimed_passthrough_sources() {
         &[
             "lease_riscv_plic_irq_endpoints(&new_irqs, affinity)",
             "preparation.begin_irreversible()",
-            "VIRTUAL_IRQ_ENDPOINTS[source].call_once",
+            "VIRTUAL_IRQ_ENDPOINTS[source].install(",
             "preparation.publish()",
         ],
+    );
+
+    let endpoint_slot = platform_irq
+        .split_once("impl RiscvVirtualIrqEndpointSlot")
+        .expect("RISC-V endpoint slot lifecycle must remain explicit")
+        .1
+        .split_once("struct RiscvVirtualIrqPublisher")
+        .expect("RISC-V endpoint slot implementation must remain focused")
+        .0;
+    let install = endpoint_slot
+        .split_once("fn install")
+        .expect("RISC-V endpoint installation must remain explicit")
+        .1
+        .split_once("fn activate")
+        .expect("RISC-V endpoint installation must remain focused")
+        .0;
+    assert_in_order(
+        install,
+        &["write(endpoint)", "self.state.store(", "Ordering::Release"],
     );
 
     let activate = platform_irq
         .split_once("pub fn activate_virtual_irq_targets")
         .expect("RISC-V target activation must remain explicit")
         .1
-        .split_once("struct IrqIfImpl")
+        .split_once("fn begin_virtual_irq_route_revocation")
         .expect("RISC-V activation must remain focused")
         .0;
     assert!(
@@ -713,9 +822,13 @@ fn riscv_vm_target_install_leases_unclaimed_passthrough_sources() {
         activate,
         &[
             "for &source in irq_sources",
-            r#".expect("a published RISC-V route must own every endpoint before activation")"#,
+            "slot.state.load(Ordering::Acquire)",
+            "endpoint_state(generation, ENDPOINT_PREPARED)",
+            "unsafe { slot.endpoint_ref() }",
+            "activation.begin_irreversible()",
             "for &source in irq_sources",
-            "activate_virtual_irq_endpoint(source)",
+            "VIRTUAL_IRQ_ENDPOINTS[source as usize].activate(generation)",
+            "activation.finish()",
         ],
     );
 
@@ -737,8 +850,12 @@ fn riscv_vm_target_install_leases_unclaimed_passthrough_sources() {
             "prepare_route_if_available",
             "preparation_permit.begin_irreversible()",
             "install_platform_owner",
-            "PLATFORM_VPLIC_ROUTE.call_once",
+            "PLATFORM_VPLIC_ROUTE.install(candidate, route_generation)",
+            "preparation_permit.publish()",
+            "activate_published_route",
+            "activation_permit.begin_irreversible()",
             "activate_virtual_irq_targets",
+            "activation_permit.finish()",
         ],
     );
     assert!(transaction.contains("PlatformVplicRoute::new"));
@@ -900,11 +1017,11 @@ fn riscv_passthrough_hard_irq_uses_endpoint_and_lock_free_ingress_only() {
         mask,
         &[
             "RiscvPlicSource::from_irq(controller_irq)",
-            "VIRTUAL_IRQ_ENDPOINTS[source].get()",
+            "VIRTUAL_IRQ_ENDPOINTS[source].acquire_active()",
+            "publisher.endpoint.endpoint.mask()",
         ],
     );
-    assert!(mask.contains("VIRTUAL_IRQ_ENDPOINTS[source].get()"));
-    assert!(mask.contains("endpoint.mask()"));
+    assert!(mask.contains("VIRTUAL_IRQ_ENDPOINTS[source].acquire_active()"));
     for forbidden in [
         "irq_set_enable",
         "domain_by_kind",
@@ -1375,8 +1492,8 @@ fn axvm_ipi_routes_hold_one_cpu_pin_through_identity_and_send() {
         .split_once("fn send_ipi_to_all_except_current")
         .expect("AxVM must provide broadcast host IPI routing")
         .1
-        .split_once("pub fn shutdown_host_filesystems")
-        .expect("broadcast routing must end before filesystem shutdown")
+        .split_once("pub fn begin_host_storage_handoff")
+        .expect("broadcast routing must end before storage handoff")
         .0;
     let broadcast_pin = broadcast
         .find("let preempt_guard = PreemptGuard::new();")

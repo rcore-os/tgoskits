@@ -9,12 +9,12 @@ use ax_sync::PiMutex;
 use starry_process::{Pid, Process};
 
 use crate::{
-    file::FD_TABLE,
+    file::PreparedProcessScope,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
     pseudofs::{self, dev::tty},
     task::{
-        ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task,
-        spawn_user_thread,
+        ProcessData, ProcessDataInit, ProcessImage, Thread, add_task_to_table, new_user_task,
+        spawn_alarm_task, spawn_user_thread,
     },
     tracepoint::tracepoint_init,
 };
@@ -36,12 +36,11 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let loc = current_fs_context()
         .lock()
-        .resolve(&args[0])
+        .resolve_file_location(&args[0])
         .expect("Failed to resolve executable path");
-    let path = loc
-        .absolute_path()
-        .expect("Failed to get executable absolute path");
-    let name = loc.name().into_owned();
+    let (path, name) = loc
+        .with_operation(|view| Ok((view.absolute_path()?, view.name())))
+        .expect("Failed to inspect executable location");
 
     let mut uspace = new_user_aspace_empty()
         .and_then(|mut it| {
@@ -72,21 +71,26 @@ pub fn init(args: &[String], envs: &[String]) {
     let console_handover = tty::prepare_console_handover(&proc)
         .unwrap_or_else(|err| panic!("Failed to prepare console tty handover: {err:?}"));
 
-    let proc = ProcessData::new(
-        proc,
-        ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
-        Arc::new(PiMutex::new(uspace)),
-        Arc::default(),
-        None,
-        pid,
-        false,
-    );
+    let prepared_scope = match PreparedProcessScope::prepare_init() {
+        Ok(scope) => scope,
+        Err(err) => {
+            // Starry kernels abort rather than unwind on panic, so explicitly
+            // release the reservation before reporting the fatal boot error.
+            drop(console_handover);
+            panic!("Failed to prepare init process resources: {err:?}");
+        }
+    };
 
-    {
-        let mut scope = proc.scope.write();
-        crate::file::add_stdio(&mut FD_TABLE.scope_cell_mut(&mut scope).write())
-            .expect("Failed to add stdio");
-    }
+    let proc = ProcessData::new(ProcessDataInit {
+        process: proc,
+        image: ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
+        aspace: Arc::new(PiMutex::new(uspace)),
+        signal_actions: Arc::default(),
+        exit_signal: None,
+        wait_parent_tid: pid,
+        vm_aspace_shared: false,
+        prepared_scope,
+    });
 
     console_handover
         .commit()
@@ -110,11 +114,8 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let fs_context = current_fs_context();
     let cx = fs_context.lock();
-    cx.root_dir()
-        .unmount_all()
+    cx.with_namespace_operation(|namespace| namespace.root().unmount_all())
         .expect("Failed to unmount all filesystems");
-    cx.root_dir()
-        .filesystem()
-        .flush()
+    cx.with_namespace_operation(|namespace| namespace.root().flush_filesystem())
         .expect("Failed to flush rootfs");
 }

@@ -37,7 +37,9 @@ impl_task_runtime! {
             _origin: RuntimeScheduleOrigin,
             _entry: RuntimeSchedulerEntry,
         ) -> RuntimeStatus { RuntimeStatus::Success }
-        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool { true }
+        fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool {
+            matches!(return_to, RuntimeSchedulerReturn::Task)
+        }
         fn in_hard_irq() -> bool { false }
         fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
             RuntimeStatus::Success
@@ -45,6 +47,9 @@ impl_task_runtime! {
         fn monotonic_ns() -> u64 { ax_hal::time::monotonic_time_nanos() }
         fn timer_resolution_ns() -> u64 { 1 }
         fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
+        fn dispatch_expired_timer(_event: RuntimeTimerEventV1) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
         fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn wait_for_interrupt() {}
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {

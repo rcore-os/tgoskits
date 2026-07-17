@@ -118,8 +118,9 @@ impl_trait! {
             RuntimeStatus::Success
         }
 
-        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool {
-            ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
+        fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool {
+            matches!(return_to, RuntimeSchedulerReturn::Task)
+                && ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
         }
 
         fn in_hard_irq() -> bool { IN_HARD_IRQ.with(Cell::get) }
@@ -134,6 +135,9 @@ impl_trait! {
         fn timer_resolution_ns() -> u64 { TIMER_RESOLUTION_NS.with(Cell::get) }
         fn program_oneshot_timer(deadline_ns: u64) -> RuntimeStatus {
             LAST_ONESHOT_NS.with(|deadline| deadline.set(deadline_ns));
+            RuntimeStatus::Success
+        }
+        fn dispatch_expired_timer(_event: RuntimeTimerEventV1) -> RuntimeStatus {
             RuntimeStatus::Success
         }
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {

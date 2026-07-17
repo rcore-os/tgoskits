@@ -46,8 +46,10 @@ use crate::{
 
 pub(crate) mod boot;
 pub(crate) mod memory;
+mod passthrough_access;
 pub(crate) mod prepare;
 pub use memory::PreparedMemoryLayout;
+use passthrough_access::PassthroughAccessControl;
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -430,6 +432,8 @@ pub struct AxVM {
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
+    startup_failure: Mutex<Option<AxVmError>>,
+    passthrough_access: PassthroughAccessControl,
 }
 
 impl AxVM {
@@ -450,6 +454,8 @@ impl AxVM {
             name,
             machine: Mutex::new(Machine::Ready(resources)),
             pending_fw_cfg: Mutex::new(None),
+            startup_failure: Mutex::new(None),
+            passthrough_access: PassthroughAccessControl::new(),
         });
 
         info!("VM created: id={}", result.id());
@@ -627,6 +633,8 @@ impl AxVM {
 
     /// Starts the VM by transitioning to Running state.
     pub fn start(self: &Arc<Self>) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
+        self.startup_failure.lock().take();
         if self.status() == VmStatus::Stopped {
             if let Some(runtime) = self.take_stopped_runtime() {
                 runtime.join_all_vcpu_tasks(self.id());
@@ -656,6 +664,17 @@ impl AxVM {
         let task = crate::host::task::spawn_task(primary_task);
         runtime.add_vcpu_task(0, task);
         Ok(())
+    }
+
+    pub(crate) fn record_startup_failure(&self, error: AxVmError) {
+        let mut failure = self.startup_failure.lock();
+        if failure.is_none() {
+            *failure = Some(error);
+        }
+    }
+
+    pub(crate) fn take_startup_failure(&self) -> Option<AxVmError> {
+        self.startup_failure.lock().take()
     }
 
     /// Returns if the VM is running.
@@ -755,6 +774,7 @@ impl AxVM {
     /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
     /// and starting from a fresh `Running` state.
     pub fn reset(self: &Arc<Self>) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
         info!("Resetting VM[{}]", self.id());
         self.stop_and_join_runtime(StopReason::Forced)?;
 
@@ -1043,6 +1063,7 @@ impl AxVM {
         size: usize,
         flags: MappingFlags,
     ) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
         self.with_resources_mut(|resources| {
             resources
                 .address_space
@@ -1197,6 +1218,7 @@ impl AxVM {
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
     ) -> AxVmResult<&[u8]> {
+        self.ensure_passthrough_access_active()?;
         assert!(
             layout.size() > 0,
             "Cannot allocate zero-sized memory region"
@@ -1268,6 +1290,7 @@ impl AxVM {
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
     ) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
         assert!(
             layout.size() > 0,
             "Cannot allocate zero-sized memory region"

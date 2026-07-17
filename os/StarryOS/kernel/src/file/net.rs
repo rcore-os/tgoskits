@@ -12,6 +12,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_io::prelude::*;
 use ax_net::{
     InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, RecvOptions, SendOptions,
     Socket as SocketInner, SocketOps,
@@ -25,7 +26,7 @@ use linux_raw_sys::{
         SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
         SIOCGIFTXQLEN,
     },
-    net::{AF_INET, ifreq},
+    net::{AF_INET, SOCK_STREAM, ifreq},
 };
 use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
 
@@ -49,6 +50,7 @@ const IFREQ_COMPAT_LEN: usize = 40;
 const SIOCETHTOOL: u32 = 0x8946;
 const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
+const SOCKET_USER_IO_CHUNK: usize = 64 * 1024;
 
 pub struct Socket {
     inner: SocketInner,
@@ -70,6 +72,57 @@ impl Socket {
     pub fn ip_domain(&self) -> u32 {
         self.ip_domain
     }
+
+    /// Sends bytes copied from a potentially faultable user-backed source.
+    ///
+    /// The copy into the bounded kernel buffer completes before ax-net can
+    /// acquire a socket lock. Stream writes may return a partial result at the
+    /// staging boundary; message-oriented sockets retain one-message semantics.
+    pub(crate) fn send_from_user(
+        &self,
+        mut src: impl Read + IoBuf,
+        options: SendOptions,
+    ) -> AxResult<usize> {
+        let mut socket_type = 0;
+        self.inner
+            .get_option(GetSocketOption::SocketType(&mut socket_type))?;
+        let stage_len = send_stage_len(socket_type, src.remaining())?;
+        let mut staged = alloc::vec![0; stage_len];
+        let copied = src.read(&mut staged)?;
+
+        self.inner.send(&staged[..copied], options)
+    }
+
+    /// Receives into a bounded kernel buffer before copying to user memory.
+    ///
+    /// ax-net and all of its socket locks are out of scope before `dst.write`
+    /// can fault. A datagram received with `MSG_TRUNC` still returns its full
+    /// length while copying only the caller-provided capacity.
+    pub(crate) fn recv_to_user(
+        &self,
+        mut dst: impl Write + IoBufMut,
+        options: RecvOptions<'_>,
+    ) -> AxResult<usize> {
+        let stage_len = dst.remaining_mut().min(SOCKET_USER_IO_CHUNK);
+        let mut staged = alloc::vec![0; stage_len];
+        let received = self.inner.recv(staged.as_mut_slice(), options)?;
+        let copy_len = received.min(staged.len());
+        if copy_len != 0 && dst.write(&staged[..copy_len])? != copy_len {
+            return Err(AxError::WriteZero);
+        }
+
+        Ok(received)
+    }
+}
+
+fn send_stage_len(socket_type: i32, requested: usize) -> AxResult<usize> {
+    if socket_type == SOCK_STREAM as i32 {
+        return Ok(requested.min(SOCKET_USER_IO_CHUNK));
+    }
+    if requested > SOCKET_USER_IO_CHUNK {
+        return Err(AxError::MessageTooLong);
+    }
+    Ok(requested)
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -219,11 +272,11 @@ impl Deref for Socket {
 
 impl FileLike for Socket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
-        self.recv(dst, RecvOptions::default())
+        self.recv_to_user(dst, RecvOptions::default())
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        self.send(src, SendOptions::default())
+        self.send_from_user(src, SendOptions::default())
     }
 
     fn stat(&self) -> AxResult<Kstat> {

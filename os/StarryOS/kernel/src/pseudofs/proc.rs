@@ -411,14 +411,18 @@ fn render_diskstats() -> String {
     // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
     // only its request/sector counters are real; the timing and in-flight fields
     // have no source and stay zero.
-    let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
+    let stats = ax_runtime::block::block_io_stats();
+    let reads = stats.reads_completed();
+    let sectors_read = stats.sectors_read();
+    let writes = stats.writes_completed();
+    let sectors_written = stats.sectors_written();
     format!(
         "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
          0 0\n"
     )
 }
 
-fn render_mounts() -> String {
+fn render_mounts() -> VfsResult<String> {
     // Root filesystem plus the pseudo-filesystems mounted unconditionally by
     // `pseudofs::mount_all()` at boot. The root fs type is read live from the
     // mount table; the pseudo mounts are fixed. Dynamic user mounts are not
@@ -427,7 +431,7 @@ fn render_mounts() -> String {
     let root_fstype = {
         let fs_context = current_fs_context();
         let ctx = fs_context.lock();
-        ctx.root_dir().filesystem().name().to_string()
+        ctx.with_namespace_operation(|namespace| Ok(namespace.root().filesystem_name()))?
     };
     let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
     buf.push_str("devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n");
@@ -436,10 +440,10 @@ fn render_mounts() -> String {
     buf.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
     buf.push_str("sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n");
     buf.push_str("debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf
+    Ok(buf)
 }
 
-fn render_mountinfo() -> String {
+fn render_mountinfo() -> VfsResult<String> {
     // /proc/<pid>/mountinfo (Linux fs/proc_namespace.c show_mountinfo layout):
     //   id parent major:minor root mount_point options [optional-fields] - fstype source super_opts
     // Same mount set as render_mounts(): the root fs type is read live; the pseudo mounts are the
@@ -449,7 +453,7 @@ fn render_mountinfo() -> String {
     let root_fstype = {
         let fs_context = current_fs_context();
         let ctx = fs_context.lock();
-        ctx.root_dir().filesystem().name().to_string()
+        ctx.with_namespace_operation(|namespace| Ok(namespace.root().filesystem_name()))?
     };
     let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");
     buf.push_str("22 21 0:5 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw\n");
@@ -460,7 +464,7 @@ fn render_mountinfo() -> String {
     buf.push_str(
         "27 26 0:20 / /sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw\n",
     );
-    buf
+    Ok(buf)
 }
 
 fn render_proc_bus_usb_devices() -> String {
@@ -1339,8 +1343,8 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
-            "mountinfo" => SimpleFile::new_regular(fs, move || Ok(render_mountinfo())).into(),
+            "mounts" => SimpleFile::new_regular(fs, render_mounts).into(),
+            "mountinfo" => SimpleFile::new_regular(fs, render_mountinfo).into(),
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1602,10 +1606,7 @@ impl SimpleDirOps for ProcFsHandler {
 
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
-    root.add(
-        "mounts",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_mounts())),
-    );
+    root.add("mounts", SimpleFile::new_regular(fs.clone(), render_mounts));
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
     // can mount; absence (ENOENT) made those probes fail.

@@ -12,29 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::format;
-use core::time::Duration;
+use alloc::{format, vec::Vec};
 
 use dwmmc_host::{CardDetect, DwMmc, HostClock, rdif as dwmmc_rdif};
 use fdt_edit::{Node, Phandle};
 use log::{info, warn};
+use rdif_block::InitError;
 use rdif_pinctrl::{FdtPinctrl, PinctrlDevice};
 use rdrive::{
     probe::{OnProbeError, fdt::ClockLine},
     register::{FdtInfo, ProbeFdt},
 };
 use sdmmc_protocol::{
-    Error, OperationPoll,
+    Error,
     error::{ErrorContext, Phase},
-    sdio::{
-        card::{CardInfo, SdioSdmmc},
-        host2::SdioHost2Adapter,
-        init::SdioInitScratch,
-    },
+    rdif::StagedBlockDevice,
+    sdio::{CardInitPreference, OwnedSdioInit, SdioSdmmc},
 };
 
-use super::clock::{ScmiClockOps, enable_node_clocks, rdrive_named_clock, scmi_named_clock};
-use crate::{block::ProbeFdtBlock, mmio::iomap, soc::RockchipFdtPinctrlParser};
+use super::clock::{
+    ScmiClockOps, StagedClockEnable, rdrive_named_clock, scmi_named_clock, staged_node_clocks,
+};
+use crate::{
+    block::{
+        ProbeFdtBlock,
+        staged::{PlatformPrelude, StagedPlatformBlock},
+    },
+    mmio::iomap,
+    soc::RockchipFdtPinctrlParser,
+};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 const ROCKCHIP_DWMMC_CLKGEN_DIV: u32 = 2;
@@ -46,20 +52,27 @@ const RK3588_SDMMC_CON1: usize = 0x0c34;
 const RK3588_SDMMC_PHASE_SHIFT: u32 = 1;
 const RK3588_SDMMC_DRV_PHASE_DEG: u32 = 90;
 const RK3588_SDMMC_SAMPLE_PHASE_DEG: u32 = 0;
-const RK3588_SDMMC_SAMPLE_PHASE_CANDIDATES: [u32; 8] = [0, 45, 90, 135, 180, 225, 270, 315];
-const SDMMC_INIT_POLL_DELAY: Duration = Duration::from_micros(1);
-const SDMMC_INIT_RETRY_DELAY: Duration = Duration::from_millis(10);
-
-type RockchipDwMmc = SdioSdmmc<SdioHost2Adapter<DwMmc>>;
-
+#[derive(Clone)]
 enum RockchipDwMmcClock {
     Rdrive(ClockLine),
     Scmi(ScmiClockOps),
 }
 
 struct DwMmcClockSetup {
-    reference_clock: u32,
     clock: RockchipDwMmcClock,
+}
+
+struct RockchipSdResources {
+    regulators: Vec<StagedRegulator>,
+    clocks: Vec<StagedClockEnable>,
+    ciu_clock: Option<RockchipDwMmcClock>,
+    phase: phase::Rk3588PhaseSetup,
+}
+
+#[derive(Clone, Copy)]
+struct StagedRegulator {
+    supply: Phandle,
+    startup_delay_ns: u64,
 }
 
 impl HostClock for RockchipDwMmcClock {
@@ -68,24 +81,7 @@ impl HostClock for RockchipDwMmcClock {
             return Err(Error::InvalidArgument);
         }
         let cclkin = u64::from(target_hz) * u64::from(ROCKCHIP_DWMMC_CLKGEN_DIV);
-        let rate = match self {
-            Self::Rdrive(clock) => {
-                clock
-                    .set_rate(cclkin)
-                    .map_err(|_| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
-                clock
-                    .rate()
-                    .map_err(|_| Error::BadResponse(ErrorContext::new(Phase::Init)))?
-            }
-            Self::Scmi(clock) => {
-                clock
-                    .set_rate(cclkin)
-                    .ok_or_else(|| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
-                clock
-                    .rate()
-                    .ok_or_else(|| Error::BadResponse(ErrorContext::new(Phase::Init)))?
-            }
-        };
+        let rate = self.enable_set_rate_and_read(cclkin)?;
         let bus_hz = rate / u64::from(ROCKCHIP_DWMMC_CLKGEN_DIV);
         let bus_hz = validate_bus_clock(bus_hz)?;
         info!(
@@ -96,9 +92,89 @@ impl HostClock for RockchipDwMmcClock {
     }
 }
 
+impl RockchipDwMmcClock {
+    fn enable_set_rate_and_read(&self, rate: u64) -> Result<u64, Error> {
+        match self {
+            Self::Rdrive(clock) => {
+                clock
+                    .enable()
+                    .map_err(|_| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
+                clock
+                    .set_rate(rate)
+                    .map_err(|_| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
+                clock
+                    .rate()
+                    .map_err(|_| Error::BadResponse(ErrorContext::new(Phase::Init)))
+            }
+            Self::Scmi(clock) => {
+                clock
+                    .enable()
+                    .ok_or_else(|| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
+                clock
+                    .set_rate(rate)
+                    .ok_or_else(|| Error::BadResponse(ErrorContext::new(Phase::Init)))?;
+                clock
+                    .rate()
+                    .ok_or_else(|| Error::BadResponse(ErrorContext::new(Phase::Init)))
+            }
+        }
+    }
+}
+
 mod phase;
 
-use phase::{init_rk3588_sdmmc_phase, tune_rk3588_sdmmc_sample_phase};
+impl RockchipSdResources {
+    fn discover(
+        info: &FdtInfo<'_>,
+        ciu_clock: Option<RockchipDwMmcClock>,
+    ) -> Result<Self, OnProbeError> {
+        let regulators = staged_regulators(info)?;
+        let clocks = staged_node_clocks(info)?;
+        let phase = if is_rk3588_dwmmc(info) {
+            phase::rk3588_phase_setup(info)
+        } else {
+            phase::Rk3588PhaseSetup::disabled()
+        };
+        Ok(Self {
+            regulators,
+            clocks,
+            ciu_clock,
+            phase,
+        })
+    }
+}
+
+impl PlatformPrelude for RockchipSdResources {
+    fn prepare(&mut self) -> Result<u64, InitError> {
+        let settle_ns = enable_staged_regulators(&self.regulators).map_err(|error| {
+            warn!("rockchip-dwmmc: staged regulator enable failed: {error}");
+            InitError::Hardware("Rockchip SD regulator prelude failed")
+        })?;
+        for clock in &self.clocks {
+            clock.enable().map_err(|error| {
+                warn!("rockchip-dwmmc: staged clock enable failed: {error}");
+                InitError::Hardware("Rockchip SD clock prelude failed")
+            })?;
+        }
+        if let Some(clock) = &self.ciu_clock {
+            let rate = clock
+                .enable_set_rate_and_read(u64::from(DWMMC_STABLE_REFERENCE_CLOCK))
+                .map_err(|error| {
+                    warn!("rockchip-dwmmc: staged ciu setup failed: {error:?}");
+                    InitError::Hardware("Rockchip SD ciu prelude failed")
+                })?;
+            let rate = validate_bus_clock(rate).map_err(|error| {
+                warn!("rockchip-dwmmc: invalid staged ciu rate: {error:?}");
+                InitError::Hardware("Rockchip SD ciu rate is invalid")
+            })?;
+            self.phase.apply(rate).map_err(|error| {
+                warn!("rockchip-dwmmc: staged phase setup failed: {error}");
+                InitError::Hardware("Rockchip SD phase prelude failed")
+            })?;
+        }
+        Ok(settle_ns)
+    }
+}
 
 crate::model_register!(
     name: "Rockchip SD",
@@ -114,7 +190,6 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
-    apply_rockchip_sd_resources(info)?;
     let base_reg = info
         .node
         .regs()
@@ -137,15 +212,14 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mut host = unsafe { DwMmc::new(mmio_base) };
     host.set_card_detect(CardDetect::ControllerActiveLow);
     let clock_setup = dwmmc_clock_setup(info);
+    let ciu_clock = clock_setup.as_ref().map(|setup| setup.clock.clone());
+    let resources = RockchipSdResources::discover(info, ciu_clock)?;
     if let Some(setup) = clock_setup {
         info!(
             "rockchip-dwmmc: using ciu reference clock {} Hz",
-            setup.reference_clock
+            DWMMC_STABLE_REFERENCE_CLOCK
         );
-        host.set_reference_clock(setup.reference_clock);
-        if is_rk3588_dwmmc(info) {
-            init_rk3588_sdmmc_phase(info, setup.reference_clock)?;
-        }
+        host.set_reference_clock(DWMMC_STABLE_REFERENCE_CLOCK);
         host.set_external_clock(setup.clock);
     } else {
         warn!(
@@ -156,63 +230,38 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
-    info!("rockchip-dwmmc: initialize card through native host2 bus ops");
-    let mut sd = SdioSdmmc::new_host2(host);
+    let mut sd = SdioSdmmc::new_host2_timed(host);
     sd.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
-    let card_info = poll_card_init(&mut sd).map_err(|e| {
-        warn!("rockchip-dwmmc: card init failed: {:?}", e);
-        card_init_error(base_reg.address, mmio_size, e)
-    })?;
-    sd.host_mut()
-        .with_host_mut(|host| host.clear_external_clock());
-    info!(
-        "rockchip-dwmmc card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} \
-         cid={} ext_csd={}",
-        card_info.kind,
-        card_info.high_capacity,
-        card_info.rca,
-        card_info.ocr,
-        card_info.capacity_blocks,
-        card_info.cid.is_some(),
-        card_info.ext_csd.is_some()
+    let staged = StagedBlockDevice::new(
+        OwnedSdioInit::new(sd, CardInitPreference::SdFirst),
+        dwmmc_rdif::dma_config("rockchip-sd", 0, dma),
+        dwmmc_rdif::device,
     );
-
-    if let Some(reference_clock) = sd
-        .host()
-        .with_host(|host| validate_reference_clock(info, u64::from(host.reference_clock())))
-        && is_rk3588_dwmmc(info)
-    {
-        tune_rk3588_sdmmc_sample_phase(&mut sd, reference_clock);
-    }
-
-    let dev = dwmmc_rdif::device(
-        sd,
-        dwmmc_rdif::dma_config(
-            "rockchip-sd",
-            card_info.capacity_blocks.unwrap_or(0),
-            true,
-            dma,
-        ),
-    );
-    let irq = probe.register_block(dev)?;
-    info!("rockchip-sd block device registered irq={:?}", irq);
+    let staged = StagedPlatformBlock::new(staged, resources);
+    let irq = probe.register_block(staged)?;
+    info!("rockchip-sd controller staged irq={irq:?}");
     Ok(())
 }
 
-fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
-    let Some(pinctrl) = rdrive::get_one::<PinctrlDevice>() else {
-        warn!(
-            "[{}] PinctrlDevice not found; skip SDMMC pinctrl and fixed regulators",
-            info.node.name()
-        );
-        return Ok(());
-    };
-    let mut pinctrl = pinctrl
-        .lock()
-        .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
+fn staged_regulators(info: &FdtInfo<'_>) -> Result<Vec<StagedRegulator>, OnProbeError> {
+    let mut regulators = Vec::new();
     for (name, supply) in sd_supply_phandles(info.node.as_node()) {
         if supply_has_fixed_gpio_enable(info, supply)? {
-            enable_fixed_regulator_with_pinctrl(&mut pinctrl, info, supply)?;
+            let regulator = info.get_by_phandle(supply).ok_or_else(|| {
+                OnProbeError::other(format!("SDMMC regulator phandle {supply:?} not found"))
+            })?;
+            let startup_delay_ns = u64::from(
+                regulator
+                    .as_node()
+                    .get_property("startup-delay-us")
+                    .and_then(|property| property.get_u32())
+                    .unwrap_or(0),
+            )
+            .saturating_mul(1_000);
+            regulators.push(StagedRegulator {
+                supply,
+                startup_delay_ns,
+            });
         } else {
             info!(
                 "[{}] {name} phandle {:?} is not a fixed GPIO regulator; skip pinctrl enable",
@@ -221,44 +270,45 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
             );
         }
     }
-    enable_node_clocks(info, "SDMMC")?;
-    Ok(())
+    Ok(regulators)
 }
 
-fn enable_fixed_regulator_with_pinctrl(
-    pinctrl: &mut PinctrlDevice,
-    info: &FdtInfo<'_>,
-    supply: Phandle,
-) -> Result<(), OnProbeError> {
-    let regulator = info.get_by_phandle(supply).ok_or_else(|| {
-        OnProbeError::other(format!("SDMMC regulator phandle {supply:?} not found"))
+fn enable_staged_regulators(regulators: &[StagedRegulator]) -> Result<u64, OnProbeError> {
+    if regulators.is_empty() {
+        return Ok(0);
+    }
+    let pinctrl = rdrive::get_one::<PinctrlDevice>().ok_or_else(|| {
+        OnProbeError::other("PinctrlDevice unavailable for staged SDMMC regulator enable")
     })?;
+    let mut pinctrl = pinctrl
+        .lock()
+        .map_err(|error| OnProbeError::other(format!("failed to lock PinctrlDevice: {error}")))?;
     let fdt = rdrive::with_fdt(Clone::clone)
         .ok_or_else(|| OnProbeError::other("live FDT not found for SDMMC regulator"))?;
-    FdtPinctrl::apply_fixed_regulator(
-        pinctrl,
-        &fdt,
-        regulator.as_node(),
-        &RockchipFdtPinctrlParser,
-        "rockchip-sd-regulator",
-    )
-    .map_err(|err| {
-        OnProbeError::other(format!(
-            "failed to enable SDMMC regulator {supply:?} via pinctrl: {err}"
-        ))
-    })?;
-
-    let startup_delay_us = regulator
-        .as_node()
-        .get_property("startup-delay-us")
-        .and_then(|prop| prop.get_u32())
-        .unwrap_or(0);
-    if startup_delay_us != 0 {
-        axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(
-            startup_delay_us,
-        )));
+    let mut startup_delay_ns = 0;
+    for regulator in regulators {
+        let node = fdt.get_by_phandle(regulator.supply).ok_or_else(|| {
+            OnProbeError::other(format!(
+                "SDMMC regulator phandle {:?} disappeared before activation",
+                regulator.supply
+            ))
+        })?;
+        FdtPinctrl::apply_fixed_regulator(
+            &mut *pinctrl,
+            &fdt,
+            node.as_node(),
+            &RockchipFdtPinctrlParser,
+            "rockchip-sd-regulator",
+        )
+        .map_err(|error| {
+            OnProbeError::other(format!(
+                "failed to enable SDMMC regulator {:?} via pinctrl: {error}",
+                regulator.supply
+            ))
+        })?;
+        startup_delay_ns = startup_delay_ns.max(regulator.startup_delay_ns);
     }
-    Ok(())
+    Ok(startup_delay_ns)
 }
 
 fn sd_supply_phandles(node: &Node) -> impl Iterator<Item = (&'static str, Phandle)> + '_ {
@@ -289,86 +339,14 @@ fn regulator_has_fixed_gpio_enable(node: &Node) -> bool {
             || node.get_property("pinctrl-0").is_some())
 }
 
-fn poll_card_init(sd: &mut RockchipDwMmc) -> Result<CardInfo, Error> {
-    let mut scratch = SdioInitScratch::new();
-    let mut request = sd.submit_init(&mut scratch)?;
-    loop {
-        match sd.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {
-                if request.take_needs_pace() {
-                    axklib::time::busy_wait(SDMMC_INIT_RETRY_DELAY);
-                } else {
-                    axklib::time::busy_wait(SDMMC_INIT_POLL_DELAY);
-                }
-            }
-            OperationPoll::Complete(info) => return Ok(info),
-            _ => return Err(Error::UnsupportedCommand),
-        }
-    }
-}
-
-fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    OnProbeError::other(format!(
-        "failed to initialize DWMMC device at [PA:{:?}, SZ:0x{:x}): {err:?}",
-        address, size
-    ))
-}
-
-fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    if is_absent_card_init_error(err) {
-        warn!(
-            "rockchip-dwmmc: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: \
-             {err:?}",
-            address, size
-        );
-        return OnProbeError::NotMatch;
-    }
-
-    init_error(address, size, err)
-}
-
-fn is_absent_card_init_error(err: Error) -> bool {
-    match err {
-        Error::NoCard => true,
-        Error::Timeout(ctx) | Error::Crc(ctx) | Error::BadResponse(ctx) => {
-            ctx.cmd.is_some()
-                && matches!(
-                    ctx.phase,
-                    Phase::CommandSend | Phase::ResponseWait | Phase::Init
-                )
-        }
-        _ => false,
-    }
-}
-
 fn dwmmc_clock_setup(info: &FdtInfo<'_>) -> Option<DwMmcClockSetup> {
     match rdrive_named_clock(info, "ciu") {
-        Ok(Some(clock)) => {
-            if let Err(err) = clock.set_rate(DWMMC_STABLE_REFERENCE_CLOCK as u64) {
-                warn!(
-                    "[{}] failed to set ciu clock {:?} to {} Hz: {err}",
-                    info.node.name(),
-                    clock.id(),
-                    DWMMC_STABLE_REFERENCE_CLOCK
-                );
-            }
-            match clock.rate() {
-                Ok(rate) => Some(DwMmcClockSetup {
-                    reference_clock: validate_reference_clock(info, rate)?,
-                    clock: RockchipDwMmcClock::Rdrive(clock),
-                }),
-                Err(err) => {
-                    warn!("[{}] failed to read ciu clock: {err}", info.node.name());
-                    None
-                }
-            }
-        }
+        Ok(Some(clock)) => Some(DwMmcClockSetup {
+            clock: RockchipDwMmcClock::Rdrive(clock),
+        }),
         Ok(None) | Err(_) => {
             if let Some(clock) = scmi_named_clock(info, "ciu") {
-                clock.set_rate(DWMMC_STABLE_REFERENCE_CLOCK as u64)?;
-                let rate = clock.rate()?;
                 return Some(DwMmcClockSetup {
-                    reference_clock: validate_reference_clock(info, rate)?,
                     clock: RockchipDwMmcClock::Scmi(clock),
                 });
             }
@@ -388,14 +366,6 @@ fn is_rk3588_dwmmc(info: &FdtInfo<'_>) -> bool {
         .any(|compatible| compatible == "rockchip,rk3588-dw-mshc")
 }
 
-fn validate_reference_clock(info: &FdtInfo<'_>, rate: u64) -> Option<u32> {
-    if rate == 0 || rate > u32::MAX as u64 {
-        warn!("[{}] invalid ciu clock rate {} Hz", info.node.name(), rate);
-        return None;
-    }
-    Some(rate as u32)
-}
-
 fn validate_bus_clock(rate: u64) -> Result<u32, Error> {
     if rate == 0 || rate > u32::MAX as u64 {
         return Err(Error::BadResponse(ErrorContext::new(Phase::Init)));
@@ -407,23 +377,7 @@ fn validate_bus_clock(rate: u64) -> Result<u32, Error> {
 mod tests {
     use alloc::{vec, vec::Vec};
 
-    use sdmmc_protocol::error::ErrorContext;
-
     use super::*;
-
-    #[test]
-    fn command_timeout_during_card_init_is_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, 1));
-
-        assert!(is_absent_card_init_error(err));
-    }
-
-    #[test]
-    fn data_timeout_after_card_init_is_not_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
-
-        assert!(!is_absent_card_init_error(err));
-    }
 
     #[test]
     fn sd_supply_phandles_reads_optional_vmmc_and_vqmmc() {

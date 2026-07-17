@@ -24,7 +24,7 @@ impl<T: DmaPod> CoherentBox<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn read_cpu(&self) -> T {
@@ -42,7 +42,7 @@ impl<T: DmaPod> CoherentBox<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     /// # Safety
@@ -80,7 +80,7 @@ impl<T: DmaPod> ContiguousBox<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn read_cpu(&self) -> T {
@@ -129,7 +129,7 @@ impl<T: DmaPod> ContiguousBox<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     /// # Safety

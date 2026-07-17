@@ -12,10 +12,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::current_fs_context;
+use ax_fs_ng::vfs::{FileLocation, current_fs_context};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::PiMutex;
-use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_process::Pid;
@@ -23,7 +22,7 @@ use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
+    file::{FD_TABLE, ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{current_user_task, future::block_on, rebind_task_tid, yield_now, zap_thread},
 };
@@ -35,7 +34,7 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    let loc = current_fs_context().lock().resolve(&path)?;
+    let loc = current_fs_context().lock().resolve_file_location(&path)?;
     do_execve(uctx, loc, path, argv, envp)
 }
 
@@ -56,22 +55,28 @@ pub fn sys_execveat(
 
     let path = vm_load_string(path)?;
 
-    // Resolve dirfd + path to the `Location` the loader reads from. A regular
+    // Resolve dirfd + path to the `FileLocation` capability the loader reads from. A regular
     // file yields its filesystem path as the display name; an anonymous memfd
-    // has no path but wraps a tmpfs-backed `Location` we can still load — this
+    // has no path but wraps a tmpfs-backed `FileLocation` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
     let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
         ResolveAtResult::File(loc) => {
-            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+            let disp = loc.with_operation(|view| {
+                Ok(view
+                    .absolute_path()
+                    .map(|path| path.to_string())
+                    .unwrap_or_else(|_| path.clone()))
+            })?;
             (loc, disp)
         }
+        ResolveAtResult::Directory(_) => return Err(AxError::PermissionDenied),
         ResolveAtResult::Other(f) => {
             let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
                 warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
                 AxError::PermissionDenied
             })?;
-            let loc = memfd.inner().inner().location().clone();
+            let loc = memfd.inner().inner().file_location();
             let disp = format!("/memfd:{} (deleted)", memfd.name());
             (loc, disp)
         }
@@ -81,13 +86,13 @@ pub fn sys_execveat(
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
-/// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
+/// `sys_execve` and `sys_execveat` resolve the program to a `FileLocation`, then
 /// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
 /// the loader's `.sh`/shebang handling), not re-resolved against the FS.
 fn do_execve(
     uctx: &mut UserContext,
-    loc: Location,
+    loc: FileLocation,
     path: String,
     argv: *const *const c_char,
     envp: *const *const c_char,
@@ -146,7 +151,7 @@ fn do_execve(
     //   - fall-through to acquisition if the holder fails before commit,
     //   - cooperative exit (EINTR → user-return → `do_exit(0, false)`) if
     //     the holder zaps us during its sibling-teardown loop,
-    // without consuming any flag the user-return `check_signals` needs.
+    // without consuming any flag the user-return `process_one_signal` needs.
     //
     // Note: we deliberately do *not* abort on generic `task.interrupt()`
     // (signal wakeups). Linux's execve is killable but not arbitrarily
@@ -164,11 +169,14 @@ fn do_execve(
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let mut new_name = loc.name().to_string();
-    let mut new_exe_path = loc
-        .absolute_path()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|_| path.clone());
+    let (mut new_name, mut new_exe_path) = loc.with_operation(|view| {
+        Ok((
+            view.name(),
+            view.absolute_path()
+                .map(|path| path.to_string())
+                .unwrap_or_else(|_| path.clone()),
+        ))
+    })?;
 
     // Build the new address space entirely before committing.
     // Loading into a fresh aspace (rather than clearing the existing one)
@@ -189,9 +197,11 @@ fn do_execve(
                 // not by the kernel. This is a pragmatic workaround until
                 // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
-                let shell_loc = current_fs_context().lock().resolve(shell_path)?;
-                new_name = shell_loc.name().to_string();
-                new_exe_path = shell_loc.absolute_path()?.to_string();
+                let shell_loc = current_fs_context()
+                    .lock()
+                    .resolve_file_location(shell_path)?;
+                (new_name, new_exe_path) = shell_loc
+                    .with_operation(|view| Ok((view.name(), view.absolute_path()?.to_string())))?;
                 args = iter::once(String::from(shell_path))
                     .chain(args.iter().cloned())
                     .collect();
@@ -268,24 +278,49 @@ fn do_execve(
         }));
     }
 
-    // Collect CLOEXEC fds to close *after* sibling teardown. Snapshotting
-    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
-    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
-    // between our snapshot and its own exit, leaking those fds into the new
-    // image. Once all siblings are reaped, the snapshot reflects the final
-    // post-quiescence table. The close pass below runs under the same
-    // `FD_TABLE.write()` guard so no new fds appear between scan and close.
-    let fd_table_owner = current_fd_table();
+    // ----------------------------------------------------------------
+    // Phase 2: point of no return — commit all changes.
+    // Nothing below may fail; errors here would leave the process broken.
+    // ----------------------------------------------------------------
+
+    // Linux unshares `files_struct` before applying close-on-exec. A distinct
+    // process may still share this table through CLONE_FILES even though every
+    // sibling in our thread group has exited, so mutating the inherited table
+    // would incorrectly close its descriptors too. Clone the final table only
+    // after sibling teardown, then publish the private owner in one short
+    // active-scope transaction. Dropping the inherited Arc happens after the
+    // scope/preemption guard has been released.
+    let private_fd_table = {
+        let inherited = current_fd_table();
+        let snapshot = inherited.read().clone();
+        Arc::new(ax_kspin::SpinRwLock::new(snapshot))
+    };
+    let old_fd_table = proc_data.with_current_scope_mut(|scope| {
+        let mut slot = FD_TABLE.scope_cell_mut(scope);
+        core::mem::replace(&mut *slot, private_fd_table.clone())
+    });
+    drop(old_fd_table);
+
+    // Remove CLOEXEC entries in one short spin-protected transaction, then run
+    // POSIX-lock release, wakes, and descriptor destructors only after the raw
+    // table guard is gone. In particular, no FD_TABLE guard may cross into
+    // address-space process-slot accounting, which uses a sleepable PI mutex.
+    let fd_table_owner = private_fd_table;
     let mut fd_table = fd_table_owner.write();
     let cloexec_fds: Vec<_> = fd_table
         .ids()
         .filter(|it| fd_table.get(*it).unwrap().cloexec)
         .collect();
-
-    // ----------------------------------------------------------------
-    // Phase 2: point of no return — commit all changes.
-    // Nothing below may fail; errors here would leave the process broken.
-    // ----------------------------------------------------------------
+    let mut closing = Vec::with_capacity(cloexec_fds.len());
+    for fd in cloexec_fds {
+        if let Some(file) = fd_table.remove(fd) {
+            closing.push(file);
+        }
+    }
+    drop(fd_table);
+    for file in closing {
+        crate::file::release_locks_on_close(file);
+    }
 
     // Replace the aspace Arc so the parent's shared Arc<PiMutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
@@ -331,31 +366,6 @@ fn do_execve(
     thr.set_clear_child_tid(0);
     thr.set_robust_list_head(0);
     thr.clear_rseq_state();
-
-    // Remove CLOEXEC fds from the table under the write guard we took
-    // for the post-teardown snapshot — no fd can be added or have its
-    // CLOEXEC bit flipped between scan and close — but defer the actual
-    // `release_locks_on_close` (POSIX-lock release, OFD waker wakes,
-    // FileDescriptor drop) until after we've dropped the table write
-    // lock. The wakers fire on the global advisory-lock waiter queues
-    // and may immediately drive woken tasks back through `FD_TABLE`;
-    // running them under the write guard would risk lock re-entry and
-    // also expand the critical section across arbitrary destructor work.
-    // Linux's `do_close_on_exec` drops `files->file_lock` around each
-    // `filp_close` call for the same reason. We close the entire batch
-    // after the lock is released, which is equivalent: no new fd can
-    // appear in the slots we just emptied because nothing else in this
-    // process is running yet (siblings reaped, new image not started).
-    let mut closing = Vec::with_capacity(cloexec_fds.len());
-    for fd in cloexec_fds {
-        if let Some(f) = fd_table.remove(fd) {
-            closing.push(f);
-        }
-    }
-    drop(fd_table);
-    for f in closing {
-        crate::file::release_locks_on_close(f);
-    }
 
     // de_thread leader transfer (non-leader caller only).
     //

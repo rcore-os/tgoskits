@@ -2,16 +2,18 @@
 
 Portable NVMe 1.4 block driver for the `rdif-block` capability boundary.
 
-## RDIF Submit/Poll Model
+## RDIF Submit/IRQ Model
 
 The RDIF data path is queue-local and non-blocking:
 
-- `submit_request()` validates the LBA request, allocates a queue-local CID, builds PRP entries, writes one SQE, rings the submission doorbell, and returns `RequestId`.
-- `poll_request()` drains CQEs without spinning, updates the matching CID slot, rings the completion doorbell, and reports `Pending` or `Complete`.
-- `RequestId` is the NVMe CID for the same IO queue. It must not be used on another queue.
-- Queue-full or CID exhaustion is reported as `BlkError::Retry`; incomplete commands are reported as `RequestStatus::Pending`.
+- `submit_owned()` validates the LBA request, allocates a queue-local CID, builds PRP entries, writes one SQE, rings the submission doorbell, and transfers request ownership to that queue.
+- The hard-IRQ endpoint acknowledges a globally bounded CQ batch into a preallocated queue-local cache and emits a queue event.
+- `service_events()` consumes that IRQ snapshot and may continue draining the same acknowledged CQ in bounded worker batches only when the hard-IRQ endpoint yielded an explicit continuation because its 64-completion budget expired or CQ ownership was contended. A cache-only event cannot read the CQ again. The worker resolves the matching runtime `RequestId`, returns request ownership through `CompletionSink`, and rings the completion doorbell; no timer or request thread probes the CQ.
+- Queue-full or CID exhaustion returns the unaccepted request with `BlkError::Retry`; an accepted request reaches exactly one terminal completion through an IRQ event or typed recovery.
 
-Controller/admin initialization still uses the driver's internal admin queue flow. The public block data path does not call synchronous read/write helpers and does not spin for IO completion inside `submit_request()`.
+Discovery only maps the BAR, validates capabilities, allocates retained DMA storage, and keeps device interrupt sources masked. `InitialController` performs disable/enable, Identify Controller, queue creation, and namespace identification only after the OS has installed its initialization IRQ action. The IRQ endpoint caches each admin completion, and the state machine consumes that cache only when `InitInput` names the admin source. Capacity and normal queues are not published before `Ready`.
+
+Controller recovery uses the same IRQ-cached admin completion boundary through `InterruptLifecycle`. Absolute deadlines detect reset or command failure; they never inspect a completion queue as a fallback. The public block data path has no completion-query or synchronous read/write API and does not spin for hardware completion.
 
 ## Queues, PRP, And CID
 
@@ -23,13 +25,13 @@ Read and write requests use NVMe PRP:
 - `prp2` is either the second page or a PRP-list page.
 - The current implementation supports one PRP-list page per request.
 
-Flush maps to NVMe NVM Flush. Discard and write-zeroes are reported as unsupported until the command set implementation grows those operations.
+Flush, discard, and write-zeroes are reported as unsupported until Identify/feature capability validation is plumbed for those commands.
 
 ## IRQ Sources
 
-`rdif-block` supports multiple IRQ sources via `Interface::irq_sources()` and `take_irq_handler(source_id)`. The current NVMe block adapter intentionally exposes no IRQ source: IO completion queues are created with interrupts disabled and runtime/OS glue advances requests through submit/poll. This avoids pretending that a controller MSI-X completion path is a legacy INTx source.
+`rdif-block` supports multiple IRQ sources via `Interface::irq_sources()` and `take_irq_handler(source_id)`. NVMe maps INTx source 0 or each retained MSI-X vector to the queues routed to that vector. Activation fails closed if the admin vector or an I/O queue vector lacks a platform binding or handler.
 
-Future MSI-X support can expose one RDIF IRQ source per completion vector. The IRQ handler should only return queue events; it should not complete requests, wake tasks, or take OS locks. Runtime/OS glue polls the indicated queues after receiving an event.
+The IRQ handler performs the first destructive CQ read under a queue-local claim, stores completion metadata in fixed cache slots, and returns a queue event. It does not transfer request ownership, wake arbitrary tasks, allocate, or take OS locks. The shared block worker consumes the cached metadata, performs any bounded CQ continuation authorized by that event, and issues directed completion wakeups.
 
 ## QEMU Smoke Test
 

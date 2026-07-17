@@ -14,7 +14,7 @@ use core::{
 pub use message::{InboxKind, InboxMessage};
 pub use node::InboxNode;
 
-use crate::epoch_mpsc::EpochMpscQueue;
+use crate::epoch_mpsc::{EpochMpscQueue, EpochRemainder, EpochSnapshot};
 
 /// Result of publishing one embedded scheduler node.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,7 +31,18 @@ pub enum PublishResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrainBatch {
     drained: usize,
-    pending: bool,
+    remainder: DrainRemainder,
+}
+
+/// Work remaining after one bounded owner-side drain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DrainRemainder {
+    /// No detached or published message remains.
+    Empty,
+    /// At least one fully published message can be drained later.
+    MoreReady,
+    /// A non-preemptible producer still owns the retired generation grace.
+    PublisherInFlight,
 }
 
 impl DrainBatch {
@@ -42,7 +53,12 @@ impl DrainBatch {
 
     /// Reports whether another drain is required.
     pub const fn pending(self) -> bool {
-        self.pending
+        !matches!(self.remainder, DrainRemainder::Empty)
+    }
+
+    /// Classifies ready work separately from a publisher grace wait.
+    pub const fn remainder(self) -> DrainRemainder {
+        self.remainder
     }
 }
 
@@ -112,7 +128,7 @@ impl SchedulerInbox {
         {
             return DrainBatch {
                 drained: 0,
-                pending: true,
+                remainder: DrainRemainder::MoreReady,
             };
         }
 
@@ -135,9 +151,17 @@ impl SchedulerInbox {
         }
 
         self.pending.store(cursor, Ordering::Release);
-        let pending = !cursor.is_null() || !self.publication.is_empty();
+        let remainder = if !cursor.is_null() {
+            DrainRemainder::MoreReady
+        } else {
+            match self.publication.remainder() {
+                EpochRemainder::Empty => DrainRemainder::Empty,
+                EpochRemainder::Ready => DrainRemainder::MoreReady,
+                EpochRemainder::PublisherInFlight => DrainRemainder::PublisherInFlight,
+            }
+        };
         self.draining.store(false, Ordering::Release);
-        DrainBatch { drained, pending }
+        DrainBatch { drained, remainder }
     }
 
     /// Reports whether producer or partially drained work remains.
@@ -150,10 +174,14 @@ impl SchedulerInbox {
         if !pending.is_null() {
             return pending;
         }
-        let stack = unsafe {
+        let snapshot = unsafe {
             // `draining` makes this the only consumer. A null result may mean
             // the old publication epoch is still crossing its grace period.
             self.publication.take_graced_stack()
+        };
+        let stack = match snapshot {
+            EpochSnapshot::Ready(stack) => stack,
+            EpochSnapshot::Empty | EpochSnapshot::PublisherInFlight => ptr::null_mut(),
         };
         unsafe {
             // The drain guard and completed epoch grace make this consumer the
@@ -163,17 +191,17 @@ impl SchedulerInbox {
     }
 
     #[cfg(test)]
-    fn arm_test_publisher_pause(&self) {
+    pub(crate) fn arm_test_publisher_pause(&self) {
         self.publication.arm_test_publisher_pause();
     }
 
     #[cfg(test)]
-    fn wait_for_test_publisher_pause(&self) {
+    pub(crate) fn wait_for_test_publisher_pause(&self) {
         self.publication.wait_for_test_publisher_pause();
     }
 
     #[cfg(test)]
-    fn resume_test_publisher(&self) {
+    pub(crate) fn resume_test_publisher(&self) {
         self.publication.resume_test_publisher();
     }
 

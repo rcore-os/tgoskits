@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add bounded, non-blocking emergency UART write and transmitter-drain
+  capabilities that share the runtime register owner without entering the
+  normal TX queue or worker path.
+
+### Fixed
+
+- Enforce serial register-owner exclusion in release builds before creating a
+  mutable owner access, preventing reentrant aliasing.
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rdif-serial-v0.8.2...rdif-serial-v0.9.0) - 2026-06-27
 
 ### Other

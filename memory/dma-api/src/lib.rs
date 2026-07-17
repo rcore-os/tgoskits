@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![doc = include_str!("../README.md")]
+#![feature(allocator_api)]
 
 extern crate alloc;
 

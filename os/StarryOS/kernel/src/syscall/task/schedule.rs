@@ -358,7 +358,6 @@ fn apply_scheduler_update(
     let thread = scheduler_thread_id(pid)?;
     scheduler::set_thread_policy(thread, update.policy).map_err(map_task_error)?;
 
-    task.set_accounting_policy(update.policy);
     task.set_reset_on_fork(update.reset_on_fork);
     if let scheduler::SchedulePolicy::Fair { nice, .. } = update.policy {
         task.as_thread().set_nice(i32::from(nice.get()));

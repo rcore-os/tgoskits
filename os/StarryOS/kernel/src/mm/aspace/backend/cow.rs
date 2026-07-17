@@ -421,31 +421,25 @@ impl CowBackend {
     }
 
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {
-        let loc = self
-            .file
-            .as_ref()
-            .map(|(file, file_vaddr_base, file_start, ..)| {
-                (file.location(), *file_vaddr_base, *file_start)
-            });
-        if let Some((loc, file_vaddr_base, file_start)) = loc {
-            let path = loc.absolute_path().map(|pb| pb.to_string())?;
-            let inode = loc.inode();
-            let dev = loc.metadata()?.device;
+        if let Some((file, file_vaddr_base, file_start, ..)) = self.file.as_ref() {
             // Same invariant as `alloc_new_at`: a virtual address maps to
             // `file_start + (vaddr - file_vaddr_base)`, clamped to file_start
             // for the unaligned first page (where self.start < file_vaddr_base).
-            let offset = file_start
+            let offset = *file_start
                 + self
                     .start
                     .as_usize()
                     .saturating_sub(file_vaddr_base.as_usize()) as u64;
             let offset = align_down_4k(offset as usize) as u64;
-            return Ok(BackendFileInfo {
-                path,
-                offset: Some(offset),
-                inode: Some(inode),
-                dev: Some(dev),
-                shared: self.shared,
+            return file.with_operation(|view| {
+                let metadata = view.metadata()?;
+                Ok(BackendFileInfo {
+                    path: view.absolute_path()?.to_string(),
+                    offset: Some(offset),
+                    inode: Some(view.inode()),
+                    dev: Some(metadata.device),
+                    shared: self.shared,
+                })
             });
         }
         if let Some(name) = &self.name {

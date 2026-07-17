@@ -7,7 +7,7 @@ sidebar_label: "概览"
 
 TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它向上为 ArceOS、StarryOS、Axvisor 提供统一的设备发现、注册、查询和领域能力接口，向下通过分层结构适配真实硬件。`rdrive` 负责设备探测（probe）、驱动注册（register）和类型化设备查询；`rdif-*` 负责各设备类别的能力边界（capability boundary）；具体硬件驱动 core 保持 `no_std` 且不耦合 OS runtime。
 
-旧的 `ax-driver` 全局容器模型（`AllDevices`、`AxDeviceContainer`、`Ax*Device`）已移除。宿主物理设备初始化与交付主线不再经过 legacy driver crates；块设备路径的 runtime 已删除，统一以 `rdif-block` 作为 block capability boundary。`ax-driver` 现在作为共享驱动聚合 crate 接入 `rdrive + rdif`，负责 OS glue（probe、iomap、IRQ 注册、DMA 适配）。
+旧的 `ax-driver` 全局容器模型（`AllDevices`、`AxDeviceContainer`、`Ax*Device`）已移除。宿主物理设备初始化与交付主线不再经过 legacy driver crates；`rdif-block` 是 portable block capability boundary，`ax-runtime::block` 负责共享 worker、hctx/tag、watchdog、恢复和 handoff 编排。`ax-driver` 现在作为共享驱动聚合 crate 接入 `rdrive + rdif`，负责 OS glue（probe、iomap、IRQ binding、DMA 适配）。
 
 ## 源码
 
@@ -38,7 +38,7 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 
 | 能力 | interface crate | runtime crate | 上层消费 | 状态 |
 | --- | --- | --- | --- | --- |
-| 块设备 | `rdif-block` | 已删除，直接消费 submit/poll 边界 | block volume service、FS | 完整 |
+| 块设备 | `rdif-block` | `ax-runtime::block` | block volume service、FS | IRQ-only 迁移中 |
 | 网络设备 | `rdif-eth` | `rd-net` | net interface service、ax-net | 完整 |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb | 完整 |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input | 完整 |
@@ -60,6 +60,8 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 - **类型化设备查询**：`rdrive::Manager` 只保存 `DriverRegister` 和类型化设备 registry，上层通过 `Device<T>` 弱引用按领域能力查询设备，不使用全局字符串匹配或大容器。
 - **IRQ domain 化**：所有中断路径使用 `IrqId` 作为运行时注册 key，平台 IRQ namespace 解析留在平台 resolver 侧。
 - **领域 service 消费**：上层业务模块通过领域 service 消费设备能力，不直接把 `rdrive` 当作全局设备篮子。
+- **块 I/O IRQ-only**：纯软件设备允许 inline completion；所有硬件 queue 必须绑定非空 IRQ source，normal I/O 只由 IRQ event 推进。初始化中的无事件等待使用绝对 deadline 状态机，watchdog 只判失败和恢复。
+- **共享 worker 而非 queue 线程**：每个 hctx 有独立串行 work item，但由共享 per-CPU normal/high-priority pool 执行，避免硬件 queue 永久占用线程。
 
 ## 非目标与硬约束
 

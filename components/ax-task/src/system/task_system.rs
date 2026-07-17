@@ -13,9 +13,9 @@ use crate::{
     EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkToken, PiLockId, PiWaitToken,
     QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason, TaskError,
     TaskSystemConfig, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
-    ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources,
-    ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeHandle,
-    inbox::{InboxKind, InboxMessage, PublishResult, SchedulerInbox},
+    ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle, ThreadPolicyApplied,
+    ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeHandle,
+    inbox::{DrainRemainder, InboxKind, InboxMessage, PublishResult, SchedulerInbox},
     lock::{IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -160,6 +160,24 @@ enum DeferredTaskWorkClass {
     Reclaim,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct OwnerEnqueueSnapshot {
+    entity: SchedulingEntity,
+    base_entity: SchedulingEntity,
+    base_deadline: Option<DeadlineEntity>,
+    deadline_activity: DeadlineActivity,
+    deadline_bandwidth_cpu: Option<CpuId>,
+    deadline_zero_lag_ns: u64,
+    target_cpu: Option<CpuId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DeadlineReplenishSnapshot {
+    owner_enqueue: OwnerEnqueueSnapshot,
+    lifecycle: ThreadState,
+    replenish_pending: bool,
+}
+
 impl DeferredTaskWorkClass {
     const COUNT: usize = 4;
 
@@ -239,13 +257,16 @@ impl TaskSystem {
         state.deadline_admission.release(u128::from(released));
     }
 
-    fn defer_deadline_admission_release(&self, released: u64) -> Result<(), TaskError> {
-        self.pending_deadline_admission_release
+    fn defer_deadline_admission_release(&self, released: u64) {
+        if self
+            .pending_deadline_admission_release
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                 pending.checked_add(released)
             })
-            .map(|_| ())
-            .map_err(|_| TaskError::InvalidConfiguration)
+            .is_err()
+        {
+            task_runtime::fatal_invariant(0x444C_0001, released as usize);
+        }
     }
 
     /// Creates an empty scheduler instance for a fixed topology.
@@ -322,12 +343,20 @@ impl TaskSystem {
         let count = self
             .scheduler_ipi_retries
             .take_retry_batch(&mut targets[..limit]);
+        let current = CpuId::new(task_runtime::current_cpu_id().as_u32());
         let mut attempted = 0;
         for &target in targets.iter().take(count) {
             let Some(remote) = self.cpu_remotes.get(target.as_u32() as usize) else {
                 self.scheduler_ipi_retries.publish_invalid(target);
                 continue;
             };
+            if target == current {
+                // This safe point itself is delivery for a failed local
+                // doorbell. Retain the independent scheduler reason and clear
+                // any stale transport claim instead of queuing a self-IPI.
+                remote.acknowledge_scheduler_ipi();
+                continue;
+            }
             attempted += usize::from(remote.retry_scheduler_ipi());
         }
         Ok(attempted)
@@ -607,9 +636,7 @@ impl TaskSystem {
                 active_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 desired_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 deadline_zero_lag_ns: 0,
-                queued_cpu: None,
-                running_cpu: None,
-                on_cpu: None,
+                placement: super::thread_sched::ThreadPlacement::DETACHED,
                 migration_target: None,
                 blocked_pi_waiters: 0,
                 pi_donor: None,
@@ -699,8 +726,8 @@ impl TaskSystem {
             let mut sched = record.sched.lock();
             sched.transition(&core, ThreadState::Ready)?;
             sched.transition(&core, ThreadState::Running)?;
-            sched.running_cpu = Some(cpu.owner());
-            sched.on_cpu = Some(cpu.owner());
+            sched.start_running_detached(cpu.owner())?;
+            sched.mark_on_cpu(cpu.owner())?;
             core.set_target_cpu(cpu.owner());
             Self::owner_dispatch(&core, &sched, task_runtime::monotonic_ns())?
         };
@@ -747,8 +774,7 @@ impl TaskSystem {
             state.ensure_cpu_online(&cpu)?;
             Arc::clone(&state.thread_record(thread)?.core)
         };
-        self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
-        Self::program_local_timer(cpu.as_mut(), now_ns)
+        self.enqueue_owner_thread_and_program_timer(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)
     }
 
     /// Places a newly ready thread on an allowed online CPU.
@@ -769,7 +795,7 @@ impl TaskSystem {
         thread: ThreadId,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let placed_locally = {
+        {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let owner = cpu.owner();
@@ -777,8 +803,12 @@ impl TaskSystem {
             if affinity.contains(owner) {
                 let core = Arc::clone(&state.thread_record(thread)?.core);
                 drop(state);
-                self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
-                true
+                self.enqueue_owner_thread_and_program_timer(
+                    cpu.as_mut(),
+                    core,
+                    now_ns,
+                    EnqueueReason::Wake,
+                )?;
             } else {
                 let target = state
                     .select_allowed_cpu(&affinity)
@@ -789,10 +819,7 @@ impl TaskSystem {
                     if sched.lifecycle.state() != ThreadState::Ready {
                         return Err(TaskError::NotReady);
                     }
-                    if sched.queued_cpu.is_some()
-                        || sched.running_cpu.is_some()
-                        || sched.on_cpu.is_some()
-                    {
+                    if !sched.run_is_off() || !sched.execution_is_off() {
                         return Err(TaskError::AlreadyQueued);
                     }
                     sched.migration_target = Some(target);
@@ -800,14 +827,9 @@ impl TaskSystem {
                     Arc::clone(&record.core)
                 };
                 state.publish_migration_to(&core, target, owner, target)?;
-                false
             }
-        };
-        if placed_locally {
-            Self::program_local_timer(cpu.as_mut(), now_ns)
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Removes a ready thread from its owner run queue for migration or update.
@@ -826,7 +848,7 @@ impl TaskSystem {
         if !sched.is_pi_boosted() {
             sched.base_entity = queued.entity;
         }
-        sched.queued_cpu = None;
+        sched.clear_queued(cpu.owner())?;
         drop(sched);
         drop(state);
         self.publish_owner_cpu_load_summary(cpu.as_mut());
@@ -839,15 +861,21 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<RemoteWakeDrain, TaskError> {
+        // A wake may arrive after the outgoing thread became Blocked but
+        // before the architecture switch tail cleared its `on_cpu` owner. The
+        // new context must finish that handoff before making the same thread
+        // runnable; otherwise one execution context is simultaneously owned
+        // by the switch tail and the runqueue.
+        self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         cpu.acknowledge_scheduler_ipi();
-        let (drained, pending) = {
+        let (drained, remainder) = {
             let fields = cpu.as_mut().fields_mut();
             let limit = fields.batch_limit();
             let remote = Arc::clone(fields.remote());
             let buffer = &mut fields.remote_wake_buffer;
             let batch = remote.remote_wake_inbox().drain(limit, buffer);
-            (batch.drained(), batch.pending())
+            (batch.drained(), batch.remainder())
         };
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
         detached[..drained].copy_from_slice(&cpu.remote_wake_buffer[..drained]);
@@ -884,10 +912,7 @@ impl TaskSystem {
                 }
             }
         }
-        if pending {
-            cpu.request_scheduler_work();
-        }
-        Ok(RemoteWakeDrain { drained, pending })
+        Ok(RemoteWakeDrain { drained, remainder })
     }
 
     /// Applies a bounded batch of owner-CPU effective-policy updates.
@@ -897,14 +922,14 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<RemoteWakeDrain, TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
-        let (drained, pending) = {
+        let (drained, remainder) = {
             let fields = cpu.as_mut().fields_mut();
             let limit = fields.batch_limit();
             let remote = Arc::clone(fields.remote());
             let batch = remote
                 .migration_inbox()
                 .drain(limit, &mut fields.migration_buffer);
-            (batch.drained(), batch.pending())
+            (batch.drained(), batch.remainder())
         };
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
         detached[..drained].copy_from_slice(&cpu.migration_buffer[..drained]);
@@ -972,9 +997,8 @@ impl TaskSystem {
                     let sched = core.sched().lock();
                     sched.deadline_cleanup_pending
                         && sched.deadline_bandwidth_cpu == Some(owner)
-                        && sched.queued_cpu.is_none()
-                        && sched.running_cpu.is_none()
-                        && sched.on_cpu.is_none()
+                        && sched.run_is_off()
+                        && sched.execution_is_off()
                 };
                 if cleanup_deadline_member {
                     Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
@@ -1004,9 +1028,8 @@ impl TaskSystem {
                     {
                         let mut sched = core.sched().lock();
                         if sched.lifecycle.state() != ThreadState::Ready
-                            || sched.queued_cpu.is_some()
-                            || sched.running_cpu.is_some()
-                            || sched.on_cpu.is_some()
+                            || !sched.run_is_off()
+                            || !sched.execution_is_off()
                         {
                             return Err(TaskError::InvalidConfiguration);
                         }
@@ -1023,8 +1046,8 @@ impl TaskSystem {
                     let (queued_cpu, running_cpu, lifecycle, latest_target) = {
                         let sched = core.sched().lock();
                         (
-                            sched.queued_cpu,
-                            sched.running_cpu,
+                            sched.queued_cpu(),
+                            sched.running_cpu(),
                             sched.lifecycle.state(),
                             sched.migration_target,
                         )
@@ -1046,7 +1069,7 @@ impl TaskSystem {
                             if !sched.is_pi_boosted() {
                                 sched.base_entity = queued.entity;
                             }
-                            sched.queued_cpu = None;
+                            sched.clear_queued(owner)?;
                             core.set_target_cpu(latest_target);
                         }
                         self.publish_owner_cpu_load_summary(cpu.as_mut());
@@ -1072,8 +1095,8 @@ impl TaskSystem {
             let (queued_cpu, running_cpu, policy_generation, cbs_borrowed) = {
                 let sched = core.sched().lock();
                 (
-                    sched.queued_cpu,
-                    sched.running_cpu,
+                    sched.queued_cpu(),
+                    sched.running_cpu(),
                     sched.policy_generation,
                     sched.deadline_cbs_borrower.is_some(),
                 )
@@ -1114,7 +1137,7 @@ impl TaskSystem {
                         sched.base_entity = queued.entity;
                         sched.entity = queued.entity;
                     }
-                    sched.queued_cpu = None;
+                    sched.clear_queued(owner)?;
                 }
                 let applied = self.apply_owner_policy_generation(
                     &core,
@@ -1132,7 +1155,6 @@ impl TaskSystem {
                     now_ns,
                     EnqueueReason::PolicyChanged,
                 )?;
-                cpu.request_reschedule();
             } else if running_cpu == Some(owner) && cpu.current() == Some(core.id()) {
                 Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
                 let fair_placement =
@@ -1178,33 +1200,32 @@ impl TaskSystem {
                 Self::assign_owner_inactive_deadline_bandwidth(&core, cpu.as_mut())?;
             }
         }
-        if pending {
-            cpu.request_scheduler_work();
-        }
-        Ok(RemoteWakeDrain { drained, pending })
+        Ok(RemoteWakeDrain { drained, remainder })
     }
 
     /// Drains one bounded batch from every inbox owned by `cpu`.
     ///
-    /// The inboxes, rather than `need_resched`, are the source of truth for
-    /// remote scheduler work. Forced scheduling operations call this before
-    /// claiming their doorbell so object-API users cannot accidentally clear a
-    /// wake, migration, or policy update without first making it visible to the
-    /// owner run queue. Work racing after this batch is retained by
-    /// [`CpuLocal::scheduler_enter`]'s post-claim inbox recheck.
-    fn drain_owner_work(&self, mut cpu: Pin<&mut CpuLocal>, now_ns: u64) -> Result<(), TaskError> {
-        self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
-        self.drain_policy_updates(cpu.as_mut(), now_ns)?;
-        if cpu.has_remote_work() {
-            cpu.request_scheduler_work();
-            // One safe point consumes at most one batch from each inbox. A
-            // self-IPI carries the remainder into a later IRQ-return instead
-            // of turning this safe point into an unbounded drain loop or
-            // relying on a future periodic tick.
-            let remote = Arc::clone(cpu.remote());
-            remote.kick_scheduler_work();
+    /// Inbox membership, scheduler reasons, and IPI transport are independent
+    /// authorities. Forced scheduling operations claim their entry reasons and
+    /// then drain owner work; a producer racing after the claim publishes a new
+    /// reason, while already-published membership remains visible even if its
+    /// earlier transport reason was consumed.
+    fn drain_owner_work(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<DrainRemainder, TaskError> {
+        let wake = self.drain_remote_wakes(cpu.as_mut(), now_ns)?.remainder();
+        let policy = self.drain_policy_updates(cpu.as_mut(), now_ns)?.remainder();
+        let remainder = merge_drain_remainder(wake, policy);
+        if remainder == DrainRemainder::MoreReady {
+            // The current safe point has consumed its bounded budget. Keep the
+            // suffix visible without turning it into another immediate
+            // IRQ-return preemption. A later producer promotes this deferred
+            // state, while idle/explicit/timer safe points may service it.
+            cpu.defer_scheduler_work();
         }
-        Ok(())
+        Ok(remainder)
     }
 
     /// Requests one owner-mediated pull from the busiest remote CPU.
@@ -1338,18 +1359,31 @@ impl TaskSystem {
         thread: ThreadId,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_online(&cpu)?;
         let core = {
             let state = self.state.lock();
             Arc::clone(&state.thread_record(thread)?.core)
         };
-        {
+        let rollback = {
             let mut sched = core.sched().lock();
             let mut deadline = sched.base_deadline.ok_or(TaskError::NotReady)?;
             deadline.replenish(now_ns);
             if deadline.is_throttled() {
                 return Err(TaskError::NotReady);
             }
-            match sched.lifecycle.state() {
+            let owner = cpu.owner();
+            if !sched.affinity.contains(owner) {
+                return Err(TaskError::InvalidCpu(owner.as_u32()));
+            }
+            if !sched.run_is_off() || !sched.execution_is_off() {
+                return Err(TaskError::AlreadyQueued);
+            }
+            let rollback = DeadlineReplenishSnapshot {
+                owner_enqueue: Self::owner_enqueue_snapshot(&core, &sched),
+                lifecycle: sched.lifecycle.state(),
+                replenish_pending: sched.deadline_replenish_pending,
+            };
+            match rollback.lifecycle {
                 ThreadState::Blocked => {
                     sched.transition(&core, ThreadState::Waking)?;
                     sched.transition(&core, ThreadState::Ready)?;
@@ -1364,9 +1398,30 @@ impl TaskSystem {
                 sched.entity = sched.base_entity;
             }
             sched.deadline_replenish_pending = false;
+            rollback
+        };
+        if let Err(error) = self.enqueue_owner_thread(
+            cpu.as_mut(),
+            Arc::clone(&core),
+            now_ns,
+            EnqueueReason::Replenished,
+        ) {
+            if Self::restore_deadline_replenishment(&core, rollback).is_err() {
+                task_runtime::fatal_invariant(0x5343_0004, core.id().as_u64() as usize);
+            }
+            return Err(error);
         }
-        self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Replenished)?;
-        Self::program_local_timer(cpu.as_mut(), now_ns)
+        let Err(error) = Self::program_local_timer(cpu.as_mut(), now_ns) else {
+            return Ok(());
+        };
+        if self
+            .rollback_owner_enqueue(cpu.as_mut(), &core, now_ns, rollback.owner_enqueue)
+            .and_then(|()| Self::restore_deadline_replenishment(&core, rollback))
+            .is_err()
+        {
+            task_runtime::fatal_invariant(0x5343_0005, core.id().as_u64() as usize);
+        }
+        Err(error)
     }
 
     /// Charges the current dispatch and reports class budget expiration.
@@ -1429,11 +1484,12 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
-        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        cpu.as_mut().scheduler_enter();
+        let _deadline_due = cpu.take_due_scheduler_deadlines(now_ns);
+        let mut entry_claim = cpu.as_mut().scheduler_enter();
+        let _owner_remainder = self.drain_owner_work(cpu.as_mut(), now_ns)?;
         Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        self.service_deadline_timers(cpu.as_mut(), now_ns, true)?;
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         let mut migration_target = None;
@@ -1459,6 +1515,8 @@ impl TaskSystem {
             SwitchReason::Preempted
         };
         let decision = Self::owner_switch_plan(previous_core.as_ref(), &next_core, reason);
+        let _absorbed = entry_claim.absorb_preempt_requested();
+        entry_claim.finish();
         Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
@@ -1469,26 +1527,38 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
-        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
+        let _deadline_due = cpu.take_due_scheduler_deadlines(now_ns);
+        let mut entry_claim = cpu.as_mut().scheduler_enter();
+        let owner_remainder = self.drain_owner_work(cpu.as_mut(), now_ns)?;
         if cpu.current_lifecycle_state() == Some(ThreadState::Parking) {
             // The interrupted owner still holds a generation-checked park
             // token and remains `current` / `on_cpu`. Consume this safe-point
             // doorbell so an IRQ-return `while need_resched` loop can return to
             // `commit_park`. A real preemption request is kept separately and
             // restored only if the park is cancelled.
-            let preempt_requested = cpu.as_mut().scheduler_enter();
-            cpu.defer_park_preemption(preempt_requested);
+            cpu.defer_park_preemption(entry_claim.preempt_requested());
+            if entry_claim.deadline_due() {
+                cpu.request_deadline_scan();
+            }
+            entry_claim.finish();
             return Ok(SchedulerOutcome::ParkingDeferred);
         }
-        let mut switch_requested = cpu.as_mut().scheduler_enter();
+        let mut switch_requested = entry_claim.preempt_requested();
         Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        let deadline_scan_pending =
+            self.service_deadline_timers(cpu.as_mut(), now_ns, entry_claim.deadline_due())?;
+        if entry_claim.owner_doorbell() {
+            // Owner deadlines carry bounded housekeeping, not an implicit
+            // context switch. Advance a due fair-balance interval here so its
+            // one-shot source cannot repeatedly ring an empty safe point.
+            let _migrated = self.balance_fair(cpu.as_mut(), now_ns)?;
+        }
         // Work published while this bounded safe point is running must affect
-        // this decision. `scheduler_enter` consumes only the request observed
-        // on entry; the second exchange closes the publication window without
-        // losing a request that races after it.
-        switch_requested |= cpu.take_preempt_requested();
+        // this decision. The entry transaction owns the initial request; this
+        // transfer absorbs one racing preemption without losing a publication
+        // that arrives after the exchange.
+        switch_requested |= entry_claim.absorb_preempt_requested();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         if let Some(core) = previous_core.as_ref()
@@ -1504,15 +1574,19 @@ impl TaskSystem {
             // bounded inbox drain may have left another batch behind. Preserve
             // that work (and any request produced by Deadline servicing) for
             // the next scheduler safe point.
-            if cpu.has_remote_work() {
-                cpu.request_scheduler_work();
-            }
+            entry_claim.finish();
             Self::program_local_timer(cpu.as_mut(), now_ns)?;
-            return Ok(if cpu.has_remote_work() {
-                SchedulerOutcome::OwnerWorkPending
-            } else {
-                SchedulerOutcome::Quiescent
-            });
+            return Ok(
+                if owner_remainder != DrainRemainder::Empty
+                    || cpu.has_deferred_scheduler_work()
+                    || cpu.needs_reschedule()
+                    || deadline_scan_pending
+                {
+                    SchedulerOutcome::OwnerWorkPending
+                } else {
+                    SchedulerOutcome::Quiescent
+                },
+            );
         }
         let mut migration_target = None;
         if let Some(core) = previous_core.as_ref() {
@@ -1537,6 +1611,8 @@ impl TaskSystem {
             SwitchReason::Preempted
         };
         let decision = Self::owner_switch_plan(previous_core.as_ref(), &next_core, reason);
+        let _absorbed = entry_claim.absorb_preempt_requested();
+        entry_claim.finish();
         Ok(SchedulerOutcome::Decision(
             self.finish_owner_selection(cpu, decision, now_ns),
         ))
@@ -1549,11 +1625,12 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         self.complete_context_switch(cpu.as_mut())?;
-        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        cpu.as_mut().scheduler_enter();
+        let _deadline_due = cpu.take_due_scheduler_deadlines(now_ns);
+        let mut entry_claim = cpu.as_mut().scheduler_enter();
+        let _owner_remainder = self.drain_owner_work(cpu.as_mut(), now_ns)?;
         Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        self.service_deadline_timers(cpu.as_mut(), now_ns, true)?;
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         let mut migration_target = None;
@@ -1570,9 +1647,9 @@ impl TaskSystem {
                         sched.base_entity = sched.entity;
                         sched.base_deadline = Some(deadline);
                         cpu.as_mut()
-                            .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
+                            .arm_deadline_class_deadline(deadline.next_scheduler_event_ns());
                     }
-                    sched.running_cpu = None;
+                    sched.stop_running(cpu.owner())?;
                     sched.deadline_replenish_pending = true;
                     sched.transition(core, ThreadState::Blocked)?;
                     true
@@ -1602,6 +1679,8 @@ impl TaskSystem {
         )?;
         let decision =
             Self::owner_switch_plan(previous_core.as_ref(), &next_core, SwitchReason::Yield);
+        let _absorbed = entry_claim.absorb_preempt_requested();
+        entry_claim.finish();
         Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
@@ -1647,13 +1726,13 @@ impl TaskSystem {
             cpu.finish_park_preemption(true);
             return Ok(ParkCommit::Notified);
         }
-        cpu.as_mut().scheduler_enter();
+        let mut entry_claim = cpu.as_mut().scheduler_enter();
         cpu.finish_park_preemption(false);
         Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
         {
             let mut sched = previous_core.sched().lock();
             sched.transition(&previous_core, ThreadState::Blocked)?;
-            sched.running_cpu = None;
+            sched.stop_running(cpu.owner())?;
         }
         Self::mark_owner_deadline_non_contending(&previous_core, cpu.as_mut(), now_ns)?;
         cpu.as_mut().clear_current();
@@ -1667,6 +1746,8 @@ impl TaskSystem {
         )?;
         let decision =
             Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Blocked);
+        let _absorbed = entry_claim.absorb_preempt_requested();
+        entry_claim.finish();
         Ok(ParkCommit::Blocked(
             self.finish_owner_selection(cpu, decision, now_ns),
         ))
@@ -1742,7 +1823,7 @@ impl TaskSystem {
         if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
             return Err(TaskError::InvalidPiState);
         }
-        if sched.running_cpu != Some(cpu.owner()) || sched.on_cpu != Some(cpu.owner()) {
+        if sched.running_cpu() != Some(cpu.owner()) || sched.on_cpu() != Some(cpu.owner()) {
             return Err(TaskError::ThreadBusy);
         }
         if record.resources.context().is_none() {
@@ -1770,7 +1851,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
-        let decision = {
+        let (decision, mut entry_claim) = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
@@ -1778,7 +1859,7 @@ impl TaskSystem {
             if state.thread_record(previous)?.has_live_pi_edges() {
                 return Err(TaskError::InvalidPiState);
             }
-            cpu.as_mut().scheduler_enter();
+            let entry_claim = cpu.as_mut().scheduler_enter();
             Self::commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
             let previous_core = previous_core.ok_or(TaskError::NoRunnableThread)?;
             Self::detach_owner_deadline_bandwidth(&previous_core, cpu.as_mut())?;
@@ -1789,7 +1870,7 @@ impl TaskSystem {
                 let mut sched = previous_core.sched().lock();
                 sched.migration_target = None;
                 sched.transition(&previous_core, ThreadState::Exited)?;
-                sched.running_cpu = None;
+                sched.stop_running(cpu.owner())?;
                 let record = state.thread_record_mut(previous)?;
                 record.exit_callback_pending = record.extension.is_some();
                 record.exit_callback_claimed = false;
@@ -1804,8 +1885,13 @@ impl TaskSystem {
                 next_core.id(),
                 None,
             )?;
-            Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Exited)
+            (
+                Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Exited),
+                entry_claim,
+            )
         };
+        let _absorbed = entry_claim.absorb_preempt_requested();
+        entry_claim.finish();
         Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 
@@ -1833,19 +1919,16 @@ impl TaskSystem {
         let previous = handoff.previous.id();
         let (migration_target, previous_exited) = {
             let mut sched = handoff.previous.sched().lock();
-            if sched.on_cpu != Some(cpu.owner()) {
+            if sched.on_cpu() != Some(cpu.owner()) {
                 return Err(TaskError::InvalidConfiguration);
             }
-            sched.on_cpu = None;
+            sched.clear_on_cpu(cpu.owner())?;
             let migration_target = match handoff.migration_target {
                 Some(_) => {
                     let target = sched
                         .migration_target
                         .ok_or(TaskError::InvalidConfiguration)?;
-                    if sched.lifecycle.state() != ThreadState::Ready
-                        || sched.queued_cpu.is_some()
-                        || sched.running_cpu.is_some()
-                    {
+                    if sched.lifecycle.state() != ThreadState::Ready || !sched.run_is_off() {
                         return Err(TaskError::InvalidConfiguration);
                     }
                     handoff.previous.set_target_cpu(target);
@@ -1932,6 +2015,137 @@ impl TaskSystem {
         Ok(())
     }
 
+    fn enqueue_owner_thread_and_program_timer(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        now_ns: u64,
+        reason: EnqueueReason,
+    ) -> Result<(), TaskError> {
+        let rollback = {
+            let sched = core.sched().lock();
+            Self::owner_enqueue_snapshot(&core, &sched)
+        };
+        self.enqueue_owner_thread(cpu.as_mut(), Arc::clone(&core), now_ns, reason)?;
+        let Err(error) = Self::program_local_timer(cpu.as_mut(), now_ns) else {
+            return Ok(());
+        };
+        if self
+            .rollback_owner_enqueue(cpu.as_mut(), &core, now_ns, rollback)
+            .is_err()
+        {
+            // The public enqueue contract cannot report a recoverable failure
+            // while retaining a runnable thread that its caller may destroy.
+            task_runtime::fatal_invariant(0x5343_0003, core.id().as_u64() as usize);
+        }
+        Err(error)
+    }
+
+    fn rollback_owner_enqueue(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: &Arc<ThreadCore>,
+        now_ns: u64,
+        rollback: OwnerEnqueueSnapshot,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        {
+            let sched = core.sched().lock();
+            if sched.lifecycle.state() != ThreadState::Ready
+                || sched.queued_cpu() != Some(owner)
+                || !sched.execution_is_off()
+            {
+                return Err(TaskError::InvalidConfiguration);
+            }
+        }
+        let _queued = cpu
+            .as_mut()
+            .fields_mut()
+            .run_queue
+            .dequeue(core.id())
+            .ok_or(TaskError::NotReady)?;
+        Self::detach_owner_deadline_bandwidth(core, cpu.as_mut())?;
+        Self::restore_owner_deadline_bandwidth(core, cpu.as_mut(), rollback)?;
+        {
+            let mut sched = core.sched().lock();
+            Self::apply_owner_enqueue_snapshot(core, &mut sched, rollback);
+            sched.clear_queued(owner)?;
+        }
+        cpu.as_mut().refresh_scheduler_deadline(now_ns);
+        self.publish_owner_cpu_load_summary(cpu.as_mut());
+        Ok(())
+    }
+
+    fn owner_enqueue_snapshot(core: &ThreadCore, sched: &ThreadSchedState) -> OwnerEnqueueSnapshot {
+        OwnerEnqueueSnapshot {
+            entity: sched.entity,
+            base_entity: sched.base_entity,
+            base_deadline: sched.base_deadline,
+            deadline_activity: sched.deadline_activity,
+            deadline_bandwidth_cpu: sched.deadline_bandwidth_cpu,
+            deadline_zero_lag_ns: sched.deadline_zero_lag_ns,
+            target_cpu: core.target_cpu(),
+        }
+    }
+
+    fn apply_owner_enqueue_snapshot(
+        core: &ThreadCore,
+        sched: &mut ThreadSchedState,
+        snapshot: OwnerEnqueueSnapshot,
+    ) {
+        sched.entity = snapshot.entity;
+        sched.base_entity = snapshot.base_entity;
+        sched.base_deadline = snapshot.base_deadline;
+        sched.deadline_activity = snapshot.deadline_activity;
+        sched.deadline_bandwidth_cpu = snapshot.deadline_bandwidth_cpu;
+        sched.deadline_zero_lag_ns = snapshot.deadline_zero_lag_ns;
+        core.publish_effective_schedule(sched.policy, sched.entity);
+        core.restore_target_cpu(snapshot.target_cpu);
+    }
+
+    fn restore_owner_deadline_bandwidth(
+        core: &Arc<ThreadCore>,
+        mut cpu: Pin<&mut CpuLocal>,
+        snapshot: OwnerEnqueueSnapshot,
+    ) -> Result<(), TaskError> {
+        let Some(assigned_cpu) = snapshot.deadline_bandwidth_cpu else {
+            return Ok(());
+        };
+        let owner = cpu.owner();
+        if assigned_cpu != owner {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: assigned_cpu.as_u32(),
+                actual: owner.as_u32(),
+            });
+        }
+        let bandwidth_scaled = core.sched().lock().deadline_bandwidth_scaled;
+        let registered = cpu.as_mut().fields_mut().register_deadline_member(core)?;
+        if let Err(error) = cpu.as_mut().fields_mut().add_deadline_bandwidth(
+            bandwidth_scaled,
+            snapshot.deadline_activity != DeadlineActivity::Inactive,
+        ) {
+            if registered {
+                cpu.as_mut().fields_mut().unregister_deadline_member(core);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn restore_deadline_replenishment(
+        core: &ThreadCore,
+        snapshot: DeadlineReplenishSnapshot,
+    ) -> Result<(), TaskError> {
+        let mut sched = core.sched().lock();
+        Self::apply_owner_enqueue_snapshot(core, &mut sched, snapshot.owner_enqueue);
+        sched.deadline_replenish_pending = snapshot.replenish_pending;
+        sched
+            .lifecycle
+            .rollback_deadline_replenishment(snapshot.lifecycle)?;
+        core.publish_state(snapshot.lifecycle);
+        Ok(())
+    }
+
     fn enqueue_owner_thread_locked(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
@@ -1947,28 +2161,63 @@ impl TaskSystem {
         if !sched.affinity.contains(owner) {
             return Err(TaskError::InvalidCpu(owner.as_u32()));
         }
-        let policy = sched.policy;
-        let mut queued_entity = sched.entity;
-        if matches!(reason, EnqueueReason::Wake) && matches!(policy, SchedulePolicy::Deadline(_)) {
-            queued_entity.activate_deadline(now_ns);
-            sched.entity = queued_entity;
-            if !sched.is_pi_boosted()
-                && let SchedulingEntity::Deadline(deadline) = queued_entity
-            {
-                sched.base_entity = queued_entity;
-                sched.base_deadline = Some(deadline);
+        if !sched.run_is_off() {
+            return Err(TaskError::AlreadyQueued);
+        }
+        if let Some(on_cpu) = sched.on_cpu() {
+            let outgoing_self_enqueue = on_cpu == owner
+                && cpu.current() == Some(core.id())
+                && matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield);
+            if !outgoing_self_enqueue {
+                return Err(TaskError::ThreadBusy);
             }
         }
-        Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)?;
+        let policy = sched.policy;
+        let mut queued_entity = sched.entity;
+        let activates_deadline =
+            matches!(reason, EnqueueReason::Wake) && matches!(policy, SchedulePolicy::Deadline(_));
+        if activates_deadline {
+            queued_entity.activate_deadline(now_ns);
+        }
+        let prepared = {
+            let fields = cpu.as_mut().fields_mut();
+            fields.run_queue.prepare_enqueue(
+                core.id(),
+                policy,
+                queued_entity,
+                Arc::clone(core),
+                now_ns,
+                reason,
+            )?
+        };
+        if let Err(error) =
+            Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)
+        {
+            if cpu
+                .as_mut()
+                .fields_mut()
+                .run_queue
+                .rollback_enqueue(prepared)
+                .is_err()
+            {
+                task_runtime::fatal_invariant(0x5343_0006, core.id().as_u64() as usize);
+            }
+            return Err(error);
+        }
+        if sched.mark_queued(owner).is_err() {
+            if cpu
+                .as_mut()
+                .fields_mut()
+                .run_queue
+                .rollback_enqueue(prepared)
+                .is_err()
+            {
+                task_runtime::fatal_invariant(0x5343_0007, core.id().as_u64() as usize);
+            }
+            task_runtime::fatal_invariant(0x5343_0008, core.id().as_u64() as usize);
+        }
+        let queued_entity = prepared.commit();
         let fields = cpu.as_mut().fields_mut();
-        let queued_entity = fields.run_queue.enqueue(
-            core.id(),
-            policy,
-            queued_entity,
-            Arc::clone(core),
-            now_ns,
-            reason,
-        )?;
         let current_fair = fields
             .current_dispatch
             .as_ref()
@@ -1988,9 +2237,11 @@ impl TaskSystem {
         sched.entity = queued_entity;
         if !sched.is_pi_boosted() {
             sched.base_entity = queued_entity;
+            if activates_deadline {
+                sched.base_deadline = queued_entity.deadline();
+            }
         }
         core.publish_effective_schedule(policy, queued_entity);
-        sched.queued_cpu = Some(owner);
         core.set_target_cpu(owner);
         Ok(preempts_current)
     }
@@ -2004,7 +2255,10 @@ impl TaskSystem {
         let fields = cpu.as_mut().fields_mut();
         if matches!(
             reason,
-            EnqueueReason::Wake | EnqueueReason::Replenished | EnqueueReason::Migrated
+            EnqueueReason::Wake
+                | EnqueueReason::Replenished
+                | EnqueueReason::Migrated
+                | EnqueueReason::PolicyChanged
         ) && preempts_current
         {
             fields.request_reschedule();
@@ -2134,7 +2388,7 @@ impl TaskSystem {
         } else {
             sched.deadline_activity = DeadlineActivity::ActiveNonContending;
             sched.deadline_zero_lag_ns = zero_lag_ns;
-            cpu.arm_deferred_scheduler_deadline(zero_lag_ns);
+            cpu.arm_deadline_class_deadline(zero_lag_ns);
         }
         Ok(())
     }
@@ -2187,8 +2441,7 @@ impl TaskSystem {
                     // is available as soon as the donor is neither the runnable
                     // owner dispatch nor a queued candidate; timer servicing is
                     // excluded by the borrower baton below.
-                    let cbs_available =
-                        donor_sched.running_cpu.is_none() && donor_sched.queued_cpu.is_none();
+                    let cbs_available = donor_sched.run_is_off();
                     let cbs_generation =
                         if cbs_available && donor_sched.deadline_cbs_borrower.is_none() {
                             let generation = donor_sched
@@ -2341,7 +2594,9 @@ impl TaskSystem {
         if sched.applied_policy_generation == sched.policy_generation {
             return Ok(false);
         }
+        let previous_base_policy = sched.active_base_policy;
         let base_policy = sched.base_policy;
+        let applied_generation = sched.policy_generation;
         let mut base_entity = match (sched.base_entity, base_policy) {
             (SchedulingEntity::Fair(fair), SchedulePolicy::Fair { nice, mode }) => {
                 let source_virtual_time = fair_placement
@@ -2390,9 +2645,27 @@ impl TaskSystem {
         let released = previous_held.saturating_sub(sched.desired_deadline_reservation);
         let effective_policy = sched.policy;
         let effective_entity = sched.entity;
+        let extension = core.extension_view();
         core.publish_effective_schedule(effective_policy, effective_entity);
         drop(sched);
-        self.defer_deadline_admission_release(released)?;
+        if let Some(extension) = extension {
+            let event = ThreadPolicyApplied::new(
+                applied_generation,
+                now_ns,
+                previous_base_policy,
+                base_policy,
+            );
+            // SAFETY: the thread core retains the extension throughout this
+            // owner-side activity. The scheduler lock was released above and
+            // the value-only event contains no borrowed scheduler state.
+            unsafe {
+                (extension.ops().on_policy_applied)(extension.data(), core.id(), event);
+            }
+        }
+        // A committed generation cannot return an ordinary error before or
+        // after its OS metadata notification. Exhausting this bounded
+        // accumulator means an internal accounting invariant was violated.
+        self.defer_deadline_admission_release(released);
         Ok(true)
     }
 
@@ -2500,7 +2773,7 @@ impl TaskSystem {
             .ok_or(TaskError::InvalidConfiguration)?;
         let (source, remains_placed) = {
             sched.affinity = affinity;
-            let location = sched.running_cpu.or(sched.queued_cpu);
+            let location = sched.run_cpu();
             let source = match location {
                 Some(owner) if !sched.affinity.contains(owner) => {
                     sched.migration_target = Some(target);
@@ -2559,7 +2832,7 @@ impl TaskSystem {
         let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
         let record = state.thread_record(current)?;
         let mut sched = record.sched.lock();
-        if sched.running_cpu != Some(cpu.owner()) || sched.on_cpu != Some(cpu.owner()) {
+        if sched.running_cpu() != Some(cpu.owner()) || sched.on_cpu() != Some(cpu.owner()) {
             return Err(TaskError::InvalidConfiguration);
         }
         let is_deadline = matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
@@ -2609,10 +2882,10 @@ impl TaskSystem {
             let cleanup_deadline_member = {
                 let record = state.thread_record_mut(thread)?;
                 let mut sched = record.sched.lock();
-                if sched.queued_cpu.is_some() || sched.running_cpu.is_some() {
+                if !sched.run_is_off() {
                     return Err(TaskError::AlreadyQueued);
                 }
-                if sched.on_cpu.is_some() {
+                if !sched.execution_is_off() {
                     return Err(TaskError::ThreadBusy);
                 }
                 if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
@@ -2639,10 +2912,10 @@ impl TaskSystem {
                     .try_scheduler_exit()
                     .ok_or(TaskError::ThreadBusy)?;
                 let mut sched = record.sched.lock();
-                if sched.queued_cpu.is_some() || sched.running_cpu.is_some() {
+                if !sched.run_is_off() {
                     return Err(TaskError::AlreadyQueued);
                 }
-                if sched.on_cpu.is_some() || sched.deadline_cbs_borrower.is_some() {
+                if !sched.execution_is_off() || sched.deadline_cbs_borrower.is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
                 if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
@@ -2807,9 +3080,8 @@ impl TaskSystem {
         let record = state.thread_record_mut(current)?;
         let mut sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Running
-            || sched.running_cpu != Some(owner)
-            || sched.on_cpu != Some(owner)
-            || sched.queued_cpu.is_some()
+            || sched.running_cpu() != Some(owner)
+            || sched.on_cpu() != Some(owner)
         {
             return Err(TaskError::InvalidConfiguration);
         }
@@ -2895,6 +3167,11 @@ impl TaskSystem {
             let record = state.thread_record(thread)?;
             (Arc::clone(&record.core), Arc::clone(&record.sched))
         };
+        // Policy publication, owner delivery, and the eventual extension
+        // callback all depend on the thread's scheduler-owned resources. Hold
+        // the activity gate before mutating any generation so an exit cannot
+        // close and reap those resources between publication and commit.
+        let _activity = core.try_scheduler_activity().ok_or(TaskError::NotReady)?;
         let mut sched = sched_cell.lock();
         if sched.lifecycle.state() == ThreadState::Exited {
             return Err(TaskError::NotReady);
@@ -2902,10 +3179,7 @@ impl TaskSystem {
         let active_reservation = u128::from(sched.active_deadline_reservation);
         let desired_reservation = u128::from(sched.desired_deadline_reservation);
         let affinity = sched.affinity.clone();
-        let owner = sched
-            .running_cpu
-            .or(sched.queued_cpu)
-            .or(sched.deadline_bandwidth_cpu);
+        let owner = sched.run_cpu().or(sched.deadline_bandwidth_cpu);
         let generation = sched
             .policy_generation
             .checked_add(1)
@@ -3296,9 +3570,9 @@ impl TaskSystem {
                         !remote.is_online() || sched.affinity.contains(CpuId::new(index as u32))
                     });
             if !allowed_target
-                || sched.queued_cpu != Some(source)
+                || sched.queued_cpu() != Some(source)
                 || sched.migration_target.is_some()
-                || sched.on_cpu.is_some()
+                || !sched.execution_is_off()
                 || candidate.core.sleep_timer_cpu().is_some()
                 || !deadline_covers_online
             {
@@ -3383,14 +3657,14 @@ impl TaskSystem {
         Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
         {
             let mut sched = core.sched().lock();
-            if sched.lifecycle.state() != ThreadState::Ready || sched.queued_cpu != Some(source) {
+            if sched.lifecycle.state() != ThreadState::Ready || sched.queued_cpu() != Some(source) {
                 return Err(TaskError::InvalidConfiguration);
             }
             sched.entity = queued.entity;
             if !sched.is_pi_boosted() {
                 sched.base_entity = queued.entity;
             }
-            sched.queued_cpu = None;
+            sched.clear_queued(source)?;
             sched.migration_target = Some(target);
             core.set_target_cpu(target);
         }
@@ -3406,15 +3680,20 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
-    ) -> Result<(), TaskError> {
+        begin_scan: bool,
+    ) -> Result<bool, TaskError> {
+        let remaining = cpu.as_mut().fields_mut().begin_deadline_scan(begin_scan);
         let member_count = cpu.deadline_members.len();
-        if member_count == 0 {
+        if member_count == 0 || remaining == 0 {
+            cpu.as_mut()
+                .fields_mut()
+                .set_deadline_scan_continuation(None);
             cpu.as_mut().refresh_scheduler_deadline(now_ns);
-            return Ok(());
+            return Ok(false);
         }
         let owner = cpu.owner();
         let start = cpu.deadline_scan_cursor() % member_count;
-        let examined = member_count.min(cpu.batch_limit());
+        let examined = remaining.min(member_count).min(cpu.batch_limit());
         for offset in 0..examined {
             let index = (start + offset) % member_count;
             let core = Arc::clone(&cpu.deadline_members[index]);
@@ -3430,7 +3709,7 @@ impl TaskSystem {
                 }
                 if sched.deadline_cbs_borrower.is_some() {
                     if let Some(deadline) = sched.base_deadline {
-                        cpu.arm_deferred_scheduler_deadline(
+                        cpu.arm_deadline_class_deadline(
                             deadline
                                 .next_scheduler_event_ns()
                                 .max(now_ns.saturating_add(1)),
@@ -3446,7 +3725,7 @@ impl TaskSystem {
                         sched.deadline_activity = DeadlineActivity::Inactive;
                         sched.deadline_zero_lag_ns = 0;
                     } else {
-                        cpu.arm_deferred_scheduler_deadline(sched.deadline_zero_lag_ns);
+                        cpu.arm_deadline_class_deadline(sched.deadline_zero_lag_ns);
                     }
                 }
                 let Some(mut deadline) = sched.base_deadline else {
@@ -3457,7 +3736,7 @@ impl TaskSystem {
                     deadline.is_throttled() && now_ns >= deadline.next_scheduler_event_ns();
                 let next_event_ns = deadline.next_scheduler_event_ns();
                 if !replenish_due && next_event_ns > now_ns {
-                    cpu.arm_deferred_scheduler_deadline(next_event_ns);
+                    cpu.arm_deadline_class_deadline(next_event_ns);
                 }
                 if replenish_due {
                     deadline.replenish(now_ns);
@@ -3468,7 +3747,7 @@ impl TaskSystem {
                         core.publish_effective_schedule(sched.policy, sched.entity);
                     }
                     if deadline.is_throttled() {
-                        cpu.arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
+                        cpu.arm_deadline_class_deadline(deadline.next_scheduler_event_ns());
                         continue;
                     }
                     if sched.deadline_replenish_pending {
@@ -3483,7 +3762,7 @@ impl TaskSystem {
                             _ => return Err(TaskError::InvalidConfiguration),
                         }
                         replenish = true;
-                    } else if !sched.is_pi_boosted() && sched.queued_cpu == Some(owner) {
+                    } else if !sched.is_pi_boosted() && sched.queued_cpu() == Some(owner) {
                         update_queued = Some(SchedulingEntity::Deadline(deadline));
                     }
                 } else if missed {
@@ -3491,7 +3770,7 @@ impl TaskSystem {
                     sched.base_entity = SchedulingEntity::Deadline(deadline);
                     if !sched.is_pi_boosted() {
                         sched.entity = sched.base_entity;
-                        if sched.queued_cpu == Some(owner) {
+                        if sched.queued_cpu() == Some(owner) {
                             update_queued = Some(SchedulingEntity::Deadline(deadline));
                         }
                     }
@@ -3510,14 +3789,17 @@ impl TaskSystem {
                 self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Replenished)?;
             }
         }
+        let pending = cpu
+            .as_mut()
+            .fields_mut()
+            .finish_deadline_scan_batch(examined);
+        let continuation =
+            pending.then(|| now_ns.saturating_add(task_runtime::timer_resolution_ns().max(1)));
         cpu.as_mut()
             .fields_mut()
-            .set_deadline_scan_cursor((start + examined) % member_count);
-        if examined < member_count {
-            cpu.request_scheduler_work();
-        }
+            .set_deadline_scan_continuation(continuation);
         cpu.as_mut().refresh_scheduler_deadline(now_ns);
-        Ok(())
+        Ok(pending)
     }
 
     fn program_local_timer(mut cpu: Pin<&mut CpuLocal>, now_ns: u64) -> Result<(), TaskError> {
@@ -3638,6 +3920,9 @@ impl TaskSystem {
         self.ensure_owner_cpu_online(&cpu)?;
         let owner = cpu.owner();
         let mut sched = core.sched().lock();
+        if sched.running_cpu() != Some(owner) || sched.on_cpu() != Some(owner) {
+            return Err(TaskError::InvalidConfiguration);
+        }
 
         let migration_requested =
             sched.migration_target.is_some() || !sched.affinity.contains(owner);
@@ -3656,7 +3941,7 @@ impl TaskSystem {
                 .ok_or(TaskError::InvalidConfiguration)?;
             sched.migration_target = Some(target);
             sched.transition(&core, ThreadState::Ready)?;
-            sched.running_cpu = None;
+            sched.stop_running(owner)?;
             core.set_target_cpu(target);
             cpu.as_mut().clear_current();
             return Ok(Some(target));
@@ -3670,17 +3955,17 @@ impl TaskSystem {
                 sched.base_deadline = Some(deadline);
                 sched.deadline_replenish_pending = true;
                 cpu.as_mut()
-                    .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
+                    .arm_deadline_class_deadline(deadline.next_scheduler_event_ns());
             }
             sched.transition(&core, ThreadState::Blocked)?;
-            sched.running_cpu = None;
+            sched.stop_running(owner)?;
             cpu.as_mut().clear_current();
             return Ok(None);
         }
 
         if cpu.idle() == Some(core.id()) {
             sched.transition(&core, ThreadState::Ready)?;
-            sched.running_cpu = None;
+            sched.stop_running(owner)?;
             cpu.as_mut().clear_current();
             return Ok(None);
         }
@@ -3696,13 +3981,13 @@ impl TaskSystem {
             }
             return Err(error);
         }
-        sched.running_cpu = None;
+        sched.stop_running(owner)?;
         let enqueue =
             self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, now_ns, reason);
         let preempts_current = match enqueue {
             Ok(preempts_current) => preempts_current,
             Err(error) => {
-                sched.running_cpu = Some(owner);
+                sched.start_running_detached(owner)?;
                 let rollback = sched.transition(&core, ThreadState::Running);
                 if let Some(dispatch) = dispatch {
                     cpu.as_mut().install_dispatch(dispatch);
@@ -3741,7 +4026,7 @@ impl TaskSystem {
         owner: CpuId,
         outgoing: Option<ThreadId>,
     ) -> Result<(), TaskError> {
-        match sched.on_cpu {
+        match sched.on_cpu() {
             None => Ok(()),
             Some(executing_cpu) if outgoing == Some(next) && executing_cpu == owner => Ok(()),
             Some(_) => Err(TaskError::InvalidConfiguration),
@@ -3770,10 +4055,9 @@ impl TaskSystem {
                 if !sched.is_pi_boosted() {
                     sched.base_entity = queued.entity;
                 }
-                sched.queued_cpu = None;
-                sched.running_cpu = Some(owner);
-                sched.on_cpu = Some(owner);
                 sched.transition(&core, ThreadState::Running)?;
+                sched.start_running_from_queue(owner)?;
+                sched.mark_on_cpu(owner)?;
                 let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
                 fields.current_dispatch = Some(dispatch);
             }
@@ -3790,8 +4074,10 @@ impl TaskSystem {
                 if sched.lifecycle.state() == ThreadState::Ready {
                     sched.transition(&core, ThreadState::Running)?;
                 }
-                sched.running_cpu = Some(owner);
-                sched.on_cpu = Some(owner);
+                if sched.running_cpu() != Some(owner) {
+                    sched.start_running_detached(owner)?;
+                }
+                sched.mark_on_cpu(owner)?;
                 let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
                 fields.current_dispatch = Some(dispatch);
             }
@@ -4006,7 +4292,8 @@ impl TaskSystemState {
             // `Exited`, so no producer can increment the delivery count after
             // the Acquire observation of zero. A non-zero count owns both one
             // raw inbox Arc and access to scheduler-owned thread state.
-            if sched.on_cpu.is_some()
+            if !sched.run_is_off()
+                || !sched.execution_is_off()
                 || sched.migration_target.is_some()
                 || sched.deadline_bandwidth_cpu.is_some()
                 || sched.deadline_cleanup_pending
@@ -4072,7 +4359,8 @@ impl TaskSystemState {
                 };
                 let sched = record.sched.lock();
                 if sched.lifecycle.state() != ThreadState::Exited
-                    || sched.on_cpu.is_some()
+                    || !sched.run_is_off()
+                    || !sched.execution_is_off()
                     || sched.migration_target.is_some()
                     || sched.deadline_bandwidth_cpu.is_some()
                     || sched.deadline_cleanup_pending
@@ -4119,7 +4407,8 @@ impl TaskSystemState {
             };
             let sched = record.sched.lock();
             if sched.lifecycle.state() != ThreadState::Exited
-                || sched.on_cpu.is_some()
+                || !sched.run_is_off()
+                || !sched.execution_is_off()
                 || sched.deadline_overrun_events != 0
                 || record.deadline_callback_claimed
                 || !record.exit_callback_pending
@@ -4148,7 +4437,8 @@ impl TaskSystemState {
         let record = self.thread_record_mut(thread)?;
         let sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Exited
-            || sched.on_cpu.is_some()
+            || !sched.run_is_off()
+            || !sched.execution_is_off()
             || !record.exit_callback_pending
             || !record.exit_callback_claimed
         {
@@ -4250,10 +4540,7 @@ impl TaskSystemState {
             let (cpu, generation) = {
                 let sched = record.sched.lock();
                 (
-                    sched
-                        .running_cpu
-                        .or(sched.queued_cpu)
-                        .or(sched.deadline_bandwidth_cpu),
+                    sched.run_cpu().or(sched.deadline_bandwidth_cpu),
                     sched.policy_generation,
                 )
             };
@@ -4454,13 +4741,18 @@ pub enum SchedulerOutcome {
     Quiescent,
     /// The current thread owns an in-flight park token and must finish it.
     ParkingDeferred,
-    /// One bounded inbox batch completed, with more owner-only work retained.
+    /// One bounded scheduler batch completed, with more owner-only work retained.
     OwnerWorkPending,
     /// The scheduler selected a next thread.
     Decision(ScheduleDecision),
 }
 
 impl SchedulerOutcome {
+    /// Returns whether this pass consumed all immediately eligible work.
+    pub const fn is_quiescent(self) -> bool {
+        matches!(self, Self::Quiescent)
+    }
+
     /// Returns the scheduler decision, if this pass selected a thread.
     pub const fn decision(self) -> Option<ScheduleDecision> {
         match self {
@@ -4475,8 +4767,8 @@ impl SchedulerOutcome {
         matches!(self, Self::ParkingDeferred)
     }
 
-    /// Returns whether more owner-only inbox work remains for a later bounded
-    /// safe point.
+    /// Returns whether more owner-only scheduler work remains for a later
+    /// bounded safe point.
     pub const fn owner_work_pending(self) -> bool {
         matches!(self, Self::OwnerWorkPending)
     }
@@ -4621,7 +4913,7 @@ impl DeadlineRuntimeSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RemoteWakeDrain {
     drained: usize,
-    pending: bool,
+    remainder: DrainRemainder,
 }
 
 impl RemoteWakeDrain {
@@ -4632,7 +4924,12 @@ impl RemoteWakeDrain {
 
     /// Returns whether another bounded drain is required.
     pub const fn pending(self) -> bool {
-        self.pending
+        !matches!(self.remainder, DrainRemainder::Empty)
+    }
+
+    /// Classifies ready suffixes separately from a publisher grace wait.
+    pub const fn remainder(self) -> DrainRemainder {
+        self.remainder
     }
 }
 
@@ -4735,6 +5032,18 @@ fn validate_affinity(affinity: &CpuSet, cpu_count: usize) -> Result<(), TaskErro
     }
 }
 
+const fn merge_drain_remainder(left: DrainRemainder, right: DrainRemainder) -> DrainRemainder {
+    match (left, right) {
+        (DrainRemainder::MoreReady, _) | (_, DrainRemainder::MoreReady) => {
+            DrainRemainder::MoreReady
+        }
+        (DrainRemainder::PublisherInFlight, _) | (_, DrainRemainder::PublisherInFlight) => {
+            DrainRemainder::PublisherInFlight
+        }
+        (DrainRemainder::Empty, DrainRemainder::Empty) => DrainRemainder::Empty,
+    }
+}
+
 const fn next_generation(generation: u32) -> u32 {
     let next = generation.wrapping_add(1);
     if next == 0 { 1 } else { next }
@@ -4746,6 +5055,7 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::inbox::InboxNode;
 
     fn publish_test_scheduler_work(
         remote: &CpuRemote,
@@ -4766,6 +5076,167 @@ mod tests {
             // or the complete owning task system has been dropped.
             Pin::new_unchecked(&*node)
         }
+    }
+
+    #[test]
+    fn failed_local_timer_programming_rolls_back_new_ready_placement() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(thread.id()).unwrap();
+        crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Busy);
+
+        let result = system.place_ready(cpu.as_mut(), thread.id(), 0);
+
+        crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Success);
+        assert_eq!(
+            result,
+            Err(TaskError::RuntimeFailure(RuntimeStatus::Busy as u32))
+        );
+        assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
+        system.mark_exited(thread.id()).unwrap();
+    }
+
+    #[test]
+    fn failed_deadline_replenishment_timer_restores_the_blocked_job() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let idle = system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(2, 10, 20, DeadlineFlags::NONE).unwrap());
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu.as_mut(), 0).unwrap().next(),
+            thread.id()
+        );
+        assert!(
+            system
+                .charge_current(cpu.as_mut(), 2, 2, 0)
+                .unwrap()
+                .slice_expired()
+        );
+        assert_eq!(system.schedule(cpu.as_mut(), 2).unwrap().next(), idle.id());
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        assert_eq!(thread.state(), ThreadState::Blocked);
+        let activity_before = system.deadline_activity(thread.id()).unwrap();
+        let bandwidth_before = cpu.deadline_bandwidth();
+        let runtime_before = system.deadline_runtime(thread.id()).unwrap();
+        crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Busy);
+
+        let result = system.replenish_deadline(cpu.as_mut(), thread.id(), 10);
+
+        crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Success);
+        assert_eq!(
+            result,
+            Err(TaskError::RuntimeFailure(RuntimeStatus::Busy as u32))
+        );
+        assert_eq!(thread.state(), ThreadState::Blocked);
+        assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
+        assert_eq!(
+            system.deadline_activity(thread.id()).unwrap(),
+            activity_before
+        );
+        assert_eq!(cpu.deadline_bandwidth(), bandwidth_before);
+        assert_eq!(
+            system.deadline_runtime(thread.id()).unwrap(),
+            runtime_before
+        );
+        let state = system.state.lock();
+        let sched = state.thread_record(thread.id()).unwrap().sched.lock();
+        assert!(sched.deadline_replenish_pending);
+        assert!(
+            sched
+                .base_deadline
+                .expect("Deadline state must remain installed")
+                .is_throttled()
+        );
+    }
+
+    #[test]
+    fn rejected_duplicate_deadline_enqueue_does_not_activate_a_new_job() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(2, 10, 20, DeadlineFlags::NONE).unwrap());
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+        let deadline_before = {
+            let state = system.state.lock();
+            state
+                .thread_record(thread.id())
+                .unwrap()
+                .sched
+                .lock()
+                .base_deadline
+                .unwrap()
+        };
+        let bandwidth_before = cpu.deadline_bandwidth();
+
+        assert_eq!(
+            system.enqueue(cpu.as_mut(), thread.id(), 100),
+            Err(TaskError::AlreadyQueued)
+        );
+
+        let state = system.state.lock();
+        let sched = state.thread_record(thread.id()).unwrap().sched.lock();
+        assert_eq!(sched.base_deadline, Some(deadline_before));
+        assert_eq!(cpu.deadline_bandwidth(), bandwidth_before);
+    }
+
+    #[test]
+    fn failed_deadline_member_activation_rolls_back_runqueue_sequence() {
+        let system = TaskSystem::new(TaskSystemConfig::new(1).with_timer_capacity(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(1, 10, 10, DeadlineFlags::NONE).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+        }
+        system.enqueue(cpu.as_mut(), first.id(), 0).unwrap();
+        let sequence_before = cpu.run_queue.next_sequence();
+        let virtual_time_before = cpu.run_queue.virtual_time();
+        let deadline_event_before = cpu.run_queue.earliest_deadline_event_ns();
+
+        assert_eq!(
+            system.enqueue(cpu.as_mut(), second.id(), 0),
+            Err(TaskError::TimerCapacity)
+        );
+
+        assert_eq!(cpu.run_queue.next_sequence(), sequence_before);
+        assert_eq!(cpu.run_queue.virtual_time(), virtual_time_before);
+        assert_eq!(
+            cpu.run_queue.earliest_deadline_event_ns(),
+            deadline_event_before
+        );
+        assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 1);
     }
 
     #[test]
@@ -4835,6 +5306,66 @@ mod tests {
     }
 
     #[test]
+    fn publisher_grace_wait_does_not_self_ipi_the_interrupted_owner() {
+        let system = Arc::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let remote = Arc::clone(cpu.remote());
+        let first = Box::leak(Box::new(InboxNode::new(InboxKind::RemoteWake)));
+        let second = Box::leak(Box::new(InboxNode::new(InboxKind::RemoteWake)));
+        let first = unsafe { Pin::new_unchecked(&*first) };
+        let second = unsafe { Pin::new_unchecked(&*second) };
+        assert_eq!(
+            remote.publish_remote_wake(
+                first,
+                InboxMessage::remote_wake(ThreadId::from_parts(40, 1), CpuId::new(0)),
+            ),
+            PublishResult::Published,
+        );
+        cpu.acknowledge_scheduler_ipi();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+
+        remote.remote_wake_inbox().arm_test_publisher_pause();
+        let publisher_remote = Arc::clone(&remote);
+        let publisher = std::thread::spawn(move || {
+            crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+            let result = publisher_remote.publish_remote_wake(
+                second,
+                InboxMessage::remote_wake(ThreadId::from_parts(41, 1), CpuId::new(0)),
+            );
+            (result, crate::test_runtime::scheduler_ipi_send_count())
+        });
+        remote.remote_wake_inbox().wait_for_test_publisher_pause();
+
+        let outcome = system.schedule_if_requested(cpu.as_mut(), 0).unwrap();
+
+        assert!(outcome.owner_work_pending());
+        assert_eq!(
+            crate::test_runtime::scheduler_ipi_send_count(),
+            0,
+            "a grace-waiting publisher must resume before its owner can be kicked again",
+        );
+        assert!(
+            !cpu.needs_reschedule(),
+            "publisher grace is retained work, not an immediate preemption reason",
+        );
+
+        remote.remote_wake_inbox().resume_test_publisher();
+        assert_eq!(publisher.join().unwrap(), (PublishResult::Published, 1));
+        assert!(cpu.needs_reschedule());
+        assert_eq!(
+            system
+                .drain_remote_wakes(cpu.as_mut(), 0)
+                .unwrap()
+                .drained(),
+            2,
+        );
+    }
+
+    #[test]
     fn current_extension_lookup_progresses_while_registry_is_locked() {
         let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -4871,6 +5402,25 @@ mod tests {
         assert_eq!(system.service_scheduler_ipi_retries(64), Ok(1));
         assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 2);
         assert!(!system.scheduler_ipi_retry_pending());
+    }
+
+    #[test]
+    fn local_safe_point_consumes_busy_retry_without_a_self_ipi() {
+        let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let remote = &system.cpu_remotes[0];
+        remote.mark_online();
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 1);
+
+        publish_test_scheduler_work(remote, test_inbox_node(&node), 1);
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+        assert!(system.scheduler_ipi_retry_pending());
+
+        assert_eq!(system.service_scheduler_ipi_retries(64), Ok(0));
+
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+        assert!(!system.scheduler_ipi_retry_pending());
+        assert!(remote.needs_reschedule());
     }
 
     #[test]
@@ -5878,7 +6428,8 @@ mod tests {
                 .unwrap()
                 .owner_work_pending()
         );
-        assert!(cpu.needs_reschedule());
+        assert!(!cpu.needs_reschedule());
+        assert!(cpu.has_deferred_scheduler_work());
 
         let second = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
         assert_eq!(second.drained(), 1);
@@ -5964,7 +6515,7 @@ mod tests {
             .unwrap()
             .sched
             .lock()
-            .on_cpu = Some(CpuId::new(1));
+            .force_on_cpu(CpuId::new(1));
 
         assert!(matches!(
             system.schedule(cpu0.as_mut(), 1),
@@ -6354,7 +6905,9 @@ mod tests {
                     .expect("Deadline donor must retain CBS state"),
             )
         };
-        system.service_deadline_timers(cpu0.as_mut(), 20).unwrap();
+        system
+            .service_deadline_timers(cpu0.as_mut(), 20, true)
+            .unwrap();
         {
             let state = system.state.lock();
             let sched = state.thread_record(donor.id()).unwrap().sched.lock();
@@ -6382,7 +6935,9 @@ mod tests {
                 5
             );
         }
-        system.service_deadline_timers(cpu0.as_mut(), 20).unwrap();
+        system
+            .service_deadline_timers(cpu0.as_mut(), 20, true)
+            .unwrap();
         assert_eq!(system.deadline_runtime(donor.id()).unwrap().misses(), 1);
     }
 
@@ -6409,6 +6964,92 @@ mod tests {
         let wake = system.drain_remote_wakes(cpu.as_mut(), 0).unwrap();
         assert_eq!(wake.drained(), 1);
         assert!(!wake.pending());
+    }
+
+    #[test]
+    fn ready_thread_owned_by_switch_tail_cannot_be_publicly_enqueued() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let bootstrap = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let sleeper = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(sleeper.id()).unwrap();
+        system.enqueue(cpu.as_mut(), sleeper.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu.as_mut(), 0).unwrap().next(),
+            sleeper.id()
+        );
+        assert_eq!(
+            system.block_current(cpu.as_mut()).unwrap().next(),
+            bootstrap.id()
+        );
+        let wake = sleeper.wake_handle();
+        assert_eq!(wake.wake(), crate::WakeResult::Notified);
+        assert!(system.consume_wake(&wake).unwrap());
+
+        assert_eq!(
+            system.enqueue(cpu.as_mut(), sleeper.id(), 1),
+            Err(TaskError::ThreadBusy),
+            "a Ready thread remains switch-tail-owned until on_cpu is cleared",
+        );
+
+        system.complete_context_switch(cpu.as_mut()).unwrap();
+        assert_eq!(
+            system
+                .drain_remote_wakes(cpu.as_mut(), 1)
+                .unwrap()
+                .drained(),
+            1,
+        );
+        system.enqueue(cpu.as_mut(), sleeper.id(), 1).unwrap();
+    }
+
+    #[test]
+    fn remote_wake_after_block_completes_switch_tail_before_enqueue() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let bootstrap = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let sleeper = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(sleeper.id()).unwrap();
+        system.enqueue(cpu.as_mut(), sleeper.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu.as_mut(), 0).unwrap().next(),
+            sleeper.id()
+        );
+        assert_eq!(
+            system.block_current(cpu.as_mut()).unwrap().next(),
+            bootstrap.id()
+        );
+        assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+        let tail_count_before = crate::test_runtime::context_switch_tail_count();
+
+        assert_eq!(
+            system
+                .drain_remote_wakes(cpu.as_mut(), 1)
+                .unwrap()
+                .drained(),
+            1,
+        );
+
+        assert_eq!(
+            crate::test_runtime::context_switch_tail_count(),
+            tail_count_before + 1,
+        );
+        let state = system.state.lock();
+        let sched = state.thread_record(sleeper.id()).unwrap().sched.lock();
+        assert_eq!(sched.on_cpu(), None);
+        assert_eq!(sched.queued_cpu(), Some(cpu.owner()));
     }
 
     #[test]
@@ -6530,6 +7171,7 @@ mod tests {
     static DEADLINE_TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: no_extension_hook,
         on_switch_out: no_extension_switch_out,
+        on_policy_applied: no_extension_policy_applied,
         on_exit: no_extension_hook,
         on_deadline_overrun: count_deadline_overrun,
         drop: no_extension_drop,
@@ -6540,6 +7182,7 @@ mod tests {
     static ROTATING_DEADLINE_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: no_extension_hook,
         on_switch_out: no_extension_switch_out,
+        on_policy_applied: no_extension_policy_applied,
         on_exit: no_extension_hook,
         on_deadline_overrun: count_rotating_deadline_overrun,
         drop: no_extension_drop,
@@ -6550,6 +7193,7 @@ mod tests {
     static EXIT_CALLBACK_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: no_extension_hook,
         on_switch_out: no_extension_switch_out,
+        on_policy_applied: no_extension_policy_applied,
         on_exit: count_exit_callback,
         on_deadline_overrun: no_extension_hook,
         drop: no_extension_drop,
@@ -6561,6 +7205,13 @@ mod tests {
         _data: usize,
         _thread: ThreadId,
         _reason: SwitchReason,
+    ) {
+    }
+
+    unsafe extern "Rust" fn no_extension_policy_applied(
+        _data: usize,
+        _thread: ThreadId,
+        _event: ThreadPolicyApplied,
     ) {
     }
 

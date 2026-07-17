@@ -770,6 +770,39 @@ impl Gic {
         }
     }
 
+    /// Starts quiescing one SPI before its ownership is transferred.
+    ///
+    /// This publishes ICENABLER before clearing pending and active state. The
+    /// caller must subsequently poll [`Self::poll_distributor_write_complete`]
+    /// until the GICD RWP bit clears.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SpiIntIdRequired`] when `id` is an SGI or PPI.
+    pub fn begin_spi_quiesce(&mut self, id: IntId) -> Result<(), crate::SpiIntIdRequired> {
+        if id.is_private() {
+            return Err(crate::SpiIntIdRequired);
+        }
+        self.set_irq_enable(id, false);
+        self.set_pending(id, false);
+        self.set_active(id, false);
+        barrier::dsb(barrier::SY);
+        Ok(())
+    }
+
+    /// Polls whether all preceding distributor writes are complete.
+    ///
+    /// This is deliberately a single observation rather than a busy loop so
+    /// callers can yield or retain a fail-closed transfer state.
+    pub fn poll_distributor_write_complete(&self) -> bool {
+        barrier::dsb(barrier::SY);
+        if self.gicd().is_write_pending() {
+            return false;
+        }
+        barrier::isb(barrier::SY);
+        true
+    }
+
     /// Check if an interrupt is pending.
     ///
     /// Returns whether the specified interrupt is currently pending.

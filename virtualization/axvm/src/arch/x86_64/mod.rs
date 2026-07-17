@@ -59,7 +59,7 @@ impl X86_64Arch {
         vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
         vector: usize,
     ) -> AxVmResult {
-        ax_std::os::arceos::modules::ax_hal::irq::handle_irq(vector);
+        ax_std::os::arceos::modules::ax_hal::irq::handle_irq_from_task(vector);
         irq::queue_pending_serial_irq(vm, vcpu)
     }
 }
@@ -78,17 +78,28 @@ impl ArchOps for X86_64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
     ) -> AxVmResult {
-        irq::enable_ioapic_irq_forwarding(vm, vcpu);
+        irq::enable_ioapic_irq_forwarding(vm, vcpu)?;
         Ok(())
     }
 
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>) {
         irq::drain_bound_pending_ioapic_irqs(vm, vcpu);
-        irq::activate_ready_ioapic_forwarding_routes(vm);
+    }
+
+    fn after_mmio_write(
+        vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        irq::activate_ready_ioapic_forwarding_routes(vm)
     }
 
     fn on_last_vcpu_exit(vm_id: usize) {
         irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
+    }
+
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        irq::revoke_ioapic_irq_forwarding_for_vm(vm.id())
     }
 
     fn handle_vcpu_exit_bound<'cpu>(

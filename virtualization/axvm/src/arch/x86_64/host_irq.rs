@@ -7,6 +7,7 @@ use ax_std::os::arceos::modules::ax_hal::irq as host_irq;
 
 pub(crate) type IrqContext = host_irq::IrqContext;
 pub(crate) type IrqError = host_irq::IrqError;
+pub(crate) type IrqHandle = host_irq::IrqHandle;
 pub(crate) type IrqId = host_irq::IrqId;
 pub(crate) type IrqReturn = host_irq::IrqReturn;
 pub(crate) type IrqSource = host_irq::IrqSource;
@@ -20,6 +21,30 @@ pub(crate) fn request_shared_irq(
     handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
 ) -> Result<host_irq::IrqHandle, host_irq::IrqError> {
     host_irq::request_shared_irq(irq, handler)
+}
+
+pub(crate) fn request_exclusive_irq_disabled(
+    irq: IrqId,
+    handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
+) -> Result<host_irq::IrqHandle, host_irq::IrqError> {
+    let request = host_irq::IrqRequest::new(handler).auto_enable(host_irq::AutoEnable::No);
+    host_irq::request_irq(irq, request)
+}
+
+pub(crate) fn synchronize_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    host_irq::synchronize_irq(handle)
+}
+
+pub(crate) fn disable_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    host_irq::disable_irq(handle)
+}
+
+pub(crate) fn enable_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    host_irq::enable_irq(handle)
+}
+
+pub(crate) fn free_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    host_irq::free_irq(handle)
 }
 
 #[cfg(test)]

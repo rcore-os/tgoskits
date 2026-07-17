@@ -13,7 +13,8 @@ use std::{
 
 use ax_task::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, SchedulePolicy, TaskSystem,
-    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec,
+    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadPolicyApplied,
+    ThreadSpec,
 };
 
 mod support;
@@ -63,6 +64,7 @@ static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
 static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_thread_event,
     on_switch_out: ignore_switch_out,
+    on_policy_applied: ignore_policy_applied,
     on_exit: ignore_thread_event,
     on_deadline_overrun: ignore_thread_event,
     drop: ignore_drop,
@@ -71,6 +73,7 @@ static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
 static HARD_IRQ_DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_thread_event,
     on_switch_out: ignore_switch_out,
+    on_policy_applied: ignore_policy_applied,
     on_exit: ignore_thread_event,
     on_deadline_overrun: record_deadline_overrun,
     drop: ignore_drop,
@@ -202,6 +205,13 @@ unsafe extern "Rust" fn ignore_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: ax_task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn ignore_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ThreadPolicyApplied,
 ) {
 }
 

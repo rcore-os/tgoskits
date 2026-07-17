@@ -181,8 +181,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
             SeekFrom::End(delta) => d
-                .inner()
-                .len()?
+                .with_operation(|view| view.len())?
                 .checked_add_signed(delta)
                 .ok_or(AxError::InvalidInput)?,
             SeekFrom::Current(delta) => {
@@ -217,7 +216,7 @@ pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isi
     // same owner/group/other + root-bypass rules as faccessat2(2).
     let cred = current_user_task().as_thread().cred();
     if cred.fsuid != 0 {
-        let metadata = file.location().metadata()?;
+        let metadata = file.metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
         let has_write = if cred.fsuid == file_uid {
             file_mode.contains(NodePermission::OWNER_WRITE)
@@ -297,14 +296,14 @@ pub fn sys_fallocate(
         if seals & F_SEAL_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
-        let cur_len = f.inner().backend()?.location().len()?;
+        let cur_len = f.inner().backend()?.len()?;
         if !keep_size && end > cur_len && seals & F_SEAL_GROW != 0 {
             return Err(AxError::OperationNotPermitted);
         }
     }
     let inner = f.inner();
     let file = inner.access(FileFlags::WRITE)?;
-    let old_len = file.location().len()?;
+    let old_len = file.len()?;
     let new_len = if keep_size { old_len } else { old_len.max(end) };
     memfd_check_resize_seals(&f_like, old_len, new_len)?;
 
@@ -349,7 +348,7 @@ pub fn sys_fsync(fd: c_int) -> AxResult<isize> {
         f.inner().sync(false)?;
         return Ok(0);
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        d.inner().sync(false)?;
+        d.with_operation(|view| view.sync(false))?;
         return Ok(0);
     }
     Err(AxError::from(LinuxError::EINVAL))
@@ -366,7 +365,7 @@ pub fn sys_fdatasync(fd: c_int) -> AxResult<isize> {
         f.inner().sync(true)?;
         return Ok(0);
     } else if let Ok(d) = any_file.downcast_arc::<Directory>() {
-        d.inner().sync(true)?;
+        d.with_operation(|view| view.sync(true))?;
         return Ok(0);
     }
     Err(AxError::from(LinuxError::EINVAL))
@@ -804,8 +803,8 @@ pub fn sys_copy_file_range(
     let file_in = File::from_fd(fd_in).map_err(remap)?;
     let file_out = File::from_fd(fd_out).map_err(remap)?;
 
-    let meta_in = file_in.inner().location().metadata()?;
-    let meta_out = file_out.inner().location().metadata()?;
+    let meta_in = file_in.inner().metadata()?;
+    let meta_out = file_out.inner().metadata()?;
 
     if meta_in.node_type == NodeType::Directory || meta_out.node_type == NodeType::Directory {
         return Err(AxError::IsADirectory);

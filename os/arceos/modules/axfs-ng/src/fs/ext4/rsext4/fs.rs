@@ -1,5 +1,4 @@
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
@@ -14,7 +13,7 @@ use rsext4::{
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
 use crate::{
-    block::{BlockRegion, FsBlockDevice},
+    block::{BlockDevice, BlockRegion},
     os::sync::{PiMutex, PiMutexGuard},
 };
 
@@ -103,16 +102,16 @@ pub struct Ext4Filesystem {
 }
 
 impl Ext4Filesystem {
-    pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
-        Self::new_from_boxed(dev, region)
+    pub fn new(dev: Arc<dyn BlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
+        Self::new_from_device(dev, region)
     }
 
-    /// Create from a dynamic (boxed) block device (e.g. loop device).
-    pub fn new_from_boxed(
-        dev: Box<dyn FsBlockDevice>,
+    /// Creates a filesystem from a dynamic block service such as a loop device.
+    pub fn new_from_device(
+        dev: Arc<dyn BlockDevice>,
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
-        let disk = Ext4Disk::new(dev, region);
+        let disk = Ext4Disk::new(dev, region)?;
         let mut dev = Jbd2Dev::initial_jbd2dev(0, disk, true);
         let (fs, dev, readonly) = match rsext4::Ext4FileSystem::device_has_error_state(&mut dev) {
             Ok(true) => {
@@ -198,9 +197,9 @@ impl Ext4Filesystem {
     /// Locks the shared rsext4 state.
     ///
     /// Uses a blocking mutex because rsext4 operations may issue block I/O while
-    /// this guard is held. Submit/poll block devices without IRQ support can
-    /// yield while waiting for completion, so the outer filesystem state guard
-    /// must not disable interrupts or preemption.
+    /// this guard is held. The runtime-backed block service can park until an
+    /// IRQ completion arrives, so the outer filesystem state guard must not
+    /// disable interrupts or preemption.
     pub(crate) fn lock(&self) -> PiMutexGuard<'_, Ext4State> {
         self.inner.lock()
     }

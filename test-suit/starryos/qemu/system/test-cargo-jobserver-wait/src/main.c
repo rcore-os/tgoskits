@@ -1026,6 +1026,17 @@ static void close_build_script_child(struct build_script_child *child)
     }
 }
 
+static int build_script_output_reached_eof(
+    const struct build_script_child children[BUILD_SCRIPT_WAVE])
+{
+    for (int i = 0; i < BUILD_SCRIPT_WAVE; i++) {
+        if (!children[i].out_eof || !children[i].err_eof) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void test_build_script_wave(void)
 {
     printf("[phase] concurrent build-script stdout/stderr wave\n");
@@ -1071,7 +1082,15 @@ static void test_build_script_wave(void)
 
     int reaped = 0;
     int loops = 0;
-    while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS) {
+    /*
+     * Reaping a child proves that it closed its pipe writers, but it does not
+     * prove that the parent has consumed the final readable bytes and observed
+     * EOF on every pipe. Keep draining after the last waitpid() result so the
+     * outcome does not depend on whether poll readiness or child-exit
+     * publication wins the final scheduling race.
+     */
+    while ((reaped < BUILD_SCRIPT_WAVE || !build_script_output_reached_eof(children)) &&
+           loops++ < MAX_LOOPS) {
         struct pollfd pfds[BUILD_SCRIPT_WAVE * 2];
         int child_index[BUILD_SCRIPT_WAVE * 2];
         int is_stderr[BUILD_SCRIPT_WAVE * 2];
@@ -1130,7 +1149,7 @@ static void test_build_script_wave(void)
             }
         }
 
-        if (reap_available(&reaped, 1) != 0) {
+        if (reaped < BUILD_SCRIPT_WAVE && reap_available(&reaped, 1) != 0) {
             note_fail("build-script wave waitpid", strerror(errno));
             goto cleanup;
         }

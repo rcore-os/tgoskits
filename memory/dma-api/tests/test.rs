@@ -2,6 +2,7 @@
 
 mod test_helpers;
 
+use ax_kspin_test_runtime as _;
 use dma_api::*;
 use test_helpers::{DmaOperation, TrackingDmaOp};
 
@@ -17,6 +18,51 @@ fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
     (DeviceDma::new_legacy(u64::MAX, tracker), tracker)
+}
+
+#[test]
+fn cpu_owned_buffer_is_a_small_ownership_handle() {
+    assert!(
+        size_of::<CpuDmaBuffer>() <= 3 * size_of::<usize>(),
+        "request transport must not copy allocation metadata through every submit result"
+    );
+}
+
+#[test]
+fn dma_ownership_transitions_deallocate_the_backing_exactly_once() {
+    let (device, tracker) = new_tracking_device();
+    let buffer = CpuDmaBuffer::new_zero(
+        &device,
+        core::num::NonZeroUsize::new(4096).unwrap(),
+        4096,
+        DmaDirection::FromDevice,
+    )
+    .unwrap();
+    tracker.clear();
+
+    let prepared = buffer.prepare_for_device();
+    let inflight = unsafe {
+        // SAFETY: this test models one accepted command and immediately proves
+        // that its synthetic device has stopped before returning ownership.
+        prepared.into_in_flight()
+    };
+    let completed = unsafe {
+        // SAFETY: no device exists in this host test, so the DMA backing cannot
+        // still be accessed after the modeled command boundary above.
+        inflight.complete_after_quiesce()
+    };
+    drop(completed.into_cpu_buffer());
+
+    let operations = tracker.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, DmaOperation::DeallocContiguous { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(tracker.count_sync_alloc_for_device(), 1);
+    assert_eq!(tracker.count_sync_alloc_for_cpu(), 1);
 }
 
 #[test]

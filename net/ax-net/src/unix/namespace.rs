@@ -18,6 +18,38 @@ use ax_kspin::PreemptOnce;
 
 use super::BindSlot;
 
+/// Filesystem slot reserved for a transport bind.
+///
+/// A dynamically created pathname is removed when transport publication
+/// fails. A pre-existing socket node (for example a devfs-provided `/dev/log`)
+/// is retained, but its still-empty slot can be retried.
+pub struct NamespaceBindSlot {
+    slot: Arc<BindSlot>,
+    remove_on_rollback: bool,
+}
+
+impl NamespaceBindSlot {
+    /// Build a reservation for a pathname created by this bind attempt.
+    pub fn created(slot: Arc<BindSlot>) -> Self {
+        Self {
+            slot,
+            remove_on_rollback: true,
+        }
+    }
+
+    /// Build a reservation backed by a pre-existing socket node.
+    pub fn preexisting(slot: Arc<BindSlot>) -> Self {
+        Self {
+            slot,
+            remove_on_rollback: false,
+        }
+    }
+
+    pub(super) fn into_parts(self) -> (Arc<BindSlot>, bool) {
+        (self.slot, self.remove_on_rollback)
+    }
+}
+
 /// Path-based Unix socket namespace provider.
 ///
 /// Provides filesystem backing for Unix domain socket path bindings.
@@ -26,11 +58,15 @@ pub trait UnixNamespace: Send + Sync {
     /// Resolve an existing socket path binding.
     fn resolve(&self, path: &str) -> AxResult<Arc<BindSlot>>;
 
-    /// Create or get a socket path binding.
-    fn bind(&self, path: &str) -> AxResult<Arc<BindSlot>>;
+    /// Exclusively create an unpublished socket path binding.
+    ///
+    /// Implementations may reserve a deliberately pre-created socket node, but
+    /// must mark it with [`NamespaceBindSlot::preexisting`]. The caller invokes
+    /// [`Self::rollback_bind`] only for paths marked as newly created.
+    fn reserve_bind(&self, path: &str) -> AxResult<NamespaceBindSlot>;
 
-    /// Remove a socket path binding.
-    fn unbind(&self, path: &str) -> AxResult<()>;
+    /// Remove an unpublished path created by [`Self::reserve_bind`].
+    fn rollback_bind(&self, path: &str) -> AxResult<()>;
 }
 
 static UNIX_NS: PreemptOnce<Box<dyn UnixNamespace>> = PreemptOnce::new();

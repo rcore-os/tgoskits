@@ -2,7 +2,8 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_task::{
     CpuId, FairMode, Nice, RtPriority, SchedulePolicy, SwitchReason, TaskSystem, TaskSystemConfig,
-    ThreadExtension, ThreadExtensionOps, ThreadId, ThreadResources, ThreadSpec,
+    ThreadExtension, ThreadExtensionOps, ThreadId, ThreadPolicyApplied, ThreadResources,
+    ThreadSpec,
     runtime::{AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle},
 };
 
@@ -289,6 +290,7 @@ fn test_address_space(raw: usize) -> AddressSpaceHandle {
 static DROP_COUNT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_thread_event,
     on_switch_out: ignore_switch_out,
+    on_policy_applied: ignore_policy_applied,
     on_exit: ignore_thread_event,
     on_deadline_overrun: ignore_thread_event,
     drop: count_drop,
@@ -300,6 +302,13 @@ unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
 
 unsafe extern "Rust" fn ignore_switch_out(_data: usize, _thread: ThreadId, _reason: SwitchReason) {}
 
+unsafe extern "Rust" fn ignore_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ThreadPolicyApplied,
+) {
+}
+
 unsafe extern "Rust" fn count_drop(data: usize) {
     DROP_COUNTS[data].fetch_add(1, Ordering::Release);
 }
@@ -310,6 +319,7 @@ static MARK_EXIT_DROPS: AtomicUsize = AtomicUsize::new(0);
 static MARK_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_thread_event,
     on_switch_out: ignore_switch_out,
+    on_policy_applied: ignore_policy_applied,
     on_exit: block_mark_exit_callback,
     on_deadline_overrun: ignore_thread_event,
     drop: count_mark_exit_drop,

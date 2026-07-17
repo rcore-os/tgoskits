@@ -30,6 +30,7 @@ use crate::{
 /// The saved value has key semantics matching Linux `local_irq_save` and
 /// Zephyr `arch_irq_lock`: nested callers retain ownership of the disabled
 /// state, so guest return must restore rather than unconditionally unmask IRQ.
+#[derive(Debug)]
 struct HostIrqState {
     saved_daif: u64,
 }
@@ -95,6 +96,7 @@ pub struct ArmVcpu<H: ArmHostOps> {
     guest_system_regs: GuestSystemRegisters,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
+    pending_host_irq_state: Option<HostIrqState>,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -105,11 +107,11 @@ impl ArmHostOps for AssemblyLayoutHost {
         Err(crate::ArmVcpuError::BadState)
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
+    unsafe fn handle_post_unbind_host_irq(_cpu_pin: &CpuPin) -> ArmVcpuResult {
+        Ok(())
     }
 
-    fn handle_current_host_irq() {}
+    unsafe fn handle_current_host_irq() {}
 }
 
 type AssemblyArmVcpu = ArmVcpu<AssemblyLayoutHost>;
@@ -178,6 +180,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             host: HostRuntimeContext::default(),
             guest_system_regs: GuestSystemRegisters::default(),
             mpidr: config.mpidr_el1,
+            pending_host_irq_state: None,
             _host: PhantomData,
         })
     }
@@ -210,6 +213,9 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Runs the vCPU until a VM exit.
     pub fn run(&mut self, _cpu_pin: &CpuPin) -> ArmVcpuResult<ArmVmExit> {
+        if self.pending_host_irq_state.is_some() {
+            return Err(crate::ArmVcpuError::BadState);
+        }
         let host_irq_state = HostIrqState::save_and_mask();
 
         let exit_reason = unsafe {
@@ -220,7 +226,11 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         let trap_kind = TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
         let result = self.vmexit_handler(trap_kind);
 
-        host_irq_state.restore();
+        if trap_kind == TrapKind::Irq {
+            self.pending_host_irq_state = Some(host_irq_state);
+        } else {
+            host_irq_state.restore();
+        }
 
         result
     }
@@ -233,6 +243,24 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     /// Unbinds this vCPU from the current physical CPU.
     pub fn unbind(&mut self, _cpu_pin: &CpuPin) -> ArmVcpuResult {
         Ok(())
+    }
+
+    /// Finishes host state retained across a lower-EL IRQ exit.
+    ///
+    /// The embedding AxVM lifecycle calls this only after backend unbind and
+    /// current-vCPU removal, while the guest-entry CPU pin remains live. The
+    /// saved DAIF value is restored after the host controller transaction on
+    /// both success and recoverable error paths.
+    pub fn finish_post_unbind(&mut self, cpu_pin: &CpuPin) -> ArmVcpuResult {
+        let Some(host_irq_state) = self.pending_host_irq_state.take() else {
+            return Ok(());
+        };
+        // SAFETY: the pending state exists only for a lower-EL IRQ exit. AxVM
+        // calls this method after unbind/current-vCPU removal while retaining
+        // the same CPU pin, and this method remains the unique DAIF restorer.
+        let result = unsafe { H::handle_post_unbind_host_irq(cpu_pin) };
+        host_irq_state.restore();
+        result
     }
 
     /// Sets a general-purpose register.
@@ -420,9 +448,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
-            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {
-                vector: H::fetch_pending_host_irq().unwrap_or(0) as u64,
-            }),
+            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };
 

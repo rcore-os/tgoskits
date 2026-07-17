@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 #[test]
-fn guest_run_restores_the_callers_complete_daif_state() {
+fn non_irq_guest_exit_restores_the_callers_complete_daif_state() {
     let source = read_vcpu_source();
     let run = section(&source, "    pub fn run(", "    /// Binds this vCPU");
 
@@ -10,8 +10,10 @@ fn guest_run_restores_the_callers_complete_daif_state() {
         "guest entry must save DAIF before masking host IRQs"
     );
     assert!(
-        run.contains("host_irq_state.restore()"),
-        "guest exit must restore the caller's DAIF state"
+        run.contains("TrapKind::Irq")
+            && run.contains("self.pending_host_irq_state = Some(host_irq_state)")
+            && run.contains("host_irq_state.restore()"),
+        "only a lower-EL IRQ exit may retain the caller's masked DAIF state"
     );
     assert!(
         !run.contains("msr daifclr, #2"),
@@ -22,6 +24,8 @@ fn guest_run_restores_the_callers_complete_daif_state() {
         &[
             "HostIrqState::save_and_mask()",
             "self.run_guest()",
+            "TrapKind::Irq",
+            "self.pending_host_irq_state = Some(host_irq_state)",
             "host_irq_state.restore()",
         ],
     );
@@ -31,6 +35,33 @@ fn guest_run_restores_the_callers_complete_daif_state() {
             && source.contains("msr daifset, #2")
             && source.contains("msr daif, {saved_daif}"),
         "AArch64 must follow save-DAIF, mask-I, restore-saved-DAIF semantics"
+    );
+}
+
+#[test]
+fn lower_el_irq_ownership_is_finished_once_after_backend_unbind() {
+    let source = read_vcpu_source();
+    let finish = section(
+        &source,
+        "    pub fn finish_post_unbind(",
+        "    /// Sets a general-purpose register",
+    );
+
+    assert!(
+        source.contains("pending_host_irq_state: Option<HostIrqState>"),
+        "the saved DAIF owner must stay inside the vCPU until post-unbind completion"
+    );
+    assert_in_order(
+        finish,
+        &[
+            "self.pending_host_irq_state.take()",
+            "H::handle_post_unbind_host_irq(cpu_pin)",
+            "host_irq_state.restore()",
+        ],
+    );
+    assert!(
+        !source.contains("fetch_pending_host_irq"),
+        "a lower-EL exit must not fabricate a vector or claim the controller before unbind"
     );
 }
 

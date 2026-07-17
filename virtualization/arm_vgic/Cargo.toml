@@ -34,3 +34,6 @@ ax-memory-addr = { workspace = true }
 spin = { workspace = true }
 tock-registers = "0.10"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+ax-kspin-test-runtime = { path = "../../components/kspin/test-runtime" }

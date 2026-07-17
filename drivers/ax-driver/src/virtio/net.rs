@@ -12,11 +12,7 @@ use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::{
-    Error as VirtIoError,
-    device::net::VirtIONetRaw,
-    transport::{InterruptStatus, Transport},
-};
+use virtio_drivers::{Error as VirtIoError, device::net::VirtIONetRaw, transport::InterruptStatus};
 
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
@@ -120,7 +116,13 @@ struct VirtioNetInnerCell<T: VirtIoTransport> {
     irq_ack_pending: AtomicBool,
 }
 
+// SAFETY: `T: VirtIoTransport` proves the raw transport is movable, and all
+// mutable access is serialized by `access_active`.
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
+
+// SAFETY: every `UnsafeCell` dereference owns the `access_active` gate. Task
+// context disables local IRQ/preemption while IRQ context uses a try-only
+// acquisition, so no shared reference reaches the transport concurrently.
 unsafe impl<T: VirtIoTransport> Sync for VirtioNetInnerCell<T> {}
 
 impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
@@ -214,7 +216,7 @@ struct VirtioNetIrqHandler<T: VirtIoTransport> {
     inner: Arc<VirtioNetInnerCell<T>>,
 }
 
-impl<T: VirtIoTransport + 'static> rd_net::InterfaceIrqHandler for VirtioNetIrqHandler<T> {
+impl<T: VirtIoTransport> rd_net::InterfaceIrqHandler for VirtioNetIrqHandler<T> {
     fn handle_irq(&mut self) -> Event {
         self.inner.handle_irq()
     }
@@ -232,6 +234,8 @@ struct NetInner<T: VirtIoTransport> {
     rx_inflight: BTreeMap<u16, RxInflight>,
 }
 
+// SAFETY: `T: VirtIoTransport` is movable and the queue DMA bookkeeping moves
+// together with `raw`; access to this value is exclusive through its cell.
 unsafe impl<T: VirtIoTransport> Send for NetInner<T> {}
 
 impl<T: VirtIoTransport> NetInner<T> {
@@ -372,7 +376,7 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_pci_transport(probe, transport)
 }
 
-pub fn register_transport<T: Transport + 'static>(
+pub fn register_transport<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
@@ -383,7 +387,7 @@ pub fn register_transport<T: Transport + 'static>(
 }
 
 #[cfg(feature = "pci")]
-fn register_pci_transport<T: Transport + 'static>(
+fn register_pci_transport<T: VirtIoTransport>(
     probe: rdrive::probe::pci::ProbePci<'_>,
     transport: T,
 ) -> Result<(), OnProbeError> {
@@ -396,7 +400,7 @@ fn register_pci_transport<T: Transport + 'static>(
     Ok(())
 }
 
-fn make_net<T: Transport + 'static>(transport: T) -> Result<VirtIoNetDevice<T>, OnProbeError> {
+fn make_net<T: VirtIoTransport>(transport: T) -> Result<VirtIoNetDevice<T>, OnProbeError> {
     VirtIoNetDevice::new(transport).map_err(|err| {
         OnProbeError::other(format!(
             "failed to initialize static VirtIO net device: {err:?}"

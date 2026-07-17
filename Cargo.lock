@@ -137,6 +137,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahci-host"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "mmio-api",
+ "rdif-block",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -428,6 +438,7 @@ dependencies = [
  "aarch64_sysreg",
  "ax-crate-interface",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "ax-memory-addr",
  "axdevice_base",
  "axvm-types",
@@ -670,6 +681,7 @@ dependencies = [
 name = "ax-driver"
 version = "0.12.0"
 dependencies = [
+ "ahci-host",
  "aic8800",
  "anyhow",
  "arm-scmi-rs",
@@ -680,7 +692,6 @@ dependencies = [
  "ax-kspin",
  "ax-kspin-test-runtime",
  "axklib",
- "bcm2835-sdhci",
  "crab-usb",
  "cv181x-sdhci",
  "dma-api",
@@ -726,10 +737,10 @@ dependencies = [
  "sdio-host-cv1800",
  "sdmmc-protocol",
  "sg200x-bsp",
- "simple-ahci",
  "some-serial",
  "spin",
  "starfive-jh7110-dwmmc",
+ "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "virtio-drivers",
  "x86",
@@ -765,19 +776,16 @@ dependencies = [
  "ax-sync",
  "axfs-ng-vfs",
  "bitflags 2.13.0",
- "cfg-if",
  "chrono",
- "dma-api",
  "intrusive-collections",
- "irq-framework",
  "log",
  "lru 0.16.4",
- "rdif-block",
  "rsext4",
  "scope-local",
  "slab",
  "spin",
  "starry-fatfs",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1081,6 +1089,7 @@ dependencies = [
  "dma-api",
  "indoc",
  "irq-framework",
+ "loom",
  "quote",
  "rd-net",
  "rdif-block",
@@ -1088,6 +1097,7 @@ dependencies = [
  "rdrive",
  "sdhci-cv1800",
  "spin",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1565,18 +1575,6 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "bcm2835-sdhci"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d94ab095b7fe2241c977d6b4b03804e7eea2f72e0419ae856e48b664e4dfa26"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "log",
- "tock-registers 0.10.1",
- "volatile 0.3.0",
-]
 
 [[package]]
 name = "bincode"
@@ -2903,6 +2901,7 @@ version = "0.9.3"
 dependencies = [
  "aarch64-cpu-ext",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "cfg-if",
  "derive_more",
  "log",
@@ -2988,6 +2987,7 @@ dependencies = [
  "dma-api",
  "embedded-hal",
  "log",
+ "mbarrier",
  "mmio-api",
  "rdif-block",
  "sdio-host2",
@@ -5305,7 +5305,6 @@ dependencies = [
  "mbarrier",
  "mmio-api",
  "rdif-block",
- "spin",
  "tock-registers 0.10.1",
 ]
 
@@ -6030,7 +6029,6 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramdisk"
 version = "0.1.10"
 dependencies = [
- "ax-kspin",
  "rdif-block",
 ]
 
@@ -6292,9 +6290,8 @@ dependencies = [
 
 [[package]]
 name = "rdif-block"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
- "ax-kspin",
  "dma-api",
  "rdif-base",
  "thiserror 2.0.18",
@@ -7173,7 +7170,6 @@ version = "0.4.1"
 dependencies = [
  "bitflags 2.13.0",
  "dma-api",
- "embedded-hal",
  "log",
  "rdif-block",
  "sdio-host2",
@@ -7486,18 +7482,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
-name = "simple-ahci"
-version = "0.1.1-preview.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e202ff0a10a30a13384768edcda5b00eeeafd7dda1784234662f43dba170e9b2"
-dependencies = [
- "bitfield-struct 0.11.0",
- "log",
- "thiserror 2.0.18",
- "volatile 0.6.1",
-]
-
-[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7769,7 +7753,6 @@ dependencies = [
  "ouroboros",
  "rand 0.10.1",
  "rbpf",
- "rdif-block",
  "rdif-pinctrl",
  "rdif-pwm",
  "rdrive",
@@ -9047,12 +9030,6 @@ name = "vm-fdt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
-
-[[package]]
-name = "volatile"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8e76fae08f03f96e166d2dfda232190638c10e0383841252416f9cfe2ae60e6"
 
 [[package]]
 name = "volatile"

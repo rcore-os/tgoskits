@@ -141,6 +141,14 @@ fn closes_the_wake_during_park_window() {
 }
 
 #[test]
+fn direct_wake_retains_from_the_owning_arc_provenance() {
+    let fixture = executor();
+    let owner_wake = fixture.local().shared.owner_wake.clone();
+
+    assert_eq!(owner_wake.wake(), crate::WakeResult::Notified);
+}
+
+#[test]
 fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
     let fixture = executor();
     let completed = Rc::new(Cell::new(false));

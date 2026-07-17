@@ -8,7 +8,10 @@ use loongArch64::register::{
     estat::{self, Exception, Trap},
 };
 
-pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
+pub use crate::uspace_common::{
+    DecodedUserExit, ExceptionKind, ExceptionSyndrome, RawUserExit, RawUserInterrupt,
+    UserExitReason,
+};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
 const ECODE_LSX_DISABLED: usize = 0x10;
@@ -59,8 +62,11 @@ impl UserContext {
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `sepc`).
     ///
-    /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    /// This function returns an opaque context-bound token with raw local
+    /// interrupts still masked. It does not read or dispatch the captured
+    /// exception. The runtime must publish kernel accounting before calling
+    /// [`Self::decode_raw_exit`].
+    pub fn run_raw(&mut self) -> RawUserExit {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
@@ -68,33 +74,49 @@ impl UserContext {
         crate::asm::disable_irqs();
         unsafe { enter_user(self) };
 
+        RawUserExit::bind(self, 0)
+    }
+
+    /// Decodes a raw exit previously returned by this context.
+    ///
+    /// The caller must keep raw local interrupts masked and publish the
+    /// user-to-kernel accounting transition before invoking this method.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `raw_exit` was produced by a different [`UserContext`].
+    pub fn decode_raw_exit(&mut self, raw_exit: RawUserExit) -> DecodedUserExit {
+        raw_exit.assert_bound_to(self);
+
         let estat = estat::read();
         let badv = badv::read().vaddr();
         let badi = badi::read().inst();
         let ecode = estat.ecode();
         let esubcode = estat.esubcode();
 
-        let ret = match estat.cause() {
+        match estat.cause() {
             Trap::Interrupt(_) => {
                 let irq_num: usize = estat.is().trailing_zeros() as usize;
-                crate::trap::dispatch_irq(irq_num);
-                ReturnReason::Interrupt
+                DecodedUserExit::Interrupt(RawUserInterrupt::new(irq_num))
             }
             Trap::Exception(Exception::Syscall) => {
                 self.era += 4;
-                ReturnReason::Syscall
+                DecodedUserExit::Reason(UserExitReason::Syscall)
             }
             Trap::Exception(Exception::LoadPageFault)
-            | Trap::Exception(Exception::PageNonReadableFault) => {
-                ReturnReason::PageFault(va!(badv), PageFaultFlags::READ | PageFaultFlags::USER)
-            }
+            | Trap::Exception(Exception::PageNonReadableFault) => DecodedUserExit::Reason(
+                UserExitReason::PageFault(va!(badv), PageFaultFlags::READ | PageFaultFlags::USER),
+            ),
             Trap::Exception(Exception::StorePageFault)
-            | Trap::Exception(Exception::PageModifyFault) => {
-                ReturnReason::PageFault(va!(badv), PageFaultFlags::WRITE | PageFaultFlags::USER)
-            }
+            | Trap::Exception(Exception::PageModifyFault) => DecodedUserExit::Reason(
+                UserExitReason::PageFault(va!(badv), PageFaultFlags::WRITE | PageFaultFlags::USER),
+            ),
             Trap::Exception(Exception::FetchPageFault)
             | Trap::Exception(Exception::PageNonExecutableFault) => {
-                ReturnReason::PageFault(va!(badv), PageFaultFlags::EXECUTE | PageFaultFlags::USER)
+                DecodedUserExit::Reason(UserExitReason::PageFault(
+                    va!(badv),
+                    PageFaultFlags::EXECUTE | PageFaultFlags::USER,
+                ))
             }
             Trap::Exception(Exception::PagePrivilegeIllegal) => {
                 // The CPU reports only a privilege mismatch here, not whether
@@ -106,34 +128,33 @@ impl UserContext {
                 // address first in case the exception came from such an entry
                 // or a stale kernel-only TLB entry for the same VA.
                 crate::asm::flush_tlb(Some(va!(badv)));
-                ReturnReason::PageFault(va!(badv), PageFaultFlags::USER)
+                DecodedUserExit::Reason(UserExitReason::PageFault(va!(badv), PageFaultFlags::USER))
             }
-            Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo {
-                e,
-                badv,
-                badi,
-                ecode,
-                esubcode,
-            }),
+            Trap::Exception(e) => {
+                DecodedUserExit::Reason(UserExitReason::Exception(ExceptionInfo {
+                    e,
+                    badv,
+                    badi,
+                    ecode,
+                    esubcode,
+                }))
+            }
             Trap::Unknown
                 if matches!(
                     ecode,
                     ECODE_LSX_DISABLED | ECODE_LASX_DISABLED | ECODE_BINARY_TRANSLATION_DISABLED
                 ) =>
             {
-                ReturnReason::Exception(ExceptionInfo {
+                DecodedUserExit::Reason(UserExitReason::Exception(ExceptionInfo {
                     e: Exception::InstructionNotExist,
                     badv,
                     badi,
                     ecode,
                     esubcode,
-                })
+                }))
             }
-            _ => ReturnReason::Unknown,
-        };
-
-        crate::asm::enable_irqs();
-        ret
+            _ => DecodedUserExit::Reason(UserExitReason::Unknown),
+        }
     }
 }
 

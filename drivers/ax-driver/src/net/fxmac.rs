@@ -336,39 +336,6 @@ fn fxmac_queue_config() -> QueueConfig {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn irq_state_does_not_publish_empty_snapshot() {
-        let state = FxmacIrqState::new();
-        let event = state.publish(false, false);
-
-        assert!(!event.tx_queue.contains(QUEUE_ID));
-        assert!(!event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(!state.take_rx_pending());
-    }
-
-    #[test]
-    fn irq_state_publishes_only_reported_queues() {
-        let state = FxmacIrqState::new();
-
-        let tx_event = state.publish(true, false);
-        assert!(tx_event.tx_queue.contains(QUEUE_ID));
-        assert!(!tx_event.rx_queue.contains(QUEUE_ID));
-        assert!(state.take_tx_pending());
-        assert!(!state.take_rx_pending());
-
-        let rx_event = state.publish(false, true);
-        assert!(!rx_event.tx_queue.contains(QUEUE_ID));
-        assert!(rx_event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(state.take_rx_pending());
-    }
-}
-
 struct FxmacKernelFunc;
 
 const _: FxmacKernelFunc = FxmacKernelFunc;
@@ -423,5 +390,38 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
         let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
         let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
         unsafe { axklib::dma::op().dealloc_coherent(handle) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irq_state_does_not_publish_empty_snapshot() {
+        let state = FxmacIrqState::new();
+        let event = state.publish(false, false);
+
+        assert!(!event.tx_queue.contains(QUEUE_ID));
+        assert!(!event.rx_queue.contains(QUEUE_ID));
+        assert!(!state.take_tx_pending());
+        assert!(!state.take_rx_pending());
+    }
+
+    #[test]
+    fn irq_state_publishes_only_reported_queues() {
+        let state = FxmacIrqState::new();
+
+        let tx_event = state.publish(true, false);
+        assert!(tx_event.tx_queue.contains(QUEUE_ID));
+        assert!(!tx_event.rx_queue.contains(QUEUE_ID));
+        assert!(state.take_tx_pending());
+        assert!(!state.take_rx_pending());
+
+        let rx_event = state.publish(false, true);
+        assert!(!rx_event.tx_queue.contains(QUEUE_ID));
+        assert!(rx_event.rx_queue.contains(QUEUE_ID));
+        assert!(!state.take_tx_pending());
+        assert!(state.take_rx_pending());
     }
 }

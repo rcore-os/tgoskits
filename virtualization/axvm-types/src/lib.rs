@@ -441,6 +441,17 @@ pub trait VmArchVcpuOps: Sized {
     fn bind(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
     /// Unbinds the vCPU from the physical CPU covered by `cpu_pin`.
     fn unbind(&mut self, cpu_pin: &CpuPin) -> VmBackendResult;
+    /// Finishes CPU-owned state that must remain live until after unbind and
+    /// current-vCPU removal.
+    ///
+    /// The generic AxVM runner invokes this hook while it still holds the same
+    /// CPU pin used for bind/run/unbind, but only after the architecture has
+    /// restored host anchors and the CPU-local current-vCPU publication has
+    /// been cleared. Implementations must not block, yield, retain `cpu_pin`,
+    /// or restore an IRQ state owned by a different entry.
+    fn finish_post_unbind(&mut self, _cpu_pin: &CpuPin) -> VmBackendResult {
+        Ok(())
+    }
     /// Sets a general-purpose register.
     fn set_gpr(&mut self, reg: usize, val: usize);
     /// Decodes an architecture-specific memory fault as a legacy normalized

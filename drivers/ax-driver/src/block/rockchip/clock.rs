@@ -1,8 +1,9 @@
 #[cfg(feature = "rockchip-dwmmc")]
 use alloc::format;
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
+use alloc::vec::Vec;
 
-use log::info;
-#[cfg(feature = "rockchip-dwmmc")]
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
 use rdrive::probe::fdt::ClockLine;
 use rdrive::{
     probe::{OnProbeError, fdt::ClockRef},
@@ -31,44 +32,6 @@ fn is_scmi_clock_provider(info: &FdtInfo<'_>, clock: &ClockRef) -> bool {
 }
 
 #[cfg(feature = "rockchip-dwmmc")]
-fn enable_scmi_clock(
-    info: &FdtInfo<'_>,
-    clock: &ClockRef,
-    label: &str,
-) -> Result<bool, OnProbeError> {
-    if !is_scmi_clock_provider(info, clock) {
-        return Ok(false);
-    }
-    let Some(clock_id) = scmi_clock_id(clock) else {
-        return Ok(false);
-    };
-    scmi::enable_clock(clock.phandle, clock_id).ok_or_else(|| {
-        OnProbeError::other(format!(
-            "[{}] failed to enable SCMI {label} clock {:?} ({:#x})",
-            info.node.name(),
-            clock.name,
-            clock_id
-        ))
-    })?;
-    info!(
-        "[{}] enabled {label} SCMI clock {:?} ({:#x})",
-        info.node.name(),
-        clock.name,
-        clock_id
-    );
-    Ok(true)
-}
-
-#[cfg(not(feature = "rockchip-dwmmc"))]
-fn enable_scmi_clock(
-    _info: &FdtInfo<'_>,
-    _clock: &ClockRef,
-    _label: &str,
-) -> Result<bool, OnProbeError> {
-    Ok(false)
-}
-
-#[cfg(feature = "rockchip-dwmmc")]
 pub(crate) fn rdrive_named_clock(
     info: &FdtInfo<'_>,
     name: &str,
@@ -86,27 +49,6 @@ pub(crate) fn rdrive_named_clock(
     info.clock_line(&clock).map(Some)
 }
 
-pub(crate) fn enable_node_clocks(info: &FdtInfo<'_>, label: &str) -> Result<(), OnProbeError> {
-    for clock in info.clocks()? {
-        if clock.select() == Some(0) {
-            continue;
-        }
-        if enable_scmi_clock(info, &clock, label)? {
-            continue;
-        }
-
-        let line = info.clock_line(&clock)?;
-        line.enable()?;
-        info!(
-            "[{}] enabled {label} clock {:?} ({:#x})",
-            info.node.name(),
-            clock.name,
-            line.id().raw()
-        );
-    }
-    Ok(())
-}
-
 #[cfg(feature = "rockchip-dwmmc")]
 pub(crate) fn scmi_named_clock(info: &FdtInfo<'_>, name: &str) -> Option<ScmiClockOps> {
     let clock = info.find_clk_by_name(name)?;
@@ -118,6 +60,7 @@ pub(crate) fn scmi_named_clock(info: &FdtInfo<'_>, name: &str) -> Option<ScmiClo
 }
 
 #[cfg(feature = "rockchip-dwmmc")]
+#[derive(Clone, Copy)]
 pub(crate) struct ScmiClockOps {
     phandle: fdt_edit::Phandle,
     clock_id: u32,
@@ -125,6 +68,10 @@ pub(crate) struct ScmiClockOps {
 
 #[cfg(feature = "rockchip-dwmmc")]
 impl ScmiClockOps {
+    pub(crate) fn enable(&self) -> Option<()> {
+        scmi::enable_clock(self.phandle, self.clock_id)
+    }
+
     pub(crate) fn set_rate(&self, rate: u64) -> Option<()> {
         scmi::set_clock_rate(self.phandle, self.clock_id, rate)
     }
@@ -132,4 +79,65 @@ impl ScmiClockOps {
     pub(crate) fn rate(&self) -> Option<u64> {
         scmi::clock_rate(self.phandle, self.clock_id)
     }
+}
+
+/// A clock capability resolved during discovery but enabled only from a
+/// controller initialization worker after its IRQ actions are live.
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
+pub(crate) enum StagedClockEnable {
+    Rdrive(ClockLine),
+    #[cfg(feature = "rockchip-dwmmc")]
+    Scmi(ScmiClockOps),
+}
+
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
+impl StagedClockEnable {
+    pub(crate) fn enable(&self) -> Result<(), OnProbeError> {
+        match self {
+            Self::Rdrive(clock) => clock.enable(),
+            #[cfg(feature = "rockchip-dwmmc")]
+            Self::Scmi(clock) => clock.enable().ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "failed to enable staged SCMI clock {:#x}",
+                    clock.clock_id
+                ))
+            }),
+        }
+    }
+}
+
+/// Resolve the node's clock ownership without changing hardware state.
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
+pub(crate) fn staged_node_clocks(
+    info: &FdtInfo<'_>,
+) -> Result<Vec<StagedClockEnable>, OnProbeError> {
+    info.clocks()?
+        .into_iter()
+        .filter(|clock| clock.select() != Some(0))
+        .map(|clock| staged_clock_enable(info, clock))
+        .collect()
+}
+
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
+fn staged_clock_enable(
+    info: &FdtInfo<'_>,
+    clock: ClockRef,
+) -> Result<StagedClockEnable, OnProbeError> {
+    #[cfg(feature = "rockchip-dwmmc")]
+    {
+        if is_scmi_clock_provider(info, &clock) {
+            let clock_id = scmi_clock_id(&clock).ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "[{}] staged SCMI clock {:?} has no selector",
+                    info.node.name(),
+                    clock.name
+                ))
+            })?;
+            return Ok(StagedClockEnable::Scmi(ScmiClockOps {
+                phandle: clock.phandle,
+                clock_id,
+            }));
+        }
+    }
+    info.clock_line(&clock).map(StagedClockEnable::Rdrive)
 }

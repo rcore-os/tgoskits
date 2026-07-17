@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an explicit filesystem detach policy so upper layers can distinguish
+  generation-managed storage from non-detachable synthetic filesystems.
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.4...axfs-ng-vfs-v0.5.5) - 2026-07-08
 
 ### Other

@@ -9,14 +9,24 @@ pub(super) struct TimerEntry {
     deadline_ns: u64,
     token: TimerToken,
     node: *const TimerNode,
+    owner: usize,
+    owner_class: u64,
 }
 
 impl TimerEntry {
-    pub(super) const fn new(deadline_ns: u64, token: TimerToken, node: *const TimerNode) -> Self {
+    pub(super) const fn new(
+        deadline_ns: u64,
+        token: TimerToken,
+        node: *const TimerNode,
+        owner: usize,
+        owner_class: u64,
+    ) -> Self {
         Self {
             deadline_ns,
             token,
             node,
+            owner,
+            owner_class,
         }
     }
 
@@ -30,6 +40,14 @@ impl TimerEntry {
 
     pub(super) const fn node(self) -> *const TimerNode {
         self.node
+    }
+
+    pub(super) const fn owner(self) -> usize {
+        self.owner
+    }
+
+    pub(super) const fn owner_class(self) -> u64 {
+        self.owner_class
     }
 
     const fn precedes(self, other: Self) -> bool {

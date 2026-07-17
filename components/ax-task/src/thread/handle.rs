@@ -195,7 +195,14 @@ impl ThreadWakeHandle {
 
     /// Publishes a wake without allocating, taking a lock, or invoking callbacks.
     pub fn wake(&self) -> WakeResult {
-        self.core.wake()
+        let core = Arc::as_ptr(&self.core);
+        unsafe {
+            // SAFETY: `core` comes directly from this live owning Arc. The
+            // handle remains borrowed for the call, so the allocation and its
+            // original Arc provenance remain valid while wake publication may
+            // retain a strong reference for the remote inbox.
+            ThreadCore::wake_from_arc_ptr(core)
+        }
     }
 
     /// Creates a borrowed hard-IRQ wake capability for a pinned registration.
@@ -206,8 +213,13 @@ impl ThreadWakeHandle {
     /// permanently detached from every [`crate::IrqWaitCell`].
     pub(crate) unsafe fn irq_wake_handle(&self) -> IrqWakeHandle {
         unsafe fn wake_thread_core(data: usize) {
-            let core = unsafe { &*core::ptr::with_exposed_provenance::<ThreadCore>(data) };
-            let _result = core.wake();
+            let core = core::ptr::with_exposed_provenance::<ThreadCore>(data);
+            let _result = unsafe {
+                // SAFETY: `irq_wake_handle` requires the owning
+                // `ThreadWakeHandle` to outlive every registered callback, and
+                // `data` is the exposed form of that Arc's original pointer.
+                ThreadCore::wake_from_arc_ptr(core)
+            };
         }
 
         unsafe {
@@ -231,11 +243,24 @@ impl ThreadWakeHandle {
 }
 
 impl ThreadCore {
-    fn wake(&self) -> WakeResult {
-        if self.state() == ThreadState::Exited {
+    /// Publishes a wake from the original pointer of a live owning Arc.
+    ///
+    /// # Safety
+    ///
+    /// `core` must come from [`Arc::as_ptr`] for a live `Arc<ThreadCore>` whose
+    /// allocation remains owned for this call. It must not be a pointer
+    /// re-derived from `&ThreadCore`, because only the Arc pointer carries the
+    /// provenance needed to retain and release the allocation header.
+    unsafe fn wake_from_arc_ptr(core: *const Self) -> WakeResult {
+        let thread = unsafe {
+            // SAFETY: guaranteed by the caller; the shared borrow lasts only
+            // for this bounded wake publication.
+            &*core
+        };
+        if thread.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        let cpu = self.target_cpu.load(Ordering::Acquire);
+        let cpu = thread.target_cpu.load(Ordering::Acquire);
         let Some(target) = (cpu != u32::MAX).then(|| CpuId::new(cpu)) else {
             return WakeResult::Unavailable;
         };
@@ -245,22 +270,23 @@ impl ThreadCore {
         // Publish the inbox request and wake-before-park notification as one
         // atomic state transition. Owner-side consumption can then preserve
         // the notification only while PARKING without racing a newer wake.
-        if self.publish_wake() {
+        if thread.publish_wake() {
             // A coalesced wake is also a recovery path for a doorbell claimed
             // concurrently by the owner. Reassert scheduler work even though
             // the first producer still owns the intrusive publication.
             cpu.kick_scheduler_work();
             return WakeResult::AlreadyPending;
         }
-        let core = self as *const ThreadCore;
         // SAFETY: this retained strong count is transferred to the inbox
         // payload and released by the owner drain after consuming the node.
+        // The function contract guarantees that `core` is the original Arc
+        // pointer rather than one derived from the pointee borrow.
         unsafe { Arc::increment_strong_count(core) };
         // SAFETY: Arc allocation addresses are stable. The transferred strong
         // count keeps the embedded node alive until owner-side drain.
-        let node = unsafe { Pin::new_unchecked(&(*core).remote_wake_node) };
+        let node = unsafe { Pin::new_unchecked(&thread.remote_wake_node) };
         let message =
-            InboxMessage::remote_wake_with_payload(self.id, target, core.expose_provenance());
+            InboxMessage::remote_wake_with_payload(thread.id, target, core.expose_provenance());
         match cpu.publish_remote_wake(node, message) {
             PublishResult::Published => WakeResult::Notified,
             PublishResult::AlreadyPending => {
@@ -272,7 +298,7 @@ impl ThreadCore {
             PublishResult::WrongKind => {
                 // SAFETY: publication rejected the node before taking ownership.
                 unsafe { Arc::decrement_strong_count(core) };
-                self.discard_failed_wake();
+                thread.discard_failed_wake();
                 WakeResult::Unavailable
             }
         }
@@ -733,6 +759,11 @@ impl ThreadCore {
 
     pub(crate) fn set_target_cpu(&self, cpu: CpuId) {
         self.target_cpu.store(cpu.as_u32(), Ordering::Release);
+    }
+
+    pub(crate) fn restore_target_cpu(&self, cpu: Option<CpuId>) {
+        self.target_cpu
+            .store(cpu.map_or(u32::MAX, CpuId::as_u32), Ordering::Release);
     }
 
     pub(crate) fn target_cpu(&self) -> Option<CpuId> {

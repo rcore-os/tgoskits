@@ -4,8 +4,8 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::current_fs_context;
-use axfs_ng_vfs::{Location, NodePermission};
+use ax_fs_ng::vfs::{LocationOperationView, current_fs_context};
+use axfs_ng_vfs::{NodePermission, StatFs};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
     AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, R_OK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
@@ -210,8 +210,7 @@ pub fn sys_faccessat2(dirfd: c_int, path: *const c_char, mode: u32, flags: u32) 
     Ok(0)
 }
 
-fn statfs(loc: &Location) -> AxResult<statfs> {
-    let stat = loc.filesystem().stat()?;
+fn statfs(stat: StatFs, mount_device: u64) -> statfs {
     // FIXME: Zeroable
     let mut result: statfs = unsafe { core::mem::zeroed() };
     result.f_type = stat.fs_type as _;
@@ -223,27 +222,30 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
     result.f_ffree = stat.free_file_count as _;
     // TODO: fsid
     result.f_fsid = __kernel_fsid_t {
-        val: [0, loc.mountpoint().device() as _],
+        val: [0, mount_device as _],
     };
     result.f_namelen = stat.name_length as _;
     result.f_frsize = stat.fragment_size as _;
     result.f_flags = stat.mount_flags as _;
-    Ok(result)
+    result
 }
 
 pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    let location = current_fs_context().lock().resolve(path)?;
-    write_statfs(buf, statfs(&location.mountpoint().root_location())?)?;
+    let location = current_fs_context().lock().resolve_file_location(path)?;
+    let value = location
+        .with_operation(|view| Ok(statfs(view.filesystem_statistics()?, view.mount_device())))?;
+    write_statfs(buf, value)?;
     Ok(0)
 }
 
 pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
-    write_statfs(buf, statfs(File::from_fd(fd)?.inner().location())?)?;
+    let (statistics, mount_device) = File::from_fd(fd)?.inner().filesystem_statistics()?;
+    write_statfs(buf, statfs(statistics, mount_device))?;
     Ok(0)
 }
 
@@ -394,10 +396,16 @@ pub fn sys_name_to_handle_at(
     } else {
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
-    let loc = resolve_at(dirfd, path.as_deref(), resolve_flags)?
-        .into_file()
-        .ok_or(AxError::InvalidInput)?;
-    let stat = loc.metadata()?;
+    resolve_at(dirfd, path.as_deref(), resolve_flags)?
+        .with_operation(|view| write_file_handle(&view, handle, mount_id))
+}
+
+fn write_file_handle(
+    view: &LocationOperationView<'_>,
+    handle: *mut FileHandleHeader,
+    mount_id: *mut c_int,
+) -> AxResult<isize> {
+    let stat = view.metadata()?;
 
     let header_ptr = UserPtr::<FileHandleHeader>::from(handle);
     let mut header = header_ptr.read()?;
@@ -418,6 +426,6 @@ pub fn sys_name_to_handle_at(
         .ok_or(AxError::InvalidInput)? as *mut u8;
     UserPtr::<u8>::from(data_ptr).write_slice(&bytes)?;
 
-    (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
+    (mount_id as *mut c_int).vm_write(view.mount_device() as c_int)?;
     Ok(0)
 }

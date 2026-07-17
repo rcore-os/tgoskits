@@ -47,6 +47,20 @@ fn assert_contains(path: &Path, expected: &str) {
     );
 }
 
+fn assert_tree_contains(root: &Path, expected: &str) {
+    let expected = compact(expected);
+    let found = rust_sources(root).into_iter().any(|path| {
+        fs::read_to_string(&path)
+            .map(|source| compact(&source).contains(&expected))
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+    });
+    assert!(
+        found,
+        "{} must make its lock semantics explicit with `{expected}`",
+        root.display(),
+    );
+}
+
 #[test]
 fn selected_consumers_reject_the_ambiguous_ax_sync_mutex_alias() {
     let workspace = workspace_root();
@@ -125,8 +139,8 @@ fn consumer_lock_classes_match_their_waiting_behavior() {
     let fat = workspace.join("os/arceos/modules/axfs-ng/src/fs/fat/fs.rs");
     assert_contains(&fat, "inner: PiMutex<FatFilesystemInner>");
     assert_contains(&fat, "root_dir: SpinMutex<Option<DirEntry>>");
-    assert_contains(
-        &workspace.join("os/arceos/modules/axfs-ng/src/file/cache.rs"),
+    assert_tree_contains(
+        &workspace.join("os/arceos/modules/axfs-ng/src/file/cache"),
         "static CACHED_FILE_BY_INODE: spin::LazyLock<SpinMutex<InodeCacheIndex>>",
     );
 }
@@ -152,4 +166,21 @@ fn sleepable_consumer_features_enable_pi_mutex_support() {
         "net = [\"multitask\", \"dep:ax-net\", \"fd\"]",
     );
     assert_contains(&posix_manifest, "epoll = [\"multitask\", \"fd\"]");
+}
+
+#[test]
+fn pi_mutex_context_failure_preserves_the_lock_callsite() {
+    let workspace = workspace_root();
+    let mutex = fs::read_to_string(workspace.join("os/arceos/modules/axsync/src/mutex.rs"))
+        .expect("failed to read the PI mutex implementation");
+    let mutex = compact(&mutex);
+
+    assert!(
+        mutex.contains("#[track_caller]fntask_result"),
+        "PI task-runtime failures must retain the public lock callsite"
+    );
+    assert!(
+        !mutex.contains("unwrap_or_else(|error|panic!"),
+        "a panic inside an unwrap closure loses #[track_caller] propagation"
+    );
 }

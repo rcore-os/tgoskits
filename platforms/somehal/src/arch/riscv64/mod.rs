@@ -5,7 +5,7 @@ use crate::{
 
 mod plic;
 
-pub use plic::RiscvPlicIrqEndpoint;
+pub use plic::{RiscvPlicIrqEndpoint, RiscvPlicLeaseId};
 
 use crate::irq_routing::{
     RISCV_INTERRUPT_BIT, RISCV_S_SOFT_CAUSE, riscv_cpu_local_hwirq_is_runtime_irq,
@@ -54,6 +54,10 @@ pub fn lease_riscv_plic_irq_endpoints(
         hwirqs.push(irq.hwirq);
     }
     plic::lease_irq_endpoints(&hwirqs, affinity)
+}
+
+pub fn release_riscv_plic_irq_endpoints(leases: &[RiscvPlicLeaseId]) -> Result<(), IrqError> {
+    plic::release_irq_endpoints(leases)
 }
 
 impl PlatOp for Plat {

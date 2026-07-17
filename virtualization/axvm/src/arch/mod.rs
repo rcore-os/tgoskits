@@ -80,7 +80,7 @@ pub mod platform {
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::irq::{
         register_guest_irq_route as register_loongarch_guest_irq_route,
-        unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
+        revoke_guest_irq_routes as revoke_loongarch_guest_irq_routes,
     };
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::{host_fdt_bootarg, host_phys_to_virt};
@@ -88,12 +88,21 @@ pub mod platform {
     pub use super::riscv64::{host_fdt_bootarg, host_phys_to_virt};
     #[cfg(target_arch = "x86_64")]
     pub use super::x86_64::irq::{
-        register_ioapic_irq_forwarding_activator as register_x86_ioapic_irq_forwarding_activator,
+        IoApicForwardingActivationOps as X86IoApicForwardingActivationOps,
+        register_ioapic_irq_forwarding_activation as register_x86_ioapic_irq_forwarding_activation,
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
+        reserve_ioapic_irq_forwarding_action as reserve_x86_ioapic_irq_forwarding_action,
     };
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    pub use crate::host::arceos::shutdown_host_filesystems;
+    pub use crate::host::arceos::{
+        abort_host_storage_handoff_before_guest, begin_host_storage_handoff,
+        commit_host_storage_handoff_to_guest, return_host_storage_from_guest,
+    };
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    pub use crate::host::storage::{
+        activate_guest_storage_routes, revoke_guest_irq_route_lease, revoke_guest_storage_routes,
+    };
 }
 
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;

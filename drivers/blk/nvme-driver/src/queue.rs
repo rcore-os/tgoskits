@@ -1,14 +1,7 @@
-use core::{
-    cell::UnsafeCell,
-    hint::spin_loop,
-    mem,
-    ptr::NonNull,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::{cell::UnsafeCell, mem, ptr::NonNull};
 
 use dma_api::{CoherentArray, DeviceDma};
-use log::debug;
-use mbarrier::{rmb, wmb};
+use mbarrier::{mb, rmb, wmb};
 use tock_registers::register_bitfields;
 
 use crate::{
@@ -16,19 +9,6 @@ use crate::{
     err::*,
     registers::NvmeReg,
 };
-
-static ID_FACTORY: AtomicU32 = AtomicU32::new(0);
-
-fn next_id() -> u32 {
-    if ID_FACTORY
-        .compare_exchange(0xFFFF, 0, Ordering::Relaxed, Ordering::Acquire)
-        .is_ok()
-    {
-        return 0;
-    }
-
-    ID_FACTORY.fetch_add(1, Ordering::Relaxed)
-}
 
 register_bitfields! [
     u32,
@@ -77,8 +57,8 @@ pub struct CommandSet {
 }
 
 impl CommandSet {
-    pub fn cdw0_from_opcode(opcode: command::Opcode) -> u32 {
-        Self::cdw0_from_opcode_with_cid(opcode, next_id() as u16)
+    pub const fn command_id(&self) -> u16 {
+        (self.cdw0 >> 16) as u16
     }
 
     pub fn cdw0_from_opcode_with_cid(opcode: command::Opcode, cid: u16) -> u32 {
@@ -86,8 +66,8 @@ impl CommandSet {
             .value
     }
 
-    pub fn set_features(feature: Feature) -> Self {
-        let cdw0 = Self::cdw0_from_opcode(command::Opcode::SET_FEATURES);
+    pub(crate) fn set_features_with_cid(feature: Feature, cid: u16) -> Self {
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::SET_FEATURES, cid);
 
         let cdw10 = feature.to_cdw10();
         let mut cdw11 = 0;
@@ -104,15 +84,17 @@ impl CommandSet {
         }
     }
 
-    pub fn create_io_completion_queue(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_io_completion_queue_with_cid(
         qid: u32,
         size: u32,
         paddr: u64,
         physically_contiguous: bool,
         interrupts_enabled: bool,
         interrupt_vector: u32,
+        cid: u16,
     ) -> CommandSet {
-        let cdw0 = Self::cdw0_from_opcode(command::Opcode::CREATE_IO_CQ);
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::CREATE_IO_CQ, cid);
         let prp1 = paddr;
         let cdw10 = (qid & 0xffff) | ((size - 1) & 0xffff) << 16;
 
@@ -129,7 +111,8 @@ impl CommandSet {
         }
     }
 
-    pub fn create_io_submission_queue(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_io_submission_queue_with_cid(
         qid: u32,
         size: u32,
         paddr: u64,
@@ -137,8 +120,9 @@ impl CommandSet {
         priority: u32,
         cqid: u32,
         nvm_set_id: u16,
+        cid: u16,
     ) -> CommandSet {
-        let cdw0 = Self::cdw0_from_opcode(command::Opcode::CREATE_IO_SQ);
+        let cdw0 = Self::cdw0_from_opcode_with_cid(command::Opcode::CREATE_IO_SQ, cid);
         let prp1 = paddr;
         let cdw10 = (qid & 0xffff) | ((size - 1) & 0xffff) << 16;
         let cdw11 = if physically_contiguous { 1 } else { 0 } | priority << 1 | cqid << 16;
@@ -151,10 +135,6 @@ impl CommandSet {
             cdw12: nvm_set_id as _,
             ..Default::default()
         }
-    }
-
-    pub fn nvm_cmd_read(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
-        Self::nvm_cmd_read_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
     }
 
     pub fn nvm_cmd_read_with_cid(
@@ -180,10 +160,6 @@ impl CommandSet {
             cdw12,
             ..Default::default()
         }
-    }
-
-    pub fn nvm_cmd_write(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
-        Self::nvm_cmd_write_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
     }
 
     pub fn nvm_cmd_write_with_cid(
@@ -260,24 +236,6 @@ impl CompletionStatus {
     // }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::CompletionStatus;
-
-    #[test]
-    fn completion_status_ignores_phase_for_success() {
-        assert!(CompletionStatus(0).is_success());
-        assert!(CompletionStatus(1).is_success());
-    }
-
-    #[test]
-    fn completion_status_checks_full_status_field() {
-        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
-        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
-        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
-    }
-}
-
 pub struct NvmeQueue {
     pub qid: u32,
     sq: UnsafeCell<SubmitQueue>,
@@ -289,6 +247,13 @@ pub struct NvmeQueue {
 // Moving that owner between threads does not create aliasing; register access
 // still happens through `&mut self` queue methods.
 unsafe impl Send for NvmeQueue {}
+
+// SAFETY: SQ and CQ storage live in disjoint `UnsafeCell`s. Every published
+// queue has one task-side SQ owner, while its CQ is consumed behind the
+// queue-local claim in the block adapter. The retained admin queue is likewise
+// submitted by one lifecycle worker and consumed by its claimed IRQ endpoint.
+// No method exposes either mutable cell or permits an uncoordinated consumer.
+unsafe impl Sync for NvmeQueue {}
 
 impl NvmeQueue {
     pub fn new(
@@ -334,18 +299,37 @@ impl NvmeQueue {
         self.submit_admin_data(data);
     }
 
-    pub(crate) fn poll_completion(&self) -> Option<NvmeCompletion> {
+    pub(crate) fn submit_admin_command(&self, data: CommandSet) {
+        self.submit_admin_data(data);
+    }
+
+    /// Consumes one completion while an acknowledged IRQ continuation owns CQ service.
+    pub(crate) fn take_irq_completion(&self) -> Option<NvmeCompletion> {
         let (complete, head) = self.with_cq(|cq| {
             let complete = cq.take_complete()?;
             Some((complete, cq.head))
         })?;
-        wmb();
+        // The controller may reuse this CQ slot after observing the head
+        // doorbell, so every CQE read must retire before that MMIO write.
+        mb();
         self.reg().write_cq_y_head_doolbell(self.qid as _, head);
         Some(complete)
     }
 
     pub(crate) fn depth(&self) -> usize {
         self.sq_len().min(self.cq_len())
+    }
+
+    /// Resets retained queue memory after CC.RDY reached zero.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have stopped controller DMA and excluded every IRQ and
+    /// task-side queue consumer before invoking this method.
+    pub(crate) unsafe fn reset_after_controller_disable(&self) {
+        self.with_sq(SubmitQueue::reset);
+        self.with_cq(CompleteQueue::reset);
+        wmb();
     }
 
     pub(crate) fn sq_len(&self) -> usize {
@@ -362,26 +346,6 @@ impl NvmeQueue {
 
     pub(crate) fn cq_bus_addr(&self) -> u64 {
         unsafe { &*self.cq.get() }.bus_addr()
-    }
-
-    pub fn command_sync(&mut self, data: CommandSet) -> Result<()> {
-        self.submit_admin_data(data);
-        let (complete, head) = self.with_cq(|cq| {
-            let complete = cq.spin_for_complete();
-            (complete, cq.head)
-        });
-        wmb();
-        self.reg().write_cq_y_head_doolbell(self.qid as _, head);
-
-        if complete.status.is_success() {
-            Ok(())
-        } else {
-            debug!(
-                "command failed: status {:#x}, result {:#x}",
-                complete.status.0, complete.result
-            );
-            Err(Error::Unknown("send command failed"))
-        }
     }
 }
 
@@ -414,6 +378,13 @@ impl SubmitQueue {
     pub fn bus_addr(&self) -> u64 {
         self.queue.dma_addr().as_u64()
     }
+
+    fn reset(&mut self) {
+        // The controller cannot inspect an SQ entry until the new tail is
+        // published. Resetting the producer index is sufficient and avoids a
+        // potentially large memory sweep in a bounded lifecycle transition.
+        self.tail = 0;
+    }
 }
 
 pub struct CompleteQueue {
@@ -434,21 +405,18 @@ impl CompleteQueue {
 
     // check if there is completed command in completion queue
     fn complete(&self) -> Option<NvmeCompletion> {
-        rmb();
-        let cqe = self.queue.read_cpu(self.head as _)?;
-
-        let complete = cqe.status.phase() != self.phase;
-
-        if complete { Some(cqe) } else { None }
+        read_completed_entry(self.phase, || self.read_head_entry(), rmb)
     }
 
-    fn spin_for_complete(&mut self) -> NvmeCompletion {
-        loop {
-            if let Some(e) = self.take_complete() {
-                return e;
-            }
-            spin_loop();
+    fn read_head_entry(&self) -> Option<NvmeCompletion> {
+        let index = usize::try_from(self.head).ok()?;
+        if index >= self.queue.len() {
+            return None;
         }
+        // SAFETY: `index` was checked against the retained coherent array.
+        // Volatile loads are required because the controller, not a Rust
+        // alias, publishes and may update this memory between observations.
+        Some(unsafe { self.queue.as_ptr().add(index).read_volatile() })
     }
 
     fn take_complete(&mut self) -> Option<NvmeCompletion> {
@@ -470,5 +438,73 @@ impl CompleteQueue {
 
     pub fn bus_addr(&self) -> u64 {
         self.queue.dma_addr().as_u64()
+    }
+
+    fn reset(&mut self) {
+        for index in 0..self.queue.len() {
+            self.queue.set_cpu(index, NvmeCompletion::default());
+        }
+        self.head = 0;
+        self.phase = false;
+    }
+}
+
+fn read_completed_entry(
+    consumer_phase: bool,
+    mut read_entry: impl FnMut() -> Option<NvmeCompletion>,
+    read_barrier: impl FnOnce(),
+) -> Option<NvmeCompletion> {
+    let observed_phase = read_entry()?.status.phase();
+    if observed_phase == consumer_phase {
+        return None;
+    }
+    read_barrier();
+    read_entry()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use core::cell::{Cell, RefCell};
+
+    use super::{CompletionStatus, NvmeCompletion, read_completed_entry};
+
+    #[test]
+    fn completion_status_ignores_phase_for_success() {
+        assert!(CompletionStatus(0).is_success());
+        assert!(CompletionStatus(1).is_success());
+    }
+
+    #[test]
+    fn completion_status_checks_full_status_field() {
+        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
+    }
+
+    #[test]
+    fn completion_phase_orders_cqe_fields_after_the_read_barrier() {
+        let trace = RefCell::new(Vec::new());
+        let reads = Cell::new(0);
+        let completion = NvmeCompletion {
+            status: CompletionStatus(1),
+            ..NvmeCompletion::default()
+        };
+
+        let observed = read_completed_entry(
+            false,
+            || {
+                let read = reads.get();
+                reads.set(read + 1);
+                trace
+                    .borrow_mut()
+                    .push(if read == 0 { "phase" } else { "entry" });
+                Some(completion)
+            },
+            || trace.borrow_mut().push("barrier"),
+        );
+
+        assert!(observed.is_some());
+        assert_eq!(&*trace.borrow(), &["phase", "barrier", "entry"]);
     }
 }

@@ -773,7 +773,7 @@ fn execute_write(target: &AioWriteTarget, offset: u64, data: &[u8]) -> AxResult<
 fn execute_fsync(target: &AioSyncTarget, data_only: bool) -> AxResult<isize> {
     match target {
         AioSyncTarget::File(file) => file.inner().sync(data_only)?,
-        AioSyncTarget::Directory(dir) => dir.inner().sync(data_only)?,
+        AioSyncTarget::Directory(dir) => dir.with_operation(|view| view.sync(data_only))?,
         AioSyncTarget::Memfd(memfd) => memfd.inner().inner().sync(data_only)?,
     }
     Ok(0)

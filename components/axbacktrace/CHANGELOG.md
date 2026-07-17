@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an allocation-free raw backtrace writer for panic and fatal paths.
+
+### Fixed
+
+- Resolve the current task's exact mapped stack capability for every walk,
+  validate complete frame records inside it, and never treat a broad kernel VA
+  range containing unmapped holes as readable panic memory.
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.4...axbacktrace-v0.4.5) - 2026-07-07
 
 ### Other

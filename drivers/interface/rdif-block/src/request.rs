@@ -1,20 +1,54 @@
-use alloc::boxed::Box;
-use core::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use core::fmt;
 
-use dma_api::{CompletedDma, PreparedDma};
+use dma_api::{CpuDmaBuffer, DmaDirection};
 
 use crate::{BlkError, DeviceInfo, QueueInfo, QueueLimits};
 
+/// Identity carried by one queue request.
+///
+/// An interrupt runtime allocates generation-bearing values before submission
+/// so completion routing does not depend on a driver-local allocator or a
+/// later lookup by buffer address. Inline queues always use [`Self::INLINE`]
+/// because ownership never leaves the submission call.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RequestId(usize);
 
 impl RequestId {
+    /// Sentinel used by a [`crate::QueueKind::Inline`] request.
+    ///
+    /// Inline queues return ownership in the submission call and therefore do
+    /// not need a generation, waiter, tag, or completion-table identity. The
+    /// all-ones value is reserved so it can never alias an interrupt-backed
+    /// request identity.
+    pub const INLINE: Self = Self(usize::MAX);
+
+    /// Tries to create an interrupt-backed generation or tag identity.
+    ///
+    /// Returns `None` for the representation reserved by [`Self::INLINE`].
+    pub const fn try_new(id: usize) -> Option<Self> {
+        if id == usize::MAX {
+            None
+        } else {
+            Some(Self(id))
+        }
+    }
+
+    /// Creates an interrupt-backed generation or tag identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `id` is the reserved [`Self::INLINE`] representation.
     pub const fn new(id: usize) -> Self {
-        Self(id)
+        match Self::try_new(id) {
+            Some(id) => id,
+            None => panic!("usize::MAX is reserved for RequestId::INLINE"),
+        }
+    }
+
+    /// Whether this value names a call-stack-only inline request.
+    pub const fn is_inline(self) -> bool {
+        self.0 == Self::INLINE.0
     }
 }
 
@@ -24,12 +58,7 @@ impl From<RequestId> for usize {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestStatus {
-    Pending,
-    Complete,
-}
-
+/// Operation performed by a block request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestOp {
     Read,
@@ -39,6 +68,10 @@ pub enum RequestOp {
     WriteZeroes,
 }
 
+/// Request behavior flags supported independently of completion dispatch.
+///
+/// Completion dispatch is deliberately not a request property. Queues declare
+/// their inline or interrupt completion contract through [`crate::QueueKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestFlags(u32);
 
@@ -48,14 +81,12 @@ impl RequestFlags {
     pub const PREFLUSH: Self = Self(1 << 1);
     pub const SYNC: Self = Self(1 << 2);
     pub const META: Self = Self(1 << 3);
-    pub const POLLED: Self = Self(1 << 4);
-    pub const NOWAIT: Self = Self(1 << 5);
+    pub const NOWAIT: Self = Self(1 << 4);
     pub const ALL_KNOWN: Self = Self(
         Self::FUA.bits()
             | Self::PREFLUSH.bits()
             | Self::SYNC.bits()
             | Self::META.bits()
-            | Self::POLLED.bits()
             | Self::NOWAIT.bits(),
     );
 
@@ -100,73 +131,17 @@ impl Default for RequestFlags {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Segment<'a> {
-    pub virt: *mut u8,
-    pub bus: u64,
-    pub len: usize,
-    _marker: PhantomData<&'a mut [u8]>,
-}
-
-impl<'a> Segment<'a> {
-    /// Creates a block I/O segment from caller-owned CPU and DMA addresses.
-    ///
-    /// # Safety
-    ///
-    /// `virt` must be valid for reads and writes of `len` bytes for the
-    /// whole request lifetime, and `bus` must be the DMA/bus address for the
-    /// same storage. The caller must keep the buffer and DMA mapping alive
-    /// until `poll_request` reports `RequestStatus::Complete`.
-    pub unsafe fn from_raw_parts(virt: *mut u8, bus: u64, len: usize) -> Self {
-        Self {
-            virt,
-            bus,
-            len,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl Deref for Segment<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(self.virt, self.len) }
-    }
-}
-
-impl DerefMut for Segment<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.virt, self.len) }
-    }
-}
-
-pub type Buffer<'a> = Segment<'a>;
-
-pub struct Request<'a> {
-    pub op: RequestOp,
-    pub lba: u64,
-    pub block_count: u32,
-    pub segments: &'a mut [Segment<'a>],
-    pub flags: RequestFlags,
-}
-
-impl Request<'_> {
-    pub fn data_len(&self) -> usize {
-        self.segments.iter().map(|segment| segment.len).sum()
-    }
-
-    pub fn is_data_op(&self) -> bool {
-        matches!(self.op, RequestOp::Read | RequestOp::Write)
-    }
-}
-
-/// Block I/O request that moves DMA backing ownership into the queue.
+/// Block I/O request whose optional data buffer is owned by the runtime.
+///
+/// At the public queue boundary the DMA buffer is always CPU-owned. An
+/// interrupt-backed queue prepares it immediately before arming hardware and
+/// restores CPU ownership after the hardware is quiesced. Consequently both a
+/// submit failure and a terminal completion can return this exact request.
 pub struct OwnedRequest {
     pub op: RequestOp,
     pub lba: u64,
     pub block_count: u32,
-    pub data: Option<PreparedDma>,
+    pub data: Option<CpuDmaBuffer>,
     pub flags: RequestFlags,
 }
 
@@ -180,147 +155,74 @@ impl OwnedRequest {
     }
 }
 
-/// Submit-side failure that returns request ownership to the caller.
+impl fmt::Debug for OwnedRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedRequest")
+            .field("op", &self.op)
+            .field("lba", &self.lba)
+            .field("block_count", &self.block_count)
+            .field("data_len", &self.data_len())
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+/// Submit-side failure that returns request ownership to the runtime.
+#[derive(Debug, thiserror::Error)]
+#[error("block request submission failed: {error}")]
 pub struct SubmitError {
-    pub error: BlkError,
-    request: Box<OwnedRequest>,
+    id: RequestId,
+    error: BlkError,
+    request: OwnedRequest,
 }
 
 impl SubmitError {
-    pub fn new(error: BlkError, request: OwnedRequest) -> Self {
-        Self {
-            error,
-            request: Box::new(request),
-        }
+    pub fn new(id: RequestId, error: BlkError, request: OwnedRequest) -> Self {
+        Self { id, error, request }
     }
 
-    pub fn into_request(self) -> OwnedRequest {
-        *self.request
+    pub const fn id(&self) -> RequestId {
+        self.id
+    }
+
+    pub const fn error(&self) -> BlkError {
+        self.error
     }
 
     pub fn request(&self) -> &OwnedRequest {
         &self.request
     }
+
+    pub fn into_parts(self) -> (RequestId, BlkError, OwnedRequest) {
+        (self.id, self.error, self.request)
+    }
 }
 
-/// One terminal request result with owned DMA backing returned to the runtime.
+/// One terminal result with complete request ownership returned to the runtime.
+#[derive(Debug)]
 pub struct CompletedRequest {
     pub id: RequestId,
     pub result: Result<(), BlkError>,
-    pub data: Option<CompletedDma>,
+    pub request: OwnedRequest,
 }
 
 impl CompletedRequest {
-    pub const fn new(
-        id: RequestId,
-        result: Result<(), BlkError>,
-        data: Option<CompletedDma>,
-    ) -> Self {
-        Self { id, result, data }
-    }
-}
-
-/// Result of polling an owned queue request.
-pub enum RequestPoll {
-    Pending,
-    Ready(CompletedRequest),
-}
-
-/// Queue misuse/query failure.
-///
-/// This is intentionally separate from request I/O completion. Returning this
-/// error must not tell the runtime that the DMA backing is safe to recycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PollError {
-    UnknownRequest,
-    WrongQueue,
-    DriverPoisoned,
-}
-
-impl From<PollError> for BlkError {
-    fn from(value: PollError) -> Self {
-        match value {
-            PollError::UnknownRequest | PollError::WrongQueue => BlkError::InvalidRequest,
-            PollError::DriverPoisoned => BlkError::Io,
+    pub const fn new(id: RequestId, result: Result<(), BlkError>, request: OwnedRequest) -> Self {
+        Self {
+            id,
+            result,
+            request,
         }
     }
 }
 
-pub fn validate_request(info: QueueInfo, request: &Request<'_>) -> Result<(), BlkError> {
-    validate_request_flags(info, request.flags)?;
-    validate_request_shape(info.device, info.limits, request)
-}
-
-pub fn validate_request_shape(
-    info: DeviceInfo,
-    limits: QueueLimits,
-    request: &Request<'_>,
-) -> Result<(), BlkError> {
-    if request.block_count == 0 && !matches!(request.op, RequestOp::Flush) {
-        return Err(BlkError::InvalidRequest);
-    }
-
-    if request.lba >= info.num_blocks
-        || request
-            .lba
-            .checked_add(request.block_count as u64)
-            .is_none_or(|end| end > info.num_blocks)
-    {
-        return Err(BlkError::InvalidBlockIndex(request.lba));
-    }
-
-    match request.op {
-        RequestOp::Read | RequestOp::Write => {
-            let expected = request
-                .block_count
-                .checked_mul(info.logical_block_size as u32)
-                .map(|len| len as usize)
-                .ok_or(BlkError::InvalidRequest)?;
-            if request.segments.is_empty()
-                || request.segments.len() > limits.max_segments
-                || request.data_len() != expected
-            {
-                return Err(BlkError::InvalidRequest);
-            }
-            if request
-                .segments
-                .iter()
-                .any(|segment| segment.len > limits.max_segment_size)
-            {
-                return Err(BlkError::InvalidRequest);
-            }
-        }
-        RequestOp::Flush => {
-            if !request.segments.is_empty() || request.block_count != 0 {
-                return Err(BlkError::InvalidRequest);
-            }
-            if !limits.supports_flush {
-                return Err(BlkError::NotSupported);
-            }
-        }
-        RequestOp::Discard => {
-            if !request.segments.is_empty() {
-                return Err(BlkError::InvalidRequest);
-            }
-            if !limits.supports_discard {
-                return Err(BlkError::NotSupported);
-            }
-        }
-        RequestOp::WriteZeroes => {
-            if !request.segments.is_empty() {
-                return Err(BlkError::InvalidRequest);
-            }
-            if !limits.supports_write_zeroes {
-                return Err(BlkError::NotSupported);
-            }
-        }
-    }
-
-    if request.block_count > limits.max_blocks_per_request {
-        return Err(BlkError::InvalidRequest);
-    }
-
-    Ok(())
+/// Result of submitting an owned request.
+#[derive(Debug)]
+pub enum SubmitOutcome {
+    /// The request completed inline and ownership is already back at runtime.
+    Completed(CompletedRequest),
+    /// The queue owns the request until it reports one terminal completion.
+    Queued,
 }
 
 pub fn validate_owned_request(info: QueueInfo, request: &OwnedRequest) -> Result<(), BlkError> {
@@ -336,6 +238,17 @@ pub fn validate_owned_request_shape(
     if request.block_count == 0 && !matches!(request.op, RequestOp::Flush) {
         return Err(BlkError::InvalidRequest);
     }
+    if info.read_only
+        && matches!(
+            request.op,
+            RequestOp::Write | RequestOp::Discard | RequestOp::WriteZeroes
+        )
+    {
+        return Err(BlkError::NotSupported);
+    }
+    if matches!(request.op, RequestOp::Flush) && request.lba != 0 {
+        return Err(BlkError::InvalidRequest);
+    }
 
     if request.lba >= info.num_blocks
         || request
@@ -347,28 +260,7 @@ pub fn validate_owned_request_shape(
     }
 
     match request.op {
-        RequestOp::Read | RequestOp::Write => {
-            let expected = request
-                .block_count
-                .checked_mul(info.logical_block_size as u32)
-                .map(|len| len as usize)
-                .ok_or(BlkError::InvalidRequest)?;
-            if request.data_len() != expected {
-                return Err(BlkError::InvalidRequest);
-            }
-            let Some(data) = &request.data else {
-                return Err(BlkError::InvalidRequest);
-            };
-            let segments = data.segments();
-            if segments.is_empty()
-                || segments.len() > limits.max_segments
-                || segments
-                    .iter()
-                    .any(|segment| segment.len.get() > limits.max_segment_size)
-            {
-                return Err(BlkError::InvalidRequest);
-            }
-        }
+        RequestOp::Read | RequestOp::Write => validate_data_request(info, limits, request)?,
         RequestOp::Flush => {
             if request.data.is_some() || request.block_count != 0 {
                 return Err(BlkError::InvalidRequest);
@@ -402,6 +294,55 @@ pub fn validate_owned_request_shape(
     Ok(())
 }
 
+fn validate_data_request(
+    info: DeviceInfo,
+    limits: QueueLimits,
+    request: &OwnedRequest,
+) -> Result<(), BlkError> {
+    let expected = usize::try_from(request.block_count)
+        .ok()
+        .and_then(|blocks| blocks.checked_mul(info.logical_block_size))
+        .ok_or(BlkError::InvalidRequest)?;
+    let Some(data) = &request.data else {
+        return Err(BlkError::InvalidRequest);
+    };
+    let segment_capacity = limits.max_segment_size.saturating_mul(limits.max_segments);
+    if request.data_len() != expected
+        || limits.max_segments == 0
+        || data.len().get() > segment_capacity
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+    let direction_matches = match request.op {
+        RequestOp::Read => matches!(
+            data.direction(),
+            DmaDirection::FromDevice | DmaDirection::Bidirectional
+        ),
+        RequestOp::Write => matches!(
+            data.direction(),
+            DmaDirection::ToDevice | DmaDirection::Bidirectional
+        ),
+        RequestOp::Flush | RequestOp::Discard | RequestOp::WriteZeroes => false,
+    };
+    if !direction_matches || data.domain_id() != limits.dma_domain {
+        return Err(BlkError::InvalidRequest);
+    }
+
+    let dma_alignment = u64::try_from(limits.dma_alignment)
+        .ok()
+        .filter(|alignment| *alignment != 0)
+        .ok_or(BlkError::InvalidRequest)?;
+    let dma_start = data.dma_addr().as_u64();
+    let dma_len = u64::try_from(data.len().get()).map_err(|_| BlkError::InvalidRequest)?;
+    let dma_end = dma_start
+        .checked_add(dma_len - 1)
+        .ok_or(BlkError::InvalidRequest)?;
+    if !dma_start.is_multiple_of(dma_alignment) || dma_end > limits.dma_mask {
+        return Err(BlkError::InvalidRequest);
+    }
+    Ok(())
+}
+
 fn validate_request_flags(info: QueueInfo, flags: RequestFlags) -> Result<(), BlkError> {
     let unknown = flags.unsupported_by(RequestFlags::ALL_KNOWN);
     if !unknown.is_empty() {
@@ -422,184 +363,317 @@ fn validate_request_flags(info: QueueInfo, flags: RequestFlags) -> Result<(), Bl
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+    use std::alloc::{alloc_zeroed, dealloc};
+
     use super::*;
+    use crate::{
+        DispatchMode, QueueKind,
+        dma_api::{
+            DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+        },
+    };
 
-    #[test]
-    fn request_status_distinguishes_pending_from_errors() {
-        assert_eq!(RequestStatus::Pending, RequestStatus::Pending);
-        assert_ne!(RequestStatus::Pending, RequestStatus::Complete);
+    struct TestDma;
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            unsafe { self.alloc_contiguous(constraints, layout) }
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+            unsafe { self.dealloc_contiguous(handle) };
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
     }
 
-    #[test]
-    fn segment_carries_cpu_and_dma_addresses() {
-        let mut bytes = [0x5a_u8; 4];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
+    static TEST_DMA: TestDma = TestDma;
 
-        assert_eq!(segment.bus, 0x1000);
-        assert_eq!(&*segment, &[0x5a; 4]);
+    fn dma_buffer(len: usize) -> CpuDmaBuffer {
+        dma_buffer_for_direction(len, DmaDirection::FromDevice)
     }
 
-    #[test]
-    fn request_shape_checks_lba_and_segments() {
-        let info = DeviceInfo::new(8, 512);
-        let limits = QueueLimits {
-            max_blocks_per_request: 8,
-            max_segment_size: 1024,
-            ..QueueLimits::simple(512, u64::MAX)
-        };
-        let mut bytes = [0_u8; 1024];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Read,
-            lba: 1,
-            block_count: 2,
-            segments: &mut segments,
-            flags: RequestFlags::NONE,
-        };
-
-        assert_eq!(validate_request_shape(info, limits, &request), Ok(()));
-    }
-
-    #[test]
-    fn request_shape_rejects_wrong_segment_size() {
-        let info = DeviceInfo::new(8, 512);
-        let limits = QueueLimits::simple(512, u64::MAX);
-        let mut bytes = [0_u8; 512];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Write,
-            lba: 1,
-            block_count: 2,
-            segments: &mut segments,
-            flags: RequestFlags::NONE,
-        };
-
-        assert_eq!(
-            validate_request_shape(info, limits, &request),
-            Err(BlkError::InvalidRequest)
-        );
+    fn dma_buffer_for_direction(len: usize, direction: DmaDirection) -> CpuDmaBuffer {
+        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        CpuDmaBuffer::new_zero(
+            &dma,
+            NonZeroUsize::new(len).expect("test DMA buffer must be non-empty"),
+            1,
+            direction,
+        )
+        .expect("test DMA allocation must succeed")
     }
 
     fn queue_info_with(limits: QueueLimits) -> QueueInfo {
+        let mut sources = crate::IdList::none();
+        sources.insert(0);
         QueueInfo {
             id: 0,
             device: DeviceInfo::new(64, 512),
             limits,
+            kind: QueueKind::Interrupt { sources },
+            dispatch_mode: DispatchMode::Direct,
         }
+    }
+
+    fn flush_request(flags: RequestFlags) -> OwnedRequest {
+        OwnedRequest {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            data: None,
+            flags,
+        }
+    }
+
+    #[test]
+    fn inline_request_identity_is_a_reserved_non_generation_sentinel() {
+        assert_eq!(usize::from(RequestId::INLINE), usize::MAX);
+        assert_eq!(RequestId::try_new(usize::MAX), None);
+        assert_eq!(RequestId::try_new(7), Some(RequestId::new(7)));
+        assert!(RequestId::INLINE.is_inline());
+        assert!(!RequestId::new(7).is_inline());
     }
 
     #[test]
     fn request_validation_rejects_unsupported_flags() {
         let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
-        let mut bytes = [0_u8; 512];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Write,
-            lba: 0,
-            block_count: 1,
-            segments: &mut segments,
-            flags: RequestFlags::FUA,
-        };
 
         assert_eq!(
-            validate_request(info, &request),
+            validate_owned_request(info, &flush_request(RequestFlags::FUA)),
             Err(BlkError::NotSupported)
         );
     }
 
     #[test]
     fn request_validation_rejects_unknown_flags() {
-        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
-        let mut bytes = [0_u8; 512];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Read,
-            lba: 0,
-            block_count: 1,
-            segments: &mut segments,
-            flags: RequestFlags(1 << 24),
-        };
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.supports_flush = true;
+        let info = queue_info_with(limits);
 
         assert_eq!(
-            validate_request(info, &request),
+            validate_owned_request(info, &flush_request(RequestFlags(1 << 24))),
             Err(BlkError::InvalidRequest)
         );
     }
 
     #[test]
-    fn request_validation_accepts_supported_flags() {
+    fn flush_validation_accepts_cpu_owned_request_without_data() {
         let mut limits = QueueLimits::simple(512, u64::MAX);
-        limits.supported_flags = RequestFlags::FUA;
+        limits.supports_flush = true;
         let info = queue_info_with(limits);
-        let mut bytes = [0_u8; 512];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Write,
-            lba: 0,
-            block_count: 1,
-            segments: &mut segments,
-            flags: RequestFlags::FUA,
-        };
 
-        assert_eq!(validate_request(info, &request), Ok(()));
+        assert_eq!(
+            validate_owned_request(info, &flush_request(RequestFlags::NONE)),
+            Ok(())
+        );
     }
 
     #[test]
-    fn preflush_flag_requires_flush_support() {
-        let mut limits = QueueLimits::simple(512, u64::MAX);
-        limits.supported_flags = RequestFlags::PREFLUSH;
-        let info = queue_info_with(limits);
-        let mut bytes = [0_u8; 512];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Write,
+    fn request_length_does_not_truncate_a_large_logical_block_size() {
+        let logical_block_size = u32::MAX as usize + 513;
+        let mut limits = QueueLimits::simple(logical_block_size, u64::MAX);
+        limits.max_segment_size = logical_block_size;
+        let request = OwnedRequest {
+            op: RequestOp::Read,
             lba: 0,
             block_count: 1,
-            segments: &mut segments,
-            flags: RequestFlags::PREFLUSH,
+            data: Some(dma_buffer(512)),
+            flags: RequestFlags::NONE,
         };
 
         assert_eq!(
-            validate_request(info, &request),
+            validate_owned_request_shape(DeviceInfo::new(1, logical_block_size), limits, &request,),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn submit_error_returns_the_same_request_identity_fields() {
+        let request_id = RequestId::new(33);
+        let error = SubmitError::new(
+            request_id,
+            BlkError::Retry,
+            flush_request(RequestFlags::SYNC),
+        );
+
+        assert_eq!(error.id(), request_id);
+        assert_eq!(error.error(), BlkError::Retry);
+        assert_eq!(error.request().flags, RequestFlags::SYNC);
+        let (returned_id, returned_error, request) = error.into_parts();
+        assert_eq!(returned_id, request_id);
+        assert_eq!(returned_error, BlkError::Retry);
+        assert_eq!(request.op, RequestOp::Flush);
+        assert_eq!(request.lba, 0);
+    }
+
+    #[test]
+    fn submit_error_returns_the_exact_dma_backing_without_reallocation() {
+        let data = dma_buffer(512);
+        let original_cpu_pointer = data.cpu_ptr();
+        let original_dma_address = data.dma_addr();
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba: 5,
+            block_count: 1,
+            data: Some(data),
+            flags: RequestFlags::SYNC,
+        };
+
+        let (_, error, returned) =
+            SubmitError::new(RequestId::new(37), BlkError::Retry, request).into_parts();
+        let returned_data = returned
+            .data
+            .expect("rejected data request must return its DMA backing");
+
+        assert_eq!(error, BlkError::Retry);
+        assert_eq!(returned_data.cpu_ptr(), original_cpu_pointer);
+        assert_eq!(returned_data.dma_addr(), original_dma_address);
+    }
+
+    #[test]
+    fn request_validation_rejects_dma_direction_mismatch() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.dma_alignment = 1;
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba: 0,
+            block_count: 1,
+            data: Some(dma_buffer_for_direction(512, DmaDirection::ToDevice)),
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(
+            validate_owned_request(queue_info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_dma_domain_mismatch() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.dma_alignment = 1;
+        limits.dma_domain = crate::dma_api::DmaDomainId::from_raw(2);
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba: 0,
+            block_count: 1,
+            data: Some(dma_buffer(512)),
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(
+            validate_owned_request(queue_info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_dma_backing_outside_the_queue_mask() {
+        let data = dma_buffer(512);
+        let dma_start = data.dma_addr().as_u64();
+        let mut limits = QueueLimits::simple(512, dma_start.saturating_sub(1));
+        limits.dma_alignment = 1;
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba: 0,
+            block_count: 1,
+            data: Some(data),
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(
+            validate_owned_request(queue_info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_write_operations_on_read_only_devices() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.dma_alignment = 1;
+        let mut info = queue_info_with(limits);
+        info.device.read_only = true;
+        let request = OwnedRequest {
+            op: RequestOp::Write,
+            lba: 0,
+            block_count: 1,
+            data: Some(dma_buffer_for_direction(512, DmaDirection::ToDevice)),
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(
+            validate_owned_request(info, &request),
             Err(BlkError::NotSupported)
         );
     }
 
     #[test]
-    fn request_validation_rejects_transfer_larger_than_hard_block_limit() {
-        let info = queue_info_with(QueueLimits {
-            dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::legacy_global(),
-            dma_alignment: 512,
-            max_inflight: 1,
-            max_blocks_per_request: 2,
-            max_segments: 1,
-            max_segment_size: 4096,
-            supported_flags: RequestFlags::NONE,
-            supports_flush: false,
-            supports_discard: false,
-            supports_write_zeroes: false,
-        });
-        let mut bytes = [0_u8; 1536];
-        let segment = unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), 0x1000, bytes.len()) };
-        let mut segments = [segment];
-        let request = Request {
-            op: RequestOp::Write,
+    fn flush_request_cannot_smuggle_a_logical_block_address() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.supports_flush = true;
+        let mut request = flush_request(RequestFlags::NONE);
+        request.lba = 5;
+
+        assert_eq!(
+            validate_owned_request(queue_info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn request_validation_accounts_for_the_full_segment_budget() {
+        let mut limits = QueueLimits::simple(512, u64::MAX);
+        limits.dma_alignment = 1;
+        limits.max_blocks_per_request = 2;
+        limits.max_segments = 2;
+        limits.max_segment_size = 512;
+        let request = OwnedRequest {
+            op: RequestOp::Read,
             lba: 0,
-            block_count: 3,
-            segments: &mut segments,
+            block_count: 2,
+            data: Some(dma_buffer(1024)),
             flags: RequestFlags::NONE,
         };
 
         assert_eq!(
-            validate_request(info, &request),
-            Err(BlkError::InvalidRequest)
+            validate_owned_request(queue_info_with(limits), &request),
+            Ok(())
         );
     }
 }

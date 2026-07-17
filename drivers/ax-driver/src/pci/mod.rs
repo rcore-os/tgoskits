@@ -1,6 +1,4 @@
 use alloc::format;
-#[cfg(virtio_dev)]
-use alloc::sync::Arc;
 
 use ax_kspin::SpinRaw as Mutex;
 use heapless::Vec as ArrayVec;
@@ -18,7 +16,7 @@ use rdrive::{
 };
 #[cfg(virtio_dev)]
 use virtio_drivers::transport::{
-    DeviceType, Transport,
+    DeviceType,
     pci::{
         PciTransport,
         bus::{ConfigurationAccess, DeviceFunction, DeviceFunctionInfo, HeaderType, PciRoot},
@@ -28,13 +26,17 @@ use virtio_drivers::transport::{
 
 use crate::BindingIrq;
 #[cfg(virtio_dev)]
-use crate::virtio::VirtIoHalImpl;
+use crate::virtio::{VirtIoHalImpl, VirtIoTransport};
 
 mod acpi;
 mod fdt;
+mod intx;
 pub mod msi;
 pub(crate) use acpi::acpi_irq_for_endpoint;
 pub(crate) use fdt::fdt_irq_for_endpoint;
+pub use intx::PciIntxIrqLease;
+#[cfg(virtio_dev)]
+use intx::SharedPciEndpoint;
 pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
@@ -501,535 +503,6 @@ const fn legacy_line_to_irq_for_platform(line: u8, is_x86_64: bool) -> usize {
     base + line as usize
 }
 
-#[cfg(test)]
-mod tests {
-    use alloc::string::ToString;
-    use core::cell::Cell;
-
-    use axklib::{
-        AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle,
-        IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
-    };
-    use rdrive::probe::{
-        OnProbeError,
-        pci::{PciAddress, PciInfo, PciIntxRoute},
-    };
-
-    use super::{
-        DynamicPciIrqSource, LegacyIrqRoute, legacy_line_to_irq_for_platform,
-        prepare_intx_passthrough_command, resolve_intx_binding_with_resolvers,
-        resolve_intx_irq_with_resolvers, select_dynamic_pci_irq_source,
-        unmask_intx_passthrough_command,
-    };
-    use crate::{BindingIrq, BindingIrqSource};
-    struct KlibImpl;
-    impl_trait! {
-        impl Klib for KlibImpl {
-            fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
-                PhysAddr::from_usize(addr.as_usize())
-            }
-
-            fn mem_make_dma_coherent_uncached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_alloc_pages(
-                _dma_mask: u64,
-                _num_pages: usize,
-                _align: usize,
-            ) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
-
-            fn time_busy_wait(_dur: core::time::Duration) {}
-
-            fn time_monotonic_nanos() -> u64 {
-                0
-            }
-
-            fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
-                false
-            }
-
-            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
-                Ok(())
-            }
-
-            fn irq_request_shared(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_shared_disabled(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_percpu(
-                _irq: IrqId,
-                _cpus: IrqCpuMask,
-                _handler: ConcurrentBoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_free(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_enable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_disable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-        }
-    }
-
-    #[test]
-    fn x86_64_legacy_line_uses_dynamic_ioapic_base() {
-        assert_eq!(legacy_line_to_irq_for_platform(9, true), 0x39);
-    }
-
-    #[test]
-    fn non_x86_64_legacy_line_remains_raw_irq() {
-        assert_eq!(legacy_line_to_irq_for_platform(9, false), 9);
-    }
-
-    #[test]
-    fn legacy_route_uses_swizzled_root_device_and_pin() {
-        let route = LegacyIrqRoute::from_irqs(0, 8, &[40, 41, 42, 43]).unwrap();
-        let info = PciInfo {
-            address: PciAddress::new(0, 2, 7, 0),
-            interrupt_pin: 1,
-            interrupt_line: 0,
-            intx_route: Some(PciIntxRoute {
-                root_device: 2,
-                root_function: 0,
-                root_pin: 4,
-            }),
-        };
-
-        assert_eq!(route.irq_for(info), Some(41));
-    }
-
-    #[test]
-    fn legacy_route_ignores_endpoints_without_intx_route() {
-        let route = LegacyIrqRoute::from_irqs(0, 8, &[40, 41, 42, 43]).unwrap();
-        let info = PciInfo {
-            address: PciAddress::new(0, 2, 7, 0),
-            interrupt_pin: 1,
-            interrupt_line: 0,
-            intx_route: None,
-        };
-
-        assert_eq!(route.irq_for(info), None);
-    }
-
-    #[test]
-    fn resolve_intx_irq_source_prefers_acpi_when_both_backends_exist() {
-        assert_eq!(
-            select_dynamic_pci_irq_source(true, true),
-            Some(DynamicPciIrqSource::Acpi)
-        );
-    }
-
-    #[test]
-    fn resolve_intx_irq_acpi_error_does_not_fallback_to_fdt_or_legacy() {
-        let info = endpoint_with_intx_route();
-        let fdt_called = Cell::new(false);
-        let legacy_called = Cell::new(false);
-        let line_called = Cell::new(false);
-
-        let err = resolve_intx_irq_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Acpi),
-            |_| Err(OnProbeError::other("acpi irq failed")),
-            |_| {
-                fdt_called.set(true);
-                Ok(Some(55))
-            },
-            |_| None,
-            |_| {
-                legacy_called.set(true);
-                Some(66)
-            },
-            |_| {
-                line_called.set(true);
-                Some(77)
-            },
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("acpi irq failed"));
-        assert!(!fdt_called.get());
-        assert!(!legacy_called.get());
-        assert!(!line_called.get());
-    }
-
-    #[test]
-    fn resolve_intx_binding_acpi_keeps_gsi_source_native() {
-        let info = endpoint_with_intx_route();
-        let irq = resolve_intx_binding_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Acpi),
-            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
-            |_| Ok(Some(BindingIrq::acpi_gsi(19))),
-            |_| None,
-            |_| Some(66),
-            |_| Some(77),
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(irq.legacy_num(), None);
-        assert_eq!(
-            irq.as_irq_source(),
-            Some(irq_framework::IrqSource::AcpiGsi(18))
-        );
-    }
-
-    #[test]
-    fn resolve_intx_binding_acpi_keeps_route_metadata_native() {
-        let info = endpoint_with_intx_route();
-        let controller = rdrive::DeviceId::new();
-        let route = irq_framework::AcpiGsiRoute {
-            gsi: 10,
-            controller: irq_framework::AcpiGsiController::IoApic,
-            controller_id: 0,
-            controller_address: 0xfec0_0000,
-            controller_input: 10,
-            trigger: irq_framework::AcpiIrqTrigger::Level,
-            polarity: irq_framework::AcpiIrqPolarity::ActiveLow,
-        };
-        let irq = resolve_intx_binding_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Acpi),
-            |_| Ok(Some(BindingIrq::acpi_gsi_route(route))),
-            |_| {
-                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
-                    controller,
-                    [0, 42, 4],
-                )))
-            },
-            |_| None,
-            |_| Some(66),
-            |_| Some(77),
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(irq.legacy_num(), None);
-        assert_eq!(
-            irq.as_irq_source(),
-            Some(irq_framework::IrqSource::AcpiGsiRoute(route))
-        );
-    }
-
-    #[test]
-    fn resolve_intx_binding_fdt_keeps_interrupt_cells_native() {
-        let info = endpoint_with_intx_route();
-        let controller = rdrive::DeviceId::new();
-        let irq = resolve_intx_binding_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Fdt),
-            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
-            |_| {
-                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
-                    controller,
-                    [0, 42, 4],
-                )))
-            },
-            |_| None,
-            |_| Some(66),
-            |_| Some(77),
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(irq.legacy_num(), None);
-        let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
-            panic!("expected native FDT interrupt binding");
-        };
-        assert_eq!(spec.controller, controller);
-        assert_eq!(spec.cells, [0, 42, 4]);
-    }
-
-    #[test]
-    fn resolve_intx_binding_fdt_prefers_registered_native_legacy_route() {
-        let info = endpoint_with_intx_route();
-        let fdt_called = Cell::new(false);
-        let legacy_called = Cell::new(false);
-        let line_called = Cell::new(false);
-        let controller = rdrive::DeviceId::new();
-        let irq = resolve_intx_binding_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Fdt),
-            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
-            |_| {
-                fdt_called.set(true);
-                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
-                    controller,
-                    [0, 0, 4],
-                )))
-            },
-            |_| {
-                Some(BindingIrq::fdt_interrupt_with_controller(
-                    controller,
-                    [0, 245, 4],
-                ))
-            },
-            |_| {
-                legacy_called.set(true);
-                Some(66)
-            },
-            |_| {
-                line_called.set(true);
-                Some(77)
-            },
-        )
-        .unwrap()
-        .unwrap();
-
-        assert!(!fdt_called.get());
-        assert!(!legacy_called.get());
-        assert!(!line_called.get());
-        assert_eq!(irq.legacy_num(), None);
-        let BindingIrq::Source(BindingIrqSource::FdtInterrupt(spec)) = irq else {
-            panic!("expected native FDT interrupt binding");
-        };
-        assert_eq!(spec.controller, controller);
-        assert_eq!(spec.cells, [0, 245, 4]);
-    }
-
-    #[test]
-    fn resolve_intx_binding_without_dynamic_firmware_uses_legacy_irq_line() {
-        let info = endpoint_with_intx_route();
-        let controller = rdrive::DeviceId::new();
-        let irq = resolve_intx_binding_with_resolvers(
-            info,
-            None,
-            |_| Ok(Some(BindingIrq::acpi_gsi(18))),
-            |_| {
-                Ok(Some(BindingIrq::fdt_interrupt_with_controller(
-                    controller,
-                    [0, 42, 4],
-                )))
-            },
-            |_| None,
-            |_| None,
-            |_| Some(77),
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(irq.legacy_num(), Some(77));
-        assert_eq!(irq.as_irq_source(), None);
-    }
-
-    #[test]
-    fn resolve_intx_irq_fdt_none_does_not_fallback_to_legacy_or_interrupt_line() {
-        let info = endpoint_with_intx_route();
-        let acpi_called = Cell::new(false);
-        let legacy_called = Cell::new(false);
-        let line_called = Cell::new(false);
-
-        let irq = resolve_intx_irq_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Fdt),
-            |_| {
-                acpi_called.set(true);
-                Ok(Some(44))
-            },
-            |_| Ok(None),
-            |_| None,
-            |_| {
-                legacy_called.set(true);
-                Some(66)
-            },
-            |_| {
-                line_called.set(true);
-                Some(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(irq, None);
-        assert!(!acpi_called.get());
-        assert!(!legacy_called.get());
-        assert!(!line_called.get());
-    }
-
-    #[test]
-    fn resolve_intx_irq_acpi_none_does_not_fallback_to_legacy_or_interrupt_line() {
-        let info = endpoint_with_intx_route();
-        let fdt_called = Cell::new(false);
-        let legacy_called = Cell::new(false);
-        let line_called = Cell::new(false);
-
-        let irq = resolve_intx_irq_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Acpi),
-            |_| Ok(None),
-            |_| {
-                fdt_called.set(true);
-                Ok(Some(55))
-            },
-            |_| None,
-            |_| {
-                legacy_called.set(true);
-                Some(66)
-            },
-            |_| {
-                line_called.set(true);
-                Some(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(irq, None);
-        assert!(!fdt_called.get());
-        assert!(!legacy_called.get());
-        assert!(!line_called.get());
-    }
-
-    #[test]
-    fn resolve_intx_irq_dynamic_source_without_intx_route_does_not_use_interrupt_line() {
-        let info = PciInfo {
-            intx_route: None,
-            ..endpoint_with_intx_route()
-        };
-        let acpi_called = Cell::new(false);
-        let fdt_called = Cell::new(false);
-        let legacy_called = Cell::new(false);
-        let line_called = Cell::new(false);
-
-        let irq = resolve_intx_irq_with_resolvers(
-            info,
-            Some(DynamicPciIrqSource::Acpi),
-            |_| {
-                acpi_called.set(true);
-                Ok(Some(44))
-            },
-            |_| {
-                fdt_called.set(true);
-                Ok(Some(55))
-            },
-            |_| None,
-            |_| {
-                legacy_called.set(true);
-                Some(66)
-            },
-            |_| {
-                line_called.set(true);
-                Some(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(irq, None);
-        assert!(!acpi_called.get());
-        assert!(!fdt_called.get());
-        assert!(!legacy_called.get());
-        assert!(!line_called.get());
-    }
-
-    #[test]
-    fn resolve_intx_irq_static_source_keeps_legacy_and_interrupt_line_fallback() {
-        let info = endpoint_with_intx_route();
-        let acpi_called = Cell::new(false);
-        let fdt_called = Cell::new(false);
-        let line_called = Cell::new(false);
-
-        let irq = resolve_intx_irq_with_resolvers(
-            info,
-            None,
-            |_| {
-                acpi_called.set(true);
-                Ok(Some(44))
-            },
-            |_| {
-                fdt_called.set(true);
-                Ok(Some(55))
-            },
-            |_| None,
-            |_| None,
-            |line| {
-                line_called.set(true);
-                assert_eq!(line, 9);
-                Some(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(irq, Some(77));
-        assert!(!acpi_called.get());
-        assert!(!fdt_called.get());
-        assert!(line_called.get());
-    }
-
-    #[test]
-    fn prepare_intx_passthrough_command_masks_native_intx_until_guest_route_ready() {
-        let mut command = pcie::CommandRegister::INTERRUPT_DISABLE;
-
-        command = prepare_intx_passthrough_command(command);
-
-        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
-
-        command = prepare_intx_passthrough_command(pcie::CommandRegister::empty());
-
-        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
-    }
-
-    #[test]
-    fn unmask_intx_passthrough_command_clears_native_intx_mask() {
-        let mut command = pcie::CommandRegister::INTERRUPT_DISABLE
-            | pcie::CommandRegister::IO_ENABLE
-            | pcie::CommandRegister::MEMORY_ENABLE
-            | pcie::CommandRegister::BUS_MASTER_ENABLE;
-
-        command = unmask_intx_passthrough_command(command);
-
-        assert!(command.contains(pcie::CommandRegister::IO_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::MEMORY_ENABLE));
-        assert!(command.contains(pcie::CommandRegister::BUS_MASTER_ENABLE));
-        assert!(!command.contains(pcie::CommandRegister::INTERRUPT_DISABLE));
-    }
-
-    fn endpoint_with_intx_route() -> PciInfo {
-        PciInfo {
-            address: PciAddress::new(0, 2, 7, 0),
-            interrupt_pin: 1,
-            interrupt_line: 9,
-            intx_route: Some(PciIntxRoute {
-                root_device: 2,
-                root_function: 0,
-                root_pin: 1,
-            }),
-        }
-    }
-}
 pub fn register_legacy_irq_route(bus_start: u8, bus_end: u8, irq: usize) {
     register_legacy_irq_routes(bus_start, bus_end, &[irq]);
 }
@@ -1084,7 +557,7 @@ pub fn register_native_legacy_irq_route(
 pub fn take_virtio_transport(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
-) -> Result<impl Transport + 'static, OnProbeError> {
+) -> Result<impl VirtIoTransport, OnProbeError> {
     take_virtio_transport_with_intx_policy(endpoint, expected, false)
 }
 
@@ -1092,8 +565,24 @@ pub fn take_virtio_transport(
 pub fn take_virtio_transport_masked(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
-) -> Result<impl Transport + 'static, OnProbeError> {
+) -> Result<impl VirtIoTransport, OnProbeError> {
     take_virtio_transport_with_intx_policy(endpoint, expected, true)
+}
+
+/// Takes a VirtIO PCI transport together with its move-only INTx gate.
+///
+/// This block-specific path leaves the endpoint masked until the block runtime
+/// has installed every IRQ action and enables the returned binding lease.
+#[cfg(virtio_dev)]
+pub fn take_virtio_block_transport(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    binding: crate::BindingInfo,
+) -> Result<(impl VirtIoTransport, PciIntxIrqLease), OnProbeError> {
+    let (bdf, endpoint) = take_matched_virtio_endpoint(endpoint, expected, true)?;
+    let irq_lease = PciIntxIrqLease::from_shared(endpoint.clone(), binding);
+    let transport = virtio_transport_from_endpoint(bdf, endpoint)?;
+    Ok((transport, irq_lease))
 }
 
 #[cfg(virtio_dev)]
@@ -1101,7 +590,17 @@ fn take_virtio_transport_with_intx_policy(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
     mask_intx_after_match: bool,
-) -> Result<impl Transport + 'static, OnProbeError> {
+) -> Result<impl VirtIoTransport, OnProbeError> {
+    let (bdf, endpoint) = take_matched_virtio_endpoint(endpoint, expected, mask_intx_after_match)?;
+    virtio_transport_from_endpoint(bdf, endpoint)
+}
+
+#[cfg(virtio_dev)]
+fn take_matched_virtio_endpoint(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    mask_intx_after_match: bool,
+) -> Result<(DeviceFunction, SharedPciEndpoint), OnProbeError> {
     match (endpoint.vendor_id(), endpoint.device_id()) {
         (0x1af4, 0x1000..=0x107f) => {}
         _ => return Err(OnProbeError::NotMatch),
@@ -1119,7 +618,15 @@ fn take_virtio_transport_with_intx_policy(
     }
     enable_virtio_pci_command(endpoint);
 
-    let config_access = EndpointConfigAccess::new(bdf, endpoint.take());
+    Ok((bdf, SharedPciEndpoint::new(endpoint.take())))
+}
+
+#[cfg(virtio_dev)]
+fn virtio_transport_from_endpoint(
+    bdf: DeviceFunction,
+    endpoint: SharedPciEndpoint,
+) -> Result<impl VirtIoTransport, OnProbeError> {
+    let config_access = EndpointConfigAccess::new(bdf, endpoint);
     remember_taken_endpoint_config(&config_access);
 
     let mut root = PciRoot::new(config_access);
@@ -1205,16 +712,13 @@ struct TakenEndpointConfig {
 #[cfg(virtio_dev)]
 struct EndpointConfigAccess {
     bdf: DeviceFunction,
-    endpoint: Arc<Mutex<Endpoint>>,
+    endpoint: SharedPciEndpoint,
 }
 
 #[cfg(virtio_dev)]
 impl EndpointConfigAccess {
-    fn new(bdf: DeviceFunction, endpoint: Endpoint) -> Self {
-        Self {
-            bdf,
-            endpoint: Arc::new(Mutex::new(endpoint)),
-        }
+    fn new(bdf: DeviceFunction, endpoint: SharedPciEndpoint) -> Self {
+        Self { bdf, endpoint }
     }
 
     fn assert_same_function(&self, device_function: DeviceFunction) {
@@ -1231,7 +735,7 @@ impl EndpointConfigAccess {
     where
         F: FnOnce(CommandRegister) -> CommandRegister,
     {
-        self.endpoint.lock().update_command(f);
+        self.endpoint.update_command(f);
     }
 }
 
@@ -1239,18 +743,21 @@ impl EndpointConfigAccess {
 impl ConfigurationAccess for EndpointConfigAccess {
     fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
         self.assert_same_function(device_function);
-        self.endpoint.lock().read(register_offset.into())
+        self.endpoint.read(register_offset.into())
     }
 
     fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32) {
         self.assert_same_function(device_function);
-        self.endpoint.lock().write(register_offset.into(), data);
+        self.endpoint.write(register_offset.into(), data);
     }
 
     unsafe fn unsafe_clone(&self) -> Self {
         Self {
             bdf: self.bdf,
-            endpoint: Arc::clone(&self.endpoint),
+            endpoint: self.endpoint.clone(),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -16,6 +16,7 @@ pub(crate) mod hvc;
 mod ivc;
 pub(crate) mod vcpus;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
@@ -30,22 +31,108 @@ static VMM: crate::HostWaitQueueHandle = crate::HostWaitQueueHandle::new();
 /// The number of running VMs. This is used to determine when to exit the VMM.
 static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+struct RunningVmStartPermit {
+    armed: bool,
+}
+
+impl RunningVmStartPermit {
+    fn reserve() -> Self {
+        RUNNING_VM_COUNT
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .expect("running VM count overflowed");
+        Self { armed: true }
+    }
+
+    fn commit(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RunningVmStartPermit {
+    fn drop(&mut self) {
+        if self.armed {
+            sub_running_vm_count(1);
+        }
+    }
+}
+
+/// One default VM that could not enter its first runtime generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DefaultVmStartFailure {
+    vm_id: usize,
+    error: AxVmError,
+}
+
+impl DefaultVmStartFailure {
+    pub(crate) const fn new(vm_id: usize, error: AxVmError) -> Self {
+        Self { vm_id, error }
+    }
+
+    /// Returns the VM identifier whose start operation failed.
+    pub const fn vm_id(&self) -> usize {
+        self.vm_id
+    }
+
+    /// Returns the typed start failure reported by the VM lifecycle.
+    pub const fn error(&self) -> &AxVmError {
+        &self.error
+    }
+}
+
+/// Result of starting every registered default VM and waiting for successes.
+///
+/// A failed VM is not counted as running. Successfully started peers are still
+/// joined before this report is returned, which lets the application revoke
+/// guest routes and return any exclusive host resource before surfacing the
+/// start failures.
+#[derive(Debug, Default)]
+#[must_use = "default VM start failures must be reported after resource cleanup"]
+pub struct DefaultVmRunReport {
+    start_failures: Vec<DefaultVmStartFailure>,
+}
+
+impl DefaultVmRunReport {
+    /// Returns whether every registered VM entered its runtime generation.
+    pub fn all_started(&self) -> bool {
+        self.start_failures.is_empty()
+    }
+
+    /// Returns every VM start failure in registry traversal order.
+    pub fn start_failures(&self) -> &[DefaultVmStartFailure] {
+        &self.start_failures
+    }
+
+    fn record_start_failure(&mut self, vm_id: usize, error: AxVmError) {
+        self.start_failures
+            .push(DefaultVmStartFailure::new(vm_id, error));
+    }
+}
+
 /// Initialize runtime state for already registered VMs.
 pub fn init() {
     info!("Initializing VMM...");
 }
 
-/// Start the VMM.
-pub fn start() {
+/// Start the VMM and report VMs that could not enter their runtime generation.
+pub fn start() -> DefaultVmRunReport {
     info!("VMM starting, booting VMs...");
+    let mut report = DefaultVmRunReport::default();
+    let mut started_vms = Vec::new();
     for vm in crate::get_vm_list() {
+        let running = RunningVmStartPermit::reserve();
         match vm.start() {
             Ok(_) => {
-                RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
+                running.commit();
                 vcpus::notify_primary_vcpu(vm.id());
-                info!("VM[{}] boot success", vm.id())
+                info!("VM[{}] boot success", vm.id());
+                started_vms.push(vm);
             }
-            Err(err) => warn!("VM[{}] boot failed, error {:?}", vm.id(), err),
+            Err(error) => {
+                warn!("VM[{}] boot failed, error {:?}", vm.id(), error);
+                report.record_start_failure(vm.id(), error);
+            }
         }
     }
 
@@ -55,14 +142,23 @@ pub fn start() {
         debug!("a VM exited, current running VM count: {vm_count}");
         vm_count == 0
     });
+    for vm in started_vms {
+        if let Some(error) = vm.take_startup_failure() {
+            report.record_start_failure(vm.id(), error);
+        }
+    }
+    report
+        .start_failures
+        .sort_by_key(DefaultVmStartFailure::vm_id);
+    report
 }
 
-pub fn add_running_vm_count(count: usize) {
-    RUNNING_VM_COUNT.fetch_add(count, Ordering::Release);
-}
-
-pub fn sub_running_vm_count(count: usize) {
-    RUNNING_VM_COUNT.fetch_sub(count, Ordering::Release);
+pub(crate) fn sub_running_vm_count(count: usize) {
+    let previous = RUNNING_VM_COUNT.fetch_sub(count, Ordering::AcqRel);
+    assert!(previous >= count, "running VM count underflowed");
+    if previous == count {
+        crate::host::task::wait_queue_wake(&VMM, 1);
+    }
 }
 
 fn reset_starts_counted_runtime(previous_status: VmStatus) -> bool {
@@ -83,8 +179,9 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
         return ax_err!(BadState, "VM cannot be started from its current state");
     }
 
+    let running = RunningVmStartPermit::reserve();
     vm.start()?;
-    add_running_vm_count(1);
+    running.commit();
     vcpus::notify_primary_vcpu(vm_id);
     Ok(())
 }
@@ -106,9 +203,10 @@ pub fn resume_vm(vm_id: usize) -> AxVmResult {
 pub fn reset_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
     let previous_status = vm.status();
+    let running = reset_starts_counted_runtime(previous_status).then(RunningVmStartPermit::reserve);
     vm.reset()?;
-    if reset_starts_counted_runtime(previous_status) {
-        add_running_vm_count(1);
+    if let Some(running) = running {
+        running.commit();
     }
     vcpus::notify_primary_vcpu(vm_id);
     Ok(())
@@ -155,5 +253,24 @@ mod tests {
     fn missing_vm_is_reported_with_its_id() {
         let vm_id = usize::MAX;
         assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
+    }
+
+    #[test]
+    fn default_vm_run_report_preserves_every_start_failure() {
+        let mut report = DefaultVmRunReport::default();
+        let first = AxVmError::VmNotFound { vm_id: 7 };
+        let second = AxVmError::VmNotFound { vm_id: 11 };
+
+        report.record_start_failure(7, first.clone());
+        report.record_start_failure(11, second.clone());
+
+        assert_eq!(
+            report.start_failures(),
+            [
+                DefaultVmStartFailure::new(7, first),
+                DefaultVmStartFailure::new(11, second),
+            ]
+        );
+        assert!(!report.all_started());
     }
 }

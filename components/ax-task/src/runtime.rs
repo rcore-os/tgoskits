@@ -178,9 +178,15 @@ pub enum RuntimeSchedulerEntry {
 #[repr(u32)]
 pub enum RuntimeSchedulerReturn {
     /// Resume ordinary task context with local IRQs enabled.
-    Task      = 0,
+    Task        = 0,
     /// Resume the architecture trap epilogue with local IRQs disabled.
-    IrqReturn = 1,
+    IrqReturn   = 1,
+    /// Resume the outer preemption-guard exit with local IRQs disabled.
+    ///
+    /// The guard that entered [`RuntimeSchedulerEntry::PreemptExit`] owns the
+    /// saved IRQ state. The scheduler only finishes its CPU-local baton; it
+    /// must not enable IRQs before returning that ownership to the guard.
+    PreemptExit = 2,
 }
 
 /// Result of an operation that creates one opaque runtime resource.
@@ -325,6 +331,27 @@ pub struct SchedSwitchRecord {
     pub reason: u32,
 }
 
+/// Allocation-free runtime-owned timer expiration delivered at a scheduler safe point.
+///
+/// The timer IRQ only copies this information into CPU-local fixed storage.
+/// The scheduler later forwards the record after dropping its owner-only timer
+/// borrow, so a runtime may publish bounded deferred work without running an
+/// arbitrary callback in hard IRQ context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RuntimeTimerEventV1 {
+    /// Runtime-defined shutdown-lifetime owner address.
+    pub owner: usize,
+    /// Address of the pinned [`crate::timer::TimerNode`] that expired.
+    pub node: usize,
+    /// Non-zero runtime-defined owner class used before interpreting `owner`.
+    pub owner_class: u64,
+    /// Generation of the specific arm operation that expired.
+    pub token_generation: u64,
+    /// Absolute monotonic deadline supplied when the timer was armed.
+    pub deadline_ns: u64,
+}
+
 /// OS capabilities needed by the scheduling core.
 ///
 /// Implementations must keep task-system and CPU-local handles valid until
@@ -421,8 +448,12 @@ pub trait TaskRuntime {
     /// Consumes the current CPU's scheduler switch baton after switch tail.
     ///
     /// This hook restores task-context hardware IRQ state and must not schedule
-    /// recursively. It returns `true` only when deferred callbacks may run with
-    /// IRQs enabled and every ordinary guard clear.
+    /// recursively. It must return `true` for [`RuntimeSchedulerReturn::Task`]
+    /// only after IRQs are enabled and every ordinary guard is clear. It must
+    /// return `false` and leave IRQs disabled for
+    /// [`RuntimeSchedulerReturn::PreemptExit`] and
+    /// [`RuntimeSchedulerReturn::IrqReturn`], whose outer guard or trap
+    /// epilogue still owns the disabled-IRQ continuation.
     fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool;
 
     /// Returns whether execution is currently inside a hard interrupt.
@@ -444,6 +475,17 @@ pub trait TaskRuntime {
 
     /// Programs the local one-shot timer for an absolute monotonic deadline.
     fn program_oneshot_timer(deadline_ns: u64) -> RuntimeStatus;
+
+    /// Publishes one runtime-owned timer expiration from a scheduler safe point.
+    ///
+    /// The implementation must remain allocation-free and non-blocking. It may
+    /// validate the opaque owner and enqueue preallocated deferred work, but it
+    /// must not invoke the timer owner's callback directly. `Success` means the
+    /// event was accepted or deliberately rejected as stale. Every other status
+    /// means no publication occurred; ax-task retains the event and retries it
+    /// before later expirations, so an implementation must not partially publish
+    /// an event and then report failure.
+    fn dispatch_expired_timer(event: RuntimeTimerEventV1) -> RuntimeStatus;
 
     /// Sends a coalescible scheduler IPI directly to `cpu`.
     fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus;

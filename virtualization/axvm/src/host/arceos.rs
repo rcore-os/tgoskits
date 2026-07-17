@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use alloc::format;
 use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
@@ -16,6 +18,10 @@ use ax_std::{
 };
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use crate::host::storage::{
+    GuestStorageRoutesRevoked, HostStorageHandoff, HostStorageHandoffError, StorageGuestSelection,
+};
 use crate::{
     AxVmError, AxVmResult,
     arch::{ArchOps, CurrentArch},
@@ -341,15 +347,139 @@ fn send_ipi_to_all_except_current(cpu_num: usize) -> AxVmResult {
     Ok(())
 }
 
+/// Reserves block controllers, then freezes and detaches the mounted generation.
+///
+/// # Errors
+///
+/// Controller preparation does not close host I/O admission. Any filesystem
+/// failure drops the reservation token before returning its typed error.
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-pub fn shutdown_host_filesystems() -> AxVmResult {
-    modules::ax_fs_ng::shutdown_filesystems()
-        .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
-    let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
-    if released != 0 {
-        info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
+pub fn begin_host_storage_handoff() -> Result<Option<HostStorageHandoff>, HostStorageHandoffError> {
+    let selection = StorageGuestSelection::discover()?;
+    let prepared = modules::ax_runtime::block::prepare_runtime_controllers_for_passthrough(
+        selection.regions(),
+    )
+    .map_err(
+        |error| HostStorageHandoffError::ControllerPrepareRolledBack {
+            detail: format!("{error}"),
+        },
+    )?;
+    if prepared.is_empty() {
+        return Ok(None);
     }
+    let guests = selection.selected_guests(prepared.selected_guest_keys().iter().copied())?;
+    let freeze = modules::ax_fs_ng::begin_filesystem_freeze().map_err(|error| {
+        HostStorageHandoffError::Freeze {
+            detail: format!("{error}"),
+        }
+    })?;
+    if let Err(error) = wait_for_filesystem_freeze(&freeze) {
+        drop(prepared);
+        return Err(rollback_failed_filesystem_detach(&freeze, error));
+    }
+    if let Err(error) = modules::ax_fs_ng::detach_filesystem(&freeze) {
+        drop(prepared);
+        return Err(rollback_failed_filesystem_detach(&freeze, error));
+    }
+    Ok(Some(HostStorageHandoff::prepared(prepared, guests)))
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+fn wait_for_filesystem_freeze(
+    freeze: &modules::ax_fs_ng::FsFreezePermit,
+) -> Result<(), modules::ax_fs_ng::FsHandoffError> {
+    loop {
+        match modules::ax_fs_ng::poll_filesystem_freeze(freeze)? {
+            modules::ax_fs_ng::FsFreezeProgress::Drained => return Ok(()),
+            modules::ax_fs_ng::FsFreezeProgress::Pending { .. } => thread::yield_now(),
+        }
+    }
+}
+
+/// Commits a fully prepared passthrough route as guest-owned storage.
+///
+/// # Errors
+///
+/// Returns [`HostStorageHandoffError::InvalidState`] unless the handoff is in
+/// the prepared, pre-guest phase. A partial commit retains explicit
+/// quarantined controller identities and cancels untouched reservations.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn commit_host_storage_handoff_to_guest(
+    handoff: &mut HostStorageHandoff,
+) -> Result<(), HostStorageHandoffError> {
+    handoff.commit_to_guest()
+}
+
+/// Returns storage after guest routes are revoked, then remounts the filesystem.
+///
+/// # Errors
+///
+/// Returns a typed controller-return, remount, or lifecycle-state error while
+/// preserving the fail-closed handoff record for diagnostics.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn return_host_storage_from_guest(
+    handoff: &mut HostStorageHandoff,
+    revoked: GuestStorageRoutesRevoked,
+) -> Result<(), HostStorageHandoffError> {
+    handoff.return_controllers(revoked)?;
+    remount_retained_filesystem(handoff)?;
+    handoff.complete_return();
     Ok(())
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+fn remount_retained_filesystem(
+    handoff: &mut HostStorageHandoff,
+) -> Result<(), HostStorageHandoffError> {
+    let permit = modules::ax_fs_ng::begin_filesystem_remount().map_err(|error| {
+        handoff.mark_failed_closed();
+        HostStorageHandoffError::FilesystemRemountFailedClosed {
+            detail: format!("{error}"),
+        }
+    })?;
+    modules::ax_fs_ng::remount_filesystem(permit).map_err(|error| {
+        handoff.mark_failed_closed();
+        HostStorageHandoffError::FilesystemRemountFailedClosed {
+            detail: format!("{error}"),
+        }
+    })?;
+    Ok(())
+}
+
+/// Cancels a non-destructive controller reservation when guest setup fails.
+///
+/// # Errors
+///
+/// Returns a typed remount or lifecycle error. No controller has crossed the
+/// destructive commit boundary when this operation is valid.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn abort_host_storage_handoff_before_guest(
+    handoff: &mut HostStorageHandoff,
+) -> Result<(), HostStorageHandoffError> {
+    handoff.cancel_prepared()?;
+    remount_retained_filesystem(handoff)?;
+    handoff.complete_return();
+    Ok(())
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+fn rollback_failed_filesystem_detach(
+    freeze: &modules::ax_fs_ng::FsFreezePermit,
+    detach_error: modules::ax_fs_ng::FsHandoffError,
+) -> HostStorageHandoffError {
+    let detail = format!("{detach_error}");
+    let can_cancel = modules::ax_fs_ng::filesystem_runtime_snapshot()
+        .is_some_and(|snapshot| snapshot.state == modules::ax_fs_ng::FsRuntimeState::Freezing);
+    if !can_cancel {
+        return HostStorageHandoffError::FilesystemDetachFailedClosed { detail };
+    }
+
+    match modules::ax_fs_ng::cancel_filesystem_freeze(freeze) {
+        Ok(()) => HostStorageHandoffError::FilesystemDetachRolledBack { detail },
+        Err(rollback_error) => HostStorageHandoffError::FilesystemDetachFailedClosed {
+            detail: format!("{detail}; freeze rollback also failed: {rollback_error}"),
+        },
+    }
 }
 
 impl HostPlatform for ArceOsHost {
@@ -420,5 +550,19 @@ impl HostPlatform for ArceOsHost {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, any(feature = "fs", feature = "host-fs")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_return_api_requires_a_route_revocation_proof() {
+        let return_path: fn(
+            &mut HostStorageHandoff,
+            GuestStorageRoutesRevoked,
+        ) -> Result<(), HostStorageHandoffError> = return_host_storage_from_guest;
+        let _ = return_path;
     }
 }

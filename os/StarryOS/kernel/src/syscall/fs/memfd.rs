@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
+use ax_fs_ng::vfs::{FileLocation, OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
@@ -65,7 +65,6 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 
     let fs_context = current_fs_context();
     let fs = fs_context.lock();
-    let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current_user_task().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
@@ -73,7 +72,11 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
         cred.fsuid,
         cred.fsgid,
     );
-    let loc = axfs_ng_vfs::Location::new(mountpoint, entry);
+    let loc = fs.with_namespace_operation(|namespace| {
+        namespace
+            .resolve_path(mount_path)?
+            .attach_unmanaged_entry(entry)
+    })?;
 
     let file = OpenOptions::new()
         .read(true)
@@ -83,12 +86,18 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 
     let inner = Arc::new(File::new(file, O_RDWR));
     let memfd = Memfd::new(inner, name_str, allow_sealing);
-    loc.user_data().insert(MemfdRef(memfd.clone()));
+    FileLocation::Unmanaged(loc).with_operation(|view| {
+        view.insert_user_data(MemfdRef(memfd.clone()));
+        Ok(())
+    })?;
     add_file_like(memfd, cloexec).map(|fd| fd as _)
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    current_fs_context().lock().resolve(path).is_ok()
+    current_fs_context()
+        .lock()
+        .with_namespace_operation(|namespace| namespace.resolve_path(path).map(drop))
+        .is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
@@ -99,9 +108,8 @@ fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
     file.inner()
         .backend()
         .ok()?
-        .location()
-        .user_data()
-        .get::<MemfdRef>()
+        .get_user_data::<MemfdRef>()
+        .ok()?
         .map(|memfd| memfd.0.clone())
 }
 

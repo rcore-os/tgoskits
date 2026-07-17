@@ -151,6 +151,89 @@ pub enum SwitchReason {
     Migrated  = 5,
 }
 
+/// Scheduler class committed by the owner CPU for an OS extension.
+///
+/// This is intentionally smaller than [`SchedulePolicy`]. Extension callbacks
+/// that maintain accounting need the class transition, while queue parameters
+/// remain owned by the scheduler and can be queried outside the callback.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadPolicyClass {
+    /// EEVDF fair scheduling, including Normal, Batch, and Idle modes.
+    Fair     = 1,
+    /// POSIX FIFO or round-robin real-time scheduling.
+    Realtime = 2,
+    /// EDF/CBS Deadline scheduling.
+    Deadline = 3,
+}
+
+impl ThreadPolicyClass {
+    /// Returns whether this class contributes to POSIX continuous RT runtime.
+    pub const fn is_realtime(self) -> bool {
+        matches!(self, Self::Realtime)
+    }
+
+    const fn from_policy(policy: SchedulePolicy) -> Self {
+        match policy {
+            SchedulePolicy::Fair { .. } => Self::Fair,
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. } => Self::Realtime,
+            SchedulePolicy::Deadline(_) => Self::Deadline,
+        }
+    }
+}
+
+/// Value-only notification for one applied base-policy generation.
+///
+/// The scheduler constructs this event at the same owner timestamp used to
+/// reconfigure its runqueue entity. No pointer, reference, or scheduler-owned
+/// object crosses the extension callback boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThreadPolicyApplied {
+    generation: u64,
+    now_ns: u64,
+    previous_class: ThreadPolicyClass,
+    current_class: ThreadPolicyClass,
+    reserved: [u8; 6],
+}
+
+impl ThreadPolicyApplied {
+    pub(crate) const fn new(
+        generation: u64,
+        now_ns: u64,
+        previous: SchedulePolicy,
+        current: SchedulePolicy,
+    ) -> Self {
+        Self {
+            generation,
+            now_ns,
+            previous_class: ThreadPolicyClass::from_policy(previous),
+            current_class: ThreadPolicyClass::from_policy(current),
+            reserved: [0; 6],
+        }
+    }
+
+    /// Returns the scheduler generation that became active.
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the owner CPU's monotonic commit timestamp.
+    pub const fn now_ns(self) -> u64 {
+        self.now_ns
+    }
+
+    /// Returns the previously active base scheduling class.
+    pub const fn previous_class(self) -> ThreadPolicyClass {
+        self.previous_class
+    }
+
+    /// Returns the newly active base scheduling class.
+    pub const fn current_class(self) -> ThreadPolicyClass {
+        self.current_class
+    }
+}
+
 /// CPU affinity expressed against one [`crate::TaskSystem`] topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CpuSet {
@@ -225,6 +308,13 @@ pub struct ThreadExtensionOps {
     pub on_switch_in: unsafe extern "Rust" fn(data: usize, thread: ThreadId),
     /// Invoked after the thread stops being the current execution context.
     pub on_switch_out: unsafe extern "Rust" fn(data: usize, thread: ThreadId, reason: SwitchReason),
+    /// Invoked after an owner CPU commits a base-policy generation.
+    ///
+    /// The scheduler has released its internal locks before this bounded
+    /// callback. It must not allocate, block, invoke arbitrary callbacks, or
+    /// re-enter the scheduler.
+    pub on_policy_applied:
+        unsafe extern "Rust" fn(data: usize, thread: ThreadId, event: ThreadPolicyApplied),
     /// Invoked in task context after the thread exits.
     pub on_exit: unsafe extern "Rust" fn(data: usize, thread: ThreadId),
     /// Invoked in task context for requested Deadline overrun notification.
@@ -247,9 +337,10 @@ impl ThreadExtension {
     ///
     /// `data` must satisfy every callback contract in `ops`, and the owning OS
     /// must ensure callbacks do not allocate, block, or re-enter the scheduler
-    /// when invoked as switch hooks. Task-context callbacks must return to the
-    /// dedicated service thread; abandoning that stack leaves their explicit
-    /// in-flight lifetime claim closed to prevent use-after-free.
+    /// when invoked from a scheduler-owned switch or policy-commit path.
+    /// Task-context callbacks must return to the dedicated service thread;
+    /// abandoning that stack leaves their explicit in-flight lifetime claim
+    /// closed to prevent use-after-free.
     pub const unsafe fn new(data: usize, ops: &'static ThreadExtensionOps) -> Self {
         Self { data, ops }
     }

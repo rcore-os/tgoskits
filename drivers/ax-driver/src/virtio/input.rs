@@ -9,10 +9,14 @@ use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::input::{InputConfigSelect, VirtIOInput},
-    transport::{InterruptStatus, Transport},
+    transport::InterruptStatus,
 };
 
-use crate::{BindingInfo, input::PlatformDeviceInput, virtio::VirtIoHalImpl};
+use crate::{
+    BindingInfo,
+    input::PlatformDeviceInput,
+    virtio::{VirtIoHalImpl, VirtIoTransport},
+};
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
@@ -34,14 +38,14 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
-pub fn register_transport<T: Transport + 'static>(
+pub fn register_transport<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
     register_transport_with_info(plat_dev, transport, BindingInfo::empty())
 }
 
-pub fn register_transport_with_info<T: Transport + 'static>(
+pub fn register_transport_with_info<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
     info: BindingInfo,
@@ -54,7 +58,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     Ok(())
 }
 
-struct VirtIoInputDevice<T: Transport + 'static> {
+struct VirtIoInputDevice<T: VirtIoTransport> {
     raw: VirtIOInput<VirtIoHalImpl, T>,
     device_id: InputDeviceId,
     name: String,
@@ -63,9 +67,12 @@ struct VirtIoInputDevice<T: Transport + 'static> {
     irq_enabled: bool,
 }
 
-unsafe impl<T: Transport + 'static> Send for VirtIoInputDevice<T> {}
+// SAFETY: `T: VirtIoTransport` proves the transport is movable. The upstream
+// queue storage moves with `raw`, and the RDIF interface gives every mutable
+// queue/configuration operation exclusive `&mut self` access.
+unsafe impl<T: VirtIoTransport> Send for VirtIoInputDevice<T> {}
 
-impl<T: Transport + 'static> VirtIoInputDevice<T> {
+impl<T: VirtIoTransport> VirtIoInputDevice<T> {
     fn new(transport: T) -> Result<Self, VirtIoError> {
         let mut raw = VirtIOInput::new(transport)?;
         let name = raw.name().unwrap_or_else(|_| "<unknown>".to_owned());
@@ -101,13 +108,13 @@ impl<T: Transport + 'static> VirtIoInputDevice<T> {
     }
 }
 
-impl<T: Transport + 'static> DriverGeneric for VirtIoInputDevice<T> {
+impl<T: VirtIoTransport> DriverGeneric for VirtIoInputDevice<T> {
     fn name(&self) -> &str {
         &self.name
     }
 }
 
-impl<T: Transport + 'static> rdif_input::Interface for VirtIoInputDevice<T> {
+impl<T: VirtIoTransport> rdif_input::Interface for VirtIoInputDevice<T> {
     fn device_id(&self) -> InputDeviceId {
         self.device_id
     }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep residual callback work deferred after a bounded IRQ-return batch instead of forming an immediate self-IPI chain.
+
 ## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.26...ax-ipi-v0.5.27) - 2026-07-10
 
 ### Other

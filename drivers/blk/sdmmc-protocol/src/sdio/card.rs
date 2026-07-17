@@ -5,8 +5,8 @@ use core::num::NonZeroU16;
 use log::warn;
 
 use super::{
-    host::{BusWidth, SdioHost},
-    init::{MmcSwitchRequest, MmcSwitchRequestState, mmc_switch_deadline_passed},
+    host::{BusWidth, ClockSpeed, SdioHost},
+    init::{MmcSwitchRequest, MmcSwitchRequestState},
     nonzero_block_size,
 };
 use crate::{
@@ -22,6 +22,7 @@ pub struct SdioSdmmc<H: SdioHost> {
     pub(super) rca: u16,
     pub(super) high_capacity: bool,
     pub(super) bus_width: BusWidth,
+    pub(super) clock: ClockSpeed,
     pub(super) kind: CardKind,
     pub(super) sd_speed_selection_enabled: bool,
     pub(super) sd_uhs_selection_enabled: bool,
@@ -56,6 +57,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
             rca: 0,
             high_capacity: false,
             bus_width: BusWidth::Bit1,
+            clock: ClockSpeed::Identification,
             kind: CardKind::Sd,
             sd_speed_selection_enabled: true,
             sd_uhs_selection_enabled: true,
@@ -121,6 +123,15 @@ impl<H: SdioHost> SdioSdmmc<H> {
         self.rca
     }
 
+    /// Returns the host/card link selected by successful initialization.
+    ///
+    /// Before initialization this reports the reset link (1-bit at the
+    /// identification clock). A successful initialization never publishes
+    /// that identification-only configuration.
+    pub const fn link(&self) -> CardLink {
+        CardLink::new(self.bus_width, self.clock)
+    }
+
     pub fn submit_read_blocks_into<'a>(
         &mut self,
         addr: u32,
@@ -169,6 +180,24 @@ impl<H: SdioHost> SdioSdmmc<H> {
         self.host.poll_data_request(&mut request.inner)
     }
 
+    pub fn poll_data_request_at<'a>(
+        &mut self,
+        request: &mut SdioDataRequest<'a, H>,
+        now_ns: u64,
+    ) -> Result<DataCommandPoll, Error>
+    where
+        H: 'a,
+    {
+        self.host.poll_data_request_at(&mut request.inner, now_ns)
+    }
+
+    pub fn data_request_wake_at<'a>(&self, request: &SdioDataRequest<'a, H>) -> Option<u64>
+    where
+        H: 'a,
+    {
+        self.host.data_request_wake_at(&request.inner)
+    }
+
     pub fn submit_command_request(&mut self, cmd: &Command) -> Result<SdioCommandRequest, Error> {
         self.host.submit_command(cmd)?;
         Ok(SdioCommandRequest)
@@ -179,6 +208,18 @@ impl<H: SdioHost> SdioSdmmc<H> {
         _request: &mut SdioCommandRequest,
     ) -> Result<CommandResponsePoll, Error> {
         self.host.poll_command_response()
+    }
+
+    pub fn poll_command_request_at(
+        &mut self,
+        _request: &mut SdioCommandRequest,
+        now_ns: u64,
+    ) -> Result<CommandResponsePoll, Error> {
+        self.host.poll_command_response_at(now_ns)
+    }
+
+    pub fn command_wake_at(&self) -> Option<u64> {
+        self.host.command_wake_at()
     }
 
     pub fn submit_status(&mut self) -> Result<SdioStatusRequest, Error> {
@@ -192,6 +233,23 @@ impl<H: SdioHost> SdioSdmmc<H> {
         request: &mut SdioStatusRequest,
     ) -> Result<OperationPoll<CardState>, Error> {
         match self.poll_command_request(&mut request.inner)? {
+            CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+            CommandResponsePoll::Complete(Response::R1(r1)) => {
+                Ok(OperationPoll::Complete(r1.current_state()))
+            }
+            CommandResponsePoll::Complete(_) => Err(Error::BadResponse(ErrorContext::for_cmd(
+                Phase::ResponseWait,
+                13,
+            ))),
+        }
+    }
+
+    pub fn poll_status_request_at(
+        &mut self,
+        request: &mut SdioStatusRequest,
+        now_ns: u64,
+    ) -> Result<OperationPoll<CardState>, Error> {
+        match self.poll_command_request_at(&mut request.inner, now_ns)? {
             CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
             CommandResponsePoll::Complete(Response::R1(r1)) => {
                 Ok(OperationPoll::Complete(r1.current_state()))
@@ -243,6 +301,27 @@ impl<H: SdioHost> SdioSdmmc<H> {
         }
     }
 
+    pub fn poll_ext_csd_request_at<'a>(
+        &mut self,
+        request: &mut ExtCsdRequest<'a, H>,
+        now_ns: u64,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request_at(&mut request.inner, now_ns)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
+    pub fn ext_csd_request_wake_at<'a>(&self, request: &ExtCsdRequest<'a, H>) -> Option<u64>
+    where
+        H: 'a,
+    {
+        self.data_request_wake_at(&request.inner)
+    }
+
     pub fn submit_switch_function<'a>(
         &mut self,
         cmd: &Command,
@@ -268,21 +347,45 @@ impl<H: SdioHost> SdioSdmmc<H> {
         }
     }
 
+    pub fn poll_switch_function_request_at<'a>(
+        &mut self,
+        request: &mut SwitchFunctionRequest<'a, H>,
+        now_ns: u64,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request_at(&mut request.inner, now_ns)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
+    pub fn switch_function_request_wake_at<'a>(
+        &self,
+        request: &SwitchFunctionRequest<'a, H>,
+    ) -> Option<u64>
+    where
+        H: 'a,
+    {
+        self.data_request_wake_at(&request.inner)
+    }
+
     pub fn submit_mmc_switch(
         &mut self,
+        now_ns: u64,
         access: u8,
         index: u8,
         value: u8,
     ) -> Result<MmcSwitchRequest, Error> {
         let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
-        let started_ms = self.host.now_ms();
         self.host.submit_command(&cmd)?;
         Ok(MmcSwitchRequest {
             rca: self.rca,
             index,
             value,
-            polls: 0,
-            started_ms,
+            deadline_ns: now_ns.saturating_add(super::init::MMC_SWITCH_TIMEOUT_NS),
+            retry_at_ns: None,
             state: MmcSwitchRequestState::PollSwitch,
         })
     }
@@ -290,49 +393,99 @@ impl<H: SdioHost> SdioSdmmc<H> {
     pub fn poll_mmc_switch_request(
         &mut self,
         request: &mut MmcSwitchRequest,
+        now_ns: u64,
     ) -> Result<OperationPoll<()>, Error> {
         match request.state {
-            MmcSwitchRequestState::PollSwitch => match self.host.poll_command_response()? {
-                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-                CommandResponsePoll::Complete(_) => {
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    request.state = MmcSwitchRequestState::PollStatus;
-                    Ok(OperationPoll::Pending)
+            MmcSwitchRequestState::PollSwitch => {
+                match self.host.poll_command_response_at(now_ns)? {
+                    CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                    CommandResponsePoll::Complete(_) => {
+                        let cmd = crate::cmd::cmd13(request.rca);
+                        self.host.submit_command(&cmd)?;
+                        request.state = MmcSwitchRequestState::PollStatus;
+                        Ok(OperationPoll::Pending)
+                    }
                 }
-            },
-            MmcSwitchRequestState::PollStatus => match self.host.poll_command_response()? {
-                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-                CommandResponsePoll::Complete(Response::R1(r1)) => {
-                    if r1.switch_error() {
-                        warn!(
-                            "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
-                            request.index, request.value
-                        );
-                        return Err(Error::CardError(crate::error::CardError::IllegalCommand));
+            }
+            MmcSwitchRequestState::PollStatus => {
+                match self.host.poll_command_response_at(now_ns)? {
+                    CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+                    CommandResponsePoll::Complete(Response::R1(r1)) => {
+                        if r1.switch_error() {
+                            warn!(
+                                "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
+                                request.index, request.value
+                            );
+                            return Err(Error::CardError(crate::error::CardError::IllegalCommand));
+                        }
+                        if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer)
+                        {
+                            return Ok(OperationPoll::Complete(()));
+                        }
+                        if now_ns >= request.deadline_ns {
+                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                        }
+                        request.retry_at_ns =
+                            Some(now_ns.saturating_add(super::init::INIT_RETRY_INTERVAL_NS));
+                        request.state = MmcSwitchRequestState::WaitStatusRetry;
+                        Ok(OperationPoll::Pending)
                     }
-                    if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
-                        return Ok(OperationPoll::Complete(()));
+                    CommandResponsePoll::Complete(_) => {
+                        if now_ns >= request.deadline_ns {
+                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                        }
+                        request.retry_at_ns =
+                            Some(now_ns.saturating_add(super::init::INIT_RETRY_INTERVAL_NS));
+                        request.state = MmcSwitchRequestState::WaitStatusRetry;
+                        Ok(OperationPoll::Pending)
                     }
-                    if mmc_switch_deadline_passed(&self.host, request) {
-                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-                    }
-                    request.polls = request.polls.saturating_add(1);
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    Ok(OperationPoll::Pending)
                 }
-                CommandResponsePoll::Complete(_) => {
-                    if mmc_switch_deadline_passed(&self.host, request) {
-                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-                    }
-                    request.polls = request.polls.saturating_add(1);
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    Ok(OperationPoll::Pending)
+            }
+            MmcSwitchRequestState::WaitStatusRetry => {
+                if now_ns >= request.deadline_ns {
+                    return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
                 }
-            },
+                if request
+                    .retry_at_ns
+                    .is_some_and(|retry_at| now_ns < retry_at)
+                {
+                    return Ok(OperationPoll::Pending);
+                }
+                request.retry_at_ns = None;
+                let cmd = crate::cmd::cmd13(request.rca);
+                self.host.submit_command(&cmd)?;
+                request.state = MmcSwitchRequestState::PollStatus;
+                Ok(OperationPoll::Pending)
+            }
         }
+    }
+}
+
+/// Host/card link configuration proven by the initialization state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardLink {
+    bus_width: BusWidth,
+    clock: ClockSpeed,
+}
+
+impl CardLink {
+    pub(super) const fn new(bus_width: BusWidth, clock: ClockSpeed) -> Self {
+        Self { bus_width, clock }
+    }
+
+    /// Returns the negotiated data-bus width.
+    pub const fn bus_width(self) -> BusWidth {
+        self.bus_width
+    }
+
+    /// Returns the negotiated clock/timing mode.
+    pub const fn clock(self) -> ClockSpeed {
+        self.clock
+    }
+
+    /// Returns whether this configuration is usable for normal block I/O.
+    pub const fn is_operational(self) -> bool {
+        !matches!(self.clock, ClockSpeed::Identification)
     }
 }
 
@@ -348,6 +501,9 @@ pub struct CardInfo {
     pub high_capacity: bool,
     pub ocr: u32,
     pub rca: u16,
+    /// Link configuration that was successfully applied to both the card
+    /// protocol state and the host before this card became visible.
+    pub link: CardLink,
     /// User-data capacity in 512-byte blocks, parsed from the CSD.
     /// `None` if the CSD reports a structure version we do not yet support.
     pub capacity_blocks: Option<u64>,

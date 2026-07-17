@@ -3,11 +3,23 @@ use rdif_block::{
     dma_api::{self, DeviceDma},
 };
 
-use crate::{BlockTransferMode, Error};
+use crate::Error;
 
 pub const BLOCK_SIZE: usize = 512;
 pub const DEFAULT_DMA_MASK: u64 = u32::MAX as u64;
 pub const DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST: u32 = u16::MAX as u32 + 1;
+
+/// Data path exposed after card initialization reaches `Ready`.
+///
+/// Initialization-only traffic may use controller FIFO helpers without
+/// publishing a normal-I/O queue. Normal PIO is a different capability: it
+/// owns request buffers and advances only from acknowledged IRQ snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockDataPath {
+    InitializationOnly,
+    Dma,
+    InterruptPio,
+}
 
 #[derive(Clone)]
 pub struct BlockConfig {
@@ -17,12 +29,11 @@ pub struct BlockConfig {
     pub dma_domain: dma_api::DmaDomainId,
     pub max_blocks_per_request: u32,
     pub max_segment_size: usize,
-    pub irq_driven: bool,
-    pub dma: Option<DeviceDma>,
+    data_path: BlockDataPath,
 }
 
 impl BlockConfig {
-    pub fn dma(name: &'static str, capacity_blocks: u64, irq_driven: bool, dma: DeviceDma) -> Self {
+    pub fn dma(name: &'static str, capacity_blocks: u64, dma: DeviceDma) -> Self {
         let dma_mask = dma.dma_mask();
         Self {
             name,
@@ -31,12 +42,18 @@ impl BlockConfig {
             dma_domain: dma.domain_id(),
             max_blocks_per_request: DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST,
             max_segment_size: usize::MAX,
-            irq_driven,
-            dma: Some(dma),
+            data_path: BlockDataPath::Dma,
         }
     }
 
-    pub const fn fifo(name: &'static str, capacity_blocks: u64, irq_driven: bool) -> Self {
+    /// Configuration used only by the bounded card-initialization state
+    /// machine.
+    ///
+    /// This constructor deliberately does not expose a runtime queue. A
+    /// `ControllerInit` separates bring-up traffic from normal interrupt-DMA
+    /// or owned interrupt-PIO traffic; this value can never publish a polling
+    /// queue.
+    pub const fn fifo(name: &'static str, capacity_blocks: u64) -> Self {
         Self {
             name,
             capacity_blocks,
@@ -44,8 +61,25 @@ impl BlockConfig {
             dma_domain: dma_api::DmaDomainId::legacy_global(),
             max_blocks_per_request: 1,
             max_segment_size: BLOCK_SIZE,
-            irq_driven,
-            dma: None,
+            data_path: BlockDataPath::InitializationOnly,
+        }
+    }
+
+    /// Configuration for normal IRQ-driven programmed-I/O requests.
+    ///
+    /// The CPU buffer allocator still uses RDIF's DMA-shaped allocation
+    /// contract, but the controller never observes its bus address. Using an
+    /// unrestricted mask prevents a PIO queue from fabricating a hardware DMA
+    /// address limitation.
+    pub const fn interrupt_pio(name: &'static str, capacity_blocks: u64) -> Self {
+        Self {
+            name,
+            capacity_blocks,
+            dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
+            max_blocks_per_request: 1,
+            max_segment_size: BLOCK_SIZE,
+            data_path: BlockDataPath::InterruptPio,
         }
     }
 
@@ -64,20 +98,31 @@ impl BlockConfig {
         self
     }
 
-    pub fn with_irq_driven(mut self, irq_driven: bool) -> Self {
-        self.irq_driven = irq_driven;
-        self
-    }
-
     pub fn with_dma(mut self, dma: DeviceDma) -> Self {
         self.dma_mask = dma.dma_mask();
         self.dma_domain = dma.domain_id();
-        self.dma = Some(dma);
+        self.data_path = BlockDataPath::Dma;
         self
     }
 
     pub const fn uses_dma(&self) -> bool {
-        self.dma.is_some()
+        matches!(self.data_path, BlockDataPath::Dma)
+    }
+
+    pub const fn uses_interrupt_pio(&self) -> bool {
+        matches!(self.data_path, BlockDataPath::InterruptPio)
+    }
+
+    pub const fn data_path(&self) -> BlockDataPath {
+        self.data_path
+    }
+
+    /// Whether this configuration can expose the RDIF runtime queue.
+    pub const fn supports_runtime_queue(&self) -> bool {
+        matches!(
+            self.data_path,
+            BlockDataPath::Dma | BlockDataPath::InterruptPio
+        )
     }
 }
 
@@ -90,6 +135,7 @@ pub fn queue_limits(config: &BlockConfig, dma_mask: u64) -> rdif_block::QueueLim
         max_blocks_per_request: config.max_blocks_per_request,
         max_segments: 1,
         max_segment_size: config.max_segment_size,
+        request_timeout_ns: rdif_block::DEFAULT_REQUEST_TIMEOUT_NS,
         supported_flags: rdif_block::RequestFlags::NONE,
         supports_flush: false,
         supports_discard: false,
@@ -118,23 +164,13 @@ pub fn block_addr_for_card(block_id: u64, high_capacity: bool) -> Result<u32, Bl
 pub fn map_dev_err_to_blk_err(err: Error) -> BlkError {
     match err {
         Error::Busy => BlkError::Retry,
+        Error::Timeout(_) => BlkError::TimedOut,
         Error::NoCard | Error::UnsupportedCommand | Error::CardLocked => BlkError::NotSupported,
         Error::Misaligned | Error::InvalidArgument => {
             BlkError::Other("SD/MMC request is not block aligned")
         }
         _ => BlkError::Io,
     }
-}
-
-pub fn transfer_mode_for_dma(dma: Option<&DeviceDma>) -> BlockTransferMode {
-    match dma {
-        Some(_) => BlockTransferMode::Dma,
-        None => BlockTransferMode::Fifo,
-    }
-}
-
-pub(super) fn should_split_fifo_request(dma: Option<&DeviceDma>, block_count: u32) -> bool {
-    dma.is_none() && block_count > 1
 }
 
 pub fn can_fallback_to_fifo(err: Error) -> bool {

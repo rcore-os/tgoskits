@@ -15,8 +15,8 @@ use alloc::{
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs_ng::vfs::LocationOperationView;
 use ax_sync::PiMutex;
-use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
     XATTR_REPLACE, XATTR_SIZE_MAX,
@@ -40,21 +40,21 @@ fn linux_errno(errno: LinuxError) -> AxError {
     AxError::from(errno)
 }
 
-fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
-    loc.user_data().get::<XattrStore>()
+fn existing_store(view: &LocationOperationView<'_>) -> AxResult<Option<Arc<XattrStore>>> {
+    overlay::visible_user_data::<XattrStore>(view)
 }
 
 /// Return the existing xattr store or attach a new one to this real node.
-fn store_for_update(loc: &Location) -> Arc<XattrStore> {
-    loc.user_data().get_or_insert_with(XattrStore::default)
+fn store_for_update(view: &LocationOperationView<'_>) -> AxResult<Arc<XattrStore>> {
+    overlay::writable_user_data::<XattrStore>(view)
 }
 
 /// Snapshot existing attrs before copy-up.
 ///
 /// Copy-up creates a different upper `Location`, so metadata kept in
 /// `user_data` must be transferred explicitly when the upper store is empty.
-fn existing_attrs(loc: &Location) -> Option<XattrMap> {
-    existing_store(loc).map(|store| store.attrs.lock().clone())
+fn existing_attrs(view: &LocationOperationView<'_>) -> AxResult<Option<XattrMap>> {
+    Ok(existing_store(view)?.map(|store| store.attrs.lock().clone()))
 }
 
 /// Read and validate an xattr name from userspace.
@@ -86,23 +86,26 @@ fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
     Ok(value_buf)
 }
 
-/// Resolve a path argument used by path-based xattr syscalls.
-fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
+/// Runs one path-based xattr operation in its resolved location scope.
+fn with_resolved_path<T>(
+    path: *const c_char,
+    nofollow: bool,
+    operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> AxResult<T>,
+) -> AxResult<T> {
     let path = vm_load_path_string(path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
-    resolve_at(AT_FDCWD, Some(&path), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)
+    resolve_at(AT_FDCWD, Some(&path), flags)?.with_operation(operation)
 }
 
-/// Resolve an fd argument used by fd-based xattr syscalls.
-fn resolve_fd(fd: i32) -> AxResult<Location> {
+/// Runs one fd-based xattr operation while retaining its open-handle lease.
+fn with_resolved_fd<T>(
+    fd: i32,
+    operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> AxResult<T>,
+) -> AxResult<T> {
     if fd_is_path(fd) {
         return Err(AxError::BadFileDescriptor);
     }
-    resolve_at(fd, None, AT_EMPTY_PATH)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)
+    resolve_at(fd, None, AT_EMPTY_PATH)?.with_operation(operation)
 }
 
 /// Copy a single xattr value to userspace, or return its required size.
@@ -150,15 +153,14 @@ fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize
 
 /// Get an xattr from the currently visible real node.
 fn get_xattr(
-    loc: Location,
+    view: LocationOperationView<'_>,
     name: *const c_char,
     user_value: *mut u8,
     size: usize,
 ) -> AxResult<isize> {
     let name = read_name(name)?;
-    let loc = overlay::visible_target(&loc)?;
     let value = {
-        let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+        let store = existing_store(&view)?.ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
         store
             .attrs
             .lock()
@@ -170,10 +172,9 @@ fn get_xattr(
 }
 
 /// List xattrs from the currently visible real node.
-fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
-    let loc = overlay::visible_target(&loc)?;
+fn list_xattr(view: LocationOperationView<'_>, list: *mut u8, size: usize) -> AxResult<isize> {
     let names = {
-        let Some(store) = existing_store(&loc) else {
+        let Some(store) = existing_store(&view)? else {
             return copy_list_to_user(&[], list, size);
         };
         serialize_names(Some(&store.attrs.lock()))?
@@ -183,7 +184,7 @@ fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
 
 /// Set an xattr, copying lower-backed overlay files up before writing.
 fn set_xattr(
-    loc: Location,
+    view: LocationOperationView<'_>,
     name: *const c_char,
     value: *const u8,
     size: usize,
@@ -198,7 +199,7 @@ fn set_xattr(
 
     let name = read_name(name)?;
     let value = read_value(value, size)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
+    let old_attrs = existing_attrs(&view)?;
 
     if let Some(attrs) = &old_attrs {
         let exists = attrs.contains_key(&name);
@@ -212,8 +213,7 @@ fn set_xattr(
         return Err(linux_errno(LinuxError::ENODATA));
     }
 
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
+    let store = store_for_update(&view)?;
     let mut attrs = store.attrs.lock();
     if attrs.is_empty()
         && let Some(old_attrs) = old_attrs
@@ -238,16 +238,14 @@ fn set_xattr(
 }
 
 /// Remove an xattr, copying lower-backed overlay files up before mutation.
-fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
+fn remove_xattr(view: LocationOperationView<'_>, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
-    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
-        .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+    let old_attrs = existing_attrs(&view)?.ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
     if !old_attrs.contains_key(&name) {
         return Err(linux_errno(LinuxError::ENODATA));
     }
 
-    let loc = overlay::ensure_copy_up_target(&loc)?;
-    let store = store_for_update(&loc);
+    let store = store_for_update(&view)?;
     let mut attrs = store.attrs.lock();
     if attrs.is_empty() {
         *attrs = old_attrs;
@@ -257,15 +255,15 @@ fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
 }
 
 pub fn sys_listxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
-    list_xattr(resolve_path(path, false)?, list, size)
+    with_resolved_path(path, false, |location| list_xattr(location, list, size))
 }
 
 pub fn sys_llistxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
-    list_xattr(resolve_path(path, true)?, list, size)
+    with_resolved_path(path, true, |location| list_xattr(location, list, size))
 }
 
 pub fn sys_flistxattr(fd: i32, list: *mut u8, size: usize) -> AxResult<isize> {
-    list_xattr(resolve_fd(fd)?, list, size)
+    with_resolved_fd(fd, |location| list_xattr(location, list, size))
 }
 
 pub fn sys_getxattr(
@@ -274,7 +272,9 @@ pub fn sys_getxattr(
     value: *mut u8,
     size: usize,
 ) -> AxResult<isize> {
-    get_xattr(resolve_path(path, false)?, name, value, size)
+    with_resolved_path(path, false, |location| {
+        get_xattr(location, name, value, size)
+    })
 }
 
 pub fn sys_lgetxattr(
@@ -283,11 +283,13 @@ pub fn sys_lgetxattr(
     value: *mut u8,
     size: usize,
 ) -> AxResult<isize> {
-    get_xattr(resolve_path(path, true)?, name, value, size)
+    with_resolved_path(path, true, |location| {
+        get_xattr(location, name, value, size)
+    })
 }
 
 pub fn sys_fgetxattr(fd: i32, name: *const c_char, value: *mut u8, size: usize) -> AxResult<isize> {
-    get_xattr(resolve_fd(fd)?, name, value, size)
+    with_resolved_fd(fd, |location| get_xattr(location, name, value, size))
 }
 
 pub fn sys_setxattr(
@@ -297,7 +299,9 @@ pub fn sys_setxattr(
     size: usize,
     flags: i32,
 ) -> AxResult<isize> {
-    set_xattr(resolve_path(path, false)?, name, value, size, flags)
+    with_resolved_path(path, false, |location| {
+        set_xattr(location, name, value, size, flags)
+    })
 }
 
 pub fn sys_lsetxattr(
@@ -307,7 +311,9 @@ pub fn sys_lsetxattr(
     size: usize,
     flags: i32,
 ) -> AxResult<isize> {
-    set_xattr(resolve_path(path, true)?, name, value, size, flags)
+    with_resolved_path(path, true, |location| {
+        set_xattr(location, name, value, size, flags)
+    })
 }
 
 pub fn sys_fsetxattr(
@@ -317,17 +323,17 @@ pub fn sys_fsetxattr(
     size: usize,
     flags: i32,
 ) -> AxResult<isize> {
-    set_xattr(resolve_fd(fd)?, name, value, size, flags)
+    with_resolved_fd(fd, |location| set_xattr(location, name, value, size, flags))
 }
 
 pub fn sys_removexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
-    remove_xattr(resolve_path(path, false)?, name)
+    with_resolved_path(path, false, |location| remove_xattr(location, name))
 }
 
 pub fn sys_lremovexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
-    remove_xattr(resolve_path(path, true)?, name)
+    with_resolved_path(path, true, |location| remove_xattr(location, name))
 }
 
 pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> AxResult<isize> {
-    remove_xattr(resolve_fd(fd)?, name)
+    with_resolved_fd(fd, |location| remove_xattr(location, name))
 }

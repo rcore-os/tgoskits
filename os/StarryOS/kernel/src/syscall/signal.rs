@@ -12,9 +12,10 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     task::{
-        block_next_signal, check_signals, current_user_task,
+        block_next_signal, current_user_task,
         future::{self, block_on_user},
-        get_process_cred, processes, send_signal_to_process, send_signal_to_thread,
+        get_process_cred, process_one_signal, processes, send_signal_to_process,
+        send_signal_to_thread,
     },
     time::TimeValueLike,
 };
@@ -308,7 +309,7 @@ pub fn sys_rt_sigtimedwait(
     // Publish sigwait_set so that send_signal skips is_ignore() for signals
     // this thread is waiting for.  We do NOT unblock the waited signals:
     // dequeue_signal(&set) can already retrieve blocked pending signals, and
-    // keeping them blocked prevents check_signals from racing to dequeue and
+    // keeping them blocked prevents process_one_signal from racing to dequeue and
     // discard them as default-ignore (e.g. SIGCHLD/SIGURG).
     *signal.sigwait_set.lock() = Some(set);
 
@@ -316,10 +317,15 @@ pub fn sys_rt_sigtimedwait(
     let fut = poll_fn(|cx| {
         if let Some(sig) = signal.dequeue_signal(&set) {
             Poll::Ready(Some(sig))
-        } else if check_signals(thr, uctx, Some(old_blocked), None) {
+        } else if process_one_signal(thr, uctx, Some(old_blocked), None).processed() {
+            Poll::Ready(None)
+        } else if curr.poll_interrupt(cx).is_ready() {
+            // The notification is only a level hint. Unwind this blocking
+            // syscall so the owner exit-to-user loop can re-evaluate all work
+            // and acknowledge its generation; ignoring Ready would leave
+            // block_on_user's abort predicate permanently true.
             Poll::Ready(None)
         } else {
-            let _ = curr.poll_interrupt(cx);
             Poll::Pending
         }
     });
@@ -361,17 +367,16 @@ pub fn sys_rt_sigsuspend(
     let old_blocked = thr.signal.set_blocked(set);
 
     // sigsuspend always returns -EINTR when a signal is caught
-    // We set this in uctx before check_signals so it's saved in SignalFrame
+    // We set this in uctx before process_one_signal so it's saved in SignalFrame
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
 
     block_on_user(
         &curr,
         poll_fn(|cx| {
-            if check_signals(thr, uctx, Some(old_blocked), None) {
+            if process_one_signal(thr, uctx, Some(old_blocked), None).processed() {
                 return Poll::Ready(());
             }
-            let _ = curr.poll_interrupt(cx);
-            Poll::Pending
+            curr.poll_interrupt(cx)
         }),
     );
 

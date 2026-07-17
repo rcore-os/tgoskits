@@ -34,6 +34,7 @@ impl PreparedVm {
 impl AxVM {
     /// Sets up the VM before booting.
     pub fn prepare(&self) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 
@@ -43,6 +44,7 @@ impl AxVM {
         factories: &DeviceFactoryRegistry,
         interrupt_fabric: InterruptFabric,
     ) -> AxVmResult {
+        self.ensure_passthrough_access_active()?;
         crate::arch::CurrentArch::init_vm(
             self,
             VmInitRequest::Provided {

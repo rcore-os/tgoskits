@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::{
     ptr::NonNull,
-    sync::atomic::{self, AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{self, AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
@@ -16,10 +16,9 @@ use crate::{
     Event, PhytiumMciIrqHandle,
     command::CommandState,
     regs::{
-        CARD_THRCTL_OFFSET, CLK_SRC_OFFSET, CType, ClkEna, ClockSource, Cmd, RIntSts,
-        RegisterBlock, RegisterBlockVolatileFieldAccess, Uhs,
+        CLK_SRC_OFFSET, CType, ClockSource, RIntSts, RegisterBlock,
+        RegisterBlockVolatileFieldAccess, Uhs,
     },
-    timing::TimingTable,
 };
 
 pub const DEFAULT_FIFO_OFFSET: usize = 0x200;
@@ -27,10 +26,6 @@ const DEFAULT_FIFO_WORD_DEPTH: u32 = 128;
 pub(crate) const FIFO_THRESHOLD: u32 = (2 << 28) | (7 << 16) | 0x100;
 pub(crate) const CARD_READ_THRESHOLD_ENABLE: u32 = 1;
 pub(crate) const CARD_READ_THRESHOLD_DEPTH8: u32 = 1 << 23;
-const BMOD_SOFTWARE_RESET: u32 = 1;
-const RESET_POLL_LIMIT: usize = 1_000_000;
-const CLOCK_POLL_LIMIT: usize = 1_000_000;
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingData {
     pub direction: sdmmc_protocol::DataDirection,
@@ -43,18 +38,62 @@ pub(crate) struct IrqState {
     status_mailbox: AtomicU64,
     idmac_mailbox: AtomicU64,
     next_generation: AtomicU32,
+    register_owner: AtomicU8,
+}
+
+const REGISTER_OWNER_IDLE: u8 = 0;
+const REGISTER_OWNER_TASK: u8 = 1;
+const REGISTER_OWNER_IRQ: u8 = 2;
+
+pub(crate) struct RegisterOwner<'a> {
+    owner: &'a AtomicU8,
+}
+
+impl Drop for RegisterOwner<'_> {
+    fn drop(&mut self) {
+        self.owner.store(REGISTER_OWNER_IDLE, Ordering::Release);
+    }
 }
 
 const IRQ_GENERATION_SHIFT: u64 = 32;
 const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
 
 impl IrqState {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             status_mailbox: AtomicU64::new(0),
             idmac_mailbox: AtomicU64::new(0),
             next_generation: AtomicU32::new(0),
+            register_owner: AtomicU8::new(REGISTER_OWNER_IDLE),
         }
+    }
+
+    pub(crate) fn try_begin_task_update(&self) -> Option<RegisterOwner<'_>> {
+        self.register_owner
+            .compare_exchange(
+                REGISTER_OWNER_IDLE,
+                REGISTER_OWNER_TASK,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| RegisterOwner {
+                owner: &self.register_owner,
+            })
+    }
+
+    pub(crate) fn try_begin_irq_snapshot(&self) -> Option<RegisterOwner<'_>> {
+        self.register_owner
+            .compare_exchange(
+                REGISTER_OWNER_IDLE,
+                REGISTER_OWNER_IRQ,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| RegisterOwner {
+                owner: &self.register_owner,
+            })
     }
 
     pub(crate) fn begin_request(&self) {
@@ -190,8 +229,9 @@ pub(crate) struct IrqCore {
     pub(crate) state: IrqState,
 }
 
-// SAFETY: `IrqCore` is shared only between task-side polling and the IRQ
-// top-half. MMIO accesses are volatile and event sharing goes through atomics.
+// SAFETY: `IrqCore` is shared only between bounded task-side event service and
+// the IRQ top-half. MMIO accesses are volatile and snapshots cross through
+// atomics.
 unsafe impl Send for IrqCore {}
 // SAFETY: See the `Send` impl.
 unsafe impl Sync for IrqCore {}
@@ -216,6 +256,8 @@ pub struct PhytiumMci {
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
     pub(crate) dma_poisoned: bool,
+    /// Set only after reset completion proves every FIFO/IDMAC engine idle.
+    pub(crate) recovery_quiesced: bool,
     pub(crate) use_hold_reg: bool,
     pub(crate) irq: Arc<IrqCore>,
     completion_irq_enabled: AtomicBool,
@@ -241,6 +283,7 @@ impl PhytiumMci {
             dma: None,
             dma_mask: u32::MAX as u64,
             dma_poisoned: false,
+            recovery_quiesced: false,
             use_hold_reg: true,
             irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
@@ -280,115 +323,6 @@ impl PhytiumMci {
         self.dma_poisoned = true;
     }
 
-    pub fn reset_and_init(&mut self) -> Result<(), Error> {
-        self.regs.clkena().write(ClkEna::new());
-        self.regs.ctrl().update(|r| {
-            r.with_use_internal_dmac(false)
-                .with_dma_enable(false)
-                .with_int_enable(false)
-        });
-        self.regs.ctrl().update(|r| {
-            r.with_controller_reset(true)
-                .with_fifo_reset(true)
-                .with_dma_reset(true)
-        });
-        self.wait_reset_clear(Phase::Init)?;
-
-        self.regs.intmask().write(0);
-        self.regs.idinten().write(0);
-        self.clear_all_int_status();
-        self.regs.idsts().write(u32::MAX);
-        self.irq.state.clear_all();
-        self.completion_irq_enabled.store(false, Ordering::Release);
-
-        self.regs.ctype().write(CType::new());
-        self.regs.uhs().write(Uhs::new());
-        self.regs.tmout().write(0xffff_ffff);
-        self.regs.pwren().write(1);
-        self.regs.fifoth().write(FIFO_THRESHOLD);
-        self.write_ext_reg(
-            CARD_THRCTL_OFFSET,
-            CARD_READ_THRESHOLD_ENABLE | CARD_READ_THRESHOLD_DEPTH8,
-        );
-
-        self.program_timing(TimingTable::sd_for_speed(
-            sdmmc_protocol::sdio::host::ClockSpeed::Identification,
-        )?)?;
-        self.dma_poisoned = false;
-        Ok(())
-    }
-
-    pub(crate) fn reset_and_init_preserving_irq(&mut self) -> Result<(), Error> {
-        let was_irq_enabled = self.completion_irq_enabled();
-        self.reset_and_init()?;
-        if was_irq_enabled {
-            self.enable_completion_irq();
-        }
-        Ok(())
-    }
-
-    pub fn program_timing(&mut self, timing: TimingTable) -> Result<(), Error> {
-        self.use_hold_reg = timing.use_hold;
-        self.update_external_clock(timing.clk_src)?;
-        self.set_card_clock(false)?;
-        self.send_update_clock(false)?;
-        self.regs.clkdiv().write(timing.clk_div);
-        self.set_card_clock(true)?;
-        self.send_update_clock(false)?;
-        Ok(())
-    }
-
-    fn update_external_clock(&self, raw: u32) -> Result<(), Error> {
-        self.write_ext_reg(CLK_SRC_OFFSET, 0);
-        self.write_ext_reg(CLK_SRC_OFFSET, raw);
-        for _ in 0..CLOCK_POLL_LIMIT {
-            if self.regs.cksts().read().ready() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
-    }
-
-    fn set_card_clock(&self, enable: bool) -> Result<(), Error> {
-        let value = if enable {
-            ClkEna::new().with_cclk_enable(1)
-        } else {
-            ClkEna::new()
-        };
-        self.regs.clkena().write(value);
-        Ok(())
-    }
-
-    pub(crate) fn send_update_clock(&self, voltage_switch: bool) -> Result<(), Error> {
-        self.regs.cmd().write(
-            Cmd::new()
-                .with_start_cmd(true)
-                .with_wait_prvdata_complete(true)
-                .with_update_clock_registers_only(true)
-                .with_volt_switch(voltage_switch),
-        );
-        for _ in 0..CLOCK_POLL_LIMIT {
-            if !self.regs.cmd().read().start_cmd() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
-    }
-
-    fn wait_reset_clear(&self, phase: Phase) -> Result<(), Error> {
-        for _ in 0..RESET_POLL_LIMIT {
-            let c = self.regs.ctrl().read();
-            if !c.controller_reset() && !c.fifo_reset() && !c.dma_reset() {
-                self.send_update_clock(false)?;
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(phase)))
-    }
-
     pub(crate) fn clear_all_int_status(&self) {
         let cur = self.regs.rintsts().read();
         self.regs.rintsts().write(cur);
@@ -409,6 +343,7 @@ impl PhytiumMci {
     pub fn disable_completion_irq(&mut self) {
         self.completion_irq_enabled.store(false, Ordering::Release);
         self.regs.intmask().write(0);
+        self.regs.idinten().write(0);
         self.regs.ctrl().update(|r| r.with_int_enable(false));
     }
 
@@ -434,11 +369,11 @@ impl PhytiumMci {
         if raw & crate::MCI_INT_ERROR_MASK != 0 {
             Event::Error { raw_status: raw }
         } else if idsts & crate::MCI_IDSTS_ERROR_MASK != 0 {
-            Event::Error { raw_status: idsts }
-        } else if raw & crate::MCI_INT_DATA_TRANSFER_OVER != 0
-            || idsts & (crate::MCI_IDSTS_RECEIVE | crate::MCI_IDSTS_TRANSMIT) != 0
-        {
+            Event::DmaError { raw_status: idsts }
+        } else if raw & crate::MCI_INT_DATA_TRANSFER_OVER != 0 {
             Event::TransferComplete
+        } else if idsts & (crate::MCI_IDSTS_RECEIVE | crate::MCI_IDSTS_TRANSMIT) != 0 {
+            Event::DmaComplete
         } else if raw & crate::MCI_INT_COMMAND_DONE != 0 {
             Event::CommandComplete
         } else if raw & crate::MCI_INT_RXDR != 0 {
@@ -465,46 +400,9 @@ impl PhytiumMci {
         self.regs.ctype().write(ctype);
     }
 
-    pub(crate) fn set_signal_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
-        let cur = self.regs.uhs().read();
-        let next = uhs_bits_after_voltage(cur, voltage)?;
-        self.regs.uhs().write(next);
-        self.send_update_clock(matches!(voltage, SignalVoltage::V180))?;
-        Ok(())
-    }
-
     pub(crate) fn program_data_phase(&self, block_size: u32, block_count: u32) {
         self.regs.blksiz().write(block_size);
         self.regs.bytcnt().write(block_size * block_count);
-    }
-
-    pub(crate) fn reset_fifo(&self, phase: Phase) -> Result<(), Error> {
-        self.regs.ctrl().update(|r| r.with_fifo_reset(true));
-        for _ in 0..RESET_POLL_LIMIT {
-            if !self.regs.ctrl().read().fifo_reset() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(phase)))
-    }
-
-    pub(crate) fn reset_dma(&self, phase: Phase) -> Result<(), Error> {
-        self.regs.ctrl().update(|r| r.with_dma_reset(true));
-        for _ in 0..RESET_POLL_LIMIT {
-            if !self.regs.ctrl().read().dma_reset() {
-                self.regs.bmod().write(BMOD_SOFTWARE_RESET);
-                for _ in 0..RESET_POLL_LIMIT {
-                    if self.regs.bmod().read() & BMOD_SOFTWARE_RESET == 0 {
-                        return Ok(());
-                    }
-                    core::hint::spin_loop();
-                }
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(phase)))
     }
 
     pub(crate) fn translate_int_error(&self, ints: RIntSts, phase: Phase, cmd_index: u8) -> Error {
@@ -560,6 +458,9 @@ impl SdioIrqHandle for PhytiumMciIrqHandle {
 }
 
 fn handle_irq_core(irq: &IrqCore) -> Event {
+    let Some(_register_owner) = irq.state.try_begin_irq_snapshot() else {
+        return Event::Deferred;
+    };
     let generation = irq.state.generation();
     let raw = irq.regs.rintsts().read().into_bits();
     let idsts = irq.regs.idsts().read();
@@ -591,6 +492,8 @@ unsafe impl Sync for PhytiumMci {}
 mod tests {
     use core::ptr::NonNull;
 
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind};
+
     use super::*;
 
     #[test]
@@ -600,6 +503,21 @@ mod tests {
 
         assert_eq!(host.base_addr, 0x2800_0000);
         assert_eq!(host.fifo_offset, DEFAULT_FIFO_OFFSET);
+    }
+
+    #[test]
+    fn discovery_constructor_does_not_reset_issue_or_ack_the_controller() {
+        let mut mmio = [0u32; 256];
+        mmio[0] = 0xa5a5_5a5a;
+        mmio[11] = 0x1357_2468;
+        mmio[17] = crate::MCI_INT_COMMAND_DONE;
+        mmio[36] = crate::MCI_IDSTS_RECEIVE;
+        let before = mmio;
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+
+        let _host = unsafe { PhytiumMci::new(base) };
+
+        assert_eq!(mmio, before);
     }
 
     #[test]
@@ -626,7 +544,9 @@ mod tests {
                 .write_volatile(IDSTS_RECEIVE)
         };
 
-        assert_eq!(host.handle_irq(), crate::Event::TransferComplete);
+        let event = host.handle_irq();
+        assert_eq!(event, crate::Event::DmaComplete);
+        assert_eq!(event.kind(), HostEventKind::Other);
         assert_eq!(host.irq.state.pending_idmac_status(), IDSTS_RECEIVE);
         assert_eq!(host.irq.state.pending_status(), 0);
 
@@ -638,5 +558,78 @@ mod tests {
             .state
             .cache_if_current(old_generation, 0, IDSTS_RECEIVE);
         assert_eq!(host.irq.state.pending_idmac_status(), 0);
+    }
+
+    #[test]
+    fn idmac_abnormal_summary_wins_over_combined_transfer_completion() {
+        const IDSTS_ABNORMAL_SUMMARY: u32 = 1 << 9;
+
+        assert!(matches!(
+            PhytiumMci::event_from_raw_irq(
+                crate::MCI_INT_DATA_TRANSFER_OVER,
+                IDSTS_ABNORMAL_SUMMARY,
+            ),
+            crate::Event::DmaError { .. }
+        ));
+    }
+
+    #[test]
+    fn irq_defers_destructive_status_snapshot_while_task_programs_request() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.irq.state.begin_request();
+        let irq_core = host.irq.clone();
+        let task_owner = irq_core
+            .state
+            .try_begin_task_update()
+            .expect("idle register gate must admit task setup");
+        const IDSTS_WORD: usize = 36;
+        const IDSTS_RECEIVE: u32 = 1 << 1;
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(IDSTS_WORD)
+                .write_volatile(IDSTS_RECEIVE);
+        }
+
+        let mut irq = host.irq_endpoint();
+        assert_eq!(irq.handle_irq(), crate::Event::Deferred);
+        assert_eq!(host.irq.state.pending_idmac_status(), 0);
+        assert_eq!(
+            unsafe { mmio.as_ptr().add(IDSTS_WORD).read_volatile() },
+            IDSTS_RECEIVE
+        );
+
+        drop(task_owner);
+        assert_eq!(irq.handle_irq(), crate::Event::DmaComplete);
+        assert_eq!(host.irq.state.pending_idmac_status(), IDSTS_RECEIVE);
+    }
+
+    #[test]
+    fn task_register_update_defers_instead_of_spinning_behind_irq_snapshot() {
+        let state = IrqState::new();
+        let irq_owner = state
+            .try_begin_irq_snapshot()
+            .expect("idle register gate must admit the IRQ snapshot");
+
+        assert!(state.try_begin_task_update().is_none());
+
+        drop(irq_owner);
+        assert!(state.try_begin_task_update().is_some());
+    }
+
+    #[test]
+    fn disabling_completion_delivery_masks_controller_and_idmac_sources() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.enable_completion_irq();
+        host.regs.idinten().write(u32::MAX);
+
+        host.disable_completion_irq();
+
+        assert_eq!(host.regs.intmask().read(), 0);
+        assert_eq!(host.regs.idinten().read(), 0);
+        assert!(!host.regs.ctrl().read().int_enable());
     }
 }

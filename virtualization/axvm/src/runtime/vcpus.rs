@@ -277,6 +277,7 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     if let Err(error) = CurrentArch::before_first_run(&vm, &vcpu) {
         error!("VM[{vm_id}] VCpu[{vcpu_id}] first-run preparation failed: {error:?}");
+        vm.record_startup_failure(error.clone());
         if let Err(stop_error) = vm.stop(StopReason::Fault(format!("{error:?}"))) {
             warn!("VM[{vm_id}] shutdown failed after first-run preparation: {stop_error:?}");
         }
@@ -363,5 +364,4 @@ fn complete_vm_stop(vm: &VMRef, vm_id: usize, vcpu_id: usize) {
     info!("VM[{vm_id}] state changed to Stopped");
     CurrentArch::on_last_vcpu_exit(vm_id);
     sub_running_vm_count(1);
-    crate::host::task::wait_queue_wake(&super::VMM, 1);
 }

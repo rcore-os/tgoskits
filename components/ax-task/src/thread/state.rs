@@ -50,6 +50,31 @@ impl ThreadLifecycle {
             })
         }
     }
+
+    /// Rolls back a Deadline replenishment that could not publish its timer.
+    ///
+    /// This is deliberately narrower than a general reverse transition: only
+    /// the temporary `Blocked/Waking/Ready -> Ready` preparation performed by
+    /// `TaskSystem::replenish_deadline` may use it.
+    pub(crate) fn rollback_deadline_replenishment(
+        &mut self,
+        previous: ThreadState,
+    ) -> Result<(), TaskError> {
+        if self.state == ThreadState::Ready
+            && matches!(
+                previous,
+                ThreadState::Blocked | ThreadState::Waking | ThreadState::Ready
+            )
+        {
+            self.state = previous;
+            Ok(())
+        } else {
+            Err(TaskError::InvalidTransition {
+                from: self.state,
+                to: previous,
+            })
+        }
+    }
 }
 
 const fn transition_is_valid(from: ThreadState, to: ThreadState) -> bool {

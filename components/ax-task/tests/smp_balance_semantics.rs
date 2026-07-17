@@ -236,6 +236,30 @@ fn fair_push_waits_for_the_configured_balance_interval() {
 }
 
 #[test]
+fn fair_balance_owner_deadline_runs_without_forcing_the_fifo_current_off_cpu() {
+    let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
+    let fifo = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(80).unwrap()));
+    system.enqueue(cpu0.as_mut(), fifo.id(), 0).unwrap();
+    for _ in 0..2 {
+        let fair = ready_thread(&system, SchedulePolicy::default());
+        system.enqueue(cpu0.as_mut(), fair.id(), 0).unwrap();
+    }
+    assert_eq!(system.schedule(cpu0.as_mut(), 0).unwrap().next(), fifo.id());
+
+    let outcome = system
+        .schedule_if_requested(cpu0.as_mut(), DEFAULT_BALANCE_INTERVAL_NS)
+        .unwrap();
+    assert!(
+        outcome.decision().is_none(),
+        "fair housekeeping is owner work, not a FIFO preemption reason"
+    );
+    system
+        .drain_policy_updates(cpu1.as_mut(), DEFAULT_BALANCE_INTERVAL_NS)
+        .unwrap();
+    assert_eq!(cpu1.runnable_summary(), 1);
+}
+
+#[test]
 fn fair_balance_deadline_is_relative_to_cpu_online_time() {
     const BOOT_NOW_NS: u64 = 30_000_000_000;
 

@@ -33,7 +33,7 @@ use crate::{
     CMsgData, RecvFlags, RecvOptions, SendOptions, SocketAddrEx,
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
-    unix::{Transport, TransportOps, UnixSocketAddr, with_slot},
+    unix::{Transport, TransportOps, UnixSocketAddr, resolve_slot},
 };
 
 struct Packet {
@@ -239,16 +239,16 @@ impl TransportOps for DgramTransport {
 
         let wake_poll = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
-            with_slot(&addr, |slot| {
-                if let Some(bind) = slot.dgram.lock().as_ref() {
-                    bind.data_tx
-                        .try_send(packet)
-                        .map_err(|_| AxError::BrokenPipe)?;
-                    Ok(bind.poll_update.clone())
-                } else {
-                    Err(AxError::NotConnected)
-                }
-            })?
+            let slot = resolve_slot(&addr)?;
+            let slot = slot.dgram.lock();
+            if let Some(bind) = slot.as_ref() {
+                bind.data_tx
+                    .try_send(packet)
+                    .map_err(|_| AxError::BrokenPipe)?;
+                bind.poll_update.clone()
+            } else {
+                return Err(AxError::NotConnected);
+            }
         } else if let Some(chan) = self.connected.read().as_ref() {
             chan.data_tx
                 .try_send(packet)

@@ -884,9 +884,12 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
         "/dev/urandom"
     };
 
-    let f = current_fs_context().lock().resolve(path)?;
     let mut kbuf = vec![0; len];
-    let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
+    let len = current_fs_context()
+        .lock()
+        .with_namespace_operation(|namespace| {
+            namespace.resolve_path(path)?.read_at(&mut kbuf, 0)
+        })?;
 
     vm_write_slice(buf, &kbuf)?;
 

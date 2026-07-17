@@ -4,7 +4,10 @@ use ax_errno::{AxError, AxResult};
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{Metadata, NodePermission, NodeType};
 
-use crate::highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context};
+use crate::{
+    highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context},
+    lifecycle::FsOpenHandleLease,
+};
 
 pub type FileType = NodeType;
 pub type FilePerm = NodePermission;
@@ -175,8 +178,7 @@ impl File {
     }
 
     pub fn truncate(&self, size: u64) -> AxResult {
-        self.inner.location().entry().as_file()?.set_len(size)?;
-        Ok(())
+        self.inner.set_len(size)
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
@@ -205,13 +207,14 @@ impl File {
     }
 
     pub fn get_attr(&self) -> AxResult<FileAttr> {
-        self.inner.location().metadata()
+        self.inner.metadata()
     }
 }
 
 pub struct Directory {
     entries: Vec<DirEntry>,
     cursor: usize,
+    lease: Option<FsOpenHandleLease>,
 }
 
 impl Directory {
@@ -228,6 +231,7 @@ impl Directory {
         let entries = {
             let fs_context = current_fs_context();
             let ctx = fs_context.lock();
+            let lease = ctx.open_handle()?;
             let mut entries = Vec::new();
             for entry in ctx.read_dir(path)? {
                 let entry = entry?;
@@ -236,12 +240,22 @@ impl Directory {
                     ty: entry.node_type,
                 });
             }
-            Ok::<_, AxError>(entries)
+            Ok::<_, AxError>((entries, lease))
         }?;
-        Ok(Self { entries, cursor: 0 })
+        Ok(Self {
+            entries: entries.0,
+            cursor: 0,
+            lease: entries.1,
+        })
     }
 
     pub fn read_dir(&mut self, dirents: &mut [DirEntry]) -> AxResult<usize> {
+        let _operation = self
+            .lease
+            .as_ref()
+            .map(FsOpenHandleLease::begin_operation)
+            .transpose()
+            .map_err(|error| error.into_ax_error())?;
         let mut count = 0;
         for slot in dirents.iter_mut() {
             let Some(entry) = self.entries.get(self.cursor).cloned() else {

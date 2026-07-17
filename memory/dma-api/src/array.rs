@@ -31,11 +31,11 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -43,7 +43,7 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn read_cpu(&self, index: usize) -> Option<T> {
@@ -79,7 +79,7 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {
@@ -126,11 +126,11 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -138,15 +138,15 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn domain_id(&self) -> DmaDomainId {
-        self.data.device.domain_id()
+        self.data.device().domain_id()
     }
 
     pub fn direction(&self) -> DmaDirection {
-        match self.data.kind {
+        match self.data.kind() {
             AllocationKind::Contiguous { direction } => direction,
             AllocationKind::Coherent => unreachable!("ContiguousArray cannot hold coherent DMA"),
         }
@@ -242,7 +242,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {

@@ -1,17 +1,10 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::{
-    block::runtime::{BlockDeviceHandle, BlockDrainWake, BlockIrqBridge, BlockRuntimeConfig},
-    vfs::FileBackend,
-};
+use ax_fs_ng::{BlockDevice, BlockDeviceMetadata, vfs::FileBackend};
 use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::VfsResult;
-use rdif_block::{
-    BlkError, DeviceInfo, IQueue, QueueInfo, QueueLimits, Request, RequestId, RequestOp,
-    RequestStatus,
-};
 
 use super::r#loop::LoopDevice;
 
@@ -46,47 +39,36 @@ impl CacheData {
     }
 }
 
-struct LoopDrainWake;
-
-impl BlockDrainWake for LoopDrainWake {
-    fn wake_drain(&self) {}
-}
-
-struct LoopQueue {
+struct LoopBlockDevice {
     cache: Arc<CacheData>,
+    backing: FileBackend,
     ro: bool,
-    info: QueueInfo,
-    next_request_id: usize,
-    pending: BTreeMap<RequestId, RequestStatus>,
+    metadata: BlockDeviceMetadata,
 }
 
-impl LoopQueue {
-    fn new(cache: Arc<CacheData>, ro: bool) -> Self {
-        cache.mounted.store(true, Ordering::Release);
-        let total_len = cache.total_len;
-        let mut limits = QueueLimits::simple(LOOP_BLOCK_SIZE, u64::MAX);
-        limits.supports_flush = true;
-        let mut device = DeviceInfo::new((total_len / LOOP_BLOCK_SIZE) as u64, LOOP_BLOCK_SIZE);
-        device.read_only = ro;
-        Self {
-            cache,
-            ro,
-            info: QueueInfo {
-                id: 0,
-                device,
-                limits,
-            },
-            next_request_id: 1,
-            pending: BTreeMap::new(),
+impl LoopBlockDevice {
+    fn new(cache: Arc<CacheData>, backing: FileBackend, ro: bool) -> AxResult<Self> {
+        if cache.total_len == 0 || !cache.total_len.is_multiple_of(LOOP_BLOCK_SIZE) {
+            return Err(AxError::InvalidInput);
         }
+        let num_blocks =
+            u64::try_from(cache.total_len / LOOP_BLOCK_SIZE).map_err(|_| AxError::InvalidInput)?;
+        let metadata = BlockDeviceMetadata::new(num_blocks, LOOP_BLOCK_SIZE)?;
+        cache.mounted.store(true, Ordering::Release);
+        Ok(Self {
+            cache,
+            backing,
+            ro,
+            metadata,
+        })
     }
 
-    fn copy_from_cache(&self, offset: usize, dst: &mut [u8]) -> Result<(), BlkError> {
+    fn copy_from_cache(&self, offset: usize, dst: &mut [u8]) -> AxResult {
         if offset
             .checked_add(dst.len())
             .is_none_or(|end| end > self.cache.total_len)
         {
-            return Err(BlkError::InvalidRequest);
+            return Err(AxError::InvalidInput);
         }
         let blocks = self.cache.blocks.lock();
         let mut pos = 0;
@@ -95,7 +77,7 @@ impl LoopQueue {
             let idx = cur / CACHE_BLK;
             let off = cur % CACHE_BLK;
             let Some(chunk) = blocks.get(idx) else {
-                return Err(BlkError::InvalidRequest);
+                return Err(AxError::InvalidInput);
             };
             let to_copy = (dst.len() - pos).min(CACHE_BLK - off);
             dst[pos..pos + to_copy].copy_from_slice(&chunk[off..off + to_copy]);
@@ -105,12 +87,12 @@ impl LoopQueue {
         Ok(())
     }
 
-    fn copy_into_cache(&self, offset: usize, src: &[u8]) -> Result<(), BlkError> {
+    fn copy_into_cache(&self, offset: usize, src: &[u8]) -> AxResult {
         if offset
             .checked_add(src.len())
             .is_none_or(|end| end > self.cache.total_len)
         {
-            return Err(BlkError::InvalidRequest);
+            return Err(AxError::InvalidInput);
         }
         let mut blocks = self.cache.blocks.lock();
         let mut pos = 0;
@@ -119,7 +101,7 @@ impl LoopQueue {
             let idx = cur / CACHE_BLK;
             let off = cur % CACHE_BLK;
             let Some(chunk) = blocks.get_mut(idx) else {
-                return Err(BlkError::InvalidRequest);
+                return Err(AxError::InvalidInput);
             };
             let to_copy = (src.len() - pos).min(CACHE_BLK - off);
             chunk[off..off + to_copy].copy_from_slice(&src[pos..pos + to_copy]);
@@ -130,79 +112,58 @@ impl LoopQueue {
         Ok(())
     }
 
-    fn block_offset(lba: u64) -> Result<usize, BlkError> {
-        let lba = usize::try_from(lba).map_err(|_| BlkError::InvalidRequest)?;
+    fn block_offset(lba: u64) -> AxResult<usize> {
+        let lba = usize::try_from(lba).map_err(|_| AxError::InvalidInput)?;
         lba.checked_mul(LOOP_BLOCK_SIZE)
-            .ok_or(BlkError::InvalidRequest)
-    }
-
-    fn execute_request(&self, request: &mut Request<'_>) -> Result<(), BlkError> {
-        let base = Self::block_offset(request.lba)?;
-        match request.op {
-            RequestOp::Read => {
-                let mut offset = 0usize;
-                for segment in request.segments.iter_mut() {
-                    let len = segment.len;
-                    self.copy_from_cache(base + offset, &mut segment[..len])?;
-                    offset += len;
-                }
-                Ok(())
-            }
-            RequestOp::Write => {
-                if self.ro {
-                    return Err(BlkError::Io);
-                }
-                let mut offset = 0usize;
-                for segment in request.segments.iter() {
-                    let len = segment.len;
-                    self.copy_into_cache(base + offset, &segment[..len])?;
-                    offset += len;
-                }
-                Ok(())
-            }
-            RequestOp::Flush => Ok(()),
-            _ => Err(BlkError::NotSupported),
-        }
+            .ok_or(AxError::InvalidInput)
     }
 }
 
-impl Drop for LoopQueue {
+impl Drop for LoopBlockDevice {
     fn drop(&mut self) {
         self.cache.mounted.store(false, Ordering::Release);
     }
 }
 
-// SAFETY: The queue executes all operations synchronously while holding
-// exclusive `&mut self` access and only touches the cached file bytes.
-unsafe impl IQueue for LoopQueue {
-    fn id(&self) -> usize {
-        self.info.id
+impl BlockDevice for LoopBlockDevice {
+    fn name(&self) -> &str {
+        "loop"
     }
 
-    fn info(&self) -> QueueInfo {
-        self.info
+    fn metadata(&self) -> BlockDeviceMetadata {
+        self.metadata
     }
 
-    fn submit_request(&mut self, mut request: Request<'_>) -> Result<RequestId, BlkError> {
-        self.execute_request(&mut request)?;
-        let request_id = RequestId::new(self.next_request_id);
-        self.next_request_id += 1;
-        self.pending.insert(request_id, RequestStatus::Complete);
-        Ok(request_id)
+    fn read_blocks(&self, start_block: u64, buffer: &mut [u8]) -> AxResult {
+        self.metadata.validate_transfer(start_block, buffer.len())?;
+        self.copy_from_cache(Self::block_offset(start_block)?, buffer)
     }
 
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        self.pending
-            .remove(&request)
-            .ok_or(BlkError::InvalidRequest)
+    fn write_blocks(&self, start_block: u64, buffer: &[u8]) -> AxResult {
+        if self.ro {
+            return Err(AxError::ReadOnlyFilesystem);
+        }
+        self.metadata.validate_transfer(start_block, buffer.len())?;
+        self.copy_into_cache(Self::block_offset(start_block)?, buffer)
+    }
+
+    fn flush(&self) -> AxResult {
+        if !self.cache.dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if self.ro || !writeback_buffer(&self.backing, &self.cache) {
+            self.cache.dirty.store(true, Ordering::Release);
+            return Err(AxError::Io);
+        }
+        Ok(())
     }
 }
 
 impl LoopDevice {
-    pub fn block_handle(&self) -> VfsResult<Arc<BlockDeviceHandle>> {
+    pub fn block_device(&self) -> VfsResult<Arc<dyn BlockDevice>> {
         let file = self.file.lock().clone();
         let file = file.ok_or(AxError::from(LinuxError::ENXIO))?;
-        let len = file.location().len().unwrap_or(0) as usize;
+        let len = file.len().unwrap_or(0) as usize;
 
         {
             let mut cache = self.block_cache.lock();
@@ -230,14 +191,8 @@ impl LoopDevice {
         cache.data = Some(cd.clone());
         drop(cache);
 
-        let handle = BlockDeviceHandle::new(
-            "loop",
-            [Box::new(LoopQueue::new(cd, self.ro.load(Ordering::Relaxed))) as Box<dyn IQueue>],
-            Arc::new(BlockIrqBridge::new()),
-            BlockRuntimeConfig::new(Arc::new(LoopDrainWake)),
-        )
-        .map_err(|_| AxError::Io)?;
-        Ok(handle)
+        let device = LoopBlockDevice::new(cd, file, self.ro.load(Ordering::Relaxed))?;
+        Ok(Arc::new(device))
     }
 
     pub fn flush_cache_to_file(&self) -> AxResult<()> {

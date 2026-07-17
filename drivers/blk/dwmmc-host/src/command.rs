@@ -1,14 +1,14 @@
 //! Command issue and response decoding.
 //!
 //! Encodes [`sdmmc_protocol::cmd::Command`] into a DW_mshc CMD register
-//! value, fires it, polls RINTSTS for completion, and decodes the four
-//! 32-bit response slots back into [`Response`].
+//! value, fires it, consumes IRQ-owned completion snapshots, and decodes the
+//! four 32-bit response slots back into [`Response`].
 
 use log::warn;
 use sdmmc_protocol::{
     CommandPoll, CommandResponsePoll,
     cmd::{Command as ProtoCmd, DataDirection},
-    error::{Error, ErrorContext, Phase},
+    error::{Error, Phase},
     response::{
         IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType,
         SdioOcrResponse, SdioRwResponse,
@@ -16,7 +16,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    host::DwMmc,
+    host::{DwMmc, RegisterOwner},
     regs::{Cmd, RegisterBlockVolatileFieldAccess},
 };
 
@@ -26,15 +26,12 @@ pub(crate) enum CommandState {
     WaitingInhibit {
         cmd: ProtoCmd,
         data: Option<crate::host::PendingData>,
-        polls: u32,
     },
     WaitingStart {
         cmd: ProtoCmd,
-        polls: u32,
     },
     Issued {
         cmd: ProtoCmd,
-        polls: u32,
     },
     Complete {
         response: Response,
@@ -62,19 +59,49 @@ impl DwMmc {
     }
 
     pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+        let irq = self.irq.clone();
+        let register_owner = irq.state.try_begin_task_update().ok_or(Error::Busy)?;
+        self.submit_command_while_registers_owned(cmd, &register_owner)
+    }
+
+    pub(crate) fn ensure_runtime_data_command_can_issue(&self) -> Result<(), Error> {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
         if !self.card_present() {
             return Err(Error::NoCard);
         }
+        if !self.completion_irq_enabled() {
+            return Err(Error::UnsupportedCommand);
+        }
+        if !self.command_can_issue(true) {
+            return Err(Error::Busy);
+        }
+        Ok(())
+    }
+
+    /// Stage and activate a command while the caller owns the controller's
+    /// task-side register gate.
+    pub(crate) fn submit_command_while_registers_owned(
+        &mut self,
+        cmd: &ProtoCmd,
+        _register_owner: &RegisterOwner<'_>,
+    ) -> Result<(), Error> {
+        if !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
+        if !self.card_present() {
+            return Err(Error::NoCard);
+        }
+        if !self.completion_irq_enabled() {
+            return Err(Error::UnsupportedCommand);
+        }
+        if !self.command_can_issue(self.pending_data.is_some()) {
+            return Err(Error::Busy);
+        }
         let data = self.pending_data.take();
         self.prepare_irq_for_request();
-        self.command_state = CommandState::WaitingInhibit {
-            cmd: *cmd,
-            data,
-            polls: 0,
-        };
+        self.command_state = CommandState::WaitingInhibit { cmd: *cmd, data };
         if let Err(err) = self.poll_command() {
             self.command_state = CommandState::Idle;
             return Err(err);
@@ -82,44 +109,38 @@ impl DwMmc {
         Ok(())
     }
 
+    /// Commit a data command after the caller has completed every fallible
+    /// admission check and transferred the buffer to the hardware path.
+    ///
+    /// Card removal after admission is reported by the IRQ/watchdog recovery
+    /// path. Rechecking it here would make a post-IDMAC error look like an
+    /// unaccepted request and allow the caller to release live DMA memory.
+    pub(crate) fn activate_admitted_data_command(
+        &mut self,
+        cmd: &ProtoCmd,
+        _register_owner: &RegisterOwner<'_>,
+    ) {
+        debug_assert!(matches!(self.command_state, CommandState::Idle));
+        debug_assert!(self.pending_data.is_some());
+        let data = self.pending_data.take();
+        self.prepare_irq_for_request();
+        self.program_command(cmd, data);
+    }
+
     pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
         match self.command_state {
-            CommandState::WaitingInhibit { cmd, data, polls } => {
+            CommandState::WaitingInhibit { cmd, data } => {
                 if !self.command_can_issue(data.is_some()) {
-                    if polls >= COMMAND_WAIT_POLLS {
-                        self.log_command_timeout("wait-inhibit", cmd);
-                        let err =
-                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
-                        self.command_state = CommandState::Failed { error: err };
-                        return Err(err);
-                    }
-                    self.command_state = CommandState::WaitingInhibit {
-                        cmd,
-                        data,
-                        polls: polls + 1,
-                    };
                     return Ok(CommandPoll::Pending);
                 }
                 self.program_command(&cmd, data);
                 return Ok(CommandPoll::Pending);
             }
-            CommandState::WaitingStart { cmd, polls } => {
+            CommandState::WaitingStart { cmd } => {
                 if self.regs.cmd().read().start_cmd() {
-                    if polls >= COMMAND_WAIT_POLLS {
-                        self.log_command_timeout("wait-start", cmd);
-                        let err =
-                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
-                        self.command_state = CommandState::Failed { error: err };
-                        return Err(err);
-                    }
-                    self.command_state = CommandState::WaitingStart {
-                        cmd,
-                        polls: polls + 1,
-                    };
                     return Ok(CommandPoll::Pending);
                 }
-                self.command_state = CommandState::Issued { cmd, polls: 0 };
-                return Ok(CommandPoll::Pending);
+                self.command_state = CommandState::Issued { cmd };
             }
             CommandState::Issued { .. } => {}
             CommandState::Complete { .. } => return Ok(CommandPoll::Complete),
@@ -127,7 +148,7 @@ impl DwMmc {
             CommandState::Idle => return Err(Error::InvalidArgument),
         }
 
-        let CommandState::Issued { cmd, polls } = self.command_state else {
+        let CommandState::Issued { cmd } = self.command_state else {
             unreachable!();
         };
         let raw_status = self.take_command_irq_status();
@@ -153,16 +174,6 @@ impl DwMmc {
             self.command_state = CommandState::Complete { response };
             return Ok(CommandPoll::Complete);
         }
-        if polls >= COMMAND_WAIT_POLLS {
-            let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
-            self.log_command_error("response-timeout", cmd, raw_status, err);
-            self.command_state = CommandState::Failed { error: err };
-            return Err(err);
-        }
-        self.command_state = CommandState::Issued {
-            cmd,
-            polls: polls + 1,
-        };
         Ok(CommandPoll::Pending)
     }
 
@@ -204,10 +215,7 @@ impl DwMmc {
         });
         self.regs.cmdarg().write(cmd.argument);
         self.regs.cmd().write(encode_command(cmd, data_dir));
-        self.command_state = CommandState::WaitingStart {
-            cmd: *cmd,
-            polls: 0,
-        };
+        self.command_state = CommandState::WaitingStart { cmd: *cmd };
     }
 
     fn take_command_irq_status(&mut self) -> u32 {
@@ -215,50 +223,17 @@ impl DwMmc {
     }
 
     fn clear_command_int_status(&mut self) {
-        let raw_status = self.regs.rintsts().read().into_bits()
-            & (crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
-        if raw_status != 0 {
-            self.regs
-                .rintsts()
-                .write(crate::regs::RIntSts::from_bits(raw_status));
-        }
         self.irq
             .state
             .clear(crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_ERROR_MASK);
     }
 
-    fn log_command_timeout(&self, stage: &str, cmd: ProtoCmd) {
-        warn!(
-            "dwmmc-command: {stage} timeout cmd={} arg={:#010x} resp={:?} cmdreg={:#010x} \
-             status={:#010x} rintsts={:#010x} mintsts={:#010x} intmask={:#010x} ctrl={:#010x} \
-             pwren={:#010x} cdetect={:#010x} clkena={:#010x} clksrc={:#010x} clkdiv={:#010x} \
-             ctype={:#010x} uhs={:#010x} rst={:#010x}",
-            cmd.index,
-            cmd.argument,
-            cmd.response,
-            self.regs.cmd().read().into_bits(),
-            self.regs.status().read().into_bits(),
-            self.regs.rintsts().read().into_bits(),
-            self.regs.mintsts().read(),
-            self.regs.intmask().read(),
-            self.regs.ctrl().read().into_bits(),
-            self.regs.pwren().read(),
-            self.regs.cdetect().read(),
-            self.regs.clkena().read().into_bits(),
-            self.regs.clksrc().read(),
-            self.regs.clkdiv().read().into_bits(),
-            self.regs.ctype().read().into_bits(),
-            self.regs.uhs().read().into_bits(),
-            self.regs.rst().read(),
-        );
-    }
-
     fn log_command_error(&self, stage: &str, cmd: ProtoCmd, raw_status: u32, err: Error) {
         warn!(
             "dwmmc-command: {stage} cmd={} arg={:#010x} resp={:?} raw={:#010x} err={:?} \
-             cmdreg={:#010x} status={:#010x} rintsts={:#010x} mintsts={:#010x} intmask={:#010x} \
-             ctrl={:#010x} pwren={:#010x} cdetect={:#010x} clkena={:#010x} clksrc={:#010x} \
-             clkdiv={:#010x} ctype={:#010x} uhs={:#010x} rst={:#010x}",
+             cmdreg={:#010x} status={:#010x} cached_irq={:#010x} cached_idmac={:#010x} \
+             intmask={:#010x} ctrl={:#010x} pwren={:#010x} cdetect={:#010x} clkena={:#010x} \
+             clksrc={:#010x} clkdiv={:#010x} ctype={:#010x} uhs={:#010x} rst={:#010x}",
             cmd.index,
             cmd.argument,
             cmd.response,
@@ -266,8 +241,8 @@ impl DwMmc {
             err,
             self.regs.cmd().read().into_bits(),
             self.regs.status().read().into_bits(),
-            self.regs.rintsts().read().into_bits(),
-            self.regs.mintsts().read(),
+            self.irq.state.pending(),
+            self.irq.state.pending_idmac(),
             self.regs.intmask().read(),
             self.regs.ctrl().read().into_bits(),
             self.regs.pwren().read(),
@@ -282,25 +257,17 @@ impl DwMmc {
     }
 
     fn prepare_irq_for_request(&mut self) {
-        self.clear_all_int_status();
         self.irq.state.begin_request();
     }
 
     pub(crate) fn abort_command(&mut self) -> Result<(), Error> {
-        self.clear_command_int_status();
-        for _ in 0..COMMAND_WAIT_POLLS {
-            if !self.regs.cmd().read().start_cmd() {
-                self.clear_all_int_status();
-                self.reset_and_init_preserving_irq()?;
-                self.pending_data = None;
-                self.data_blocks_remaining = 0;
-                self.data_cmd_index = 0;
-                self.command_state = CommandState::Idle;
-                return Ok(());
-            }
-            core::hint::spin_loop();
+        if self.completion_irq_enabled() && !self.recovery_quiesced {
+            return Err(Error::Busy);
         }
-        self.reset_and_init_preserving_irq()?;
+        if !self.recovery_quiesced {
+            return Err(Error::Busy);
+        }
+        self.clear_command_int_status();
         self.pending_data = None;
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
@@ -308,8 +275,6 @@ impl DwMmc {
         Ok(())
     }
 }
-
-const COMMAND_WAIT_POLLS: u32 = 1_000_000;
 
 /// Build the CMD register value for a single command.
 ///
@@ -411,4 +376,27 @@ fn read_r2(resp: [u32; 4]) -> [u8; 16] {
     bytes[8..12].copy_from_slice(&resp[1].to_be_bytes());
     bytes[12..16].copy_from_slice(&resp[0].to_be_bytes());
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use core::ptr::NonNull;
+
+    use super::*;
+
+    #[test]
+    fn runtime_request_setup_does_not_ack_raw_irq_status() {
+        const RINTSTS_WORD: usize = 17;
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let pending = crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_DATA_TRANSFER_OVER;
+        mmio[RINTSTS_WORD] = pending;
+        host.enable_completion_irq();
+
+        host.prepare_irq_for_request();
+
+        assert_eq!(mmio[RINTSTS_WORD], pending);
+        assert_ne!(host.irq.state.generation(), 0);
+    }
 }

@@ -46,6 +46,10 @@ pub mod v3;
 #[cfg(target_arch = "aarch64")]
 /// Re-export arch specific APIs for VGIC to avoid doc build errors
 mod api_reexp {
+    #[cfg(feature = "vgicv3")]
+    pub(crate) use crate::host::{
+        begin_physical_spi_quiesce, poll_physical_distributor_write_complete, route_physical_spi,
+    };
     #[allow(unused_imports)]
     pub use crate::host::{
         get_host_gicd_base, get_host_gicr_base, read_vgicd_iidr, read_vgicd_typer,
@@ -71,5 +75,24 @@ mod api_reexp {
 
     pub fn get_host_gicr_base() -> PhysAddr {
         pa!(0)
+    }
+
+    #[cfg(feature = "vgicv3")]
+    pub fn route_physical_spi(
+        _irq: u32,
+        _cpu_phys_id: usize,
+        _affinity: (u8, u8, u8, u8),
+    ) -> crate::VgicResult {
+        Ok(())
+    }
+
+    #[cfg(feature = "vgicv3")]
+    pub fn begin_physical_spi_quiesce(_irq: u32) -> crate::VgicResult {
+        Ok(())
+    }
+
+    #[cfg(feature = "vgicv3")]
+    pub fn poll_physical_distributor_write_complete() -> crate::VgicResult<bool> {
+        Ok(true)
     }
 }

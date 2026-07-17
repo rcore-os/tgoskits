@@ -30,7 +30,7 @@ use crate::{
 
 numeric_enum_macro::numeric_enum! {
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapKind {
     Synchronous = 0,
     Irq = 1,
@@ -287,9 +287,9 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
 /// which is provided by the host callback.
 #[unsafe(no_mangle)]
 fn current_el_irq_handler(_tf: &mut TrapFrame) {
-    // TODO: consider if returning VmExit::ExternalInterrupt (or another enum variant) is
-    // better than directly calling the handler here.
-    crate::host::handle_current_host_irq()
+    // SAFETY: this function is entered only by the current-EL IRQ vector. Its
+    // live exception frame remains responsible for restoring the saved DAIF.
+    unsafe { crate::host::handle_current_host_irq() }
 }
 
 /// Handles synchronous exceptions that occur from the current exception level.

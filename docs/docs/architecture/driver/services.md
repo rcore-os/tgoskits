@@ -56,7 +56,7 @@ pub struct BlockVolume {
 
 block volume 层负责：
 
-- 从 `rdif-block` 枚举 physical disk。
+- 从 `ax-runtime::block` 枚举已经完成 IRQ binding 和 staged initialization 的 physical disk。
 - 支持 GPT、MBR、raw disk。
 - 产出稳定 volume metadata。
 - 提供裁剪到 `BlockRegion` 的 block reader。
@@ -66,6 +66,10 @@ FS 负责：
 - 根据 `root=/dev/sdXn`、`root=/dev/mmcblkXpY`、`PARTUUID=`、`PARTLABEL=` 选择 root volume。
 - 检测 ext4、FAT 等 filesystem magic。
 - 挂载选定 volume。
+
+FS 只消费 `Arc<dyn BlockDevice>` blocking facade。`Inline` 设备在 submit 调用栈中归还 owned buffer；`Interrupt` 设备等待请求自己的 generation completion。FS 不读取 `rdif-block` IRQ event、不拥有 tag/completion table、不启动全局 drain thread，也不以周期 timer 推进硬件完成。
+
+root filesystem 的 detach/remount 使用 generation lifecycle：freeze 阻止新操作并等待 active operation/open-handle lease，sync 后才卸载；guest 归还 controller 并重新初始化成功后按保存的 `MountRecipe` remount。旧 generation 的 file/directory handle 永久返回 stale，不能在新 mount 上继续使用。
 
 FS 不再 import `ax_driver::{AxBlockDevice, AxDeviceContainer, PartitionInfo, PartitionRegion, PartitionTableKind}`，也不调用 `ax_driver::scan_partitions`。
 

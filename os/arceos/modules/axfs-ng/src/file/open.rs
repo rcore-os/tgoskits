@@ -1,7 +1,15 @@
 use axfs_ng_vfs::{Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path};
 
-use super::handle::{File, FileBackend};
-use crate::fs_core::FsContext;
+#[cfg(feature = "vfs")]
+use super::location::UnmanagedLocation;
+use super::{
+    handle::{File, FileBackend},
+    operation::LocationOperationView,
+};
+use crate::{
+    fs_core::{FsContext, FsContextOperationView},
+    lifecycle::{FsOpenHandleLease, FsOperationLease},
+};
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -25,10 +33,93 @@ pub enum OpenResult {
     /// The opened path is a regular file.
     File(File),
     /// The opened path is a directory.
-    Dir(Location),
+    Dir(OpenedDirectory),
+}
+
+/// Generation-bound directory returned by [`OpenOptions`].
+pub struct OpenedDirectory {
+    location: Location,
+    lease: Option<FsOpenHandleLease>,
+}
+
+impl OpenedDirectory {
+    fn new(location: Location, lease: Option<FsOpenHandleLease>) -> Self {
+        Self { location, lease }
+    }
+
+    /// Runs one restricted operation without exposing the directory location.
+    pub fn with_operation<T>(
+        &self,
+        operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> VfsResult<T>,
+    ) -> VfsResult<T> {
+        let operation_lease = self.begin_operation()?;
+        let view = match operation_lease.as_ref() {
+            Some(operation_lease) => {
+                LocationOperationView::managed(&self.location, operation_lease)
+            }
+            None => LocationOperationView::unmanaged(&self.location),
+        };
+        operation(view)
+    }
+
+    /// Runs one operation relative to this directory in `context`.
+    ///
+    /// The directory's operation lease must belong to the exact filesystem
+    /// runtime and generation represented by `context`. The callback retains
+    /// that admitted operation even if a freeze starts after entry.
+    pub fn with_fs_context<T>(
+        &self,
+        context: &FsContext,
+        operation: impl for<'operation> FnOnce(FsContextOperationView<'operation>) -> VfsResult<T>,
+    ) -> VfsResult<T> {
+        let directory_operation = self.begin_operation()?;
+        let scoped_context =
+            context.with_current_dir_during(self.location.clone(), directory_operation.as_ref())?;
+        operation(FsContextOperationView::new(
+            &scoped_context,
+            directory_operation.as_ref(),
+        )?)
+    }
+
+    /// Installs this directory as the current directory of `context`.
+    ///
+    /// The directory and context must represent the same runtime, generation,
+    /// and mount namespace.
+    pub fn set_context_current_dir(&self, context: &mut FsContext) -> VfsResult<()> {
+        let directory_operation = self.begin_operation()?;
+        context.set_current_dir_during(self.location.clone(), directory_operation.as_ref())
+    }
+
+    fn begin_operation(&self) -> VfsResult<Option<FsOperationLease>> {
+        self.lease
+            .as_ref()
+            .map(FsOpenHandleLease::begin_operation)
+            .transpose()
+            .map_err(|error| error.into_ax_error())
+    }
+
+    /// Verifies that this directory belongs to the mounted generation.
+    pub fn validate_generation(&self) -> Result<(), crate::FsRuntimeError> {
+        self.lease
+            .as_ref()
+            .map(FsOpenHandleLease::validate)
+            .transpose()
+            .map(|_| ())
+    }
 }
 
 impl OpenResult {
+    /// Runs one restricted operation on the opened file or directory.
+    pub fn with_operation<T>(
+        &self,
+        operation: impl for<'operation> FnOnce(LocationOperationView<'operation>) -> VfsResult<T>,
+    ) -> VfsResult<T> {
+        match self {
+            Self::File(file) => file.with_operation(operation),
+            Self::Dir(directory) => directory.with_operation(operation),
+        }
+    }
+
     /// Converts into a [`File`], returning an error if this is a directory.
     pub fn into_file(self) -> VfsResult<File> {
         match self {
@@ -42,19 +133,10 @@ impl OpenResult {
 
     /// Converts into a [`Location`], returning an error if this is a file.
     #[cfg(feature = "vfs")]
-    pub fn into_dir(self) -> VfsResult<Location> {
+    pub fn into_dir(self) -> VfsResult<OpenedDirectory> {
         match self {
             Self::Dir(dir) => Ok(dir),
             Self::File(_) => Err(VfsError::NotADirectory),
-        }
-    }
-
-    /// Extracts the underlying [`Location`] regardless of variant.
-    #[cfg(feature = "vfs")]
-    pub fn into_location(self) -> Location {
-        match self {
-            Self::File(file) => file.location().clone(),
-            Self::Dir(dir) => dir,
         }
     }
 }
@@ -188,7 +270,12 @@ impl OpenOptions {
         self
     }
 
-    fn _open(&self, loc: Location) -> VfsResult<OpenResult> {
+    fn _open(
+        &self,
+        loc: Location,
+        lease: Option<FsOpenHandleLease>,
+        operation: Option<&FsOperationLease>,
+    ) -> VfsResult<OpenResult> {
         let flags = self.to_flags()?;
 
         // O_CREAT on an existing directory → EISDIR (Linux behavior;
@@ -233,7 +320,7 @@ impl OpenOptions {
             if flags.contains(FileFlags::WRITE) {
                 return Err(VfsError::IsADirectory);
             }
-            OpenResult::Dir(loc)
+            OpenResult::Dir(OpenedDirectory::new(loc, lease))
         } else {
             // TODO(mivik): is this correct?
             let non_cacheable_type = matches!(
@@ -246,24 +333,24 @@ impl OpenOptions {
                 || self.direct
                 || loc.flags().contains(NodeFlags::NON_CACHEABLE);
             let backend = if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
-                FileBackend::new_cached(loc)?
+                FileBackend::new_cached(loc, lease.clone())?
             } else {
-                FileBackend::new_direct(loc)
+                FileBackend::new_direct(loc, lease.clone())?
             };
             if self.truncate {
-                backend.set_len(0)?;
+                backend.set_len_during(0, operation)?;
             }
-            OpenResult::File(File::new(backend, flags))
+            OpenResult::File(File::new_with_lease(backend, flags, lease))
         })
     }
 
-    /// Opens a file at the given [`Location`] using these options.
+    /// Opens a file in a checked non-detachable filesystem using these options.
     #[cfg(feature = "vfs")]
-    pub fn open_loc(&self, loc: Location) -> VfsResult<OpenResult> {
+    pub fn open_loc(&self, loc: UnmanagedLocation) -> VfsResult<OpenResult> {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
-        self._open(loc)
+        self._open(loc.into_inner(), None, None)
     }
 
     /// Opens a file at the given path relative to the provided [`FsContext`].
@@ -272,12 +359,42 @@ impl OpenOptions {
             return Err(VfsError::InvalidInput);
         }
 
+        let lease = context.open_handle()?;
+        let operation = lease
+            .as_ref()
+            .map(FsOpenHandleLease::begin_operation)
+            .transpose()
+            .map_err(|error| error.into_ax_error())?;
+        self.open_during(context, path.as_ref(), &lease, operation.as_ref())
+    }
+
+    pub(crate) fn open_scoped(
+        &self,
+        context: &FsContext,
+        path: &Path,
+        operation: Option<&FsOperationLease>,
+    ) -> VfsResult<OpenResult> {
+        if !self.is_valid() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let lease = context.open_handle_during(operation)?;
+        self.open_during(context, path, &lease, operation)
+    }
+
+    fn open_during(
+        &self,
+        context: &FsContext,
+        path: &Path,
+        lease: &Option<FsOpenHandleLease>,
+        operation: Option<&FsOperationLease>,
+    ) -> VfsResult<OpenResult> {
         // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
         // the named file does not exist." resolve_parent("") would otherwise
         // return cwd itself which lets open() succeed — wrong per POSIX.
         // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
         // Fixes bug-openat-empty-path-no-enoent.
-        if path.as_ref().as_str().is_empty() {
+        if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
 
@@ -286,9 +403,9 @@ impl OpenOptions {
         // component, so we use Path::has_trailing_slash() to recover the
         // signal. Captured early; the post-resolution check below enforces
         // it. Fixes bug-open-trailing-slash.
-        let must_be_dir = path.as_ref().has_trailing_slash();
+        let must_be_dir = path.has_trailing_slash();
 
-        let loc = match context.resolve_parent(path.as_ref()) {
+        let loc = match context.resolve_parent_during(path, operation) {
             Ok((parent, name)) => {
                 // If the path ends with '/', Linux never creates regular
                 // files via O_CREAT here — the path explicitly requests a
@@ -319,8 +436,8 @@ impl OpenOptions {
                     };
                     let parent_for_resolve = parent.clone();
                     match context
-                        .with_current_dir(parent_for_resolve)?
-                        .try_resolve_symlink(loc, &mut 0)
+                        .with_current_dir_during(parent_for_resolve, operation)?
+                        .try_resolve_symlink_during(loc, &mut 0, operation)
                     {
                         Ok(resolved) => loc = resolved,
                         Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
@@ -330,7 +447,12 @@ impl OpenOptions {
                             // symlink target as the new path.
                             // Fixes bug-open-creat-dangling-no-create.
                             let target = symlink_target.unwrap();
-                            return self.open(&context.with_current_dir(parent)?, &target);
+                            return self.open_during(
+                                &context.with_current_dir_during(parent, operation)?,
+                                Path::new(&target),
+                                lease,
+                                operation,
+                            );
                         }
                         Err(e) => return Err(e),
                     }
@@ -369,7 +491,7 @@ impl OpenOptions {
             return Err(VfsError::NotADirectory);
         }
 
-        self._open(loc)
+        self._open(loc, lease.clone(), operation)
     }
 
     pub(crate) fn to_flags(&self) -> VfsResult<FileFlags> {

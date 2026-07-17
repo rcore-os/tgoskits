@@ -344,6 +344,32 @@ fn forwarded_batch_is_atomic_and_rejects_pending_or_active_collisions() {
 }
 
 #[test]
+fn forwarded_route_revocation_is_generation_checked_and_reusable() {
+    let vplic =
+        VPlicGlobal::new(GuestPhysAddr::from(HOST_PLIC_BASE), Some(HOST_PLIC_SIZE), 2).unwrap();
+    let source = 37;
+
+    vplic
+        .set_forwarded_pending_batch_for_generation(&[source], 7)
+        .unwrap();
+    assert!(matches!(
+        vplic.revoke_forwarded_route_batch(8, &[source]),
+        Err(VplicError::ForwardedGenerationMismatch {
+            source_id: 37,
+            expected: 8,
+            actual: 7,
+        })
+    ));
+    assert!(vplic.is_pending(source).unwrap());
+
+    assert_eq!(vplic.revoke_forwarded_route_batch(7, &[source]).unwrap(), 1);
+    assert!(!vplic.is_pending(source).unwrap());
+    vplic
+        .set_forwarded_pending_batch_for_generation(&[source], 9)
+        .unwrap();
+}
+
+#[test]
 fn test_context_lines_remain_independent_after_another_context_claims() {
     const ISOLATED_OFFSET: usize = 0x10_0000;
     let addr = GuestPhysAddr::from(HOST_PLIC_BASE + ISOLATED_OFFSET);

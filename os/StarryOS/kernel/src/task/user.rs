@@ -1,13 +1,14 @@
-use ax_runtime::hal::cpu::uspace::{ExceptionKind, ReturnReason, UserContext};
+use ax_runtime::hal::cpu::uspace::{ExceptionKind, UserContext, UserExitReason};
 use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
 use super::{
-    SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, current_user_task,
-    poll_process_timer, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
-    set_timer_state, unblock_next_signal, wait_existing_ptrace_stop_current,
+    SyscallRestartInfo, SyscallTraceState, Thread, UserReturnDecision, UserTaskRef,
+    current_user_task, poll_process_timer, poll_timer, process_one_signal, ptrace_stop_current,
+    ptrace_syscall_stop_current, raise_signal_fatal, unblock_next_signal,
+    wait_existing_ptrace_stop_current, yield_now,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
@@ -61,16 +62,26 @@ pub fn new_user_task(
                 crate::syscall::ptrace_setup_singlestep(&thr.proc_data, tid, &mut uctx);
             }
 
-            let reason = uctx.run();
-
-            set_timer_state(&curr, TimerState::Kernel);
+            let outcome = ax_runtime::task::run_user_context(
+                &mut uctx,
+                &thr.cpu_time,
+                curr.user_entry_notification(),
+            )
+            .unwrap_or_else(|error| panic!("invalid userspace transition context: {error}"));
+            let reason = match outcome {
+                ax_runtime::task::RunUserContextOutcome::Deferred => {
+                    drain_user_return_work(&curr, thr, &mut uctx, None);
+                    continue;
+                }
+                ax_runtime::task::RunUserContextOutcome::Exited(reason) => reason,
+            };
 
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
-            let is_syscall = matches!(reason, ReturnReason::Syscall);
+            let is_syscall = matches!(reason, UserExitReason::Syscall);
 
             match reason {
-                ReturnReason::Syscall => {
+                UserExitReason::Syscall => {
                     let tid = thr.tid();
                     let trace_state = thr.proc_data.take_ptrace_syscall_trace_for(tid);
                     if matches!(trace_state, SyscallTraceState::Entry)
@@ -113,7 +124,7 @@ pub fn new_user_task(
                         }
                     }
                 }
-                ReturnReason::PageFault(addr, flags) => {
+                UserExitReason::PageFault(addr, flags) => {
                     // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
                     // semantics: all faults, before resolution). Kernel-mode faults on user
                     // addresses are counted separately in the mm page-fault handler.
@@ -150,9 +161,9 @@ pub fn new_user_task(
                         .expect("Failed to send SIGSEGV");
                     }
                 }
-                ReturnReason::Interrupt => {}
+                UserExitReason::Interrupt => {}
                 #[allow(unused_labels)]
-                ReturnReason::Exception(exc_info) => 'exc: {
+                UserExitReason::Exception(exc_info) => 'exc: {
                     let kind = exc_info.kind();
                     // A uprobe plants an `int3` in user text (delivered as a
                     // #BP / Breakpoint exception) and completes its
@@ -291,35 +302,88 @@ pub fn new_user_task(
                 }
             }
 
-            if !unblock_next_signal() {
-                // POSIX timers are also driven by the alarm task, but polling
-                // here closes the window where an expired timer is only noticed
-                // after the current syscall returns to userspace.
-                poll_process_timer(thr.proc_data.proc.pid());
+            let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
+            let restart = if is_syscall
+                && (uctx.retval() as isize) == eintr_code
+                && syscall_allows_signal_restart(saved_sysno)
+            {
+                Some(SyscallRestartInfo {
+                    saved_a0,
+                    saved_sysno,
+                })
+            } else {
+                None
+            };
+            drain_user_return_work(&curr, thr, &mut uctx, restart);
+        }
+    }
+}
 
-                let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
-                let restart = if is_syscall
-                    && (uctx.retval() as isize) == eintr_code
-                    && syscall_allows_signal_restart(saved_sysno)
-                {
-                    Some(SyscallRestartInfo {
-                        saved_a0,
-                        saved_sysno,
-                    })
-                } else {
-                    None
-                };
-                // Single-shot: the first delivered signal decides
-                // whether to restart. Subsequent signals in the same
-                // loop must not re-apply the decision.
-                let mut pending_restart = restart.as_ref();
-                while check_signals(thr, &mut uctx, None, pending_restart) {
-                    pending_restart = None;
+fn drain_user_return_work(
+    task: &UserTaskRef,
+    thread: &Thread,
+    context: &mut UserContext,
+    mut pending_restart: Option<SyscallRestartInfo>,
+) {
+    const USER_RETURN_WORK_BUDGET: usize = 64;
+
+    let mut transitions = 0;
+    loop {
+        let snapshot = task.begin_user_return_work();
+        let mut delivered_signal = false;
+
+        if !unblock_next_signal() {
+            // Process timers are also driven by the alarm task, but checking
+            // here closes the window where an expiration is noticed only after
+            // the interrupted syscall returns to user mode.
+            poll_process_timer(thread.proc_data.proc.pid());
+
+            // The first delivered signal owns the one syscall-restart
+            // decision. A retry caused by a concurrent publication may still
+            // use it only when no earlier pass delivered a signal.
+            let mut restart = pending_restart.as_ref();
+            while transitions < USER_RETURN_WORK_BUDGET {
+                if !process_one_signal(thread, context, None, restart).processed() {
+                    break;
+                }
+                transitions += 1;
+                delivered_signal = true;
+                restart = None;
+            }
+        }
+
+        if delivered_signal {
+            pending_restart = None;
+        }
+        if transitions == USER_RETURN_WORK_BUDGET {
+            // A full batch may have left both signal state and publications
+            // unseen. Do not acknowledge the snapshot: keeping the level
+            // pending makes the next runtime user-entry gate fail closed.
+            // Yield only after dropping the owner ticket, then resume this
+            // kernel loop rather than returning to architectural user entry.
+            drop(snapshot);
+            yield_now();
+            transitions = 0;
+            continue;
+        }
+        poll_timer(task);
+
+        match task.finish_user_return_work(snapshot) {
+            UserReturnDecision::Ready => break,
+            UserReturnDecision::Retry => {
+                // A producer may advance only the coalesced epoch while its
+                // underlying signal is already pending. Charge that retry to
+                // the same batch budget; otherwise repeated Idle checks can
+                // spin forever without reaching the signal-transition limit.
+                transitions += 1;
+                if transitions == USER_RETURN_WORK_BUDGET {
+                    // `finish_user_return_work` consumed only the old ticket.
+                    // Its Retry result proves a newer epoch remains pending,
+                    // so yielding here cannot accidentally permit user entry.
+                    yield_now();
+                    transitions = 0;
                 }
             }
-
-            set_timer_state(&curr, TimerState::User);
-            curr.clear_interrupt();
         }
     }
 }

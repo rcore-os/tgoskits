@@ -33,9 +33,14 @@ virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci"]
 
 ramdisk = ["block", "dep:ramdisk"]
-bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
-ahci = ["block", "pci", "dep:simple-ahci"]
-ls2k1000-ahci = ["block", "dep:simple-ahci"]
+bcm2835-sdhci = [
+    "block",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
+ahci = ["block", "pci", "dep:ahci-host"]
+ls2k1000-ahci = ["block", "dep:ahci-host"]
 ls2k1000-gmac = ["net", "dep:ax-kspin"]
 nvme = ["block", "pci", "dep:nvme-driver"]
 cvsd = [
@@ -106,6 +111,7 @@ rockchip-dwmmc = [
 ]
 starfive-jh7110-dwmmc = [
     "block",
+    "pinctrl",
     "starfive-soc",
     "dep:sdmmc-protocol",
     "dep:starfive-jh7110-dwmmc",
@@ -141,6 +147,7 @@ pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
 aic8800 = { workspace = true, optional = true }
+ahci-host = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
@@ -148,7 +155,6 @@ ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
-bcm2835-sdhci = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
 cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
@@ -193,10 +199,10 @@ sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
-simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
 starfive-jh7110-dwmmc = { workspace = true, optional = true }
+thiserror.workspace = true
 tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
 

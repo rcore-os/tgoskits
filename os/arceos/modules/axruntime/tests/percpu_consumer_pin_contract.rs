@@ -268,6 +268,9 @@ fn ipi_callbacks_are_transferable_to_the_destination_cpu() {
 fn unix_namespace_holds_an_owned_task_scope_context_while_locking() {
     assert!(!UNIX_NAMESPACE.contains("FS_CONTEXT.lock()"));
     assert!(UNIX_NAMESPACE.contains("let fs_context = current_fs_context();"));
+    assert!(UNIX_NAMESPACE.contains("fn reserve_bind("));
+    assert!(UNIX_NAMESPACE.contains(".create_new(true)"));
+    assert!(UNIX_NAMESPACE.contains("fn rollback_bind("));
 }
 
 #[test]
@@ -324,7 +327,7 @@ fn cancelled_synchronous_ipi_does_not_retain_the_raw_payload() {
 }
 
 #[test]
-fn callback_follow_up_selects_a_current_cpu_doorbell_for_itself() {
+fn callback_producers_use_typed_doorbells_but_bounded_consumers_do_not_self_kick() {
     assert!(AXIPI.contains("fn callback_ipi_target(current: CpuId, destination: CpuId)"));
     let sender = source_section(
         AXIPI,
@@ -337,11 +340,11 @@ fn callback_follow_up_selects_a_current_cpu_doorbell_for_itself() {
         !sender.contains("CpuIpiTarget::Other {\n            cpu: CpuId(claim.cpu),\n        }")
     );
 
-    let follow_up = source_section(
+    let drain = source_section(
         AXIPI,
-        "fn request_follow_up_ipi()",
-        "fn validate_callback_routing_context()",
+        "pub fn drain_deferred_callbacks()",
+        "fn execute_callback_batch(",
     );
-    assert!(follow_up.contains("this_cpu_id_pinned(irq_guard.cpu_pin())"));
-    assert!(follow_up.contains("kick_callback_ipi(cpu_id)"));
+    assert!(drain.contains("mark_deferred_pending()"));
+    assert!(!drain.contains("kick_callback_ipi"));
 }

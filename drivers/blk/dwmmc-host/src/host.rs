@@ -12,7 +12,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
@@ -26,10 +26,7 @@ use volatile::VolatilePtr;
 use crate::{
     UhsBits,
     command::CommandState,
-    regs::{
-        BlkSiz, CType, ClkDiv, ClkEna, Cmd, RIntSts, RegisterBlock,
-        RegisterBlockVolatileFieldAccess,
-    },
+    regs::{BlkSiz, CType, RIntSts, RegisterBlock, RegisterBlockVolatileFieldAccess},
     uhs_bits_after_speed, uhs_bits_after_voltage,
 };
 
@@ -46,8 +43,6 @@ const DEFAULT_FIFOTH: u32 = fifoth(
     DEFAULT_FIFO_DEPTH_WORDS / 2 - 1,
     DEFAULT_FIFO_DEPTH_WORDS / 2,
 );
-pub(crate) const DWMMC_HW_POLL_LIMIT: u32 = 500_000;
-
 const fn fifoth(msize: u32, rx_wmark: u32, tx_wmark: u32) -> u32 {
     ((msize & 0x7) << 28) | ((rx_wmark & 0x0fff) << 16) | (tx_wmark & 0x0fff)
 }
@@ -76,45 +71,82 @@ const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
 
 pub(crate) struct IrqState {
     mailbox: AtomicU64,
+    idmac_mailbox: AtomicU64,
     next_generation: AtomicU32,
+    register_owner: AtomicU8,
+}
+
+const REGISTER_OWNER_IDLE: u8 = 0;
+const REGISTER_OWNER_TASK: u8 = 1;
+const REGISTER_OWNER_IRQ: u8 = 2;
+
+pub(crate) struct RegisterOwner<'a> {
+    owner: &'a AtomicU8,
+}
+
+impl Drop for RegisterOwner<'_> {
+    fn drop(&mut self) {
+        self.owner.store(REGISTER_OWNER_IDLE, Ordering::Release);
+    }
 }
 
 impl IrqState {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             mailbox: AtomicU64::new(0),
+            idmac_mailbox: AtomicU64::new(0),
             next_generation: AtomicU32::new(0),
+            register_owner: AtomicU8::new(REGISTER_OWNER_IDLE),
         }
+    }
+
+    pub(crate) fn try_begin_task_update(&self) -> Option<RegisterOwner<'_>> {
+        self.register_owner
+            .compare_exchange(
+                REGISTER_OWNER_IDLE,
+                REGISTER_OWNER_TASK,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| RegisterOwner {
+                owner: &self.register_owner,
+            })
+    }
+
+    pub(crate) fn try_begin_irq_snapshot(&self) -> Option<RegisterOwner<'_>> {
+        self.register_owner
+            .compare_exchange(
+                REGISTER_OWNER_IDLE,
+                REGISTER_OWNER_IRQ,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()
+            .map(|_| RegisterOwner {
+                owner: &self.register_owner,
+            })
     }
 
     pub(crate) fn begin_request(&self) {
         let generation = self.next_generation();
         self.mailbox
             .store(pack_mailbox(generation, 0), Ordering::Release);
+        self.idmac_mailbox
+            .store(pack_mailbox(generation, 0), Ordering::Release);
     }
 
     pub(crate) fn end_request(&self) {
         self.mailbox.store(0, Ordering::Release);
+        self.idmac_mailbox.store(0, Ordering::Release);
     }
 
     pub(crate) fn cache_if_current(&self, generation: u32, status: u32) {
-        if generation == 0 || status == 0 {
-            return;
-        }
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            if mailbox_generation(cur) != generation {
-                return;
-            }
-            let next = pack_mailbox(generation, mailbox_status(cur) | status);
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(observed) => cur = observed,
-            }
-        }
+        cache_mailbox_if_current(&self.mailbox, generation, status);
+    }
+
+    pub(crate) fn cache_idmac_if_current(&self, generation: u32, status: u32) {
+        cache_mailbox_if_current(&self.idmac_mailbox, generation, status);
     }
 
     pub(crate) fn generation(&self) -> u32 {
@@ -122,41 +154,32 @@ impl IrqState {
     }
 
     pub(crate) fn take(&self, mask: u32) -> u32 {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let status = mailbox_status(cur);
-            let taken = status & mask;
-            if taken == 0 {
-                return 0;
-            }
-            let next = pack_mailbox(mailbox_generation(cur), status & !mask);
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return taken,
-                Err(observed) => cur = observed,
-            }
-        }
+        take_mailbox_status(&self.mailbox, mask)
+    }
+
+    pub(crate) fn take_idmac(&self, mask: u32) -> u32 {
+        take_mailbox_status(&self.idmac_mailbox, mask)
     }
 
     pub(crate) fn clear(&self, mask: u32) {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let next = pack_mailbox(mailbox_generation(cur), mailbox_status(cur) & !mask);
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(observed) => cur = observed,
-            }
-        }
+        clear_mailbox_status(&self.mailbox, mask);
     }
 
-    #[cfg(test)]
+    pub(crate) fn clear_idmac(&self, mask: u32) {
+        clear_mailbox_status(&self.idmac_mailbox, mask);
+    }
+
+    pub(crate) fn clear_all(&self) {
+        self.clear(u32::MAX);
+        self.clear_idmac(u32::MAX);
+    }
+
     pub(crate) fn pending(&self) -> u32 {
         mailbox_status(self.mailbox.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn pending_idmac(&self) -> u32 {
+        mailbox_status(self.idmac_mailbox.load(Ordering::Acquire))
     }
 
     fn next_generation(&self) -> u32 {
@@ -175,6 +198,50 @@ impl IrqState {
                 Ok(_) => return next,
                 Err(observed) => cur = observed,
             }
+        }
+    }
+}
+
+fn cache_mailbox_if_current(mailbox: &AtomicU64, generation: u32, status: u32) {
+    if generation == 0 || status == 0 {
+        return;
+    }
+    let mut cur = mailbox.load(Ordering::Acquire);
+    loop {
+        if mailbox_generation(cur) != generation {
+            return;
+        }
+        let next = pack_mailbox(generation, mailbox_status(cur) | status);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(observed) => cur = observed,
+        }
+    }
+}
+
+fn take_mailbox_status(mailbox: &AtomicU64, mask: u32) -> u32 {
+    let mut cur = mailbox.load(Ordering::Acquire);
+    loop {
+        let status = mailbox_status(cur);
+        let taken = status & mask;
+        if taken == 0 {
+            return 0;
+        }
+        let next = pack_mailbox(mailbox_generation(cur), status & !mask);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return taken,
+            Err(observed) => cur = observed,
+        }
+    }
+}
+
+fn clear_mailbox_status(mailbox: &AtomicU64, mask: u32) {
+    let mut cur = mailbox.load(Ordering::Acquire);
+    loop {
+        let next = pack_mailbox(mailbox_generation(cur), mailbox_status(cur) & !mask);
+        match mailbox.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(observed) => cur = observed,
         }
     }
 }
@@ -226,6 +293,9 @@ pub struct DwMmc {
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
     pub(crate) dma_poisoned: bool,
+    /// True only after the lifecycle FSM has observed controller/FIFO/DMA
+    /// reset completion with IRQ delivery drained.
+    pub(crate) recovery_quiesced: bool,
     pub(crate) irq: Arc<IrqCore>,
     pub(crate) completion_irq_enabled: AtomicBool,
     pub(crate) host2_next_id: u64,
@@ -256,6 +326,11 @@ impl DwMmc {
     /// hardware.
     pub unsafe fn new_with_fifo_offset(base: NonNull<u8>, fifo_offset: usize) -> Self {
         let regs = unsafe { VolatilePtr::new(base.cast()) };
+        // Discovery may inspect an already-running firmware controller. Mask
+        // delivery without acknowledging status or issuing reset/clock/card
+        // commands; the staged initializer owns those later transitions.
+        regs.intmask().write(0);
+        regs.ctrl().update(|control| control.with_int_enable(false));
         Self {
             regs,
             base_addr: base.as_ptr() as usize,
@@ -270,6 +345,7 @@ impl DwMmc {
             dma: None,
             dma_mask: u32::MAX as u64,
             dma_poisoned: false,
+            recovery_quiesced: false,
             irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
             host2_next_id: 0,
@@ -402,158 +478,28 @@ impl DwMmc {
         self.dma_poisoned = true;
     }
 
-    /// Bring the controller to a known state and arm it for card
-    /// identification at 400 kHz.
-    ///
-    /// Call this once after construction. Performs:
-    ///
-    /// 1. Disable the SD clock and IDMAC paths so subsequent register
-    ///    writes can't be misinterpreted by an in-flight transfer.
-    /// 2. Issue a controller / FIFO / DMA reset and wait for the bits
-    ///    to self-clear.
-    /// 3. Mask all interrupts (we poll RINTSTS), and clear any pending
-    ///    raw interrupt bits.
-    /// 4. Program a low-speed clock divider suitable for ID mode and
-    ///    enable the bus clock.
-    pub fn reset_and_init(&mut self) -> Result<(), Error> {
-        // Disable the bus clock during reset. Skip update-clock here —
-        // the controller-reset below will gate everything anyway.
-        self.regs.clkena().write(ClkEna::new());
-
-        // Disable internal DMAC / DMA path: this driver is PIO-only.
-        self.regs.ctrl().update(|r| {
-            r.with_use_internal_dmac(false)
-                .with_dma_enable(false)
-                .with_int_enable(false)
-        });
-
-        // Reset CIU + FIFO + DMA. These bits self-clear on completion.
-        self.regs.ctrl().update(|r| {
-            r.with_controller_reset(true)
-                .with_fifo_reset(true)
-                .with_dma_reset(true)
-        });
-        self.wait_reset_clear()?;
-
-        // Mask every interrupt; clear any leftover raw status.
-        self.regs.intmask().write(0);
-        self.clear_all_int_status();
-        self.irq.state.clear(u32::MAX);
-        self.completion_irq_enabled.store(false, Ordering::Release);
-        self.program_linux_init_baseline();
-
-        // Default to 1-bit bus until the protocol layer asks for wider.
-        self.regs.ctype().write(CType::new());
-        self.regs.uhs().write(crate::regs::UHS::new());
-
-        // Program the divider for 400 kHz (the SD spec ID-mode rate).
-        self.program_clock(400_000)?;
-
-        self.dma_poisoned = false;
-        Ok(())
-    }
-
-    pub(crate) fn reset_and_init_preserving_irq(&mut self) -> Result<(), Error> {
-        let was_irq_enabled = self.completion_irq_enabled();
-        self.reset_and_init()?;
-        if was_irq_enabled {
-            self.enable_completion_irq();
-        }
-        Ok(())
-    }
-
-    /// Wait for [`Ctrl::controller_reset`] / [`Ctrl::fifo_reset`] /
-    /// [`Ctrl::dma_reset`] to all clear, indicating the reset finished.
-    fn wait_reset_clear(&self) -> Result<(), Error> {
-        for _ in 0..DWMMC_HW_POLL_LIMIT {
-            let c = self.regs.ctrl().read();
-            if !c.controller_reset() && !c.fifo_reset() && !c.dma_reset() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
-    }
-
-    /// Re-program the bus clock to roughly `target_hz`.
-    ///
-    /// The DW_mshc clock path requires:
-    ///   1. Disable CCLK_ENABLE and push the change with an
-    ///      `update_clock_registers_only` command.
-    ///   2. Write the new CLKDIV.
-    ///   3. Push the divider change with another update-only command.
-    ///   4. Re-enable CCLK_ENABLE and push it once more.
-    ///
-    /// Writing the CMD register without `start_cmd = 1` does
-    /// nothing on this controller — start_cmd is what hands control
-    /// to the CIU, even for a no-op clock-update sequence.
-    pub fn program_clock(&mut self, target_hz: u32) -> Result<(), Error> {
-        // 1. Gate the bus clock.
-        self.regs.clkena().write(ClkEna::new());
-        self.send_update_clock()?;
-
-        // 2. Compute a divider. CLKDIV value `n` divides the
-        //    reference by `2 * n` (n = 0 means bypass / 1:1).
-        let div: u8 = if self.ref_clock_hz == 0 || target_hz == 0 || target_hz >= self.ref_clock_hz
-        {
-            0
-        } else {
-            let raw = self.ref_clock_hz.div_ceil(2 * target_hz);
-            // Saturate: divider field is 8 bits, max 0xFF.
-            raw.min(0xFF) as u8
-        };
-        self.regs
-            .clkdiv()
-            .write(ClkDiv::new().with_clk_divider0(div));
-        self.send_update_clock()?;
-
-        // 3. Re-enable the bus clock for card 0. Bit 0 in
-        //    `cclk_enable` controls card 0 — that's the only slot
-        //    we drive in this MVP.
-        self.regs.clkena().write(ClkEna::new().with_cclk_enable(1));
-        self.send_update_clock()?;
-
-        Ok(())
-    }
-
-    /// Issue a "no command, just push clock-related register changes
-    /// to the CIU" sequence. Polls the [`Cmd::start_cmd`] bit until
-    /// the controller acks the update.
-    fn send_update_clock(&self) -> Result<(), Error> {
-        self.regs.cmd().write(
-            Cmd::new()
-                .with_start_cmd(true)
-                .with_use_hold_reg(false)
-                .with_wait_prvdata_complete(false)
-                .with_update_clock_registers_only(true),
-        );
-        for _ in 0..DWMMC_HW_POLL_LIMIT {
-            if !self.regs.cmd().read().start_cmd() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(Phase::Init)))
-    }
-
     /// Clear every bit in RINTSTS by writing it back (write-1-to-clear).
     pub(crate) fn clear_all_int_status(&self) {
         self.regs.rintsts().write(RIntSts::from_bits(ALL_INT_CLR));
     }
 
+    /// Discard IDMAC causes while the controller IRQ action is masked and
+    /// synchronized during initialization or recovery.
+    pub(crate) fn clear_all_idmac_status(&self) {
+        self.regs
+            .idsts()
+            .write(crate::event::DWMMC_IDMAC_INT_ENABLE_MASK);
+    }
+
     pub(crate) fn take_task_irq_status(&mut self, mask: u32) -> u32 {
-        if self.completion_irq_enabled() {
-            let cached = self.irq.state.take(mask);
-            if cached != 0 {
-                return cached;
-            }
-        }
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let clear = raw_status & mask;
-        if clear != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(clear));
-        }
-        raw_status
+        // The IRQ endpoint is the sole owner of destructive RINTSTS reads and
+        // W1C acknowledgement. An empty mailbox means no acknowledged event,
+        // never permission to inspect hardware from task context.
+        self.irq.state.take(mask)
+    }
+
+    pub(crate) fn take_task_idmac_status(&mut self, mask: u32) -> u32 {
+        self.irq.state.take_idmac(mask)
     }
 
     pub(crate) fn program_linux_init_baseline(&self) {
@@ -647,19 +593,6 @@ impl DwMmc {
         self.regs.bytcnt().write(block_size * block_count);
     }
 
-    /// Reset just the FIFO pointers. Useful after a data-phase error
-    /// so the next transfer starts from a clean state.
-    pub fn reset_fifo(&self) -> Result<(), Error> {
-        self.regs.ctrl().update(|r| r.with_fifo_reset(true));
-        for _ in 0..DWMMC_HW_POLL_LIMIT {
-            if !self.regs.ctrl().read().fifo_reset() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::Timeout(ErrorContext::new(Phase::DataRead)))
-    }
-
     /// Translate a non-zero `RIntSts.error()` into our protocol error
     /// type. `phase` and `cmd_index` give the caller's pipeline
     /// context.
@@ -687,7 +620,6 @@ impl DwMmc {
 }
 
 unsafe impl Send for DwMmc {}
-unsafe impl Sync for DwMmc {}
 
 /// Platform clock capability for DWMMC hosts with a SoC-side CIU clock.
 pub trait HostClock: Send {
@@ -715,17 +647,39 @@ mod tests {
 
     #[test]
     fn constructs_from_mapped_mmio_pointer() {
-        let base = NonNull::new(0x1000_0000 as *mut u8).unwrap();
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let host = unsafe { DwMmc::new(base) };
 
-        assert_eq!(host.base_addr, 0x1000_0000);
+        assert_eq!(host.base_addr, base.as_ptr() as usize);
+    }
+
+    #[test]
+    fn discovery_masks_device_irq_without_issuing_a_command() {
+        const CTRL_WORD: usize = 0;
+        const INTMASK_WORD: usize = 9;
+        const CMD_WORD: usize = 11;
+        let mut mmio = [0u32; 256];
+        mmio[CTRL_WORD] = crate::regs::Ctrl::new().with_int_enable(true).into_bits();
+        mmio[INTMASK_WORD] = u32::MAX;
+        mmio[CMD_WORD] = 0x5a5a_a5a5;
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+
+        let host = unsafe { DwMmc::new(base) };
+
+        assert_eq!(mmio[INTMASK_WORD], 0);
+        assert!(!crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]).int_enable());
+        assert_eq!(mmio[CMD_WORD], 0x5a5a_a5a5);
+        assert!(!host.completion_irq_enabled());
     }
 
     #[test]
     fn legacy_addr_constructor_keeps_raw_mmio_boundary_explicit() {
-        let host = unsafe { DwMmc::new_from_addr(0x1000_0000) };
+        let mut mmio = [0u32; 256];
+        let base_addr = mmio.as_mut_ptr() as usize;
+        let host = unsafe { DwMmc::new_from_addr(base_addr) };
 
-        assert_eq!(host.base_addr, 0x1000_0000);
+        assert_eq!(host.base_addr, base_addr);
     }
 
     #[test]

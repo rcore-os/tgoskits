@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Quarantine an active ADMA descriptor table when its request is dropped
+  without terminal IRQ evidence or controller quiescence; successful and
+  proof-gated completion release the table exactly at the ownership boundary.
+- Consume an acknowledged ADMA boundary indication as part of the active data
+  snapshot, including when it is coalesced with transfer completion, so a
+  multi-block request can hand off directly to its explicit CMD12 IRQ epoch.
+- Acknowledge card/retuning/vendor sideband status without publishing it into
+  the active request generation or scheduling block-queue service.
+
+### Changed
+
+- Make every low-level raw-pointer block submission API `unsafe` and document
+  the cross-worker lifetime/exclusive-access contract. Safe protocol and RDIF
+  paths continue to retain either the Rust borrow or the owned DMA/CPU buffer.
+- Expose the effective bus clock proven by the completed clock state machine,
+  including platform-quantized external clock rates.
+- Consume the protocol's initialized-card capability when publishing RDIF and
+  retain platform clock/reset capabilities through recovery and ownership
+  handoff.
+- Add bounded SDHCI reset/reconstruction states with absolute wake deadlines
+  and proof-gated ADMA reclamation.
+- Require platform reset hooks to explicitly declare bounded support for both
+  initial ResetAll and recovery; an unproven hook fails before callback or MMIO
+  reset side effects.
+- Fail closed the direct `SdioHost` bus-operation/tuning compatibility path;
+  staged initialization must use the native host2 state machines.
+- Add a typed scheduled ResetAll hook with begin/poll/cancel transitions and
+  absolute deadlines for platform reset pulses during init and recovery.
+- Separate initialization-owned status access from runtime IRQ ownership;
+  masked runtime FIFO and R1b paths no longer use present-state or W1C polling
+  to synthesize completion, and error snapshots defer reset to recovery.
+- Reject an IRQ-owned submission while the command/data engine is inhibited,
+  and publish a new ADMA address only in the final command-issue step, so
+  watchdog activation cannot become an eventless retry path or expose
+  caller-owned descriptors to busy hardware.
+- Make request-generation handoff conditional on an empty IRQ mailbox; pending
+  evidence blocks the next command, while a late event carrying the previous
+  generation is ignored instead of completing the new request.
+- Drive reset, clock, voltage, and tuning transitions from caller-supplied
+  absolute monotonic time, and remove the synchronous clock-programming API.
+- Rename normal block progression to `service_block_request`; completion can
+  only be advanced by an IRQ snapshot, while watchdog expiry only fails and
+  quarantines the request for lifecycle recovery.
+- Add an explicit owned interrupt-PIO runtime configuration for FIFO-only
+  SDHCI integrations. Submit failure, IRQ completion, and recovery return the
+  exact CPU buffer without introducing a completion-poll fallback; a final
+  buffer-ready event coalesced with transfer-complete is consumed in the same
+  bounded service pass.
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.0...sdhci-host-v0.4.1) - 2026-07-08
 
 ### Other

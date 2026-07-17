@@ -97,15 +97,24 @@ pub mod virtio;
 
 #[cfg(feature = "pci")]
 pub use binding_info::PciIrqRequirement;
-pub use binding_info::{BindingInfo, BindingIrq, BindingIrqBinding, BindingIrqSource, FdtIrqSpec};
-#[cfg(feature = "pci")]
-pub use binding_resolver::binding_info_from_pci;
+pub use binding_info::{
+    BindingInfo, BindingIrq, BindingIrqBinding, BindingIrqSource, BindingLocator, FdtIrqSpec,
+    HostMmioRange, HostMmioRangeError,
+};
 pub use binding_resolver::{
     binding_info_from_acpi, binding_info_from_acpi_route, binding_info_from_fdt,
     binding_irq_from_named_fdt_interrupt,
 };
+#[cfg(feature = "pci")]
+pub use binding_resolver::{binding_info_from_pci, binding_info_from_pci_endpoint};
 pub use error::{Error, Result};
-pub use irq_binding::IrqBindingLease;
+pub use irq_binding::{
+    IrqBindingError, IrqBindingFailure, IrqBindingFault, IrqBindingLease, IrqBindingOperation,
+    IrqBindingStage,
+};
+
+#[cfg(test)]
+mod test_klib;
 
 #[cfg(all(
     test,

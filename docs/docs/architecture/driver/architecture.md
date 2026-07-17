@@ -5,9 +5,9 @@ sidebar_label: "总体架构"
 
 # 总体架构
 
-`rdrive + rdif` 驱动框架以分层隔离为核心。新的宿主设备路径分为五层：平台发现来源、`rdrive` backend 分发、具体驱动 core、`rdif` 能力边界、领域 service 与上层消费方。各层之间通过明确的契约交互，不反向依赖。
+`rdrive + rdif` 驱动框架以分层隔离为核心。新的宿主设备路径分为六层：平台发现来源、`rdrive` backend 分发、具体驱动 core、`rdif` 能力边界、OS runtime、领域 service 与上层消费方。各层之间通过明确的契约交互，不反向依赖。
 
-## 五层结构
+## 六层结构
 
 ```mermaid
 flowchart TB
@@ -38,6 +38,12 @@ flowchart TB
         RdifPlatform["rdif-intc / pinctrl / pcie / clk / timer / serial"]
     end
 
+    subgraph OsRuntime["OS Runtime"]
+        BlockRuntime["ax-runtime::block<br/>ctx / hctx / tag / watchdog / recovery"]
+        SharedWorkers["per-CPU shared workqueue"]
+        OtherRuntime["rd-net / rd-display / rd-input / rd-vsock"]
+    end
+
     subgraph Services["领域 service"]
         BlockVolume["block volume / partition"]
         NetService["net interface service"]
@@ -60,7 +66,9 @@ flowchart TB
     DriverCore --> Capability
     Capability --> Manager
     Runtime --> Backends
-    Manager --> Services
+    Manager --> OsRuntime
+    SharedWorkers --> BlockRuntime
+    OsRuntime --> Services
     Services --> Fs
     Services --> Net
     Services --> Starry
@@ -76,7 +84,15 @@ flowchart TB
 - Driver Core 不依赖 `rdrive`、`ax-driver`、`ax-hal` 或平台 crate。
 - `rdif-*` 不依赖平台、runtime 或任务调度。
 - OS Glue 不引入上层 FS/NET 策略。
-- Runtime wrapper（`rd-*`）不参与 probe、设备树解析或平台选择。
+- Runtime（`rd-*` 或 `ax-runtime::block`）不参与 probe、设备树解析或平台选择。
+
+块设备在 capability 与 service 之间必须经过 `ax-runtime::block`。它在调用驱动前发布 tag，将 hardware queue 映射为独立 hctx，并把每个 hctx 的固定串行 work item 交给共享 per-CPU worker pool；IRQ top-half 只产生稳定事件，watchdog 只判定失败并进入 recovery。文件系统不拥有 IRQ handler、completion table 或周期 drain worker。
+
+逻辑 `WorkQueue` 只定义 CPU、优先级、admission 与 flush/drain 边界，不拥有专属线程。`drain_workqueue()` 先关闭该逻辑域的新提交，再等待此前接受的 intrusive item 全部回到 idle；per-CPU normal/highpri worker 始终保留，其他逻辑域仍可继续执行。设备 teardown 仍须按“停止 submit → mask/synchronize IRQ → cancel delayed work → flush/drain”的顺序完成，不能把停止共享 worker 当作设备隔离手段。
+
+`cancel_delayed_work_sync()` 在返回前还必须等待 timer expiry 的 publication baton 离开 `PUBLISHING`：旧 generation 要么回到 `ARMED` 并被 control work 取消，要么先把 activation 发布成 `QUEUED` 再由 `cancel_work_sync()` 消费。不允许在取消已返回后再由晚到 expiry 发布工作。
+
+incoming MPSC 栈与 worker doorbell 是一个不可拆分的 lost-wake 协议：它们的 publish、clear 和 detach 通过同一顺序一致次序线性化。若 clear 先发生，producer 必须留下 doorbell；若 clear 后发生，consumer 必须观测并 detach incoming node。不能只在两个独立原子上分别使用 Acquire/Release，那会在弱内存序架构上允许跨对象次序环。
 
 ## 核心源码
 

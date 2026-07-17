@@ -15,7 +15,8 @@ flowchart TB
     AxDriver --> Rdrive["rdrive Manager"]
     Rdrive --> Registry["typed device registry"]
 
-    Registry --> BlockSvc["block volume service"]
+    Registry --> BlockRuntime["ax-runtime::block"]
+    BlockRuntime --> BlockSvc["block volume service"]
     Registry --> NetSvc["net interface service"]
     Registry --> DispSvc["display service"]
     Registry --> InSvc["input service"]
@@ -61,12 +62,15 @@ ArceOS 的 `ax-runtime` 是驱动框架的主要消费者：
 | 集成点 | 职责 |
 | --- | --- |
 | `ax-runtime` init_later | 调用 `rdrive::init()`、`register_append()`、`probe_pre_kernel()` |
-| `ax-runtime` devices init | 调用 `rdrive::probe_all(false)`，初始化领域 service |
+| `ax-runtime` devices init | 调用 `rdrive::probe_all(false)`，绑定 block worker/IRQ，运行 controller init FSM，再初始化领域 service |
 | `ax-runtime` IRQ | 将 platform IRQ 注册能力适配为 `ax_net::EthernetIrqRegistrar` 等 |
+| `ax-runtime::block` | 管理 ctx/hctx/tag、固定 event ring、watchdog、recovery 与 passthrough handoff |
 | `ax-fs` / `ax-fs-ng` | 通过 block volume service 消费块设备 |
 | `ax-net` | 通过 net interface service 消费网卡 |
 
 `ax-runtime` 不再拆 `AllDevices.block/net/display/input/vsock` 后逐个传给模块，只触发 probe 和领域 service 初始化。
+
+块设备启动顺序固定为：scheduler/IRQ online → 全部目标 CPU 的 shared worker ready → controller discovery → 初始化 IRQ action disabled registration → action enable → device source unmask → bounded init FSM → Ready queue publication → root mount。任何 IRQ source 缺失、注册失败或初始化失败的硬件 controller 都不得进入 block volume service。
 
 ## StarryOS 集成
 
@@ -89,8 +93,11 @@ Axvisor 作为 hypervisor，使用驱动框架管理宿主物理设备：
 | Axvisor HAL | 查询 `rdif-intc` 设置 GIC backend |
 | Axvisor GIC backend | 允许直接使用 `rdrive::get_*` 查询中断控制器 |
 | guest emulated devices | `axdevice` / `axdevice_base` 提供 guest 设备模型，不参与宿主 probe |
+| passthrough handoff | freeze/unmount host FS，quiesce hctx 与 DMA，撤销 host route 后转移 MMIO/DMA/IRQ lease；guest 退出后走同一 init FSM 并 remount |
 
 `axdevice` 与 `axdevice_base` 不纳入驱动框架范围。它们作为 Axvisor / axvm 的 guest emulated device model，不作为 FS、NET、display、input、vsock 的设备来源。
+
+passthrough 使用 typed prepare/commit/return permit，不能用计数或裸布尔值宣称 DMA 已停止、guest route 已撤销或 host route 已恢复。任一阶段缺少证明时 controller 保持 quarantine/failed-closed；host 与 guest 不得同时访问同一 queue、MMIO 或 IRQ source。
 
 ## 自定义平台接入
 

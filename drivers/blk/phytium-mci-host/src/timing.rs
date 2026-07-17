@@ -16,8 +16,13 @@ pub struct TimingTable {
 }
 
 impl TimingTable {
-    pub fn sd_for_speed(speed: ClockSpeed) -> Result<Self, Error> {
-        Self::for_speed(speed, MediaKind::Sd)
+    pub fn for_host_speed(speed: ClockSpeed) -> Result<Self, Error> {
+        let media = if matches!(speed, ClockSpeed::Hs200) {
+            MediaKind::Mmc
+        } else {
+            MediaKind::Sd
+        };
+        Self::for_speed(speed, media)
     }
 
     pub fn for_speed(speed: ClockSpeed, media: MediaKind) -> Result<Self, Error> {

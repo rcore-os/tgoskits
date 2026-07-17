@@ -15,6 +15,11 @@
 //! RISC-V virtual PLIC interrupt backend.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
 
 use ax_cpu_local::CpuPin;
 use ax_std::os::arceos::task::{ThreadWakeHandle, WakeResult};
@@ -30,13 +35,16 @@ use riscv_vplic::{
 };
 use spin::Once;
 
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use super::route_transaction::{RouteRevocation, current_route_identity, revoke_active_route};
 use super::{
     completion_restore::{restore_all, restore_present_suffix},
     forwarded_ingress::{FORWARDED_IRQ_DRAIN_BATCH, ForwardedIrqIngress, ForwardedIrqPublish},
     owner_doorbell::{FixedOwnerContext, OwnerDoorbell},
     route_transaction::{
-        RouteActivation, RouteControl, RoutePreparation, RouteReservationError,
-        RouteTransactionState, activate_published_route, prepare_route_if_available,
+        ROUTE_GENERATION_MAX, RouteActivation, RouteControl, RoutePreparation,
+        RouteReservationError, RouteTransactionState, activate_published_route,
+        prepare_route_if_available,
     },
 };
 use crate::{
@@ -47,7 +55,7 @@ use crate::{
     },
 };
 
-static PLATFORM_VPLIC_ROUTE: Once<PlatformVplicRoute> = Once::new();
+static PLATFORM_VPLIC_ROUTE: PlatformVplicRouteSlot = PlatformVplicRouteSlot::new();
 // Hard IRQs consume only the immutable published route and never acquire this
 // short control-plane lock. The complete canonical key and generation reserve
 // ownership while platform preparation and activation run outside the lock.
@@ -56,6 +64,169 @@ static PLATFORM_VPLIC_ROUTE_CONTROL: RouteControl<PlatformVplicRouteState> =
     RouteControl::new(PlatformVplicRouteState::new());
 pub(crate) const FORWARDED_COMPLETION_DRAIN_BATCH: usize = 64;
 const PLATFORM_VPLIC_SOURCE_WORDS: usize = PLIC_NUM_SOURCES.div_ceil(u64::BITS as usize);
+const PLATFORM_VPLIC_ROUTE_MAX_SOURCES: usize =
+    ax_plat::irq::riscv64_hv::RISCV_PLIC_GUEST_ROUTE_MAX_SOURCES;
+const ROUTE_PHASE_MASK: u64 = 0b11;
+const ROUTE_VACANT: u64 = 0;
+const ROUTE_ACTIVE: u64 = 1;
+const ROUTE_REVOKING: u64 = 2;
+
+struct PlatformVplicRouteSlot {
+    state: AtomicU64,
+    publishers: AtomicUsize,
+    platform_released: AtomicBool,
+    route: UnsafeCell<MaybeUninit<PlatformVplicRoute>>,
+}
+
+// SAFETY: route storage is written only in Vacant with no publishers. IRQ
+// readers increment and revalidate the exact Active generation before taking
+// a reference. Revocation publishes Revoking and drains readers before drop.
+unsafe impl Sync for PlatformVplicRouteSlot {}
+
+impl PlatformVplicRouteSlot {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(ROUTE_VACANT),
+            publishers: AtomicUsize::new(0),
+            platform_released: AtomicBool::new(false),
+            route: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    fn install(&self, route: PlatformVplicRoute, generation: u64) {
+        assert_eq!(self.state.load(Ordering::Acquire), ROUTE_VACANT);
+        assert_eq!(self.publishers.load(Ordering::Acquire), 0);
+        assert!(!self.platform_released.load(Ordering::Acquire));
+        // SAFETY: Vacant and zero publishers grant the preparation permit
+        // exclusive access until Active is published below.
+        unsafe { (*self.route.get()).write(route) };
+        self.state
+            .store(route_state(generation, ROUTE_ACTIVE), Ordering::Release);
+    }
+
+    fn acquire_irq(&self) -> PlatformRouteAcquire<'_> {
+        let observed = self.state.load(Ordering::Acquire);
+        match observed & ROUTE_PHASE_MASK {
+            ROUTE_VACANT => PlatformRouteAcquire::Vacant,
+            ROUTE_REVOKING => PlatformRouteAcquire::Quarantined,
+            ROUTE_ACTIVE => {
+                self.publishers.fetch_add(1, Ordering::AcqRel);
+                if self.state.load(Ordering::Acquire) != observed {
+                    self.publishers.fetch_sub(1, Ordering::Release);
+                    return PlatformRouteAcquire::Quarantined;
+                }
+                // SAFETY: exact Active generation was revalidated after the
+                // publisher increment; Revoking cannot drop until it drains.
+                PlatformRouteAcquire::Active(PlatformRoutePublisher {
+                    slot: self,
+                    route: unsafe { self.route_ref() },
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn acquire_control(&self, generation: u64) -> Option<PlatformRoutePublisher<'_>> {
+        let observed = self.state.load(Ordering::Acquire);
+        if observed != route_state(generation, ROUTE_ACTIVE)
+            && observed != route_state(generation, ROUTE_REVOKING)
+        {
+            return None;
+        }
+        self.publishers.fetch_add(1, Ordering::AcqRel);
+        if self.state.load(Ordering::Acquire) != observed {
+            self.publishers.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        // SAFETY: the exact initialized generation was revalidated and cannot
+        // be cleared until this task-context publisher is dropped.
+        Some(PlatformRoutePublisher {
+            slot: self,
+            route: unsafe { self.route_ref() },
+        })
+    }
+
+    fn acquire_active_control(&self) -> Option<PlatformRoutePublisher<'_>> {
+        let observed = self.state.load(Ordering::Acquire);
+        if observed & ROUTE_PHASE_MASK != ROUTE_ACTIVE {
+            return None;
+        }
+        self.acquire_control(observed >> 2)
+    }
+
+    fn begin_revocation(&self, generation: u64) {
+        let active = route_state(generation, ROUTE_ACTIVE);
+        let revoking = route_state(generation, ROUTE_REVOKING);
+        match self
+            .state
+            .compare_exchange(active, revoking, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {}
+            Err(observed) => assert_eq!(
+                observed, revoking,
+                "RISC-V AxVM route revocation observed another generation"
+            ),
+        }
+    }
+
+    fn publishers_drained(&self, generation: u64) -> bool {
+        self.state.load(Ordering::Acquire) == route_state(generation, ROUTE_REVOKING)
+            && self.publishers.load(Ordering::Acquire) == 0
+    }
+
+    fn platform_released(&self, generation: u64) -> bool {
+        assert_eq!(
+            self.state.load(Ordering::Acquire),
+            route_state(generation, ROUTE_REVOKING)
+        );
+        self.platform_released.load(Ordering::Acquire)
+    }
+
+    fn mark_platform_released(&self, generation: u64) {
+        assert_eq!(
+            self.state.load(Ordering::Acquire),
+            route_state(generation, ROUTE_REVOKING)
+        );
+        self.platform_released.store(true, Ordering::Release);
+    }
+
+    fn finish_revocation(&self, generation: u64) {
+        assert!(self.publishers_drained(generation));
+        assert!(self.platform_released.load(Ordering::Acquire));
+        // SAFETY: the platform lease is gone, Revoking blocks IRQ readers,
+        // and the final publisher has drained.
+        unsafe { (*self.route.get()).assume_init_drop() };
+        self.platform_released.store(false, Ordering::Release);
+        self.state.store(ROUTE_VACANT, Ordering::Release);
+    }
+
+    unsafe fn route_ref(&self) -> &PlatformVplicRoute {
+        // SAFETY: every caller proves a published non-Vacant lifecycle state.
+        unsafe { (&*self.route.get()).assume_init_ref() }
+    }
+}
+
+struct PlatformRoutePublisher<'a> {
+    slot: &'a PlatformVplicRouteSlot,
+    route: &'a PlatformVplicRoute,
+}
+
+impl Drop for PlatformRoutePublisher<'_> {
+    fn drop(&mut self) {
+        self.slot.publishers.fetch_sub(1, Ordering::Release);
+    }
+}
+
+enum PlatformRouteAcquire<'a> {
+    Vacant,
+    Active(PlatformRoutePublisher<'a>),
+    Quarantined,
+}
+
+const fn route_state(generation: u64, phase: u64) -> u64 {
+    assert!(generation != 0 && generation <= ROUTE_GENERATION_MAX);
+    generation << 2 | phase
+}
 
 struct PlatformVplicRoute {
     binding: VplicVcpuBinding,
@@ -65,6 +236,11 @@ struct PlatformVplicRoute {
 
 impl PlatformVplicRoute {
     fn new(binding: VplicVcpuBinding, target_cpu: usize, irq_sources: &[u32]) -> AxVmResult<Self> {
+        if irq_sources.is_empty() || irq_sources.len() > PLATFORM_VPLIC_ROUTE_MAX_SOURCES {
+            return Err(AxVmError::invalid_config(format_args!(
+                "RISC-V passthrough route requires 1..={PLATFORM_VPLIC_ROUTE_MAX_SOURCES} sources"
+            )));
+        }
         let mut canonical_sources = irq_sources.to_vec();
         canonical_sources.sort_unstable();
         if canonical_sources
@@ -89,6 +265,10 @@ impl PlatformVplicRoute {
         self.target_cpu == installed.target_cpu
             && self.irq_sources == installed.irq_sources
             && self.binding.same_binding(&installed.binding)
+    }
+
+    fn contains_source(&self, source: u32) -> bool {
+        self.irq_sources.binary_search(&source).is_ok()
     }
 }
 
@@ -117,6 +297,33 @@ impl PlatformVplicRouteKey {
             notifications: Arc::as_ptr(&route.binding.notifications) as usize,
             irq_sources,
         }
+    }
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+struct PlatformRouteRevocationSnapshot {
+    binding: VplicVcpuBinding,
+    target_cpu: usize,
+    irq_sources: [u32; PLATFORM_VPLIC_ROUTE_MAX_SOURCES],
+    source_count: usize,
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+impl PlatformRouteRevocationSnapshot {
+    fn from_publisher(publisher: &PlatformRoutePublisher<'_>) -> Self {
+        let route = publisher.route;
+        let mut irq_sources = [0; PLATFORM_VPLIC_ROUTE_MAX_SOURCES];
+        irq_sources[..route.irq_sources.len()].copy_from_slice(&route.irq_sources);
+        Self {
+            binding: route.binding.clone(),
+            target_cpu: route.target_cpu,
+            irq_sources,
+            source_count: route.irq_sources.len(),
+        }
+    }
+
+    fn sources(&self) -> &[u32] {
+        &self.irq_sources[..self.source_count]
     }
 }
 
@@ -207,12 +414,14 @@ impl VplicVcpuBinding {
             .map_err(map_route_reservation_error)?;
         let RoutePreparation::Reserved(mut preparation_permit) = preparation else {
             let installed = PLATFORM_VPLIC_ROUTE
-                .get()
-                .expect("an active RISC-V platform route must be published");
-            assert!(
-                candidate.same_route(installed) && self.is_platform_owner(),
-                "active RISC-V route state does not match its immutable publication"
-            );
+                .acquire_active_control()
+                .ok_or_else(|| {
+                    AxVmError::resource_unavailable(
+                        "RISC-V platform IRQ route",
+                        "the matching route entered revocation during lookup",
+                    )
+                })?;
+            assert!(candidate.same_route(installed.route) && self.is_platform_owner());
             return Ok(RiscvPlatformIrqRouteResult {
                 status: RiscvPlatformIrqRouteStatus::Activated,
                 source: 0,
@@ -229,16 +438,17 @@ impl VplicVcpuBinding {
         // The lower layer now owns permanent physical leases. Any subsequent
         // invariant failure must quarantine this generation as reserved
         // instead of exposing a false vacant state to another owner.
+        let route_generation = preparation_permit.generation();
         preparation_permit.begin_irreversible();
 
         assert!(
             self.notifications.install_platform_owner(self.context_id),
             "prepared RISC-V platform IRQ route conflicts with the vPLIC owner"
         );
-        let installed = PLATFORM_VPLIC_ROUTE.call_once(|| candidate);
+        PLATFORM_VPLIC_ROUTE.install(candidate, route_generation);
         assert!(
-            self.same_binding(&installed.binding),
-            "RISC-V platform IRQ route changed while its generation was reserved"
+            self.notifications
+                .activate_platform_owner(self.context_id, route_generation)
         );
         preparation_permit.publish();
 
@@ -272,6 +482,7 @@ impl VplicVcpuBinding {
 
     pub(crate) fn is_platform_owner(&self) -> bool {
         self.notifications.is_platform_owner(self.context_id)
+            && self.notifications.accepts_forwarded_irqs()
     }
 
     pub(crate) fn take_line_level(&self) -> Result<bool, riscv_vplic::VplicError> {
@@ -281,6 +492,11 @@ impl VplicVcpuBinding {
     }
 
     pub(crate) fn forward_physical_irq(&self, claim: RiscvPhysicalIrqClaim) -> bool {
+        if !self.notifications.accepts_forwarded_irqs() {
+            // Revocation consumes already-claimed old-generation IRQs without
+            // publishing them to either the guest or a host handler.
+            return true;
+        }
         if !self.is_platform_owner() {
             return false;
         }
@@ -408,10 +624,14 @@ impl VplicVcpuBinding {
         }
 
         if source_count != 0 {
-            match self
-                .vplic
-                .set_forwarded_pending_batch(&sources[..source_count])
-            {
+            let route_generation = self
+                .notifications
+                .platform_route_generation()
+                .ok_or_else(|| self.notifications.ingress.record_fault())?;
+            match self.vplic.set_forwarded_pending_batch_for_generation(
+                &sources[..source_count],
+                route_generation,
+            ) {
                 Ok(()) => {
                     for source in &sources[..source_count] {
                         self.notifications.ingress.clear_collision_retry(*source);
@@ -457,6 +677,27 @@ impl VplicVcpuBinding {
         Ok(())
     }
 
+    pub(crate) fn finish_completed_claim_batch(
+        &self,
+        batch: &ForwardedCompletionBatch,
+    ) -> Result<(), ()> {
+        let route_generation = self
+            .notifications
+            .platform_route_generation()
+            .ok_or_else(|| self.notifications.ingress.record_fault())?;
+        let mut sources = [0usize; FORWARDED_COMPLETION_DRAIN_BATCH];
+        for (index, claim) in batch.claims().iter().enumerate() {
+            let Some(claim) = claim else {
+                self.notifications.ingress.record_fault();
+                return Err(());
+            };
+            sources[index] = claim.source() as usize;
+        }
+        self.vplic
+            .finish_forwarded_route_batch(route_generation, &sources[..batch.claims().len()])
+            .map_err(|_| self.notifications.ingress.record_fault())
+    }
+
     /// Publishes context-line changes and guest completions after one guest
     /// MMIO write returned to normal task context.
     pub(crate) fn publish_guest_state_changes(&self) -> Result<(), ()> {
@@ -470,6 +711,126 @@ impl VplicVcpuBinding {
     }
 }
 
+/// Masks, drains, and releases the generation-scoped PLIC route for one VM.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub(crate) fn revoke_guest_irq_routes(vm_id: VMId) -> AxVmResult {
+    let Some((route_key, _)) = current_route_identity(&PLATFORM_VPLIC_ROUTE_CONTROL) else {
+        return Ok(());
+    };
+    if route_key.vm_id != vm_id {
+        return Ok(());
+    }
+    let revocation = revoke_active_route(&PLATFORM_VPLIC_ROUTE_CONTROL, route_key)
+        .map_err(map_route_reservation_error)?;
+    let RouteRevocation::Reserved(revocation_permit) = revocation else {
+        return Ok(());
+    };
+    let generation = revocation_permit.generation();
+    PLATFORM_VPLIC_ROUTE.begin_revocation(generation);
+
+    let snapshot = {
+        let publisher = PLATFORM_VPLIC_ROUTE
+            .acquire_control(generation)
+            .ok_or_else(|| {
+                AxVmError::resource_unavailable(
+                    "RISC-V platform IRQ route revocation",
+                    "the published route does not match its transaction generation",
+                )
+            })?;
+        assert_eq!(
+            PlatformVplicRouteKey::from_route(publisher.route),
+            route_key
+        );
+        PlatformRouteRevocationSnapshot::from_publisher(&publisher)
+    };
+    if !snapshot
+        .binding
+        .notifications
+        .begin_platform_revocation(snapshot.binding.context_id, generation)
+    {
+        return Err(AxVmError::resource_unavailable(
+            "RISC-V platform IRQ route revocation",
+            "the fixed vPLIC owner or generation changed before quarantine",
+        ));
+    }
+
+    if !PLATFORM_VPLIC_ROUTE.platform_released(generation) {
+        let route = ax_plat::irq::riscv64_hv::RiscvPlicGuestRouteV1::new(
+            snapshot.target_cpu,
+            snapshot.sources(),
+        )
+        .map_err(|error| {
+            AxVmError::interrupt(
+                "encode RISC-V PLIC route revocation",
+                format_args!("{error:?}"),
+            )
+        })?;
+        let platform_revocation = ax_plat::irq::riscv64_hv::begin_guest_irq_route_revocation(route)
+            .map_err(|error| {
+                AxVmError::interrupt(
+                    "begin RISC-V PLIC route revocation",
+                    format_args!("{error:?}"),
+                )
+            })?;
+        loop {
+            match ax_plat::irq::riscv64_hv::poll_guest_irq_route_revocation(platform_revocation)
+                .map_err(|error| {
+                    AxVmError::interrupt(
+                        "poll RISC-V PLIC route revocation",
+                        format_args!("{error:?}"),
+                    )
+                })? {
+                ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocationProgress::Pending => {
+                    crate::host::task::yield_now();
+                }
+                ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocationProgress::Released => {
+                    PLATFORM_VPLIC_ROUTE.mark_platform_released(generation);
+                    break;
+                }
+            }
+        }
+    }
+
+    while !PLATFORM_VPLIC_ROUTE.publishers_drained(generation) {
+        crate::host::task::yield_now();
+    }
+
+    let mut sources = [0usize; PLATFORM_VPLIC_ROUTE_MAX_SOURCES];
+    for (index, source) in snapshot.sources().iter().copied().enumerate() {
+        sources[index] = source as usize;
+    }
+    snapshot
+        .binding
+        .vplic
+        .revoke_forwarded_route_batch(generation, &sources[..snapshot.source_count])
+        .map_err(|error| {
+            AxVmError::interrupt(
+                "revoke RISC-V vPLIC forwarded state",
+                format_args!("{error}"),
+            )
+        })?;
+    for &source in &sources[..snapshot.source_count] {
+        snapshot
+            .binding
+            .notifications
+            .ingress
+            .discard_for_revocation(source);
+    }
+    if !snapshot
+        .binding
+        .notifications
+        .finish_platform_revocation(snapshot.binding.context_id, generation)
+    {
+        return Err(AxVmError::resource_unavailable(
+            "RISC-V platform IRQ route revocation",
+            "the vPLIC owner could not finish the quarantined generation",
+        ));
+    }
+    PLATFORM_VPLIC_ROUTE.finish_revocation(generation);
+    revocation_permit.finish();
+    Ok(())
+}
+
 /// Publishes one platform-owned claim into the fixed vPLIC owner ingress.
 ///
 /// # Safety
@@ -479,13 +840,20 @@ impl VplicVcpuBinding {
 /// The body must remain allocation-free, lock-free, non-blocking, and
 /// non-unwinding.
 pub(crate) unsafe extern "C" fn forward_unbound_physical_irq(source: u32, generation: u64) -> bool {
-    let Some(route) = PLATFORM_VPLIC_ROUTE.get() else {
-        return false;
+    let route = match PLATFORM_VPLIC_ROUTE.acquire_irq() {
+        PlatformRouteAcquire::Vacant => return false,
+        PlatformRouteAcquire::Quarantined => return true,
+        PlatformRouteAcquire::Active(route) => route,
     };
     let Some(claim) = RiscvPhysicalIrqClaim::try_new(source, generation) else {
-        return false;
+        route.route.binding.notifications.ingress.record_fault();
+        return true;
     };
-    route.binding.forward_physical_irq(claim)
+    if !route.route.contains_source(source) {
+        route.route.binding.notifications.ingress.record_fault();
+        return true;
+    }
+    route.route.binding.forward_physical_irq(claim)
 }
 
 fn encode_claim(claim: RiscvPhysicalIrqClaim) -> u64 {
@@ -500,6 +868,8 @@ struct VplicNotifications {
     context_wakes: Box<[Once<ThreadWakeHandle>]>,
     ingress: ForwardedIrqIngress,
     platform_owner_context: FixedOwnerContext,
+    platform_route_generation: AtomicU64,
+    accepting_forwarded_irqs: AtomicBool,
     completion_doorbell: OwnerDoorbell,
 }
 
@@ -512,6 +882,8 @@ impl VplicNotifications {
                 .into_boxed_slice(),
             ingress: ForwardedIrqIngress::new(PLIC_NUM_SOURCES),
             platform_owner_context: FixedOwnerContext::new(),
+            platform_route_generation: AtomicU64::new(0),
+            accepting_forwarded_irqs: AtomicBool::new(false),
             completion_doorbell: OwnerDoorbell::new(),
         }
     }
@@ -528,6 +900,80 @@ impl VplicNotifications {
 
     fn install_platform_owner(&self, context_id: usize) -> bool {
         self.platform_owner_context.install(context_id)
+    }
+
+    fn activate_platform_owner(&self, context_id: usize, generation: u64) -> bool {
+        if !self.platform_owner_context.is_owner(context_id) || generation == 0 {
+            return false;
+        }
+        match self.platform_route_generation.compare_exchange(
+            0,
+            generation,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(installed) if installed == generation => {}
+            Err(_) => return false,
+        }
+        self.accepting_forwarded_irqs.store(true, Ordering::Release);
+        true
+    }
+
+    fn begin_platform_revocation(&self, context_id: usize, generation: u64) -> bool {
+        if self.platform_route_generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        let accepting = self.accepting_forwarded_irqs.load(Ordering::Acquire);
+        let owner = self.platform_owner_context.get();
+        // `None + !accepting` is the retryable midpoint after owner release
+        // and before generation retirement. No new route can install while
+        // the monitor-wide transaction remains Revoking.
+        if owner != Some(context_id) && (accepting || owner.is_some()) {
+            return false;
+        }
+        self.accepting_forwarded_irqs
+            .store(false, Ordering::Release);
+        true
+    }
+
+    fn finish_platform_revocation(&self, context_id: usize, generation: u64) -> bool {
+        if self.accepting_forwarded_irqs.load(Ordering::Acquire) {
+            return false;
+        }
+        let installed_generation = self.platform_route_generation.load(Ordering::Acquire);
+        if installed_generation != generation && installed_generation != 0 {
+            return false;
+        }
+        let owner = self.platform_owner_context.get();
+        if owner != Some(context_id) && owner.is_some() {
+            return false;
+        }
+        self.ingress.finish_revocation();
+        self.completion_doorbell.clear();
+        // Clear the reusable owner before retiring the generation. Both steps
+        // are idempotent so a failed-closed caller can retry either midpoint.
+        if !self.platform_owner_context.clear(context_id) {
+            return false;
+        }
+        match self.platform_route_generation.compare_exchange(
+            generation,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,
+            Err(installed) => installed == 0,
+        }
+    }
+
+    fn accepts_forwarded_irqs(&self) -> bool {
+        self.accepting_forwarded_irqs.load(Ordering::Acquire)
+    }
+
+    fn platform_route_generation(&self) -> Option<u64> {
+        let generation = self.platform_route_generation.load(Ordering::Acquire);
+        (generation != 0).then_some(generation)
     }
 
     fn is_platform_owner(&self, context_id: usize) -> bool {
@@ -596,7 +1042,8 @@ fn map_route_reservation_error(error: RouteReservationError) -> AxVmError {
         ),
         RouteReservationError::Preparing
         | RouteReservationError::Published
-        | RouteReservationError::Activating => AxVmError::resource_unavailable(
+        | RouteReservationError::Activating
+        | RouteReservationError::Revoking => AxVmError::resource_unavailable(
             "RISC-V platform IRQ route",
             format_args!("the matching route transaction is currently {error:?}"),
         ),

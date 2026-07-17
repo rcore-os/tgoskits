@@ -7,7 +7,10 @@ use ax_memory_addr::VirtAddr;
 use tock_registers::LocalRegisterCopy;
 
 use super::trap::{TrapKind, is_valid_page_fault};
-pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
+pub use crate::uspace_common::{
+    DecodedUserExit, ExceptionKind, ExceptionSyndrome, RawUserExit, RawUserInterrupt,
+    UserExitReason,
+};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
@@ -172,8 +175,11 @@ impl UserContext {
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `elr`).
     ///
-    /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    /// This function returns an opaque context-bound token with raw local
+    /// interrupts still masked. It does not read or dispatch the captured
+    /// exception. The runtime must publish kernel accounting before calling
+    /// [`Self::decode_raw_exit`].
+    pub fn run_raw(&mut self) -> RawUserExit {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext) -> TrapKind;
         }
@@ -181,45 +187,66 @@ impl UserContext {
         crate::asm::disable_irqs();
         let kind = unsafe { enter_user(self) };
 
-        let ret = match kind {
-            TrapKind::Irq => {
-                crate::trap::dispatch_irq(0);
-                ReturnReason::Interrupt
+        // The vector entry reports IRQ versus synchronous entry only through
+        // its return register. Preserve that opaque byte without reading ESR
+        // or interpreting it until the runtime publishes kernel accounting.
+        RawUserExit::bind(self, kind as usize)
+    }
+
+    /// Decodes a raw exit previously returned by this context.
+    ///
+    /// The caller must keep raw local interrupts masked and publish the
+    /// user-to-kernel accounting transition before invoking this method.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `raw_exit` was produced by a different [`UserContext`].
+    pub fn decode_raw_exit(&mut self, raw_exit: RawUserExit) -> DecodedUserExit {
+        let kind = raw_exit.assert_bound_to(self);
+
+        match kind {
+            kind if kind == TrapKind::Irq as usize => {
+                DecodedUserExit::Interrupt(RawUserInterrupt::new(0))
             }
-            TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,
-            TrapKind::Synchronous => {
+            kind if kind == TrapKind::Fiq as usize || kind == TrapKind::SError as usize => {
+                DecodedUserExit::Reason(UserExitReason::Unknown)
+            }
+            kind if kind == TrapKind::Synchronous as usize => {
                 let esr = ESR_EL1.extract();
                 let far = FAR_EL1.get() as usize;
 
                 let iss = esr.read(ESR_EL1::ISS);
 
                 match esr.read_as_enum(ESR_EL1::EC) {
-                    Some(ESR_EL1::EC::Value::SVC64) => ReturnReason::Syscall,
+                    Some(ESR_EL1::EC::Value::SVC64) => {
+                        DecodedUserExit::Reason(UserExitReason::Syscall)
+                    }
                     Some(ESR_EL1::EC::Value::InstrAbortLowerEL) if is_valid_page_fault(iss) => {
-                        ReturnReason::PageFault(
+                        DecodedUserExit::Reason(UserExitReason::PageFault(
                             va!(far),
                             PageFaultFlags::EXECUTE | PageFaultFlags::USER,
-                        )
+                        ))
                     }
                     Some(ESR_EL1::EC::Value::DataAbortLowerEL) if is_valid_page_fault(iss) => {
                         let wnr = (iss & (1 << 6)) != 0; // WnR: Write not Read
                         let cm = (iss & (1 << 8)) != 0; // CM: Cache maintenance
-                        ReturnReason::PageFault(
+                        DecodedUserExit::Reason(UserExitReason::PageFault(
                             va!(far),
                             if wnr & !cm {
                                 PageFaultFlags::WRITE
                             } else {
                                 PageFaultFlags::READ
                             } | PageFaultFlags::USER,
-                        )
+                        ))
                     }
-                    _ => ReturnReason::Exception(ExceptionInfo { esr, far }),
+                    _ => DecodedUserExit::Reason(UserExitReason::Exception(ExceptionInfo {
+                        esr,
+                        far,
+                    })),
                 }
             }
-        };
-
-        crate::asm::enable_irqs();
-        ret
+            _ => DecodedUserExit::Reason(UserExitReason::Unknown),
+        }
     }
 }
 

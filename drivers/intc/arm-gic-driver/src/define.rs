@@ -84,6 +84,10 @@ pub const SPECIAL_RANGE: Range<u32> = Range {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CheckedIntIdError;
 
+/// Error returned when an SPI-only operation receives a private INTID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpiIntIdRequired;
+
 /// Create an [`IntId`] after validating it against the probed GIC range.
 pub fn checked_intid(raw: u32, max_intid: u32) -> Result<IntId, CheckedIntIdError> {
     if raw >= max_intid || SPECIAL_RANGE.contains(&raw) {

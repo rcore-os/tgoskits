@@ -19,6 +19,53 @@ fn fair_dispatch_programs_its_remaining_service_request() {
 }
 
 #[test]
+fn claimed_fair_slice_is_not_rearmed_before_the_scheduler_consumes_it() {
+    let (system, mut cpu) = online_system();
+    let fair = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu.as_mut(), fair.id(), 100).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 100).unwrap().next(),
+        fair.id()
+    );
+
+    support::install_handles(
+        (&system as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+    support::set_monotonic_ns(1_000_100);
+    let first = ax_task::timer_interrupt_current_cpu(false, 0).unwrap();
+    assert!(first.pending());
+    assert_eq!(
+        first.next_deadline_ns(),
+        None,
+        "a sticky PREEMPT reason owns the expired dispatch until its safe point"
+    );
+
+    let duplicate = ax_task::timer_interrupt_current_cpu(false, 0).unwrap();
+    assert!(
+        !duplicate.pending(),
+        "the same expired dispatch must not be claimed a second time"
+    );
+    assert_eq!(duplicate.next_deadline_ns(), None);
+
+    assert_eq!(
+        system
+            .schedule_if_requested(cpu.as_mut(), 1_000_100)
+            .unwrap()
+            .decision()
+            .unwrap()
+            .next(),
+        fair.id()
+    );
+    assert_eq!(
+        support::last_oneshot_ns(),
+        2_000_100,
+        "the replacement dispatch must arm a fresh service deadline"
+    );
+    support::clear_handles();
+}
+
+#[test]
 fn round_robin_dispatch_programs_its_remaining_quantum() {
     let (system, mut cpu) = online_system();
     let rr = ready_thread(
@@ -93,6 +140,48 @@ fn fifo_dispatch_programs_the_rt_quota_exhaustion_boundary() {
         fifo.id()
     );
     assert_eq!(support::last_oneshot_ns(), 950_000_100);
+}
+
+#[test]
+fn timer_irq_claims_rt_replenishment_before_accounting_advances_the_period() {
+    let (system, mut cpu) = online_system();
+    let rt = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(80).unwrap()));
+    let fair = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu.as_mut(), rt.id(), 0).unwrap();
+    system.enqueue(cpu.as_mut(), fair.id(), 0).unwrap();
+    assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), rt.id());
+
+    system
+        .charge_current(cpu.as_mut(), 950_000_000, 950_000_000, 0)
+        .unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 950_000_000).unwrap().next(),
+        fair.id()
+    );
+    support::set_monotonic_ns(950_000_000);
+    let idle = system.block_current(cpu.as_mut()).unwrap().next();
+    assert_ne!(idle, rt.id());
+
+    support::install_handles(
+        (&system as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+    support::set_monotonic_ns(1_000_000_000);
+    let timer = ax_task::timer_interrupt_current_cpu(false, 0).unwrap();
+    assert!(
+        timer.pending(),
+        "the due RT-period slot must survive accounting's period advance"
+    );
+    assert_eq!(
+        system
+            .schedule_if_requested(cpu.as_mut(), 1_000_000_000)
+            .unwrap()
+            .decision()
+            .unwrap()
+            .next(),
+        rt.id()
+    );
+    support::clear_handles();
 }
 
 #[test]
@@ -214,7 +303,7 @@ fn yielded_deadline_rearms_replenishment_after_earlier_zero_lag_event() {
     );
     support::set_monotonic_ns(10);
     assert!(
-        ax_task::timer_interrupt_current_cpu(0, 0)
+        ax_task::timer_interrupt_current_cpu(false, 0)
             .unwrap()
             .pending()
     );

@@ -1,8 +1,33 @@
 use dma_api::DmaDomainId;
 
-use crate::request::RequestFlags;
+use crate::{irq::IdList, request::RequestFlags};
 
-#[derive(Debug, Clone, Copy)]
+/// Default absolute watchdog budget for one accepted hardware request.
+pub const DEFAULT_REQUEST_TIMEOUT_NS: u64 = 30_000_000_000;
+
+/// How a queue returns terminal request ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    /// Submission with [`crate::RequestId::INLINE`] completes before
+    /// [`crate::IQueue::submit_owned`] returns.
+    Inline,
+    /// Submission completion is reported after a device interrupt event.
+    Interrupt {
+        /// Logical interrupt source IDs that can report this queue.
+        sources: IdList,
+    },
+}
+
+/// Which task-side execution context may advance a queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchMode {
+    /// The runtime may dispatch directly from the submitting task.
+    Direct,
+    /// A single task-side service context must serialize queue progression.
+    Serialized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub num_blocks: u64,
     pub logical_block_size: usize,
@@ -25,7 +50,7 @@ impl DeviceInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueLimits {
     pub dma_mask: u64,
     pub dma_domain: DmaDomainId,
@@ -34,6 +59,9 @@ pub struct QueueLimits {
     pub max_blocks_per_request: u32,
     pub max_segments: usize,
     pub max_segment_size: usize,
+    /// Monotonic-time budget after hardware acceptance. A zero budget is
+    /// invalid for interrupt queues because it cannot protect DMA ownership.
+    pub request_timeout_ns: u64,
     pub supported_flags: RequestFlags,
     pub supports_flush: bool,
     pub supports_discard: bool,
@@ -50,6 +78,7 @@ impl QueueLimits {
             max_blocks_per_request: 1,
             max_segments: 1,
             max_segment_size: logical_block_size,
+            request_timeout_ns: DEFAULT_REQUEST_TIMEOUT_NS,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,
@@ -58,9 +87,55 @@ impl QueueLimits {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueInfo {
     pub id: usize,
     pub device: DeviceInfo,
     pub limits: QueueLimits,
+    pub kind: QueueKind,
+    pub dispatch_mode: DispatchMode,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interrupt_kind(source_id: usize) -> QueueKind {
+        let mut sources = IdList::none();
+        sources.insert(source_id);
+        QueueKind::Interrupt { sources }
+    }
+
+    #[test]
+    fn completion_kind_and_dispatch_mode_are_orthogonal() {
+        let direct_interrupt = QueueInfo {
+            id: 0,
+            device: DeviceInfo::new(8, 512),
+            limits: QueueLimits::simple(512, u64::MAX),
+            kind: interrupt_kind(1),
+            dispatch_mode: DispatchMode::Direct,
+        };
+        let serialized_interrupt = QueueInfo {
+            dispatch_mode: DispatchMode::Serialized,
+            ..direct_interrupt
+        };
+        let inline = QueueInfo {
+            kind: QueueKind::Inline,
+            dispatch_mode: DispatchMode::Direct,
+            ..direct_interrupt
+        };
+
+        assert_eq!(direct_interrupt.kind, interrupt_kind(1));
+        assert_eq!(direct_interrupt.dispatch_mode, DispatchMode::Direct);
+        assert_eq!(serialized_interrupt.kind, interrupt_kind(1));
+        assert_eq!(serialized_interrupt.dispatch_mode, DispatchMode::Serialized);
+        assert_eq!(inline.kind, QueueKind::Inline);
+    }
+
+    #[test]
+    fn simple_queue_declares_an_absolute_watchdog_budget() {
+        let limits = QueueLimits::simple(512, u64::MAX);
+
+        assert_eq!(limits.request_timeout_ns, 30_000_000_000);
+    }
 }

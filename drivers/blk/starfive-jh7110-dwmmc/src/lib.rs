@@ -5,13 +5,16 @@ extern crate std;
 
 use core::ptr::NonNull;
 
-use dma_api::CompletedDma;
+use dma_api::{CompletedDma, DeviceDma};
 use dwmmc_host::{DwMmc, DwMmcIrq, Event};
 use sdio_host2::{
     BusOp, BusWidth, Error as Host2Error, PollRequestError, RawResponse, RequestPoll, SdioHost,
     SignalVoltage, SubmitTransactionError, Transaction,
 };
-use sdmmc_protocol::{Error, sdio::host2::SdioHost2Irq};
+use sdmmc_protocol::{
+    Error,
+    sdio::host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+};
 
 pub const JH7110_DWMMC_FIFO_OFFSET: usize = 0x200;
 pub const JH7110_STABLE_REFERENCE_CLOCK_HZ: u32 = 50_000_000;
@@ -130,8 +133,8 @@ impl Jh7110DwMmc {
         self.inner
     }
 
-    pub fn reset_and_init(&mut self) -> Result<(), Error> {
-        self.inner.reset_and_init()
+    pub fn set_dma(&mut self, dma: DeviceDma) {
+        self.inner.set_dma(dma);
     }
 }
 
@@ -237,26 +240,99 @@ impl SdioHost2Irq for Jh7110DwMmc {
     }
 }
 
+impl SdioHost2Timed for Jh7110DwMmc {
+    fn poll_transaction_at<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        now_ns: u64,
+    ) -> Result<RequestPoll<RawResponse>, PollRequestError>
+    where
+        Self: 'a,
+    {
+        SdioHost2Timed::poll_transaction_at(&mut self.inner, request, now_ns)
+    }
+
+    fn transaction_wake_at<'a>(&self, request: &Self::TransactionRequest<'a>) -> Option<u64>
+    where
+        Self: 'a,
+    {
+        SdioHost2Timed::transaction_wake_at(&self.inner, request)
+    }
+
+    fn poll_bus_op_at(
+        &mut self,
+        request: &mut Self::BusRequest,
+        now_ns: u64,
+    ) -> Result<RequestPoll<()>, PollRequestError> {
+        SdioHost2Timed::poll_bus_op_at(&mut self.inner, request, now_ns)
+    }
+
+    fn bus_op_wake_at(&self, request: &Self::BusRequest) -> Option<u64> {
+        SdioHost2Timed::bus_op_wake_at(&self.inner, request)
+    }
+}
+
+impl SdioHost2Lifecycle for Jh7110DwMmc {
+    type RecoveryState = dwmmc_host::DwMmcRecoveryState;
+
+    fn begin_recovery(
+        &mut self,
+        cause: rdif_block::RecoveryCause,
+    ) -> Result<Self::RecoveryState, Error> {
+        SdioHost2Lifecycle::begin_recovery(&mut self.inner, cause)
+    }
+
+    fn poll_dma_quiesce(
+        &mut self,
+        state: &mut Self::RecoveryState,
+        input: rdif_block::InitInput,
+    ) -> rdif_block::InitPoll<()> {
+        SdioHost2Lifecycle::poll_dma_quiesce(&mut self.inner, state, input)
+    }
+
+    fn begin_reinitialize(&mut self, state: &mut Self::RecoveryState) -> Result<(), Error> {
+        SdioHost2Lifecycle::begin_reinitialize(&mut self.inner, state)
+    }
+
+    fn poll_reinitialize(
+        &mut self,
+        state: &mut Self::RecoveryState,
+        input: rdif_block::InitInput,
+    ) -> rdif_block::InitPoll<()> {
+        SdioHost2Lifecycle::poll_reinitialize(&mut self.inner, state, input)
+    }
+}
+
 pub mod rdif {
+    use dma_api::DeviceDma;
     pub use rdif_block::{
-        BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-        OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
-        RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
+        BInterface, BIrqHandler, BQueue, BlkError, CompletedRequest, CompletionHint,
+        CompletionSink, DispatchMode, IQueue, Interface, OwnedRequest, QueueEventBatch,
+        QueueHandle, QueueKind, RequestId as RdifRequestId, ServiceProgress, SubmitError,
+        SubmitOutcome,
     };
     pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-    use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
+    use sdmmc_protocol::sdio::{InitializedSdioCard, host2::SdioHost2Adapter};
 
     use crate::{DEVICE_NAME, Jh7110DwMmc};
 
     pub fn device(
-        card: SdioSdmmc<SdioHost2Adapter<Jh7110DwMmc>>,
+        card: InitializedSdioCard<SdioHost2Adapter<Jh7110DwMmc>>,
         config: BlockConfig,
     ) -> BlockDevice<SdioHost2Adapter<Jh7110DwMmc>> {
-        BlockDevice::new(card, config)
+        BlockDevice::from_initialized(card, config)
     }
 
-    pub const fn fifo_config(capacity_blocks: u64, irq_driven: bool) -> BlockConfig {
-        BlockConfig::fifo(DEVICE_NAME, capacity_blocks, irq_driven)
+    pub fn dma_config(capacity_blocks: u64, dma: DeviceDma) -> BlockConfig {
+        dwmmc_host::rdif::dma_config(DEVICE_NAME, capacity_blocks, dma)
+    }
+
+    /// Build the FIFO-only configuration used while the card initializes.
+    ///
+    /// FIFO is confined to controller/card initialization and cannot publish
+    /// an RDIF runtime queue.
+    pub const fn initialization_config(capacity_blocks: u64) -> BlockConfig {
+        BlockConfig::fifo(DEVICE_NAME, capacity_blocks)
     }
 }
 
@@ -330,12 +406,24 @@ mod tests {
     }
 
     #[test]
-    fn rdif_fifo_config_is_irq_driven_without_dma() {
-        let config = rdif::fifo_config(16, true);
+    fn rdif_fifo_config_cannot_publish_runtime_queue() {
+        let config = rdif::initialization_config(16);
 
         assert_eq!(config.name, DEVICE_NAME);
         assert_eq!(config.capacity_blocks, 16);
-        assert!(config.irq_driven);
         assert!(!config.uses_dma());
+        assert!(!config.supports_runtime_queue());
+    }
+
+    #[test]
+    fn wrapper_exposes_timed_initialization_and_typed_recovery() {
+        fn assert_runtime_contract<T>()
+        where
+            T: sdmmc_protocol::sdio::host2::SdioHost2Timed
+                + sdmmc_protocol::sdio::host2::SdioHost2Lifecycle,
+        {
+        }
+
+        assert_runtime_contract::<Jh7110DwMmc>();
     }
 }

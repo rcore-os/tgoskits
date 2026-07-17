@@ -4,14 +4,16 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::PiMutex;
-use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
 use super::{
@@ -218,9 +220,14 @@ impl FileBackend {
         self.0.shared
     }
 
-    /// Location of the backing file (used by memfd seal accounting).
-    pub(crate) fn cache_location(&self) -> &Location {
-        self.0.cache.location()
+    /// Clones typed data attached to the backing node under its operation lease.
+    pub(crate) fn cache_user_data<T>(&self) -> AxResult<Option<Arc<T>>>
+    where
+        T: Any + Send + Sync,
+    {
+        self.0
+            .cache
+            .with_operation(|view| Ok(view.get_user_data::<T>()))
     }
 
     pub fn is_shared(&self) -> bool {
@@ -265,17 +272,16 @@ impl FileBackend {
     }
 
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {
-        let loc = self.0.cache.location();
-        let name = loc.absolute_path().map(|pb| pb.to_string())?;
         let offset = (self.0.file_data.lock().offset_page as u64) * PAGE_SIZE_4K as u64;
-        let inode = loc.inode();
-        let dev = loc.metadata()?.device;
-        Ok(BackendFileInfo {
-            path: name,
-            offset: Some(offset),
-            inode: Some(inode),
-            dev: Some(dev),
-            shared: self.0.shared,
+        self.0.cache.with_operation(|view| {
+            let metadata = view.metadata()?;
+            Ok(BackendFileInfo {
+                path: view.absolute_path()?.to_string(),
+                offset: Some(offset),
+                inode: Some(view.inode()),
+                dev: Some(metadata.device),
+                shared: self.0.shared,
+            })
         })
     }
 }

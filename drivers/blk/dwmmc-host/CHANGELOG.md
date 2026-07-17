@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consume the protocol's initialized-card capability when publishing RDIF and
+  retain platform clock capabilities through recovery and ownership handoff.
+- Migrate the RDIF adapter to owned IRQ-only queue semantics and prevent task
+  context from reading or acknowledging runtime completion status.
+- Add bounded controller/FIFO/IDMAC reset and clock reconstruction states with
+  absolute wake deadlines and proof-gated DMA reclamation.
+- Fail closed the direct `SdioHost` bus-operation compatibility path so card
+  initialization cannot enter legacy synchronous reset/clock helpers.
+- Replace the task-side register spin gate with a non-blocking `Busy` result
+  and cap each FIFO IRQ continuation at 64 words.
+- Use caller-supplied absolute monotonic deadlines for reset/clock bus states;
+  runtime aborts now retain request and DMA ownership until typed lifecycle
+  quiescence instead of entering a synchronous controller reset.
+- Reject the shared host2 owned-CPU PIO variant without consuming its backing;
+  DWMMC runtime queues remain explicitly IDMAC-only.
+- Keep IDMAC `RI`/`TI` completion separate from controller `DATA_OVER`, require
+  both generation-tagged events for DMA success, and let either error source win
+  over a combined completion snapshot while preserving exact IDMAC diagnostics.
+- Remove the post-admission card-detect failure window: once IDMAC owns the
+  request buffer, command activation is infallible and later card removal is
+  handled by IRQ/watchdog recovery.
+- Move bounce-buffer in-flight conversion to the hardware commit point, and
+  quarantine both accepted data buffers and IDMAC descriptor tables until
+  terminal completion or reset-derived quiescence permits release.
+- Add explicit DMA/device ordering barriers before IDMAC fetch, command
+  activation, and IRQ mailbox publication for weakly ordered architectures.
+- Mask the controller interrupt output during discovery without issuing a
+  command or acknowledging status, and discard stale IDMAC status only after
+  reset has established typed lifecycle quiescence.
+
 ## [0.3.2](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.3.1...dwmmc-host-v0.3.2) - 2026-07-08
 
 ### Other

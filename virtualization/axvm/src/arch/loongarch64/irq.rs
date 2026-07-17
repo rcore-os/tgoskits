@@ -14,18 +14,42 @@ pub fn register_guest_irq_route(
     vm_id: usize,
     vcpu_id: usize,
     guest_vector: usize,
-) {
+) -> crate::AxVmResult {
     ax_plat::irq::loongarch64_hv::register_guest_irq_route(
         physical_irq,
         vm_id,
         vcpu_id,
         guest_vector,
-    );
+    )
+    .map_err(|error| {
+        crate::AxVmError::interrupt(
+            "register LoongArch guest IRQ route",
+            format_args!("{error:?}"),
+        )
+    })
 }
 
-/// Remove all routed LoongArch guest IRQs owned by one VM.
-pub fn unregister_guest_irq_routes(vm_id: usize) {
-    ax_plat::irq::loongarch64_hv::unregister_guest_irq_routes(vm_id);
+/// Masks, unpublishes, and drains all guest IRQ routes owned by one VM.
+pub fn revoke_guest_irq_routes(vm_id: usize) -> crate::AxVmResult {
+    ax_plat::irq::loongarch64_hv::begin_guest_irq_route_revocation(vm_id).map_err(|error| {
+        crate::AxVmError::interrupt(
+            "begin LoongArch guest IRQ route revocation",
+            format_args!("{error:?}"),
+        )
+    })?;
+    loop {
+        let drained = ax_plat::irq::loongarch64_hv::poll_guest_irq_route_revocation(vm_id)
+            .map_err(|error| {
+                crate::AxVmError::interrupt(
+                    "poll LoongArch guest IRQ route revocation",
+                    format_args!("{error:?}"),
+                )
+            })?;
+        if drained {
+            return Ok(());
+        }
+        crate::host::task::yield_now();
+    }
 }
 
 fn set_irq_enabled(raw_irq: usize, enabled: bool) {

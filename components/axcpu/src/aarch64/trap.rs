@@ -230,7 +230,9 @@ unsafe extern "C" fn aarch64_trap_handler(raw: *mut RawTrapFrame, raw_kind: u8, 
             );
         }
         TrapKind::Irq => {
-            crate::trap::dispatch_irq(0);
+            // SAFETY: the exception vector owns the saved PSTATE and returns
+            // through the matching AArch64 exception footer.
+            unsafe { crate::trap::dispatch_arch_irq(0) };
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

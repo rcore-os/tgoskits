@@ -159,27 +159,35 @@ pub(crate) fn acquire_usb_device(bus_num: u8, device_num: u8) -> AxResult<UsbDev
         .map(|lease| UsbDeviceHandle { lease })
 }
 
-pub(crate) fn is_usbfs_device(inner: &dyn Any) -> bool {
-    inner.is::<tree::UsbDeviceOps>()
+#[derive(Clone, Copy)]
+pub(crate) struct UsbFsDeviceIdentity {
+    bus_num: u8,
+    device_num: u8,
+}
+
+pub(crate) fn device_identity(inner: &dyn Any) -> Option<UsbFsDeviceIdentity> {
+    inner
+        .downcast_ref::<tree::UsbDeviceOps>()
+        .map(|ops| UsbFsDeviceIdentity {
+            bus_num: ops.bus_num,
+            device_num: ops.device_num,
+        })
 }
 
 pub(crate) fn open_usbfs_file(
-    inner: &dyn Any,
+    identity: UsbFsDeviceIdentity,
     file: ax_fs_ng::File,
     open_flags: u32,
 ) -> AxResult<Arc<dyn FileLike>> {
-    let ops = inner
-        .downcast_ref::<tree::UsbDeviceOps>()
-        .ok_or(ax_errno::AxError::InvalidInput)?;
     let manager = manager().ok_or(ax_errno::AxError::NoSuchDevice)?;
     let snapshot = manager
-        .device_snapshot(ops.bus_num, ops.device_num)
+        .device_snapshot(identity.bus_num, identity.device_num)
         .ok_or(ax_errno::AxError::NoSuchDevice)?;
     Ok(Arc::new(UsbDeviceFile {
         base: KernelFile::new(file, open_flags),
         manager,
-        bus_num: ops.bus_num,
-        device_num: ops.device_num,
+        bus_num: identity.bus_num,
+        device_num: identity.device_num,
         snapshot,
         lease: PiMutex::new(None),
         lifecycle_lock: PiMutex::new(()),

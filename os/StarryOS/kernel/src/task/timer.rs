@@ -3,11 +3,11 @@
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap};
 use core::{
     mem,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
-use ax_kspin::{PreemptGuard, SpinNoIrq as Mutex};
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task as scheduler;
 use event_listener::{Event, listener};
@@ -177,8 +177,7 @@ pub struct CpuTimeAccounting {
     last_account_ns: AtomicU64,
     realtime_continuous_ns: AtomicU64,
     realtime_reset_generation: AtomicU64,
-    writers: AtomicUsize,
-    completed_writes: AtomicU64,
+    sequence: AtomicU64,
     state: AtomicU8,
     running: AtomicBool,
     realtime_policy: AtomicBool,
@@ -198,8 +197,7 @@ impl CpuTimeAccounting {
             last_account_ns: AtomicU64::new(0),
             realtime_continuous_ns: AtomicU64::new(0),
             realtime_reset_generation: AtomicU64::new(0),
-            writers: AtomicUsize::new(0),
-            completed_writes: AtomicU64::new(0),
+            sequence: AtomicU64::new(0),
             state: AtomicU8::new(TimerState::None as u8),
             running: AtomicBool::new(false),
             realtime_policy: AtomicBool::new(false),
@@ -215,12 +213,6 @@ impl CpuTimeAccounting {
         )
     }
 
-    /// Publishes the current user/kernel execution state.
-    pub fn set_state(&self, state: TimerState) {
-        let _preempt_guard = PreemptGuard::new();
-        self.set_state_at(state, monotonic_time_nanos() as u64);
-    }
-
     pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
         self.scheduler_switch_in_at(realtime_policy, monotonic_time_nanos() as u64);
     }
@@ -229,17 +221,19 @@ impl CpuTimeAccounting {
         self.scheduler_switch_out_at(reason, monotonic_time_nanos() as u64);
     }
 
-    pub(crate) fn set_realtime_policy(&self, realtime_policy: bool, leaving_realtime: bool) {
-        let _preempt_guard = PreemptGuard::new();
-        self.set_realtime_policy_at(
-            realtime_policy,
-            leaving_realtime,
-            monotonic_time_nanos() as u64,
-        );
-    }
-
     fn scheduler_switch_in_at(&self, realtime_policy: bool, now_ns: u64) {
         let _writer = self.begin_write();
+        assert!(
+            !self.running.load(Ordering::Acquire),
+            "CPU-time accounting switch-in observed an already running task"
+        );
+        assert_eq!(
+            TimerState::from_raw(self.state.load(Ordering::Acquire)),
+            TimerState::None,
+            "CPU-time accounting switch-in requires an inactive task"
+        );
+        self.state
+            .store(TimerState::Kernel as u8, Ordering::Release);
         self.last_account_ns.store(now_ns, Ordering::Release);
         self.realtime_policy
             .store(realtime_policy, Ordering::Release);
@@ -248,8 +242,18 @@ impl CpuTimeAccounting {
 
     fn scheduler_switch_out_at(&self, reason: scheduler::SwitchReason, now_ns: u64) {
         let _writer = self.begin_write();
+        assert!(
+            self.running.load(Ordering::Acquire),
+            "CPU-time accounting switch-out observed an inactive task"
+        );
+        assert_eq!(
+            TimerState::from_raw(self.state.load(Ordering::Acquire)),
+            TimerState::Kernel,
+            "CPU-time accounting switch-out requires user return to publish Kernel first"
+        );
         self.account_running_until(now_ns);
         self.running.store(false, Ordering::Release);
+        self.state.store(TimerState::None as u8, Ordering::Release);
         if reason == scheduler::SwitchReason::Blocked {
             self.reset_realtime_continuous();
         }
@@ -257,12 +261,34 @@ impl CpuTimeAccounting {
 
     fn set_state_at(&self, state: TimerState, now_ns: u64) {
         let _writer = self.begin_write();
+        assert!(
+            self.running.load(Ordering::Acquire),
+            "user/kernel accounting transition requires the running task"
+        );
+        let previous = TimerState::from_raw(self.state.load(Ordering::Acquire));
+        assert!(
+            matches!(
+                (previous, state),
+                (TimerState::Kernel, TimerState::User) | (TimerState::User, TimerState::Kernel)
+            ),
+            "invalid user/kernel CPU-time accounting transition"
+        );
         self.account_running_until(now_ns);
         self.state.store(state as u8, Ordering::Release);
     }
 
-    fn set_realtime_policy_at(&self, realtime_policy: bool, leaving_realtime: bool, now_ns: u64) {
+    pub(crate) fn set_realtime_policy_at(
+        &self,
+        realtime_policy: bool,
+        leaving_realtime: bool,
+        now_ns: u64,
+    ) {
         let _writer = self.begin_write();
+        assert_ne!(
+            TimerState::from_raw(self.state.load(Ordering::Acquire)),
+            TimerState::User,
+            "owner policy commit requires Kernel or inactive accounting state"
+        );
         self.account_running_until(now_ns);
         self.realtime_policy
             .store(realtime_policy, Ordering::Release);
@@ -304,8 +330,8 @@ impl CpuTimeAccounting {
 
     fn snapshot_at(&self, now_ns: u64) -> CpuTimeSnapshot {
         loop {
-            let completed = self.completed_writes.load(Ordering::Acquire);
-            if self.writers.load(Ordering::Acquire) != 0 {
+            let sequence = self.sequence.load(Ordering::Acquire);
+            if sequence & 1 != 0 {
                 core::hint::spin_loop();
                 continue;
             }
@@ -332,30 +358,73 @@ impl CpuTimeAccounting {
                         snapshot.realtime_continuous_ns.saturating_add(residual);
                 }
             }
-            if self.writers.load(Ordering::Acquire) == 0
-                && self.completed_writes.load(Ordering::Acquire) == completed
-            {
+            if self.sequence.load(Ordering::Acquire) == sequence {
                 return snapshot;
             }
         }
     }
 
     fn begin_write(&self) -> CpuTimeWriter<'_> {
-        self.writers.fetch_add(1, Ordering::AcqRel);
-        CpuTimeWriter { accounting: self }
+        let even = self.sequence.load(Ordering::Acquire);
+        assert_eq!(
+            even & 1,
+            0,
+            "CPU-time accounting mutations must have one owner writer"
+        );
+        let odd = even
+            .checked_add(1)
+            .expect("CPU-time accounting sequence exhausted");
+        let next_even = even
+            .checked_add(2)
+            .expect("CPU-time accounting sequence exhausted");
+        let acquired =
+            self.sequence
+                .compare_exchange(even, odd, Ordering::AcqRel, Ordering::Acquire);
+        assert_eq!(
+            acquired,
+            Ok(even),
+            "CPU-time accounting mutations must have one owner writer"
+        );
+        CpuTimeWriter {
+            accounting: self,
+            odd,
+            next_even,
+        }
+    }
+}
+
+// SAFETY: the callback maps the typed execution domain and performs only the
+// bounded atomic accounting transaction in `set_state_at`. It does not acquire
+// a lock, allocate, invoke a callback, schedule, fault, or change IRQ state.
+unsafe impl ax_runtime::task::UserContextAccounting for CpuTimeAccounting {
+    fn transition_irqoff(&self, state: ax_runtime::task::UserExecutionState, now_ns: u64) {
+        let state = match state {
+            ax_runtime::task::UserExecutionState::User => TimerState::User,
+            ax_runtime::task::UserExecutionState::Kernel => TimerState::Kernel,
+        };
+        self.set_state_at(state, now_ns);
     }
 }
 
 struct CpuTimeWriter<'accounting> {
     accounting: &'accounting CpuTimeAccounting,
+    odd: u64,
+    next_even: u64,
 }
 
 impl Drop for CpuTimeWriter<'_> {
     fn drop(&mut self) {
-        self.accounting
-            .completed_writes
-            .fetch_add(1, Ordering::Release);
-        self.accounting.writers.fetch_sub(1, Ordering::Release);
+        let released = self.accounting.sequence.compare_exchange(
+            self.odd,
+            self.next_even,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        assert_eq!(
+            released,
+            Ok(self.odd),
+            "CPU-time accounting writer lost ownership"
+        );
     }
 }
 
@@ -642,8 +711,9 @@ mod tests {
     #[test]
     fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(true, 0);
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.set_state_at(TimerState::Kernel, 500_000);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 500_000);
         assert_eq!(
             accounting.snapshot_at(500_000).realtime_continuous_ns,
@@ -651,6 +721,8 @@ mod tests {
         );
 
         accounting.scheduler_switch_in_at(true, 500_000);
+        accounting.set_state_at(TimerState::User, 500_000);
+        accounting.set_state_at(TimerState::Kernel, 1_000_000);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Yield, 1_000_000);
         assert_eq!(
             accounting.snapshot_at(1_000_000).realtime_continuous_ns,
@@ -658,6 +730,8 @@ mod tests {
         );
 
         accounting.scheduler_switch_in_at(true, 1_000_000);
+        accounting.set_state_at(TimerState::User, 1_000_000);
+        accounting.set_state_at(TimerState::Kernel, 1_500_000);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 1_500_000);
         assert_eq!(
             accounting.snapshot_at(1_500_000).realtime_continuous_ns,
@@ -665,6 +739,8 @@ mod tests {
         );
 
         accounting.scheduler_switch_in_at(true, 1_500_000);
+        accounting.set_state_at(TimerState::User, 1_500_000);
+        accounting.set_state_at(TimerState::Kernel, 2_000_000);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 2_000_000);
         let blocked = accounting.snapshot_at(2_000_000);
         assert_eq!(blocked.realtime_continuous_ns, 0);
@@ -674,7 +750,6 @@ mod tests {
     #[test]
     fn leaving_rt_policy_resets_continuous_runtime() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::Kernel, 0);
         accounting.scheduler_switch_in_at(true, 0);
         accounting.set_realtime_policy_at(false, true, 2_000_000);
         let fair = accounting.snapshot_at(3_000_000);
@@ -689,14 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn remote_policy_update_closes_its_bounded_writer_epoch() {
+    fn owner_policy_commit_closes_its_bounded_writer_epoch() {
         let accounting = CpuTimeAccounting::new();
         accounting.scheduler_switch_in_at(true, 0);
 
         accounting.set_realtime_policy_at(false, true, 1_000_000);
 
-        assert_eq!(accounting.writers.load(Ordering::Acquire), 0);
-        assert_eq!(accounting.completed_writes.load(Ordering::Acquire), 2);
+        assert_eq!(accounting.sequence.load(Ordering::Acquire), 4);
         assert_eq!(accounting.snapshot_at(2_000_000).realtime_continuous_ns, 0);
     }
 
@@ -743,8 +817,9 @@ mod tests {
     #[test]
     fn timer_poll_returns_a_bounded_signal_batch_without_a_callback() {
         let accounting = CpuTimeAccounting::new();
-        accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(false, 0);
+        accounting.set_state_at(TimerState::User, 0);
+        accounting.set_state_at(TimerState::Kernel, 10);
         accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 10);
         let mut manager = TimeManager::new();
         for timer in &mut manager.itimers {
@@ -760,5 +835,28 @@ mod tests {
         assert!(signals.contains(&Signo::SIGALRM));
         assert!(signals.contains(&Signo::SIGVTALRM));
         assert!(signals.contains(&Signo::SIGPROF));
+    }
+
+    #[test]
+    fn first_switch_in_accounts_kernel_bootstrap_time() {
+        let accounting = CpuTimeAccounting::new();
+
+        accounting.scheduler_switch_in_at(false, 10);
+
+        assert_eq!(accounting.snapshot_at(20).system_ns, 10);
+        assert_eq!(
+            TimerState::from_raw(accounting.state.load(Ordering::Acquire)),
+            TimerState::Kernel
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "requires user return to publish Kernel first")]
+    fn switch_out_rejects_user_accounting_state() {
+        let accounting = CpuTimeAccounting::new();
+        accounting.scheduler_switch_in_at(false, 0);
+        accounting.set_state_at(TimerState::User, 0);
+
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 1);
     }
 }

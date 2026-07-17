@@ -4,11 +4,7 @@ use alloc::{
     format,
     vec::Vec,
 };
-use core::{
-    alloc::Layout,
-    ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::{alloc::Layout, ptr::NonNull};
 
 use arm_gic_driver::v3::{GITS_TRANSLATER_OFFSET, Its, ItsCommand, ItsTableType};
 use ax_kspin::SpinRaw as Mutex;
@@ -22,6 +18,9 @@ use someboot::DCacheOp;
 
 use crate::common::ioremap;
 
+#[path = "collection_affinity.rs"]
+mod collection_affinity;
+
 pub(super) const LPI_INTID_BASE: u32 = 8192;
 const LPI_ID_BITS: u8 = 16;
 const LPI_COUNT: usize = 1 << LPI_ID_BITS;
@@ -32,10 +31,10 @@ const COMMAND_QUEUE_ENTRIES: usize = 256;
 const MIN_DEVICE_EVENTS: u32 = 32;
 const MAX_DEVICE_ID_BITS: u8 = 16;
 const COLLECTION_ID: u16 = 0;
-const INVALID_DEVICE_ID: u64 = u64::MAX;
-
-static LPI_OWNER: Mutex<BTreeMap<u32, DeviceId>> = Mutex::new(BTreeMap::new());
-static PRIMARY_ITS: AtomicU64 = AtomicU64::new(INVALID_DEVICE_ID);
+// Controller-facing operations carry only the parent IRQ. Retaining the full
+// public MSI identity lets that path use the provider capability without
+// depending on its concrete implementation type.
+static LPI_BINDINGS: Mutex<BTreeMap<IrqId, LpiBinding>> = Mutex::new(BTreeMap::new());
 
 module_driver!(
     name: "GICv3 ITS",
@@ -72,7 +71,6 @@ fn probe_its(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .ok_or_else(|| OnProbeError::other("GICv3 redistributor base is not available for ITS"))?;
     let provider_id = dev.descriptor.device_id();
     let provider = GicItsProvider::new(provider_id, its, mmio, gicr_phys_base)?;
-    PRIMARY_ITS.store(u64::from(provider_id), Ordering::Release);
     dev.register(Msi::new(MsiProviderId(u64::from(provider_id)), provider));
     Ok(())
 }
@@ -92,21 +90,37 @@ fn with_gic<R>(
 }
 
 pub(super) fn set_lpi_enabled(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-    let owner = LPI_OWNER
-        .lock()
-        .get(&irq.hwirq.0)
-        .copied()
-        .or_else(|| match PRIMARY_ITS.load(Ordering::Acquire) {
-            INVALID_DEVICE_ID => None,
-            raw => Some(DeviceId::from(raw)),
-        })
-        .ok_or(IrqError::Unsupported)?;
-    let msi = rdrive::get::<Msi>(owner).map_err(|_| IrqError::Unsupported)?;
+    let binding = lpi_binding(irq)?;
+    let msi = rdrive::get::<Msi>(binding.owner).map_err(|_| IrqError::Controller)?;
     let mut msi = msi.try_lock().map_err(|_| IrqError::Busy)?;
-    let provider = msi
-        .typed_mut::<GicItsProvider>()
-        .ok_or(IrqError::Unsupported)?;
-    provider.set_lpi_enabled_by_intid(irq.hwirq.0, enabled)
+    msi.set_vector_enabled(&binding.vector, enabled)
+}
+
+pub(super) fn set_lpi_affinity(
+    irq: IrqId,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), IrqError> {
+    let binding = lpi_binding(irq)?;
+    let msi = rdrive::get::<Msi>(binding.owner).map_err(|_| IrqError::Controller)?;
+    let mut msi = msi.try_lock().map_err(|_| IrqError::Busy)?;
+    let affinity = match affinity {
+        crate::irq::IrqAffinity::Any => irq_framework::IrqAffinity::Any,
+        crate::irq::IrqAffinity::Fixed { cpu_id } => {
+            irq_framework::IrqAffinity::Fixed(irq_framework::CpuId(cpu_id))
+        }
+    };
+    msi.set_vector_affinity(&binding.vector, affinity)
+}
+
+fn lpi_binding(irq: IrqId) -> Result<LpiBinding, IrqError> {
+    let binding = LPI_BINDINGS
+        .lock()
+        .get(&irq)
+        .copied()
+        .ok_or(IrqError::InvalidIrq)?;
+    (binding.vector.parent_irq == irq)
+        .then_some(binding)
+        .ok_or(IrqError::InvalidIrq)
 }
 
 struct GicItsProvider {
@@ -120,6 +134,7 @@ struct GicItsProvider {
     devices: BTreeMap<u32, ItsDevice>,
     lpis: BTreeMap<u32, LpiRoute>,
     collection_target: u64,
+    collection_cpu: usize,
     gic_domain: irq_framework::IrqDomainId,
     _msi_domain: irq_framework::IrqDomainId,
     msix_domain: irq_framework::IrqDomainId,
@@ -183,6 +198,13 @@ impl GicItsProvider {
                     its.uses_physical_collection_target(),
                 ))
             })?;
+        let collection_cpu =
+            crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
+        if collection_cpu >= someboot::smp::runtime_cpu_count() {
+            return Err(OnProbeError::other(
+                "ITS collection CPU is outside the runtime topology",
+            ));
+        }
 
         its.disable();
         let command_queue = CommandQueue::new(COMMAND_QUEUE_ENTRIES)
@@ -204,6 +226,7 @@ impl GicItsProvider {
             devices: BTreeMap::new(),
             lpis: BTreeMap::new(),
             collection_target,
+            collection_cpu,
             gic_domain,
             _msi_domain: msi_domain,
             msix_domain,
@@ -313,6 +336,7 @@ impl Interface for GicItsProvider {
             let parent_irq = IrqId::new(self.gic_domain, HwIrq(lpi));
             let leaf_irq = IrqId::new(self.msix_domain, HwIrq(lpi - LPI_INTID_BASE));
             crate::irq::map_irq_route(parent_irq, leaf_irq)?;
+            let vector = MsiVector::with_parent(MsiVectorIndex(index), event, leaf_irq, parent_irq);
             self.lpis.insert(
                 lpi,
                 LpiRoute {
@@ -321,13 +345,14 @@ impl Interface for GicItsProvider {
                     leaf_irq,
                 },
             );
-            LPI_OWNER.lock().insert(lpi, self.owner);
-            vectors.push(MsiVector::with_parent(
-                MsiVectorIndex(index),
-                event,
-                leaf_irq,
+            LPI_BINDINGS.lock().insert(
                 parent_irq,
-            ));
+                LpiBinding {
+                    owner: self.owner,
+                    vector,
+                },
+            );
+            vectors.push(vector);
         }
         self.send_command(ItsCommand::sync(self.collection_target))?;
         Ok(vectors)
@@ -346,12 +371,32 @@ impl Interface for GicItsProvider {
 
     fn set_vector_affinity(
         &mut self,
-        _vector: &MsiVector,
+        vector: &MsiVector,
         affinity: irq_framework::IrqAffinity,
     ) -> Result<(), IrqError> {
-        match affinity {
-            irq_framework::IrqAffinity::Any => Ok(()),
-            irq_framework::IrqAffinity::Fixed { .. } => Err(IrqError::Unsupported),
+        let route = self
+            .lpis
+            .get(&vector.parent_irq.hwirq.0)
+            .ok_or(IrqError::InvalidIrq)?;
+        if route.leaf_irq != vector.irq || route.event != vector.event {
+            return Err(IrqError::InvalidIrq);
+        }
+        let requested_cpu = match affinity {
+            irq_framework::IrqAffinity::Any => None,
+            irq_framework::IrqAffinity::Fixed(cpu) => Some(cpu.0),
+        };
+        match collection_affinity::decide_collection_affinity(
+            requested_cpu,
+            self.collection_cpu,
+            someboot::smp::runtime_cpu_count(),
+        ) {
+            collection_affinity::CollectionAffinityDecision::Keep => Ok(()),
+            collection_affinity::CollectionAffinityDecision::InvalidCpu => {
+                Err(IrqError::InvalidCpu)
+            }
+            collection_affinity::CollectionAffinityDecision::Unsupported => {
+                Err(IrqError::Unsupported)
+            }
         }
     }
 
@@ -365,7 +410,7 @@ impl Interface for GicItsProvider {
             self.set_lpi_enabled_by_intid(intid, false)?;
             crate::irq::unmap_irq_route(vector.parent_irq, vector.irq)?;
             self.lpis.remove(&intid);
-            LPI_OWNER.lock().remove(&intid);
+            LPI_BINDINGS.lock().remove(&vector.parent_irq);
         }
         Ok(())
     }
@@ -382,6 +427,12 @@ struct LpiRoute {
     device: MsiDeviceId,
     event: MsiEventId,
     leaf_irq: IrqId,
+}
+
+#[derive(Clone, Copy)]
+struct LpiBinding {
+    owner: DeviceId,
+    vector: MsiVector,
 }
 
 struct CommandQueue {

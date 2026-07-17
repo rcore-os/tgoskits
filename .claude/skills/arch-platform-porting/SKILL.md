@@ -101,6 +101,14 @@ hardware registers and separate Rust types. `ax-cpu-local` is the only crate
 allowed to contain the small architecture register primitives; `ax-percpu` and
 its proc macro perform only layout, offset, and ordinary Rust pointer arithmetic.
 
+- Split CPU binding into an offline owner path and a steady-state reader path.
+  The platform entry installs and verifies its binding directly through the
+  `ax-cpu-local` raw register leaf while traps and migration are excluded; it
+  must not call back through the linked platform client facade that it
+  implements. The steady-state `CpuLocalPlatformV1` provider may construct an
+  unchecked pin for its value-only callback, but it must terminate at that same
+  raw register leaf and must never call `ax-percpu`, `ax-hal`, or another
+  platform/per-CPU facade. Safe clients revalidate the returned scalar binding.
 - Every runtime per-CPU area starts with a feature-invariant, three-cache-line
   `CpuAreaPrefixV2`: an immutable `CpuAreaHeader`, a CPU-owned runtime anchor
   containing the current-thread slot and trap/stack pointers, and a permanent
@@ -252,6 +260,18 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   invariant, not an infinite WFI gate. Any IPI observed after publication may
   serve as the receive doorbell; acknowledge the generation only at the owner
   safe point where the published reason is consumed.
+- Treat exit-to-user work as a coalesced level backed by real OS state, not as
+  an edge bit that a waiter may clear. A producer publishes that state, advances
+  the runtime notification epoch with Release ordering, and then directly wakes
+  the owning thread. The owner alone snapshots, drains and acknowledges an exact
+  epoch; interruptible waits only observe it. Immediately before architectural
+  user entry, the runtime masks raw IRQs and performs an Acquire level check. A
+  pending level defers entry without charging user time, while a producer racing
+  after the check relies on the already-published scheduler IPI doorbell to trap
+  immediately when the user IRQ state opens. Bound each owner drain batch to 64
+  signal or notification-retry transitions. On exhaustion, do not acknowledge
+  unseen work: release the owner ticket, yield once at a validated task-context
+  scheduler point, and continue the kernel drain without entering user mode.
 - Service only a bounded callback-retry batch before each idle scheduler pass.
   Persistent transport `Retry` must reject the final WFI but must never skip
   `schedule_current_cpu`, because an independent remote task wake may already
@@ -344,6 +364,14 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   failure may delay delivery but must not make callers retry an already
   committed edge. Backend injection failures return through the common unbind
   path instead of being logged and discarded.
+- Treat a passthrough device's host IRQ callback as linear ownership. After
+  device masking and action drain, remove the host action from the descriptor
+  into an opaque detached-action token before installing any guest route. A
+  disabled action is not detached and must not coexist with the guest owner.
+  Guest return first revokes and frees the guest action, then reattaches the
+  host token disabled before controller reinitialization; detach or reattach
+  failure keeps the device quarantined without relaxing share or affinity
+  compatibility.
 - On RISC-V, represent a guest exit as `VmArchVcpuOps::Exit<'cpu>` and keep the
   host IRQ-save token private in that RAII value. The bound architecture
   handler must capture physical exit state before dropping the exit; its drop
@@ -363,6 +391,19 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   lookup, driver lock, guest MMIO, or arbitrary callback. Busy or malformed
   leased state is quarantined and consumed rather than falling through to a
   host handler.
+- RISC-V passthrough route teardown is generation-scoped
+  `Active -> Revoking -> Vacant`, not process-lifetime publication. Publish
+  Revoking before masking so new hard-IRQ sink readers are consumed in
+  quarantine. The PLIC release path must keep a claim-reader gate plus
+  per-source active-claim count: after priority zero is visible, return `Busy`
+  until every claim that could have observed the old lease completes, then
+  disable all contexts and clear the generation-checked controller lease as
+  one batch. Task context yields between bounded polls; it never polls device
+  completion state. Only after the platform reports Released may AxVM clear
+  matching-generation vPLIC pending/active/forwarded/completed state, ingress,
+  doorbells, fixed owner, and route storage. Any failure leaves Revoking
+  retryable, and an old claim must never fall through to a host action or enter
+  a later route generation.
 - Fix one vPLIC context as the platform owner. Only that owner may drain the
   VM-global forwarded ingress and guest-completion bitmaps, in batches of at
   most 64; nonowner vCPUs may synchronize only their own context line. Preserve

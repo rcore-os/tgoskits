@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Replace the clearable task-interruption bit with generation-checked
+  user-entry work tickets, so concurrent signal/timer publication cannot be
+  erased while the owner drains exit-to-user work; bound each owner drain to
+  64 signal transitions and yield in kernel mode without acknowledging
+  unfinished work when a signal or coalesced-epoch producer flood exhausts
+  that budget.
+- Publish the selected serial backend as the runtime log and emergency-output
+  owner before permanently retiring the boot console, and make panic shutdown
+  perform one bounded raw transmitter drain.
+- Build fork image, file-table, and filesystem-context snapshots before child
+  construction, then require every `ProcessData` constructor to consume a
+  complete unpublished process-scope proof so partial scopes cannot escape and
+  temporary spin guards cannot cross a sleeping operation.
+- Preserve root-filesystem generation state across chroot, carry executable
+  and dirfd locations as scoped generation capabilities, keep xattr locations
+  borrowed inside that scope, and restrict raw file construction to explicitly
+  non-detachable synthetic filesystems.
+- Keep syscall, pseudo-filesystem, mount, and overlay path operations inside
+  generation-scoped namespace views; overlay copy-up and rename now retain one
+  outer generation lease across each composite VFS operation.
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.3...starry-kernel-v0.7.4) - 2026-07-10
 
 ### Added

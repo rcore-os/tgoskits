@@ -2,55 +2,53 @@
 
 use dma_api::DeviceDma;
 pub use rdif_block::{
-    BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-    OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
-    RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
+    BInterface, BIrqHandler, BQueue, BlkError, CompletedRequest, CompletionHint, CompletionSink,
+    DispatchMode, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueHandle, QueueKind,
+    RequestId as RdifRequestId, ServiceProgress, SubmitError, SubmitOutcome,
 };
 #[cfg(test)]
 use sdmmc_protocol::rdif::config as protocol_rdif_config;
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
+use sdmmc_protocol::sdio::{InitializedSdioCard, host2::SdioHost2Adapter};
 
 use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, Sdhci};
 
 pub fn device(
-    card: SdioSdmmc<SdioHost2Adapter<Sdhci>>,
+    card: InitializedSdioCard<SdioHost2Adapter<Sdhci>>,
     config: BlockConfig,
 ) -> BlockDevice<SdioHost2Adapter<Sdhci>> {
-    BlockDevice::new(card, config)
+    BlockDevice::from_initialized(card, config)
 }
 
-pub fn dma_config(
-    name: &'static str,
-    capacity_blocks: u64,
-    irq_driven: bool,
-    dma: DeviceDma,
-) -> BlockConfig {
-    BlockConfig::dma(name, capacity_blocks, irq_driven, dma)
+pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: DeviceDma) -> BlockConfig {
+    BlockConfig::dma(name, capacity_blocks, dma)
         .with_max_blocks_per_request(ADMA2_MAX_BLOCKS)
         .with_max_segment_size(ADMA2_MAX_TRANSFER_SIZE)
 }
 
-pub const fn fifo_config(
-    name: &'static str,
-    capacity_blocks: u64,
-    irq_driven: bool,
-) -> BlockConfig {
-    BlockConfig::fifo(name, capacity_blocks, irq_driven)
+pub const fn fifo_config(name: &'static str, capacity_blocks: u64) -> BlockConfig {
+    BlockConfig::interrupt_pio(name, capacity_blocks)
 }
 
 #[cfg(test)]
 mod tests {
+    use core::ptr::NonNull;
+
     use super::*;
 
     #[test]
     fn fifo_config_keeps_one_block_limits() {
-        let config = fifo_config("sdhci", 16, true);
+        let config = fifo_config("sdhci", 16);
         let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, 1);
         assert_eq!(limits.max_segment_size, protocol_rdif_config::BLOCK_SIZE);
         assert!(!config.uses_dma());
+        assert!(config.uses_interrupt_pio());
+        assert!(
+            config.supports_runtime_queue(),
+            "an IRQ-backed FIFO controller must publish its normal-I/O queue"
+        );
     }
 
     #[test]
@@ -58,7 +56,6 @@ mod tests {
         let config = dma_config(
             "sdhci",
             16,
-            true,
             dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA),
         );
         let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
@@ -66,6 +63,53 @@ mod tests {
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);
         assert!(config.uses_dma());
+    }
+
+    #[test]
+    fn hardware_constructor_installs_typed_controller_lifecycle() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let host = unsafe { Sdhci::new(base) };
+        let mut host = SdioHost2Adapter::new(host);
+        sdmmc_protocol::rdif::BlockHost::prepare_block_runtime(&mut host);
+
+        assert!(
+            sdmmc_protocol::rdif::BlockHost::begin_recovery(
+                &mut host,
+                rdif_block::RecoveryCause::QueueFault { queue_id: 0 },
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn runtime_transition_retains_platform_clock_capability() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        struct RuntimeClock;
+
+        impl crate::HostClock for RuntimeClock {
+            fn set_clock(&self, _target_hz: u32) -> Result<(), sdmmc_protocol::Error> {
+                Ok(())
+            }
+        }
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.set_external_clock(RuntimeClock);
+        let mut host = SdioHost2Adapter::new(host);
+
+        sdmmc_protocol::rdif::BlockHost::prepare_block_runtime(&mut host);
+
+        assert!(
+            host.with_host(|host| host.ext_clock.is_some()),
+            "controller-owned clock capability must survive until detach or handoff"
+        );
     }
 
     struct TestDma;

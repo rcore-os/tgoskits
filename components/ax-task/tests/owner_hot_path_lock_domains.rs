@@ -75,7 +75,7 @@ fn enqueue_publishes_runqueue_location_in_one_thread_sched_transaction() {
     assert_eq!(
         enqueue.matches("core.sched().lock()").count(),
         1,
-        "affinity updates must not observe a gap between runqueue insertion and queued_cpu"
+        "affinity updates must not observe a gap between runqueue insertion and typed placement"
     );
     assert_in_order(
         enqueue,
@@ -95,9 +95,50 @@ fn enqueue_publishes_runqueue_location_in_one_thread_sched_transaction() {
     assert_in_order(
         locked_enqueue,
         &[
-            "fields.run_queue.enqueue(",
-            "sched.queued_cpu = Some(owner)",
+            "fields.run_queue.prepare_enqueue(",
+            "sched.mark_queued(owner)",
+            "prepared.commit()",
         ],
+    );
+}
+
+#[test]
+fn runqueue_membership_has_one_typed_production_authority() {
+    assert!(THREAD_SCHED.contains("struct ThreadPlacement"));
+    assert!(THREAD_SCHED.contains("enum RunPlacement"));
+    assert!(THREAD_SCHED.contains("enum ExecutionOwner"));
+    for forbidden in [
+        "queued_cpu: Option<CpuId>",
+        "running_cpu: Option<CpuId>",
+        "on_cpu: Option<CpuId>",
+    ] {
+        assert!(
+            !THREAD_SCHED.contains(forbidden),
+            "independent placement field `{forbidden}` would recreate a second truth"
+        );
+    }
+    let prepare = function_body(
+        include_str!("../src/scheduler/queue.rs"),
+        "pub(crate) fn prepare_enqueue(",
+    );
+    let duplicate_scan = prepare
+        .find("if self.contains(id)")
+        .expect("debug builds must retain a structural consistency check");
+    assert!(
+        prepare[..duplicate_scan].contains("#[cfg(debug_assertions)]"),
+        "release enqueue must trust typed placement instead of scanning every queue"
+    );
+}
+
+#[test]
+fn expired_timer_safe_point_delivery_is_bounded_and_delayed() {
+    let drain = function_body(FACADE, "fn drain_current_expired_timers(");
+    assert!(drain.contains("while drained < batch_limit"));
+    assert!(drain.contains("cpu.defer_scheduler_work()"));
+    assert!(drain.contains("cpu.arm_deferred_owner_deadline(continuation_ns)"));
+    assert!(
+        !drain.contains("request_reschedule"),
+        "timer delivery backpressure is owner work, not a preemption reason"
     );
 }
 

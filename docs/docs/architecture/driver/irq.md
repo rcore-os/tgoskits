@@ -126,11 +126,17 @@ pub enum PciIrqRequirement {
 
 网络 IRQ 的 runtime 适配遵循同一方向。`ax-net-ng` 只暴露网络领域自己的 `EthernetIrqAction`、`EthernetIrqOutcome` 和注册错误类型，不再在公开 registrar trait 中泄漏 HAL IRQ 细节。`ax-runtime` 持有 HAL IRQ registration，并把 `EthernetIrqAction` 放入 boxed HAL callback；因此网络 runtime 只描述“是否需要唤醒 poll 方”，HAL 注册形态留在 ArceOS runtime 边界内。
 
+设备独占移交不能只把 host action 设为 disabled。disabled action 仍在 IRQ descriptor 中参与 share mode、affinity 与 execution compatibility 检查，也仍表示一个 host owner。块设备 passthrough 因此使用线性 detached-action token：先 mask 设备 source、disable 并 drain host action，再从 descriptor 真正移除 action，同时把 move-only callback 保存在 opaque token 中。guest action 只有在 host action 已移除后才能注册；guest 退出时先撤销并释放 guest action，再把 host token 以 disabled 状态重新注册，随后运行 controller reinitialize，最后才 enable host action 与设备 source。detach/reattach 任一步失败都会保留唯一 token 或 action owner 并隔离设备，不能通过放宽共享或 affinity 规则继续运行。
+
 ## rdif 内部 IRQ 事件
 
-部分 `rdif-*` 能力接口（如 `rdif-block`、`rdif-display`、`rdif-input`、`rdif-vsock`）的 `Interface` trait 提供 `handle_irq()` 方法。这些方法只确认中断源并返回可 poll 的 queue mask 或事件，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
+部分 `rdif-*` 能力接口（如 `rdif-block`、`rdif-display`、`rdif-input`、`rdif-vsock`）提供 IRQ endpoint。这些 endpoint 只识别并确认中断源、生成稳定的 queue-local 事件，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
 
-例如 `rdif-block` 的 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask，它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
+例如 `rdif-block` 的 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask，它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。IRQ action 把 `IrqOutcome` 中已经确认的事件写入固定 event ring，并从 hard IRQ 合并相应 hctx 的预分配 `service_work`。若驱动显式返回 deferred destructive acknowledgement，worker 必须先确认和分类该 source，再消费 completion state；普通 task path 不得重新读取或 W1C 全局 IRQ status。
+
+`ax-runtime::block` 使用共享的 per-CPU high-priority worker pool执行 hctx work item，而不是为每条 queue 永久占用一个线程。每个 hctx 同时最多只有一个串行 work item，重复的 submit/IRQ/timeout/cancel cause 通过原子状态合并；单次 callback 至多处理固定 batch，剩余工作返回 requeue。watchdog 只与 terminal completion 竞争并触发恢复，不调用驱动探测 completion。
+
+固定 event ring 溢出或 work admission 失败属于 controller 不变量破坏。block IRQ action 此时返回 `IrqReturn::QuenchAndWake`：IRQ framework 在本次 dispatch 返回前清除该 action 的 enabled gate，并立即屏蔽整条 backing line。共享 IRQ 的其他 action 保持逻辑 enabled，但在故障设备仍可能持续拉住电平时不能继续承受中断风暴。恢复 work 必须先成功执行设备 source mask，随后才能通过 action-owned `release_quench` 释放线路隔离；多个 action 同时 quench 时必须全部释放，peer 才重新获得线路。之后再完成 IRQ synchronize、DMA quiesce 和完整 reinitialize。该协议借鉴 Linux descriptor mask 与 deferred recovery 的所有权顺序，但把“设备源已屏蔽”作为显式 release 前置条件。
 
 `rdif-serial` 同样把 hard IRQ 限制为固定 RX/TX/pass budget。`SerialIrqOutcome::budget_exhausted` 表示硬件或软件队列可能仍有工作，上层不能丢弃该状态：OS glue 应将它合并成 task-context 事件，再用 `SerialSoftWork::RESERVICE` 按固定批次继续推进。service thread 的单次 activation 也必须有固定事件批次上限；持续流量达到上限时保留 pending bit、显式 yield，再进入下一批。这样既不把 UART burst 变成无界 IRQ 或内核线程占用，也不会因为 controller EOI 或 level/edge 状态变化而遗失剩余数据。
 
@@ -138,8 +144,9 @@ pub enum PciIrqRequirement {
 flowchart LR
     Irq["platform IRQ<br/>IrqId"] --> Handler["HAL IRQ handler"]
     Handler --> Rdif["rdif Interface::handle_irq()"]
-    Rdif --> Event["事件 / queue mask"]
-    Event --> Runtime["runtime / task wrapper"]
-    Runtime --> Poll["poll_request() / 推进完成"]
-    Poll --> Wake["wake 等待方"]
+    Rdif --> Event["已确认事件 / queue mask"]
+    Event --> Ring["固定 event ring"]
+    Ring --> Work["合并 hctx service_work"]
+    Work --> Service["有界 service_events()"]
+    Service --> Wake["定向完成与唤醒"]
 ```

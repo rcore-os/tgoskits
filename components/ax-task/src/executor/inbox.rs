@@ -3,7 +3,7 @@
 use core::{ptr, sync::atomic::Ordering};
 
 use super::CoroutineHeader;
-use crate::epoch_mpsc::EpochMpscQueue;
+use crate::epoch_mpsc::{EpochMpscQueue, EpochSnapshot};
 
 #[derive(Clone, Copy)]
 pub(super) enum InboxKind {
@@ -51,10 +51,14 @@ impl IntrusiveInbox {
     ///
     /// This function must be called only by the inbox's single owner consumer.
     pub(super) unsafe fn take_fifo(&self) -> *mut CoroutineHeader {
-        let stack = unsafe {
+        let snapshot = unsafe {
             // The executor owner is the only consumer. A null result can also
             // mean that the retired head is waiting for an in-flight publisher.
             self.publication.take_graced_stack()
+        };
+        let stack = match snapshot {
+            EpochSnapshot::Ready(stack) => stack,
+            EpochSnapshot::Empty | EpochSnapshot::PublisherInFlight => ptr::null_mut(),
         };
         unsafe {
             // Completed epoch grace transfers every retained pointer provenance

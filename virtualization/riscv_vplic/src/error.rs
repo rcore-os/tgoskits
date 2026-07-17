@@ -80,6 +80,29 @@ pub enum VplicError {
         /// The source whose virtual state must drain before physical transfer.
         source_id: usize,
     },
+    /// A forwarding operation used the reserved zero route generation.
+    #[error("vPLIC forwarded route generation must be nonzero")]
+    InvalidForwardedGeneration,
+    /// A bounded forwarding transaction exceeded its task-context batch.
+    #[error("vPLIC forwarded route batch has {actual} sources, maximum is {maximum}")]
+    ForwardedBatchTooLarge {
+        /// Number of sources supplied by the caller.
+        actual: usize,
+        /// Maximum sources accepted by one bounded operation.
+        maximum: usize,
+    },
+    /// A stale route generation attempted to mutate a newer source owner.
+    #[error(
+        "vPLIC forwarded source ID {source_id} belongs to generation {actual}, expected {expected}"
+    )]
+    ForwardedGenerationMismatch {
+        /// Source whose generation did not match.
+        source_id: usize,
+        /// Generation supplied by the caller.
+        expected: u64,
+        /// Generation currently owning the source, or zero for no owner.
+        actual: u64,
+    },
     /// A context identifier is outside the configured range.
     #[error("vPLIC context ID {context} is outside the configured range 0..{contexts}")]
     InvalidContext {
@@ -129,6 +152,9 @@ impl From<VplicError> for DeviceError {
             | VplicError::SourceNotAssigned { .. }
             | VplicError::ForwardedSourceBusy { .. }
             | VplicError::ForwardedSourceCollision { .. }
+            | VplicError::InvalidForwardedGeneration
+            | VplicError::ForwardedBatchTooLarge { .. }
+            | VplicError::ForwardedGenerationMismatch { .. }
             | VplicError::InvalidContext { .. }
             | VplicError::InvalidEnableWord { .. }
             | VplicError::InvalidAccessWidth { .. }

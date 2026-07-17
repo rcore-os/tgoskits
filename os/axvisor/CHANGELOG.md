@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Run architecture IRQ activation only after host storage selection/commit and
+  return controllers before surfacing any default-VM startup failure.
+- Retain and revoke the post-selection guest IRQ-route lease even when storage
+  selection finds no matching host block controller.
+- Reject interactive passthrough start, reset, and removal until a
+  process-lifetime dynamic ownership coordinator can retain the guest-route,
+  controller, and filesystem transaction.
+- Bind x86 block passthrough PCI/INTx handoff to the controllers selected by the host-storage transaction.
+- Pair x86 QEMU block INTx activation with an idempotent native PCI remask for
+  AxVM route rollback and revocation.
+- Reserve the selected x86 block forwarding action in the post-commit storage
+  transaction so IRQ ownership conflicts roll back before the first vCPU run.
+- Delay LoongArch guest IRQ route activation until every selected host controller has committed to guest ownership, and revoke the batch before host recovery.
+- Keep the bundled host `xtask` aligned with axbuild after removal of the image
+  subcommand.
+
 ## [0.5.21](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.20...axvisor-v0.5.21) - 2026-07-10
 
 ### Other

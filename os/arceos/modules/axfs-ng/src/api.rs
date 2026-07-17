@@ -28,17 +28,17 @@ pub fn rename(old: &str, new: &str) -> AxResult {
 }
 
 pub fn current_dir() -> AxResult<String> {
-    current_fs_context()
+    let fs_context = current_fs_context();
+    fs_context
         .lock()
-        .current_dir()
-        .absolute_path()
+        .with_namespace_operation(|namespace| namespace.current_dir().absolute_path())
         .map(|path| path.to_string())
 }
 
 pub fn set_current_dir(path: &str) -> AxResult {
     let fs_context = current_fs_context();
     let mut ctx = fs_context.lock();
-    let dir = ctx.resolve(path)?;
+    let dir = ctx.resolve_file_location(path)?;
     ctx.set_current_dir(dir)?;
     Ok(())
 }

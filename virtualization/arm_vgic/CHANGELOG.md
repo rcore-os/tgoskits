@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep passthrough SPI ownership fail-closed until physical GIC writes drain.
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.2...arm_vgic-v0.5.3) - 2026-07-08
 
 ### Other

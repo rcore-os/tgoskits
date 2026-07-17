@@ -161,10 +161,7 @@ pub fn irq_set_affinity(
         return Err(crate::irq::IrqError::Unsupported);
     }
     if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
-        return match affinity {
-            crate::irq::IrqAffinity::Any => Ok(()),
-            crate::irq::IrqAffinity::Fixed { .. } => Err(crate::irq::IrqError::Unsupported),
-        };
+        return super::its::set_lpi_affinity(irq, affinity);
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,

@@ -2,8 +2,10 @@
 //!
 //! The protocol crate intentionally does not know about a block runtime or any
 //! executor. These types describe the portable queue contract that host
-//! drivers expose upward: submit one block transfer, advance it by polling or
-//! IRQ wakeups, and keep the concrete FIFO/DMA engine visible.
+//! drivers expose upward: submit one block transfer, advance it from stable IRQ
+//! snapshots, and keep the concrete FIFO/DMA engine visible. Eventless waits
+//! belong to the explicit initialization/recovery state machines, not runtime
+//! request completion.
 
 use core::num::NonZeroUsize;
 

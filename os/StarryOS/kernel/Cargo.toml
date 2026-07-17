@@ -99,7 +99,6 @@ axbacktrace = { workspace = true }
 ax-errno = { workspace = true }
 axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
-rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 ax-io = { workspace = true }

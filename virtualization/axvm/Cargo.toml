@@ -70,6 +70,7 @@ x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-plat = { workspace = true }
 riscv-h = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }

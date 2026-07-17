@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
@@ -35,12 +29,6 @@ use axvm::{
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
 use axvmconfig::{AxVMCrateConfig, VMType};
-
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
 pub mod vmcfg {
@@ -111,12 +99,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
-    let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
-
     if let Some(linux) = get_image_header(&vm_create_config, &image_provider) {
         debug!(
             "VM[{}] Linux header: {:#x?}",
@@ -158,19 +140,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     if !axvm::register_vm(vm) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }
-    #[cfg(target_arch = "loongarch64")]
-    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
-
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
-    if release_host_filesystem {
-        #[cfg(target_arch = "x86_64")]
-        register_x86_host_fs_passthrough_irq_route();
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-    }
-
     Ok(vm_id)
 }
 
@@ -215,106 +184,137 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrat
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
-    config.kernel.image_location.as_deref() == Some("fs")
-        && (!config.devices.passthrough_devices.is_empty()
-            || !config.devices.passthrough_addresses.is_empty()
-            || !config.devices.passthrough_ports.is_empty())
-}
-
-#[cfg(all(
-    feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
-))]
-pub fn host_filesystem_release_required() -> bool {
-    HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
-}
-
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn register_x86_host_fs_passthrough_irq_route() {
-    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
-    let info = x86_host_fs_passthrough_pci_info();
-
-    let route = match ax_driver::pci::resolve_intx_binding(info) {
-        Ok(Some(binding)) => {
-            let trigger = x86_intx_forwarding_trigger(&binding);
-            resolve_binding_irq(binding).map(|host_irq| (host_irq, trigger))
-        }
-        Ok(None) => {
-            warn!("x86 host filesystem passthrough PCI INTx route was not found for {info:?}");
-            return;
-        }
-        Err(err) => {
-            warn!("failed to resolve x86 host filesystem passthrough PCI INTx route: {err:?}");
-            return;
-        }
+pub(crate) fn prepare_x86_host_storage_passthrough(
+    handoff: &axvm::HostStorageHandoff,
+) -> Result<()> {
+    let Some(endpoint) = select_x86_qemu_block_endpoint(handoff.pci_endpoints())? else {
+        return Ok(());
     };
+    let info = x86_qemu_block_pci_info(endpoint);
+    let (host_irq, trigger) = resolve_x86_host_storage_irq_route(info)?;
 
-    match route {
-        Ok((host_irq, trigger)) => {
-            axvm::register_x86_ioapic_irq_forwarding_route_with_trigger(
-                guest_gsi, host_irq, trigger,
-            );
-            axvm::register_x86_ioapic_irq_forwarding_activator(
-                guest_gsi,
-                unmask_x86_host_fs_passthrough_intx,
-            );
-            info!(
-                "Registered x86 host filesystem PCI INTx forwarding route: guest GSI \
-                 {guest_gsi} <- host IRQ {host_irq:?}, trigger {trigger:?}"
-            );
-        }
-        Err(err) => {
-            warn!(
-                "failed to resolve x86 host filesystem passthrough IRQ source into host IRQ: \
-                 {err:?}"
-            );
-        }
+    ax_driver::pci::prepare_intx_passthrough(info).map_err(|error| {
+        anyhow::anyhow!("prepare selected x86 host storage PCI INTx endpoint {info:?}: {error:?}")
+    })?;
+    register_x86_qemu_block_irq_route(host_irq, trigger)?;
+    reserve_x86_qemu_block_irq_action()?;
+    info!("Prepared selected x86 host storage PCI INTx endpoint {info:?}");
+    Ok(())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn select_x86_qemu_block_endpoint(
+    endpoints: &[axvm::HostStoragePciEndpoint],
+) -> Result<Option<axvm::HostStoragePciEndpoint>> {
+    if endpoints.is_empty() {
+        return Ok(None);
+    }
+
+    let supported = x86_qemu_block_endpoint();
+    if endpoints != [supported] {
+        bail!(
+            "Unsupported x86 host storage PCI endpoint selection {endpoints:?}; this platform \
+             supports exactly {supported:?}"
+        );
+    }
+    Ok(Some(supported))
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn resolve_x86_host_storage_irq_route(
+    info: ax_driver::probe::pci::PciInfo,
+) -> Result<(ax_hal::irq::IrqId, InterruptTriggerMode)> {
+    let binding = ax_driver::pci::resolve_intx_binding(info)
+        .map_err(|error| anyhow::anyhow!("resolve selected PCI INTx binding: {error:?}"))?
+        .ok_or_else(|| anyhow::anyhow!("selected PCI INTx endpoint has no firmware route"))?;
+    let trigger = x86_intx_forwarding_trigger(&binding);
+    let host_irq = resolve_binding_irq(binding)
+        .map_err(|error| anyhow::anyhow!("resolve selected PCI INTx source: {error:?}"))?;
+    Ok((host_irq, trigger))
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn register_x86_qemu_block_irq_route(
+    host_irq: ax_hal::irq::IrqId,
+    trigger: InterruptTriggerMode,
+) -> AxVmResult {
+    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
+    axvm::register_x86_ioapic_irq_forwarding_route_with_trigger(guest_gsi, host_irq, trigger)?;
+    axvm::register_x86_ioapic_irq_forwarding_activation(
+        guest_gsi,
+        axvm::X86IoApicForwardingActivationOps::new(
+            unmask_x86_qemu_block_intx,
+            mask_x86_qemu_block_intx,
+        ),
+    )?;
+    info!(
+        "Registered selected x86 host storage PCI INTx forwarding route: guest GSI {guest_gsi} \
+         <- host IRQ {host_irq:?}, trigger {trigger:?}"
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn reserve_x86_qemu_block_irq_action() -> AxVmResult {
+    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
+    axvm::reserve_x86_ioapic_irq_forwarding_action(guest_gsi)?;
+    info!("Reserved selected x86 host storage forwarding action for guest GSI {guest_gsi}");
+    Ok(())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn unmask_x86_qemu_block_intx() -> AxVmResult {
+    let info = x86_qemu_block_pci_info(x86_qemu_block_endpoint());
+    ax_driver::pci::unmask_intx_passthrough(info).map_err(|error| AxVmError::Interrupt {
+        operation: "unmask selected x86 QEMU block PCI INTx endpoint",
+        detail: alloc::format!("{info:?}: {error:?}"),
+    })?;
+    info!("Unmasked selected x86 QEMU block PCI INTx endpoint {info:?}");
+    Ok(())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn mask_x86_qemu_block_intx() -> AxVmResult {
+    let info = x86_qemu_block_pci_info(x86_qemu_block_endpoint());
+    ax_driver::pci::prepare_intx_passthrough(info).map_err(|error| AxVmError::Interrupt {
+        operation: "mask selected x86 QEMU block PCI INTx endpoint",
+        detail: alloc::format!("{info:?}: {error:?}"),
+    })?;
+    info!("Masked selected x86 QEMU block PCI INTx endpoint {info:?}");
+    Ok(())
+}
+
+#[cfg(all(feature = "fs", target_arch = "x86_64"))]
+fn x86_qemu_block_endpoint() -> axvm::HostStoragePciEndpoint {
+    let (device, function, _, _) = axvm::boot::x86_qemu_passthrough_block_intx();
+    axvm::HostStoragePciEndpoint {
+        segment: 0,
+        bus: 0,
+        device,
+        function,
     }
 }
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-pub(crate) fn prepare_x86_host_fs_passthrough_devices() {
-    let info = x86_host_fs_passthrough_pci_info();
-    match ax_driver::pci::prepare_intx_passthrough(info) {
-        Ok(()) => {
-            info!("Prepared x86 host filesystem PCI INTx passthrough device {info:?}");
-        }
-        Err(err) => {
-            warn!("failed to prepare x86 host filesystem PCI INTx passthrough device: {err:?}");
-        }
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn unmask_x86_host_fs_passthrough_intx() {
-    let info = x86_host_fs_passthrough_pci_info();
-    match ax_driver::pci::unmask_intx_passthrough(info) {
-        Ok(()) => {
-            info!("Unmasked x86 host filesystem PCI INTx passthrough device {info:?}");
-        }
-        Err(err) => {
-            warn!("failed to unmask x86 host filesystem PCI INTx passthrough device: {err:?}");
-        }
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn x86_host_fs_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
+fn x86_qemu_block_pci_info(
+    endpoint: axvm::HostStoragePciEndpoint,
+) -> ax_driver::probe::pci::PciInfo {
     use ax_driver::probe::pci::{PciAddress, PciInfo, PciIntxRoute};
 
-    let (device, function, pin, _) = axvm::boot::x86_qemu_passthrough_block_intx();
+    let (_, _, pin, _) = axvm::boot::x86_qemu_passthrough_block_intx();
     PciInfo {
-        address: PciAddress::new(0, 0, device, function),
+        address: PciAddress::new(
+            endpoint.segment,
+            endpoint.bus,
+            endpoint.device,
+            endpoint.function,
+        ),
         interrupt_pin: pin,
         interrupt_line: 0,
         intx_route: Some(PciIntxRoute {
-            root_device: device,
-            root_function: function,
+            root_device: endpoint.device,
+            root_function: endpoint.function,
             root_pin: pin,
         }),
     }

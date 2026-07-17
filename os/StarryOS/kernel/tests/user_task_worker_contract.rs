@@ -17,6 +17,7 @@ const NET_CMSG: &str = include_str!("../src/syscall/net/cmsg.rs");
 const STARRY_VM_LIB: &str = include_str!("../../../../components/starry-vm/src/lib.rs");
 const STARRY_VM_THIN: &str = include_str!("../../../../components/starry-vm/src/thin.rs");
 const PIDFD: &str = include_str!("../src/syscall/fs/pidfd.rs");
+const PERF_SAMPLING: &str = include_str!("../src/perf/sampling.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
 const SERIAL_TTY: &str = include_str!("../src/pseudofs/dev/tty/serial.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
@@ -126,6 +127,43 @@ fn published_user_thread_cannot_be_reported_as_a_recoverable_spawn_failure() {
 }
 
 #[test]
+fn kernel_and_user_thread_creation_cross_one_explicit_adapter_boundary() {
+    let kernel_spawn = function_body(SCHEDULER_TASK, "pub fn try_spawn_kernel_thread_with_stack<");
+    let user_spawn = function_body(SCHEDULER_TASK, "fn spawn_user_thread_inner<");
+
+    assert!(kernel_spawn.contains("scheduler::spawn_raw("));
+    assert!(!kernel_spawn.contains("ThreadExtension"));
+    assert!(!kernel_spawn.contains("address_space"));
+    assert!(user_spawn.contains("ThreadExtension::new"));
+    assert!(user_spawn.contains("Some(extension)"));
+
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pending = std::vec![source_root];
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(&path).expect("Starry source directory must be readable") {
+            let entry = entry.expect("Starry source entry must be readable");
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
+                || path.file_name().and_then(std::ffi::OsStr::to_str) == Some("scheduler_task.rs")
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("Rust source must be readable");
+            assert!(
+                !source.contains("scheduler::spawn_raw")
+                    && !source.contains("ThreadExtension::new"),
+                "{} bypasses the Starry user/kernel thread adapter",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn scheduler_identity_is_a_lock_free_one_time_publication() {
     assert!(SCHEDULER_IDENTITY.contains("AtomicU64"));
     assert!(SCHEDULER_IDENTITY.contains("compare_exchange"));
@@ -167,9 +205,11 @@ fn console_output_ownership_uses_a_success_typed_two_phase_handover() {
     assert!(!prepare.contains("claim_runtime_output"));
     assert!(commit.contains("commit_console_handover"));
     assert!(commit.contains("prepare_runtime_output_handover"));
+    assert!(commit.contains("prepare_runtime_output_sink"));
+    assert!(commit.contains("runtime_output.commit"));
     assert!(commit.contains("platform_handover.commit"));
     assert!(commit.contains("PortStartError::RecoveryFailed"));
-    assert!(commit.contains("restoring boot polling here could create two register owners"));
+    assert!(commit.contains("runtime_output.fail_closed"));
     assert!(rollback.contains("quiesce_to_polling"));
     assert!(rollback.contains(".is_ok()"));
     assert!(!rollback.contains("let _ = ax_serial::run_on_owner"));
@@ -181,15 +221,87 @@ fn console_output_ownership_uses_a_success_typed_two_phase_handover() {
     let prepare = init
         .find("prepare_console_handover")
         .expect("the handover must be prepared before opening stdio");
-    let stdio = init.find("add_stdio").expect("stdio must be installed");
+    let scope_prepare = init
+        .find("PreparedProcessScope::prepare_init")
+        .expect("the complete init scope must be prepared as one typed value");
+    let process_create = init
+        .find("ProcessData::new")
+        .expect("process data must consume the prepared scope");
     let claim = init
         .find("console_handover\n        .commit()")
         .expect("the prepared console must be committed");
     let publish = init
         .find("add_task_to_table")
         .expect("the user task must be published");
-    assert!(prepare < stdio && stdio < claim && claim < publish);
+    assert!(
+        prepare < scope_prepare
+            && scope_prepare < process_create
+            && process_create < claim
+            && claim < publish
+    );
+    assert!(TASK.contains("pub(crate) struct ProcessDataInit"));
+    assert!(TASK.contains("prepared_scope: PreparedProcessScope"));
+    assert!(TASK.contains("pub(crate) fn new(init: ProcessDataInit)"));
+    assert!(TASK.contains("scope: prepared_scope.into_scope()"));
+    assert!(!init.contains("scope_cell_mut_unpublished"));
+    assert!(!init.contains("core::mem::replace"));
     assert!(!init.contains("PreemptIrqGuard"));
+
+    let runtime_output = function_body(SERIAL_TTY, "fn try_submit_runtime_output(");
+    assert!(SERIAL_TTY.contains("RuntimeOutputSinkV1::new"));
+    assert!(SERIAL_TTY.contains("unsafe extern \"C\" fn runtime_normal_output"));
+    assert!(SERIAL_TTY.contains("unsafe extern \"C\" fn runtime_emergency_output"));
+    assert!(runtime_output.contains("try_lock"));
+    assert!(runtime_output.contains("publish_irq"));
+    assert!(!runtime_output.contains("output_lock"));
+    assert!(!runtime_output.contains(".lock()"));
+}
+
+#[test]
+fn runtime_emergency_console_uses_the_bounded_raw_uart_capability() {
+    let emergency = function_body(
+        SERIAL_TTY,
+        "unsafe extern \"C\" fn runtime_emergency_output(",
+    );
+
+    assert!(emergency.contains("try_write_emergency"));
+    assert!(emergency.contains("irqs_enabled"));
+    assert!(emergency.contains("disable_irqs"));
+    assert!(emergency.contains("enable_irqs"));
+    assert!(!emergency.contains("try_submit_runtime_output"));
+    assert!(!emergency.contains("try_lock"));
+    assert!(!emergency.contains("publish_irq"));
+
+    let flush = function_body(
+        SERIAL_TTY,
+        "unsafe extern \"C\" fn runtime_emergency_flush(",
+    );
+    assert!(flush.contains("try_flush_emergency"));
+    assert!(flush.contains("disable_irqs"));
+    assert!(flush.contains("enable_irqs"));
+    assert!(!flush.contains("try_lock"));
+    assert!(!flush.contains("publish_irq"));
+}
+
+#[test]
+fn runtime_console_handover_has_one_fail_closed_irq_off_commit_boundary() {
+    let commit = function_body(SERIAL_TTY, "pub fn commit(mut self) -> AxResult<()> {");
+    let irq_boundary = function_body(SERIAL_TTY, "fn with_local_irqs_disabled<");
+
+    assert!(commit.contains("commit_console_handover"));
+    assert!(commit.contains("runtime_output.fail_closed()"));
+    let retire_early = commit
+        .find("let platform_result = platform_handover.commit()")
+        .expect("the final transition must retire the paused early owner");
+    let publish_runtime = commit
+        .find("let runtime_result = runtime_output.commit()")
+        .expect("the final transition must publish the runtime owner");
+    assert!(retire_early < publish_runtime);
+
+    assert!(irq_boundary.contains("irqs_enabled"));
+    assert!(irq_boundary.contains("disable_irqs"));
+    assert!(irq_boundary.contains("enable_irqs"));
+    assert!(!irq_boundary.contains("IrqGuard"));
 }
 
 #[test]
@@ -202,6 +314,16 @@ fn observer_context_uses_the_starry_per_cpu_user_view() {
     assert!(TRACEPOINT.contains("try_current_user_irq_view()"));
     assert!(EBPF.contains("try_current_user_irq_view()"));
     assert!(KPROBE.contains("try_current_user_irq_view()"));
+}
+
+#[test]
+fn perf_irq_samples_use_linux_ids_only_for_a_published_user_task() {
+    let service = function_body(PERF_SAMPLING, "fn service_overflowed_slots(");
+
+    assert!(service.contains("try_current_user_irq_view()"));
+    assert!(service.contains("task.tgid()"));
+    assert!(service.contains("task.tid()"));
+    assert!(!service.contains("current_thread_id()"));
 }
 
 #[test]

@@ -31,7 +31,11 @@ fn irq_return_safe_point_owns_bounded_callback_execution() {
     let drain = source_section(AXIPI, "pub fn drain_deferred_callbacks()", "fn cpu_index");
     assert!(drain.contains("DEFERRED_CALLBACK_BATCH"));
     assert!(drain.contains("callback.call()"));
-    assert!(drain.contains("request_follow_up_ipi"));
+    assert!(drain.contains("mark_deferred_pending"));
+    assert!(
+        !drain.contains("request_follow_up_ipi"),
+        "bounded residual callback work must not form an immediate self-IPI chain"
+    );
 
     let irq_return = source_section(
         AXRUNTIME_GUARD,

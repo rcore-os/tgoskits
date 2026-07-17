@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Implement the rdif-block inline/direct owned-request queue contract without
+  synthetic interrupt or polling state.
+- Move the RAM backing into one exclusive inline queue instead of manufacturing
+  several locked views of the same storage, removing the runtime lock and OS
+  lock dependency from the portable driver.
+
+### Fixed
+
+- Stop queue creation before RDIF's fixed controller queue identity set is
+  exhausted.
+
 ## [0.1.10](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.9...ramdisk-v0.1.10) - 2026-07-08
 
 ### Other

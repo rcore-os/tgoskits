@@ -19,18 +19,15 @@ axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
 ax-sync = { workspace = true, features = ["multitask"] }
 bitflags = "2.10"
-cfg-if = { workspace = true }
 chrono = { workspace = true }
-dma-api = { workspace = true }
 intrusive-collections = "0.9"
 ax-kspin = { workspace = true }
-irq-framework = { workspace = true }
 log = { workspace = true }
 lru = "0.16"
-rdif-block = { workspace = true }
 scope-local = { workspace = true }
 slab = { version = "0.4", default-features = false }
 spin = { workspace = true }
+thiserror = { workspace = true }
 
 [dependencies.rsext4]
 workspace = true

@@ -84,7 +84,10 @@ pub trait RawUart: Send + Any + 'static {
         }
     }
 
-    /// 一轮 IRQ 建议写入的最大字节数。
+    /// Maximum number of bytes that may be loaded after one TX-ready fact.
+    ///
+    /// Implementations must return a non-zero value. The runtime treats zero
+    /// as a driver invariant failure and disables the device interrupt source.
     fn tx_load_size(&self) -> usize {
         1
     }

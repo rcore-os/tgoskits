@@ -30,11 +30,11 @@ impl ArmHostOps for DummyHost {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
+    unsafe fn handle_post_unbind_host_irq(_cpu_pin: &ax_cpu_local::CpuPin) -> ArmVcpuResult {
+        Ok(())
     }
 
-    fn handle_current_host_irq() {}
+    unsafe fn handle_current_host_irq() {}
 }
 
 #[test]

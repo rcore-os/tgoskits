@@ -2,37 +2,23 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use alloc::{boxed::Box, vec::Vec};
 
-use ax_kspin::SpinRaw as Mutex;
 use rdif_block::{
-    BlkError, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface, IrqHandler,
-    IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestId, RequestOp,
-    RequestStatus, validate_request,
+    BlkError, CompletedRequest, CompletionSink, DeviceInfo, DispatchMode, DmaQuiesced,
+    DriverGeneric, IQueue, Interface, LifecycleEndpoint, OwnedRequest, QueueEventBatch,
+    QueueHandle, QueueInfo, QueueKind, QueueLimits, RequestId, RequestOp, ServiceProgress,
+    SubmitError, SubmitOutcome, validate_owned_request,
 };
 
 const PREFERRED_TRANSFER_SIZE: usize = 16 * 1024;
 
-struct RamInner {
-    storage: Vec<u8>,
-    completed: Vec<RequestId>,
-    next_req_id: usize,
-    next_queue_id: usize,
-}
-
-struct RamIrqState {
-    enabled: AtomicBool,
-    handler_taken: AtomicBool,
-    queues: AtomicU64,
-}
-
+/// CPU-memory-backed block device whose requests always complete inline.
 pub struct RamDisk {
     name: &'static str,
     block_size: usize,
     num_blocks: usize,
-    inner: Arc<Mutex<RamInner>>,
-    irq: Arc<RamIrqState>,
+    storage: Option<Vec<u8>>,
 }
 
 impl RamDisk {
@@ -43,30 +29,19 @@ impl RamDisk {
     pub fn with_name(name: &'static str, block_size: usize, num_blocks: usize) -> Self {
         assert!(block_size > 0, "block size must be greater than zero");
 
-        let mut storage = Vec::with_capacity(block_size * num_blocks);
-        for i in 0..num_blocks {
-            let value = i as u8;
-            storage.extend(core::iter::repeat_n(value, block_size));
+        let storage_len = block_size
+            .checked_mul(num_blocks)
+            .expect("ramdisk capacity must fit in usize");
+        let mut storage = Vec::with_capacity(storage_len);
+        for block in 0..num_blocks {
+            storage.extend(core::iter::repeat_n(block as u8, block_size));
         }
-
-        let inner = RamInner {
-            storage,
-            completed: Vec::new(),
-            next_req_id: 1,
-            next_queue_id: 0,
-        };
-        let irq = RamIrqState {
-            enabled: AtomicBool::new(true),
-            handler_taken: AtomicBool::new(false),
-            queues: AtomicU64::new(0),
-        };
 
         Self {
             name,
             block_size,
             num_blocks,
-            inner: Arc::new(Mutex::new(inner)),
-            irq: Arc::new(irq),
+            storage: Some(storage),
         }
     }
 
@@ -79,7 +54,8 @@ impl RamDisk {
     }
 
     pub fn storage_len(&self) -> usize {
-        self.inner.lock().storage.len()
+        // Construction already proved that the product fits in `usize`.
+        self.block_size * self.num_blocks
     }
 
     fn device_info_for(&self) -> DeviceInfo {
@@ -97,12 +73,9 @@ impl RamDisk {
         );
         limits.max_blocks_per_request = (transfer_size / self.block_size).max(1) as u32;
         limits.max_segment_size = transfer_size;
+        limits.supports_flush = true;
         limits
     }
-}
-
-fn align_down(value: usize, align: usize) -> usize {
-    value / align * align
 }
 
 impl DriverGeneric for RamDisk {
@@ -120,6 +93,14 @@ impl DriverGeneric for RamDisk {
 }
 
 impl Interface for RamDisk {
+    fn controller_init(&mut self) -> rdif_block::ControllerInitEndpoint<'_> {
+        rdif_block::ControllerInitEndpoint::Ready
+    }
+
+    fn lifecycle(&mut self) -> LifecycleEndpoint<'_> {
+        LifecycleEndpoint::Inline
+    }
+
     fn device_info(&self) -> DeviceInfo {
         self.device_info_for()
     }
@@ -128,165 +109,340 @@ impl Interface for RamDisk {
         self.limits_for()
     }
 
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
-        let mut guard = self.inner.lock();
-        let id = guard.next_queue_id;
-        guard.next_queue_id += 1;
+    fn create_queue(&mut self) -> Option<QueueHandle> {
+        let storage = self.storage.take()?;
 
-        if id >= 64 {
-            return None;
-        }
-
-        Some(Box::new(RamQueue {
-            id,
-            device: self.device_info_for(),
-            limits: self.limits_for(),
-            inner: Arc::clone(&self.inner),
-            irq: Arc::clone(&self.irq),
-        }))
+        Some(QueueHandle::new(Box::new(RamQueue {
+            info: QueueInfo {
+                id: 0,
+                device: self.device_info_for(),
+                limits: self.limits_for(),
+                kind: QueueKind::Inline,
+                dispatch_mode: DispatchMode::Direct,
+            },
+            storage,
+        })))
     }
 
-    fn enable_irq(&self) {
-        self.irq.enabled.store(true, Ordering::Release);
+    fn enable_irq(&self) -> Result<(), BlkError> {
+        Err(BlkError::NotSupported)
     }
 
-    fn disable_irq(&self) {
-        self.irq.enabled.store(false, Ordering::Release);
+    fn disable_irq(&self) -> Result<(), BlkError> {
+        Err(BlkError::NotSupported)
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.irq.enabled.load(Ordering::Acquire)
+        false
     }
 
-    fn irq_sources(&self) -> IrqSourceList {
-        alloc::vec![IrqSourceInfo::legacy(IdList::from_bits(u64::MAX))]
+    fn irq_sources(&self) -> rdif_block::IrqSourceList {
+        Vec::new()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        if source_id != 0 {
-            return None;
-        }
-        self.irq
-            .handler_taken
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()?;
-
-        Some(Box::new(RamIrqHandler {
-            irq: Arc::clone(&self.irq),
-        }))
-    }
-}
-
-struct RamIrqHandler {
-    irq: Arc<RamIrqState>,
-}
-
-impl IrqHandler for RamIrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        if !self.irq.enabled.load(Ordering::Acquire) {
-            return Event::none();
-        }
-
-        Event::from_queue_bits(self.irq.queues.swap(0, Ordering::AcqRel))
+    fn take_irq_handler(&mut self, _source_id: usize) -> Option<rdif_block::BIrqHandler> {
+        None
     }
 }
 
 struct RamQueue {
-    id: usize,
-    device: DeviceInfo,
-    limits: QueueLimits,
-    inner: Arc<Mutex<RamInner>>,
-    irq: Arc<RamIrqState>,
+    info: QueueInfo,
+    storage: Vec<u8>,
 }
 
-// SAFETY: ramdisk copies data synchronously during `submit_request`; it stores
-// only the completed request ID and never retains request segment pointers.
-unsafe impl IQueue for RamQueue {
+impl IQueue for RamQueue {
     fn id(&self) -> usize {
-        self.id
+        self.info.id
     }
 
     fn info(&self) -> QueueInfo {
-        QueueInfo {
-            id: self.id,
-            device: self.device,
-            limits: self.limits,
-        }
+        self.info
     }
 
-    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        validate_request(self.info(), &request)?;
-
-        let mut guard = self.inner.lock();
-        let req_id = RequestId::new(guard.next_req_id);
-        guard.next_req_id += 1;
-
-        match request.op {
-            RequestOp::Read => {
-                copy_from_storage(&guard.storage, self.device.logical_block_size, &request)?;
-            }
-            RequestOp::Write => {
-                if self.device.read_only {
-                    return Err(BlkError::NotSupported);
-                }
-                copy_to_storage(&mut guard.storage, self.device.logical_block_size, &request)?;
-            }
-            RequestOp::Flush => {}
-            RequestOp::Discard | RequestOp::WriteZeroes => return Err(BlkError::NotSupported),
+    fn submit_owned(
+        &mut self,
+        id: RequestId,
+        mut request: OwnedRequest,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        if let Err(error) = validate_owned_request(self.info, &request) {
+            return Err(SubmitError::new(id, error, request));
         }
 
-        guard.completed.push(req_id);
-        insert_irq_bit(&self.irq.queues, self.id);
-        Ok(req_id)
+        let result = execute_request(&mut self.storage, self.info.device, &mut request);
+        Ok(SubmitOutcome::Completed(CompletedRequest::new(
+            id, result, request,
+        )))
     }
 
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        let mut guard = self.inner.lock();
-        if let Some(pos) = guard.completed.iter().position(|r| *r == request) {
-            guard.completed.remove(pos);
-            Ok(RequestStatus::Complete)
-        } else {
-            Ok(RequestStatus::Pending)
-        }
+    fn service_events(
+        &mut self,
+        _events: &QueueEventBatch<'_>,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<ServiceProgress, BlkError> {
+        Err(BlkError::NotSupported)
+    }
+
+    fn reclaim_after_quiesce(
+        &mut self,
+        _proof: &DmaQuiesced,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
     }
 }
 
-fn copy_from_storage(
-    storage: &[u8],
-    block_size: usize,
-    request: &Request<'_>,
-) -> Result<(), BlkError> {
-    let mut offset = request.lba as usize * block_size;
-    for segment in request.segments.iter() {
-        unsafe {
-            core::ptr::copy_nonoverlapping(storage.as_ptr().add(offset), segment.virt, segment.len);
-        }
-        offset += segment.len;
-    }
-    Ok(())
-}
-
-fn copy_to_storage(
+fn execute_request(
     storage: &mut [u8],
-    block_size: usize,
-    request: &Request<'_>,
+    device: DeviceInfo,
+    request: &mut OwnedRequest,
 ) -> Result<(), BlkError> {
-    let mut offset = request.lba as usize * block_size;
-    for segment in request.segments.iter() {
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                segment.virt,
-                storage.as_mut_ptr().add(offset),
-                segment.len,
-            );
+    let byte_offset = usize::try_from(request.lba)
+        .ok()
+        .and_then(|lba| lba.checked_mul(device.logical_block_size))
+        .ok_or(BlkError::InvalidRequest)?;
+
+    match request.op {
+        RequestOp::Read => {
+            let data = request.data.as_mut().ok_or(BlkError::InvalidRequest)?;
+            let byte_len = data.len().get();
+            let source = storage
+                .get(byte_offset..byte_offset + byte_len)
+                .ok_or(BlkError::InvalidRequest)?;
+            // SAFETY: an inline ramdisk never transfers this CPU-owned buffer
+            // to hardware, and the queue has exclusive ownership of request.
+            unsafe { data.as_mut_slice_cpu() }.copy_from_slice(source);
+            Ok(())
         }
-        offset += segment.len;
+        RequestOp::Write => {
+            if device.read_only {
+                return Err(BlkError::NotSupported);
+            }
+            let data = request.data.as_ref().ok_or(BlkError::InvalidRequest)?;
+            let target = storage
+                .get_mut(byte_offset..byte_offset + data.len().get())
+                .ok_or(BlkError::InvalidRequest)?;
+            target.copy_from_slice(data.as_slice_cpu());
+            Ok(())
+        }
+        RequestOp::Flush => Ok(()),
+        RequestOp::Discard | RequestOp::WriteZeroes => Err(BlkError::NotSupported),
     }
-    Ok(())
 }
 
-fn insert_irq_bit(bits: &AtomicU64, id: usize) {
-    if id < u64::BITS as usize {
-        bits.fetch_or(1 << id, Ordering::AcqRel);
+fn align_down(value: usize, align: usize) -> usize {
+    value / align * align
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+    use std::alloc::{alloc_zeroed, dealloc};
+
+    use rdif_block::{
+        IrqSourceList, RequestFlags,
+        dma_api::{
+            CpuDmaBuffer, DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError,
+            DmaMapHandle, DmaOp,
+        },
+    };
+
+    use super::*;
+
+    struct TestDma;
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            Some(unsafe { DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            unsafe { self.alloc_contiguous(constraints, layout) }
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+            unsafe { self.dealloc_contiguous(handle) };
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            Ok(unsafe { DmaMapHandle::new(addr, (addr.as_ptr() as u64).into(), layout, None) })
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    static TEST_DMA: TestDma = TestDma;
+
+    fn dma_buffer(direction: DmaDirection, fill: u8) -> CpuDmaBuffer {
+        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        let mut buffer = CpuDmaBuffer::new_zero(
+            &dma,
+            NonZeroUsize::new(16).expect("test buffer is non-zero"),
+            16,
+            direction,
+        )
+        .expect("test DMA allocation must succeed");
+        // SAFETY: the freshly allocated buffer has never been device-owned.
+        unsafe { buffer.as_mut_slice_cpu() }.fill(fill);
+        buffer
+    }
+
+    fn request(op: RequestOp, lba: u64, data: Option<CpuDmaBuffer>) -> OwnedRequest {
+        OwnedRequest {
+            op,
+            lba,
+            block_count: u32::from(data.is_some()),
+            data,
+            flags: RequestFlags::NONE,
+        }
+    }
+
+    fn completed(outcome: SubmitOutcome) -> CompletedRequest {
+        match outcome {
+            SubmitOutcome::Completed(completion) => completion,
+            SubmitOutcome::Queued => panic!("ramdisk must never queue a request"),
+        }
+    }
+
+    struct NoopSink;
+
+    impl CompletionSink for NoopSink {
+        fn complete(&mut self, _completion: CompletedRequest) {
+            panic!("inline ramdisk must have no queued completion at shutdown");
+        }
+    }
+
+    #[test]
+    fn queue_declares_inline_direct_without_interrupt_sources() {
+        let mut disk = RamDisk::new(16, 8);
+        let mut queue = disk.create_queue().expect("ramdisk queue must be created");
+        let sources: IrqSourceList = disk.irq_sources();
+
+        assert_eq!(queue.info().kind, QueueKind::Inline);
+        assert_eq!(queue.info().dispatch_mode, DispatchMode::Direct);
+        assert!(sources.is_empty());
+        assert!(!disk.is_irq_enabled());
+        queue.shutdown(&mut NoopSink).unwrap();
+    }
+
+    #[test]
+    fn read_and_write_complete_inline_and_return_full_request() {
+        let mut disk = RamDisk::new(16, 8);
+        let mut queue = disk.create_queue().expect("ramdisk queue must be created");
+
+        let write_id = RequestId::INLINE;
+        let write_buffer = dma_buffer(DmaDirection::ToDevice, 0xa5);
+        let write_cpu_pointer = write_buffer.cpu_ptr();
+        let write_dma_address = write_buffer.dma_addr();
+        let write = completed(
+            queue
+                .submit_owned(write_id, request(RequestOp::Write, 3, Some(write_buffer)))
+                .expect("write submission must be accepted"),
+        );
+        assert_eq!(write.id, write_id);
+        assert_eq!(write.result, Ok(()));
+        let returned_write_buffer = write
+            .request
+            .data
+            .as_ref()
+            .expect("inline completion must return the submitted buffer");
+        assert_eq!(returned_write_buffer.cpu_ptr(), write_cpu_pointer);
+        assert_eq!(returned_write_buffer.dma_addr(), write_dma_address);
+
+        let read_id = RequestId::INLINE;
+        let read = completed(
+            queue
+                .submit_owned(
+                    read_id,
+                    request(
+                        RequestOp::Read,
+                        3,
+                        Some(dma_buffer(DmaDirection::FromDevice, 0)),
+                    ),
+                )
+                .expect("read submission must be accepted"),
+        );
+        assert_eq!(read.id, read_id);
+        assert_eq!(read.result, Ok(()));
+        assert_eq!(
+            read.request
+                .data
+                .as_ref()
+                .expect("read request must retain data")
+                .as_slice_cpu(),
+            &[0xa5; 16]
+        );
+        queue.shutdown(&mut NoopSink).unwrap();
+    }
+
+    #[test]
+    fn rejected_request_returns_runtime_id_and_ownership() {
+        let mut disk = RamDisk::new(16, 8);
+        let mut queue = disk.create_queue().expect("ramdisk queue must be created");
+        let request_id = RequestId::INLINE;
+
+        let error = queue
+            .submit_owned(
+                request_id,
+                request(
+                    RequestOp::Read,
+                    8,
+                    Some(dma_buffer(DmaDirection::FromDevice, 0)),
+                ),
+            )
+            .expect_err("out-of-range request must be rejected");
+
+        assert_eq!(error.id(), request_id);
+        assert_eq!(error.error(), BlkError::InvalidBlockIndex(8));
+        assert!(error.request().data.is_some());
+
+        let flush = queue
+            .submit_owned(RequestId::INLINE, request(RequestOp::Flush, 0, None))
+            .expect("a pre-admission rejection must not poison the inline queue");
+        assert_eq!(completed(flush).result, Ok(()));
+        queue.shutdown(&mut NoopSink).unwrap();
+    }
+
+    #[test]
+    fn ramdisk_materializes_one_exclusive_inline_queue() {
+        let mut disk = RamDisk::new(16, 8);
+        let mut queue = disk
+            .create_queue()
+            .expect("the ramdisk storage must move into its only queue");
+
+        assert!(
+            disk.create_queue().is_none(),
+            "an inline ramdisk must not manufacture several locked views of one storage object"
+        );
+        queue.shutdown(&mut NoopSink).unwrap();
     }
 }

@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Migrate block queues to the IRQ-driven rdif-block 0.12 owned-request contract,
+  with bounded completion draining and explicit DMA ownership return.
+- Add a non-blocking typed controller lifecycle that waits for CC.RDY with
+  absolute deadlines and rebuilds retained queues from IRQ-cached admin
+  completions after recovery.
+- Keep lifecycle IRQ handling on the hard-IRQ-owned admin/CQ path and make its
+  no-deferred-ack contract explicit for runtime recovery dispatch.
+- Make PCI discovery command-free and move reset, Identify, queue creation, and
+  namespace publication into an IRQ-bound initialization state machine.
+- Remove synchronous command and block-I/O polling APIs, global command IDs,
+  and the unused spin dependency; preserve 64-bit namespace capacity and honor
+  controller page-size and queue-depth capabilities.
+
+### Fixed
+
+- Bind queue DMA reclaim to the controller cookie and a strictly advancing
+  lifecycle epoch, and report invalid proofs separately from request errors.
+- Keep a cached CQ slot published until the worker has copied its complete
+  payload, preventing a late or duplicate CQE from overwriting the result
+  concurrently being consumed.
+- Accept bidirectional DMA buffers for read and write operations, matching the
+  direction contract already validated by rdif-block.
+- Disable the controller and wait for `CC.RDY=0` before publishing an
+  initialization, namespace-publication, or reinitialization failure,
+  retaining DMA state in quarantine when the abort deadline expires.
+- Require an explicit hard-IRQ continuation credit before a worker reads an
+  I/O CQ, so a cache-only event cannot turn into completion polling after the
+  IRQ endpoint already observed the queue empty.
+- Preserve CQ continuation credit for every queue named by a shared IRQ when
+  an earlier queue exhausts the global hard-IRQ completion budget.
+- Freeze the logical-device and per-queue tag depth from the usable common
+  SQ/CQ capacity, including the reserved ring entry, instead of advertising
+  the larger requested depth.
+- Refuse to touch controller registers during initialization until both the
+  admin IRQ handler and its delivery path are live.
+- Reject vector mappings outside the controller's 32-bit INTMS/INTMC range so
+  every published IRQ source remains device-maskable during quiesce.
+- Reject queue topologies larger than the fixed RDIF queue-event mask instead
+  of initializing hardware queues that the runtime can never publish.
+- Require the first published I/O queue to share MSI-X vector zero with the
+  admin CQ, preserving a permanent recovery IRQ route even when fewer queues
+  are materialized than the controller topology preallocated.
+- Observe a new CQ phase before the read barrier and reload the CQE afterward,
+  preserving device-to-CPU ordering for completion fields and DMA data on weak
+  memory-order architectures; publish the CQ head only after those reads
+  retire.
+- Validate a bounded snapshot of every cached CID before publishing any
+  terminal completion, so a stale or structurally invalid CQE enters recovery
+  before callbacks can expose partial success from the same service batch.
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.1...nvme-driver-v0.7.2) - 2026-07-10
 
 ### Added

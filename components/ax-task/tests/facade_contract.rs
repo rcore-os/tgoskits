@@ -114,30 +114,47 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
-    for node in &timers {
-        unsafe { cpu.as_mut().timer_queue().arm(node.as_ref(), 0).unwrap() };
+    for (index, node) in timers.iter().enumerate() {
+        unsafe {
+            cpu.as_mut()
+                .timer_queue()
+                .arm(node.as_ref(), (index as u64 + 1) * 10)
+                .unwrap()
+        };
     }
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
         cpu.as_mut(),
     );
+    support::set_monotonic_ns(30);
 
-    let first = timer_interrupt_current_cpu(1, 0).unwrap();
+    let first = timer_interrupt_current_cpu(false, 0).unwrap();
     assert_eq!(first.expired(), 2);
     assert!(first.pending());
-    assert_eq!(first.next_deadline_ns(), Some(1));
-    let before_drain = timer_interrupt_current_cpu(1, 0).unwrap();
+    assert_eq!(
+        first.next_deadline_ns(),
+        Some(1_000_000),
+        "the buffered delivery owns the due root without hiding a future scheduler deadline"
+    );
+    let before_drain = timer_interrupt_current_cpu(false, 0).unwrap();
     assert_eq!(before_drain.expired(), 0);
     assert!(before_drain.pending(), "{before_drain:?}");
 
     let mut expired = [ExpiredTimer::EMPTY; 2];
     assert_eq!(take_current_expired_timers(&mut expired).unwrap(), 2);
-    let mut owners = [expired[0].owner(), expired[1].owner(), 0];
-    assert_eq!(timer_interrupt_current_cpu(1, 0).unwrap().expired(), 1);
+    assert_eq!(
+        [expired[0].owner(), expired[1].owner()],
+        [1, 2],
+        "task-context delivery must preserve timer deadline order"
+    );
+    assert_eq!(
+        support::last_oneshot_ns(),
+        31,
+        "class-zero delivery must reprogram the newly exposed due heap continuation"
+    );
+    assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
     assert_eq!(take_current_expired_timers(&mut expired).unwrap(), 1);
-    owners[2] = expired[0].owner();
-    owners.sort_unstable();
-    assert_eq!(owners, [1, 2, 3]);
+    assert_eq!(expired[0].owner(), 3);
     support::clear_handles();
 }
 
@@ -148,6 +165,7 @@ fn timer(owner: usize) -> Pin<Box<TimerNode>> {
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: no_extension_hook,
     on_switch_out: no_extension_switch_out,
+    on_policy_applied: no_extension_policy_applied,
     on_exit: no_extension_hook,
     on_deadline_overrun: no_extension_hook,
     drop: no_extension_drop,
@@ -159,6 +177,13 @@ unsafe extern "Rust" fn no_extension_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: ax_task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn no_extension_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ax_task::ThreadPolicyApplied,
 ) {
 }
 

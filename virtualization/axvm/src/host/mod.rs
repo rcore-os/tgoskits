@@ -2,6 +2,8 @@
 
 pub(crate) mod arceos;
 pub(crate) mod paging;
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub(crate) mod storage;
 pub(crate) mod task;
 pub(crate) mod traits;
 

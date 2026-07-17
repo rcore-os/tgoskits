@@ -1,9 +1,13 @@
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 use alloc::vec::Vec;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use core::sync::atomic::{AtomicPtr, AtomicUsize};
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicPtr, AtomicUsize},
+};
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 use ax_kspin::SpinNoPreempt;
@@ -23,8 +27,8 @@ mod loongarch64_hv;
 static VIRTUAL_IRQ_ROUTE_CONTROL: SpinNoPreempt<VirtualIrqRouteState> =
     SpinNoPreempt::new(VirtualIrqRouteState::new());
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_ENDPOINTS: [spin::Once<RiscvVirtualIrqEndpoint>; RISCV_PLIC_SOURCE_COUNT] =
-    [const { spin::Once::new() }; RISCV_PLIC_SOURCE_COUNT];
+static VIRTUAL_IRQ_ENDPOINTS: [RiscvVirtualIrqEndpointSlot; RISCV_PLIC_SOURCE_COUNT] =
+    [const { RiscvVirtualIrqEndpointSlot::new() }; RISCV_PLIC_SOURCE_COUNT];
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 static FORWARDED_IRQ_STATE: [ForwardedIrqState; RISCV_PLIC_SOURCE_COUNT] =
     [const { ForwardedIrqState::new() }; RISCV_PLIC_SOURCE_COUNT];
@@ -40,8 +44,32 @@ struct RiscvVirtualIrqEndpoint {
     controller_irq: IrqId,
     endpoint: somehal::irq::RiscvPlicIrqEndpoint,
     target_cpu: usize,
-    activated: AtomicBool,
 }
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+struct RiscvVirtualIrqEndpointSlot {
+    state: AtomicU64,
+    publishers: AtomicUsize,
+    endpoint: UnsafeCell<MaybeUninit<RiscvVirtualIrqEndpoint>>,
+}
+
+// SAFETY: control-plane writers can access `endpoint` only while the atomic
+// lifecycle is Vacant and the publisher count is zero. IRQ readers increment
+// the publisher count and revalidate the exact Active generation before
+// borrowing it. Revocation publishes Revoking before waiting for zero readers.
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+unsafe impl Sync for RiscvVirtualIrqEndpointSlot {}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const ENDPOINT_PHASE_MASK: u64 = 0b11;
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const ENDPOINT_VACANT: u64 = 0;
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const ENDPOINT_PREPARED: u64 = 1;
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const ENDPOINT_ACTIVE: u64 = 2;
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const ENDPOINT_REVOKING: u64 = 3;
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 const VIRTUAL_IRQ_SOURCE_WORDS: usize = RISCV_PLIC_SOURCE_COUNT.div_ceil(u64::BITS as usize);
@@ -73,6 +101,11 @@ enum VirtualIrqRoutePhase {
         key: VirtualIrqRouteKey,
         generation: u64,
     },
+    Revoking {
+        key: VirtualIrqRouteKey,
+        generation: u64,
+        release_in_progress: bool,
+    },
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -91,6 +124,156 @@ impl VirtualIrqRouteState {
     }
 }
 
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+impl RiscvVirtualIrqEndpointSlot {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(ENDPOINT_VACANT),
+            publishers: AtomicUsize::new(0),
+            endpoint: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    fn is_vacant(&self) -> bool {
+        self.state.load(Ordering::Acquire) == ENDPOINT_VACANT
+    }
+
+    fn install(&self, endpoint: RiscvVirtualIrqEndpoint, generation: u64) {
+        assert!(self.is_vacant(), "RISC-V endpoint slot is not vacant");
+        assert_eq!(
+            self.publishers.load(Ordering::Acquire),
+            0,
+            "vacant RISC-V endpoint retained an IRQ publisher"
+        );
+        // SAFETY: Vacant plus zero publishers gives this control-plane caller
+        // exclusive access to the stable slot storage until Prepared is
+        // published below.
+        unsafe {
+            (*self.endpoint.get()).write(endpoint);
+        }
+        self.state.store(
+            endpoint_state(generation, ENDPOINT_PREPARED),
+            Ordering::Release,
+        );
+    }
+
+    fn activate(&self, generation: u64) {
+        let prepared = endpoint_state(generation, ENDPOINT_PREPARED);
+        let active = endpoint_state(generation, ENDPOINT_ACTIVE);
+        self.state
+            .compare_exchange(prepared, active, Ordering::AcqRel, Ordering::Acquire)
+            .expect("prepared RISC-V endpoint lost its route generation");
+        // SAFETY: this slot was initialized before Prepared publication and
+        // cannot be cleared until a later Revoking state drains publishers.
+        unsafe { self.endpoint_ref() }.endpoint.unmask();
+    }
+
+    fn begin_revocation(&self, generation: u64, forwarded: &ForwardedIrqState) {
+        let active = endpoint_state(generation, ENDPOINT_ACTIVE);
+        let prepared = endpoint_state(generation, ENDPOINT_PREPARED);
+        let revoking = endpoint_state(generation, ENDPOINT_REVOKING);
+        let observed = self.state.load(Ordering::Acquire);
+        if observed != revoking {
+            assert!(
+                observed == active || observed == prepared,
+                "RISC-V endpoint revocation observed another generation"
+            );
+            self.state
+                .compare_exchange(observed, revoking, Ordering::AcqRel, Ordering::Acquire)
+                .expect("RISC-V endpoint changed while entering revocation");
+        }
+        forwarded.begin_revocation();
+        // SAFETY: Revoking retains initialized storage until every publisher
+        // drains and the lower controller lease is released.
+        unsafe { self.endpoint_ref() }.endpoint.mask();
+    }
+
+    fn acquire_active(&self) -> EndpointAcquire<'_> {
+        let observed = self.state.load(Ordering::Acquire);
+        match observed & ENDPOINT_PHASE_MASK {
+            ENDPOINT_VACANT => EndpointAcquire::Host,
+            ENDPOINT_ACTIVE => {
+                self.publishers.fetch_add(1, Ordering::AcqRel);
+                if self.state.load(Ordering::Acquire) != observed {
+                    self.publishers.fetch_sub(1, Ordering::Release);
+                    return EndpointAcquire::Quarantined;
+                }
+                // SAFETY: the exact Active generation was revalidated after
+                // acquiring a publisher lease. Revocation cannot clear the
+                // storage until this lease is dropped.
+                let endpoint = unsafe { self.endpoint_ref() };
+                EndpointAcquire::Active(RiscvVirtualIrqPublisher {
+                    slot: self,
+                    endpoint,
+                })
+            }
+            ENDPOINT_PREPARED | ENDPOINT_REVOKING => EndpointAcquire::Quarantined,
+            _ => unreachable!(),
+        }
+    }
+
+    fn revocation_drained(&self, generation: u64) -> bool {
+        self.state.load(Ordering::Acquire) == endpoint_state(generation, ENDPOINT_REVOKING)
+            && self.publishers.load(Ordering::Acquire) == 0
+    }
+
+    fn lease_id(&self, generation: u64) -> somehal::irq::RiscvPlicLeaseId {
+        assert!(
+            self.revocation_drained(generation),
+            "RISC-V endpoint lease was read before IRQ publishers drained"
+        );
+        // SAFETY: Revoking retains the initialized endpoint, and zero
+        // publishers gives the task-context releaser exclusive access.
+        unsafe { self.endpoint_ref() }.endpoint.lease_id()
+    }
+
+    fn finish_release(&self, generation: u64, forwarded: &ForwardedIrqState) {
+        assert!(
+            self.revocation_drained(generation),
+            "RISC-V endpoint release completed before publishers drained"
+        );
+        forwarded.finish_revocation();
+        // SAFETY: the lower controller lease is already released, Revoking
+        // blocks new publishers, and the observed publisher count is zero.
+        unsafe {
+            (*self.endpoint.get()).assume_init_drop();
+        }
+        self.state.store(ENDPOINT_VACANT, Ordering::Release);
+    }
+
+    unsafe fn endpoint_ref(&self) -> &RiscvVirtualIrqEndpoint {
+        // SAFETY: every caller proves a non-Vacant lifecycle state and the
+        // storage is initialized before that state is published.
+        unsafe { (&*self.endpoint.get()).assume_init_ref() }
+    }
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+struct RiscvVirtualIrqPublisher<'a> {
+    slot: &'a RiscvVirtualIrqEndpointSlot,
+    endpoint: &'a RiscvVirtualIrqEndpoint,
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+impl Drop for RiscvVirtualIrqPublisher<'_> {
+    fn drop(&mut self) {
+        self.slot.publishers.fetch_sub(1, Ordering::Release);
+    }
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+enum EndpointAcquire<'a> {
+    Host,
+    Active(RiscvVirtualIrqPublisher<'a>),
+    Quarantined,
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+const fn endpoint_state(generation: u64, phase: u64) -> u64 {
+    assert!(generation != 0 && generation <= FORWARDED_GENERATION_MAX);
+    (generation << 2) | phase
+}
+
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const FORWARDED_STATE_MASK: u64 = 0b11;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
@@ -99,6 +282,8 @@ const FORWARDED_UNMASKED: u64 = 0;
 const FORWARDED_MASKED: u64 = 1;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const FORWARDED_UNMASKING: u64 = 2;
+#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
+const FORWARDED_REVOKING: u64 = 3;
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const FORWARDED_GENERATION_MAX: u64 = u64::MAX >> 2;
@@ -154,9 +339,41 @@ impl ForwardedIrqState {
             .map(|_| ForwardedUnmaskPermit { generation })
     }
 
-    fn finish_unmask(&self, permit: ForwardedUnmaskPermit) {
+    fn finish_unmask(&self, permit: ForwardedUnmaskPermit) -> bool {
+        let unmasking = permit.generation.get() << 2 | FORWARDED_UNMASKING;
+        let unmasked = permit.generation.get() << 2 | FORWARDED_UNMASKED;
+        self.0
+            .compare_exchange(unmasking, unmasked, Ordering::Release, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn begin_revocation(&self) {
+        let mut observed = self.0.load(Ordering::Acquire);
+        loop {
+            if observed & FORWARDED_STATE_MASK == FORWARDED_REVOKING {
+                return;
+            }
+            let revoking = (observed & !FORWARDED_STATE_MASK) | FORWARDED_REVOKING;
+            match self
+                .0
+                .compare_exchange(observed, revoking, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(changed) => observed = changed,
+            }
+        }
+    }
+
+    fn finish_revocation(&self) {
+        let observed = self.0.load(Ordering::Acquire);
+        assert_eq!(
+            observed & FORWARDED_STATE_MASK,
+            FORWARDED_REVOKING,
+            "RISC-V forwarded source left quarantine before lease release"
+        );
+        let generation = next_forwarded_generation(observed >> 2);
         self.0.store(
-            permit.generation.get() << 2 | FORWARDED_UNMASKED,
+            generation.get() << 2 | FORWARDED_UNMASKED,
             Ordering::Release,
         );
     }
@@ -315,6 +532,14 @@ impl RiscvVirtualIrqRouteResult {
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 impl VirtualIrqRouteKey {
     fn new(target_cpu: usize, irq_sources: &[u32]) -> Result<Self, RiscvVirtualIrqRouteResult> {
+        if irq_sources.is_empty()
+            || irq_sources.len() > ax_plat::irq::riscv64_hv::RISCV_PLIC_GUEST_ROUTE_MAX_SOURCES
+        {
+            return Err(RiscvVirtualIrqRouteResult::failed(
+                RiscvVirtualIrqRouteStatus::InvalidSource,
+                0,
+            ));
+        }
         let mut canonical_sources = [0; VIRTUAL_IRQ_SOURCE_WORDS];
         for &source in irq_sources {
             let source_index = source as usize;
@@ -337,6 +562,33 @@ impl VirtualIrqRouteKey {
         Ok(Self {
             target_cpu,
             irq_sources: canonical_sources,
+        })
+    }
+
+    fn from_platform_route(
+        route: ax_plat::irq::riscv64_hv::RiscvPlicGuestRouteV1,
+    ) -> Result<Self, IrqError> {
+        let source_count = route
+            .source_words()
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum::<usize>();
+        if !route.is_valid_v1()
+            || source_count == 0
+            || source_count > ax_plat::irq::riscv64_hv::RISCV_PLIC_GUEST_ROUTE_MAX_SOURCES
+        {
+            return Err(IrqError::InvalidIrq);
+        }
+        Ok(Self {
+            target_cpu: route.target_cpu(),
+            irq_sources: *route.source_words(),
+        })
+    }
+
+    fn sources(&self) -> impl Iterator<Item = usize> + '_ {
+        (1..RISCV_PLIC_SOURCE_COUNT).filter(|source| {
+            self.irq_sources[*source / u64::BITS as usize] & (1 << (*source % u64::BITS as usize))
+                != 0
         })
     }
 }
@@ -363,6 +615,10 @@ struct VirtualIrqPreparePermit {
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 impl VirtualIrqPreparePermit {
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Quarantines the reservation after the physical lease commits.
     fn begin_irreversible(&mut self) {
         self.rollback = false;
@@ -415,6 +671,10 @@ struct VirtualIrqActivatePermit {
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 impl VirtualIrqActivatePermit {
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Marks the following MMIO activation as infallible and irreversible.
     ///
     /// Every endpoint and ownership invariant must be checked before this
@@ -489,6 +749,7 @@ fn reserve_virtual_irq_route(
         VirtualIrqRoutePhase::Reserved { key: owner, .. }
         | VirtualIrqRoutePhase::Published { key: owner, .. }
         | VirtualIrqRoutePhase::Activating { key: owner, .. }
+        | VirtualIrqRoutePhase::Revoking { key: owner, .. }
             if owner == key =>
         {
             Err(RiscvVirtualIrqRouteResult::failed(
@@ -528,6 +789,7 @@ fn reserve_virtual_irq_activation(
         }
         VirtualIrqRoutePhase::Reserved { key: owner, .. }
         | VirtualIrqRoutePhase::Activating { key: owner, .. }
+        | VirtualIrqRoutePhase::Revoking { key: owner, .. }
             if owner == key =>
         {
             Err(RiscvVirtualIrqRouteResult::failed(
@@ -544,7 +806,7 @@ fn reserve_virtual_irq_activation(
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 const fn next_route_generation(current: u64) -> u64 {
-    let next = current.wrapping_add(1);
+    let next = current.wrapping_add(1) & FORWARDED_GENERATION_MAX;
     if next == 0 { 1 } else { next }
 }
 
@@ -579,7 +841,7 @@ pub fn prepare_virtual_irq_targets(
     let mut new_irqs = Vec::with_capacity(irq_sources.len());
     for &source in irq_sources {
         assert!(
-            VIRTUAL_IRQ_ENDPOINTS[source as usize].get().is_none(),
+            VIRTUAL_IRQ_ENDPOINTS[source as usize].is_vacant(),
             "a vacant RISC-V route transaction retained a leased endpoint"
         );
         new_irqs.push(IrqId::new(domain, ax_plat::irq::HwIrq(source)));
@@ -598,6 +860,7 @@ pub fn prepare_virtual_irq_targets(
     // A successful controller batch lease is permanent. From here onward an
     // invariant failure must leave Reserved quarantine; it must never expose
     // a false Vacant state to a second owner.
+    let generation = preparation.generation();
     preparation.begin_irreversible();
 
     // The controller batch lease validates every source before changing any
@@ -610,19 +873,13 @@ pub fn prepare_virtual_irq_targets(
     );
     for (irq_id, endpoint) in new_irqs.iter().copied().zip(endpoints) {
         let source = irq_id.hwirq.0 as usize;
-        let installed = VIRTUAL_IRQ_ENDPOINTS[source].call_once(|| RiscvVirtualIrqEndpoint {
-            controller_irq: irq_id,
-            endpoint,
-            target_cpu: cpu_id,
-            activated: AtomicBool::new(false),
-        });
-        assert_eq!(
-            installed.controller_irq, irq_id,
-            "a reserved PLIC source changed controller identity during publication"
-        );
-        assert_eq!(
-            installed.target_cpu, cpu_id,
-            "a reserved PLIC source changed target CPU during publication"
+        VIRTUAL_IRQ_ENDPOINTS[source].install(
+            RiscvVirtualIrqEndpoint {
+                controller_irq: irq_id,
+                endpoint,
+                target_cpu: cpu_id,
+            },
+            generation,
         );
     }
     preparation.publish();
@@ -649,10 +906,17 @@ pub fn activate_virtual_irq_targets(
         Ok(VirtualIrqRouteActivation::Reserved(permit)) => permit,
         Err(error) => return error,
     };
+    let generation = activation.generation();
     for &source in irq_sources {
-        let endpoint = VIRTUAL_IRQ_ENDPOINTS[source as usize]
-            .get()
-            .expect("a published RISC-V route must own every endpoint before activation");
+        let slot = &VIRTUAL_IRQ_ENDPOINTS[source as usize];
+        assert_eq!(
+            slot.state.load(Ordering::Acquire),
+            endpoint_state(generation, ENDPOINT_PREPARED),
+            "a published RISC-V route must own every endpoint before activation"
+        );
+        // SAFETY: the exact Prepared generation above proves initialized slot
+        // storage that cannot be revoked before the route becomes Active.
+        let endpoint = unsafe { slot.endpoint_ref() };
         assert_eq!(
             endpoint.target_cpu, cpu_id,
             "a published RISC-V endpoint changed target CPU before activation"
@@ -664,13 +928,162 @@ pub fn activate_virtual_irq_targets(
     // must not make a partially active route appear rollback-safe.
     activation.begin_irreversible();
     for &source in irq_sources {
-        activate_virtual_irq_endpoint(source);
+        VIRTUAL_IRQ_ENDPOINTS[source as usize].activate(generation);
     }
     activation.finish();
     RiscvVirtualIrqRouteResult::activated()
 }
 
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+fn begin_virtual_irq_route_revocation(
+    key: VirtualIrqRouteKey,
+) -> Result<ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocation, IrqError> {
+    let (generation, begin_endpoints) = {
+        let mut state = VIRTUAL_IRQ_ROUTE_CONTROL.lock();
+        match state.phase {
+            VirtualIrqRoutePhase::Active {
+                key: active,
+                generation,
+            } if active == key => {
+                state.phase = VirtualIrqRoutePhase::Revoking {
+                    key,
+                    generation,
+                    release_in_progress: false,
+                };
+                (generation, true)
+            }
+            VirtualIrqRoutePhase::Revoking {
+                key: active,
+                generation,
+                ..
+            } if active == key => (generation, false),
+            VirtualIrqRoutePhase::Vacant => return Err(IrqError::NotFound),
+            _ => return Err(IrqError::Busy),
+        }
+    };
+
+    if begin_endpoints {
+        for source in key.sources() {
+            VIRTUAL_IRQ_ENDPOINTS[source]
+                .begin_revocation(generation, &FORWARDED_IRQ_STATE[source]);
+        }
+    }
+    Ok(
+        ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocation::try_new(generation)
+            .expect("a platform route generation is always nonzero"),
+    )
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+fn reset_virtual_irq_release_attempt(key: VirtualIrqRouteKey, generation: u64) {
+    let mut state = VIRTUAL_IRQ_ROUTE_CONTROL.lock();
+    assert_eq!(
+        state.phase,
+        VirtualIrqRoutePhase::Revoking {
+            key,
+            generation,
+            release_in_progress: true,
+        },
+        "RISC-V route release retry lost its quarantined generation"
+    );
+    state.phase = VirtualIrqRoutePhase::Revoking {
+        key,
+        generation,
+        release_in_progress: false,
+    };
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+fn poll_virtual_irq_route_revocation(
+    revocation: ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocation,
+) -> Result<ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocationProgress, IrqError> {
+    use ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocationProgress;
+
+    let generation = revocation.generation();
+    let key = {
+        let mut state = VIRTUAL_IRQ_ROUTE_CONTROL.lock();
+        match state.phase {
+            VirtualIrqRoutePhase::Revoking {
+                key,
+                generation: active_generation,
+                release_in_progress: false,
+            } if active_generation == generation => {
+                state.phase = VirtualIrqRoutePhase::Revoking {
+                    key,
+                    generation,
+                    release_in_progress: true,
+                };
+                key
+            }
+            VirtualIrqRoutePhase::Revoking {
+                generation: active_generation,
+                release_in_progress: true,
+                ..
+            } if active_generation == generation => {
+                return Ok(RiscvPlicRouteRevocationProgress::Pending);
+            }
+            _ => return Err(IrqError::NotFound),
+        }
+    };
+
+    if key
+        .sources()
+        .any(|source| !VIRTUAL_IRQ_ENDPOINTS[source].revocation_drained(generation))
+    {
+        reset_virtual_irq_release_attempt(key, generation);
+        return Ok(RiscvPlicRouteRevocationProgress::Pending);
+    }
+
+    let leases = key
+        .sources()
+        .map(|source| VIRTUAL_IRQ_ENDPOINTS[source].lease_id(generation))
+        .collect::<Vec<_>>();
+    match somehal::irq::release_riscv_plic_irq_endpoints(&leases) {
+        Ok(()) => {}
+        Err(IrqError::Busy) => {
+            reset_virtual_irq_release_attempt(key, generation);
+            return Ok(RiscvPlicRouteRevocationProgress::Pending);
+        }
+        Err(error) => {
+            reset_virtual_irq_release_attempt(key, generation);
+            return Err(error);
+        }
+    }
+
+    for source in key.sources() {
+        VIRTUAL_IRQ_ENDPOINTS[source].finish_release(generation, &FORWARDED_IRQ_STATE[source]);
+    }
+    let mut state = VIRTUAL_IRQ_ROUTE_CONTROL.lock();
+    assert_eq!(
+        state.phase,
+        VirtualIrqRoutePhase::Revoking {
+            key,
+            generation,
+            release_in_progress: true,
+        },
+        "RISC-V platform route release lost its generation"
+    );
+    state.phase = VirtualIrqRoutePhase::Vacant;
+    Ok(RiscvPlicRouteRevocationProgress::Released)
+}
+
 struct IrqIfImpl;
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+#[impl_plat_interface]
+impl ax_plat::irq::Riscv64HvIrqIf for IrqIfImpl {
+    fn begin_guest_irq_route_revocation(
+        route: ax_plat::irq::riscv64_hv::RiscvPlicGuestRouteV1,
+    ) -> Result<ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocation, IrqError> {
+        begin_virtual_irq_route_revocation(VirtualIrqRouteKey::from_platform_route(route)?)
+    }
+
+    fn poll_guest_irq_route_revocation(
+        revocation: ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocation,
+    ) -> Result<ax_plat::irq::riscv64_hv::RiscvPlicRouteRevocationProgress, IrqError> {
+        poll_virtual_irq_route_revocation(revocation)
+    }
+}
 
 #[impl_plat_interface]
 impl IrqIf for IrqIfImpl {
@@ -879,13 +1292,19 @@ fn mask_forwarded_virtual_irq(controller_irq: IrqId) -> ForwardedMaskOutcome {
         return ForwardedMaskOutcome::NotForwarded;
     };
     let source = source.index();
-    let endpoint = VIRTUAL_IRQ_ENDPOINTS[source].get();
-    let endpoint_matches = endpoint.map(|endpoint| endpoint.controller_irq == controller_irq);
-    match decide_forwarded_mask(endpoint_matches, &FORWARDED_IRQ_STATE[source]) {
-        ForwardedMaskDecision::NotForwarded => ForwardedMaskOutcome::NotForwarded,
+    let publisher = match VIRTUAL_IRQ_ENDPOINTS[source].acquire_active() {
+        EndpointAcquire::Host => return ForwardedMaskOutcome::NotForwarded,
+        EndpointAcquire::Quarantined => {
+            FORWARDED_IRQ_FAULTS.fetch_add(1, Ordering::Relaxed);
+            return ForwardedMaskOutcome::Quarantined;
+        }
+        EndpointAcquire::Active(publisher) => publisher,
+    };
+    let endpoint_matches = publisher.endpoint.controller_irq == controller_irq;
+    match decide_forwarded_mask(Some(endpoint_matches), &FORWARDED_IRQ_STATE[source]) {
+        ForwardedMaskDecision::NotForwarded => unreachable!("an active endpoint is guest-owned"),
         ForwardedMaskDecision::Forwarded(generation) => {
-            let endpoint = endpoint.expect("a forwarded decision requires a leased endpoint");
-            endpoint.endpoint.mask();
+            publisher.endpoint.endpoint.mask();
             ForwardedMaskOutcome::Forwarded(RiscvForwardedIrq::from_generation(
                 source as u32,
                 generation,
@@ -893,9 +1312,7 @@ fn mask_forwarded_virtual_irq(controller_irq: IrqId) -> ForwardedMaskOutcome {
         }
         ForwardedMaskDecision::Quarantined => {
             FORWARDED_IRQ_FAULTS.fetch_add(1, Ordering::Relaxed);
-            if let Some(endpoint) = endpoint {
-                endpoint.endpoint.mask();
-            }
+            publisher.endpoint.endpoint.mask();
             ForwardedMaskOutcome::Quarantined
         }
     }
@@ -932,10 +1349,11 @@ pub fn unmask_virtual_irq(claim: RiscvForwardedIrq, current_cpu: usize) -> bool 
     if !(1..RISCV_PLIC_SOURCE_COUNT).contains(&source) {
         return false;
     }
-    let Some(endpoint) = VIRTUAL_IRQ_ENDPOINTS[source].get() else {
-        return false;
+    let publisher = match VIRTUAL_IRQ_ENDPOINTS[source].acquire_active() {
+        EndpointAcquire::Active(publisher) => publisher,
+        EndpointAcquire::Host | EndpointAcquire::Quarantined => return false,
     };
-    if endpoint.target_cpu != current_cpu {
+    if publisher.endpoint.target_cpu != current_cpu {
         return false;
     }
     if ax_cpu::asm::irqs_enabled() {
@@ -947,9 +1365,15 @@ pub fn unmask_virtual_irq(claim: RiscvForwardedIrq, current_cpu: usize) -> bool 
     let Some(permit) = FORWARDED_IRQ_STATE[source].begin_unmask(generation) else {
         return false;
     };
-    endpoint.endpoint.unmask();
-    FORWARDED_IRQ_STATE[source].finish_unmask(permit);
-    true
+    publisher.endpoint.endpoint.unmask();
+    if FORWARDED_IRQ_STATE[source].finish_unmask(permit) {
+        true
+    } else {
+        // Revocation won after the task acquired its Active publisher. Restore
+        // fail-closed priority before dropping the last old-generation reader.
+        publisher.endpoint.endpoint.mask();
+        false
+    }
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -969,23 +1393,6 @@ fn validate_pinned_virtual_irq_target(
     (current_cpu != target_cpu).then(|| {
         RiscvVirtualIrqRouteResult::failed(RiscvVirtualIrqRouteStatus::ConflictingTarget, 0)
     })
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn activate_virtual_irq_endpoint(irq: u32) {
-    let endpoint = VIRTUAL_IRQ_ENDPOINTS[irq as usize]
-        .get()
-        .expect("all virtual IRQ endpoints are validated before activation");
-    activate_endpoint_once(&endpoint.activated, || endpoint.endpoint.unmask());
-}
-
-#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-fn activate_endpoint_once(activated: &AtomicBool, activate: impl FnOnce()) -> bool {
-    if activated.swap(true, Ordering::AcqRel) {
-        return false;
-    }
-    activate();
-    true
 }
 
 #[cfg(test)]
@@ -1096,15 +1503,31 @@ mod tests {
         let generation_one = state.begin_mask().unwrap();
         let permit_one = state.begin_unmask(generation_one).unwrap();
         assert!(state.begin_unmask(generation_one).is_none());
-        state.finish_unmask(permit_one);
+        assert!(state.finish_unmask(permit_one));
 
         let generation_two = state.begin_mask().unwrap();
         assert_ne!(generation_two, generation_one);
         assert!(state.begin_unmask(generation_one).is_none());
         let permit_two = state.begin_unmask(generation_two).unwrap();
         assert!(state.begin_unmask(generation_two).is_none());
-        state.finish_unmask(permit_two);
+        assert!(state.finish_unmask(permit_two));
         assert!(state.begin_unmask(generation_two).is_none());
+    }
+
+    #[test]
+    fn revocation_wins_over_an_in_progress_old_generation_unmask() {
+        let state = super::ForwardedIrqState::new();
+        let generation = state.begin_mask().unwrap();
+        let permit = state.begin_unmask(generation).unwrap();
+
+        state.begin_revocation();
+        assert!(!state.finish_unmask(permit));
+        assert!(state.begin_mask().is_none());
+
+        state.finish_revocation();
+        let next = state.begin_mask().unwrap();
+        assert_ne!(next, generation);
+        assert!(state.begin_unmask(generation).is_none());
     }
 
     #[test]
@@ -1187,19 +1610,5 @@ mod tests {
             super::RiscvVirtualIrqRouteStatus::LeaseFailed
         );
         assert_eq!(result.source(), 11);
-    }
-
-    #[test]
-    fn an_activated_endpoint_is_never_unmasked_twice() {
-        let activated = core::sync::atomic::AtomicBool::new(false);
-        let unmask_count = core::sync::atomic::AtomicUsize::new(0);
-
-        assert!(super::activate_endpoint_once(&activated, || {
-            unmask_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }));
-        assert!(!super::activate_endpoint_once(&activated, || {
-            unmask_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }));
-        assert_eq!(unmask_count.load(core::sync::atomic::Ordering::Relaxed), 1);
     }
 }

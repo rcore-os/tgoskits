@@ -432,13 +432,20 @@ pub fn sys_mmap(
                                     true,
                                 )
                             }
-                            FileBackend::Direct(loc) => {
-                                let device = loc
-                                    .entry()
-                                    .downcast::<Device>()
+                            direct_backend @ (FileBackend::Direct(_)
+                            | FileBackend::ManagedDirect(_)) => {
+                                if let FileBackend::ManagedDirect(managed) = &direct_backend {
+                                    managed
+                                        .validate_generation()
+                                        .map_err(|_| AxError::BadState)?;
+                                }
+                                let device_mapping = direct_backend
+                                    .with_node::<Device, _>(|device| {
+                                        Ok(device.mmap(offset as u64, length as u64))
+                                    })
                                     .map_err(|_| AxError::NoSuchDevice)?;
 
-                                match device.mmap(offset as u64, length as u64) {
+                                match device_mapping {
                                     DeviceMmap::None => {
                                         return Err(AxError::NoSuchDevice);
                                     }

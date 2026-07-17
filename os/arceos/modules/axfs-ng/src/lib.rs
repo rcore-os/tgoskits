@@ -18,12 +18,13 @@ use axfs_ng_vfs::Location;
 
 pub mod api;
 pub mod block;
-pub mod block_runtime;
 pub mod file;
 pub mod fops;
 mod fs;
 mod fs_core;
 mod highlevel;
+pub mod lifecycle;
+mod mount_runtime;
 pub mod os;
 pub mod root;
 pub mod volume;
@@ -31,17 +32,23 @@ pub mod volume;
 #[cfg(test)]
 mod test_runtime;
 
-pub use block::{
-    BlockRegion,
-    runtime::{BlockDeviceHandle, block_io_stats, release_block_irqs_for_passthrough},
-};
+pub use block::{BlockDevice, BlockDeviceMetadata, BlockRegion};
 #[cfg(feature = "vfs")]
 pub use highlevel::*;
+pub use lifecycle::{
+    FsFreezePermit, FsFreezeProgress, FsGeneration, FsOpenHandleLease, FsOperationLease,
+    FsRemountPermit, FsRuntime, FsRuntimeError, FsRuntimeSnapshot, FsRuntimeState,
+};
+pub use mount_runtime::{
+    FsHandoffError, MountRecipe, begin_filesystem_freeze, begin_filesystem_remount,
+    cancel_filesystem_freeze, detach_filesystem, fail_filesystem_remount,
+    filesystem_runtime_snapshot, mount_recipe, poll_filesystem_freeze, remount_filesystem,
+};
 #[cfg(feature = "vfs")]
 pub mod vfs {
-    /// Create a filesystem from a native block runtime handle.
+    /// Creates a filesystem from a synchronous block service.
     #[cfg(any(feature = "ext4", feature = "fat"))]
-    pub use crate::fs::new_from_handle as new_filesystem_from_handle;
+    pub use crate::fs::new_from_device as new_filesystem_from_device;
     pub use crate::highlevel::*;
 }
 
@@ -53,24 +60,25 @@ pub enum FilesystemKind {
 
 /// Initializes the filesystem subsystem from a runtime-selected block region.
 pub(crate) fn init_filesystem(
-    dev: Arc<BlockDeviceHandle>,
+    dev: Arc<dyn BlockDevice>,
     region: BlockRegion,
     description: &str,
 ) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
 
-    let fs = fs::new_from_handle(dev, region).unwrap_or_else(|err| {
+    let recipe = MountRecipe::new(dev.clone(), region, None, description);
+    let fs = fs::new_from_device(dev, region).unwrap_or_else(|err| {
         panic!(
             "failed to initialize filesystem on {}: {err:?}",
             description
         )
     });
-    finish_filesystem_init(fs)
+    finish_filesystem_init(fs, recipe)
 }
 
 pub(crate) fn init_detected_filesystem(
-    dev: Arc<BlockDeviceHandle>,
+    dev: Arc<dyn BlockDevice>,
     region: BlockRegion,
     kind: FilesystemKind,
     description: &str,
@@ -78,39 +86,37 @@ pub(crate) fn init_detected_filesystem(
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
 
-    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
+    let recipe = MountRecipe::new(dev.clone(), region, Some(kind), description);
+    let fs = fs::new_from_device_with_kind(dev, region, kind).unwrap_or_else(|err| {
         panic!(
             "failed to initialize filesystem on {}: {err:?}",
             description
         )
     });
-    finish_filesystem_init(fs)
+    finish_filesystem_init(fs, recipe)
 }
 
-fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) -> Location {
+fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, recipe: MountRecipe) -> Location {
     info!("  filesystem type: {:?}", fs.name());
-
-    let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
-    let root = mp.root_location();
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
-    root
+    mount_runtime::install_initial_mount(fs, recipe)
+        .expect("initial root filesystem publication must happen exactly once")
 }
 
 pub fn shutdown_filesystems() -> ax_errno::AxResult {
     #[cfg(feature = "vfs")]
     highlevel::sync_all_cached_files(false)?;
-    if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.get() {
+    if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.snapshot() {
         ctx.root_dir().sync(false)?;
     }
     Ok(())
 }
 
 pub(crate) fn detect_filesystem(
-    dev: &mut dyn crate::block::FsBlockDevice,
+    dev: &dyn BlockDevice,
     region: BlockRegion,
 ) -> Option<FilesystemKind> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
-    let _ = (&mut *dev, region);
+    let _ = (dev, region);
 
     #[cfg(feature = "ext4")]
     if region_has_ext4(dev, region) {
@@ -126,7 +132,7 @@ pub(crate) fn detect_filesystem(
 }
 
 #[cfg(feature = "ext4")]
-fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_ext4(dev: &dyn BlockDevice, region: BlockRegion) -> bool {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
     const EXT4_MAGIC: u16 = 0xEF53;
@@ -139,7 +145,7 @@ fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegio
 }
 
 #[cfg(feature = "fat")]
-fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_fat(dev: &dyn BlockDevice, region: BlockRegion) -> bool {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
     let start_lba = region.start_lba;
@@ -148,13 +154,13 @@ fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion
         return false;
     }
 
-    let block_size = dev.block_size();
+    let block_size = dev.metadata().block_size();
     if block_size < 512 {
         return false;
     }
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(start_lba, &mut buf).is_err() {
+    if dev.read_blocks(start_lba, &mut buf).is_err() {
         return false;
     }
 
@@ -165,12 +171,12 @@ fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion
 
 #[cfg(feature = "ext4")]
 fn region_has_magic_u16(
-    dev: &mut dyn crate::block::FsBlockDevice,
+    dev: &dyn BlockDevice,
     region: BlockRegion,
     byte_offset: usize,
     magic: u16,
 ) -> bool {
-    let block_size = dev.block_size();
+    let block_size = dev.metadata().block_size();
     if block_size == 0 {
         return false;
     }
@@ -195,7 +201,7 @@ fn region_has_magic_u16(
     };
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(block_id, &mut buf).is_err() {
+    if dev.read_blocks(block_id, &mut buf).is_err() {
         return false;
     }
 

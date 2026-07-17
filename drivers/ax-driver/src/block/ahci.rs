@@ -1,25 +1,40 @@
+//! AHCI discovery and controller-bundle registration.
+//!
+//! One registered bundle owns the HBA-wide initialization, IRQ endpoint, and
+//! DMA lifecycle. Every identified ATA port is extracted later as an isolated
+//! logical device, so the runtime never treats different disks as queues of a
+//! single logical address space.
+
 extern crate alloc;
 
-use alloc::format;
-use core::sync::atomic::{Ordering, compiler_fence};
+use alloc::{format, vec};
+use core::{any::Any, num::NonZeroUsize};
 
+use ahci_host::{AhciConfig, AhciHost};
 #[cfg(feature = "ahci")]
 use pcie::CommandRegister;
+use rdif_block::{
+    BIrqHandler, BlkError, BundleError, ControllerBundle, ControllerInitEndpoint, DriverGeneric,
+    IrqSourceList, LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds,
+};
 use rdrive::probe::OnProbeError;
 #[cfg(feature = "ahci")]
 use rdrive::probe::pci::{FnOnProbe, ProbePci};
 #[cfg(feature = "ls2k1000-ahci")]
 use rdrive::register::ProbeFdt;
-use simple_ahci::{AhciDriver as SimpleAhciDriver, Hal as AhciHal};
 
-use super::{SyncBlockOps, register_sync_block};
+#[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
+use super::PlatformDeviceBlock;
+#[cfg(feature = "ls2k1000-ahci")]
+use crate::binding_info_from_fdt;
+#[cfg(feature = "ahci")]
+use crate::{PciIrqRequirement, binding_info_from_pci_endpoint, pci::PciIntxIrqLease};
 
 pub const DEVICE_NAME: &str = "ahci";
 #[cfg(feature = "ls2k1000-ahci")]
 const LS2K1000_DEVICE_NAME: &str = "ls2k1000-ahci";
-#[cfg(feature = "ls2k1000-ahci")]
-const LS2K1000_DEFAULT_MMIO_SIZE: usize = 0x10_000;
-const NANOS_PER_MILLIS: u64 = 1_000_000;
+const AHCI_LOGICAL_DEVICE_NAME: &str = "ahci-disk";
+const LOGICAL_IRQ_SOURCE: usize = 0;
 
 #[cfg(feature = "ahci")]
 crate::model_register!(
@@ -48,136 +63,171 @@ crate::model_register!(
     }],
 );
 
-struct AxAhciHal;
+struct AhciControllerBundle {
+    host: AhciHost,
+}
 
-impl AhciHal for AxAhciHal {
-    fn virt_to_phys(va: usize) -> usize {
-        axklib::mem::virt_to_phys(va.into()).as_usize()
-    }
-
-    fn current_ms() -> u64 {
-        axklib::time::monotonic_nanos() / NANOS_PER_MILLIS
-    }
-
-    fn flush_dcache() {
-        #[cfg(target_arch = "loongarch64")]
-        unsafe {
-            core::arch::asm!("dbar 0");
-        }
-
-        compiler_fence(Ordering::SeqCst);
+impl AhciControllerBundle {
+    const fn new(host: AhciHost) -> Self {
+        Self { host }
     }
 }
 
-struct AhciBlock {
-    name: &'static str,
-    driver: SimpleAhciDriver<AxAhciHal>,
-}
+impl DriverGeneric for AhciControllerBundle {
+    fn name(&self) -> &str {
+        self.host.name()
+    }
 
-impl AhciBlock {
-    /// # Safety
-    ///
-    /// `mmio_base` must point to a valid, exclusively-owned AHCI MMIO register
-    /// block that is already mapped with device/uncached semantics.
-    unsafe fn try_new(name: &'static str, mmio_base: usize) -> Option<Self> {
-        let driver = unsafe { SimpleAhciDriver::<AxAhciHal>::try_new(mmio_base) }?;
-        Some(Self { name, driver })
+    fn raw_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
 }
 
-impl SyncBlockOps for AhciBlock {
-    fn name(&self) -> &'static str {
-        self.name
+impl ControllerBundle for AhciControllerBundle {
+    fn controller_init(&mut self) -> ControllerInitEndpoint<'_> {
+        self.host.controller_init()
     }
 
-    fn num_blocks(&self) -> u64 {
-        self.driver.capacity()
+    fn lifecycle(&mut self) -> LifecycleEndpoint<'_> {
+        self.host.lifecycle()
     }
 
-    fn block_size(&self) -> usize {
-        self.driver.block_size()
+    fn logical_device_ids(&self) -> LogicalDeviceIds {
+        LogicalDeviceIds::from_bits(self.host.available_port_ids().bits())
     }
 
-    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rdif_block::BlkError> {
-        if !buf.len().is_multiple_of(self.block_size()) {
-            return Err(rdif_block::BlkError::InvalidRequest);
+    fn take_logical_device(
+        &mut self,
+        device_id: LogicalDeviceId,
+        _max_queues: NonZeroUsize,
+    ) -> Result<LogicalDevice, BundleError> {
+        let port = device_id.get();
+        if !self.host.available_port_ids().contains(port) {
+            return Err(BundleError::DeviceUnavailable { device_id });
         }
-        if self.driver.read(block_id, buf) {
-            Ok(())
-        } else {
-            Err(rdif_block::BlkError::Other("AHCI read failed"))
-        }
+
+        let logical_device_name = format!("{}-port{port}", self.host.name());
+        let mut port_device = self
+            .host
+            .take_port_device(port, AHCI_LOGICAL_DEVICE_NAME)
+            .map_err(|_| BundleError::DeviceUnavailable { device_id })?;
+        let device_info = port_device.device_info();
+        let queue_limits = port_device.queue_limits();
+        let queue = port_device
+            .create_queue()
+            .ok_or(BundleError::NoQueues { device_id })?;
+        Ok(LogicalDevice::new(
+            device_id,
+            logical_device_name,
+            device_info,
+            queue_limits,
+            vec![queue],
+        ))
     }
 
-    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rdif_block::BlkError> {
-        if !buf.len().is_multiple_of(self.block_size()) {
-            return Err(rdif_block::BlkError::InvalidRequest);
-        }
-        if self.driver.write(block_id, buf) {
-            Ok(())
-        } else {
-            Err(rdif_block::BlkError::Other("AHCI write failed"))
-        }
+    fn enable_irq(&self) -> Result<(), BlkError> {
+        self.host.enable_irq()
+    }
+
+    fn disable_irq(&self) -> Result<(), BlkError> {
+        self.host.disable_irq()
+    }
+
+    fn is_irq_enabled(&self) -> bool {
+        self.host.is_irq_enabled()
+    }
+
+    fn irq_sources(&self) -> IrqSourceList {
+        self.host.irq_sources()
+    }
+
+    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler> {
+        self.host.take_irq_handler(source_id)
     }
 }
 
 #[cfg(feature = "ahci")]
 fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
-    let endpoint = probe.endpoint_mut();
-    let class = endpoint.revision_and_class();
+    let class = probe.endpoint().revision_and_class();
     if (class.base_class, class.sub_class) != (0x01, 0x06) {
         return Err(OnProbeError::NotMatch);
     }
-
-    let Some(bar) = endpoint.bar_mmio(5).or_else(|| endpoint.bar_mmio(0)) else {
-        return Err(OnProbeError::other("AHCI MMIO BAR missing"));
-    };
-
-    endpoint.update_command(|mut cmd| {
-        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
-        cmd
+    let bar = probe
+        .endpoint()
+        .bar_mmio(5)
+        .or_else(|| probe.endpoint().bar_mmio(0))
+        .ok_or_else(|| OnProbeError::other("AHCI MMIO BAR missing"))?;
+    let binding = binding_info_from_pci_endpoint(
+        probe.info(),
+        probe.endpoint(),
+        PciIrqRequirement::Required,
+    )?;
+    PciIntxIrqLease::mask_for_discovery(probe.endpoint_mut());
+    probe.endpoint_mut().update_command(|mut command| {
+        command.insert(
+            CommandRegister::MEMORY_ENABLE
+                | CommandRegister::BUS_MASTER_ENABLE
+                | CommandRegister::INTERRUPT_DISABLE,
+        );
+        command
     });
 
-    let mmio = crate::mmio::iomap(bar.start, bar.count().max(1))
-        .map_err(|err| OnProbeError::other(format!("failed to map AHCI BAR: {err:?}")))?;
-    let Some(driver) = (unsafe { AhciBlock::try_new(DEVICE_NAME, mmio.as_ptr() as usize) }) else {
-        return Err(OnProbeError::other("failed to initialize AHCI controller"));
-    };
-    register_sync_block(probe.into_platform_device(), driver);
+    let host = discover_host(DEVICE_NAME, bar.start, bar.count().max(1))?;
+    let endpoint = probe.take_endpoint();
+    let irq_lease = PciIntxIrqLease::new(endpoint, binding);
+    let registered = probe
+        .into_platform_device()
+        .register_irq_bound_controller_bundle(AhciControllerBundle::new(host), irq_lease);
+    log::info!("registered AHCI controller bundle: slot={registered:?}");
     Ok(())
 }
 
 #[cfg(feature = "ls2k1000-ahci")]
 fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
-    let (info, plat_dev) = probe.into_parts();
-    let reg = info
+    let (info, platform) = probe.into_parts();
+    let register = info
         .node
         .regs()
         .into_iter()
         .next()
-        .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let resource_addr = reg.address as usize;
-    let size = reg.size.unwrap_or(LS2K1000_DEFAULT_MMIO_SIZE as u64) as usize;
-    let mmio = crate::mmio::iomap(resource_addr, size)?;
-    let vaddr = mmio.as_ptr() as usize;
+        .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.path())))?;
+    let size = register
+        .size
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(|| OnProbeError::other("AHCI MMIO register size is missing or too large"))?;
+    let address = usize::try_from(register.address)
+        .map_err(|_| OnProbeError::other("AHCI MMIO address does not fit usize"))?;
+    let binding = binding_info_from_fdt(&info)?;
+    if binding.irq_for_source(LOGICAL_IRQ_SOURCE).is_none() {
+        return Err(OnProbeError::other(
+            "AHCI controller has no interrupt source",
+        ));
+    }
 
-    log::debug!(
-        "probing {LS2K1000_DEVICE_NAME}: node={}, reg={resource_addr:#x}, vaddr={vaddr:#x}, \
-         size={size:#x}",
-        info.node.name(),
-    );
-
-    let Some(driver) = (unsafe { AhciBlock::try_new(LS2K1000_DEVICE_NAME, vaddr) }) else {
-        return Err(OnProbeError::other(format!(
-            "failed to initialize {LS2K1000_DEVICE_NAME} controller"
-        )));
-    };
-    let blocks = driver.num_blocks();
-    let block_size = driver.block_size();
-
-    register_sync_block(plat_dev, driver);
-    log::info!(
-        "registered {LS2K1000_DEVICE_NAME} block device: blocks={blocks}, block_size={block_size}",
-    );
+    let host = discover_host(LS2K1000_DEVICE_NAME, address, size)?;
+    let registered =
+        platform.register_controller_bundle_with_info(AhciControllerBundle::new(host), binding);
+    log::info!("registered LS2K1000 AHCI controller bundle: slot={registered:?}");
     Ok(())
+}
+
+fn discover_host(
+    name: &'static str,
+    address: usize,
+    size: usize,
+) -> Result<AhciHost, OnProbeError> {
+    AhciHost::discover(
+        name,
+        address,
+        size,
+        u64::MAX,
+        axklib::dma::op(),
+        axklib::mmio::op(),
+        AhciConfig::legacy_irq(LOGICAL_IRQ_SOURCE),
+    )
+    .map_err(|error| OnProbeError::other(format!("failed to discover {name}: {error}")))
 }

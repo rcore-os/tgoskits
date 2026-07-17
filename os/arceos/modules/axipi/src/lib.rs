@@ -646,8 +646,10 @@ pub fn ipi_handler() {
 /// Executes one bounded batch of callbacks at the IRQ-return safe point.
 ///
 /// Local IRQs must remain disabled and the caller must have left the IRQ
-/// framework's hard-IRQ marker. If more callbacks remain, this function raises
-/// a follow-up IPI so no single IRQ-return pass performs unbounded work.
+/// framework's hard-IRQ marker. Residual callbacks remain explicitly pending
+/// for the next real IRQ-return safe point. The consumer must not raise an
+/// immediate self-IPI: doing so would turn a bounded batch into an unbounded
+/// high-priority interrupt chain and could starve device IRQs.
 ///
 /// # Panics
 ///
@@ -675,7 +677,6 @@ pub fn drain_deferred_callbacks() {
 
     if deferred_callbacks_remain() {
         mark_deferred_pending();
-        request_follow_up_ipi();
     }
 }
 
@@ -727,13 +728,6 @@ fn deferred_callbacks_remain() -> bool {
 
 fn bound_cpu_pin(pin: &CpuPin) -> BoundCpuPin<'_> {
     ax_percpu::bound_current(pin).expect("IPI access requires a bound CPU-local area")
-}
-
-fn request_follow_up_ipi() {
-    let irq_guard = IrqGuard::new();
-    let cpu_id = this_cpu_id_pinned(irq_guard.cpu_pin());
-    drop(irq_guard);
-    kick_callback_ipi(cpu_id);
 }
 
 fn validate_callback_routing_context() -> Result<(), ax_hal::irq::IrqError> {
@@ -974,13 +968,12 @@ mod tests {
         assert_eq!(calls.load(Ordering::Acquire), DEFERRED_CALLBACK_BATCH);
         assert!(!queue.is_empty());
 
-        let current_cpu = CpuId(0);
-        let follow_up_target = callback_ipi_target(current_cpu, current_cpu);
-        let follow_up_status = match follow_up_target {
-            CpuIpiTarget::Current { cpu } if cpu == current_cpu => IpiSendStatus::Success,
-            _ => IpiSendStatus::Invalid,
-        };
-        assert_eq!(follow_up_status, IpiSendStatus::Success);
+        // Residual work remains explicitly pending for a later real IRQ-return
+        // safe point. The bounded consumer must not synthesize an immediate
+        // high-priority self-IPI, which could starve lower-priority device IRQs.
+        let pending = AtomicBool::new(false);
+        mark_deferred_pending_flag(&pending);
+        assert!(pending.swap(false, Ordering::AcqRel));
 
         assert_eq!(
             execute_callback_batch(DEFERRED_CALLBACK_BATCH, || {

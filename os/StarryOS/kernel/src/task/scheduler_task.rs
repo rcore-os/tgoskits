@@ -9,6 +9,7 @@ use core::{
 };
 
 use ax_kspin::{IrqGuard, SpinNoIrq};
+use ax_runtime::task::{UserEntryAck, UserEntryTicket};
 use ax_std::os::arceos::task as scheduler;
 
 use super::Thread;
@@ -25,6 +26,16 @@ static CURRENT_USER_VIEW_FAILURES: AtomicU64 = AtomicU64::new(0);
 pub struct UserTaskRef {
     scheduler: scheduler::ThreadHandle,
     extension_data: usize,
+}
+
+/// Result of acknowledging one bounded Starry user-return work pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "a retry must drain newly published Starry user-return work"]
+pub(crate) enum UserReturnDecision {
+    /// No newer work was published during the pass.
+    Ready,
+    /// A producer raced the pass, so signals and timers must be checked again.
+    Retry,
 }
 
 impl UserTaskRef {
@@ -98,16 +109,6 @@ impl UserTaskRef {
             .store(reset, Ordering::Release);
     }
 
-    /// Synchronizes Linux RT-class accounting after a scheduler policy update.
-    pub(crate) fn set_accounting_policy(&self, policy: scheduler::SchedulePolicy) {
-        let data = self.extension();
-        let realtime_policy = is_realtime_policy(policy);
-        let previous = data.realtime_policy.swap(realtime_policy, Ordering::AcqRel);
-        data.thread
-            .cpu_time
-            .set_realtime_policy(realtime_policy, previous && !realtime_policy);
-    }
-
     /// Commits an exec-time page-table replacement for the running thread.
     pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
         assert_eq!(
@@ -155,29 +156,61 @@ impl UserTaskRef {
             .unwrap_or_else(|error| panic!("failed to read Starry task affinity: {error}"))
     }
 
-    /// Sets the Starry-local interruption bit and directly wakes this thread.
+    /// Publishes Starry user-entry work and directly wakes this thread.
     pub fn interrupt(&self) {
-        self.as_thread().interrupted.store(true, Ordering::Release);
+        self.as_thread().user_entry_notification.publish();
         let _result = self.wake_handle().wake();
     }
 
-    /// Tests and consumes one pending interruption.
+    /// Tests one pending interruption without acknowledging user-return work.
     pub fn poll_interrupt(&self, _context: &Context<'_>) -> Poll<()> {
-        if self.as_thread().interrupted.swap(false, Ordering::AcqRel) {
+        if self.interruption_pending() {
             Poll::Ready(())
         } else {
             Poll::Pending
         }
     }
 
-    /// Tests whether an interruption remains pending.
-    pub fn interrupted(&self) -> bool {
-        self.as_thread().interrupted.load(Ordering::Acquire)
+    /// Tests whether unacknowledged user-entry work remains pending.
+    pub fn interruption_pending(&self) -> bool {
+        self.as_thread().user_entry_notification.pending()
     }
 
-    /// Clears a stale interruption before returning to userspace.
-    pub fn clear_interrupt(&self) {
-        self.as_thread().interrupted.store(false, Ordering::Release);
+    /// Captures a baseline for a wait that must ignore older notifications.
+    pub(crate) fn interrupt_snapshot(&self) -> UserEntryTicket<'_> {
+        self.as_thread().user_entry_notification.snapshot()
+    }
+
+    /// Tests whether an interruption was published after `snapshot`.
+    pub(crate) fn interrupted_since(&self, snapshot: &UserEntryTicket<'_>) -> bool {
+        self.as_thread()
+            .user_entry_notification
+            .changed_since(snapshot)
+    }
+
+    /// Captures the newest notification before draining exit-to-user work.
+    pub(crate) fn begin_user_return_work(&self) -> UserEntryTicket<'_> {
+        self.as_thread().user_entry_notification.snapshot()
+    }
+
+    /// Acknowledges only the captured work and reports a concurrent producer.
+    pub(crate) fn finish_user_return_work(
+        &self,
+        snapshot: UserEntryTicket<'_>,
+    ) -> UserReturnDecision {
+        match self
+            .as_thread()
+            .user_entry_notification
+            .acknowledge(snapshot)
+        {
+            UserEntryAck::Stable => UserReturnDecision::Ready,
+            UserEntryAck::Pending => UserReturnDecision::Retry,
+        }
+    }
+
+    /// Returns the concrete notification checked by ax-runtime with IRQs off.
+    pub(crate) fn user_entry_notification(&self) -> &ax_runtime::task::UserEntryNotification {
+        &self.as_thread().user_entry_notification
     }
 
     /// Waits for exit and reaps the scheduler-owned runtime resources.
@@ -644,6 +677,7 @@ static STARRY_USER_TASK_EXTENSION_OPS: scheduler::ThreadExtensionOps =
     scheduler::ThreadExtensionOps {
         on_switch_in: starry_user_task_switch_in,
         on_switch_out: starry_user_task_switch_out,
+        on_policy_applied: starry_user_task_policy_applied,
         on_exit: starry_user_task_exit,
         on_deadline_overrun: starry_user_task_deadline_overrun,
         drop: starry_user_task_drop,
@@ -681,6 +715,29 @@ unsafe extern "Rust" fn starry_user_task_switch_out(
         panic!("Starry switch-out does not own the current-user slot");
     }
     CURRENT_USER_EXTENSION.write_current(&bound, 0);
+}
+
+unsafe extern "Rust" fn starry_user_task_policy_applied(
+    data: usize,
+    _thread: scheduler::ThreadId,
+    event: scheduler::ThreadPolicyApplied,
+) {
+    let extension = unsafe { extension_data_from_raw(data) };
+    let previous_realtime = event.previous_class().is_realtime();
+    let current_realtime = event.current_class().is_realtime();
+    assert_eq!(
+        extension.realtime_policy.load(Ordering::Acquire),
+        previous_realtime,
+        "Starry accounting policy diverged from the applied scheduler generation"
+    );
+    extension.thread.cpu_time.set_realtime_policy_at(
+        current_realtime,
+        previous_realtime && !current_realtime,
+        event.now_ns(),
+    );
+    extension
+        .realtime_policy
+        .store(current_realtime, Ordering::Release);
 }
 
 unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::ThreadId) {}
@@ -762,6 +819,7 @@ mod tests {
     static FOREIGN_EXTENSION_OPS: scheduler::ThreadExtensionOps = scheduler::ThreadExtensionOps {
         on_switch_in: foreign_thread_hook,
         on_switch_out: foreign_thread_switch_out,
+        on_policy_applied: foreign_thread_policy_applied,
         on_exit: foreign_thread_hook,
         on_deadline_overrun: foreign_thread_hook,
         drop: foreign_thread_drop,
@@ -837,6 +895,13 @@ mod tests {
         _data: usize,
         _thread: scheduler::ThreadId,
         _reason: scheduler::SwitchReason,
+    ) {
+    }
+
+    unsafe extern "Rust" fn foreign_thread_policy_applied(
+        _data: usize,
+        _thread: scheduler::ThreadId,
+        _event: scheduler::ThreadPolicyApplied,
     ) {
     }
 

@@ -26,6 +26,18 @@ fn backend_live_cpu_operations_require_a_borrowed_cpu_pin() {
         );
     }
 
+    let finish_post_unbind = protocol
+        .split_once("fn finish_post_unbind")
+        .expect("missing VmArchVcpuOps::finish_post_unbind")
+        .1
+        .split_once('{')
+        .expect("post-unbind completion may have a no-op default")
+        .0;
+    assert!(
+        finish_post_unbind.contains("cpu_pin:") && finish_post_unbind.contains("CpuPin"),
+        "post-unbind completion must retain the caller's CPU pin"
+    );
+
     let run_protocol = protocol
         .split_once("fn run<'cpu>")
         .expect("vCPU run must bind its exit to the borrowed CPU lifetime")

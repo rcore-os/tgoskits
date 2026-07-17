@@ -11,9 +11,9 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_task::{
-    CpuId, CpuSet, DeadlineEntity, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiLockId,
-    RtPriority, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig, ThreadExtension,
-    ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState,
+    CpuId, CpuSet, DEFAULT_BATCH_LIMIT, DeadlineEntity, DeadlineFlags, DeadlinePolicy, FairMode,
+    Nice, PiLockId, RtPriority, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig,
+    ThreadExtension, ThreadExtensionOps, ThreadId, ThreadPolicyApplied, ThreadSpec, ThreadState,
 };
 
 mod support;
@@ -31,6 +31,53 @@ fn need_resched_remains_sticky_until_scheduler_entry() {
     assert_eq!(
         system.schedule(cpu.as_mut(), 0).unwrap().next(),
         thread.id()
+    );
+    assert!(!cpu.needs_reschedule());
+}
+
+#[test]
+fn bounded_deadline_scan_defers_retained_suffix_to_a_oneshot() {
+    let (system, mut cpu) = online_system(TaskSystemConfig::new(1));
+    let policy = SchedulePolicy::deadline(deadline_policy(10, 1_000, 1_000, DeadlineFlags::NONE));
+    let mut threads = Vec::with_capacity(DEFAULT_BATCH_LIMIT + 1);
+    for _ in 0..=DEFAULT_BATCH_LIMIT {
+        let thread = ready_thread(&system, policy);
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+        threads.push(thread);
+    }
+    system.schedule(cpu.as_mut(), 0).unwrap();
+
+    assert_eq!(support::last_oneshot_ns(), 1);
+    assert!(
+        !cpu.needs_reschedule(),
+        "a retained Deadline scan suffix is delayed owner work, not immediate preemption"
+    );
+    assert!(
+        system
+            .schedule_if_requested(cpu.as_mut(), 1)
+            .unwrap()
+            .is_quiescent(),
+        "the one-shot safe point must finish the retained scan generation"
+    );
+}
+
+#[test]
+fn bounded_deadline_scan_finishes_one_generation_instead_of_restarting_forever() {
+    let (system, mut cpu) = online_system(TaskSystemConfig::new(1));
+    let policy = SchedulePolicy::deadline(deadline_policy(10, 1_000, 1_000, DeadlineFlags::NONE));
+    for _ in 0..=DEFAULT_BATCH_LIMIT {
+        let thread = ready_thread(&system, policy);
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    system.schedule(cpu.as_mut(), 0).unwrap();
+
+    let first = system.schedule_if_requested(cpu.as_mut(), 1).unwrap();
+    let second = system.schedule_if_requested(cpu.as_mut(), 1).unwrap();
+
+    assert!(first.is_quiescent());
+    assert!(
+        second.is_quiescent(),
+        "a completed Deadline generation must not restart without a new due event"
     );
     assert!(!cpu.needs_reschedule());
 }
@@ -508,6 +555,7 @@ static DEADLINE_OVERRUNS: AtomicUsize = AtomicUsize::new(0);
 static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: no_extension_hook,
     on_switch_out: no_extension_switch_out,
+    on_policy_applied: no_extension_policy_applied,
     on_exit: no_extension_hook,
     on_deadline_overrun: count_deadline_overrun,
     drop: no_extension_drop,
@@ -519,6 +567,13 @@ unsafe extern "Rust" fn no_extension_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: ax_task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn no_extension_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ThreadPolicyApplied,
 ) {
 }
 

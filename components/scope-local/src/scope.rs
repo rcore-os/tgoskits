@@ -229,6 +229,15 @@ impl ScopeCell {
         }
     }
 
+    pub(crate) fn get_mut_unpublished(&mut self, item: &'static Item) -> &mut ItemBox {
+        assert_eq!(
+            self.active_cpus.load(Ordering::Acquire),
+            0,
+            "unpublished scope initialization requires no active CPU bindings"
+        );
+        self.scope.get_mut_unlocked(item)
+    }
+
     /// Acquires an ordinary shared scope reference while preventing migration.
     pub fn read(&self) -> ScopeCellReadGuard<'_> {
         let preempt = PreemptGuard::new();
@@ -274,8 +283,10 @@ impl ScopeCell {
     ///
     /// The caller must keep this `ScopeCell` alive, retain the current CPU pin,
     /// and invoke [`deactivate_pinned`](Self::deactivate_pinned) exactly once
-    /// before another scope is installed or the cell can be dropped. No
-    /// scope-local item operation may span either scheduler hook.
+    /// before another scope is installed or the cell can be dropped. The
+    /// caller must not create an exclusive reference to the cell while the raw
+    /// activation exists. No scope-local item operation may span either
+    /// scheduler hook.
     pub unsafe fn activate_pinned(&self, pin: &CpuPin) {
         assert_eq!(
             ActiveScope::current_scope_ptr_pinned(pin),

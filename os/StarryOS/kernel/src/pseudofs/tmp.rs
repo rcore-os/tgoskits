@@ -12,8 +12,9 @@ use ax_kspin::SpinNoIrq;
 use ax_sync::PiMutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    FilesystemDetachPolicy, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult,
+    WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -139,6 +140,10 @@ impl FilesystemOps for MemoryFs {
 
     fn root_dir(&self) -> DirEntry {
         self.root.lock().clone().unwrap()
+    }
+
+    fn detach_policy(&self) -> FilesystemDetachPolicy {
+        FilesystemDetachPolicy::NonDetachable
     }
 
     fn stat(&self) -> VfsResult<StatFs> {

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add move-only detached IRQ action ownership so passthrough runtimes can
+  remove a disabled host action, install an exclusive guest route, and later
+  re-register the original handler without retaining a dormant descriptor
+  entry.
+- Add a fail-closed `QuenchAndWake` handler result that disables the returning
+  global action, or locally quenches a per-CPU action, before waking deferred
+  recovery. Shared peers remain logically enabled and regain each affected
+  line only after every action-owned quench is explicitly released.
+- Treat failure to apply that emergency backing-line mask as a fatal irqchip
+  invariant instead of silently returning to a potentially storming source.
+- Add generation-bearing, action-specific asynchronous drain tokens with a
+  fixed hard-IRQ-safe wake target.
+
+### Changed
+
+- Make new IRQ requests disabled by default, requiring callers to publish all
+  device-side handler state before an explicit `Registry::enable` operation.
+- Commit a successful registration to the descriptor's desired line state, so
+  a disabled first owner stays masked while enabled shared peers are restored.
+- Keep newly requested actions disabled until affinity and controller-line
+  setup commit, so failed registration cannot expose a partially published
+  handler to a late IRQ.
+- Require per-CPU quench recovery to name the affected CPU explicitly; one
+  CPU's recovery no longer clears another CPU's independent quench ownership.
+
+### Fixed
+
+- Reject registration and CPU-online bookkeeping from hard-IRQ context before
+  either path can enter controller-facing or allocation-backed work.
+- Treat `IrqExecution` as an action-local contract, allowing concurrent and
+  non-reentrant handlers to share one compatible hardware line, and let an
+  unconstrained `Any` action inherit that line's existing fixed affinity.
+- Prevent action IDs and drain generations from wrapping into stale handles or
+  tokens, and make descriptor reader-count overflow/underflow fatal before it
+  can permit premature reclamation.
+- Invoke drain wake callbacks outside registry metadata critical sections and
+  pin the descriptor until immediate notification returns.
+- Preserve a racing `QuenchAndWake` action during `free` and failed-request
+  rollback until its in-flight invocation has drained.
+
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.2.0...irq-framework-v0.3.0) - 2026-07-02
 
 ### Added

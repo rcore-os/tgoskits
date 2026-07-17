@@ -23,6 +23,19 @@ pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
 
 pub struct VirtIoHalImpl(PhantomData<()>);
 
+/// A VirtIO transport whose ownership may cross the OS registration boundary.
+///
+/// [`Transport`] deliberately does not require [`Send`]. Every driver exposed
+/// through `rdrive` is movable between CPUs, so accepting the upstream trait
+/// alone and adding `unsafe impl Send` to a wrapper would be unsound. This
+/// blanket capability keeps that proof at the common discovery boundary.
+///
+/// `Sync` is intentionally not required: driver endpoints serialize transport
+/// access and never share an unprotected `&T` between CPUs.
+pub trait VirtIoTransport: Transport + Send + 'static {}
+
+impl<T: Transport + Send + 'static> VirtIoTransport for T {}
+
 pub const fn has_static_mmio_drivers() -> bool {
     cfg!(any(
         feature = "virtio-blk",
@@ -69,7 +82,7 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
 pub fn probe_mmio_device(
     reg_base: *mut u8,
     reg_size: usize,
-) -> Option<(DeviceType, MmioTransport<'static>)> {
+) -> Option<(DeviceType, impl VirtIoTransport)> {
     if reg_base.is_null() || reg_size == 0 {
         return None;
     }
@@ -106,7 +119,7 @@ pub fn register_static_mmio(
     feature = "virtio-input",
     feature = "virtio-socket",
 ))]
-pub fn register_static_transport<T: Transport + 'static>(
+pub fn register_static_transport<T: VirtIoTransport>(
     plat_dev: rdrive::PlatformDevice,
     ty: DeviceType,
     transport: T,
@@ -133,7 +146,7 @@ pub fn register_static_transport<T: Transport + 'static>(
     feature = "virtio-input",
     feature = "virtio-socket",
 )))]
-pub fn register_static_transport<T: Transport + 'static>(
+pub fn register_static_transport<T: VirtIoTransport>(
     _plat_dev: rdrive::PlatformDevice,
     _ty: DeviceType,
     _transport: T,
@@ -143,7 +156,7 @@ pub fn register_static_transport<T: Transport + 'static>(
 
 pub fn probe_fdt_mmio_device(
     info: &rdrive::register::FdtInfo<'_>,
-) -> Result<(DeviceType, MmioTransport<'static>), rdrive::probe::OnProbeError> {
+) -> Result<(DeviceType, impl VirtIoTransport), rdrive::probe::OnProbeError> {
     let base_reg = info.node.regs().into_iter().next().ok_or_else(|| {
         rdrive::probe::OnProbeError::other(alloc::format!("[{}] has no reg", info.node.name()))
     })?;
@@ -169,9 +182,3 @@ pub fn map_virtio_error(err: VirtIoError) -> &'static str {
         VirtIoError::SocketDeviceError(_) => "virtio socket device error",
     }
 }
-
-#[cfg(feature = "virtio-net")]
-pub trait VirtIoTransport: Transport + 'static {}
-
-#[cfg(feature = "virtio-net")]
-impl<T: Transport + 'static> VirtIoTransport for T {}

@@ -18,7 +18,10 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
+use ax_runtime::{
+    hal::time::{TimeValue, monotonic_time, wall_time},
+    task::UserEntryTicket,
+};
 use ax_std::os::arceos::task::{self as scheduler, LocalExecutor, ThreadWakeHandle, WaitQueue};
 use axpoll::{IoEvents, Pollable};
 
@@ -46,7 +49,21 @@ pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
 /// signal semantics through its current scheduler identity.
 #[track_caller]
 pub fn block_on_user<F: IntoFuture>(task: &UserTaskRef, future: F) -> F::Output {
-    block_on_with_abort(future, Some(task.id()), || task.interrupted())
+    block_on_with_abort(future, Some(task.id()), || task.interruption_pending())
+}
+
+/// Polls a future while ignoring notifications older than `baseline`.
+///
+/// Ptrace stop uses this form because work already pending before the stop must
+/// not masquerade as a new resume event. The baseline is observation-only and
+/// cannot acknowledge work owned by the exit-to-user drain.
+#[track_caller]
+pub(crate) fn block_on_user_since<F: IntoFuture>(
+    task: &UserTaskRef,
+    baseline: &UserEntryTicket<'_>,
+    future: F,
+) -> F::Output {
+    block_on_with_abort(future, Some(task.id()), || task.interrupted_since(baseline))
 }
 
 fn block_on_with_abort<F, A>(
@@ -186,6 +203,22 @@ pub async fn interruptible_for<F: IntoFuture>(
     let mut future = pin!(future.into_future());
     poll_fn(|context| {
         if task.poll_interrupt(context).is_ready() {
+            return Poll::Ready(Err(Interrupted));
+        }
+        future.as_mut().poll(context).map(Ok)
+    })
+    .await
+}
+
+/// Makes a future return [`Interrupted`] only for a newer publication.
+pub(crate) async fn interruptible_for_since<F: IntoFuture>(
+    task: &UserTaskRef,
+    baseline: &UserEntryTicket<'_>,
+    future: F,
+) -> Result<F::Output, Interrupted> {
+    let mut future = pin!(future.into_future());
+    poll_fn(|context| {
+        if task.interrupted_since(baseline) {
             return Poll::Ready(Err(Interrupted));
         }
         future.as_mut().poll(context).map(Ok)
@@ -423,6 +456,12 @@ fn ensure_timer_worker() {
 
 fn timer_worker() {
     loop {
+        // Capture the publication generation before observing the timer map.
+        // A registration published before this load is visible in the map;
+        // one published after the snapshot changes the wait predicate. Loading
+        // the generation after the snapshot could instead absorb that change
+        // and park forever with an unobserved timer in the map.
+        let epoch = TIMER_EPOCH.load(Ordering::Acquire);
         let now = monotonic_time();
         let (expired, next_deadline) = {
             let mut runtime = TIMER_RUNTIME.lock();
@@ -434,7 +473,6 @@ fn timer_worker() {
             waker.wake();
         }
 
-        let epoch = TIMER_EPOCH.load(Ordering::Acquire);
         match next_deadline {
             Some(deadline) if deadline > monotonic_time() => {
                 let timeout = deadline.saturating_sub(monotonic_time());

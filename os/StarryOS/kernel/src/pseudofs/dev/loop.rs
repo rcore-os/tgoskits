@@ -252,7 +252,7 @@ impl DeviceOps for LoopDevice {
             }
             BLKGETSIZE | BLKGETSIZE64 => {
                 let sectors = if let Ok(f) = self.clone_file() {
-                    f.location().len()? / 512
+                    f.len()? / 512
                 } else {
                     return Err(AxError::from(LinuxError::ENXIO));
                 };
@@ -321,7 +321,7 @@ impl DeviceOps for LoopDevice {
             // HDIO_GETGEO: virtual CHS geometry for fdisk
             HDIO_GETGEO => {
                 let size = match self.file.lock().clone() {
-                    Some(f) => f.location().len().unwrap_or(0),
+                    Some(f) => f.len().unwrap_or(0),
                     None => 0,
                 };
                 // hd_geometry: { u8 heads, u8 sectors, u16 cylinders, unsigned long start }

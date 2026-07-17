@@ -16,6 +16,7 @@ mod nsfd;
 mod packet;
 mod pidfd;
 mod pipe;
+mod process_scope;
 pub mod signalfd;
 pub mod timerfd;
 mod wext;
@@ -24,7 +25,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
+use ax_fs_ng::vfs::{FileBackend, FileFlags};
 use ax_io::prelude::*;
 use ax_kspin::SpinRwLock as RwLock;
 use ax_std::os::arceos::task::ThreadState;
@@ -33,7 +34,7 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
+    O_ACCMODE, O_PATH, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
     statx_timestamp,
 };
 use starry_process::Pid;
@@ -42,6 +43,7 @@ use starry_process::Pid;
 pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
 };
+pub(crate) use self::process_scope::PreparedProcessScope;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
@@ -271,6 +273,8 @@ pub struct FileDescriptor {
     pub cloexec: bool,
 }
 
+pub(crate) type FileDescriptorTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+
 scope_local::scope_local! {
     /// The current file descriptor table.
     pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
@@ -433,39 +437,4 @@ pub fn close_all_fds() {
     for fd in removed {
         release_locks_on_close(fd);
     }
-}
-
-pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
-    assert_eq!(fd_table.count(), 0);
-    let fs_context = current_fs_context();
-    let cx = fs_context.lock();
-    let open = |options: &mut OpenOptions, flags| {
-        AxResult::Ok(Arc::new(File::new(
-            options.open(&cx, "/dev/console")?.into_file()?,
-            flags,
-        )))
-    };
-
-    let tty_in = open(OpenOptions::new().read(true).write(false), O_RDONLY as _)?;
-    let tty_out = open(OpenOptions::new().read(false).write(true), O_WRONLY as _)?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_in,
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_out.clone(),
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
-    fd_table
-        .add(FileDescriptor {
-            inner: tty_out,
-            cloexec: false,
-        })
-        .map_err(|_| AxError::TooManyOpenFiles)?;
-
-    Ok(())
 }

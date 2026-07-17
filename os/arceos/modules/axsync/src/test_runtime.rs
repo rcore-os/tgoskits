@@ -11,8 +11,8 @@ use ax_task::{
         AddressSpaceHandle, ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle,
         ExecutionContextHandle, IrqGuardToken, KernelContextRequest, RuntimeCpuId,
         RuntimeHandleResult, RuntimeScheduleOrigin, RuntimeSchedulerEntry, RuntimeSchedulerReturn,
-        RuntimeStatus, SchedSwitchRecord, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle,
-        ThreadIdentityV1, TlsHandle, TlsRequest, UserContextRequest,
+        RuntimeStatus, RuntimeTimerEventV1, SchedSwitchRecord, StackHandle, StackRequest,
+        TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest, UserContextRequest,
     },
 };
 
@@ -96,7 +96,9 @@ impl_task_runtime! {
             _origin: RuntimeScheduleOrigin,
             _entry: RuntimeSchedulerEntry,
         ) -> RuntimeStatus { RuntimeStatus::Success }
-        fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool { true }
+        fn scheduler_frame_guard_exit(return_to: RuntimeSchedulerReturn) -> bool {
+            matches!(return_to, RuntimeSchedulerReturn::Task)
+        }
         fn in_hard_irq() -> bool { false }
         fn validate_schedule_context(_origin: ax_task::runtime::RuntimeScheduleOrigin) -> RuntimeStatus {
             if SCHEDULE_CONTEXT_SAFE.load(Ordering::Acquire) {
@@ -108,6 +110,9 @@ impl_task_runtime! {
         fn monotonic_ns() -> u64 { 0 }
         fn timer_resolution_ns() -> u64 { 1 }
         fn program_oneshot_timer(_deadline_ns: u64) -> RuntimeStatus { RuntimeStatus::Success }
+        fn dispatch_expired_timer(_event: RuntimeTimerEventV1) -> RuntimeStatus {
+            RuntimeStatus::Unsupported
+        }
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
             LAST_SCHEDULER_IPI_CPU.store(cpu.as_u32() as usize, Ordering::Release);
             SCHEDULER_IPIS.fetch_add(1, Ordering::AcqRel);

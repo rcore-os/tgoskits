@@ -1,0 +1,17 @@
+[package]
+name = "ahci-host"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable interrupt-driven AHCI block controller"
+keywords = ["ahci", "block", "driver", "no-std"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+dma-api.workspace = true
+mmio-api.workspace = true
+rdif-block.workspace = true
+thiserror.workspace = true
+

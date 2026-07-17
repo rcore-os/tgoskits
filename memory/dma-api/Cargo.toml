@@ -19,5 +19,8 @@ log.workspace = true
 mbarrier = "0.1"
 thiserror.workspace = true
 
+[dev-dependencies]
+ax-kspin-test-runtime = { path = "../../components/kspin/test-runtime" }
+
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"

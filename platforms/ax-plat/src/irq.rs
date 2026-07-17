@@ -5,9 +5,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_kspin::{IrqGuard, PreemptGuard};
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
-    CpuId, CpuIpiTarget, CpuMask, HwIrq, IpiSendStatus, IrqAffinity, IrqContext, IrqDomainId,
-    IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope,
-    IrqSource, IrqStatus, Registry, ShareMode, TrapVector,
+    CpuId, CpuIpiTarget, CpuMask, DetachedIrqAction, HwIrq, IpiSendStatus, IrqAffinity, IrqContext,
+    IrqContinuationSlot, IrqContinuationToken, IrqContinuationWake, IrqDomainId, IrqDrainToken,
+    IrqDrainWake, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest,
+    IrqReturn, IrqScope, IrqSource, IrqStatus, ReattachIrqActionError, Registry, ShareMode,
+    TrapVector,
 };
 use spin::Once;
 
@@ -15,6 +17,10 @@ use spin::Once;
 pub mod loongarch64_hv;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64_hv::LoongArchHvIrqIf;
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64_hv;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64_hv::Riscv64HvIrqIf;
 
 /// Compatibility IRQ domain used while non-domainized platforms migrate.
 pub const LEGACY_IRQ_DOMAIN: IrqDomainId = IrqDomainId(0);
@@ -227,40 +233,69 @@ fn current_cpu_in_irq_context() -> bool {
 
 /// Requests an IRQ action through the dynamic IRQ framework.
 pub fn request_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
-    let auto_enable = request.auto_enable_mode();
+    registry().request(irq, request)
+}
+
+fn request_enabled_irq(irq: IrqId, request: IrqRequest) -> Result<IrqHandle, IrqError> {
+    debug_assert_eq!(request.auto_enable_mode(), AutoEnable::No);
     let handle = registry().request(irq, request)?;
-    if auto_enable == AutoEnable::Yes
-        && let Err(err) = registry().enable(handle)
-    {
-        let _ = registry().free(handle);
-        return Err(err);
+    if let Err(error) = registry().enable(handle) {
+        if let Err(rollback_error) = registry().free(handle) {
+            panic!(
+                "failed to roll back IRQ {irq:?} after enable error {error:?}: {rollback_error:?}"
+            );
+        }
+        return Err(error);
     }
     Ok(handle)
 }
 
-/// Requests a shared IRQ action.
+/// Requests and enables a shared IRQ action.
 pub fn request_shared_irq(
     irq: IrqId,
     handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
 ) -> Result<IrqHandle, IrqError> {
-    request_irq(irq, IrqRequest::new(handler).share_mode(ShareMode::Shared))
+    let request = IrqRequest::new(handler)
+        .share_mode(ShareMode::Shared)
+        .auto_enable(AutoEnable::No);
+    request_enabled_irq(irq, request)
 }
 
-/// Requests a per-CPU IRQ action.
+/// Requests and enables a per-CPU IRQ action.
 pub fn request_percpu_irq(
     irq: IrqId,
     cpus: CpuMask,
     handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
 ) -> Result<IrqHandle, IrqError> {
-    request_irq(
-        irq,
-        IrqRequest::new_concurrent(handler).scope(IrqScope::PerCpu { cpus }),
-    )
+    let request = IrqRequest::new_concurrent(handler)
+        .scope(IrqScope::PerCpu { cpus })
+        .auto_enable(AutoEnable::No);
+    request_enabled_irq(irq, request)
 }
 
 /// Frees an IRQ action.
 pub fn free_irq(handle: IrqHandle) -> Result<(), IrqError> {
     registry().free(handle)
+}
+
+/// Removes a disabled, drained action while retaining its handler ownership.
+///
+/// # Errors
+///
+/// Returns an IRQ lifecycle error when the handle is stale, the action is not
+/// drained, or the caller is in hard-IRQ context.
+pub fn detach_irq_action(handle: IrqHandle) -> Result<DetachedIrqAction, IrqError> {
+    registry().detach_action(handle)
+}
+
+/// Re-registers a detached action under a fresh, disabled handle.
+///
+/// # Errors
+///
+/// Returns an error that retains the action when descriptor policy, CPU state,
+/// or the interrupt controller prevents registration.
+pub fn reattach_irq_action(action: DetachedIrqAction) -> Result<IrqHandle, ReattachIrqActionError> {
+    registry().reattach_action(action)
 }
 
 /// Enables an IRQ action.
@@ -271,6 +306,32 @@ pub fn enable_irq(handle: IrqHandle) -> Result<(), IrqError> {
 /// Disables an IRQ action.
 pub fn disable_irq(handle: IrqHandle) -> Result<(), IrqError> {
     registry().disable(handle)
+}
+
+/// Releases an action-owned emergency line quench after its device source is masked.
+///
+/// The action remains disabled. On a shared descriptor, enabled peer actions
+/// regain the backing line only after every quench owner has released it.
+pub fn release_irq_quench(handle: IrqHandle) -> Result<(), IrqError> {
+    registry().release_quench(handle)
+}
+
+/// Completes one generation-bearing ordinary IRQ continuation.
+pub fn finish_irq_continuation(token: IrqContinuationToken) -> Result<(), IrqError> {
+    registry().finish_continuation(token)
+}
+
+/// Disables one action and wakes a fixed target after only that action drains.
+pub fn disable_irq_async(
+    handle: IrqHandle,
+    wake: &'static IrqDrainWake,
+) -> Result<IrqDrainToken, IrqError> {
+    registry().disable_async(handle, wake)
+}
+
+/// Checks a generation-bearing action-specific drain token without waiting.
+pub fn irq_action_drain_complete(token: IrqDrainToken) -> Result<bool, IrqError> {
+    registry().action_drain_complete(token)
 }
 
 /// Waits until no handler for this IRQ descriptor is in flight.
@@ -399,8 +460,22 @@ mod tests {
     use super::*;
     use crate::impl_plat_interface;
 
-    static ENABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
-    static FAIL_ENABLE: AtomicUsize = AtomicUsize::new(0);
+    const TEST_IRQ_COUNT: usize = 6;
+    const NO_FAILING_IRQ: usize = usize::MAX;
+
+    static ENABLE_CALLS: [AtomicUsize; TEST_IRQ_COUNT] =
+        [const { AtomicUsize::new(0) }; TEST_IRQ_COUNT];
+    static FAIL_ENABLE_IRQ: AtomicUsize = AtomicUsize::new(NO_FAILING_IRQ);
+    static TIMER_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static IPI_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn enable_calls(irq: IrqId) -> usize {
+        ENABLE_CALLS[irq.hwirq.0 as usize].load(Ordering::Relaxed)
+    }
+
+    fn reset_enable_calls(irq: IrqId) {
+        ENABLE_CALLS[irq.hwirq.0 as usize].store(0, Ordering::Relaxed);
+    }
 
     struct TestIrqIf;
 
@@ -417,9 +492,12 @@ mod tests {
             Ok(())
         }
 
-        fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
-            ENABLE_CALLS.fetch_add(1, Ordering::Relaxed);
-            if FAIL_ENABLE.load(Ordering::Relaxed) != 0 {
+        fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+            if !enabled {
+                return Ok(());
+            }
+            ENABLE_CALLS[irq.hwirq.0 as usize].fetch_add(1, Ordering::Relaxed);
+            if FAIL_ENABLE_IRQ.load(Ordering::Relaxed) == irq.hwirq.0 as usize {
                 return Err(IrqError::Controller);
             }
             Ok(())
@@ -459,10 +537,10 @@ mod tests {
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(1));
         let request = IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::No);
 
-        ENABLE_CALLS.store(0, Ordering::Relaxed);
+        reset_enable_calls(irq);
         let handle = request_irq(irq, request).unwrap();
 
-        assert_eq!(ENABLE_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(enable_calls(irq), 0);
         assert!(!irq_status(handle).unwrap().action_enabled);
 
         free_irq(handle).unwrap();
@@ -471,18 +549,76 @@ mod tests {
     #[test]
     fn request_irq_rolls_back_action_when_auto_enable_fails() {
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(2));
-        let request = || IrqRequest::new(|_| IrqReturn::Handled);
+        let request = || IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::Yes);
 
-        ENABLE_CALLS.store(0, Ordering::Relaxed);
-        FAIL_ENABLE.store(1, Ordering::Relaxed);
+        reset_enable_calls(irq);
+        FAIL_ENABLE_IRQ.store(irq.hwirq.0 as usize, Ordering::Relaxed);
         let err = request_irq(irq, request()).unwrap_err();
 
         assert_eq!(err, IrqError::Controller);
-        assert_eq!(ENABLE_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(enable_calls(irq), 1);
 
-        FAIL_ENABLE.store(0, Ordering::Relaxed);
+        FAIL_ENABLE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
         let handle = request_irq(irq, request()).unwrap();
         assert!(irq_status(handle).unwrap().action_enabled);
+
+        free_irq(handle).unwrap();
+    }
+
+    #[test]
+    fn detached_action_round_trips_through_the_platform_facade() {
+        let irq = IrqId::new(IrqDomainId(0xff), HwIrq(3));
+        let request = IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::No);
+
+        FAIL_ENABLE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
+        let handle = request_irq(irq, request).unwrap();
+        let detached = detach_irq_action(handle).unwrap();
+        assert_eq!(detached.irq(), irq);
+
+        let handle = reattach_irq_action(detached).unwrap();
+        assert!(!irq_status(handle).unwrap().action_enabled);
+        free_irq(handle).unwrap();
+    }
+
+    #[test]
+    fn shared_convenience_request_enables_timer_action_once_before_dispatch() {
+        let irq = IrqId::new(IrqDomainId(0xff), HwIrq(4));
+        reset_enable_calls(irq);
+        TIMER_HANDLER_CALLS.store(0, Ordering::Relaxed);
+
+        let handle = request_shared_irq(irq, |_| {
+            TIMER_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+            IrqReturn::Handled
+        })
+        .unwrap();
+
+        assert_eq!(enable_calls(irq), 1);
+        let outcome = dispatch_irq_on(irq, CpuId(0));
+        assert_eq!(outcome.called, 1);
+        assert!(outcome.handled);
+        assert_eq!(TIMER_HANDLER_CALLS.load(Ordering::Relaxed), 1);
+
+        free_irq(handle).unwrap();
+    }
+
+    #[test]
+    fn percpu_convenience_request_enables_ipi_action_once_before_dispatch() {
+        let irq = IrqId::new(IrqDomainId(0xff), HwIrq(5));
+        reset_enable_calls(irq);
+        IPI_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        cpu_online(0).unwrap();
+
+        let handle = request_percpu_irq(irq, CpuMask::from_cpu(CpuId(0)), |_| {
+            IPI_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+            IrqReturn::Handled
+        })
+        .unwrap();
+
+        assert_eq!(enable_calls(irq), 1);
+        let outcome = dispatch_irq_on(irq, CpuId(0));
+        assert_eq!(outcome.called, 1);
+        assert!(outcome.handled);
+        assert_eq!(IPI_HANDLER_CALLS.load(Ordering::Relaxed), 1);
 
         free_irq(handle).unwrap();
     }

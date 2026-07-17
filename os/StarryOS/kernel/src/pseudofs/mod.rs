@@ -69,12 +69,17 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 }
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
-    let initial_resolve = fs.resolve(path);
-    if initial_resolve.is_err() {
-        fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
-    }
-    let loc = fs.resolve(path)?;
-    loc.mount(&mount_fs)?;
+    fs.with_namespace_operation(|namespace| {
+        let loc = match namespace.resolve_path(path) {
+            Ok(location) => location,
+            Err(_) => {
+                let (parent, name) = namespace.parent_for_create(path.as_ref())?;
+                parent.create(name, axfs_ng_vfs::NodeType::Directory, DIR_PERMISSION, 0, 0)?
+            }
+        };
+        loc.mount_filesystem(&mount_fs, false)?;
+        Ok(())
+    })?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }

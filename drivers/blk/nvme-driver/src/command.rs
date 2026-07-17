@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 use alloc::vec::Vec;
-use core::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 
 use log::debug;
 
@@ -89,41 +88,30 @@ impl Identify for IdentifyNamespaceDataStructure {
     type Output = Option<NamespaceDataStructure>;
 
     fn parse(&self, data: &[u8]) -> Self::Output {
-        let raw = unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u32, data.len() / 4) };
-        unsafe {
-            if raw[0] == 0 {
-                return None;
-            }
-            let number_of_lba_formats = data.as_ptr().add(25).read_volatile();
-            let formatted_lba_size_field = data.as_ptr().add(26).read_volatile();
-            let has_metadata = (formatted_lba_size_field >> 4) & 1 == 1;
-
-            let lba_fmt_list = data.as_ptr().add(128) as *const LBAFormatDataStructure;
-
-            let lba_size_idx = (formatted_lba_size_field & 0b1111) as usize;
-
-            let lba_fmt = if lba_size_idx > 0 {
-                lba_fmt_list.add(lba_size_idx).read_volatile()
-            } else {
-                LBAFormatDataStructure {
-                    metadata_size: 0,
-                    lba_data_size: 9,
-                    other: 0,
-                }
-            };
-
-            Some(NamespaceDataStructure {
-                namespace_size: raw[0],
-                namespcae_capacity: raw[1],
-                namespace_nused: raw[2],
-                lba_size: 2u32.pow(lba_fmt.lba_data_size as u32),
-                metadata_size: if has_metadata {
-                    data[27] as _
-                } else {
-                    lba_fmt.metadata_size as _
-                },
-            })
+        let namespace_size = read_le_u64(data, 0)?;
+        if namespace_size == 0 {
+            return None;
         }
+        let namespace_capacity = read_le_u64(data, 8)?;
+        let namespace_used = read_le_u64(data, 16)?;
+        let format_count = usize::from(*data.get(25)?) + 1;
+        let formatted_lba_size = *data.get(26)?;
+        let format_index = usize::from(formatted_lba_size & 0x0f);
+        if format_index >= format_count {
+            return None;
+        }
+        let format_offset = 128_usize.checked_add(format_index.checked_mul(4)?)?;
+        let metadata_size = read_le_u16(data, format_offset)?;
+        let lba_data_size = u32::from(*data.get(format_offset + 2)?);
+        let lba_size = 1_u32.checked_shl(lba_data_size)?;
+
+        Some(NamespaceDataStructure {
+            namespace_size,
+            namespace_capacity,
+            namespace_used,
+            lba_size,
+            metadata_size: u32::from(metadata_size),
+        })
     }
 
     fn command_set_mut(&mut self) -> &mut CommandSet {
@@ -149,14 +137,16 @@ impl Identify for IdentifyActiveNamespaceList {
 
     fn parse(&self, data: &[u8]) -> Self::Output {
         let mut id_list = Vec::new();
-
-        let raw = unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u32, data.len() / 4) };
-
-        for id in raw {
-            if *id == 0 {
+        for bytes in data.chunks_exact(4) {
+            let id = u32::from_le_bytes(
+                bytes
+                    .try_into()
+                    .expect("chunks_exact yields four-byte namespace IDs"),
+            );
+            if id == 0 {
                 break;
             }
-            id_list.push(*id);
+            id_list.push(id);
         }
 
         id_list
@@ -169,25 +159,21 @@ impl Identify for IdentifyActiveNamespaceList {
 
 #[derive(Debug, Clone)]
 pub struct NamespaceDataStructure {
-    pub namespace_size: u32,
-    pub namespcae_capacity: u32,
-    pub namespace_nused: u32,
+    pub namespace_size: u64,
+    pub namespace_capacity: u64,
+    pub namespace_used: u64,
     pub lba_size: u32,
     pub metadata_size: u32,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct LBAFormatDataStructure {
-    metadata_size: u16,
-    lba_data_size: u8,
-    other: u8,
+fn read_le_u16(data: &[u8], offset: usize) -> Option<u16> {
+    let bytes = data.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
+    Some(u16::from_le_bytes(bytes))
 }
 
-impl LBAFormatDataStructure {
-    fn relative_performance(&self) -> bool {
-        self.other & 1 > 0
-    }
+fn read_le_u64(data: &[u8], offset: usize) -> Option<u64> {
+    let bytes = data.get(offset..offset.checked_add(8)?)?.try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
 }
 
 pub struct IdentifyController {
@@ -261,7 +247,7 @@ pub struct ControllerInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::{Identify, IdentifyController};
+    use super::{Identify, IdentifyController, IdentifyNamespaceDataStructure};
 
     #[test]
     fn identify_controller_reads_mdts_from_spec_offset() {
@@ -279,5 +265,27 @@ mod tests {
         assert_eq!(info.cqes_min, 4);
         assert_eq!(info.cqes_max, 4);
         assert_eq!(info.number_of_namespaces, 3);
+    }
+
+    #[test]
+    fn identify_namespace_preserves_64_bit_capacity_and_selected_lba_format() {
+        let mut data = [0_u8; 4096];
+        data[0..8].copy_from_slice(&0x1_0000_0001_u64.to_le_bytes());
+        data[8..16].copy_from_slice(&0x1_0000_0000_u64.to_le_bytes());
+        data[16..24].copy_from_slice(&7_u64.to_le_bytes());
+        data[25] = 1;
+        data[26] = 1;
+        data[132..134].copy_from_slice(&8_u16.to_le_bytes());
+        data[134] = 12;
+
+        let namespace = IdentifyNamespaceDataStructure::new(1)
+            .parse(&data)
+            .expect("nonzero namespace must parse");
+
+        assert_eq!(namespace.namespace_size, 0x1_0000_0001);
+        assert_eq!(namespace.namespace_capacity, 0x1_0000_0000);
+        assert_eq!(namespace.namespace_used, 7);
+        assert_eq!(namespace.lba_size, 4096);
+        assert_eq!(namespace.metadata_size, 8);
     }
 }

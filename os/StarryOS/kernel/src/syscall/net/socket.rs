@@ -153,8 +153,8 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     if let Some(path) = unix_path
         && let Err(err) = current_fs_context()
             .lock()
-            .resolve_no_follow(path.as_ref())
-            .and_then(|loc| {
+            .with_namespace_operation(|namespace| {
+                let loc = namespace.resolve_path_no_follow(path.as_ref())?;
                 if loc.metadata()?.node_type == NodeType::Socket {
                     loc.update_metadata(MetadataUpdate {
                         owner: Some((cred.fsuid, cred.fsgid)),

@@ -5,7 +5,9 @@ extern crate alloc;
 use alloc::{boxed::Box, sync::Arc};
 use core::ptr::NonNull;
 
-use ax_std::os::arceos::task::{TaskError, ThreadExtension, ThreadExtensionOps, ThreadId};
+use ax_std::os::arceos::task::{
+    TaskError, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadPolicyApplied,
+};
 
 use crate::{
     host::task::CurrentTask,
@@ -90,6 +92,7 @@ pub(crate) fn into_thread_extension(task: VCpuTask) -> ThreadExtension {
 static VCPU_TASK_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: vcpu_task_hook,
     on_switch_out: vcpu_task_switch_out,
+    on_policy_applied: vcpu_task_policy_applied,
     on_exit: vcpu_task_hook,
     on_deadline_overrun: vcpu_task_hook,
     drop: drop_vcpu_task,
@@ -101,6 +104,13 @@ unsafe extern "Rust" fn vcpu_task_switch_out(
     _data: usize,
     _thread: ThreadId,
     _reason: ax_std::os::arceos::task::SwitchReason,
+) {
+}
+
+unsafe extern "Rust" fn vcpu_task_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _event: ThreadPolicyApplied,
 ) {
 }
 

@@ -16,6 +16,7 @@ embedded-hal = "1"
 bitfield-struct = "0.11"
 volatile = { version = "0.6", features = ["derive"] }
 log.workspace = true
+mbarrier = "0.1"
 dma-api.workspace = true
 mmio-api.workspace = true
 rdif-block.workspace = true

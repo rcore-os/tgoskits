@@ -240,7 +240,9 @@ unsafe extern "C" fn x86_trap_handler(raw: *mut RawTrapFrame) {
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
-            crate::trap::dispatch_irq(tf.raw.vector as _);
+            // SAFETY: this branch is reached only from the x86 IDT IRQ entry;
+            // the trap frame retains ownership of the interrupted RFLAGS.
+            unsafe { crate::trap::dispatch_arch_irq(tf.raw.vector as _) };
         }
         _ => {
             let snapshot = tf.snapshot();

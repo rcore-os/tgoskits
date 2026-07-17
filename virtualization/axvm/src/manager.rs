@@ -102,9 +102,9 @@ impl AxvmRuntime {
         crate::runtime::init();
     }
 
-    /// Start all initialized default VMs and wait for them to stop.
-    pub fn start_default_vms(&self) {
-        crate::runtime::start();
+    /// Start all initialized default VMs and wait for successful starts to stop.
+    pub fn start_default_vms(&self) -> crate::runtime::DefaultVmRunReport {
+        crate::runtime::start()
     }
 
     /// Run an operation with a VM selected from the runtime registry.

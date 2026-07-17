@@ -95,4 +95,14 @@ pub struct SerialIrqOutcome {
     pub tx_sent: usize,
     pub tx_wakeup: bool,
     pub budget_exhausted: bool,
+    pub fault: Option<SerialIrqFault>,
+}
+
+/// Fail-closed condition that disabled the portable UART interrupt source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerialIrqFault {
+    /// The raw endpoint claimed an IRQ without a serviceable source.
+    UnknownSource,
+    /// The raw endpoint reported a zero-sized hardware transmit load.
+    InvalidTransmitLoad,
 }

@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -8,8 +9,9 @@ use std::{
 };
 
 use irq_framework::{
-    AutoEnable, CpuId, CpuMask, HwIrq, IrqAffinity, IrqDomainId, IrqError, IrqExecution, IrqId,
-    IrqOps, IrqRequest, IrqReturn, IrqScope, Registry, ShareMode,
+    AutoEnable, CpuId, CpuMask, HwIrq, IrqAffinity, IrqContinuationToken, IrqContinuationWake,
+    IrqDomainId, IrqDrainWake, IrqError, IrqExecution, IrqId, IrqOps, IrqRequest, IrqReturn,
+    IrqScope, Registry, ShareMode,
 };
 
 const TEST_DOMAIN: IrqDomainId = IrqDomainId(1);
@@ -29,9 +31,21 @@ fn irq(raw: usize) -> IrqId {
     domain_irq(TEST_DOMAIN, hwirq)
 }
 
+fn enabled_request(
+    handler: impl FnMut(irq_framework::IrqContext) -> IrqReturn + Send + 'static,
+) -> IrqRequest {
+    IrqRequest::new(handler).auto_enable(AutoEnable::Yes)
+}
+
+fn enabled_concurrent_request(
+    handler: impl Fn(irq_framework::IrqContext) -> IrqReturn + Send + Sync + 'static,
+) -> IrqRequest {
+    IrqRequest::new_concurrent(handler).auto_enable(AutoEnable::Yes)
+}
+
 fn count_request(counter: &AtomicUsize) -> IrqRequest {
     let counter = counter as *const AtomicUsize as usize;
-    IrqRequest::new(move |ctx| {
+    enabled_request(move |ctx| {
         assert!(ctx.irq.hwirq.0 > 0);
         let counter = unsafe { &*(counter as *const AtomicUsize) };
         counter.fetch_add(1, Ordering::SeqCst);
@@ -41,11 +55,71 @@ fn count_request(counter: &AtomicUsize) -> IrqRequest {
 
 fn wake_request(counter: &AtomicUsize) -> IrqRequest {
     let counter = counter as *const AtomicUsize as usize;
-    IrqRequest::new(move |_| {
+    enabled_request(move |_| {
         let counter = unsafe { &*(counter as *const AtomicUsize) };
         counter.fetch_add(1, Ordering::SeqCst);
         IrqReturn::Wake
     })
+}
+
+struct ContinuationCapture {
+    token: UnsafeCell<Option<IrqContinuationToken>>,
+    ready: AtomicBool,
+    wakes: AtomicUsize,
+}
+
+// The IRQ callback is the sole producer and publishes with Release. The test
+// thread is the sole consumer and takes the slot only after an Acquire claim.
+unsafe impl Sync for ContinuationCapture {}
+
+impl ContinuationCapture {
+    fn allocate() -> (&'static Self, &'static IrqContinuationWake) {
+        let capture = Box::leak(Box::new(Self {
+            token: UnsafeCell::new(None),
+            ready: AtomicBool::new(false),
+            wakes: AtomicUsize::new(0),
+        }));
+        let data = core::ptr::from_ref(capture).expose_provenance();
+        let wake = Box::leak(Box::new(unsafe {
+            // SAFETY: both capture and wake are leaked for the test process,
+            // and the callback performs only fixed mutex/atomic publication.
+            IrqContinuationWake::new(data, capture_continuation)
+        }));
+        (capture, wake)
+    }
+
+    fn take(&self) -> IrqContinuationToken {
+        assert!(
+            self.ready.swap(false, Ordering::AcqRel),
+            "deferred dispatch must publish one continuation token"
+        );
+        unsafe {
+            // SAFETY: the Acquire claim above makes this sole consumer own the
+            // slot until the next producer publication.
+            (*self.token.get())
+                .take()
+                .expect("published continuation slot must contain its token")
+        }
+    }
+}
+
+unsafe fn capture_continuation(data: usize, token: IrqContinuationToken) {
+    let capture = unsafe {
+        // SAFETY: `ContinuationCapture::allocate` publishes the address of a
+        // leaked object and this callback is bound only to that address.
+        &*core::ptr::with_exposed_provenance::<ContinuationCapture>(data)
+    };
+    assert!(
+        !capture.ready.load(Ordering::Acquire),
+        "one action cannot publish two live tokens"
+    );
+    unsafe {
+        // SAFETY: line masking permits only this producer until the consumer
+        // finishes the matching token.
+        *capture.token.get() = Some(token);
+    }
+    capture.ready.store(true, Ordering::Release);
+    capture.wakes.fetch_add(1, Ordering::SeqCst);
 }
 
 #[derive(Clone, Default)]
@@ -64,7 +138,14 @@ struct MockInner {
     calls: Mutex<Vec<OpCall>>,
     fail_set_enabled: Mutex<Vec<(usize, Option<usize>, bool)>>,
     fail_set_affinity: AtomicBool,
+    affinity_blocker: Mutex<Option<Arc<AffinityBlocker>>>,
     cpu_sync_calls: AtomicUsize,
+    local_irq_depth: AtomicUsize,
+}
+
+struct AffinityBlocker {
+    entered: Barrier,
+    release: Barrier,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +213,19 @@ impl MockOps {
         self.inner.fail_set_affinity.store(true, Ordering::SeqCst);
     }
 
+    fn set_fail_set_affinity(&self, fail: bool) {
+        self.inner.fail_set_affinity.store(fail, Ordering::SeqCst);
+    }
+
+    fn block_next_affinity(&self) -> Arc<AffinityBlocker> {
+        let blocker = Arc::new(AffinityBlocker {
+            entered: Barrier::new(2),
+            release: Barrier::new(2),
+        });
+        *self.inner.affinity_blocker.lock().unwrap() = Some(Arc::clone(&blocker));
+        blocker
+    }
+
     fn set_line_enabled(&self, irq: usize, cpu: Option<usize>, enabled: bool) {
         let mut states = self.inner.line_enabled.lock().unwrap();
         if let Some((_, _, state)) = states
@@ -191,9 +285,14 @@ unsafe impl IrqOps for MockOps {
         self.inner.in_irq.load(Ordering::SeqCst)
     }
 
-    fn local_irq_save(&self) -> Self::LocalIrqState {}
+    fn local_irq_save(&self) -> Self::LocalIrqState {
+        self.inner.local_irq_depth.fetch_add(1, Ordering::SeqCst);
+    }
 
-    fn local_irq_restore(&self, _state: Self::LocalIrqState) {}
+    fn local_irq_restore(&self, _state: Self::LocalIrqState) {
+        let previous = self.inner.local_irq_depth.fetch_sub(1, Ordering::SeqCst);
+        assert!(previous > 0, "mock local IRQ nesting underflowed");
+    }
 
     fn run_on_cpu_sync(
         &self,
@@ -236,6 +335,11 @@ unsafe impl IrqOps for MockOps {
             irq: raw_irq,
             affinity,
         });
+        let blocker = self.inner.affinity_blocker.lock().unwrap().take();
+        if let Some(blocker) = blocker {
+            blocker.entered.wait();
+            blocker.release.wait();
+        }
         if self.inner.fail_set_affinity.load(Ordering::SeqCst) {
             return Err(IrqError::Controller);
         }
@@ -325,7 +429,7 @@ fn request_restores_enabled_line_without_hal_enable() {
 }
 
 #[test]
-fn request_restores_disabled_line_without_hal_enable() {
+fn explicitly_enabled_request_enables_a_disabled_line() {
     let ops = MockOps::with_cpus(1);
     ops.set_line_enabled(31, None, false);
     let registry = Registry::new(ops.clone());
@@ -333,7 +437,7 @@ fn request_restores_disabled_line_without_hal_enable() {
 
     let handle = registry.request(irq(31), count_request(&counter)).unwrap();
 
-    assert!(!ops.calls().contains(&OpCall::SetEnabled {
+    assert!(ops.calls().contains(&OpCall::SetEnabled {
         irq: 31,
         cpu: None,
         enabled: true,
@@ -341,12 +445,12 @@ fn request_restores_disabled_line_without_hal_enable() {
     ops.set_unsupported_status(true);
     let status = registry.status(handle).unwrap();
     assert!(status.action_enabled);
-    assert!(!status.line_enabled);
+    assert!(status.line_enabled);
     assert_eq!(registry.dispatch(irq(31), CpuId(0)).called, 1);
 }
 
 #[test]
-fn request_auto_enable_no_restores_line_but_keeps_action_disabled() {
+fn disabled_request_keeps_an_unshared_backing_line_masked() {
     let ops = MockOps::with_cpus(1);
     let registry = Registry::new(ops.clone());
     let counter = AtomicUsize::new(0);
@@ -364,35 +468,77 @@ fn request_auto_enable_no_restores_line_but_keeps_action_disabled() {
                 cpu: None,
                 enabled: false,
             },
-            OpCall::SetEnabled {
-                irq: 32,
-                cpu: None,
-                enabled: true,
-            },
         ]
     );
     ops.set_unsupported_status(true);
     let status = registry.status(handle).unwrap();
     assert!(!status.action_enabled);
-    assert!(status.line_enabled);
+    assert!(!status.line_enabled);
     assert_eq!(registry.dispatch(irq(32), CpuId(0)).called, 0);
 }
 
 #[test]
 fn irq_request_exposes_auto_enable_mode() {
-    let counter = AtomicUsize::new(0);
-
-    assert_eq!(count_request(&counter).auto_enable_mode(), AutoEnable::Yes);
     assert_eq!(
-        count_request(&counter)
-            .auto_enable(AutoEnable::No)
-            .auto_enable_mode(),
+        IrqRequest::new(|_| IrqReturn::Handled).auto_enable_mode(),
         AutoEnable::No
     );
     assert_eq!(
-        IrqRequest::new(|_| IrqReturn::Handled).auto_enable_mode(),
+        IrqRequest::new_concurrent(|_| IrqReturn::Handled).auto_enable_mode(),
+        AutoEnable::No
+    );
+    assert_eq!(
+        IrqRequest::new(|_| IrqReturn::Handled)
+            .auto_enable(AutoEnable::Yes)
+            .auto_enable_mode(),
         AutoEnable::Yes
     );
+}
+
+#[test]
+fn request_requires_explicit_enable_before_dispatch() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops);
+    let counter = Arc::new(AtomicUsize::new(0));
+    let handler_counter = Arc::clone(&counter);
+
+    let handle = registry
+        .request(
+            irq(65),
+            IrqRequest::new(move |_| {
+                handler_counter.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::Handled
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(registry.dispatch(irq(65), CpuId(0)).called, 0);
+    let status = registry.status(handle).unwrap();
+    assert!(!status.action_enabled);
+    assert!(!status.line_enabled);
+
+    registry.enable(handle).unwrap();
+    assert_eq!(registry.dispatch(irq(65), CpuId(0)).called, 1);
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn request_from_irq_context_is_rejected_before_controller_transaction() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    let counter = AtomicUsize::new(0);
+    let request = count_request(&counter);
+
+    ops.clear_calls();
+    ops.set_in_irq(true);
+    assert_eq!(
+        registry.request(irq(68), request),
+        Err(IrqError::InIrqContext)
+    );
+    ops.set_in_irq(false);
+
+    assert!(ops.calls().is_empty());
+    assert_eq!(registry.dispatch(irq(68), CpuId(0)).called, 0);
 }
 
 #[test]
@@ -404,7 +550,7 @@ fn boxed_callback_persists_captured_state() {
     registry
         .request(
             irq(46),
-            IrqRequest::new(move |ctx| {
+            enabled_request(move |ctx| {
                 assert_eq!(ctx.irq, irq(46));
                 callback_calls.fetch_add(1, Ordering::SeqCst);
                 IrqReturn::Wake
@@ -425,13 +571,316 @@ fn boxed_callback_persists_captured_state() {
 }
 
 #[test]
+fn quench_and_wake_masks_shared_line_until_recovery_releases_owner() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops);
+    let peer_calls = Arc::new(AtomicUsize::new(0));
+    let quench_calls = Arc::new(AtomicUsize::new(0));
+
+    let peer_counter = Arc::clone(&peer_calls);
+    let peer = registry
+        .request(
+            irq(51),
+            enabled_request(move |_| {
+                peer_counter.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::Handled
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let quench_counter = Arc::clone(&quench_calls);
+    let failing = registry
+        .request(
+            irq(51),
+            enabled_request(move |_| {
+                quench_counter.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::QuenchAndWake
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let first = registry.dispatch(irq(51), CpuId(0));
+    assert!(first.handled);
+    assert!(first.wake);
+    assert_eq!(first.called, 2);
+    assert!(!registry.status(failing).unwrap().action_enabled);
+    assert!(registry.status(failing).unwrap().quench_owned);
+    assert!(!registry.status(failing).unwrap().line_enabled);
+    assert!(registry.status(peer).unwrap().action_enabled);
+
+    registry.release_quench(failing).unwrap();
+    assert!(!registry.status(failing).unwrap().quench_owned);
+    assert!(registry.status(peer).unwrap().line_enabled);
+
+    let second = registry.dispatch(irq(51), CpuId(0));
+    assert!(second.handled);
+    assert!(!second.wake);
+    assert_eq!(second.called, 1);
+    assert_eq!(quench_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(peer_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn quench_and_wake_masks_an_unshared_line_before_dispatch_returns() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    let action = registry
+        .request(irq(52), enabled_request(|_| IrqReturn::QuenchAndWake))
+        .unwrap();
+    ops.clear_calls();
+
+    let outcome = registry.dispatch(irq(52), CpuId(0));
+    assert!(outcome.handled);
+    assert!(outcome.wake);
+    let status = registry.status(action).unwrap();
+    assert!(!status.action_enabled);
+    assert!(!status.line_enabled);
+    assert!(ops.calls().contains(&OpCall::SetEnabled {
+        irq: 52,
+        cpu: None,
+        enabled: false,
+    }));
+    assert_eq!(registry.dispatch(irq(52), CpuId(0)).called, 0);
+}
+
+#[test]
+#[should_panic(expected = "IRQ controller failed the emergency line quench invariant")]
+fn emergency_quench_mask_failure_is_fatal_before_dispatch_returns() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    registry
+        .request(irq(56), enabled_request(|_| IrqReturn::QuenchAndWake))
+        .unwrap();
+    ops.fail_set_enabled(56, None, false);
+
+    let _ = registry.dispatch(irq(56), CpuId(0));
+}
+
+#[test]
+fn every_shared_quench_owner_must_release_before_the_line_reopens() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let peer = registry
+        .request(
+            irq(53),
+            enabled_request(|_| IrqReturn::Handled).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let first = registry
+        .request(
+            irq(53),
+            enabled_request(|_| IrqReturn::QuenchAndWake).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let second = registry
+        .request(
+            irq(53),
+            enabled_request(|_| IrqReturn::QuenchAndWake).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    registry.dispatch(irq(53), CpuId(0));
+    assert!(!registry.status(peer).unwrap().line_enabled);
+
+    registry.release_quench(first).unwrap();
+    assert!(!registry.status(peer).unwrap().line_enabled);
+
+    registry.release_quench(second).unwrap();
+    assert!(registry.status(peer).unwrap().line_enabled);
+}
+
+#[test]
+fn per_cpu_quench_masks_only_the_cpu_that_observed_the_failure() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let cpus = CpuMask::first_n(2);
+    let peer = registry
+        .request(
+            irq(55),
+            enabled_concurrent_request(|_| IrqReturn::Handled)
+                .scope(IrqScope::PerCpu { cpus })
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let failing = registry
+        .request(
+            irq(55),
+            enabled_concurrent_request(|_| IrqReturn::QuenchAndWake)
+                .scope(IrqScope::PerCpu { cpus })
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    registry.dispatch(irq(55), CpuId(0));
+    ops.set_current_cpu(0);
+    assert!(!registry.status(peer).unwrap().line_enabled);
+    ops.set_current_cpu(1);
+    assert!(registry.status(peer).unwrap().line_enabled);
+
+    registry.release_per_cpu_quench(failing, CpuId(0)).unwrap();
+    ops.set_current_cpu(0);
+    assert!(registry.status(peer).unwrap().line_enabled);
+}
+
+#[test]
+fn per_cpu_quench_never_rendezvous_with_a_remote_cpu_from_hard_irq() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let action = registry
+        .request(
+            irq(58),
+            enabled_concurrent_request(|ctx| {
+                if ctx.cpu == CpuId(0) {
+                    IrqReturn::QuenchAndWake
+                } else {
+                    IrqReturn::Handled
+                }
+            })
+            .scope(IrqScope::PerCpu {
+                cpus: CpuMask::first_n(2),
+            }),
+        )
+        .unwrap();
+
+    ops.set_current_cpu(0);
+    ops.set_in_irq(true);
+    let outcome = registry.dispatch(irq(58), CpuId(0));
+    ops.set_in_irq(false);
+    assert!(outcome.handled);
+    assert!(outcome.wake);
+    assert!(registry.status(action).unwrap().quench_owned);
+    assert!(!registry.status(action).unwrap().line_enabled);
+
+    ops.set_current_cpu(1);
+    assert!(registry.status(action).unwrap().line_enabled);
+    ops.set_in_irq(true);
+    assert_eq!(registry.dispatch(irq(58), CpuId(1)).called, 1);
+    ops.set_in_irq(false);
+
+    registry.release_per_cpu_quench(action, CpuId(0)).unwrap();
+    registry.free(action).unwrap();
+}
+
+#[test]
+fn releasing_one_per_cpu_quench_does_not_release_another_cpu() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let action = registry
+        .request(
+            irq(62),
+            enabled_concurrent_request(|_| IrqReturn::QuenchAndWake).scope(IrqScope::PerCpu {
+                cpus: CpuMask::first_n(2),
+            }),
+        )
+        .unwrap();
+
+    registry.dispatch(irq(62), CpuId(0));
+    registry.dispatch(irq(62), CpuId(1));
+    ops.set_current_cpu(0);
+    assert!(!registry.status(action).unwrap().line_enabled);
+    ops.set_current_cpu(1);
+    assert!(!registry.status(action).unwrap().line_enabled);
+
+    ops.set_current_cpu(0);
+    registry.release_per_cpu_quench(action, CpuId(0)).unwrap();
+    assert!(registry.status(action).unwrap().line_enabled);
+    ops.set_current_cpu(1);
+    assert!(
+        !registry.status(action).unwrap().line_enabled,
+        "CPU1 must retain independent quench ownership"
+    );
+
+    registry.release_per_cpu_quench(action, CpuId(1)).unwrap();
+    registry.free(action).unwrap();
+}
+
+#[test]
+fn quench_release_requires_an_explicit_matching_scope() {
+    let registry = Registry::new(MockOps::with_cpus(2));
+    let global = registry
+        .request(irq(63), enabled_request(|_| IrqReturn::QuenchAndWake))
+        .unwrap();
+    registry.dispatch(irq(63), CpuId(0));
+    assert_eq!(
+        registry.release_per_cpu_quench(global, CpuId(0)),
+        Err(IrqError::InvalidCpu)
+    );
+    assert!(registry.status(global).unwrap().quench_owned);
+    registry.release_quench(global).unwrap();
+    registry.free(global).unwrap();
+
+    let per_cpu = registry
+        .request(
+            irq(64),
+            enabled_concurrent_request(|_| IrqReturn::QuenchAndWake).scope(IrqScope::PerCpu {
+                cpus: CpuMask::first_n(2),
+            }),
+        )
+        .unwrap();
+    registry.dispatch(irq(64), CpuId(0));
+    assert_eq!(registry.release_quench(per_cpu), Err(IrqError::InvalidCpu));
+    assert_eq!(
+        registry.release_per_cpu_quench(per_cpu, CpuId(2)),
+        Err(IrqError::InvalidCpu)
+    );
+    assert!(registry.status(per_cpu).unwrap().quench_owned);
+    registry.release_per_cpu_quench(per_cpu, CpuId(0)).unwrap();
+    registry.free(per_cpu).unwrap();
+}
+
+#[test]
+fn quenched_action_cannot_be_enabled_or_freed_before_release() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    let action = registry
+        .request(irq(54), enabled_request(|_| IrqReturn::QuenchAndWake))
+        .unwrap();
+
+    registry.dispatch(irq(54), CpuId(0));
+    assert_eq!(registry.enable(action), Err(IrqError::Busy));
+    assert_eq!(registry.free(action), Err(IrqError::Busy));
+    ops.set_in_irq(true);
+    assert_eq!(registry.release_quench(action), Err(IrqError::InIrqContext));
+    ops.set_in_irq(false);
+
+    registry.release_quench(action).unwrap();
+    registry.free(action).unwrap();
+}
+
+#[test]
+fn quenched_action_cannot_start_an_async_drain_generation() {
+    unsafe fn notify_drain(data: usize) {
+        let notifications = unsafe { &*(data as *const AtomicUsize) };
+        notifications.fetch_add(1, Ordering::SeqCst);
+    }
+
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let action = registry
+        .request(irq(59), enabled_request(|_| IrqReturn::QuenchAndWake))
+        .unwrap();
+    registry.dispatch(irq(59), CpuId(0));
+
+    let notifications = Box::leak(Box::new(AtomicUsize::new(0)));
+    let wake = Box::leak(Box::new(unsafe {
+        // SAFETY: both allocations are leaked for shutdown lifetime, and the
+        // callback performs only a lock-free atomic increment.
+        IrqDrainWake::new(notifications as *const AtomicUsize as usize, notify_drain)
+    }));
+    assert_eq!(registry.disable_async(action, wake), Err(IrqError::Busy));
+    assert_eq!(notifications.load(Ordering::SeqCst), 0);
+
+    registry.release_quench(action).unwrap();
+    registry.free(action).unwrap();
+}
+
+#[test]
 fn boxed_callback_rejects_concurrent_execution() {
     let registry = Registry::new(MockOps::with_cpus(1));
 
     let err = registry
         .request(
             irq(47),
-            IrqRequest::new(|_| IrqReturn::Handled).execution(IrqExecution::Concurrent),
+            enabled_request(|_| IrqReturn::Handled).execution(IrqExecution::Concurrent),
         )
         .unwrap_err();
 
@@ -451,7 +900,7 @@ fn boxed_callback_is_non_reentrant() {
     registry
         .request(
             irq(48),
-            IrqRequest::new(move |_| {
+            enabled_request(move |_| {
                 callback_calls.fetch_add(1, Ordering::SeqCst);
                 callback_entered.wait();
                 callback_release.wait();
@@ -555,6 +1004,35 @@ fn failed_request_restores_line_and_drops_new_action() {
 }
 
 #[test]
+fn failed_request_never_publishes_handler_while_affinity_is_uncommitted() {
+    let ops = MockOps::with_cpus(1);
+    ops.set_fail_set_affinity(true);
+    let affinity = ops.block_next_affinity();
+    let registry = Arc::new(Registry::new(ops.clone()));
+    let request_registry = Arc::clone(&registry);
+    let request = thread::spawn(move || {
+        request_registry.request(
+            irq(61),
+            enabled_request(|_| IrqReturn::QuenchAndWake).affinity(IrqAffinity::Fixed(CpuId(0))),
+        )
+    });
+
+    affinity.entered.wait();
+    let outcome = registry.dispatch(irq(61), CpuId(0));
+    assert_eq!(outcome.called, 0);
+    assert!(!outcome.handled);
+    assert!(!outcome.wake);
+    affinity.release.wait();
+    assert_eq!(request.join().unwrap(), Err(IrqError::Controller));
+
+    ops.set_fail_set_affinity(false);
+    let replacement = registry
+        .request(irq(61), enabled_request(|_| IrqReturn::Handled))
+        .expect("a failed registration must not retain a hidden quench owner");
+    registry.free(replacement).unwrap();
+}
+
+#[test]
 fn failed_restore_after_request_drops_new_action() {
     let ops = MockOps::with_cpus(1);
     ops.fail_set_enabled(36, None, true);
@@ -574,6 +1052,11 @@ fn failed_restore_after_request_drops_new_action() {
                 irq: 36,
                 cpu: None,
                 enabled: false,
+            },
+            OpCall::SetEnabled {
+                irq: 36,
+                cpu: None,
+                enabled: true,
             },
             OpCall::SetEnabled {
                 irq: 36,
@@ -636,7 +1119,7 @@ fn failed_percpu_snapshot_restores_already_disabled_cpu_lines() {
 }
 
 #[test]
-fn percpu_request_temporarily_disables_and_restores_online_target_cpu_line() {
+fn disabled_percpu_request_keeps_target_cpu_line_masked() {
     let ops = MockOps::with_cpus(4);
     ops.set_current_cpu(0);
     let registry = Registry::new(ops.clone());
@@ -665,14 +1148,9 @@ fn percpu_request_temporarily_disables_and_restores_online_target_cpu_line() {
                 cpu: Some(2),
                 enabled: false,
             },
-            OpCall::SetEnabled {
-                irq: 35,
-                cpu: Some(2),
-                enabled: true,
-            },
         ]
     );
-    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(ops.inner.cpu_sync_calls.load(Ordering::SeqCst), 1);
     assert_eq!(registry.dispatch(irq(35), CpuId(2)).called, 0);
 }
 
@@ -719,6 +1197,37 @@ fn dynamic_shared_actions_all_dispatch() {
 }
 
 #[test]
+fn shared_actions_may_use_independent_execution_contracts() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let serialized = AtomicUsize::new(0);
+    let concurrent = AtomicUsize::new(0);
+    let concurrent_ptr = &concurrent as *const AtomicUsize as usize;
+
+    registry
+        .request(
+            irq(44),
+            count_request(&serialized).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    registry
+        .request(
+            irq(44),
+            enabled_concurrent_request(move |_| {
+                let counter = unsafe { &*(concurrent_ptr as *const AtomicUsize) };
+                counter.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::Handled
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(44), CpuId(0));
+    assert_eq!(outcome.called, 2);
+    assert_eq!(serialized.load(Ordering::SeqCst), 1);
+    assert_eq!(concurrent.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn shared_dispatch_does_not_short_circuit_on_handled() {
     let registry = Registry::new(MockOps::with_cpus(1));
     let handled_counter = AtomicUsize::new(0);
@@ -743,6 +1252,60 @@ fn shared_dispatch_does_not_short_circuit_on_handled() {
     assert_eq!(outcome.called, 2);
     assert_eq!(handled_counter.load(Ordering::SeqCst), 1);
     assert_eq!(wake_counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn shared_handlers_may_all_decline_the_interrupt() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+
+    registry
+        .request(
+            irq(66),
+            enabled_request(|_| IrqReturn::Unhandled).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    registry
+        .request(
+            irq(66),
+            enabled_request(|_| IrqReturn::Unhandled).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(66), CpuId(0));
+    assert!(!outcome.handled);
+    assert!(!outcome.wake);
+    assert_eq!(outcome.called, 2);
+}
+
+#[test]
+fn disabled_shared_joiner_does_not_mask_an_enabled_peer() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let peer_calls = AtomicUsize::new(0);
+    let disabled_calls = AtomicUsize::new(0);
+
+    registry
+        .request(
+            irq(67),
+            count_request(&peer_calls).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let disabled = registry
+        .request(
+            irq(67),
+            count_request(&disabled_calls)
+                .share_mode(ShareMode::Shared)
+                .auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+
+    let status = registry.status(disabled).unwrap();
+    assert!(!status.action_enabled);
+    assert!(status.line_enabled);
+    let outcome = registry.dispatch(irq(67), CpuId(0));
+    assert!(outcome.handled);
+    assert_eq!(outcome.called, 1);
+    assert_eq!(peer_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(disabled_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -889,6 +1452,33 @@ fn shared_actions_must_use_same_affinity() {
 }
 
 #[test]
+fn shared_any_action_inherits_the_existing_fixed_line_affinity() {
+    let registry = Registry::new(MockOps::with_cpus(2));
+    let fixed = AtomicUsize::new(0);
+    let unconstrained = AtomicUsize::new(0);
+
+    registry
+        .request(
+            irq(45),
+            count_request(&fixed)
+                .share_mode(ShareMode::Shared)
+                .affinity(IrqAffinity::Fixed(CpuId(0))),
+        )
+        .unwrap();
+    registry
+        .request(
+            irq(45),
+            count_request(&unconstrained).share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(45), CpuId(0));
+    assert_eq!(outcome.called, 2);
+    assert_eq!(fixed.load(Ordering::SeqCst), 1);
+    assert_eq!(unconstrained.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn free_waits_for_inflight_dispatch_and_detaches_action() {
     struct Blocker {
         entered: Arc<Barrier>,
@@ -906,7 +1496,7 @@ fn free_waits_for_inflight_dispatch_and_detaches_action() {
     let handle = registry
         .request(
             irq(11),
-            IrqRequest::new(move |_| {
+            enabled_request(move |_| {
                 handler_blocker.calls.fetch_add(1, Ordering::SeqCst);
                 handler_blocker.entered.wait();
                 handler_blocker.release.wait();
@@ -954,7 +1544,7 @@ fn non_reentrant_action_skips_nested_dispatch() {
     registry
         .request(
             irq(44),
-            IrqRequest::new(move |_| {
+            enabled_request(move |_| {
                 handler_blocker.calls.fetch_add(1, Ordering::SeqCst);
                 handler_blocker.entered.wait();
                 handler_blocker.release.wait();
@@ -995,7 +1585,7 @@ fn synchronize_waits_for_inflight_dispatch() {
     let handle = registry
         .request(
             irq(45),
-            IrqRequest::new(move |_| {
+            enabled_request(move |_| {
                 handler_blocker.entered.wait();
                 handler_blocker.release.wait();
                 IrqReturn::Handled
@@ -1015,6 +1605,340 @@ fn synchronize_waits_for_inflight_dispatch() {
     blocker.release.wait();
     dispatch_thread.join().unwrap();
     sync_thread.join().unwrap().unwrap();
+}
+
+#[test]
+fn async_disable_drains_only_the_selected_shared_action() {
+    struct SharedBlockers {
+        action_entered: Barrier,
+        action_release: Barrier,
+        peer_entered: Barrier,
+        peer_release: Barrier,
+    }
+
+    unsafe fn notify_drain(data: usize) {
+        let notified = unsafe { &*(data as *const AtomicUsize) };
+        notified.fetch_add(1, Ordering::SeqCst);
+    }
+
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let blockers = Arc::new(SharedBlockers {
+        action_entered: Barrier::new(2),
+        action_release: Barrier::new(2),
+        peer_entered: Barrier::new(2),
+        peer_release: Barrier::new(2),
+    });
+
+    let peer_blockers = Arc::clone(&blockers);
+    registry
+        .request(
+            irq(50),
+            enabled_request(move |_| {
+                peer_blockers.peer_entered.wait();
+                peer_blockers.peer_release.wait();
+                IrqReturn::Handled
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let action_blockers = Arc::clone(&blockers);
+    let action = registry
+        .request(
+            irq(50),
+            enabled_request(move |_| {
+                action_blockers.action_entered.wait();
+                action_blockers.action_release.wait();
+                IrqReturn::Handled
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let first_registry = Arc::clone(&registry);
+    let first = thread::spawn(move || first_registry.dispatch(irq(50), CpuId(0)));
+    blockers.action_entered.wait();
+
+    let notified = Box::leak(Box::new(AtomicUsize::new(0)));
+    let wake = Box::leak(Box::new(unsafe {
+        // SAFETY: `notified` and the wake object are leaked for shutdown
+        // lifetime, and the callback performs one lock-free atomic increment.
+        IrqDrainWake::new(notified as *const AtomicUsize as usize, notify_drain)
+    }));
+    let drain = registry.disable_async(action, wake).unwrap();
+    assert!(!registry.action_drain_complete(drain).unwrap());
+
+    let peer_registry = Arc::clone(&registry);
+    let peer = thread::spawn(move || peer_registry.dispatch(irq(50), CpuId(0)));
+    blockers.peer_entered.wait();
+
+    blockers.action_release.wait();
+    assert!(first.join().unwrap().handled);
+    assert_eq!(notified.load(Ordering::SeqCst), 1);
+    assert!(registry.action_drain_complete(drain).unwrap());
+    assert!(
+        !peer.is_finished(),
+        "an unrelated shared action must not be part of this drain token"
+    );
+
+    blockers.peer_release.wait();
+    assert!(peer.join().unwrap().handled);
+}
+
+#[test]
+fn immediately_drained_action_notifies_after_releasing_registry_metadata() {
+    struct DrainProbe {
+        ops: MockOps,
+        observed_local_irq_depth: AtomicUsize,
+    }
+
+    unsafe fn record_irq_depth(data: usize) {
+        let probe = unsafe { &*(data as *const DrainProbe) };
+        probe.observed_local_irq_depth.store(
+            probe.ops.inner.local_irq_depth.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+    }
+
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    let action = registry
+        .request(
+            irq(60),
+            enabled_request(|_| IrqReturn::Handled).auto_enable(AutoEnable::No),
+        )
+        .unwrap();
+    let probe = Box::leak(Box::new(DrainProbe {
+        ops,
+        observed_local_irq_depth: AtomicUsize::new(usize::MAX),
+    }));
+    let wake = Box::leak(Box::new(unsafe {
+        // SAFETY: the probe and notification are leaked for shutdown lifetime;
+        // the callback only reads and writes atomics.
+        IrqDrainWake::new(probe as *const DrainProbe as usize, record_irq_depth)
+    }));
+
+    let token = registry.disable_async(action, wake).unwrap();
+    assert_eq!(probe.observed_local_irq_depth.load(Ordering::SeqCst), 0);
+    assert!(registry.action_drain_complete(token).unwrap());
+    registry.free(action).unwrap();
+}
+
+#[test]
+fn detached_fixed_host_allows_any_guest_then_reattaches_disabled() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops);
+    let host_calls = AtomicUsize::new(0);
+    let guest_calls = AtomicUsize::new(0);
+    let irq = irq(51);
+
+    let host = registry
+        .request(
+            irq,
+            count_request(&host_calls).affinity(IrqAffinity::Fixed(CpuId(1))),
+        )
+        .unwrap();
+    registry.disable(host).unwrap();
+    registry.synchronize(host).unwrap();
+
+    let detached_host = registry.detach_action(host).unwrap();
+    assert_eq!(registry.status(host), Err(IrqError::NotFound));
+
+    let guest = registry.request(irq, count_request(&guest_calls)).unwrap();
+    assert_eq!(registry.dispatch(irq, CpuId(0)).called, 1);
+    assert_eq!(guest_calls.load(Ordering::SeqCst), 1);
+    registry.free(guest).unwrap();
+
+    let reattached_host = registry.reattach_action(detached_host).unwrap();
+    assert_ne!(reattached_host, host);
+    assert_eq!(registry.enable(host), Err(IrqError::NotFound));
+    assert!(!registry.status(reattached_host).unwrap().action_enabled);
+    assert_eq!(registry.dispatch(irq, CpuId(1)).called, 0);
+
+    registry.enable(reattached_host).unwrap();
+    assert_eq!(registry.dispatch(irq, CpuId(1)).called, 1);
+    assert_eq!(host_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_reattach_returns_the_unique_action_for_retry() {
+    let registry = Registry::new(MockOps::with_cpus(2));
+    let host_calls = AtomicUsize::new(0);
+    let guest_calls = AtomicUsize::new(0);
+    let irq = irq(52);
+
+    let host = registry
+        .request(
+            irq,
+            count_request(&host_calls).affinity(IrqAffinity::Fixed(CpuId(1))),
+        )
+        .unwrap();
+    registry.disable(host).unwrap();
+    registry.synchronize(host).unwrap();
+    let detached_host = registry.detach_action(host).unwrap();
+
+    let guest = registry.request(irq, count_request(&guest_calls)).unwrap();
+    let error = registry.reattach_action(detached_host).unwrap_err();
+    assert_eq!(error.reason(), IrqError::Busy);
+    let detached_host = error.into_action();
+
+    registry.free(guest).unwrap();
+    let host = registry.reattach_action(detached_host).unwrap();
+    assert!(!registry.status(host).unwrap().action_enabled);
+}
+
+#[test]
+fn controller_failure_during_reattach_rolls_back_and_returns_the_action() {
+    let ops = MockOps::with_cpus(2);
+    let registry = Registry::new(ops.clone());
+    let calls = AtomicUsize::new(0);
+    let irq = irq(53);
+
+    let host = registry
+        .request(
+            irq,
+            count_request(&calls).affinity(IrqAffinity::Fixed(CpuId(1))),
+        )
+        .unwrap();
+    registry.disable(host).unwrap();
+    registry.synchronize(host).unwrap();
+    let detached_host = registry.detach_action(host).unwrap();
+
+    ops.set_fail_set_affinity(true);
+    let error = registry.reattach_action(detached_host).unwrap_err();
+    assert_eq!(error.reason(), IrqError::Controller);
+    let detached_host = error.into_action();
+    assert_eq!(registry.dispatch(irq, CpuId(1)).called, 0);
+
+    let guest_calls = AtomicUsize::new(0);
+    let guest = registry.request(irq, count_request(&guest_calls)).unwrap();
+    registry.free(guest).unwrap();
+
+    ops.set_fail_set_affinity(false);
+    let host = registry.reattach_action(detached_host).unwrap();
+    assert!(!registry.status(host).unwrap().action_enabled);
+}
+
+#[test]
+fn failed_detach_keeps_the_registered_action_and_handle() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    let calls = AtomicUsize::new(0);
+    let irq = irq(55);
+    let handle = registry.request(irq, count_request(&calls)).unwrap();
+
+    assert!(matches!(
+        registry.detach_action(handle),
+        Err(IrqError::Busy)
+    ));
+    assert!(registry.status(handle).unwrap().action_enabled);
+    assert_eq!(registry.dispatch(irq, CpuId(0)).called, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    registry.free(handle).unwrap();
+}
+
+#[test]
+fn in_flight_action_cannot_be_detached_or_destroyed() {
+    struct HandlerOwner(Arc<AtomicUsize>);
+
+    impl Drop for HandlerOwner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let handler_entered = Arc::clone(&entered);
+    let handler_release = Arc::clone(&release);
+    let handler_owner = HandlerOwner(Arc::clone(&drops));
+    let irq = irq(54);
+    let handle = registry
+        .request(
+            irq,
+            enabled_request(move |_| {
+                let _keep_owner_alive = &handler_owner;
+                handler_entered.wait();
+                handler_release.wait();
+                IrqReturn::Handled
+            }),
+        )
+        .unwrap();
+
+    let dispatch_registry = Arc::clone(&registry);
+    let dispatch_thread = thread::spawn(move || dispatch_registry.dispatch(irq, CpuId(0)));
+    entered.wait();
+
+    registry.disable(handle).unwrap();
+    assert!(matches!(
+        registry.detach_action(handle),
+        Err(IrqError::Busy)
+    ));
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    release.wait();
+    assert!(dispatch_thread.join().unwrap().handled);
+    registry.synchronize(handle).unwrap();
+    let detached = registry.detach_action(handle).unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(detached);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn free_racing_quench_retains_the_action_until_recovery_releases_it() {
+    let registry = Arc::new(Registry::new(MockOps::with_cpus(1)));
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let handler_entered = Arc::clone(&entered);
+    let handler_release = Arc::clone(&release);
+    let irq = irq(57);
+    let handle = registry
+        .request(
+            irq,
+            enabled_request(move |_| {
+                handler_entered.wait();
+                handler_release.wait();
+                IrqReturn::QuenchAndWake
+            }),
+        )
+        .unwrap();
+
+    let dispatch_registry = Arc::clone(&registry);
+    let dispatch_thread = thread::spawn(move || dispatch_registry.dispatch(irq, CpuId(0)));
+    entered.wait();
+
+    let free_registry = Arc::clone(&registry);
+    let free_thread = thread::spawn(move || free_registry.free(handle));
+    let transition_deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match registry.status(handle) {
+            Ok(status) if !status.action_enabled => break,
+            Err(IrqError::NotFound) => break,
+            Ok(_) => {}
+            Err(error) => panic!("unexpected action state while free starts: {error:?}"),
+        }
+        assert!(
+            std::time::Instant::now() < transition_deadline,
+            "free did not disable the in-flight action"
+        );
+        thread::yield_now();
+    }
+
+    release.wait();
+    let outcome = dispatch_thread
+        .join()
+        .expect("a racing free must not turn a valid quench into a fatal invariant");
+    assert!(outcome.handled);
+    assert!(outcome.wake);
+    assert_eq!(free_thread.join().unwrap(), Err(IrqError::Busy));
+    assert!(registry.status(handle).unwrap().quench_owned);
+
+    registry.release_quench(handle).unwrap();
+    registry.free(handle).unwrap();
 }
 
 #[test]
@@ -1058,7 +1982,7 @@ fn per_cpu_concurrent_action_allows_parallel_dispatch_on_different_cpus() {
     registry
         .request(
             irq(49),
-            IrqRequest::new_concurrent(move |ctx| {
+            enabled_concurrent_request(move |ctx| {
                 handler_blocker.calls.fetch_add(1, Ordering::SeqCst);
                 handler_blocker.entered.send(ctx.cpu).unwrap();
                 handler_blocker.release.wait();
@@ -1290,6 +2214,16 @@ fn offline_cpu_enable_is_applied_when_cpu_comes_online() {
 }
 
 #[test]
+fn cpu_online_bookkeeping_is_rejected_from_irq_context() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+
+    ops.set_in_irq(true);
+    assert_eq!(registry.cpu_online(CpuId(0)), Err(IrqError::InIrqContext));
+    ops.set_in_irq(false);
+}
+
+#[test]
 fn pending_enable_is_tracked_per_cpu() {
     let ops = MockOps::with_cpus(4);
     ops.set_current_cpu(0);
@@ -1384,7 +2318,7 @@ fn status_queries_controller_state() {
 
     let status = registry.status(handle).unwrap();
     assert!(!status.action_enabled);
-    assert!(status.line_enabled);
+    assert!(!status.line_enabled);
     assert!(!status.pending);
     assert!(!status.in_service);
     assert_eq!(status.in_flight, 0);
@@ -1625,4 +2559,51 @@ fn free_from_irq_context_is_rejected() {
     assert_eq!(registry.free(handle), Err(IrqError::InIrqContext));
     ops.set_in_irq(false);
     registry.free(handle).unwrap();
+}
+
+#[test]
+fn shared_line_reopens_only_after_every_deferred_action_generation_finishes() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops.clone());
+    let (first_capture, first_wake) = ContinuationCapture::allocate();
+    let (second_capture, second_wake) = ContinuationCapture::allocate();
+
+    let first = registry
+        .request(
+            irq(81),
+            enabled_request(move |_| IrqReturn::Defer(first_wake))
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    let second = registry
+        .request(
+            irq(81),
+            enabled_request(move |_| IrqReturn::Defer(second_wake))
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(81), CpuId(0));
+    assert!(outcome.handled && outcome.wake);
+    assert_eq!(first_capture.wakes.load(Ordering::Acquire), 1);
+    assert_eq!(second_capture.wakes.load(Ordering::Acquire), 1);
+    assert!(registry.status(first).unwrap().continuation_pending);
+    assert!(registry.status(second).unwrap().continuation_pending);
+    assert!(!registry.status(first).unwrap().line_enabled);
+
+    registry
+        .finish_continuation(first_capture.take())
+        .unwrap();
+    assert!(
+        !registry.status(first).unwrap().line_enabled,
+        "the second shared action still owns the masked line"
+    );
+    assert!(!registry.status(first).unwrap().continuation_pending);
+    assert!(registry.status(second).unwrap().continuation_pending);
+
+    registry
+        .finish_continuation(second_capture.take())
+        .unwrap();
+    assert!(registry.status(first).unwrap().line_enabled);
+    assert!(!registry.status(second).unwrap().continuation_pending);
 }

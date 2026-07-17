@@ -180,6 +180,24 @@ fn scheduler_scope_activation_does_not_leak_preemption_context() {
 }
 
 #[test]
+fn unpublished_scope_initialization_does_not_enter_preemption_context() {
+    let _guard = test_guard();
+    PREEMPT_DEPTH.store(0, Ordering::Release);
+    scope_local! {
+        static DATA: usize = 7;
+    }
+
+    let mut scope = ScopeCell::new();
+    *DATA.scope_cell_mut_unpublished(&mut scope) = 41;
+
+    assert_eq!(PREEMPT_DEPTH.load(Ordering::Acquire), 0);
+    let read = scope.read();
+    assert_eq!(*DATA.scope_cell(&read), 41);
+    drop(read);
+    assert_eq!(PREEMPT_DEPTH.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn active_scope_mutation_unwind_releases_the_writer_and_keeps_the_binding() {
     let _guard = test_guard();
     PREEMPT_DEPTH.store(0, Ordering::Release);

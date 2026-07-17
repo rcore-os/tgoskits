@@ -230,6 +230,72 @@ fn grouped_runner_shell_init_uses_short_exec_command_without_autorun() {
 }
 
 #[test]
+fn required_success_match_prevents_guest_shutdown_from_passing() {
+    let mut qemu = QemuConfig {
+        success_regex: vec!["SUITE_PASSED".to_string()],
+        ..Default::default()
+    };
+
+    require_qemu_success_match_before_guest_shutdown(&mut qemu);
+
+    assert!(qemu.args.iter().any(|arg| arg == "-no-shutdown"));
+    assert!(
+        qemu.fail_regex
+            .iter()
+            .any(|pattern| pattern.contains("terminating on signal")),
+        "an externally terminated QEMU process must not pass without the required marker"
+    );
+    let termination = regex::Regex::new(
+        qemu.fail_regex
+            .iter()
+            .find(|pattern| pattern.contains("terminating on signal"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        termination
+            .is_match("qemu-system-x86_64: terminating on signal 15 from pid 271828 (timeout)\n")
+    );
+}
+
+#[test]
+fn qemu_without_required_success_keeps_normal_shutdown_semantics() {
+    let mut qemu = QemuConfig::default();
+
+    require_qemu_success_match_before_guest_shutdown(&mut qemu);
+
+    assert!(!qemu.args.iter().any(|arg| arg == "-no-shutdown"));
+    assert!(qemu.fail_regex.is_empty());
+}
+
+#[test]
+fn required_success_guard_is_idempotent_with_existing_no_shutdown() {
+    let mut qemu = QemuConfig {
+        args: vec!["-no-shutdown".to_string()],
+        success_regex: vec!["SUITE_PASSED".to_string()],
+        ..Default::default()
+    };
+
+    require_qemu_success_match_before_guest_shutdown(&mut qemu);
+    require_qemu_success_match_before_guest_shutdown(&mut qemu);
+
+    assert_eq!(
+        qemu.args
+            .iter()
+            .filter(|arg| arg.as_str() == "-no-shutdown")
+            .count(),
+        1
+    );
+    assert_eq!(
+        qemu.fail_regex
+            .iter()
+            .filter(|pattern| pattern.contains("terminating on signal"))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn grouped_cache_key_tracks_runner_autorun_config() {
     let root = tempdir().unwrap();
     let shared_img = root.path().join("rootfs.img");

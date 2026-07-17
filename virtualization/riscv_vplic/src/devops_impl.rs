@@ -2,11 +2,28 @@
 //!
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
+use core::sync::atomic::Ordering;
+
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType};
 use axvm_types::GuestPhysAddrRange;
 use bitmaps::Bitmap;
 
 use crate::{ForwardedBatchError, VplicError, VplicResult, consts::*, vplic::VPlicGlobal};
+
+const FORWARDED_ROUTE_BATCH_MAX: usize = 64;
+
+fn validate_forwarded_route_batch(route_generation: u64, irq_ids: &[usize]) -> VplicResult {
+    if route_generation == 0 {
+        return Err(VplicError::InvalidForwardedGeneration);
+    }
+    if irq_ids.len() > FORWARDED_ROUTE_BATCH_MAX {
+        return Err(VplicError::ForwardedBatchTooLarge {
+            actual: irq_ids.len(),
+            maximum: FORWARDED_ROUTE_BATCH_MAX,
+        });
+    }
+    Ok(())
+}
 
 impl VPlicGlobal {
     fn validate_irq_id(irq_id: usize) -> VplicResult {
@@ -56,34 +73,160 @@ impl VPlicGlobal {
         &self,
         irq_ids: &[usize],
     ) -> Result<(), ForwardedBatchError> {
+        self.set_forwarded_pending_batch_for_generation(irq_ids, 1)
+    }
+
+    /// Transfers a bounded physical-source batch under one route generation.
+    ///
+    /// A different nonzero generation cannot reuse a source until normal
+    /// completion or explicit route revocation clears the old ownership.
+    pub fn set_forwarded_pending_batch_for_generation(
+        &self,
+        irq_ids: &[usize],
+        route_generation: u64,
+    ) -> Result<(), ForwardedBatchError> {
+        validate_forwarded_route_batch(route_generation, irq_ids)?;
         let assigned_irqs = self.assigned_irqs.lock();
         let mut pending_irqs = self.pending_irqs.lock();
         let active_irqs = self.active_irqs.lock();
         let mut forwarded_irqs = self.forwarded_irqs.lock();
+        let completed_forwarded_irqs = self.completed_forwarded_irqs.lock();
         let mut batch = Bitmap::<{ PLIC_NUM_SOURCES }>::new();
         for &irq_id in irq_ids {
             Self::validate_irq_id(irq_id)?;
             if !assigned_irqs.is_empty() && !assigned_irqs.get(irq_id) {
                 return Err(VplicError::SourceNotAssigned { source_id: irq_id }.into());
             }
-            if batch.get(irq_id) || forwarded_irqs.get(irq_id) {
+            if batch.get(irq_id)
+                || forwarded_irqs.get(irq_id)
+                || completed_forwarded_irqs.get(irq_id)
+            {
                 return Err(VplicError::ForwardedSourceBusy { source_id: irq_id }.into());
             }
             if pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
                 return Err(VplicError::ForwardedSourceCollision { source_id: irq_id }.into());
             }
+            let installed = self.forwarded_route_generations[irq_id].load(Ordering::Acquire);
+            if installed != 0 && installed != route_generation {
+                return Err(VplicError::ForwardedGenerationMismatch {
+                    source_id: irq_id,
+                    expected: route_generation,
+                    actual: installed,
+                }
+                .into());
+            }
             batch.set(irq_id, true);
         }
         for irq_id in (&batch).into_iter() {
+            self.forwarded_route_generations[irq_id].store(route_generation, Ordering::Release);
             pending_irqs.set(irq_id, true);
             forwarded_irqs.set(irq_id, true);
         }
+        drop(completed_forwarded_irqs);
         drop(forwarded_irqs);
         drop(active_irqs);
         drop(pending_irqs);
         drop(assigned_irqs);
         self.refresh_all_guest_context_lines()
             .map_err(ForwardedBatchError::Committed)
+    }
+
+    /// Clears a bounded stopped-guest forwarding batch for one route generation.
+    ///
+    /// Sources with no physical forwarding owner are left unchanged, so an
+    /// unrelated guest-created pending interrupt is never erased. A stale
+    /// generation is rejected before any source changes.
+    pub fn revoke_forwarded_route_batch(
+        &self,
+        route_generation: u64,
+        irq_ids: &[usize],
+    ) -> VplicResult<usize> {
+        validate_forwarded_route_batch(route_generation, irq_ids)?;
+        let mut pending_irqs = self.pending_irqs.lock();
+        let mut active_irqs = self.active_irqs.lock();
+        let mut forwarded_irqs = self.forwarded_irqs.lock();
+        let mut completed_forwarded_irqs = self.completed_forwarded_irqs.lock();
+        let mut batch = Bitmap::<{ PLIC_NUM_SOURCES }>::new();
+        for &irq_id in irq_ids {
+            Self::validate_irq_id(irq_id)?;
+            if batch.get(irq_id) {
+                return Err(VplicError::ForwardedSourceBusy { source_id: irq_id });
+            }
+            batch.set(irq_id, true);
+            let installed = self.forwarded_route_generations[irq_id].load(Ordering::Acquire);
+            if installed == 0 {
+                if forwarded_irqs.get(irq_id) || completed_forwarded_irqs.get(irq_id) {
+                    return Err(VplicError::ForwardedGenerationMismatch {
+                        source_id: irq_id,
+                        expected: route_generation,
+                        actual: 0,
+                    });
+                }
+            } else if installed != route_generation {
+                return Err(VplicError::ForwardedGenerationMismatch {
+                    source_id: irq_id,
+                    expected: route_generation,
+                    actual: installed,
+                });
+            }
+        }
+
+        let mut revoked = 0;
+        for irq_id in (&batch).into_iter() {
+            if self.forwarded_route_generations[irq_id].load(Ordering::Acquire) == 0 {
+                continue;
+            }
+            pending_irqs.set(irq_id, false);
+            active_irqs.set(irq_id, false);
+            forwarded_irqs.set(irq_id, false);
+            completed_forwarded_irqs.set(irq_id, false);
+            self.forwarded_route_generations[irq_id].store(0, Ordering::Release);
+            revoked += 1;
+        }
+        drop(completed_forwarded_irqs);
+        drop(forwarded_irqs);
+        drop(active_irqs);
+        drop(pending_irqs);
+        self.refresh_all_guest_context_lines()?;
+        Ok(revoked)
+    }
+
+    /// Retires generation metadata after the host unmasked completed claims.
+    pub fn finish_forwarded_route_batch(
+        &self,
+        route_generation: u64,
+        irq_ids: &[usize],
+    ) -> VplicResult {
+        validate_forwarded_route_batch(route_generation, irq_ids)?;
+        let pending_irqs = self.pending_irqs.lock();
+        let active_irqs = self.active_irqs.lock();
+        let forwarded_irqs = self.forwarded_irqs.lock();
+        let completed_forwarded_irqs = self.completed_forwarded_irqs.lock();
+        let mut batch = Bitmap::<{ PLIC_NUM_SOURCES }>::new();
+        for &irq_id in irq_ids {
+            Self::validate_irq_id(irq_id)?;
+            if batch.get(irq_id)
+                || pending_irqs.get(irq_id)
+                || active_irqs.get(irq_id)
+                || forwarded_irqs.get(irq_id)
+                || completed_forwarded_irqs.get(irq_id)
+            {
+                return Err(VplicError::ForwardedSourceBusy { source_id: irq_id });
+            }
+            batch.set(irq_id, true);
+            let installed = self.forwarded_route_generations[irq_id].load(Ordering::Acquire);
+            if installed != route_generation {
+                return Err(VplicError::ForwardedGenerationMismatch {
+                    source_id: irq_id,
+                    expected: route_generation,
+                    actual: installed,
+                });
+            }
+        }
+        for irq_id in (&batch).into_iter() {
+            self.forwarded_route_generations[irq_id].store(0, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// Takes one source whose guest claim/complete cycle has finished.

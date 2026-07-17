@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add generation-bound root filesystem freeze, detach, remount, and stale-handle semantics.
+- Add non-blocking, typed freeze-drain progress for handoff orchestration.
+
+### Changed
+
+- Keep the remount recipe's block service private so filesystem callers cannot
+  bypass freeze and controller ownership handoff with direct submissions.
+- Move block request, DMA, IRQ, completion, worker, watchdog, and recovery ownership to the
+  runtime; ax-fs-ng now consumes only a synchronous `BlockDevice` service.
+- Retain and replay every successfully mounted filesystem across detach and remount, rather than
+  reconstructing only the root mount.
+- Require a checked `UnmanagedLocation` capability for raw file, cache, and context construction;
+  detachable locations remain generation-bound across backend clones and mappings.
+- Carry resolved locations as `FileLocation` capabilities so a caller cannot relabel a location
+  from another filesystem runtime or mount generation as current.
+- Require directory handles, cwd/root updates, and cache imports to prove the original runtime,
+  generation, and mount namespace while retaining the operation admitted before a freeze.
+- Add a higher-ranked restricted location-operation view for file, backend, cache, resolved-location,
+  and directory handles so metadata and typed node state do not require a cloneable raw location.
+- Resolve paths and mutate mount namespaces through one higher-ranked namespace-operation view;
+  every returned location borrows the exact admitted generation lease or is retained as a checked
+  generation capability.
+- Make generation-bound cached and direct behavior handles share one counted open-handle lease
+  across clones, while keeping retained `FileLocation` capabilities uncounted and cache-global
+  shared state lease-free.
+- Run current-directory queries under a generation operation lease so a freeze cannot race an
+  untracked namespace read.
+- Reuse the initiating operation lease across composite path resolution, dangling-symlink create,
+  and open-time truncation so work admitted before freeze can finish without admitting new work.
+- Pass directory-relative composite callbacks an operation-scoped filesystem-context view, and
+  allow that admitted operation to publish counted handles after freeze begins without exposing
+  the ordinary re-admitting `FsContext` API.
+- Split root publication, context state, cached-file handles, and shared page-cache policy into
+  focused modules while preserving the public filesystem API.
+
+### Fixed
+
+- Keep the global cached-file spin lock limited to registry membership: cache
+  dirty-state checks, writeback, reclaim, and listener callbacks now run after
+  a bounded Arc snapshot or detached registry handoff, avoiding PI-mutex
+  acquisition with preemption disabled.
+- Keep ext4 create, metadata update, symlink, unlink, and rename operations
+  buffered until an explicit durability boundary instead of issuing a full
+  filesystem and journal flush for every namespace mutation.
+- Propagate terminal root-volume metadata I/O errors with their original
+  `AxError` after exactly one block-service call; controller recovery and
+  request resubmission remain owned by the block runtime.
+- Keep ext4 buffered writes, appends, and length changes dirty in the page and
+  filesystem caches until an explicit file sync, filesystem sync, or unmount;
+  extending a cached file no longer forces a whole-filesystem flush per write.
+- Write back dirty LRU pages in bounded 1 MiB contiguous runs under cache
+  pressure, without promoting writeback-only pages or forcing `fsync`, so
+  sequential writes do not collapse into one 4 KiB hardware request per page.
+- Retry valid short backing writes until each dirty page run is fully consumed,
+  and report a zero-length write as `WriteZero` instead of marking partial data clean.
+- Fill consecutive cold page-cache misses with a syscall-independent, bounded
+  1 MiB readahead window while preserving cached-page boundaries, so small
+  sequential reads no longer submit one hardware request for every 4 KiB page.
+- Run reclaim eviction callbacks without the listener lock, and reserve each
+  popped page number through the callback decision so a concurrent cache miss
+  cannot be overwritten by a refused eviction.
+- Deduplicate inode-shared cache state in the global reclaim registry so hard
+  links do not pin duplicate entries after their last external reference drops.
+- Keep in-memory filesystem pages clean across truncate because they have no
+  backing writeback path, while disk-backed truncation still records a new dirty
+  generation for the zeroed partial-page tail.
+- Reuse the operation admitted by `File::drop` for timestamp updates so a
+  concurrent freeze cannot reject nested admission halfway through close.
+- Reject overflowing block-region lengths instead of silently truncating the
+  published region at `u64::MAX`.
+- Propagate FAT flushes to the underlying block service without forcing durable flushes during
+  cursor-only buffer writeback.
+- Report frozen or stale files as terminal poll errors instead of silently returning no events.
+- Reject mount namespaces retained from a previous runtime or mount generation instead of
+  relabelling their VFS tree through a newly mounted filesystem context.
+- Reject cross-runtime mount, move, link, and rename composition between restricted location
+  views, while continuing to allow operations across mounts in one filesystem generation.
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
 
 ### Other

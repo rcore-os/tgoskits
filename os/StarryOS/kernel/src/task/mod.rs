@@ -25,7 +25,10 @@ use core::{
 use ax_cpu_local::CpuPin;
 use ax_errno::AxResult;
 use ax_kspin::{PreemptIrqGuard, SpinRwLock as RwLock};
-use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
+use ax_runtime::{
+    hal::{cpu::uspace::UserContext, time::TimeValue},
+    task::UserEntryNotification,
+};
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
 use kernel_elf_parser::AuxEntry;
@@ -66,7 +69,7 @@ struct PtracePendingEvent {
     msg: usize,
 }
 use self::scheduler_identity::SchedulerIdentity;
-use crate::mm::AddrSpace;
+use crate::{file::PreparedProcessScope, mm::AddrSpace};
 
 /// A one-shot flag that suppresses exactly one signal check.
 struct NextSignalCheckBlock(AtomicBool);
@@ -141,12 +144,13 @@ pub struct Thread {
     /// Ready to exit
     pub exit: Arc<AtomicBool>,
 
-    /// Sticky interruption state consumed by interruptible kernel waits.
+    /// Versioned user-entry work level shared with the runtime boundary.
     ///
-    /// Scheduler wakeup is carried by the generation-checked direct wake
-    /// handle; this bit retains the Linux `EINTR` reason across wake-before-
-    /// park races without embedding Starry signal policy in `ax-task`.
-    interrupted: AtomicBool,
+    /// Starry publishes signal/timer state before advancing this epoch and
+    /// directly waking the scheduler thread. Only this thread acknowledges a
+    /// captured epoch after draining user-return work; ax-runtime performs the
+    /// final IRQ-off level check without learning Starry signal policy.
+    user_entry_notification: UserEntryNotification,
 
     /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
     /// can observe newly-pending signals even when the signal is blocked.
@@ -187,7 +191,7 @@ pub struct Thread {
 
     /// Signo (as u8) of the synchronous user-mode fault that
     /// [`raise_signal_fatal`] last force-delivered to this thread, or 0
-    /// for "no fault dump owed". [`check_signals`] only emits the
+    /// for "no fault dump owed". [`process_one_signal`] only emits the
     /// register dump when the signal it is about to terminate on
     /// matches this signo — otherwise a low-numbered pending signal
     /// (e.g. an external SIGTERM that landed before the SIGSEGV from a
@@ -243,7 +247,7 @@ impl Thread {
             cpu_time: CpuTimeAccounting::new(),
             time: SpinNoIrq::new(TimeManager::new()),
             exit: Arc::new(AtomicBool::new(false)),
-            interrupted: AtomicBool::new(false),
+            user_entry_notification: UserEntryNotification::new(),
             oom_score_adj: AtomicI32::new(200),
             user_memory_access_depth: AtomicU32::new(0),
             block_next_signal_check: NextSignalCheckBlock::new(),
@@ -386,7 +390,7 @@ impl Thread {
 
     /// Consume a pending thread-only exit request, returning whether one
     /// was set. The flag is cleared in the same atomic step so that a
-    /// re-entrant `check_signals` (the user loop drains signals in a
+    /// re-entrant `process_one_signal` (the user loop drains signals in a
     /// while-loop) doesn't fire `do_exit` twice for the same zap.
     pub fn take_exit_request(&self) -> bool {
         self.exit_request.swap(false, Ordering::AcqRel)
@@ -394,12 +398,12 @@ impl Thread {
 
     /// Non-consuming probe for a pending thread-only exit request. Used
     /// by in-kernel wait loops that want to abort cooperatively without
-    /// stealing the flag from the user-return `check_signals` path.
+    /// stealing the flag from the user-return `process_one_signal` path.
     pub fn has_exit_request(&self) -> bool {
         self.exit_request.load(Ordering::Acquire)
     }
 
-    /// Request a thread-only exit. Honored by `check_signals` on the next
+    /// Request a thread-only exit. Honored by `process_one_signal` on the next
     /// return to user space, where it routes to `do_exit(0, false)`.
     pub fn set_exit_request(&self) {
         self.exit_request.store(true, Ordering::Release);
@@ -674,6 +678,21 @@ impl ProcessImage {
     }
 }
 
+/// Complete, named input consumed when publishing a new process object.
+///
+/// Keeping the prepared scope in this command prevents positional constructor
+/// drift and makes the FD/FS ownership proof mandatory at every call site.
+pub(crate) struct ProcessDataInit {
+    pub(crate) process: Arc<Process>,
+    pub(crate) image: ProcessImage,
+    pub(crate) aspace: Arc<PiMutex<AddrSpace>>,
+    pub(crate) signal_actions: Arc<SpinNoIrq<SignalActions>>,
+    pub(crate) exit_signal: Option<Signo>,
+    pub(crate) wait_parent_tid: Pid,
+    pub(crate) vm_aspace_shared: bool,
+    pub(crate) prepared_scope: PreparedProcessScope,
+}
+
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
@@ -874,24 +893,26 @@ pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 
 impl ProcessData {
     /// Create a new [`ProcessData`].
-    pub fn new(
-        proc: Arc<Process>,
-        image: ProcessImage,
-        aspace: Arc<PiMutex<AddrSpace>>,
-        signal_actions: Arc<SpinNoIrq<SignalActions>>,
-        exit_signal: Option<Signo>,
-        wait_parent_tid: Pid,
-        vm_aspace_shared: bool,
-    ) -> Arc<Self> {
+    pub(crate) fn new(init: ProcessDataInit) -> Arc<Self> {
+        let ProcessDataInit {
+            process,
+            image,
+            aspace,
+            signal_actions,
+            exit_signal,
+            wait_parent_tid,
+            vm_aspace_shared,
+            prepared_scope,
+        } = init;
         let this = Arc::new(Self {
-            proc,
+            proc: process,
             exe_path: RwLock::new(image.exe_path),
             cmdline: RwLock::new(image.cmdline),
             auxv: RwLock::new(image.auxv),
             aspace: SpinNoIrq::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
-            scope: ScopeCell::new(),
+            scope: prepared_scope.into_scope(),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
             rlim: RwLock::default(),
@@ -954,6 +975,15 @@ impl ProcessData {
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
         this
+    }
+
+    /// Takes an owned snapshot of the process image without extending any
+    /// spin-lock guard into the caller's next operation.
+    pub(crate) fn image_snapshot(&self) -> ProcessImage {
+        let exe_path = self.exe_path.read().clone();
+        let cmdline = self.cmdline.read().clone();
+        let auxv = self.auxv.read().clone();
+        ProcessImage::new(exe_path, cmdline, auxv)
     }
 
     /// Called after `execve` commits a fresh private address space so exit
@@ -1728,7 +1758,7 @@ impl ProcessData {
 
     /// Replace this process's address space with a new one.
     ///
-    /// # Why `mem::replace` instead of `*guard = new_aspace`
+    /// # Locking and accounting order
     ///
     /// `self.aspace` is a `SpinNoIrq<Arc<PiMutex<AddrSpace>>>`. Locking it
     /// disables IRQs and increments `preempt_count`, putting us in atomic
@@ -1745,16 +1775,20 @@ impl ProcessData {
     ///         → might_sleep()               ← PANIC (atomic context)
     /// ```
     ///
-    /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
+    /// Process-slot accounting takes the sleepable address-space mutex, so the
+    /// new slot is attached before entering the spin-protected publication
+    /// window. `mem::replace` then moves the old Arc out of that window and its
+    /// slot is released afterwards in normal preemptible context. Besides
+    /// preventing destructor work under `SpinNoIrq`, this ordering avoids a
+    /// second slot lock merely to rediscover the already-known new address
+    /// space.
     pub fn replace_aspace(&self, new_aspace: Arc<PiMutex<AddrSpace>>) {
+        crate::mm::attach_process_slot(&new_aspace);
         let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
         crate::mm::release_process_slot(&old);
-        let aspace_arc = self.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,

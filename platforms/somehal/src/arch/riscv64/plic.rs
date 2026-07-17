@@ -1,5 +1,9 @@
 use alloc::{format, vec, vec::Vec};
-use core::{num::NonZeroU32, ptr::NonNull};
+use core::{
+    num::NonZeroU32,
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_riscv_plic::{PLICRegs, Plic, PlicIrqHandler};
 use kernutil::StaticCell;
@@ -25,6 +29,25 @@ const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
 
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
+const GUEST_FORWARDABLE_PLIC_SOURCES: usize = 1024;
+static PLIC_CLAIM_READERS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_PLIC_CLAIMS: [AtomicUsize; GUEST_FORWARDABLE_PLIC_SOURCES] =
+    [const { AtomicUsize::new(0) }; GUEST_FORWARDABLE_PLIC_SOURCES];
+
+struct PlicClaimReader;
+
+impl PlicClaimReader {
+    fn enter() -> Self {
+        PLIC_CLAIM_READERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for PlicClaimReader {
+    fn drop(&mut self) {
+        PLIC_CLAIM_READERS.fetch_sub(1, Ordering::Release);
+    }
+}
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -98,12 +121,21 @@ pub struct RiscvPlicIrqEndpoint {
     handler: PlicIrqHandler,
     source: NonZeroU32,
     restore_priority: u32,
+    lease_generation: u64,
 }
 
 impl RiscvPlicIrqEndpoint {
     /// Returns the leased physical PLIC source ID.
     pub const fn source(&self) -> u32 {
         self.source.get()
+    }
+
+    /// Returns the generation-bearing controller lease identity.
+    pub const fn lease_id(&self) -> RiscvPlicLeaseId {
+        RiscvPlicLeaseId {
+            source: self.source.get(),
+            generation: self.lease_generation,
+        }
     }
 
     /// Masks the source through its independent priority register.
@@ -124,6 +156,26 @@ impl RiscvPlicIrqEndpoint {
         // The caller clears its normal-memory `masked` generation after this
         // returns. Ensure the MMIO restore reaches the PLIC first.
         plic_fence_output_to_memory();
+    }
+}
+
+/// Value-only identity of one physical PLIC source lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RiscvPlicLeaseId {
+    source: u32,
+    generation: u64,
+}
+
+impl RiscvPlicLeaseId {
+    /// Returns the physical PLIC source ID.
+    pub const fn source(self) -> u32 {
+        self.source
+    }
+
+    /// Returns the controller lease generation.
+    pub const fn generation(self) -> u64 {
+        self.generation
     }
 }
 
@@ -187,9 +239,22 @@ pub fn lease_irq_endpoints(
     .ok_or(crate::irq::IrqError::Controller)?
 }
 
+/// Atomically masks, detaches, and releases a complete PLIC lease batch.
+///
+/// Validation happens before any controller state changes. A stale generation,
+/// duplicate source, or partial batch therefore cannot release a newer owner.
+pub fn release_irq_endpoints(leases: &[RiscvPlicLeaseId]) -> Result<(), crate::irq::IrqError> {
+    let intc = get_plic().ok_or(crate::irq::IrqError::Controller)?;
+    let mut intc = intc.try_lock().map_err(|_| crate::irq::IrqError::Busy)?;
+    let plic = intc
+        .typed_mut::<RiscvPlic>()
+        .ok_or(crate::irq::IrqError::Controller)?;
+    plic.release_irq_endpoints(leases)
+}
+
 enum Completion {
     None,
-    Plic(NonZeroU32),
+    Plic { source: NonZeroU32, tracked: bool },
 }
 
 pub struct ActiveIrq {
@@ -205,8 +270,11 @@ impl ActiveIrq {
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        if let Completion::Plic(source) = self.completion {
+        if let Completion::Plic { source, tracked } = self.completion {
             complete_external_irq_source(source);
+            if tracked {
+                ACTIVE_PLIC_CLAIMS[source.get() as usize].fetch_sub(1, Ordering::Release);
+            }
         }
     }
 }
@@ -239,10 +307,10 @@ pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
 }
 
 fn begin_external_irq() -> Option<ActiveIrq> {
-    let source = claim_external_irq_source()?;
+    let (source, tracked) = claim_external_irq_source()?;
     Some(ActiveIrq {
         irq: (source.get() as usize).into(),
-        completion: Completion::Plic(source),
+        completion: Completion::Plic { source, tracked },
     })
 }
 
@@ -390,6 +458,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         affinity_by_source: vec![crate::irq::IrqAffinity::Any; ndev.saturating_add(1)],
         enabled_by_source: vec![false; ndev.saturating_add(1)],
         leased_by_source: vec![false; ndev.saturating_add(1)],
+        lease_generation_by_source: vec![0; ndev.saturating_add(1)],
         sources: ndev,
     };
     enable_local_interrupts();
@@ -447,12 +516,21 @@ fn enable_local_interrupts() {
     }
 }
 
-fn claim_external_irq_source() -> Option<NonZeroU32> {
+fn claim_external_irq_source() -> Option<(NonZeroU32, bool)> {
+    // The controller release path first masks its sources, then observes this
+    // reader count. A claim that could have read an old eligible source is
+    // therefore visible before the lease can become reusable.
+    let _reader = PlicClaimReader::enter();
     let Some(handler) = get_irq_handler() else {
         warn!("RISC-V PLIC IRQ handler is not registered for external IRQ");
         return None;
     };
-    handler.claim_current()
+    let source = handler.claim_current()?;
+    let tracked = (source.get() as usize) < GUEST_FORWARDABLE_PLIC_SOURCES;
+    if tracked {
+        ACTIVE_PLIC_CLAIMS[source.get() as usize].fetch_add(1, Ordering::AcqRel);
+    }
+    Some((source, tracked))
 }
 
 fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {
@@ -492,6 +570,7 @@ struct RiscvPlic {
     affinity_by_source: Vec<crate::irq::IrqAffinity>,
     enabled_by_source: Vec<bool>,
     leased_by_source: Vec<bool>,
+    lease_generation_by_source: Vec<u64>,
     sources: usize,
 }
 
@@ -686,14 +765,64 @@ impl RiscvPlic {
                 }
             }
             self.leased_by_source[source.get() as usize] = true;
+            let lease_generation =
+                next_lease_generation(self.lease_generation_by_source[source.get() as usize]);
+            self.lease_generation_by_source[source.get() as usize] = lease_generation;
             endpoints.push(RiscvPlicIrqEndpoint {
                 handler,
                 source,
                 restore_priority: DEFAULT_PRIORITY,
+                lease_generation,
             });
         }
         plic_fence_output_to_output();
         Ok(endpoints)
+    }
+
+    fn release_irq_endpoints(
+        &mut self,
+        leases: &[RiscvPlicLeaseId],
+    ) -> Result<(), crate::irq::IrqError> {
+        let mut prepared = Vec::with_capacity(leases.len());
+        for lease in leases {
+            let source = NonZeroU32::new(lease.source).ok_or(crate::irq::IrqError::InvalidIrq)?;
+            let source_index = source.get() as usize;
+            if source_index > self.sources
+                || source_index >= GUEST_FORWARDABLE_PLIC_SOURCES
+                || prepared.contains(&source)
+                || !self.leased_by_source[source_index]
+                || self.lease_generation_by_source[source_index] != lease.generation
+            {
+                return Err(crate::irq::IrqError::Busy);
+            }
+            prepared.push(source);
+        }
+
+        let handler = self.inner.irq_handler();
+        for &source in &prepared {
+            handler.set_priority(source, 0);
+        }
+        plic_fence_output_to_output();
+
+        if PLIC_CLAIM_READERS.load(Ordering::Acquire) != 0
+            || prepared.iter().any(|source| {
+                ACTIVE_PLIC_CLAIMS[source.get() as usize].load(Ordering::Acquire) != 0
+            })
+        {
+            // Priority zero remains as a fail-closed quarantine. The caller
+            // retries from task context after every old claim has completed.
+            return Err(crate::irq::IrqError::Busy);
+        }
+
+        for source in prepared {
+            let source_index = source.get() as usize;
+            self.disable_source_contexts(source);
+            self.enabled_by_source[source_index] = false;
+            self.affinity_by_source[source_index] = crate::irq::IrqAffinity::Any;
+            self.leased_by_source[source_index] = false;
+        }
+        plic_fence_output_to_output();
+        Ok(())
     }
 
     fn contexts_for_source(&self, source: NonZeroU32) -> Vec<usize> {
@@ -709,6 +838,11 @@ impl RiscvPlic {
                 .collect(),
         }
     }
+}
+
+const fn next_lease_generation(current: u64) -> u64 {
+    let next = current.wrapping_add(1);
+    if next == 0 { 1 } else { next }
 }
 
 fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {

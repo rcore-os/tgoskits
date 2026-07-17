@@ -94,6 +94,11 @@ impl ArchOps for Riscv64Arch {
         );
     }
 
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
+        irq::revoke_guest_irq_routes(vm.id())
+    }
+
     fn before_first_run(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -621,6 +626,15 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
             if !restored {
                 return Err(BackendError::InvalidState);
             }
+            return Err(BackendError::InvalidState);
+        }
+        if let Some(completions) = &completion_batch
+            && !completions.claims().is_empty()
+            && self
+                .vplic
+                .as_ref()
+                .is_none_or(|vplic| vplic.finish_completed_claim_batch(completions).is_err())
+        {
             return Err(BackendError::InvalidState);
         }
         self.sync_vplic_line()?;

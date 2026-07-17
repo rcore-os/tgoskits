@@ -108,30 +108,23 @@ impl RawMutex {
         PiLockId::new((self as *const Self).expose_provenance())
     }
 
+    #[track_caller]
     fn lock_pi(&self) {
+        // Match the contract of Linux's sleepable mutex API: `lock` is a
+        // scheduling operation even when the lock happens to be uncontended.
+        // Validating before owner publication makes an atomic-context misuse
+        // deterministic instead of depending on a concurrent contender.
+        task_result(
+            validate_blocking_context(),
+            "validate PI mutex sleep context",
+        );
         let current = current_thread_identity("lock PI mutex");
-        let mut blocking_context_validated = false;
 
         loop {
             match self.try_or_observe_owner(current) {
                 LockAttempt::Acquired => return,
                 LockAttempt::Retry => core::hint::spin_loop(),
                 LockAttempt::WaitFor(registration) => {
-                    if !blocking_context_validated {
-                        // The uncontended path neither publishes a waiter nor
-                        // schedules and must remain usable during single-threaded
-                        // boot. A contended observation temporarily closes the
-                        // owner-registration gate; roll it back before applying
-                        // the scheduler's might-sleep contract, then retry from
-                        // fresh ownership state after validation.
-                        drop(registration);
-                        task_result(
-                            validate_blocking_context(),
-                            "validate PI mutex sleep context",
-                        );
-                        blocking_context_validated = true;
-                        continue;
-                    }
                     self.lock_contended(current, registration);
                     return;
                 }
@@ -483,8 +476,12 @@ fn current_thread_identity(operation: &'static str) -> ThreadId {
     task_result(current_thread_id(), operation)
 }
 
+#[track_caller]
 fn task_result<T>(result: Result<T, TaskError>, operation: &'static str) -> T {
-    result.unwrap_or_else(|error| panic!("{operation} failed: {error}"))
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{operation} failed: {error}"),
+    }
 }
 
 fn select_most_urgent_waiter(head: Option<WaiterPointer>) -> Option<WaiterPointer> {
@@ -692,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn uncontended_lock_does_not_require_a_blocking_context() {
+    fn blocking_lock_validates_context_before_uncontended_acquisition() {
         let (system, cpu) = install_current_thread();
         let _runtime = crate::test_runtime::install(
             (&*system as *const TaskSystem).expose_provenance(),
@@ -701,10 +698,9 @@ mod tests {
         crate::test_runtime::set_schedule_context_safe(false);
         let mutex = Mutex::new(7usize);
 
-        let guard = mutex.lock();
-        assert_eq!(*guard, 7);
-        drop(guard);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mutex.lock()));
 
+        assert!(result.is_err());
         assert!(!mutex.is_locked());
         crate::test_runtime::clear();
     }

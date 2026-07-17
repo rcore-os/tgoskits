@@ -10,5 +10,4 @@ repository.workspace = true
 version = "0.1.10"
 
 [dependencies]
-ax-kspin = { workspace = true }
 rdif-block = { workspace = true }

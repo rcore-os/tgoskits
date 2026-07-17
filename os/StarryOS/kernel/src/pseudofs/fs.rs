@@ -3,8 +3,9 @@ use core::{any::Any, time::Duration};
 
 use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
+    DeviceId, DirEntry, DirNode, Filesystem, FilesystemDetachPolicy, FilesystemOps, Metadata,
+    MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsResult,
+    path::MAX_NAME_LEN,
 };
 use slab::Slab;
 
@@ -77,6 +78,10 @@ impl FilesystemOps for SimpleFs {
 
     fn root_dir(&self) -> DirEntry {
         self.root.lock().clone().unwrap()
+    }
+
+    fn detach_policy(&self) -> FilesystemDetachPolicy {
+        FilesystemDetachPolicy::NonDetachable
     }
 
     fn stat(&self) -> VfsResult<StatFs> {

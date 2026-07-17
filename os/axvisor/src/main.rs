@@ -48,11 +48,15 @@ fn main() {
     banner::print_logo();
 
     info!("Starting virtualization...");
-    let manager = manager::AxvmManager::new()
+    let mut manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
-    manager.init_default_vms();
-    manager.start_default_vms();
+    manager
+        .init_default_vms()
+        .unwrap_or_else(|error| panic!("failed to initialize default VMs: {error:#}"));
+    manager
+        .start_default_vms()
+        .unwrap_or_else(|error| panic!("failed to finish default VM storage handoff: {error:#}"));
 
     info!("[OK] Default guest initialized");
 

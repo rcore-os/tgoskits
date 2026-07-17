@@ -7,9 +7,8 @@ use core::{
 };
 
 use crate::{
-    CPU_AREA_RUNTIME_ANCHOR_OFFSET, CPU_LOCAL_ABI_VERSION, CpuAreaHeader, CpuAreaInitV2,
-    CpuBindingV1, CpuPin, CpuRuntimeAnchor, CurrentThreadError, CurrentThreadHeader,
-    image_register_mode,
+    CPU_AREA_RUNTIME_ANCHOR_OFFSET, CpuAreaHeader, CpuAreaInitV2, CpuBindingV1, CpuPin,
+    CpuRuntimeAnchor, CurrentThreadError, CurrentThreadHeader, image_register_mode,
 };
 
 /// Installs the current CPU's final value-only register binding.
@@ -213,15 +212,7 @@ pub unsafe fn runtime_anchor(area_base: usize) -> &'static CpuRuntimeAnchor {
 }
 
 fn validate_binding(binding: CpuBindingV1) -> Result<(), CpuLocalError> {
-    if binding.abi_version != CPU_LOCAL_ABI_VERSION
-        || binding.register_mode() != Some(image_register_mode())
-        || binding.host_level().is_none()
-        || binding.cpu_index().is_none()
-        || binding.area_base == 0
-        || binding.boot_thread == 0
-        || binding.cookie == 0
-        || binding.generation == 0
-    {
+    if binding.validated().is_none() || binding.register_mode() != Some(image_register_mode()) {
         return Err(CpuLocalError::InvalidBinding);
     }
     Ok(())

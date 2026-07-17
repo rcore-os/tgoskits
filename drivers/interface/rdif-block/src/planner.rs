@@ -239,13 +239,15 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::{QueueInfo, RequestFlags};
+    use crate::{DispatchMode, QueueInfo, QueueKind, RequestFlags};
 
     fn queue_info_with(limits: QueueLimits) -> QueueInfo {
         QueueInfo {
             id: 0,
             device: DeviceInfo::new(64, 512),
             limits,
+            kind: QueueKind::Inline,
+            dispatch_mode: DispatchMode::Direct,
         }
     }
 
@@ -262,6 +264,7 @@ mod tests {
             max_blocks_per_request,
             max_segments,
             max_segment_size,
+            request_timeout_ns: crate::DEFAULT_REQUEST_TIMEOUT_NS,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
             supports_discard: false,

@@ -22,10 +22,151 @@ use super::{
     registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
-use crate::{VgicError, VgicResult, host};
+use crate::{VgicError, VgicResult};
 
 /// Default size for GICD region.
 pub const DEFAULT_GICD_SIZE: usize = 0x10000; // 64K
+
+#[derive(Clone, Copy)]
+struct SpiRevocationBatch {
+    generation: u64,
+    irqs: Bitmap<{ MAX_IRQ_V3 }>,
+}
+
+struct IrqOwnership {
+    assigned: Bitmap<{ MAX_IRQ_V3 }>,
+    assigning: Bitmap<{ MAX_IRQ_V3 }>,
+    revocation: Option<SpiRevocationBatch>,
+    next_generation: u64,
+}
+
+impl IrqOwnership {
+    fn new() -> Self {
+        Self {
+            assigned: Bitmap::new(),
+            assigning: Bitmap::new(),
+            revocation: None,
+            next_generation: 1,
+        }
+    }
+
+    fn begin_revocation(&mut self) -> VgicResult<SpiRevocationBatch> {
+        if !self.assigning.is_empty() {
+            return Err(VgicError::Busy {
+                operation: "begin VGIC SPI revocation while assignment is in progress",
+            });
+        }
+        if let Some(batch) = self.revocation {
+            return Ok(batch);
+        }
+
+        let batch = SpiRevocationBatch {
+            generation: self.next_generation,
+            irqs: self.assigned,
+        };
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        self.revocation = Some(batch);
+        Ok(batch)
+    }
+
+    fn finish_revocation(&mut self, batch: SpiRevocationBatch) -> VgicResult<usize> {
+        let Some(active) = self.revocation else {
+            return Err(VgicError::StaleRevocation {
+                generation: batch.generation,
+                active_generation: 0,
+            });
+        };
+        if active.generation != batch.generation {
+            return Err(VgicError::StaleRevocation {
+                generation: batch.generation,
+                active_generation: active.generation,
+            });
+        }
+
+        let mut released = 0;
+        for irq in &batch.irqs {
+            self.assigned.set(irq, false);
+            released += 1;
+        }
+        self.revocation = None;
+        Ok(released)
+    }
+
+    fn is_guest_visible(&self, irq: usize) -> bool {
+        self.assigned.get(irq) && self.revocation.is_none_or(|batch| !batch.irqs.get(irq))
+    }
+}
+
+trait PhysicalSpiControl {
+    fn begin_spi_quiesce(&self, irq: u32) -> VgicResult;
+
+    fn poll_distributor_write_complete(&self) -> VgicResult<bool>;
+}
+
+struct HostPhysicalSpiControl;
+
+impl PhysicalSpiControl for HostPhysicalSpiControl {
+    fn begin_spi_quiesce(&self, irq: u32) -> VgicResult {
+        crate::api_reexp::begin_physical_spi_quiesce(irq)
+    }
+
+    fn poll_distributor_write_complete(&self) -> VgicResult<bool> {
+        crate::api_reexp::poll_physical_distributor_write_complete()
+    }
+}
+
+/// An in-progress physical SPI ownership revocation.
+///
+/// Dropping this token does not restore guest access. The distributor retains
+/// its fail-closed revocation generation so a later call can retry it.
+#[must_use = "SPI ownership remains fail-closed until revocation completes"]
+pub struct SpiRevocation<'a> {
+    distributor: &'a VGicD,
+    batch: SpiRevocationBatch,
+}
+
+/// Result of one non-blocking distributor write-completion observation.
+pub enum SpiRevocationPoll<'a> {
+    /// GICv3 still reports GICD_CTLR.RWP; poll again from task context.
+    Pending(SpiRevocation<'a>),
+    /// Every physical SPI is drained and its VGIC ownership is released.
+    Complete(SpisRevoked),
+}
+
+/// Proof that a VGIC distributor no longer owns its assigned physical SPIs.
+#[must_use]
+pub struct SpisRevoked {
+    released_spi_count: usize,
+}
+
+impl SpisRevoked {
+    /// Returns how many physical SPI ownership records were released.
+    pub const fn released_spi_count(&self) -> usize {
+        self.released_spi_count
+    }
+}
+
+impl<'a> SpiRevocation<'a> {
+    /// Polls host distributor write completion exactly once.
+    pub fn poll(self) -> VgicResult<SpiRevocationPoll<'a>> {
+        self.poll_with(&HostPhysicalSpiControl)
+    }
+
+    fn poll_with(self, control: &impl PhysicalSpiControl) -> VgicResult<SpiRevocationPoll<'a>> {
+        if !self.batch.irqs.is_empty() && !control.poll_distributor_write_complete()? {
+            return Ok(SpiRevocationPoll::Pending(self));
+        }
+
+        let released_spi_count = self
+            .distributor
+            .irq_ownership
+            .lock()
+            .finish_revocation(self.batch)?;
+        Ok(SpiRevocationPoll::Complete(SpisRevoked {
+            released_spi_count,
+        }))
+    }
+}
 
 /// Virtual Generic Interrupt Controller (VGIC) Distributor (D) implementation.
 ///
@@ -36,8 +177,8 @@ pub struct VGicD {
     /// The size of the VGicD in bytes.
     pub size: usize,
 
-    /// IRQs assigned to this VGicD.
-    pub assigned_irqs: SpinNoIrq<Bitmap<{ MAX_IRQ_V3 }>>,
+    /// IRQ assignment and fail-closed revocation state.
+    irq_ownership: SpinNoIrq<IrqOwnership>,
 
     /// The host physical address of the VGicD.
     ///
@@ -64,7 +205,7 @@ impl VGicD {
         Self {
             addr,
             size,
-            assigned_irqs: SpinNoIrq::new(Bitmap::new()),
+            irq_ownership: SpinNoIrq::new(IrqOwnership::new()),
             host_gicd_addr: crate::api_reexp::get_host_gicd_base(),
         }
     }
@@ -82,30 +223,52 @@ impl VGicD {
         );
 
         Self::validate_irq(irq)?;
-        self.assigned_irqs.lock().set(irq as usize, true);
+        if !self.is_irq_spi(irq) {
+            return Err(VgicError::NotSpi { irq: irq as usize });
+        }
 
-        // TODO: update host GICD_ITARGETSR and GICD_IROUTER registers
-        let gicd_itargetsr_paddr = self.host_gicd_addr + GICD_ITARGETSR + irq as usize;
-        let gicd_itargetsr_vaddr = host::phys_to_virt(gicd_itargetsr_paddr);
-        unsafe {
-            core::ptr::write_volatile(
-                gicd_itargetsr_vaddr.as_mut_ptr_of::<u8>(),
-                1u8 << (cpu_phys_id),
-            );
+        {
+            let mut ownership = self.irq_ownership.lock();
+            if ownership.revocation.is_some() || ownership.assigning.get(irq as usize) {
+                return Err(VgicError::Busy {
+                    operation: "assign physical SPI to VGIC",
+                });
+            }
+            ownership.assigning.set(irq as usize, true);
         }
-        let gicd_irouter_paddr = self.host_gicd_addr + GICD_IROUTER + (irq as usize) * 8;
-        let gicd_irouter_vaddr = host::phys_to_virt(gicd_irouter_paddr);
-        unsafe {
-            core::ptr::write_volatile(
-                gicd_irouter_vaddr.as_mut_ptr_of::<u64>(),
-                (target_cpu_affinity.0 as u64) << 32
-                    | 1 << 31 // set the routing mode bit
-                    | (target_cpu_affinity.1 as u64) << 16
-                    | (target_cpu_affinity.2 as u64) << 8
-                    | target_cpu_affinity.3 as u64,
-            );
-        }
+
+        let route_result =
+            crate::api_reexp::route_physical_spi(irq, cpu_phys_id, target_cpu_affinity);
+        let mut ownership = self.irq_ownership.lock();
+        ownership.assigning.set(irq as usize, false);
+        route_result?;
+        ownership.assigned.set(irq as usize, true);
         Ok(())
+    }
+
+    /// Begins fail-closed revocation of every physical SPI assigned here.
+    ///
+    /// Guest MMIO visibility is removed before any physical distributor write
+    /// is issued. A backend failure retains the revocation generation and all
+    /// ownership bits so callers can retry without fabricating a release. The
+    /// host must stop and join every vCPU before calling this method; the VGIC
+    /// cannot prove that OS-level lifecycle condition itself.
+    pub fn begin_assigned_spi_revocation(&self) -> VgicResult<SpiRevocation<'_>> {
+        self.begin_assigned_spi_revocation_with(&HostPhysicalSpiControl)
+    }
+
+    fn begin_assigned_spi_revocation_with(
+        &self,
+        control: &impl PhysicalSpiControl,
+    ) -> VgicResult<SpiRevocation<'_>> {
+        let batch = self.irq_ownership.lock().begin_revocation()?;
+        for irq in &batch.irqs {
+            control.begin_spi_quiesce(irq as u32)?;
+        }
+        Ok(SpiRevocation {
+            distributor: self,
+            batch,
+        })
     }
 }
 
@@ -132,7 +295,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_IROUTER) as u32 / 8;
 
-                if self.is_irq_assigned(irq) && self.is_irq_spi(irq) {
+                if self.is_irq_guest_visible(irq) && self.is_irq_spi(irq) {
                     perform_mmio_read(gicd_base + reg, width)
                 } else {
                     // If the IRQ is not assigned, return 0
@@ -142,7 +305,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_ITARGETSR_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_ITARGETSR) as u32;
 
-                if self.is_irq_assigned(irq) && self.is_irq_spi(irq) {
+                if self.is_irq_guest_visible(irq) && self.is_irq_spi(irq) {
                     perform_mmio_read(gicd_base + reg, width)
                 } else {
                     // If the IRQ is not assigned, return 0
@@ -204,7 +367,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_IROUTER_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_IROUTER) as u32 / 8;
 
-                if self.is_irq_assigned(irq) && self.is_irq_spi(irq) {
+                if self.is_irq_guest_visible(irq) && self.is_irq_spi(irq) {
                     perform_mmio_write(gicd_base + reg, width, val)
                 } else {
                     // If the IRQ is not assigned, ignore the write
@@ -214,7 +377,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_ITARGETSR_RANGE.contains(&reg) => {
                 let irq = (reg - GICD_ITARGETSR) as u32; // it was wrong in hVisor
 
-                if self.is_irq_assigned(irq) && self.is_irq_spi(irq) {
+                if self.is_irq_guest_visible(irq) && self.is_irq_spi(irq) {
                     perform_mmio_write(gicd_base + reg, width, val)
                 } else {
                     // If the IRQ is not assigned, ignore the write
@@ -265,7 +428,15 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
 impl VGicD {
     /// Checks if an IRQ is assigned to this VGicD.
     pub fn is_irq_assigned(&self, irq: u32) -> bool {
-        self.assigned_irqs.lock().get(irq as usize)
+        Self::validate_irq(irq).is_ok() && self.irq_ownership.lock().assigned.get(irq as usize)
+    }
+
+    /// Checks whether guest MMIO may still access an assigned IRQ.
+    ///
+    /// Revoking SPIs remain owned until physical synchronization completes,
+    /// but become invisible to the guest at the start of revocation.
+    pub fn is_irq_guest_visible(&self, irq: u32) -> bool {
+        Self::validate_irq(irq).is_ok() && self.irq_ownership.lock().is_guest_visible(irq as usize)
     }
 
     /// Checks if an IRQ is a Software Generated Interrupt (SGI).
@@ -277,7 +448,7 @@ impl VGicD {
     /// Checks if an IRQ is a Shared Peripheral Interrupt (SPI).
     pub fn is_irq_spi(&self, irq: u32) -> bool {
         // Check if the IRQ is a Shared Peripheral Interrupt (SPI)
-        (16..1020).contains(&irq)
+        (32..1020).contains(&irq)
     }
 
     /// Returns the mask of bits for the irqs assigned to this VGicD, in a bit-field reg.
@@ -303,7 +474,7 @@ impl VGicD {
 
         let mut mask = 0;
         for irq in 0..irqs_in_access_width {
-            if self.is_irq_assigned((first_irq + irq) as _) {
+            if self.is_irq_guest_visible((first_irq + irq) as _) {
                 // If the IRQ is assigned, set the corresponding bits in the mask.
                 mask |= single_irq_mask << (irq << bits_per_irq_shift);
             }
@@ -352,3 +523,160 @@ impl VGicD {
 
 // Todo: move this lock to arceos or axvisor
 static GICD_LOCK: ax_kspin::SpinNoIrq<()> = ax_kspin::SpinNoIrq::new(());
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use ax_kspin_test_runtime as _;
+
+    use super::*;
+
+    struct TestSpiControl {
+        quiesced_irq: Cell<Option<u32>>,
+        poll_count: Cell<usize>,
+        fail_quiesce: bool,
+    }
+
+    impl TestSpiControl {
+        const fn pending_then_complete() -> Self {
+            Self {
+                quiesced_irq: Cell::new(None),
+                poll_count: Cell::new(0),
+                fail_quiesce: false,
+            }
+        }
+    }
+
+    impl PhysicalSpiControl for TestSpiControl {
+        fn begin_spi_quiesce(&self, irq: u32) -> VgicResult {
+            self.quiesced_irq.set(Some(irq));
+            if self.fail_quiesce {
+                return Err(VgicError::Backend {
+                    operation: "quiesce physical SPI",
+                    detail: "injected failure".into(),
+                });
+            }
+            Ok(())
+        }
+
+        fn poll_distributor_write_complete(&self) -> VgicResult<bool> {
+            let poll_count = self.poll_count.get();
+            self.poll_count.set(poll_count + 1);
+            Ok(poll_count != 0)
+        }
+    }
+
+    fn distributor_owning(irq: u32) -> VGicD {
+        let distributor = VGicD::new(GuestPhysAddr::from(0), None);
+        distributor
+            .irq_ownership
+            .lock()
+            .assigned
+            .set(irq as usize, true);
+        distributor
+    }
+
+    #[test]
+    fn empty_revocation_completes_without_waiting_for_unrelated_gic_writes() {
+        let distributor = VGicD::new(GuestPhysAddr::from(0), None);
+        let control = TestSpiControl::pending_then_complete();
+        let revocation = distributor
+            .begin_assigned_spi_revocation_with(&control)
+            .unwrap();
+
+        let SpiRevocationPoll::Complete(proof) = revocation.poll_with(&control).unwrap() else {
+            panic!("an empty ownership set has no physical writes to drain")
+        };
+        assert_eq!(proof.released_spi_count(), 0);
+        assert_eq!(control.poll_count.get(), 0);
+    }
+
+    #[test]
+    fn revocation_hides_spi_before_physical_drain_and_releases_after_sync() {
+        let irq = 40;
+        let distributor = distributor_owning(irq);
+        let control = TestSpiControl::pending_then_complete();
+
+        let revocation = distributor
+            .begin_assigned_spi_revocation_with(&control)
+            .unwrap();
+        assert_eq!(control.quiesced_irq.get(), Some(irq));
+        assert!(distributor.is_irq_assigned(irq));
+        assert!(!distributor.is_irq_guest_visible(irq));
+
+        let revocation = match revocation.poll_with(&control).unwrap() {
+            SpiRevocationPoll::Pending(revocation) => revocation,
+            SpiRevocationPoll::Complete(_) => panic!("RWP must retain ownership while pending"),
+        };
+        assert!(distributor.is_irq_assigned(irq));
+
+        let proof = match revocation.poll_with(&control).unwrap() {
+            SpiRevocationPoll::Complete(proof) => proof,
+            SpiRevocationPoll::Pending(_) => panic!("second poll must observe completion"),
+        };
+        assert_eq!(proof.released_spi_count(), 1);
+        assert!(!distributor.is_irq_assigned(irq));
+    }
+
+    #[test]
+    fn failed_physical_quiesce_retains_fail_closed_ownership_for_retry() {
+        let irq = 63;
+        let distributor = distributor_owning(irq);
+        let failing = TestSpiControl {
+            fail_quiesce: true,
+            ..TestSpiControl::pending_then_complete()
+        };
+
+        assert!(
+            distributor
+                .begin_assigned_spi_revocation_with(&failing)
+                .is_err()
+        );
+        assert!(distributor.is_irq_assigned(irq));
+        assert!(!distributor.is_irq_guest_visible(irq));
+
+        let retry = TestSpiControl {
+            poll_count: Cell::new(1),
+            ..TestSpiControl::pending_then_complete()
+        };
+        let revocation = distributor
+            .begin_assigned_spi_revocation_with(&retry)
+            .unwrap();
+        assert!(matches!(
+            revocation.poll_with(&retry).unwrap(),
+            SpiRevocationPoll::Complete(_)
+        ));
+        assert!(!distributor.is_irq_assigned(irq));
+    }
+
+    #[test]
+    fn dropped_pending_poll_token_keeps_the_same_revocation_retryable() {
+        let irq = 72;
+        let distributor = distributor_owning(irq);
+        let pending = TestSpiControl::pending_then_complete();
+        let revocation = distributor
+            .begin_assigned_spi_revocation_with(&pending)
+            .unwrap();
+
+        let SpiRevocationPoll::Pending(revocation) = revocation.poll_with(&pending).unwrap() else {
+            panic!("first poll must remain pending")
+        };
+        drop(revocation);
+        assert!(distributor.is_irq_assigned(irq));
+        assert!(!distributor.is_irq_guest_visible(irq));
+
+        let retry = TestSpiControl {
+            poll_count: Cell::new(1),
+            ..TestSpiControl::pending_then_complete()
+        };
+        let revocation = distributor
+            .begin_assigned_spi_revocation_with(&retry)
+            .unwrap();
+        assert!(matches!(
+            revocation.poll_with(&retry).unwrap(),
+            SpiRevocationPoll::Complete(_)
+        ));
+        assert!(!distributor.is_irq_assigned(irq));
+    }
+}

@@ -17,4 +17,5 @@ mod split;
 
 pub use node::ExtentNode;
 pub use parse::ExtentRun;
+pub(crate) use parse::{ExtentMappingRun, ExtentMappingState};
 pub use root::ExtentTree;

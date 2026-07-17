@@ -250,15 +250,17 @@ impl ReferenceScheduler {
     }
 
     fn preempt(&mut self, now_ns: u64) -> ThreadId {
-        self.need_resched = false;
         self.settle_current(now_ns);
+        // This selection consumes expiration of the outgoing dispatch even if
+        // settling observes it after scheduler entry.
+        self.need_resched = false;
         self.enqueue_current(ReferenceEnqueue::Preempted);
         self.select_next(now_ns)
     }
 
     fn yield_current(&mut self, now_ns: u64) -> ThreadId {
-        self.need_resched = false;
         self.settle_current(now_ns);
+        self.need_resched = false;
         self.enqueue_current(ReferenceEnqueue::Yield);
         self.select_next(now_ns)
     }

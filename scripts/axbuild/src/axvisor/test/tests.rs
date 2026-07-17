@@ -776,7 +776,11 @@ fn orangepi_linux_board_gate_bounds_slow_storage_and_rejects_its_ownership_fault
     let path = workspace_root.join(
         "test-suit/axvisor/normal/board-orangepi-5-plus/smoke/board-orangepi-5-plus-linux.toml",
     );
-    assert!(path.is_file(), "missing board gate config {}", path.display());
+    assert!(
+        path.is_file(),
+        "missing board gate config {}",
+        path.display()
+    );
     let config: ostool::board::config::BoardRunConfig =
         toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
 

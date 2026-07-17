@@ -65,8 +65,16 @@ pub(crate) const NORMAL_INT_BUFFER_WRITE_READY: u16 = 1 << 4;
 pub(crate) const NORMAL_INT_BUFFER_READ_READY: u16 = 1 << 5;
 pub(crate) const NORMAL_INT_CARD_INSERTION: u16 = 1 << 6;
 pub(crate) const NORMAL_INT_CARD_REMOVAL: u16 = 1 << 7;
+pub(crate) const NORMAL_INT_CARD_INTERRUPT: u16 = 1 << 8;
 pub(crate) const NORMAL_INT_ERROR: u16 = 1 << 15;
 pub(crate) const NORMAL_INT_CLEAR_ALL: u16 = 0xFFFF;
+pub(crate) const NORMAL_INT_REQUEST_MASK: u16 = NORMAL_INT_CMD_COMPLETE
+    | NORMAL_INT_XFER_COMPLETE
+    | NORMAL_INT_BLOCK_GAP
+    | NORMAL_INT_DMA_INTERRUPT
+    | NORMAL_INT_BUFFER_WRITE_READY
+    | NORMAL_INT_BUFFER_READ_READY
+    | NORMAL_INT_ERROR;
 
 // ── Error Interrupt Status ─────────────────────────────────────────────
 

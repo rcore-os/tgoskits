@@ -5,7 +5,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     option::Option,
-    sync::atomic::{AtomicU8, AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 
 use ax_kspin::SpinNoIrq as Mutex;
@@ -44,6 +44,8 @@ pub struct VPlicGlobal {
     pub(crate) forwarded_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Forwarded sources completed by the guest and awaiting host completion.
     pub(crate) completed_forwarded_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    /// Route generation owning each source's pending/active/completed state.
+    pub(crate) forwarded_route_generations: Box<[AtomicU64]>,
     /// Software-owned interrupt line state for every PLIC context.
     context_lines: Box<[AtomicU8]>,
 }
@@ -100,6 +102,10 @@ impl VPlicGlobal {
                 .into_boxed_slice(),
             forwarded_irqs: Mutex::new(Bitmap::new()),
             completed_forwarded_irqs: Mutex::new(Bitmap::new()),
+            forwarded_route_generations: (0..PLIC_NUM_SOURCES)
+                .map(|_| AtomicU64::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             context_lines: (0..contexts_num)
                 .map(|_| AtomicU8::new(0))
                 .collect::<Vec<_>>()

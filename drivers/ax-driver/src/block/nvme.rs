@@ -2,8 +2,8 @@ extern crate alloc;
 
 use alloc::format;
 
-use log::{info, warn};
-use nvme_driver::{Config, Nvme, NvmeBlockDriver};
+use log::info;
+use nvme_driver::{Config, NvmeBlockDriver};
 use pcie::{CommandRegister, DeviceType};
 use rdrive::probe::{
     OnProbeError,
@@ -11,9 +11,9 @@ use rdrive::probe::{
 };
 
 use crate::{
-    PciIrqRequirement,
-    block::{PlatformDeviceBlock, ProbePciBlock},
-    pci::PciIrqLease,
+    PciIrqRequirement, binding_info_from_pci_endpoint,
+    block::PlatformDeviceBlock,
+    pci::{PciIntxIrqLease, PciIrqLease},
 };
 
 pub const DEVICE_NAME: &str = "nvme";
@@ -61,18 +61,26 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         Err(OnProbeError::Unsupported(reason)) => {
             info!("NVMe PCI endpoint {address} MSI-X unavailable ({reason}); using legacy INTx")
         }
-        Err(err) => {
-            warn!("NVMe PCI endpoint {address} MSI-X setup failed: {err}; using legacy INTx")
-        }
+        Err(err) => return Err(err),
     }
 
+    let binding = binding_info_from_pci_endpoint(
+        probe.info(),
+        probe.endpoint(),
+        PciIrqRequirement::Required,
+    )?;
+    PciIntxIrqLease::mask_for_discovery(probe.endpoint_mut());
     probe.endpoint_mut().update_command(|mut cmd| {
-        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
-        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
+        cmd.insert(
+            CommandRegister::MEMORY_ENABLE
+                | CommandRegister::BUS_MASTER_ENABLE
+                | CommandRegister::INTERRUPT_DISABLE,
+        );
         cmd
     });
 
-    let nvme = Nvme::new(
+    let driver = NvmeBlockDriver::discover(
+        DEVICE_NAME,
         bar.start,
         bar.count().max(1),
         u64::MAX,
@@ -80,11 +88,12 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         axklib::mmio::op(),
         Config::new(DEFAULT_PAGE_SIZE, DEFAULT_IO_QUEUE_PAIRS).with_intx_irq(),
     )
-    .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
-    let driver = NvmeBlockDriver::from_nvme(nvme).map_err(|err| {
-        OnProbeError::other(format!("failed to create NVMe block driver: {err:?}"))
-    })?;
-    let irq = probe.register_block(driver, PciIrqRequirement::Required)?;
+    .map_err(|err| OnProbeError::other(format!("failed to discover NVMe: {err:?}")))?;
+    let endpoint = probe.take_endpoint();
+    let irq_lease = PciIntxIrqLease::new(endpoint, binding);
+    let irq = probe
+        .into_platform_device()
+        .register_irq_bound_block(driver, irq_lease);
     info!("NVMe block device registered at {address} with irq={irq:?}");
     Ok(())
 }
@@ -105,7 +114,14 @@ fn register_msix_block(
         cmd
     });
 
-    let nvme = Nvme::new(
+    // The MSI-X lease must own the endpoint across every later fallible step.
+    // Its Drop path can then mask and disable the capability before releasing
+    // the table mapping or provider vectors when staged discovery fails.
+    let endpoint = probe.take_endpoint();
+    let irq_lease = irq_lease.retain_endpoint(endpoint);
+
+    let driver = NvmeBlockDriver::discover(
+        DEVICE_NAME,
         bar.start,
         bar.count().max(1),
         u64::MAX,
@@ -113,11 +129,8 @@ fn register_msix_block(
         axklib::mmio::op(),
         Config::new(DEFAULT_PAGE_SIZE, DEFAULT_IO_QUEUE_PAIRS).with_msix_vectors(vectors),
     )
-    .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
-    let driver = NvmeBlockDriver::from_nvme(nvme).map_err(|err| {
-        OnProbeError::other(format!("failed to create NVMe block driver: {err:?}"))
-    })?;
+    .map_err(|err| OnProbeError::other(format!("failed to discover NVMe: {err:?}")))?;
 
-    let (_, _, plat_dev) = probe.into_parts();
+    let plat_dev = probe.into_platform_device();
     Ok(plat_dev.register_irq_bound_block(driver, irq_lease))
 }

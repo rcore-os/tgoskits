@@ -124,9 +124,159 @@ const SUMMARY_PUSHABLE_CLASS_SHIFT: u32 = 5;
 const SUMMARY_CLASS_MASK: u8 = 0b11;
 const IPI_RETRY_WORD_BITS: usize = u64::BITS as usize;
 const IPI_CLAIMED: u64 = 1;
+const SCHED_REASON_PREEMPT: u8 = 1 << 0;
+const SCHED_REASON_OWNER_DOORBELL: u8 = 1 << 1;
+const SCHED_REASON_DEFERRED_OWNER_WORK: u8 = 1 << 2;
+const SCHED_REASON_DEADLINE_DUE: u8 = 1 << 3;
+const SCHED_REASON_IMMEDIATE_MASK: u8 =
+    SCHED_REASON_PREEMPT | SCHED_REASON_OWNER_DOORBELL | SCHED_REASON_DEADLINE_DUE;
+
+const DEADLINE_DUE_OWNER_WORK: u8 = 1 << 0;
+const DEADLINE_DUE_DEADLINE_CLASS: u8 = 1 << 1;
+const DEADLINE_DUE_PREEMPT: u8 = 1 << 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SchedulerIpiClaim(u64);
+
+/// Reasons atomically claimed by one owner-CPU scheduler safe point.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SchedulerEntryReasons(u8);
+
+impl SchedulerEntryReasons {
+    pub(crate) const fn preempt_requested(self) -> bool {
+        self.0 & SCHED_REASON_PREEMPT != 0
+    }
+
+    pub(crate) const fn owner_doorbell(self) -> bool {
+        self.0 & SCHED_REASON_OWNER_DOORBELL != 0
+    }
+
+    pub(crate) const fn deadline_due(self) -> bool {
+        self.0 & SCHED_REASON_DEADLINE_DUE != 0
+    }
+}
+
+/// Transactional ownership of scheduler reasons observed at one safe point.
+///
+/// Claimed reasons continue to own their expired one-shot sources until the
+/// scheduler has committed a replacement dispatch and explicitly finishes the
+/// transaction. Dropping an unfinished claim republishes its reasons so an
+/// error path cannot lose preemption or owner work.
+#[derive(Debug)]
+#[must_use = "a scheduler entry claim must be finished after committing the safe point"]
+pub(crate) struct SchedulerEntryClaim {
+    remote: Arc<CpuRemote>,
+    reasons: SchedulerEntryReasons,
+    finished: bool,
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl SchedulerEntryClaim {
+    pub(crate) const fn preempt_requested(&self) -> bool {
+        self.reasons.preempt_requested()
+    }
+
+    pub(crate) const fn owner_doorbell(&self) -> bool {
+        self.reasons.owner_doorbell()
+    }
+
+    pub(crate) const fn deadline_due(&self) -> bool {
+        self.reasons.deadline_due()
+    }
+
+    /// Moves a racing preemption request into this safe-point transaction.
+    ///
+    /// Publication that races after the exchange remains pending for the next
+    /// safe point. The claimed bit bridges the two atomics while an observed
+    /// request moves from the pending set into this transaction.
+    pub(crate) fn absorb_preempt_requested(&mut self) -> bool {
+        let already_claimed = self.reasons.preempt_requested();
+        if !already_claimed {
+            self.remote
+                .scheduler_claimed_reasons
+                .fetch_or(SCHED_REASON_PREEMPT, Ordering::Release);
+        }
+        let observed = self
+            .remote
+            .scheduler_reasons
+            .fetch_and(!SCHED_REASON_PREEMPT, Ordering::AcqRel);
+        if observed & SCHED_REASON_PREEMPT != 0 {
+            self.reasons.0 |= SCHED_REASON_PREEMPT;
+            return true;
+        }
+        if !already_claimed {
+            self.remote
+                .scheduler_claimed_reasons
+                .fetch_and(!SCHED_REASON_PREEMPT, Ordering::Release);
+        }
+        false
+    }
+
+    /// Commits consumption after replacement scheduler state is ready.
+    pub(crate) fn finish(mut self) {
+        self.remote
+            .scheduler_claimed_reasons
+            .fetch_and(!self.reasons.0, Ordering::Release);
+        self.finished = true;
+    }
+}
+
+impl Drop for SchedulerEntryClaim {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        // Republish first so deadline queries never observe an unowned expired
+        // cause while an error unwinds the scheduler transaction.
+        self.remote
+            .scheduler_reasons
+            .fetch_or(self.reasons.0, Ordering::Release);
+        self.remote
+            .scheduler_claimed_reasons
+            .fetch_and(!self.reasons.0, Ordering::Release);
+    }
+}
+
+/// Typed scheduler causes claimed from the CPU's one-shot deadline set.
+///
+/// Each cause has an independent deadline slot. This prevents an owner-work
+/// continuation or an RT replenishment timer from being interpreted as a
+/// Deadline-class CBS scan merely because it happened to be the earliest
+/// programmed one-shot event.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SchedulerDeadlineDue(u8);
+
+impl SchedulerDeadlineDue {
+    pub(crate) const fn owner_work_due(self) -> bool {
+        self.0 & DEADLINE_DUE_OWNER_WORK != 0
+    }
+
+    pub(crate) const fn deadline_class_due(self) -> bool {
+        self.0 & DEADLINE_DUE_DEADLINE_CLASS != 0
+    }
+
+    pub(crate) const fn preempt_due(self) -> bool {
+        self.0 & DEADLINE_DUE_PREEMPT != 0
+    }
+
+    pub(crate) const fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    const fn from_scheduler_reasons(reasons: u8) -> Self {
+        let mut causes = 0;
+        if reasons & SCHED_REASON_OWNER_DOORBELL != 0 {
+            causes |= DEADLINE_DUE_OWNER_WORK;
+        }
+        if reasons & SCHED_REASON_DEADLINE_DUE != 0 {
+            causes |= DEADLINE_DUE_DEADLINE_CLASS;
+        }
+        if reasons & SCHED_REASON_PREEMPT != 0 {
+            causes |= DEADLINE_DUE_PREEMPT;
+        }
+        Self(causes)
+    }
+}
 
 /// Preallocated cross-CPU retry/quarantine publication for scheduler IPIs.
 #[derive(Debug)]
@@ -221,8 +371,8 @@ pub struct CpuRemote {
     owner_claimed: AtomicBool,
     online: AtomicBool,
     scheduler_ready: AtomicBool,
-    need_resched: AtomicBool,
-    preempt_requested: AtomicBool,
+    scheduler_reasons: AtomicU8,
+    scheduler_claimed_reasons: AtomicU8,
     park_preempt_deferred: AtomicBool,
     scheduler_ipi_pending: AtomicU64,
     scheduler_ipi_fault_count: AtomicU64,
@@ -238,8 +388,11 @@ pub struct CpuRemote {
     load_summary_pushable_primary: AtomicU64,
     load_summary_pushable_sequence: AtomicU64,
     fair_balance_deadline_ns: AtomicU64,
-    scheduler_deadline_ns: AtomicU64,
-    deferred_scheduler_deadline_ns: AtomicU64,
+    armed_owner_deadline_ns: AtomicU64,
+    armed_deadline_class_deadline_ns: AtomicU64,
+    derived_owner_deadline_ns: AtomicU64,
+    derived_deadline_class_deadline_ns: AtomicU64,
+    derived_preempt_deadline_ns: AtomicU64,
     remote_wake_inbox: SchedulerInbox,
     migration_inbox: SchedulerInbox,
     reclaim_inbox: SchedulerInbox,
@@ -256,8 +409,8 @@ impl CpuRemote {
             owner_claimed: AtomicBool::new(false),
             online: AtomicBool::new(false),
             scheduler_ready: AtomicBool::new(false),
-            need_resched: AtomicBool::new(false),
-            preempt_requested: AtomicBool::new(false),
+            scheduler_reasons: AtomicU8::new(0),
+            scheduler_claimed_reasons: AtomicU8::new(0),
             park_preempt_deferred: AtomicBool::new(false),
             scheduler_ipi_pending: AtomicU64::new(0),
             scheduler_ipi_fault_count: AtomicU64::new(0),
@@ -276,8 +429,11 @@ impl CpuRemote {
             // duration here as an absolute deadline makes every CPU brought
             // online after that duration immediately overdue.
             fair_balance_deadline_ns: AtomicU64::new(u64::MAX),
-            scheduler_deadline_ns: AtomicU64::new(0),
-            deferred_scheduler_deadline_ns: AtomicU64::new(0),
+            armed_owner_deadline_ns: AtomicU64::new(0),
+            armed_deadline_class_deadline_ns: AtomicU64::new(0),
+            derived_owner_deadline_ns: AtomicU64::new(0),
+            derived_deadline_class_deadline_ns: AtomicU64::new(0),
+            derived_preempt_deadline_ns: AtomicU64::new(0),
             remote_wake_inbox: SchedulerInbox::new(InboxKind::RemoteWake),
             migration_inbox: SchedulerInbox::new(InboxKind::Migration),
             reclaim_inbox: SchedulerInbox::new(InboxKind::Reclaim),
@@ -362,16 +518,61 @@ impl CpuRemote {
 
     /// Publishes a sticky owner-CPU reschedule request.
     pub fn request_reschedule(&self) {
-        self.preempt_requested.store(true, Ordering::Release);
-        self.need_resched.store(true, Ordering::Release);
+        self.scheduler_reasons
+            .fetch_or(SCHED_REASON_PREEMPT, Ordering::Release);
     }
 
-    pub(crate) fn request_scheduler_work(&self) {
-        self.need_resched.store(true, Ordering::Release);
+    /// Publishes expiration of the dispatch currently owned by this CPU.
+    ///
+    /// An active scheduler transaction already owns that dispatch's expired
+    /// budget. Republishing it while the old dispatch is being settled would
+    /// incorrectly suppress the replacement dispatch deadline.
+    fn request_current_dispatch_preemption(&self) {
+        if self.scheduler_claimed_reasons.load(Ordering::Acquire) & SCHED_REASON_PREEMPT == 0 {
+            self.request_reschedule();
+        }
+    }
+
+    /// Publishes one owner-work doorbell and promotes any deferred remainder.
+    fn request_scheduler_work(&self) -> bool {
+        let mut observed = self.scheduler_reasons.load(Ordering::Acquire);
+        loop {
+            let next = (observed | SCHED_REASON_OWNER_DOORBELL) & !SCHED_REASON_DEFERRED_OWNER_WORK;
+            match self.scheduler_reasons.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return observed & SCHED_REASON_OWNER_DOORBELL == 0,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    pub(crate) fn defer_scheduler_work(&self) {
+        self.scheduler_reasons
+            .fetch_or(SCHED_REASON_DEFERRED_OWNER_WORK, Ordering::Release);
+    }
+
+    fn request_deadline_scan(&self) {
+        self.scheduler_reasons
+            .fetch_or(SCHED_REASON_DEADLINE_DUE, Ordering::Release);
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
-        self.request_scheduler_work();
+        if !self.request_scheduler_work() {
+            return false;
+        }
+        // A local hard IRQ already has a lossless return path into the owner
+        // scheduler. The typed reason is the doorbell in this case; sending a
+        // self-IPI would only leave a redundant interrupt pending afterwards.
+        // Same-CPU task-context producers still need an actual transport kick.
+        if task_runtime::in_hard_irq()
+            && task_runtime::current_cpu_id().as_u32() == self.owner.as_u32()
+        {
+            return true;
+        }
         let Some(claim) = self.claim_scheduler_ipi() else {
             return false;
         };
@@ -456,25 +657,30 @@ impl CpuRemote {
     }
 
     fn has_scheduler_work(&self) -> bool {
-        self.needs_reschedule() || self.has_remote_work()
+        self.needs_reschedule()
     }
 
     /// Tests the sticky reschedule request without consuming it.
     pub fn needs_reschedule(&self) -> bool {
-        self.need_resched.load(Ordering::Acquire)
+        self.scheduler_reasons.load(Ordering::Acquire) & SCHED_REASON_IMMEDIATE_MASK != 0
     }
 
-    pub(crate) fn scheduler_enter(&self) -> bool {
-        self.need_resched.swap(false, Ordering::AcqRel);
-        let preempt_requested = self.preempt_requested.swap(false, Ordering::AcqRel);
-        if self.has_remote_work() {
-            self.request_scheduler_work();
+    pub(crate) fn has_deferred_scheduler_work(&self) -> bool {
+        self.scheduler_reasons.load(Ordering::Acquire) & SCHED_REASON_DEFERRED_OWNER_WORK != 0
+    }
+
+    pub(crate) fn scheduler_enter(self: &Arc<Self>) -> SchedulerEntryClaim {
+        let reasons = SchedulerEntryReasons(self.scheduler_reasons.swap(0, Ordering::AcqRel));
+        let previous = self
+            .scheduler_claimed_reasons
+            .fetch_or(reasons.0, Ordering::Release);
+        debug_assert_eq!(previous, 0, "scheduler reasons already have an owner");
+        SchedulerEntryClaim {
+            remote: Arc::clone(self),
+            reasons,
+            finished: false,
+            _not_send_or_sync: PhantomData,
         }
-        preempt_requested
-    }
-
-    pub(crate) fn take_preempt_requested(&self) -> bool {
-        self.preempt_requested.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn defer_park_preemption(&self, requested: bool) {
@@ -646,7 +852,10 @@ impl CpuRemote {
             || self.reclaim_inbox.has_pending()
     }
 
-    /// Acknowledges one coalesced scheduler IPI epoch and rechecks publication.
+    /// Acknowledges one coalesced scheduler-IPI transport epoch.
+    ///
+    /// Scheduler reasons are independent and are never created or consumed by
+    /// this transport acknowledgement.
     pub fn acknowledge_scheduler_ipi(&self) {
         let mut current = self.scheduler_ipi_pending.load(Ordering::Acquire);
         while current & IPI_CLAIMED != 0 {
@@ -661,12 +870,16 @@ impl CpuRemote {
             }
         }
         core::sync::atomic::fence(Ordering::SeqCst);
-        if self.has_remote_work() {
-            self.request_scheduler_work();
-        }
     }
 
     pub(crate) fn prepare_idle_wait(&self) -> bool {
+        if self.has_deferred_scheduler_work() {
+            // Idle entry is an explicit future safe point. Promote a retained
+            // suffix that no longer has an inbox head into a local doorbell so
+            // it cannot become an invisible reason while this CPU enters WFI.
+            // No IPI is required: the caller is already executing locally.
+            let _new_doorbell = self.request_scheduler_work();
+        }
         self.idle_polling.store(true, Ordering::Release);
         core::sync::atomic::fence(Ordering::SeqCst);
         let may_wait =
@@ -685,13 +898,13 @@ impl CpuRemote {
         self.idle_polling.load(Ordering::Acquire)
     }
 
-    fn arm_scheduler_deadline(&self, deadline_ns: u64) {
-        let mut current = self.scheduler_deadline_ns.load(Ordering::Acquire);
+    fn arm_deadline(slot: &AtomicU64, deadline_ns: u64) {
+        let mut current = slot.load(Ordering::Acquire);
         loop {
             if current != 0 && current <= deadline_ns {
                 return;
             }
-            match self.scheduler_deadline_ns.compare_exchange_weak(
+            match slot.compare_exchange_weak(
                 current,
                 deadline_ns,
                 Ordering::AcqRel,
@@ -703,22 +916,101 @@ impl CpuRemote {
         }
     }
 
-    fn clear_due_deferred_deadline(&self, now_ns: u64) {
-        let mut current = self.deferred_scheduler_deadline_ns.load(Ordering::Acquire);
+    fn take_due_deadline(slot: &AtomicU64, now_ns: u64) -> bool {
+        let mut current = slot.load(Ordering::Acquire);
         loop {
             if current == 0 || current > now_ns {
-                return;
+                return false;
             }
-            match self.deferred_scheduler_deadline_ns.compare_exchange_weak(
-                current,
-                0,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
+            match slot.compare_exchange_weak(current, 0, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
                 Err(observed) => current = observed,
             }
         }
+    }
+
+    fn scheduler_deadline_ns(&self) -> Option<u64> {
+        // The scheduler reason is the ownership latch for a claimed one-shot
+        // cause. Once sticky, its transport is IRQ-return/IPI and the old
+        // timer must remain HRTIMER_NORESTART-like until a safe point consumes
+        // the reason and publishes a replacement dispatch/state deadline.
+        let reasons_before = self.scheduler_reasons.load(Ordering::Acquire)
+            | self.scheduler_claimed_reasons.load(Ordering::Acquire);
+        let armed_owner = self.armed_owner_deadline_ns.load(Ordering::Acquire);
+        let armed_deadline = self
+            .armed_deadline_class_deadline_ns
+            .load(Ordering::Acquire);
+        let derived_owner = self.derived_owner_deadline_ns.load(Ordering::Acquire);
+        let derived_deadline = self
+            .derived_deadline_class_deadline_ns
+            .load(Ordering::Acquire);
+        let derived_preempt = self.derived_preempt_deadline_ns.load(Ordering::Acquire);
+        // Remote producers only add reasons; the owner consumes them with IRQ
+        // disabled. OR-ing the second observation closes a publication race
+        // without an unbounded retry loop in timer IRQ context.
+        let reasons_after = self.scheduler_reasons.load(Ordering::Acquire)
+            | self.scheduler_claimed_reasons.load(Ordering::Acquire);
+        let claimed = SchedulerDeadlineDue::from_scheduler_reasons(reasons_before | reasons_after);
+
+        let mut next = None;
+        if !claimed.owner_work_due() {
+            if let Some(deadline) = nonzero_deadline(armed_owner) {
+                next = earliest(next, deadline);
+            }
+            if let Some(deadline) = nonzero_deadline(derived_owner) {
+                next = earliest(next, deadline);
+            }
+        }
+        if !claimed.deadline_class_due() {
+            if let Some(deadline) = nonzero_deadline(armed_deadline) {
+                next = earliest(next, deadline);
+            }
+            if let Some(deadline) = nonzero_deadline(derived_deadline) {
+                next = earliest(next, deadline);
+            }
+        }
+        if !claimed.preempt_due()
+            && let Some(deadline) = nonzero_deadline(derived_preempt)
+        {
+            next = earliest(next, deadline);
+        }
+        next
+    }
+
+    fn replace_derived_deadlines(
+        &self,
+        owner_work: Option<u64>,
+        deadline_class: Option<u64>,
+        preempt: Option<u64>,
+    ) {
+        let claimed = SchedulerDeadlineDue::from_scheduler_reasons(
+            self.scheduler_reasons.load(Ordering::Acquire)
+                | self.scheduler_claimed_reasons.load(Ordering::Acquire),
+        );
+        self.derived_owner_deadline_ns.store(
+            if claimed.owner_work_due() {
+                0
+            } else {
+                owner_work.unwrap_or(0)
+            },
+            Ordering::Release,
+        );
+        self.derived_deadline_class_deadline_ns.store(
+            if claimed.deadline_class_due() {
+                0
+            } else {
+                deadline_class.unwrap_or(0)
+            },
+            Ordering::Release,
+        );
+        self.derived_preempt_deadline_ns.store(
+            if claimed.preempt_due() {
+                0
+            } else {
+                preempt.unwrap_or(0)
+            },
+            Ordering::Release,
+        );
     }
 }
 
@@ -790,7 +1082,12 @@ pub struct CpuLocal {
     pub(crate) migration_buffer: Vec<InboxMessage>,
     timer_expired_buffer: Vec<ExpiredTimer>,
     timer_expired_count: usize,
+    timer_delivery_claimed: bool,
     deadline_scan_cursor: usize,
+    deadline_members_generation: u64,
+    deadline_scan_generation: u64,
+    deadline_scan_remaining: usize,
+    deadline_scan_continuation_ns: u64,
     switch_handoff: Option<SwitchHandoff>,
     batch_limit: usize,
     _pinned: PhantomPinned,
@@ -822,7 +1119,12 @@ impl CpuLocal {
             migration_buffer: vec![InboxMessage::EMPTY; config.batch_limit()],
             timer_expired_buffer: vec![ExpiredTimer::EMPTY; config.batch_limit()],
             timer_expired_count: 0,
+            timer_delivery_claimed: false,
             deadline_scan_cursor: 0,
+            deadline_members_generation: 1,
+            deadline_scan_generation: 0,
+            deadline_scan_remaining: 0,
+            deadline_scan_continuation_ns: 0,
             switch_handoff: None,
             batch_limit: config.batch_limit(),
             _pinned: PhantomPinned,
@@ -880,7 +1182,15 @@ impl CpuLocal {
     }
 
     pub(crate) fn request_scheduler_work(&self) {
-        self.remote.request_scheduler_work();
+        let _new_doorbell = self.remote.request_scheduler_work();
+    }
+
+    pub(crate) fn defer_scheduler_work(&self) {
+        self.remote.defer_scheduler_work();
+    }
+
+    pub(crate) fn request_deadline_scan(&self) {
+        self.remote.request_deadline_scan();
     }
 
     /// Tests the sticky reschedule request without clearing it.
@@ -973,7 +1283,7 @@ impl CpuLocal {
             || charge.deadline_overrun
             || (rt_quota_exhausted && !rt_quota_exempt)
         {
-            fields.request_reschedule();
+            fields.remote.request_current_dispatch_preemption();
         }
         fields.recompute_scheduler_deadline(now_ns);
         Ok(charge)
@@ -1042,6 +1352,7 @@ impl CpuLocal {
                 return Err(TaskError::TimerCapacity);
             }
             self.deadline_members.push(Arc::clone(core));
+            self.invalidate_deadline_scan();
             return Ok(true);
         }
         Ok(false)
@@ -1054,25 +1365,15 @@ impl CpuLocal {
             .position(|member| Arc::ptr_eq(member, core))
         {
             self.deadline_members.swap_remove(index);
-            if self.deadline_members.is_empty() {
-                self.deadline_scan_cursor = 0;
-            } else {
-                self.deadline_scan_cursor %= self.deadline_members.len();
-            }
+            self.invalidate_deadline_scan();
         }
     }
 
-    pub(crate) fn scheduler_enter(self: Pin<&mut Self>) -> bool {
-        // `need_resched` is cleared only after entering the scheduler, never by
-        // wake, timer, IPI, or preemption-disable paths. The AcqRel claim pairs
-        // with producer Release stores after inbox publication. Rechecking the
-        // inbox after the claim closes the race where a forced scheduling path
-        // otherwise overwrote a remote producer's doorbell.
+    pub(crate) fn scheduler_enter(self: Pin<&mut Self>) -> SchedulerEntryClaim {
+        // Immediate reasons are claimed only after entering the scheduler,
+        // never by wake, timer, IPI acknowledgement, or preemption-disable
+        // paths. Inbox membership remains a separate owner-work authority.
         self.remote.scheduler_enter()
-    }
-
-    pub(crate) fn take_preempt_requested(&self) -> bool {
-        self.remote.take_preempt_requested()
     }
 
     pub(crate) fn defer_park_preemption(&self, requested: bool) {
@@ -1181,62 +1482,55 @@ impl CpuLocal {
         }
     }
 
-    pub(crate) fn arm_deferred_scheduler_deadline(&self, deadline_ns: u64) {
+    /// Arms a continuation that only requires bounded owner-CPU work.
+    pub(crate) fn arm_deferred_owner_deadline(&self, deadline_ns: u64) {
         if deadline_ns == 0 {
             return;
         }
-        let mut current = self
-            .remote
-            .deferred_scheduler_deadline_ns
-            .load(Ordering::Acquire);
-        loop {
-            if current != 0 && current <= deadline_ns {
-                return;
-            }
-            match self
-                .remote
-                .deferred_scheduler_deadline_ns
-                .compare_exchange_weak(current, deadline_ns, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    self.remote.arm_scheduler_deadline(deadline_ns);
-                    return;
-                }
-                Err(observed) => current = observed,
-            }
-        }
+        CpuRemote::arm_deadline(&self.remote.armed_owner_deadline_ns, deadline_ns);
     }
 
-    pub(crate) fn replace_scheduler_deadline(&self, deadline_ns: Option<u64>) {
-        self.remote
-            .scheduler_deadline_ns
-            .store(deadline_ns.unwrap_or(0), Ordering::Release);
+    /// Arms Deadline-class CBS, replenishment, or zero-lag processing.
+    pub(crate) fn arm_deadline_class_deadline(&self, deadline_ns: u64) {
+        if deadline_ns == 0 {
+            return;
+        }
+        CpuRemote::arm_deadline(&self.remote.armed_deadline_class_deadline_ns, deadline_ns);
     }
 
-    pub(crate) fn take_due_scheduler_deadline(&self, now_ns: u64) -> bool {
-        let mut current = self.remote.scheduler_deadline_ns.load(Ordering::Acquire);
-        loop {
-            if current == 0 || current > now_ns {
-                return false;
-            }
-            match self.remote.scheduler_deadline_ns.compare_exchange_weak(
-                current,
-                0,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    self.remote.clear_due_deferred_deadline(now_ns);
-                    return true;
-                }
-                Err(observed) => current = observed,
-            }
+    /// Claims every typed one-shot cause due at `now_ns` and publishes the
+    /// corresponding scheduler reason.
+    pub(crate) fn take_due_scheduler_deadlines(&self, now_ns: u64) -> SchedulerDeadlineDue {
+        let owner_work_due =
+            CpuRemote::take_due_deadline(&self.remote.armed_owner_deadline_ns, now_ns)
+                | CpuRemote::take_due_deadline(&self.remote.derived_owner_deadline_ns, now_ns);
+        let deadline_class_due =
+            CpuRemote::take_due_deadline(&self.remote.armed_deadline_class_deadline_ns, now_ns)
+                | CpuRemote::take_due_deadline(
+                    &self.remote.derived_deadline_class_deadline_ns,
+                    now_ns,
+                );
+        let preempt_due =
+            CpuRemote::take_due_deadline(&self.remote.derived_preempt_deadline_ns, now_ns);
+
+        let mut bits = 0;
+        if owner_work_due {
+            bits |= DEADLINE_DUE_OWNER_WORK;
+            let _new_doorbell = self.remote.request_scheduler_work();
         }
+        if deadline_class_due {
+            bits |= DEADLINE_DUE_DEADLINE_CLASS;
+            self.remote.request_deadline_scan();
+        }
+        if preempt_due {
+            bits |= DEADLINE_DUE_PREEMPT;
+            self.remote.request_reschedule();
+        }
+        SchedulerDeadlineDue(bits)
     }
 
     pub(crate) fn scheduler_deadline_ns(&self) -> Option<u64> {
-        let deadline_ns = self.remote.scheduler_deadline_ns.load(Ordering::Acquire);
-        (deadline_ns != 0).then_some(deadline_ns)
+        self.remote.scheduler_deadline_ns()
     }
 
     pub(crate) fn refresh_scheduler_deadline(self: Pin<&mut Self>, now_ns: u64) {
@@ -1248,9 +1542,13 @@ impl CpuLocal {
         now_ns: u64,
         timer_resolution_ns: u64,
     ) -> Option<u64> {
-        let timer = self
-            .timer_queue
-            .next_deadline_ns(now_ns, timer_resolution_ns);
+        let timer =
+            if self.timer_delivery_claimed && self.timer_queue.has_immediately_actionable(now_ns) {
+                None
+            } else {
+                self.timer_queue
+                    .next_deadline_ns(now_ns, timer_resolution_ns)
+            };
         let earliest_future_ns = now_ns
             .checked_add(timer_resolution_ns.max(1))
             .or_else(|| now_ns.checked_add(1));
@@ -1266,19 +1564,20 @@ impl CpuLocal {
     }
 
     fn recompute_scheduler_deadline(&mut self, now_ns: u64) {
-        let mut next_deadline_ns = nonzero_deadline(
-            self.remote
-                .deferred_scheduler_deadline_ns
-                .load(Ordering::Acquire),
-        );
+        let mut owner_work_deadline_ns = None;
+        let mut deadline_class_deadline_ns = None;
+        let mut preempt_deadline_ns = None;
+        if let Some(deadline) = nonzero_deadline(self.deadline_scan_continuation_ns) {
+            deadline_class_deadline_ns = earliest(deadline_class_deadline_ns, deadline);
+        }
         if let Some(deadline) = self.run_queue.earliest_deadline_event_ns() {
-            next_deadline_ns = earliest(next_deadline_ns, deadline);
+            deadline_class_deadline_ns = earliest(deadline_class_deadline_ns, deadline);
         }
 
         let current_is_idle = self.current.is_some() && self.current == self.idle;
         if !current_is_idle && let Some(dispatch) = self.current_dispatch.as_ref() {
             if let Some(deadline) = dispatch.next_scheduler_event_ns(now_ns) {
-                next_deadline_ns = earliest(next_deadline_ns, deadline);
+                preempt_deadline_ns = earliest(preempt_deadline_ns, deadline);
             }
             if dispatch.is_rt() && !dispatch.rt_quota_exempt {
                 let remaining = self.rt_bandwidth.remaining_runtime_ns(now_ns);
@@ -1287,12 +1586,12 @@ impl CpuLocal {
                 } else {
                     now_ns.saturating_add(remaining)
                 };
-                next_deadline_ns = earliest(next_deadline_ns, deadline);
+                preempt_deadline_ns = earliest(preempt_deadline_ns, deadline);
             }
         }
         if self.run_queue.has_rt() && self.rt_bandwidth.is_throttled(now_ns) {
             let deadline = self.rt_bandwidth.next_period_ns(now_ns);
-            next_deadline_ns = earliest(next_deadline_ns, deadline);
+            preempt_deadline_ns = earliest(preempt_deadline_ns, deadline);
         }
         let current_non_idle = self.current.is_some() && self.current != self.idle;
         if self.run_queue.has_fair()
@@ -1302,20 +1601,56 @@ impl CpuLocal {
                 .saturating_add(usize::from(current_non_idle))
                 > 1
         {
-            next_deadline_ns = earliest(
-                next_deadline_ns,
+            owner_work_deadline_ns = earliest(
+                owner_work_deadline_ns,
                 self.remote.fair_balance_deadline_ns.load(Ordering::Acquire),
             );
         }
-        self.replace_scheduler_deadline(next_deadline_ns);
+        self.remote.replace_derived_deadlines(
+            owner_work_deadline_ns,
+            deadline_class_deadline_ns,
+            preempt_deadline_ns,
+        );
     }
 
     pub(crate) const fn deadline_scan_cursor(&self) -> usize {
         self.deadline_scan_cursor
     }
 
-    pub(crate) fn set_deadline_scan_cursor(&mut self, cursor: usize) {
-        self.deadline_scan_cursor = cursor;
+    pub(crate) fn begin_deadline_scan(&mut self, requested: bool) -> usize {
+        if self.deadline_scan_generation != self.deadline_members_generation {
+            self.deadline_scan_generation = self.deadline_members_generation;
+            self.deadline_scan_cursor = 0;
+            self.deadline_scan_remaining = self.deadline_members.len();
+        } else if requested && self.deadline_scan_remaining == 0 {
+            self.deadline_scan_cursor = 0;
+            self.deadline_scan_remaining = self.deadline_members.len();
+        }
+        self.deadline_scan_remaining
+    }
+
+    pub(crate) fn finish_deadline_scan_batch(&mut self, examined: usize) -> bool {
+        debug_assert!(examined <= self.deadline_scan_remaining);
+        self.deadline_scan_remaining -= examined;
+        if self.deadline_members.is_empty() {
+            self.deadline_scan_cursor = 0;
+        } else {
+            self.deadline_scan_cursor =
+                (self.deadline_scan_cursor + examined) % self.deadline_members.len();
+        }
+        self.deadline_scan_remaining != 0
+    }
+
+    pub(crate) fn set_deadline_scan_continuation(&mut self, deadline_ns: Option<u64>) {
+        self.deadline_scan_continuation_ns = deadline_ns.unwrap_or(0);
+    }
+
+    fn invalidate_deadline_scan(&mut self) {
+        self.deadline_members_generation = self.deadline_members_generation.wrapping_add(1).max(1);
+        self.deadline_scan_generation = 0;
+        self.deadline_scan_cursor = 0;
+        self.deadline_scan_remaining = 0;
+        self.deadline_scan_continuation_ns = 0;
     }
 
     /// Returns a coherent remotely observable scheduling-load snapshot.
@@ -1355,32 +1690,86 @@ impl CpuLocal {
         let batch = fields.timer_queue.expire(request, output);
         fields.timer_expired_count += batch.expired();
         if batch.pending() || batch.expired() != 0 {
+            // The buffered delivery owns an immediately actionable heap root
+            // until task context makes output space. Future roots remain
+            // programmable so an unrelated timer cannot be delayed.
+            fields.timer_delivery_claimed = true;
             fields.request_scheduler_work();
         }
         batch
     }
 
-    /// Copies expired timer events to task-context storage and clears the batch.
+    /// Copies caller-drained class-zero timer events without stealing scheduler
+    /// sleep timers or runtime-owned safe-point deliveries.
+    ///
+    /// Removing the last buffered event releases ownership of an immediately
+    /// due heap continuation. Object-API callers must then recompute and program
+    /// the CPU one-shot deadline; the runtime-backed facade does this itself.
     pub fn take_expired_timers(self: Pin<&mut Self>, output: &mut [ExpiredTimer]) -> usize {
         let fields = self.fields_mut();
-        let count = fields.timer_expired_count.min(output.len());
-        output[..count].copy_from_slice(&fields.timer_expired_buffer[..count]);
-        fields.timer_expired_count = 0;
-        count
+        let mut copied = 0;
+        while copied < output.len() {
+            let Some(event) = Self::take_first_expired_timer(fields, |event| {
+                event.owner_thread().is_none() && event.owner_class() == 0
+            }) else {
+                break;
+            };
+            output[copied] = event;
+            copied += 1;
+        }
+        copied
     }
 
-    pub(crate) fn take_thread_expired_timer(self: Pin<&mut Self>) -> Option<ExpiredTimer> {
+    pub(crate) fn take_dispatchable_expired_timer(self: Pin<&mut Self>) -> Option<ExpiredTimer> {
         let fields = self.fields_mut();
-        let index = fields.timer_expired_buffer[..fields.timer_expired_count]
+        Self::take_first_expired_timer(fields, |event| {
+            event.owner_thread().is_some() || event.owner_class() != 0
+        })
+    }
+
+    pub(crate) fn has_dispatchable_expired_timer(&self) -> bool {
+        self.timer_expired_buffer[..self.timer_expired_count]
             .iter()
-            .rposition(|event| event.owner_thread().is_some())?;
-        fields.timer_expired_count -= 1;
-        let last = fields.timer_expired_count;
-        fields.timer_expired_buffer.swap(index, last);
-        Some(core::mem::replace(
-            &mut fields.timer_expired_buffer[last],
-            ExpiredTimer::EMPTY,
-        ))
+            .copied()
+            .any(|event| event.owner_thread().is_some() || event.owner_class() != 0)
+    }
+
+    pub(crate) fn restore_dispatchable_expired_timer(
+        self: Pin<&mut Self>,
+        event: ExpiredTimer,
+    ) -> Result<(), ExpiredTimer> {
+        let fields = self.fields_mut();
+        let count = fields.timer_expired_count;
+        if count == fields.timer_expired_buffer.len() {
+            return Err(event);
+        }
+        fields.timer_expired_buffer.copy_within(0..count, 1);
+        fields.timer_expired_buffer[0] = event;
+        fields.timer_expired_count = count + 1;
+        fields.timer_delivery_claimed = true;
+        fields.request_scheduler_work();
+        Ok(())
+    }
+
+    fn take_first_expired_timer(
+        fields: &mut Self,
+        predicate: impl Fn(ExpiredTimer) -> bool,
+    ) -> Option<ExpiredTimer> {
+        let count = fields.timer_expired_count;
+        let index = fields.timer_expired_buffer[..count]
+            .iter()
+            .copied()
+            .position(predicate)?;
+        let event = fields.timer_expired_buffer[index];
+        fields
+            .timer_expired_buffer
+            .copy_within(index + 1..count, index);
+        fields.timer_expired_count = count - 1;
+        fields.timer_expired_buffer[count - 1] = ExpiredTimer::EMPTY;
+        if fields.timer_expired_count == 0 {
+            fields.timer_delivery_claimed = false;
+        }
+        Some(event)
     }
 
     /// Returns the migration publication endpoint for remote CPUs.
@@ -1398,7 +1787,11 @@ impl CpuLocal {
         self.remote.has_remote_work()
     }
 
-    /// Acknowledges one coalesced scheduler IPI epoch and rechecks publication.
+    pub(crate) fn has_deferred_scheduler_work(&self) -> bool {
+        self.remote.has_deferred_scheduler_work()
+    }
+
+    /// Acknowledges one coalesced scheduler-IPI transport epoch.
     pub fn acknowledge_scheduler_ipi(&self) {
         self.remote.acknowledge_scheduler_ipi();
     }
@@ -1431,6 +1824,125 @@ mod scheduler_ipi_tests {
     use super::*;
 
     #[test]
+    fn late_ipi_acknowledgement_clears_transport_without_republishing_work() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+
+        assert!(remote.kick_scheduler_work());
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+        let reasons = remote.scheduler_enter();
+        assert!(reasons.owner_doorbell());
+        assert!(!remote.needs_reschedule());
+
+        remote.acknowledge_scheduler_ipi();
+
+        assert_eq!(
+            remote.scheduler_ipi_pending.load(Ordering::Acquire) & IPI_CLAIMED,
+            0
+        );
+        assert!(!remote.needs_reschedule());
+        reasons.finish();
+    }
+
+    #[test]
+    fn late_ipi_acknowledgement_preserves_a_new_scheduler_reason() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+
+        assert!(remote.kick_scheduler_work());
+        let owner = remote.scheduler_enter();
+        assert!(owner.owner_doorbell());
+        owner.finish();
+        remote.request_reschedule();
+
+        remote.acknowledge_scheduler_ipi();
+
+        assert!(remote.needs_reschedule());
+        let preempt = remote.scheduler_enter();
+        assert!(preempt.preempt_requested());
+        preempt.finish();
+    }
+
+    #[test]
+    fn unfinished_scheduler_claim_republishes_every_observed_reason() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let _new = remote.request_scheduler_work();
+        remote.request_reschedule();
+
+        {
+            let claim = remote.scheduler_enter();
+            assert!(claim.owner_doorbell());
+            assert!(claim.preempt_requested());
+            assert!(!remote.needs_reschedule());
+        }
+
+        assert!(remote.needs_reschedule());
+        let retry = remote.scheduler_enter();
+        assert!(retry.owner_doorbell());
+        assert!(retry.preempt_requested());
+        retry.finish();
+        assert!(!remote.needs_reschedule());
+    }
+
+    #[test]
+    fn preemption_published_after_absorption_remains_for_the_next_safe_point() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let mut claim = remote.scheduler_enter();
+
+        remote.request_reschedule();
+        assert!(claim.absorb_preempt_requested());
+        assert!(!remote.needs_reschedule());
+        remote.request_reschedule();
+        claim.finish();
+
+        assert!(remote.needs_reschedule());
+        let next = remote.scheduler_enter();
+        assert!(next.preempt_requested());
+        next.finish();
+    }
+
+    #[test]
+    fn local_hard_irq_uses_irq_return_instead_of_a_self_ipi() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+        crate::test_runtime::set_hard_irq(true);
+
+        assert!(remote.kick_scheduler_work());
+
+        crate::test_runtime::set_hard_irq(false);
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 0);
+        assert_eq!(
+            remote.scheduler_ipi_pending.load(Ordering::Acquire) & IPI_CLAIMED,
+            0
+        );
+        let reasons = remote.scheduler_enter();
+        assert!(reasons.owner_doorbell());
+        reasons.finish();
+    }
+
+    #[test]
+    fn idle_entry_promotes_an_invisible_deferred_reason_without_an_ipi() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+        remote.defer_scheduler_work();
+
+        assert!(!remote.needs_reschedule());
+        assert!(!remote.prepare_idle_wait());
+
+        assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 0);
+        assert!(remote.needs_reschedule());
+        let reasons = remote.scheduler_enter();
+        assert!(reasons.owner_doorbell());
+        reasons.finish();
+    }
+
+    #[test]
     fn stale_failure_cannot_clear_a_newer_doorbell_epoch() {
         let retries = Arc::new(SchedulerIpiRetrySet::new(1));
         let remote = CpuRemote::create(CpuId::new(0), retries);
@@ -1445,6 +1957,139 @@ mod scheduler_ipi_tests {
 
         assert_eq!(remote.scheduler_ipi_pending.load(Ordering::Acquire), new.0);
         assert_ne!(new.0 & IPI_CLAIMED, 0);
+    }
+
+    #[test]
+    fn owner_continuation_deadline_does_not_masquerade_as_deadline_class_work() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let mut cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), remote);
+
+        cpu.arm_deferred_owner_deadline(10);
+        let due = cpu.take_due_scheduler_deadlines(10);
+
+        assert!(due.owner_work_due());
+        assert!(!due.deadline_class_due());
+        let reasons = cpu.as_mut().scheduler_enter();
+        assert!(reasons.owner_doorbell());
+        assert!(!reasons.deadline_due());
+        reasons.finish();
+    }
+
+    #[test]
+    fn deadline_class_timer_publishes_only_deadline_scan_work() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let mut cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), remote);
+
+        cpu.arm_deadline_class_deadline(10);
+        let due = cpu.take_due_scheduler_deadlines(10);
+
+        assert!(!due.owner_work_due());
+        assert!(due.deadline_class_due());
+        let reasons = cpu.as_mut().scheduler_enter();
+        assert!(!reasons.owner_doorbell());
+        assert!(reasons.deadline_due());
+        reasons.finish();
+    }
+
+    #[test]
+    fn budget_deadline_publishes_preemption_without_deadline_class_work() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let mut cpu =
+            CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), Arc::clone(&remote));
+        remote
+            .derived_preempt_deadline_ns
+            .store(10, Ordering::Release);
+
+        let due = cpu.take_due_scheduler_deadlines(10);
+
+        assert!(!due.owner_work_due());
+        assert!(!due.deadline_class_due());
+        assert!(due.preempt_due());
+        let reasons = cpu.as_mut().scheduler_enter();
+        assert!(reasons.preempt_requested());
+        assert!(!reasons.deadline_due());
+        reasons.finish();
+    }
+
+    #[test]
+    fn sticky_reason_suppresses_only_its_matching_derived_deadline() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+
+        let _new = remote.request_scheduler_work();
+        remote.replace_derived_deadlines(Some(10), Some(20), Some(30));
+        assert_eq!(remote.derived_owner_deadline_ns.load(Ordering::Acquire), 0);
+        assert_eq!(
+            remote
+                .derived_deadline_class_deadline_ns
+                .load(Ordering::Acquire),
+            20
+        );
+        assert_eq!(
+            remote.derived_preempt_deadline_ns.load(Ordering::Acquire),
+            30
+        );
+        assert_eq!(remote.scheduler_deadline_ns(), Some(20));
+        let owner = remote.scheduler_enter();
+        owner.finish();
+
+        remote.replace_derived_deadlines(None, None, None);
+        remote.request_deadline_scan();
+        remote.replace_derived_deadlines(Some(10), Some(20), Some(30));
+        assert_eq!(remote.derived_owner_deadline_ns.load(Ordering::Acquire), 10);
+        assert_eq!(
+            remote
+                .derived_deadline_class_deadline_ns
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            remote.derived_preempt_deadline_ns.load(Ordering::Acquire),
+            30
+        );
+        assert_eq!(remote.scheduler_deadline_ns(), Some(10));
+        let deadline = remote.scheduler_enter();
+        deadline.finish();
+
+        remote.replace_derived_deadlines(None, None, None);
+        remote.request_reschedule();
+        remote.replace_derived_deadlines(Some(10), Some(20), Some(30));
+        assert_eq!(remote.derived_owner_deadline_ns.load(Ordering::Acquire), 10);
+        assert_eq!(
+            remote
+                .derived_deadline_class_deadline_ns
+                .load(Ordering::Acquire),
+            20
+        );
+        assert_eq!(
+            remote.derived_preempt_deadline_ns.load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(remote.scheduler_deadline_ns(), Some(10));
+    }
+
+    #[test]
+    fn claimed_owner_deadline_does_not_hide_an_unrelated_deadline_class_timer() {
+        let retries = Arc::new(SchedulerIpiRetrySet::new(1));
+        let remote = CpuRemote::create(CpuId::new(0), retries);
+        let mut cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), remote);
+        cpu.arm_deferred_owner_deadline(10);
+        cpu.arm_deadline_class_deadline(20);
+        cpu.request_scheduler_work();
+
+        assert_eq!(cpu.scheduler_deadline_ns(), Some(20));
+
+        let reasons = cpu.as_mut().scheduler_enter();
+        assert!(reasons.owner_doorbell());
+        assert_eq!(
+            cpu.scheduler_deadline_ns(),
+            Some(20),
+            "the claimed owner source must stay suppressed while an unrelated class timer remains"
+        );
+        reasons.finish();
     }
 }
 

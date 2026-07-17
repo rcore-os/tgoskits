@@ -7,6 +7,20 @@ pub struct ExtentRun {
     pub len: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExtentMappingState {
+    Initialized,
+    Unwritten,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ExtentMappingRun {
+    pub logical_start: u32,
+    pub physical_start: AbsoluteBN,
+    pub len: u32,
+    pub state: ExtentMappingState,
+}
+
 impl<'a> ExtentTree<'a> {
     pub fn parse_node(bytes: &[u8]) -> Option<ExtentNode> {
         Self::parse_node_from_bytes(bytes)
@@ -109,6 +123,25 @@ impl<'a> ExtentTree<'a> {
         start_lbn: u32,
         end_lbn: u32,
     ) -> Ext4Result<Vec<ExtentRun>> {
+        Ok(self
+            .mapped_runs_in_range(dev, start_lbn, end_lbn)?
+            .into_iter()
+            .filter_map(|run| {
+                (run.state == ExtentMappingState::Initialized).then_some(ExtentRun {
+                    logical_start: run.logical_start,
+                    physical_start: run.physical_start,
+                    len: run.len,
+                })
+            })
+            .collect())
+    }
+
+    pub(crate) fn mapped_runs_in_range<B: BlockDevice>(
+        &mut self,
+        dev: &mut Jbd2Dev<B>,
+        start_lbn: u32,
+        end_lbn: u32,
+    ) -> Ext4Result<Vec<ExtentMappingRun>> {
         if start_lbn > end_lbn {
             return Ok(Vec::new());
         }
@@ -116,7 +149,7 @@ impl<'a> ExtentTree<'a> {
             return Ok(Vec::new());
         };
         let mut runs = Vec::new();
-        Self::collect_runs_in_node(dev, &root, start_lbn, end_lbn, &mut runs)?;
+        Self::collect_mappings_in_node(dev, &root, start_lbn, end_lbn, &mut runs)?;
         runs.sort_unstable_by_key(|run| run.logical_start);
         Ok(runs)
     }
@@ -173,18 +206,18 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    fn collect_runs_in_node<B: BlockDevice>(
+    fn collect_mappings_in_node<B: BlockDevice>(
         dev: &mut Jbd2Dev<B>,
         node: &ExtentNode,
         start_lbn: u32,
         end_lbn: u32,
-        out: &mut Vec<ExtentRun>,
+        out: &mut Vec<ExtentMappingRun>,
     ) -> Ext4Result<()> {
         match node {
             ExtentNode::Leaf { entries, .. } => {
                 for ext in entries {
                     let len = ext.len();
-                    if len == 0 || ext.is_unwritten() {
+                    if len == 0 {
                         continue;
                     }
                     let ext_start = ext.ee_block;
@@ -197,10 +230,15 @@ impl<'a> ExtentTree<'a> {
                     let physical_offset = logical_start.saturating_sub(ext_start);
                     let physical_start =
                         AbsoluteBN::new(ext.start_block()).checked_add(physical_offset)?;
-                    out.push(ExtentRun {
+                    out.push(ExtentMappingRun {
                         logical_start,
                         physical_start,
                         len: logical_end.saturating_sub(logical_start).saturating_add(1),
+                        state: if ext.is_unwritten() {
+                            ExtentMappingState::Unwritten
+                        } else {
+                            ExtentMappingState::Initialized
+                        },
                     });
                 }
                 Ok(())
@@ -221,7 +259,7 @@ impl<'a> ExtentTree<'a> {
                     dev.read_block(child_block)?;
                     let child =
                         Self::parse_node_from_bytes(dev.buffer()).ok_or(Ext4Error::corrupted())?;
-                    Self::collect_runs_in_node(dev, &child, start_lbn, end_lbn, out)?;
+                    Self::collect_mappings_in_node(dev, &child, start_lbn, end_lbn, out)?;
                 }
                 Ok(())
             }

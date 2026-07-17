@@ -5,14 +5,13 @@ use core::{
 
 use crate::{
     CpuId, CpuMask, IrqAffinity, IrqError, IrqExecution, IrqId, IrqRequest, IrqScope, ShareMode,
-    action::Action,
+    action::Action, detached::DetachedActionConfig,
 };
 
 pub(crate) struct Descriptor {
     pub(crate) irq: IrqId,
     share_mode: ShareMode,
     affinity: IrqAffinity,
-    execution: IrqExecution,
     pub(crate) in_flight: AtomicUsize,
     line_desired: bool,
     line_applied: bool,
@@ -23,11 +22,18 @@ pub(crate) struct Descriptor {
 
 impl Descriptor {
     pub(crate) fn new(irq: IrqId, request: &IrqRequest) -> Self {
+        Self::new_with_config(irq, request.share_mode, request.affinity)
+    }
+
+    pub(crate) fn new_with_config(
+        irq: IrqId,
+        share_mode: ShareMode,
+        affinity: IrqAffinity,
+    ) -> Self {
         Self {
             irq,
-            share_mode: request.share_mode,
-            affinity: request.affinity,
-            execution: request.execution,
+            share_mode,
+            affinity,
             in_flight: AtomicUsize::new(0),
             line_desired: false,
             line_applied: false,
@@ -38,6 +44,22 @@ impl Descriptor {
     }
 
     pub(crate) fn compatible_with(&mut self, request: &IrqRequest) -> Result<(), IrqError> {
+        self.compatible_with_config(request.scope, request.share_mode, request.affinity)
+    }
+
+    pub(crate) fn compatible_with_detached(
+        &mut self,
+        config: DetachedActionConfig,
+    ) -> Result<(), IrqError> {
+        self.compatible_with_config(config.scope, config.share_mode, config.affinity)
+    }
+
+    fn compatible_with_config(
+        &mut self,
+        scope: IrqScope,
+        share_mode: ShareMode,
+        affinity: IrqAffinity,
+    ) -> Result<(), IrqError> {
         let mut has_active_actions = false;
         for action in self.actions() {
             let action = unsafe { &*action };
@@ -45,27 +67,45 @@ impl Descriptor {
                 continue;
             }
             has_active_actions = true;
-            if !scope_compatible(action.scope, request.scope) {
+            if !scope_compatible(action.scope, scope) {
                 return Err(IrqError::InvalidIrq);
             }
         }
 
         if !has_active_actions {
-            self.share_mode = request.share_mode;
-            self.affinity = request.affinity;
-            self.execution = request.execution;
+            self.share_mode = share_mode;
+            self.affinity = affinity;
             return Ok(());
         }
 
-        if self.share_mode != ShareMode::Shared || request.share_mode != ShareMode::Shared {
+        if self.share_mode != ShareMode::Shared || share_mode != ShareMode::Shared {
             return Err(IrqError::Busy);
         }
 
-        if self.affinity != request.affinity || self.execution != request.execution {
+        // Affinity belongs to the backing line, not to an individual shared
+        // action. `Any` is therefore an unconstrained join request and
+        // inherits an existing fixed route. Changing an already-published
+        // `Any` line to `Fixed`, or joining two different fixed routes,
+        // remains a separate controller transaction and is rejected here.
+        if self.affinity != affinity && affinity != IrqAffinity::Any {
             return Err(IrqError::Busy);
         }
 
         Ok(())
+    }
+
+    pub(crate) const fn detached_config(
+        &self,
+        scope: IrqScope,
+        execution: IrqExecution,
+    ) -> DetachedActionConfig {
+        DetachedActionConfig {
+            irq: self.irq,
+            scope,
+            affinity: self.affinity,
+            execution,
+            share_mode: self.share_mode,
+        }
     }
 
     pub(crate) fn actions(&self) -> ActionIter {
@@ -112,13 +152,19 @@ impl Descriptor {
         }
     }
 
-    fn recompute_line_desired(&mut self, cpu: Option<CpuId>) {
-        let desired = self.actions().any(|action| {
+    pub(crate) fn recompute_line_desired(&mut self, cpu: Option<CpuId>) {
+        let line_owned = self.actions().any(|action| {
             let action = unsafe { &*action };
             !action.detached.load(Ordering::Acquire)
-                && action.enabled.load(Ordering::Acquire)
-                && cpu.is_none_or(|cpu| action_matches_cpu(action.scope, cpu))
+                && (action.quench_applies(cpu) || action.has_continuation())
         });
+        let desired = !line_owned
+            && self.actions().any(|action| {
+                let action = unsafe { &*action };
+                !action.detached.load(Ordering::Acquire)
+                    && action.enabled()
+                    && cpu.is_none_or(|cpu| action_matches_cpu(action.scope, cpu))
+            });
         self.set_line_desired(cpu, desired);
     }
 }

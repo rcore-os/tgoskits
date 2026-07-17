@@ -238,10 +238,7 @@ pub enum ArmVmExit {
         value: u64,
     },
     /// A physical host interrupt should be handled by the embedding VMM.
-    ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
-    },
+    ExternalInterrupt,
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {
         /// Guest-provided target state.

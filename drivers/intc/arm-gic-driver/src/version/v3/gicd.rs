@@ -591,6 +591,11 @@ impl DistributorReg {
         barrier::isb(barrier::SY);
         Ok(())
     }
+
+    /// Returns whether a distributor register write is still pending.
+    pub fn is_write_pending(&self) -> bool {
+        self.CTLR.is_set(CTLR_BASE::RWP)
+    }
 }
 
 register_bitfields! [

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Keep CPU-owned DMA buffers pointer-sized by moving allocation metadata into
+  one fallible ownership record created with the buffer, while preserving
+  exact-once deallocation and cache-direction transitions.
+
 ## [0.9.3](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.9.2...dma-api-v0.9.3) - 2026-07-08
 
 ### Other

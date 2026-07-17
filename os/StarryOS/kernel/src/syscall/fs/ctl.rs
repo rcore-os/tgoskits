@@ -11,7 +11,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
+use ax_fs_ng::vfs::{LocationOperationView, current_fs_context, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
@@ -35,9 +35,11 @@ const FIONCLEX: u32 = 0x5450;
 
 fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
     with_fs(dirfd, |fs| {
-        let loc = fs.resolve_no_follow(path)?;
-        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
-        Ok((loc.absolute_path()?.to_string(), is_dir))
+        fs.with_namespace_operation(|namespace| {
+            let loc = namespace.resolve_path_no_follow(path)?;
+            let is_dir = loc.metadata()?.node_type == NodeType::Directory;
+            Ok((loc.absolute_path()?.to_string(), is_dir))
+        })
     })
 }
 
@@ -88,7 +90,7 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
 
     let fs_context = current_fs_context();
     let mut fs = fs_context.lock();
-    let entry = fs.resolve(path)?;
+    let entry = fs.resolve_file_location(path)?;
     fs.set_current_dir(entry)?;
     Ok(0)
 }
@@ -96,8 +98,8 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
 pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
-    let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    current_fs_context().lock().set_current_dir(entry)?;
+    let directory = Directory::from_fd(dirfd)?;
+    directory.set_context_current_dir(&mut current_fs_context().lock())?;
     Ok(0)
 }
 
@@ -117,11 +119,8 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
 
     let fs_context = current_fs_context();
     let mut fs = fs_context.lock();
-    let loc = fs.resolve(path)?;
-    if loc.node_type() != NodeType::Directory {
-        return Err(AxError::NotADirectory);
-    }
-    *fs = FsContext::new(loc);
+    let loc = fs.resolve_file_location(path)?;
+    fs.reset_root(loc)?;
     Ok(0)
 }
 
@@ -178,7 +177,14 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
         // mkdir on an existing path should report EEXIST.
         // Use no-follow lookup so dangling symlinks are treated as existing
         // entries, and avoid converting empty-path invalid input.
-        Err(AxError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
+        Err(AxError::InvalidInput)
+            if !path.is_empty()
+                && fs
+                    .with_namespace_operation(|namespace| {
+                        namespace.resolve_path_no_follow(&path).map(drop)
+                    })
+                    .is_ok() =>
+        {
             Err(AxError::AlreadyExists)
         }
         Err(err) => Err(err),
@@ -221,24 +227,26 @@ pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Resu
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     let res = with_fs(dirfd, |fs| {
-        let (dir, name) = fs.resolve_nonexistent(Path::new(&path))?;
-        let loc = dir.create(
-            name,
-            node_type,
-            NodePermission::from_bits_truncate(perm as u16),
-            uid,
-            gid,
-        )?;
+        fs.with_namespace_operation(|namespace| {
+            let (dir, name) = namespace.parent_for_create(Path::new(&path))?;
+            let loc = dir.create(
+                name,
+                node_type,
+                NodePermission::from_bits_truncate(perm as u16),
+                uid,
+                gid,
+            )?;
 
-        // If device node, set rdev via update_metadata
-        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            loc.update_metadata(MetadataUpdate {
-                rdev: Some(DeviceId(dev)),
-                ..Default::default()
-            })?;
-        }
+            // If device node, set rdev via update_metadata
+            if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+                loc.update_metadata(MetadataUpdate {
+                    rdev: Some(DeviceId(dev)),
+                    ..Default::default()
+                })?;
+            }
 
-        Ok(0)
+            Ok(0)
+        })
     })?;
     Ok(res)
 }
@@ -302,15 +310,16 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> AxResult<isize> {
 
     let mut has_remaining = false;
 
-    dir.inner()
-        .read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
+    dir.with_operation(|view| {
+        view.read_dir(*dir_offset, &mut |name: &str, ino, node_type, offset| {
             has_remaining = true;
             if !buffer.write_entry(ino, offset as _, node_type, name.as_bytes()) {
                 return false;
             }
             *dir_offset = offset;
             true
-        })?;
+        })
+    })?;
 
     if has_remaining && buffer.offset == 0 {
         return Err(AxError::InvalidInput);
@@ -353,17 +362,17 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    let old = resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
-    if old.is_dir() {
-        return Err(AxError::OperationNotPermitted);
-    }
-    let (new_dir, new_name) =
-        with_fs(new_dirfd, |fs| fs.resolve_nonexistent(Path::new(&new_path)))?;
+    resolve_at(old_dirfd, old_path.as_deref(), resolve_flags)?.with_operation(|old| {
+        if old.is_dir() {
+            return Err(AxError::OperationNotPermitted);
+        }
+        let (new_dir, new_name) = with_fs(new_dirfd, |fs| {
+            fs.resolve_nonexistent_file_location(Path::new(&new_path))
+        })?;
 
-    new_dir.link(new_name, &old)?;
-    Ok(0)
+        new_dir.with_operation(|new_dir| new_dir.link(new_name, &old))?;
+        Ok(0)
+    })
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -419,7 +428,9 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
 
-    let cwd = current_fs_context().lock().current_dir().absolute_path()?;
+    let cwd = current_fs_context()
+        .lock()
+        .with_namespace_operation(|namespace| namespace.current_dir().absolute_path())?;
     debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
@@ -476,11 +487,13 @@ pub fn sys_readlinkat(
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
     with_fs(dirfd, |fs| {
-        let entry = fs.resolve_no_follow(path)?;
-        let link = entry.read_link()?;
-        let read = size.min(link.len());
-        vm_write_slice(buf, &link.as_bytes()[..read])?;
-        Ok(read as isize)
+        fs.with_namespace_operation(|namespace| {
+            let entry = namespace.resolve_path_no_follow(path)?;
+            let link = entry.read_link()?;
+            let read = size.min(link.len());
+            vm_write_slice(buf, &link.as_bytes()[..read])?;
+            Ok(read as isize)
+        })
     })
 }
 
@@ -512,10 +525,12 @@ pub fn sys_fchownat(
     }
 
     let path = path.nullable().map(vm_load_path_string).transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
-    let meta = loc.metadata()?;
+    resolve_at(dirfd, path.as_deref(), flags)?
+        .with_operation(|view| chown_location(&view, uid, gid))
+}
+
+fn chown_location(view: &LocationOperationView<'_>, uid: i32, gid: i32) -> AxResult<isize> {
+    let meta = view.metadata()?;
 
     let cred = current_user_task().as_thread().cred();
 
@@ -562,7 +577,7 @@ pub fn sys_fchownat(
 
     let uid = if uid == -1 { meta.uid } else { uid as _ };
     let gid = if gid == -1 { meta.gid } else { gid as _ };
-    loc.update_metadata(MetadataUpdate {
+    view.update_metadata(MetadataUpdate {
         owner: Some((uid, gid)),
         mode: Some(mode),
         ..Default::default()
@@ -611,20 +626,21 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         return Err(AxError::BadFileDescriptor); // (2) and (3)
     }
 
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    resolved.with_operation(|view| chmod_location(&view, mode))
+}
 
+fn chmod_location(view: &LocationOperationView<'_>, mode: u32) -> AxResult<isize> {
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
     let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
-        let meta = loc.metadata()?;
+        let meta = view.metadata()?;
         if cred.fsuid != meta.uid {
             return Err(AxError::OperationNotPermitted);
         }
     }
 
-    loc.update_metadata(MetadataUpdate {
+    view.update_metadata(MetadataUpdate {
         mode: Some(NodePermission::from_bits_truncate(mode as u16)),
         ..Default::default()
     })?;
@@ -640,14 +656,13 @@ fn update_times(
     flags: u32,
 ) -> AxResult<()> {
     let path = path.nullable().map(vm_load_string).transpose()?;
-    resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?
-        .update_metadata(MetadataUpdate {
+    resolve_at(dirfd, path.as_deref(), flags)?.with_operation(|view| {
+        view.update_metadata(MetadataUpdate {
             atime,
             mtime,
             ..Default::default()
-        })?;
+        })
+    })?;
     Ok(())
 }
 
@@ -735,19 +750,24 @@ pub fn sys_utimensat(
 
     // Resolve file and check permissions.
     let path = path.nullable().map(vm_load_path_string).transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(AxError::BadFileDescriptor)?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    resolved.with_operation(|view| update_location_times(&view, atime, mtime))
+}
 
+fn update_location_times(
+    view: &LocationOperationView<'_>,
+    atime: Option<Duration>,
+    mtime: Option<Duration>,
+) -> AxResult<isize> {
     let cred = current_user_task().as_thread().cred();
     if !cred.has_cap_fowner() {
-        let meta = loc.metadata()?;
+        let meta = view.metadata()?;
         if cred.fsuid != meta.uid {
             return Err(AxError::OperationNotPermitted);
         }
     }
 
-    loc.update_metadata(MetadataUpdate {
+    view.update_metadata(MetadataUpdate {
         atime,
         mtime,
         ..Default::default()
@@ -790,22 +810,31 @@ pub fn sys_renameat2(
          new_path: {new_path}, flags: {flags}"
     );
 
-    let (old_dir, old_name) = with_fs(old_dirfd, |fs| fs.resolve_parent(Path::new(&old_path)))?;
-    let (new_dir, new_name) = with_fs(new_dirfd, |fs| fs.resolve_parent(Path::new(&new_path)))?;
+    let (old_dir, old_name) = with_fs(old_dirfd, |fs| {
+        fs.resolve_parent_file_location(Path::new(&old_path))
+    })?;
+    let (new_dir, new_name) = with_fs(new_dirfd, |fs| {
+        fs.resolve_parent_file_location(Path::new(&new_path))
+    })?;
 
     if flags & RENAME_NOREPLACE != 0 {
         // Linux reports a missing source leaf before checking whether the
         // no-replace destination already exists.
-        old_dir.lookup_no_follow(&old_name)?;
-        match new_dir.lookup_no_follow(&new_name) {
-            Ok(_) => return Err(AxError::AlreadyExists),
-            Err(AxError::NotFound) => {}
+        let source_exists = old_dir.with_operation(|view| view.lookup_child_exists(&old_name))?;
+        if !source_exists {
+            return Err(AxError::NotFound);
+        }
+        match new_dir.with_operation(|view| view.lookup_child_exists(&new_name)) {
+            Ok(true) => return Err(AxError::AlreadyExists),
+            Ok(false) => {}
             Err(err) => return Err(err),
         }
     }
 
     // Propagate the filesystem errno directly to match renameat2 callers.
-    old_dir.rename(&old_name, &new_dir, &new_name)?;
+    old_dir.with_operation(|old_view| {
+        new_dir.with_operation(|new_view| old_view.rename(&old_name, &new_view, &new_name))
+    })?;
     Ok(0)
 }
 
@@ -813,7 +842,9 @@ pub fn sys_sync() -> AxResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
     sync_all_cached_files(false)?;
-    current_fs_context().lock().root_dir().sync(false)?;
+    current_fs_context()
+        .lock()
+        .with_namespace_operation(|namespace| namespace.root().sync(false))?;
     Ok(0)
 }
 
@@ -822,9 +853,9 @@ pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
     let any = get_file_like(fd)?;
     sync_all_cached_files(false)?;
     if let Some(f) = any.downcast_ref::<crate::file::File>() {
-        f.inner().location().filesystem().flush()?;
+        f.inner().flush_filesystem()?;
     } else if let Some(d) = any.downcast_ref::<Directory>() {
-        d.inner().filesystem().flush()?;
+        d.with_operation(|view| view.flush_filesystem())?;
     }
     Ok(0)
 }

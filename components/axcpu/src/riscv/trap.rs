@@ -177,7 +177,9 @@ fn handle_trap(tf: &mut KernelTrapFrame<'_>) {
             }
             Trap::Exception(E::Breakpoint) => handle_breakpoint(tf),
             Trap::Interrupt(_) => {
-                crate::trap::dispatch_irq(scause.bits());
+                // SAFETY: the RISC-V trap entry owns the saved sstatus and
+                // returns through the matching kernel exception frame.
+                unsafe { crate::trap::dispatch_arch_irq(scause.bits()) };
             }
             _ => {
                 let snapshot = tf.snapshot();

@@ -44,7 +44,7 @@ fn scheduler_send_failure_releases_the_coalescing_latch() {
 }
 
 #[test]
-fn generic_callback_ipi_does_not_acknowledge_a_scheduler_epoch() {
+fn shared_ipi_arrival_acknowledges_transport_without_promoting_preemption() {
     let runtime = source("os/arceos/modules/axruntime/src/task.rs");
     let body = runtime
         .split_once("pub(crate) fn on_scheduler_ipi()")
@@ -53,8 +53,33 @@ fn generic_callback_ipi_does_not_acknowledge_a_scheduler_epoch() {
         .split_once("fn initialize_current_cpu")
         .unwrap()
         .0;
-    assert!(!body.contains("acknowledge_scheduler_ipi"));
-    assert!(body.contains("needs_reschedule"));
+    assert!(body.contains("acknowledge_scheduler_ipi"));
+    assert!(!body.contains("request_reschedule"));
+}
+
+#[test]
+fn timer_irq_preserves_the_scheduler_reason_boundary() {
+    let runtime = source("os/arceos/modules/axruntime/src/task.rs");
+    let body = runtime
+        .split_once("pub(crate) fn on_timer_irq(scheduler_tick: bool)")
+        .expect("timer IRQ adapter must exist")
+        .1
+        .split_once("pub(crate) fn on_scheduler_ipi()")
+        .expect("timer IRQ adapter must remain focused")
+        .0;
+
+    assert!(body.contains("timer_interrupt_current_cpu(scheduler_tick, 0)"));
+    assert!(
+        !body.contains("request_reschedule"),
+        "periodic housekeeping and timer expiry must not be promoted to PREEMPT"
+    );
+    assert!(
+        !body.contains("slice_expired()")
+            && !body.contains("deadline_overrun()")
+            && !body.contains("expired()")
+            && !body.contains("pending()"),
+        "the ax-task reason state, not returned statistics, owns rescheduling"
+    );
 }
 
 #[test]

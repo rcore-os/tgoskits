@@ -134,6 +134,115 @@ enum SchedulerBatonState {
     Finished,
 }
 
+#[cfg(feature = "multitask")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScheduleContextSnapshot {
+    raw_irqs_enabled: bool,
+    hard_irq: bool,
+    irq_depth: u32,
+    preempt_lock_depth: u32,
+    scheduler_baton: SchedulerBatonState,
+}
+
+#[cfg(all(feature = "multitask", feature = "uspace"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UserContextBoundary {
+    /// Ordinary task context immediately before the runtime masks raw IRQs.
+    TaskEntry,
+    /// IRQ-masked boundary after publishing user accounting and before entry.
+    UserEntry,
+    /// IRQ-masked boundary after publishing kernel accounting and before decoding the exit.
+    KernelEntry,
+    /// IRQ-masked boundary after any IRQ dispatch and before restoring task context.
+    TaskReturn,
+}
+
+#[cfg(all(feature = "multitask", feature = "uspace"))]
+impl UserContextBoundary {
+    const fn accepts(self, snapshot: ScheduleContextSnapshot) -> bool {
+        match self {
+            Self::TaskEntry => snapshot.is_task_context_safe(),
+            Self::UserEntry | Self::KernelEntry | Self::TaskReturn => {
+                snapshot.is_masked_task_context_safe()
+            }
+        }
+    }
+}
+
+#[cfg(feature = "multitask")]
+impl ScheduleContextSnapshot {
+    const fn capture(raw_irqs_enabled: bool, hard_irq: bool, state: RuntimeGuardState) -> Self {
+        Self {
+            raw_irqs_enabled,
+            hard_irq,
+            irq_depth: state.irq.depth,
+            preempt_lock_depth: state.preempt.lock_depth,
+            scheduler_baton: state.preempt.scheduler_baton,
+        }
+    }
+
+    const fn is_task_context_safe(self) -> bool {
+        self.raw_irqs_enabled && self.has_clear_task_state()
+    }
+
+    #[cfg(feature = "uspace")]
+    const fn is_masked_task_context_safe(self) -> bool {
+        !self.raw_irqs_enabled && self.has_clear_task_state()
+    }
+
+    const fn has_clear_task_state(self) -> bool {
+        !self.hard_irq
+            && self.irq_depth == 0
+            && self.preempt_lock_depth == 0
+            && matches!(self.scheduler_baton, SchedulerBatonState::Finished)
+    }
+}
+
+#[cfg(feature = "multitask")]
+struct ScheduleContextDiagnostic {
+    bytes: [u8; 192],
+    len: usize,
+}
+
+#[cfg(feature = "multitask")]
+impl ScheduleContextDiagnostic {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; 192],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let available = self.bytes.len().saturating_sub(self.len);
+        let copied = available.min(bytes.len());
+        self.bytes[self.len..self.len + copied].copy_from_slice(&bytes[..copied]);
+        self.len += copied;
+    }
+
+    fn push_bool(&mut self, value: bool) {
+        self.push(if value { b"true" } else { b"false" });
+    }
+
+    fn push_u32(&mut self, mut value: u32) {
+        let mut digits = [0u8; 10];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[start..]);
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
 impl RuntimePreemptState {
     const fn new() -> Self {
         Self {
@@ -303,24 +412,110 @@ pub(crate) fn assert_boot_guards_released() {
 /// Validates a public scheduler entry before it can publish task state.
 #[cfg(feature = "multitask")]
 pub(crate) fn validate_schedule_context(
-    _origin: ax_task::runtime::RuntimeScheduleOrigin,
+    origin: ax_task::runtime::RuntimeScheduleOrigin,
 ) -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 
-    let irqs_enabled = ax_hal::asm::irqs_enabled();
+    let snapshot = schedule_context_snapshot();
+    if snapshot.is_task_context_safe() {
+        RuntimeStatus::Success
+    } else {
+        report_unsafe_schedule_context(origin, snapshot);
+        RuntimeStatus::UnsafeContext
+    }
+}
+
+#[cfg(all(feature = "multitask", feature = "uspace"))]
+pub(crate) fn validate_user_context_boundary(
+    boundary: UserContextBoundary,
+) -> ax_task::runtime::RuntimeStatus {
+    use ax_task::runtime::RuntimeStatus;
+
+    let snapshot = schedule_context_snapshot();
+    if boundary.accepts(snapshot) {
+        RuntimeStatus::Success
+    } else {
+        report_unsafe_user_context_boundary(boundary, snapshot);
+        RuntimeStatus::UnsafeContext
+    }
+}
+
+#[cfg(feature = "multitask")]
+fn schedule_context_snapshot() -> ScheduleContextSnapshot {
+    let raw_irqs_enabled = ax_hal::asm::irqs_enabled();
     let hard_irq = in_hard_irq();
-    if irqs_enabled {
+    if raw_irqs_enabled {
         ax_hal::asm::disable_irqs();
     }
     let state = read_state();
-    if irqs_enabled {
+    if raw_irqs_enabled {
         ax_hal::asm::enable_irqs();
     }
-    if irqs_enabled && !hard_irq && state.irq.is_clear() && state.preempt.is_clear() {
-        RuntimeStatus::Success
-    } else {
-        RuntimeStatus::UnsafeContext
-    }
+    ScheduleContextSnapshot::capture(raw_irqs_enabled, hard_irq, state)
+}
+
+#[cfg(feature = "multitask")]
+fn report_unsafe_schedule_context(
+    origin: ax_task::runtime::RuntimeScheduleOrigin,
+    snapshot: ScheduleContextSnapshot,
+) {
+    use ax_task::runtime::RuntimeScheduleOrigin;
+
+    let mut diagnostic = ScheduleContextDiagnostic::new();
+    diagnostic.push(b"[ctx] o=");
+    diagnostic.push(match origin {
+        RuntimeScheduleOrigin::Block => b"block",
+        RuntimeScheduleOrigin::Yield => b"yield",
+        RuntimeScheduleOrigin::Exit => b"exit",
+        RuntimeScheduleOrigin::Preempt => b"preempt",
+    });
+    diagnostic.push(b" i=");
+    diagnostic.push_bool(snapshot.raw_irqs_enabled);
+    diagnostic.push(b" h=");
+    diagnostic.push_bool(snapshot.hard_irq);
+    diagnostic.push(b" d=");
+    diagnostic.push_u32(snapshot.irq_depth);
+    diagnostic.push(b" p=");
+    diagnostic.push_u32(snapshot.preempt_lock_depth);
+    diagnostic.push(b" b=");
+    diagnostic.push(match snapshot.scheduler_baton {
+        SchedulerBatonState::Active => b"active",
+        SchedulerBatonState::Transferred => b"transferred",
+        SchedulerBatonState::Finished => b"finished",
+    });
+    diagnostic.push(b"\n");
+    crate::console::write_emergency_text_bytes(diagnostic.as_bytes());
+}
+
+#[cfg(all(feature = "multitask", feature = "uspace"))]
+fn report_unsafe_user_context_boundary(
+    boundary: UserContextBoundary,
+    snapshot: ScheduleContextSnapshot,
+) {
+    let mut diagnostic = ScheduleContextDiagnostic::new();
+    diagnostic.push(b"[ctx] o=");
+    diagnostic.push(match boundary {
+        UserContextBoundary::TaskEntry => b"task-entry",
+        UserContextBoundary::UserEntry => b"user-entry",
+        UserContextBoundary::KernelEntry => b"kernel-entry",
+        UserContextBoundary::TaskReturn => b"task-return",
+    });
+    diagnostic.push(b" i=");
+    diagnostic.push_bool(snapshot.raw_irqs_enabled);
+    diagnostic.push(b" h=");
+    diagnostic.push_bool(snapshot.hard_irq);
+    diagnostic.push(b" d=");
+    diagnostic.push_u32(snapshot.irq_depth);
+    diagnostic.push(b" p=");
+    diagnostic.push_u32(snapshot.preempt_lock_depth);
+    diagnostic.push(b" b=");
+    diagnostic.push(match snapshot.scheduler_baton {
+        SchedulerBatonState::Active => b"active",
+        SchedulerBatonState::Transferred => b"transferred",
+        SchedulerBatonState::Finished => b"finished",
+    });
+    diagnostic.push(b"\n");
+    crate::console::write_emergency_text_bytes(diagnostic.as_bytes());
 }
 
 /// Reports whether the current CPU is in a context that must not sleep.
@@ -342,6 +537,7 @@ pub(crate) fn in_atomic_context() -> bool {
     guarded
 }
 
+#[cfg(not(test))]
 pub(crate) fn enter_irq() {
     let outer_irqs_enabled = ax_hal::asm::irqs_enabled();
     ax_hal::asm::disable_irqs();
@@ -351,6 +547,7 @@ pub(crate) fn enter_irq() {
     write_state(state);
 }
 
+#[cfg(not(test))]
 pub(crate) fn exit_irq(owner: &'static str) {
     let mut state = read_state();
     let restore_irqs = state.exit_irq(owner);
@@ -369,6 +566,7 @@ pub(crate) fn finish_initial_context_switch() {
     );
 }
 
+#[cfg(not(test))]
 fn update_preempt_state(operation: impl FnOnce(&mut RuntimeGuardState)) {
     // This raw IRQ window serializes the whole per-CPU state update against a
     // hard interrupt. It cannot use ax-kspin because this is its runtime hook.
@@ -382,6 +580,7 @@ fn update_preempt_state(operation: impl FnOnce(&mut RuntimeGuardState)) {
     }
 }
 
+#[cfg(not(test))]
 fn exit_lock_preempt(irq_return: bool) {
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     assert!(
@@ -417,6 +616,10 @@ fn exit_lock_preempt(irq_return: bool) {
             if let Err(error) = unsafe { ax_task::schedule_current_cpu_from_preempt_exit(entry) } {
                 panic!("preemption-exit scheduler entry failed: {error}");
             }
+            assert_preempt_exit_completed();
+            if !irq_return && irqs_were_enabled {
+                ax_hal::asm::enable_irqs();
+            }
             return;
         }
     }
@@ -426,6 +629,19 @@ fn exit_lock_preempt(irq_return: bool) {
     if !irq_return && irqs_were_enabled {
         ax_hal::asm::enable_irqs();
     }
+}
+
+#[cfg(all(not(test), feature = "multitask"))]
+fn assert_preempt_exit_completed() {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "preemption-exit scheduler returned after restoring IRQs owned by its outer guard"
+    );
+    let state = read_state();
+    assert!(
+        state.irq.is_clear() && state.preempt.is_clear(),
+        "preemption-exit scheduler returned before finishing its CPU-local baton"
+    );
 }
 
 #[cfg(feature = "multitask")]
@@ -488,7 +704,7 @@ fn exit_scheduler_frame_guard_inner(
             ax_hal::asm::enable_irqs();
             true
         }
-        RuntimeSchedulerReturn::IrqReturn => false,
+        RuntimeSchedulerReturn::PreemptExit | RuntimeSchedulerReturn::IrqReturn => false,
     }
 }
 
@@ -572,7 +788,7 @@ struct RawConsoleWriter;
 #[cfg(feature = "lockdep")]
 impl Write for RawConsoleWriter {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        ax_hal::console::write_text_bytes(text.as_bytes());
+        crate::console::write_emergency_text_bytes(text.as_bytes());
         Ok(())
     }
 }
@@ -610,8 +826,10 @@ fn dump_lock_trace() {
     with_lock_trace(|trace| trace.enabled = restore_enabled);
 }
 
+#[cfg(not(test))]
 struct ArceOsLockRuntime;
 
+#[cfg(not(test))]
 impl_lock_runtime! {
     impl LockRuntime for ArceOsLockRuntime {
         fn irq_enter() {
@@ -686,8 +904,133 @@ impl_lock_runtime! {
 }
 
 #[cfg(test)]
+mod host_test_provider {
+    use core::{
+        cell::Cell,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct HostGuardState {
+        irq_depth: u32,
+        preempt_depth: u32,
+    }
+
+    impl HostGuardState {
+        const fn new() -> Self {
+            Self {
+                irq_depth: 0,
+                preempt_depth: 0,
+            }
+        }
+
+        fn enter_irq(&mut self) {
+            self.irq_depth = self
+                .irq_depth
+                .checked_add(1)
+                .expect("host-test IRQ guard nesting overflow");
+        }
+
+        fn exit_irq(&mut self) {
+            self.irq_depth = self
+                .irq_depth
+                .checked_sub(1)
+                .expect("unbalanced host-test IRQ guard exit");
+        }
+
+        fn enter_preempt(&mut self) {
+            self.preempt_depth = self
+                .preempt_depth
+                .checked_add(1)
+                .expect("host-test preemption guard nesting overflow");
+        }
+
+        fn exit_preempt(&mut self) {
+            self.preempt_depth = self
+                .preempt_depth
+                .checked_sub(1)
+                .expect("unbalanced host-test preemption guard exit");
+        }
+    }
+
+    std::thread_local! {
+        static HOST_GUARD_STATE: Cell<HostGuardState> = const { Cell::new(HostGuardState::new()) };
+        static HOST_THREAD_ID: u64 = NEXT_HOST_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+    }
+
+    static NEXT_HOST_THREAD_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn update_host_state(operation: impl FnOnce(&mut HostGuardState)) {
+        HOST_GUARD_STATE.with(|state| {
+            let mut snapshot = state.get();
+            operation(&mut snapshot);
+            state.set(snapshot);
+        });
+    }
+
+    struct HostTestLockRuntime;
+
+    impl_lock_runtime! {
+        impl LockRuntime for HostTestLockRuntime {
+            fn irq_enter() {
+                update_host_state(HostGuardState::enter_irq);
+            }
+
+            fn irq_exit() {
+                update_host_state(HostGuardState::exit_irq);
+            }
+
+            fn preempt_enter() {
+                update_host_state(HostGuardState::enter_preempt);
+            }
+
+            fn preempt_exit() {
+                update_host_state(HostGuardState::exit_preempt);
+            }
+
+            unsafe fn preempt_exit_irq_return() {
+                update_host_state(HostGuardState::exit_preempt);
+            }
+
+            fn current_thread_id() -> u64 {
+                HOST_THREAD_ID.with(|id| *id)
+            }
+
+            fn lockdep_acquire(_event: LockdepEvent) {}
+
+            fn lockdep_release(_event: LockdepEvent) {}
+
+            fn lockdep_set_trace_enabled(_enabled: bool) {}
+
+            fn lockdep_dump_trace() {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn depths() -> (u32, u32) {
+        HOST_GUARD_STATE.with(|state| {
+            let state = state.get();
+            (state.irq_depth, state.preempt_depth)
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_lock_runtime_balances_context_without_hardware_irq_instructions() {
+        assert_eq!(host_test_provider::depths(), (0, 0));
+        {
+            let _irq = ax_kspin::IrqGuard::new();
+            let _preempt = ax_kspin::PreemptGuard::new();
+            assert_eq!(host_test_provider::depths(), (1, 1));
+        }
+        assert_eq!(host_test_provider::depths(), (0, 0));
+    }
 
     #[test]
     fn nested_irq_exits_restore_only_the_outer_state() {
@@ -792,6 +1135,36 @@ mod tests {
 
         state.exit_scheduler_preempt("test scheduler frame");
         assert!(state.preempt.is_clear());
+    }
+
+    #[cfg(all(feature = "multitask", feature = "uspace"))]
+    #[test]
+    fn user_context_boundaries_keep_irq_restore_with_the_typed_owner() {
+        let clear = RuntimeGuardState::new();
+        let task_context = ScheduleContextSnapshot::capture(true, false, clear);
+        let masked_context = ScheduleContextSnapshot::capture(false, false, clear);
+
+        assert!(UserContextBoundary::TaskEntry.accepts(task_context));
+        assert!(!UserContextBoundary::TaskEntry.accepts(masked_context));
+        for boundary in [
+            UserContextBoundary::UserEntry,
+            UserContextBoundary::KernelEntry,
+            UserContextBoundary::TaskReturn,
+        ] {
+            assert!(boundary.accepts(masked_context));
+            assert!(!boundary.accepts(task_context));
+        }
+
+        let mut guarded = RuntimeGuardState::new();
+        guarded.enter_lock_preempt();
+        assert!(
+            !UserContextBoundary::TaskEntry
+                .accepts(ScheduleContextSnapshot::capture(true, false, guarded))
+        );
+        assert!(
+            !UserContextBoundary::KernelEntry
+                .accepts(ScheduleContextSnapshot::capture(false, false, guarded))
+        );
     }
 
     #[cfg(feature = "lockdep")]

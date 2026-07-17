@@ -5,7 +5,7 @@ sidebar_label: "能力边界"
 
 # 能力边界 rdif
 
-`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。`rdif-block` 承载 owned request、IRQ event、初始化状态机和控制器生命周期契约；共享 worker、tag、watchdog、阻塞等待及恢复编排属于 `ax-runtime::block`。其它领域如网络仍可按需保留独立 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
 所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
 
@@ -13,7 +13,7 @@ sidebar_label: "能力边界"
 
 | 能力 | interface crate | runtime crate | 上层消费 |
 | --- | --- | --- | --- |
-| 块设备 | `rdif-block` | 已删除，直接消费 submit/poll 边界 | block volume service、FS |
+| 块设备 | `rdif-block` | `ax-runtime::block` | block volume service、FS |
 | 网络设备 | `rdif-eth` | `rd-net` | net interface service、NET/NET-NG |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
@@ -39,16 +39,22 @@ pub trait DriverGeneric: Send + Any {
 
 | 源码 | 职责 |
 | --- | --- |
-| `interface.rs` | `Interface` trait、`IrqHandler` |
-| `request.rs` | `RequestId`、块请求提交 |
-| `planner.rs` | `QueueTopology`、queue 管理 |
-| `irq.rs` | `IrqSourceInfo`、IRQ 事件 |
+| `interface.rs` | `Interface`、`IQueue`、completion ownership |
+| `request.rs` | `RequestId`、`OwnedRequest`、typed submit result |
+| `planner.rs` | request transfer 分段与硬件约束规划 |
+| `irq.rs` | `IrqSourceInfo`、`IrqOutcome`、稳定 IRQ 事件 |
+| `init.rs` | discovery-to-ready 初始化状态机 |
+| `lifecycle.rs` | recovery/handoff 与 DMA quiescence proof |
 | `info.rs` | 设备信息 |
-| `error.rs` | `BlockError` |
+| `error.rs` | `BlkError`、queue contract error |
 
-接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
+接口保留 blk-mq 风格的结构能力：设备通过 `create_queue()` 发布实际 queue geometry，runtime 为每个硬件 queue 建立独立 hctx，并在调用驱动前分配 generation-based `RequestId`/tag。`IQueue::submit_owned()` 转移完整 `OwnedRequest` 所有权：纯软件 `Inline` queue 可在调用栈中返回 `SubmitOutcome::Completed`；硬件 `Interrupt` queue 返回 `Queued`，之后只能消费 IRQ 产生的 `QueueEventBatch` 并发布一次 terminal `CompletedRequest`。接口没有 normal-I/O completion query 或 polling fallback。
 
-块设备内部的 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回的是 `rdif-block` 能力边界内的事件 source 列表，每个 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask。当前 ArceOS `ax-driver` glue 只取 legacy source `0` 的 handler。
+硬件 discovery 也不允许同步执行 reset/identify。`Interface::controller_init()` 返回 `ControllerInitEndpoint`，runtime 先绑定 worker 和所有初始化 IRQ action，再调用有界 `poll_init(InitInput)`。`InitSchedule` 必须明确给出可立即重排的内存状态、可推进的 IRQ source 或绝对 `wake_at_ns`；deadline 只用于 reset/clock/power/OCR/PHY 等初始化等待，不能探测普通 I/O 是否完成。capacity 与 queue 只在状态机返回 `Ready` 后发布。
+
+块设备内部的 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回的是 `rdif-block` 能力边界内的逻辑 source 列表，每个 `IrqSourceInfo { id, queues }` 描述该 source 可能影响的 queue mask。IRQ endpoint 必须返回 `Unhandled`、已确认事件，或显式 `Deferred`；后者只表示破坏性确认因寄存器所有权竞争而转交给同一 hctx worker，不能伪装成已经确认的完成。runtime 把事件放入固定 ring、合并 hctx 的 `service_work`，worker 以固定 batch 按“IRQ/error → timeout/cancel → completion/wake → dispatch”推进。
+
+timeout 和 recovery 通过 lifecycle 契约保持所有权严格：watchdog 获胜后直接把请求判为失败并进入恢复，不读完成寄存器补发现成功。runtime 在发布 interrupt hctx 前把 `QueueHandle` 一次性绑定到 retained controller identity 和 publication epoch；通用 handle 先拒绝未绑定、foreign、不晚于发布时刻、重复或倒退 epoch 的 `DmaQuiesced` proof，驱动再复核自己的 cookie/epoch，双层验证通过后才允许 queue 把 DMA buffer 所有权归还给 CPU。无法证明 DMA 已停止时设备进入 quarantine/offline，而不是继续发布 queue。
 
 ## rdif-display / rdif-input / rdif-vsock
 

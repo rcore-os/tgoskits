@@ -239,11 +239,7 @@ fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> AxR
     let base = if whence == SEEK_CUR {
         regular.inner().position().ok_or(AxError::InvalidInput)?
     } else {
-        regular
-            .inner()
-            .location()
-            .len()
-            .map_err(|_| AxError::InvalidInput)?
+        regular.inner().len().map_err(|_| AxError::InvalidInput)?
     };
     // Linux uses i_size / cursor as i64-relative arithmetic; reject anything
     // that does not fit in i64.

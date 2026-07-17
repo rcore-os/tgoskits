@@ -211,6 +211,28 @@ impl ForwardedIrqIngress {
             .map_or(0, |claim| claim.swap(0, Ordering::AcqRel))
     }
 
+    /// Discards one stopped-route source after platform publishers drain.
+    pub(crate) fn discard_for_revocation(&self, source: usize) -> u64 {
+        if source == 0 || source >= self.claims.len() {
+            self.record_fault();
+            return 0;
+        }
+        let (word, bit) = pending_location(source);
+        self.pending_words[word].fetch_and(!bit, Ordering::AcqRel);
+        self.collision_retries[source].store(0, Ordering::Release);
+        self.claims[source].swap(0, Ordering::AcqRel)
+    }
+
+    /// Closes the coalesced notification epoch after every source was removed.
+    pub(crate) fn finish_revocation(&self) {
+        self.notification_armed.store(false, Ordering::Release);
+        for pending in &self.pending_words {
+            if pending.swap(0, Ordering::AcqRel) != 0 {
+                self.record_fault();
+            }
+        }
+    }
+
     pub(crate) fn restore_claim(&self, source: usize, claim: u64) -> bool {
         self.claims.get(source).is_some_and(|slot| {
             slot.compare_exchange(0, claim, Ordering::Release, Ordering::Relaxed)
@@ -404,6 +426,16 @@ mod tests {
         // Exercise the no-race recovery wrapper: the retained pending bit is
         // reclaimed by the failed producer for one bounded wake retry.
         assert!(ingress.retry_after_failed_wake());
+    }
+
+    #[test]
+    fn route_revocation_discards_claim_and_doorbell_without_republication() {
+        let ingress = ForwardedIrqIngress::new(128);
+        assert_eq!(ingress.publish(17, 9), ForwardedIrqPublish::WakeOwner);
+        assert_eq!(ingress.discard_for_revocation(17), 9);
+        ingress.finish_revocation();
+        assert!(ingress.take_batch().entries().is_empty());
+        assert_eq!(ingress.take_claim(17), 0);
     }
 
     fn audit<T>(operation: impl FnOnce() -> T) -> (T, usize, usize, usize) {
