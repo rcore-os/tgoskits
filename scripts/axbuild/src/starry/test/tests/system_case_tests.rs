@@ -56,6 +56,72 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 }
 
 #[test]
+fn former_nix_sandbox_debug_subcases_are_in_system_grouped_qemu_case() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+    let old_suite_dir = workspace_root.join("test-suit/starryos/qemu/nix-sandbox-debug");
+
+    assert!(
+        !old_suite_dir.exists(),
+        "{} must not be restored as a standalone QEMU case",
+        old_suite_dir.display()
+    );
+
+    for subcase in [
+        "test-cgroup-ns",
+        "test-max-ns-entries",
+        "test-mount-bind",
+        "test-mount-propagation",
+        "test-mountinfo",
+        "test-nix-builder-exec",
+        "test-nix-builder-init",
+        "test-nix-clone-parent",
+        "test-nix-namespace-exec",
+        "test-nixpkgs-first-divergence",
+        "test-per-ns-mounts",
+        "test-pivot-root",
+        "test-pivot-root-namespace",
+        "test-proc-environ",
+        "test-proc-root-cwd",
+        "test-remount-flags",
+    ] {
+        let subcase_dir = system_dir.join(subcase);
+        let cmake_path = subcase_dir.join("CMakeLists.txt");
+        let source_path = subcase_dir.join("src/main.c");
+
+        assert!(
+            cmake_path.is_file() && source_path.is_file(),
+            "{} must remain a migrated qemu/system C subcase",
+            subcase_dir.display()
+        );
+        assert!(
+            !subcase_dir.join("qemu-x86_64.toml").exists()
+                && !subcase_dir.join("qemu-aarch64.toml").exists()
+                && !subcase_dir.join("qemu-riscv64.toml").exists()
+                && !subcase_dir.join("qemu-loongarch64.toml").exists(),
+            "{} must use qemu/system runtime configs instead of subcase-local QEMU configs",
+            subcase_dir.display()
+        );
+
+        let cmake = fs::read_to_string(&cmake_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
+        assert!(
+            cmake.contains("usr/bin/starry-test-suit"),
+            "{} must install into the grouped system runner",
+            cmake_path.display()
+        );
+
+        let source = fs::read_to_string(&source_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+        assert!(
+            source.contains("Migrated from the former nix-sandbox-debug suite."),
+            "{} must document the former nix-sandbox-debug origin",
+            source_path.display()
+        );
+    }
+}
+
+#[test]
 fn starry_system_grouped_qemu_configs_report_subcase_timing() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu/system");

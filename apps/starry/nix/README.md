@@ -115,28 +115,32 @@ These C-language regression tests were migrated from the former
 under the unified system grouped suite.
 See `test-suit/starryos/qemu/system/`.
 
-## Nix Sandbox Debug Regression Suite (003)
+## Nix Sandbox System Regression Subcases (003)
 
-The `qemu/nix-sandbox-debug` grouped suite (`test-suit/starryos/qemu/nix-sandbox-debug/`)
-is a CI-tracked regression suite added by the 003-starryos-nixpkgs feature.
-It contains eleven focused C tests, one per Linux-semantics blocker fixed in
-003, plus integration coverage for `pivot_root`. The suite runs under
-`sandbox=off` (it does **not** exercise the nix sandbox builder; it only
-verifies kernel semantics that the nix sandbox path depends on).
+The Nix sandbox debug regressions were migrated from the former
+`qemu/nix-sandbox-debug` grouped suite into the unified `qemu/system` suite.
+They are CI-tracked system subcases under `test-suit/starryos/qemu/system/`.
+These tests run under `sandbox=off` (they do **not** exercise the nix sandbox
+builder directly); they verify kernel semantics that the nix sandbox path
+depends on.
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c qemu/nix-sandbox-debug
+cargo xtask starry test qemu --arch x86_64 -c qemu/system
+cargo xtask starry test qemu --arch x86_64 -c qemu/test-mountinfo
 ```
 
-The runner emits `NIX_SANDBOX_DEBUG_TESTS_PASSED` on success. Each test
-binary lives under `/usr/bin/starry-test-suit/` in the guest rootfs and
-prints its own `<NAME>_PASSED` marker.
+The grouped system runner emits `STARRY_GROUPED_TESTS_PASSED` on success.
+Each test binary lives under `/usr/bin/starry-test-suit/` in the guest rootfs
+and prints its own `<NAME>_PASSED` marker.
 
 ### Covered semantics
 
 | Test | Kernel area | Marker |
 |------|-------------|--------|
 | `test-mountinfo` | `/proc/<pid>/mountinfo` Linux-compatible format and dynamic mounts | `TEST_MOUNTINFO_PASSED` |
+| `test-nix-builder-init` | Nix builder initialization syscall sequence | `TEST_NIX_BUILDER_INIT_PASSED` |
+| `test-nix-builder-exec` | Nix builder exec path | `TEST_NIX_BUILDER_EXEC_PASSED` |
+| `test-nix-clone-parent` | `CLONE_PARENT` behavior used by Nix builder spawning | `TEST_NIX_CLONE_PARENT_PASSED` |
 | `test-per-ns-mounts` | Per-mount-namespace mount visibility (`CLONE_NEWNS`) | `TEST_PER_NS_MOUNTS_PASSED` |
 | `test-remount-flags` | `mount(MS_REMOUNT|MS_NOSUID)` reflected in mountinfo options | `TEST_REMOUNT_FLAGS_PASSED` |
 | `test-mount-bind` | `mount --bind` and `--rbind` semantics | `TEST_MOUNT_BIND_PASSED` |
@@ -147,17 +151,8 @@ prints its own `<NAME>_PASSED` marker.
 | `test-max-ns-entries` | All seven `/proc/sys/user/max_*_namespaces` files | `TEST_MAX_NS_ENTRIES_PASSED` |
 | `test-proc-environ` | `/proc/<pid>/environ` NUL-separated envp | `TEST_PROC_ENVIRON_PASSED` |
 | `test-proc-root-cwd` | `/proc/<pid>/root` and `/proc/<pid>/cwd` symlinks track `chdir`/`chroot` | `TEST_PROC_ROOT_CWD_PASSED` |
-
-### Why `pivot-root` runs last
-
-`pivot_root` in StarryOS mirrors Linux `chroot_fs_refs()`: every task whose
-root or cwd matched the old root is repointed at the new root. The
-`test-pivot-root` case therefore leaves the runner shell inside the new root
-once it exits, so the suite runner places it last to avoid breaking
-subsequent test binaries. Cosmetic `can't create /dev/null` messages may
-appear after the `NIX_SANDBOX_DEBUG_TESTS_PASSED` marker; they are expected
-post-test noise and are not treated as failures by the runner's
-success/fail regexes.
+| `test-nix-namespace-exec` | Nix namespace exec path | `TEST_NIX_NAMESPACE_EXEC_PASSED` |
+| `test-nixpkgs-first-divergence` | First-divergence diagnostics for the nixpkgs execution path | `TEST_NIXPKGS_FIRST_DIVERGENCE_PASSED` |
 
 ## File Structure
 

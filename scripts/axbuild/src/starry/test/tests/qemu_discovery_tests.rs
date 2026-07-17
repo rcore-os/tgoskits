@@ -386,10 +386,9 @@ fn starry_system_grouped_cases_use_root_cmake_layout() {
 }
 
 #[test]
-fn nix_sandbox_debug_x86_64_uses_explicit_uefi_boot() {
+fn system_x86_64_uses_explicit_uefi_boot() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config_path =
-        workspace_root.join("test-suit/starryos/qemu/nix-sandbox-debug/qemu-x86_64.toml");
+    let config_path = workspace_root.join("test-suit/starryos/qemu/system/qemu-x86_64.toml");
     let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
 
     assert_eq!(
