@@ -457,7 +457,7 @@ pub fn sys_symlinkat(
             Err(err) => return Err(err),
         }
         let meta = parent.metadata()?;
-        if cred.fsuid != 0 {
+        if !cred.has_cap_dac_override() {
             let can_create = if cred.fsuid == meta.uid {
                 meta.mode
                     .contains(NodePermission::OWNER_WRITE | NodePermission::OWNER_EXEC)
@@ -770,7 +770,9 @@ pub fn sys_utimensat(
             if !write_permission_suffices {
                 return Err(AxError::OperationNotPermitted);
             }
-            let has_write = if cred.in_group(meta.gid) {
+            let has_write = if cred.has_cap_dac_override() {
+                true
+            } else if cred.in_group(meta.gid) {
                 meta.mode.contains(NodePermission::GROUP_WRITE)
             } else {
                 meta.mode.contains(NodePermission::OTHER_WRITE)

@@ -7,11 +7,28 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <utime.h>
 #include <unistd.h>
+
+#define LINUX_CAPABILITY_VERSION_3 0x20080522
+#define CAPABILITY_U32S_3 2
+#define CAP_DAC_OVERRIDE 1
+
+struct user_cap_header {
+    uint32_t version;
+    int pid;
+};
+
+struct user_cap_data {
+    uint32_t effective;
+    uint32_t permitted;
+    uint32_t inheritable;
+};
 
 static char base[PATH_MAX];
 static char regular_file[PATH_MAX];
@@ -51,6 +68,46 @@ static int permission_child(void)
            WEXITSTATUS(status) == 0;
 }
 
+static int capability_child(void)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        char link_path[PATH_MAX];
+        struct user_cap_header header = {
+            .version = LINUX_CAPABILITY_VERSION_3,
+            .pid = 0,
+        };
+        struct user_cap_data data[CAPABILITY_U32S_3] = {0};
+        struct timespec explicit_times[2] = {
+            {.tv_sec = 10, .tv_nsec = 0},
+            {.tv_sec = 20, .tv_nsec = 0},
+        };
+        struct timespec mixed_times[2] = {
+            {.tv_sec = 0, .tv_nsec = UTIME_NOW},
+            {.tv_sec = 0, .tv_nsec = UTIME_OMIT},
+        };
+        int ok = snprintf(link_path, sizeof(link_path), "%s/cap-link", denied_dir) > 0;
+        ok = ok && syscall(SYS_setfsuid, 1000) == 0;
+        data[0].effective = 1U << CAP_DAC_OVERRIDE;
+        data[0].permitted = 1U << CAP_DAC_OVERRIDE;
+        ok = ok && syscall(SYS_capset, &header, data) == 0;
+        ok = ok && symlink("target", link_path) == 0;
+        ok = ok && utimensat(AT_FDCWD, regular_file, NULL, 0) == 0;
+        errno = 0;
+        ok = ok && utimensat(AT_FDCWD, regular_file, explicit_times, 0) == -1 &&
+             errno == EPERM;
+        errno = 0;
+        ok = ok && utimensat(AT_FDCWD, regular_file, mixed_times, 0) == -1 &&
+             errno == EPERM;
+        _exit(ok ? 0 : 1);
+    }
+    int status = 0;
+    return waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
+}
+
 static void cleanup(void)
 {
     char path[PATH_MAX];
@@ -65,6 +122,8 @@ static void cleanup(void)
     snprintf(path, sizeof(path), "%s/link", denied_dir);
     unlink(path);
     snprintf(path, sizeof(path), "%s/existing-link", denied_dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/cap-link", denied_dir);
     unlink(path);
     unlink(regular_file);
     rmdir(denied_dir);
@@ -153,6 +212,8 @@ int main(void)
 
     CHECK(permission_child(),
           "unprivileged symlink and utime return EACCES/EPERM");
+    CHECK(capability_child(),
+          "CAP_DAC_OVERRIDE bypasses DAC but not explicit timestamp ownership");
 
     cleanup();
     TEST_DONE();

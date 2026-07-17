@@ -7,7 +7,6 @@
 // This file has been modified by KylinSoft on 2025.
 
 use alloc::{
-    borrow::Cow,
     collections::vec_deque::VecDeque,
     sync::{Arc, Weak},
     task::Wake,
@@ -21,11 +20,17 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use hashbrown::HashMap;
 use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
+#[cfg(axtest)]
+use super::epoll_axtest::epoll_add_test_barrier;
+use super::epoll_topology::{
+    EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
+    prepare_nested_link, reserve_nested_link,
+};
 use crate::file::{FileLike, get_file_like};
 
 pub struct EpollEvent {
@@ -139,6 +144,14 @@ impl EntryKey {
     fn get_file(&self) -> Option<Arc<dyn FileLike>> {
         self.file.upgrade()
     }
+
+    #[cfg(axtest)]
+    fn for_test(fd: i32, file: &Arc<dyn FileLike>) -> Self {
+        Self {
+            fd,
+            file: Arc::downgrade(file),
+        }
+    }
 }
 
 impl Hash for EntryKey {
@@ -157,16 +170,23 @@ impl Eq for EntryKey {}
 struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
+    nested_link: Option<EpollTopologyLink>,
     mode: SpinNoIrq<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
 }
 
 impl EpollInterest {
-    fn new(key: EntryKey, event: EpollEvent, flags: EpollFlags) -> Self {
+    fn new(
+        key: EntryKey,
+        event: EpollEvent,
+        flags: EpollFlags,
+        nested_link: Option<EpollTopologyLink>,
+    ) -> Self {
         Self {
             key,
             event,
+            nested_link,
             mode: SpinNoIrq::new(TriggerMode::from_flags(flags)),
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
@@ -269,8 +289,9 @@ impl Wake for InterestWaker {
     }
 }
 
-struct EpollInner {
+pub(super) struct EpollInner {
     interests: SpinNoIrq<HashMap<EntryKey, Arc<EpollInterest>>>,
+    pub(super) topology: EpollTopology,
     ready_queue: SpinNoIrq<VecDeque<Weak<EpollInterest>>>,
     overflow_ready: AtomicBool,
     poll_ready: PollSet,
@@ -280,6 +301,7 @@ impl Default for EpollInner {
     fn default() -> Self {
         Self {
             interests: SpinNoIrq::new(HashMap::new()),
+            topology: EpollTopology::default(),
             ready_queue: SpinNoIrq::new(VecDeque::new()),
             overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
@@ -288,6 +310,37 @@ impl Default for EpollInner {
 }
 
 impl EpollInner {
+    pub(super) fn has_ready_events(&self) -> bool {
+        !self.ready_queue.lock().is_empty() || self.overflow_ready.load(Ordering::Acquire)
+    }
+
+    pub(super) fn register_poll_waiter(&self, context: &Context<'_>) {
+        // Registration happens from epoll wait task context.
+        unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
+    }
+
+    /// Remove an interest while the global topology mutex is held.
+    fn remove_interest_locked(&self, key: &EntryKey) -> Option<Arc<EpollInterest>> {
+        let interest = self.interests.lock().remove(key)?;
+        if let Some(link) = &interest.nested_link {
+            detach_nested_link(self, link);
+        }
+        Some(interest)
+    }
+
+    /// Remove a stale snapshot only if it is still the current map entry.
+    fn remove_invalid_interest(&self, candidate: &Arc<EpollInterest>) {
+        let _topology = lock_epoll_topology();
+        let should_remove = self
+            .interests
+            .lock()
+            .get(&candidate.key)
+            .is_some_and(|current| Arc::ptr_eq(current, candidate));
+        if should_remove {
+            self.remove_interest_locked(&candidate.key);
+        }
+    }
+
     fn reserve_ready_capacity(&self, min_capacity: usize) -> AxResult<()> {
         loop {
             if self.ready_queue.lock().capacity() >= min_capacity {
@@ -389,7 +442,7 @@ impl EpollInner {
                     continue;
                 }
                 let Some(file) = interest.key.get_file() else {
-                    self.interests.lock().remove(&interest.key);
+                    self.remove_invalid_interest(&interest);
                     continue;
                 };
                 if !match_ready_events(file.poll(), interest.event.events).is_empty()
@@ -411,42 +464,12 @@ impl EpollInner {
 
 #[derive(Default)]
 pub struct Epoll {
-    inner: Arc<EpollInner>,
+    pub(super) inner: Arc<EpollInner>,
 }
 
 impl Epoll {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Return whether this epoll instance can reach `target` through nested
-    /// epoll interests. Linux rejects a new edge that would make this graph
-    /// cyclic with ELOOP.
-    fn reaches_epoll(
-        &self,
-        target: &Arc<EpollInner>,
-        visited: &mut Vec<*const EpollInner>,
-    ) -> bool {
-        let current = Arc::as_ptr(&self.inner);
-        if !visited.contains(&current) {
-            visited.push(current);
-        } else {
-            return false;
-        }
-        if Arc::ptr_eq(&self.inner, target) {
-            return true;
-        }
-        let nested: Vec<Arc<Epoll>> = self
-            .inner
-            .interests
-            .lock()
-            .values()
-            .filter_map(|interest| interest.key.get_file())
-            .filter_map(|file| file.downcast_arc::<Epoll>().ok())
-            .collect();
-        nested
-            .iter()
-            .any(|epoll| epoll.reaches_epoll(target, visited))
     }
 
     // only register waker, not add to ready queue
@@ -500,54 +523,95 @@ impl Epoll {
 
     pub fn add(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        if let Some(file) = key.get_file()
-            && let Ok(epoll) = file.downcast_arc::<Epoll>()
-        {
-            if Arc::ptr_eq(&epoll.inner, &self.inner) {
-                return Err(AxError::InvalidInput);
-            }
-            if epoll.reaches_epoll(&self.inner, &mut Vec::new()) {
-                return Err(AxError::FilesystemLoop);
-            }
-        }
+        self.add_interest(key, event, flags)
+    }
 
-        let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
+    fn add_interest(&self, key: EntryKey, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
+        let nested_target = key
+            .get_file()
+            .and_then(|file| file.downcast_arc::<Epoll>().ok())
+            .map(|epoll| Arc::clone(&epoll.inner));
+
+        #[cfg(axtest)]
+        epoll_add_test_barrier();
+
+        // Lock order for topology mutation is global topology mutex, then one
+        // node's interests/parents/children spinlock. Poll and registration
+        // callbacks run only after the global mutex is released.
+        let topology = lock_epoll_topology();
         let target_capacity = {
-            let guard = self.inner.interests.lock();
-            if guard.contains_key(&key) {
+            let mut interests = self.inner.interests.lock();
+            if interests.contains_key(&key) {
                 return Err(AxError::AlreadyExists);
             }
-            guard.len() + 1
+            interests.try_reserve(1).map_err(|_| AxError::NoMemory)?;
+            interests.len() + 1
         };
+
+        let nested_link = nested_target
+            .as_ref()
+            .map(|target| prepare_nested_link(&self.inner, target))
+            .transpose()?;
+
+        // Complete all fallible allocations before changing either the
+        // interest map or the bidirectional topology.
         self.inner.reserve_ready_capacity(target_capacity)?;
-
-        let target_capacity = {
-            let mut guard = self.inner.interests.lock();
-            if guard.contains_key(&key) {
-                return Err(AxError::AlreadyExists);
-            }
-            guard.insert(key.clone(), Arc::clone(&interest));
-            guard.len()
-        };
-        if let Err(err) = self.inner.reserve_ready_capacity(target_capacity) {
-            self.inner.interests.lock().remove(&key);
-            return Err(err);
+        if let Some(target) = &nested_target {
+            reserve_nested_link(&self.inner, target)?;
         }
-        trace!("Epoll add fd: {} interest {:?} ", fd, interest.event.events);
+
+        let interest = Arc::new(EpollInterest::new(
+            key.clone(),
+            event,
+            flags,
+            nested_link.clone(),
+        ));
+        self.inner
+            .interests
+            .lock()
+            .insert(key.clone(), Arc::clone(&interest));
+        if let (Some(link), Some(target)) = (&nested_link, &nested_target) {
+            commit_nested_link(&self.inner, target, link);
+        }
+        drop(topology);
+
+        trace!(
+            "Epoll add fd: {} interest {:?} ",
+            key.fd, interest.event.events
+        );
         self.check_and_register_waker(&interest);
         Ok(())
     }
 
+    #[cfg(axtest)]
+    pub(super) fn add_nested_for_test(&self, fd: i32, target: Arc<Epoll>) -> AxResult<()> {
+        let target: Arc<dyn FileLike> = target;
+        self.add_interest(
+            EntryKey::for_test(fd, &target),
+            EpollEvent {
+                events: IoEvents::IN,
+                user_data: 0,
+            },
+            EpollFlags::empty(),
+        )
+    }
+
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
-        let interest = Arc::new(EpollInterest::new(key.clone(), event, flags));
 
+        let topology = lock_epoll_topology();
         let mut guard = self.inner.interests.lock();
         let old = guard.get_mut(&key).ok_or(AxError::NotFound)?;
         // Linux forbids modifying an entry that was added as exclusive.
         if old.is_exclusive() {
             return Err(AxError::InvalidInput);
         }
+        let interest = Arc::new(EpollInterest::new(
+            key.clone(),
+            event,
+            flags,
+            old.nested_link.clone(),
+        ));
 
         // Preserve ready-queue membership across the swap. The ready_queue
         // only holds Weak<EpollInterest> pointing at the old Arc, so
@@ -565,6 +629,7 @@ impl Epoll {
         }
         *old = Arc::clone(&interest);
         drop(guard);
+        drop(topology);
         if was_in_queue {
             self.inner.remove_ready_entries_for(&old_ready_entry);
             self.inner.enqueue_marked_ready(&interest);
@@ -580,12 +645,12 @@ impl Epoll {
 
     pub fn delete(&self, fd: i32) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
+        let topology = lock_epoll_topology();
         let interest = self
             .inner
-            .interests
-            .lock()
-            .remove(&key)
+            .remove_interest_locked(&key)
             .ok_or(AxError::NotFound)?;
+        drop(topology);
         let ready_entry = Arc::downgrade(&interest);
         self.inner.remove_ready_entries_for(&ready_entry);
         interest.mark_not_in_queue();
@@ -622,7 +687,7 @@ impl Epoll {
 
             let Some(file) = interest.key.get_file() else {
                 // file already closed remove interests
-                self.inner.interests.lock().remove(&interest.key);
+                self.inner.remove_invalid_interest(&interest);
                 interest.mark_not_in_queue();
                 continue;
             };
@@ -722,35 +787,6 @@ impl Epoll {
             Err(AxError::WouldBlock)
         } else {
             Ok(count)
-        }
-    }
-}
-
-impl FileLike for Epoll {
-    fn path(&self) -> Cow<'_, str> {
-        "anon_inode:[eventpoll]".into()
-    }
-}
-
-impl Pollable for Epoll {
-    fn poll(&self) -> IoEvents {
-        if self.inner.ready_queue.lock().is_empty()
-            && !self.inner.overflow_ready.load(Ordering::Acquire)
-        {
-            IoEvents::empty()
-        } else {
-            IoEvents::IN
-        }
-    }
-
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.contains(IoEvents::IN) {
-            // Registration happens from epoll wait task context.
-            unsafe {
-                self.inner
-                    .poll_ready
-                    .register(context.waker(), IoEvents::IN)
-            };
         }
     }
 }

@@ -3,6 +3,10 @@
 #[cfg(any(feature = "jpeg", feature = "rknpu"))]
 pub mod dmabuf;
 pub mod epoll;
+#[cfg(axtest)]
+mod epoll_axtest;
+mod epoll_file;
+mod epoll_topology;
 pub mod event;
 mod fs;
 pub mod inotify;
@@ -38,6 +42,8 @@ use linux_raw_sys::general::{
 };
 use starry_process::Pid;
 
+#[cfg(axtest)]
+pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,

@@ -7,9 +7,11 @@
  * Scenarios:
  *   1. unshare(CLONE_FS) on independent task → returns 0.
  *   2. unshare(CLONE_FILES) in one thread leaves sibling fd tables unchanged.
- *   3. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
+ *   3. a failed combined unshare leaves FD, FS, and namespace state unchanged.
+ *   4. a pending CLONE_NEWPID survives a later namespace unshare.
+ *   5. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
  *      isolation: child chdir must not affect parent cwd.
- *   4. unshare(0xDEAD) → EINVAL.
+ *   6. unshare(0xDEAD) → EINVAL.
  *
  * Note: uses clone(CLONE_FS | SIGCHLD), NOT fork().  In this kernel
  * fork() does NOT share FS_CONTEXT, so a fork-based test would pass
@@ -57,6 +59,15 @@ struct files_unshare_arg {
     int close_rc;
 };
 
+struct rollback_arg {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    int fd;
+    int ready;
+    int check_fd;
+    int fd_is_closed;
+};
+
 static void *unshare_files_thread(void *opaque) {
     struct files_unshare_arg *arg = opaque;
 
@@ -94,6 +105,112 @@ static void test_thread_unshare_files_isolation(void) {
     close(fd);
 
     printf("UNSHARE_FILES_THREAD_ISOLATION_PASSED\n");
+}
+
+static void *check_shared_fd_after_failed_unshare(void *opaque) {
+    struct rollback_arg *arg = opaque;
+
+    pthread_mutex_lock(&arg->mutex);
+    arg->ready = 1;
+    pthread_cond_signal(&arg->condition);
+    while (!arg->check_fd)
+        pthread_cond_wait(&arg->condition, &arg->mutex);
+    pthread_mutex_unlock(&arg->mutex);
+
+    errno = 0;
+    arg->fd_is_closed = fcntl(arg->fd, F_GETFD) == -1 && errno == EBADF;
+    return NULL;
+}
+
+static ino_t current_uts_inode(void) {
+    int fd = open("/proc/self/ns/uts", O_RDONLY | O_CLOEXEC);
+    check(fd >= 0, "open current UTS namespace");
+    struct stat st;
+    check(fstat(fd, &st) == 0, "stat current UTS namespace");
+    close(fd);
+    return st.st_ino;
+}
+
+static void test_failed_unshare_rolls_back_all_state(void) {
+    ino_t original_uts_inode = current_uts_inode();
+    int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    check(fd >= 0, "open fd shared across failed unshare");
+
+    struct rollback_arg arg = {
+        .mutex = PTHREAD_MUTEX_INITIALIZER,
+        .condition = PTHREAD_COND_INITIALIZER,
+        .fd = fd,
+    };
+    pthread_t worker;
+    check(pthread_create(&worker, NULL, check_shared_fd_after_failed_unshare, &arg) == 0,
+          "create failed-unshare rollback observer");
+
+    pthread_mutex_lock(&arg.mutex);
+    while (!arg.ready)
+        pthread_cond_wait(&arg.condition, &arg.mutex);
+    pthread_mutex_unlock(&arg.mutex);
+
+    char deleted_cwd[128];
+    int length = snprintf(deleted_cwd, sizeof(deleted_cwd),
+                          "/tmp/unshare-rollback-%ld", (long)getpid());
+    check(length > 0 && (size_t)length < sizeof(deleted_cwd),
+          "build deleted cwd path");
+    rmdir(deleted_cwd);
+    check(mkdir(deleted_cwd, 0700) == 0, "create cwd for failed mount unshare");
+    check(chdir(deleted_cwd) == 0, "enter cwd before deleting it");
+    check(rmdir(deleted_cwd) == 0, "delete current cwd to force ENOENT");
+
+    errno = 0;
+    int rc = unshare(CLONE_FILES | CLONE_NEWNS | CLONE_NEWUTS);
+    int unshare_errno = errno;
+    check(rc == -1 && unshare_errno == ENOENT,
+          "combined unshare fails with ENOENT before commit");
+    check(chdir("/tmp") == 0, "leave deleted cwd after failed unshare");
+
+    check(close(fd) == 0, "close fd after failed unshare");
+    pthread_mutex_lock(&arg.mutex);
+    arg.check_fd = 1;
+    pthread_cond_signal(&arg.condition);
+    pthread_mutex_unlock(&arg.mutex);
+    check(pthread_join(worker, NULL) == 0, "join failed-unshare rollback observer");
+    check(arg.fd_is_closed,
+          "failed unshare keeps caller and sibling on the shared fd table");
+
+    ino_t current_inode = current_uts_inode();
+    check(current_inode == original_uts_inode,
+          "failed unshare preserves the original UTS namespace");
+    pthread_cond_destroy(&arg.condition);
+    pthread_mutex_destroy(&arg.mutex);
+
+    printf("UNSHARE_FAILURE_ROLLBACK_PASSED\n");
+}
+
+static void test_unshare_preserves_pending_pid_namespace(void) {
+    pid_t child = fork();
+    check(child >= 0, "fork pending PID namespace test child");
+    if (child == 0) {
+        check(unshare(CLONE_NEWPID) == 0, "prepare child PID namespace");
+        check(unshare(CLONE_NEWUTS) == 0,
+              "unshare UTS without dropping pending PID namespace");
+
+        pid_t namespace_init = fork();
+        check(namespace_init >= 0, "fork into pending PID namespace");
+        if (namespace_init == 0)
+            _exit(getpid() == 1 ? 0 : 1);
+
+        int status = 0;
+        check(waitpid(namespace_init, &status, 0) == namespace_init,
+              "wait for pending PID namespace child");
+        _exit(WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 1);
+    }
+
+    int status = 0;
+    check(waitpid(child, &status, 0) == child,
+          "wait for pending PID namespace test child");
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "unrelated unshare preserves pending child PID namespace");
+
+    printf("UNSHARE_PENDING_PID_NAMESPACE_PASSED\n");
 }
 
 static int clone_child(void *arg) {
@@ -209,6 +326,8 @@ static void test_unshare_invalid_flags(void) {
 
 int main(void) {
     test_thread_unshare_files_isolation();
+    test_failed_unshare_rolls_back_all_state();
+    test_unshare_preserves_pending_pid_namespace();
     test_unshare_fs_basic();
     test_clone_fs_unshare_isolation();
     test_unshare_invalid_flags();

@@ -8,8 +8,8 @@
 use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP, CAP_SETUID,
-    CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -206,6 +206,12 @@ impl Cred {
     /// ownership (equivalent to `CAP_CHOWN`).
     pub fn has_cap_chown(&self) -> bool {
         self.has_cap(CAP_CHOWN)
+    }
+
+    /// Check whether this credential may bypass filesystem DAC checks
+    /// (equivalent to `CAP_DAC_OVERRIDE`).
+    pub fn has_cap_dac_override(&self) -> bool {
+        self.has_cap(CAP_DAC_OVERRIDE)
     }
 
     /// Check whether this credential has the privilege to bypass file
