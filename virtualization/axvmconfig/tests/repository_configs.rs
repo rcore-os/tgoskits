@@ -98,6 +98,39 @@ fn x86_dma_passthrough_configs_keep_identity_ram_as_the_primary_region() {
 
 #[cfg(feature = "std")]
 #[test]
+fn rk3568_configs_keep_dynamically_placed_identity_ram() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let config_root = workspace.join("os/axvisor/configs/vms/roc-rk3568-pc");
+
+    for file_name in [
+        "arceos-smp1.toml",
+        "arceos-smp2.toml",
+        "linux-smp1.toml",
+        "linux-smp2.toml",
+    ] {
+        let path = config_root.join(file_name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let config =
+            axvmconfig::AxVMCrateConfig::from_toml_for_target_arch(&source, "aarch64").unwrap();
+        let primary = config.memory.regions.first().unwrap();
+
+        assert_eq!(primary.guest_base, 0, "{}", path.display());
+        assert!(
+            matches!(
+                primary.backing,
+                axvmconfig::MemoryBackingConfig::IdentityAllocate
+            ),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
 fn orangepi_linux_guest_hands_earlycon_to_the_fiq_console() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

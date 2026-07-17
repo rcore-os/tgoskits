@@ -75,6 +75,8 @@ backend = { kind = "host-console", rx = "exclusive", tx = "shared" }
 ```
 
 旧裸地址/IRQ/类型编号配置已删除。AxVM 配置不会被 FDT parser 动态修改。
+Passthrough 的 `identity-allocate` RAM 可用于 x86_64/AArch64：`guest_base = 0` 仅表示
+最终 GPA 由 allocator 选择并等于 HPA，不会在 machine plan 中占用 `[0, size)`。
 
 ## HostPlatformSnapshot
 

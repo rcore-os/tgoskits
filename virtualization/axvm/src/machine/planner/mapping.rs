@@ -115,11 +115,7 @@ pub(super) fn plan_identity_mappings(
         return Vec::new();
     }
 
-    let mut holes = request
-        .memory()
-        .iter()
-        .map(|memory| memory.range())
-        .collect::<Vec<_>>();
+    let mut holes = request.fixed_memory().collect::<Vec<_>>();
     holes.extend_from_slice(profile.reserved_mmio());
     for device in host_devices {
         if matches!(

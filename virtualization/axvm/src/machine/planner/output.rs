@@ -6,9 +6,9 @@ use axdevice::{DeviceBackend, DeviceModelId, ResolvedDeviceResources, ResourceSl
 use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
 
 use super::super::{
-    AddressRange, DeviceDisposition, DeviceInstanceId, HostDeviceDependency, HostDeviceDescriptor,
-    HostDeviceId, HostFirmwareActivation, HostInterruptResource, InterruptControllerPlan,
-    IoPortRange, LoongArchPlatformPlan,
+    AddressRange, DeviceDisposition, DeviceInstanceId, GuestMemoryRegion, HostDeviceDependency,
+    HostDeviceDescriptor, HostDeviceId, HostFirmwareActivation, HostInterruptResource,
+    InterruptControllerPlan, IoPortRange, LoongArchPlatformPlan,
 };
 
 /// A guest interrupt assigned to one named virtual-device resource slot.
@@ -238,7 +238,7 @@ pub struct VmMachinePlan {
     interrupt_delivery: InterruptDelivery,
     interrupt_controller: Option<InterruptControllerPlan>,
     loongarch_platform: Option<LoongArchPlatformPlan>,
-    guest_memory: Vec<AddressRange>,
+    guest_memory: Vec<GuestMemoryRegion>,
     identity_mappings: Vec<AddressRange>,
     virtual_devices: Vec<ResolvedVirtualDevice>,
     host_devices: Vec<PlannedHostDevice>,
@@ -255,7 +255,7 @@ pub(super) struct VmMachinePlanParts {
     pub(super) interrupt_delivery: InterruptDelivery,
     pub(super) interrupt_controller: Option<InterruptControllerPlan>,
     pub(super) loongarch_platform: Option<LoongArchPlatformPlan>,
-    pub(super) guest_memory: Vec<AddressRange>,
+    pub(super) guest_memory: Vec<GuestMemoryRegion>,
     pub(super) identity_mappings: Vec<AddressRange>,
     pub(super) virtual_devices: Vec<ResolvedVirtualDevice>,
     pub(super) host_devices: Vec<PlannedHostDevice>,
@@ -363,9 +363,16 @@ impl VmMachinePlan {
         self.loongarch_platform.as_ref()
     }
 
-    /// Returns explicit guest RAM and shared-memory address ranges.
-    pub fn guest_memory(&self) -> &[AddressRange] {
+    /// Returns fixed and dynamically placed guest-memory requirements.
+    pub fn guest_memory(&self) -> &[GuestMemoryRegion] {
         &self.guest_memory
+    }
+
+    /// Iterates memory ranges whose guest addresses are known during planning.
+    pub fn fixed_guest_memory(&self) -> impl Iterator<Item = AddressRange> + '_ {
+        self.guest_memory
+            .iter()
+            .filter_map(|memory| memory.fixed_range())
     }
 
     /// Returns final non-overlapping identity-mapped I/O ranges.

@@ -6,11 +6,11 @@ use std::sync::{
 use axdevice::ControllerInputId;
 use axvm::machine::{
     Aarch64GicV3Profile, AddressRange, ConsoleRxPolicy, ConsoleTxPolicy, DeviceBackend,
-    DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryRegion, HostConsoleBackend,
-    HostDeviceClaimProvider, HostDeviceDescriptor, HostDeviceId, HostDeviceLease,
-    HostDeviceOwnership, HostDeviceSelector, HostInterruptResource, HostPlatformSnapshot,
-    InterruptControllerPlan, InterruptControllerProfile, InterruptSourceKind, IoPortRange,
-    MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
+    DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryPlacement, GuestMemoryRegion,
+    HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDescriptor, HostDeviceId,
+    HostDeviceLease, HostDeviceOwnership, HostDeviceSelector, HostInterruptResource,
+    HostPlatformSnapshot, InterruptControllerPlan, InterruptControllerProfile, InterruptSourceKind,
+    IoPortRange, MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
     VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
     VmMachineTransaction,
 };
@@ -277,6 +277,30 @@ fn passthrough_machine_punches_mandatory_and_configured_holes() {
     assert!(!mappings.iter().any(|range| range.contains(0x2800)));
     assert!(!mappings.iter().any(|range| range.contains(0x4000)));
     assert!(mappings.iter().any(|range| range.contains(0x5800)));
+}
+
+#[test]
+fn identity_allocated_ram_does_not_hide_low_passthrough_io() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 64..=95).unwrap();
+    let low_io = AddressRange::new(0x10_0000, 0x1000).unwrap();
+    let snapshot = HostPlatformSnapshot::new(1).with_io_aperture(low_io);
+    let dynamic_ram = GuestMemoryRegion::identity_allocated(0x6000_0000).unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_memory(dynamic_ram);
+
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        dynamic_ram.placement(),
+        GuestMemoryPlacement::IdentityAllocated
+    );
+    assert_eq!(dynamic_ram.size(), 0x6000_0000);
+    assert_eq!(plan.guest_memory(), &[dynamic_ram]);
+    assert_eq!(plan.fixed_guest_memory().count(), 0);
+    assert_eq!(plan.identity_mappings(), &[low_io]);
 }
 
 #[test]

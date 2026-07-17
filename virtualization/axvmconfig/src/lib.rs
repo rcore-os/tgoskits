@@ -550,7 +550,7 @@ fn validate_memory_region(
                 guest_base: region.guest_base,
             });
         }
-        if arch != "x86_64" || mode != VmMachineMode::Passthrough {
+        if !matches!(arch, "x86_64" | "aarch64") || mode != VmMachineMode::Passthrough {
             return Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory {
                 arch: String::from(arch),
                 mode,

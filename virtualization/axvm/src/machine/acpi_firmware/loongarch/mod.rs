@@ -89,8 +89,7 @@ fn resolve_acpi_resources(
     machine: &LoongArchPlatformPlan,
 ) -> MachinePlanResult<LoongArchAcpiResources> {
     let memory = plan
-        .guest_memory()
-        .iter()
+        .fixed_guest_memory()
         .map(|memory| AcpiMemoryRegion {
             base: memory.base(),
             size: memory.size(),

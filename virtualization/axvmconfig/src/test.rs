@@ -44,7 +44,7 @@ fn parses_typed_machine_memory_and_virtual_device() {
 }
 
 #[test]
-fn host_tooling_validates_toml_for_the_requested_target_architecture() {
+fn host_tooling_accepts_identity_ram_for_supported_passthrough_architectures() {
     let config = MINIMAL_CONFIG
         .replace("mode = \"virtual\"", "mode = \"passthrough\"")
         .replace("guest_base = 0x8000_0000", "guest_base = 0")
@@ -53,10 +53,7 @@ fn host_tooling_validates_toml_for_the_requested_target_architecture() {
             "backing = { kind = \"identity-allocate\" }",
         );
 
-    assert!(matches!(
-        AxVMCrateConfig::from_toml_for_target_arch(&config, "aarch64"),
-        Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
-    ));
+    AxVMCrateConfig::from_toml_for_target_arch(&config, "aarch64").unwrap();
     AxVMCrateConfig::from_toml_for_target_arch(&config, "x86_64").unwrap();
 }
 
@@ -161,7 +158,7 @@ fn identity_allocated_memory_rejects_a_fixed_guest_base() {
 }
 
 #[test]
-fn identity_allocated_memory_is_x86_passthrough_only() {
+fn identity_allocated_memory_is_passthrough_only() {
     let region = MemoryRegionConfig {
         guest_base: 0,
         size: 0x800_0000,
@@ -173,10 +170,7 @@ fn identity_allocated_memory_is_x86_passthrough_only() {
         validate_memory_regions(&[region.clone()], VmMachineMode::Virtual, "x86_64"),
         Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
     ));
-    assert!(matches!(
-        validate_memory_regions(&[region], VmMachineMode::Passthrough, "aarch64"),
-        Err(AxVmConfigError::UnsupportedIdentityAllocatedMemory { .. })
-    ));
+    validate_memory_regions(&[region], VmMachineMode::Passthrough, "aarch64").unwrap();
 }
 
 #[test]

@@ -74,11 +74,11 @@ deny = []
 ```
 
 Memory backing kinds are `allocate`, `identity-allocate`, `host`, `shared`, and
-`reserved`. `identity-allocate` is restricted to x86_64 Passthrough machines:
-it allocates zeroed VM-owned RAM and chooses the allocation's host physical
-address as the guest address so an assigned device can DMA without an IOMMU.
-Its configured `guest_base` is therefore a zero placeholder. Fixed guest
-memory ranges must not overlap.
+`reserved`. `identity-allocate` is available to x86_64 and AArch64 Passthrough
+machines: it allocates zeroed VM-owned RAM and chooses the allocation's host
+physical address as the guest address so an assigned device can DMA without an
+IOMMU. Its configured `guest_base` is therefore a zero placeholder, not a fixed
+range beginning at zero. Fixed guest memory ranges must not overlap.
 
 ### Documentation
 

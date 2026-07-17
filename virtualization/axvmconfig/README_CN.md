@@ -70,9 +70,10 @@ deny = []
 ```
 
 内存 backing 支持 `allocate`、`identity-allocate`、`host`、`shared` 和 `reserved`。
-`identity-allocate` 仅允许用于 x86_64 Passthrough VM：它分配清零的 VM-owned RAM，
-并以分配所得 HPA 作为 GPA，供无 IOMMU 的透传设备 DMA；因此配置里的 `guest_base`
-必须写成零占位符。所有固定 GPA 内存区域都必须互不重叠。
+`identity-allocate` 允许用于 x86_64 和 AArch64 Passthrough VM：它分配清零的 VM-owned
+RAM，并以分配所得 HPA 作为 GPA，供无 IOMMU 的透传设备 DMA；因此配置里的
+`guest_base` 必须写成零占位符，并不表示 `[0, size)` 固定范围。所有固定 GPA 内存区域
+都必须互不重叠。
 
 ### 文档
 

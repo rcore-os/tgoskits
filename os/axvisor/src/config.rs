@@ -282,10 +282,12 @@ fn build_machine_plan(cfg: &AxVMCrateConfig) -> Result<axvm::machine::VmMachineP
         .with_interrupt_delivery(cfg.machine.interrupt_delivery())
         .with_vcpu_count(cfg.base.cpu_num);
     for region in &cfg.memory.regions {
-        request = request.with_memory(GuestMemoryRegion::new(AddressRange::new(
-            region.guest_base,
-            region.size,
-        )?));
+        let memory = if matches!(region.backing, MemoryBackingConfig::IdentityAllocate) {
+            GuestMemoryRegion::identity_allocated(region.size)?
+        } else {
+            GuestMemoryRegion::new(AddressRange::new(region.guest_base, region.size)?)
+        };
+        request = request.with_memory(memory);
     }
     for selector in &cfg.devices.deny {
         request = request.deny(machine_selector(selector)?);
@@ -467,8 +469,7 @@ fn finalize_machine_firmware(
                 .checked_add(image.len() as u64)
                 .context("generated x86 ACPI image address overflows")?;
             if !plan
-                .guest_memory()
-                .iter()
+                .fixed_guest_memory()
                 .any(|memory| memory.base() <= image.load_address() && image_end <= memory.end())
             {
                 bail!(

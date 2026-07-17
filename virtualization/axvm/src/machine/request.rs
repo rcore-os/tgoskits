@@ -11,21 +11,65 @@ use super::{
     MachinePlanResult,
 };
 
-/// One explicitly assigned guest RAM or shared-memory range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GuestMemoryAddress {
+    Fixed(AddressRange),
+    IdentityAllocated { size: u64 },
+}
+
+/// Address placement selected for one guest memory region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuestMemoryPlacement {
+    /// The guest address is known while the machine is planned.
+    Fixed,
+    /// The runtime allocator chooses host RAM and uses the same address in the guest.
+    IdentityAllocated,
+}
+
+/// One checked guest RAM or shared-memory placement requirement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestMemoryRegion {
-    range: AddressRange,
+    address: GuestMemoryAddress,
 }
 
 impl GuestMemoryRegion {
-    /// Creates a guest memory reservation.
+    /// Creates a memory region whose guest address is already known.
     pub const fn new(range: AddressRange) -> Self {
-        Self { range }
+        Self {
+            address: GuestMemoryAddress::Fixed(range),
+        }
     }
 
-    /// Returns the guest address range occupied by this memory.
-    pub const fn range(self) -> AddressRange {
-        self.range
+    /// Creates VM-owned memory whose final GPA equals its allocator-selected HPA.
+    pub fn identity_allocated(size: u64) -> MachinePlanResult<Self> {
+        AddressRange::new(0, size)?;
+        Ok(Self {
+            address: GuestMemoryAddress::IdentityAllocated { size },
+        })
+    }
+
+    /// Returns how the guest address is selected.
+    pub const fn placement(self) -> GuestMemoryPlacement {
+        match self.address {
+            GuestMemoryAddress::Fixed(_) => GuestMemoryPlacement::Fixed,
+            GuestMemoryAddress::IdentityAllocated { .. } => GuestMemoryPlacement::IdentityAllocated,
+        }
+    }
+
+    /// Returns the guest range when it is known during machine planning.
+    pub const fn fixed_range(self) -> Option<AddressRange> {
+        match self.address {
+            GuestMemoryAddress::Fixed(range) => Some(range),
+            GuestMemoryAddress::IdentityAllocated { .. } => None,
+        }
+    }
+
+    /// Returns the memory size in bytes.
+    pub const fn size(self) -> u64 {
+        match self.address {
+            GuestMemoryAddress::Fixed(range) => range.size(),
+            GuestMemoryAddress::IdentityAllocated { size } => size,
+        }
     }
 }
 
@@ -283,6 +327,10 @@ impl VmMachineRequest {
 
     pub(crate) fn memory(&self) -> &[GuestMemoryRegion] {
         &self.memory
+    }
+
+    pub(crate) fn fixed_memory(&self) -> impl Iterator<Item = AddressRange> + '_ {
+        self.memory.iter().filter_map(|memory| memory.fixed_range())
     }
 
     pub(crate) fn denied(&self) -> &[HostDeviceSelector] {

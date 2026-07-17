@@ -39,6 +39,10 @@ Passthrough 从 host FDT/ACPI 得到设备模板。默认授权 `Assignable` 和
 RAM、boot blobs、虚拟设备和虚拟 controller window 打洞。RAM 始终显式分配，未分配
 host RAM 永不映射。
 
+固定 GPA RAM 在 planning 阶段形成 I/O hole；`identity-allocate` RAM 则只记录大小，
+由运行时 allocator 选择 host RAM 后令 GPA=HPA。配置中的零 `guest_base` 是占位符，
+不能被当成低地址固定 RAM hole；FDT 在内存分配完成后使用实际范围重建。
+
 中断 delivery 有两种：
 
 - `Mediated`：host IRQ adapter 连接 VM-local controller input，也允许软件 `IrqLine`；

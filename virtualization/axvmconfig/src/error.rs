@@ -68,7 +68,8 @@ pub enum AxVmConfigError {
     },
     /// Identity-allocated memory was requested by an unsupported machine.
     #[error(
-        "identity-allocated memory requires an x86_64 passthrough machine, got {arch} {mode:?}"
+        "identity-allocated memory requires an x86_64 or aarch64 passthrough machine, got {arch} \
+         {mode:?}"
     )]
     UnsupportedIdentityAllocatedMemory {
         /// Build target architecture.

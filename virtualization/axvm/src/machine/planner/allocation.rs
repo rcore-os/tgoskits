@@ -238,7 +238,7 @@ fn reserve_occupied_mmio(
     allocator: &mut AddressAllocator,
 ) -> MachinePlanResult<()> {
     let mut reservations = profile.reserved_mmio().to_vec();
-    reservations.extend(request.memory().iter().map(|memory| memory.range()));
+    reservations.extend(request.fixed_memory());
     if request.mode() == VmMachineMode::Passthrough {
         reservations.extend(
             snapshot

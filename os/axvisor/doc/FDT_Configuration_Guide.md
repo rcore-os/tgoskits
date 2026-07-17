@@ -50,9 +50,10 @@ backing = { kind = "allocate" }
 ```
 
 `backing.kind` 可为 `allocate`、`identity-allocate`、`host`、`shared` 或 `reserved`。
-`host` 与 `shared` 需要提供 `host_base`。`identity-allocate` 仅用于 x86_64 Passthrough
-VM：配置中的 `guest_base` 必须为零占位符，实际 GPA 取 VM-owned 分配的 HPA，以保留
-无 IOMMU 设备的 DMA 语义。固定 GPA 内存区域不得重叠。
+`host` 与 `shared` 需要提供 `host_base`。`identity-allocate` 用于 x86_64 或 AArch64
+Passthrough VM：配置中的 `guest_base` 必须为零占位符，实际 GPA 取 VM-owned 分配的
+HPA，以保留无 IOMMU 设备的 DMA 语义；零占位符不会形成 `[0, size)` 固定范围。固定
+GPA 内存区域不得重叠。
 
 ## 设备策略
 

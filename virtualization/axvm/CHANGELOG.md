@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve x86 passthrough DMA semantics with VM-owned identity-allocated RAM,
   reserve host PIO before virtual-device allocation, and replace host COM1
   resources through the planned virtual console template.
+- Keep allocator-placed identity RAM as a dynamic machine-plan requirement so
+  its zero configuration placeholder cannot hide low passthrough I/O, and
+  restore this placement for RK3568 guests.
 - Track the firmware-selected host console separately from other compatible
   UARTs, prefer it for virtual-console replacement, and require a reversible
   host capability lease before assigning it as a physical device.

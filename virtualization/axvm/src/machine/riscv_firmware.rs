@@ -94,7 +94,7 @@ pub fn generate_riscv_fdt(
 
     write_chosen(&mut fdt, config, serial_path.as_deref())?;
     write_aliases(&mut fdt, serial_path.as_deref())?;
-    write_memory(&mut fdt, plan.guest_memory())?;
+    write_memory(&mut fdt, plan.fixed_guest_memory())?;
     write_cpus(&mut fdt, config.cpu_count)?;
     write_sbi(&mut fdt)?;
     write_soc(&mut fdt, plic, &serials, config.cpu_count)?;
@@ -181,7 +181,10 @@ fn write_aliases(fdt: &mut FdtWriter, serial_path: Option<&str>) -> vm_fdt::FdtW
     fdt.end_node(aliases)
 }
 
-fn write_memory(fdt: &mut FdtWriter, memory: &[AddressRange]) -> vm_fdt::FdtWriterResult<()> {
+fn write_memory(
+    fdt: &mut FdtWriter,
+    memory: impl IntoIterator<Item = AddressRange>,
+) -> vm_fdt::FdtWriterResult<()> {
     for region in memory {
         let node = fdt.begin_node(&format!("memory@{:x}", region.base()))?;
         fdt.property_string("device_type", "memory")?;

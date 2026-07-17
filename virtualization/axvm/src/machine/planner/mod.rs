@@ -104,11 +104,7 @@ impl VmMachinePlanner {
                 .profile
                 .loongarch_platform()
                 .map(super::LoongArchPlatformProfile::resolve),
-            guest_memory: request
-                .memory()
-                .iter()
-                .map(|memory| memory.range())
-                .collect(),
+            guest_memory: request.memory().to_vec(),
             identity_mappings,
             virtual_devices: resolved_devices,
             host_devices,

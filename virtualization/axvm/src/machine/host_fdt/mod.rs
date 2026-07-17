@@ -364,7 +364,7 @@ fn is_host_memory_path(path: &str) -> bool {
 
 fn rebuild_memory(guest: &mut Fdt, plan: &VmMachinePlan) -> MachinePlanResult<()> {
     let root = guest.root_id();
-    for memory in plan.guest_memory() {
+    for memory in plan.fixed_guest_memory() {
         let node = guest.add_node(root, Node::new(&format!("memory@{:x}", memory.base())));
         guest
             .node_mut(node)
