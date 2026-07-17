@@ -2607,3 +2607,34 @@ fn shared_line_reopens_only_after_every_deferred_action_generation_finishes() {
     assert!(registry.status(first).unwrap().line_enabled);
     assert!(!registry.status(second).unwrap().continuation_pending);
 }
+
+#[test]
+fn edge_replay_waits_for_the_exact_continuation_before_redispatch() {
+    let ops = MockOps::with_cpus(1);
+    let registry = Registry::new(ops);
+    let (capture, wake) = ContinuationCapture::allocate();
+    let calls: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
+    let handle = registry
+        .request(
+            irq(82),
+            enabled_request(move |_| {
+                if calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                    IrqReturn::Defer(wake)
+                } else {
+                    IrqReturn::Handled
+                }
+            }),
+        )
+        .unwrap();
+
+    assert!(registry.dispatch(irq(82), CpuId(0)).handled);
+    let masked_arrival = registry.dispatch(irq(82), CpuId(0));
+    assert_eq!(masked_arrival.called, 0);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+
+    registry.finish_continuation(capture.take()).unwrap();
+    let replay = registry.dispatch(irq(82), CpuId(0));
+    assert!(replay.handled);
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert!(!registry.status(handle).unwrap().continuation_pending);
+}

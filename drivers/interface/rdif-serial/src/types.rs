@@ -88,14 +88,16 @@ pub struct SerialCounters {
     pub tx_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct SerialIrqOutcome {
     pub claimed: bool,
     pub rx_pushed: usize,
     pub tx_sent: usize,
     pub tx_wakeup: bool,
     pub budget_exhausted: bool,
+    pub rx_backpressured: bool,
     pub fault: Option<SerialIrqFault>,
+    pub continuation: Option<crate::SerialContinuation>,
 }
 
 /// Fail-closed condition that disabled the portable UART interrupt source.
@@ -103,6 +105,6 @@ pub struct SerialIrqOutcome {
 pub enum SerialIrqFault {
     /// The raw endpoint claimed an IRQ without a serviceable source.
     UnknownSource,
-    /// The raw endpoint reported a zero-sized hardware transmit load.
-    InvalidTransmitLoad,
+    /// Budget exhaustion involved a source without a safe device-local mask.
+    UnmaskableSource,
 }

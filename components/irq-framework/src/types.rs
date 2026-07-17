@@ -284,6 +284,11 @@ pub enum IrqReturn {
     /// keeps it masked until the exact generation-bearing token is consumed by
     /// [`crate::Registry::finish_continuation`]. The action remains enabled;
     /// this is separate from the fail-closed [`Self::QuenchAndWake`] path.
+    ///
+    /// The endpoint may return this only when its device remains level-asserted
+    /// or its interrupt controller retains and replays arrivals observed while
+    /// masked (for example an MSI-X PBA). Edge sources without such a latch
+    /// must fail closed instead; the framework never invents a lost edge.
     Defer(&'static IrqContinuationWake),
     /// This action hit a fail-closed condition and must stop receiving IRQs.
     ///
