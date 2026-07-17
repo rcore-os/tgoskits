@@ -81,7 +81,10 @@ impl Debug for VmxInstructionError {
 numeric_enum_macro::numeric_enum! {
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    reason = "Intel SDM exit-reason names are architectural spellings"
+)]
 /// VMX basic exit reasons, as defined in the Intel Software Developer's Manual (SDM) Vol. 3D, Appendix C.
 ///
 /// This enum represents the various reasons why a VM exit might occur during

@@ -21,8 +21,9 @@ use axdevice::{
     register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceRegistry as _, DeviceResult, InterruptTriggerMode, IrqError,
-    IrqLine, IrqLineId, Port, PortRange, RegistryError, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
+    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, Port, PortRange,
+    RegistryError, Resource, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -139,6 +140,41 @@ struct MockSysRegDevice {
     range: SysRegAddrRange,
 }
 
+struct MockResourceDevice {
+    name: String,
+    resources: Vec<Resource>,
+}
+
+impl MockResourceDevice {
+    fn new(name: &str, resources: Vec<Resource>) -> Self {
+        Self {
+            name: String::from(name),
+            resources,
+        }
+    }
+}
+
+impl Device for MockResourceDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn handle(
+        &self,
+        _access: &axdevice_base::BusAccess,
+    ) -> Result<axdevice_base::BusResponse, DeviceError> {
+        Ok(axdevice_base::BusResponse::Read { value: 0x5a })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 struct MockMmioPollableDevice {
     range: GuestPhysAddrRange,
     polled_at: Mutex<Vec<u64>>,
@@ -210,6 +246,14 @@ impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
 
 fn empty_devices() -> AxVmDevices {
     AxVmDevices::new(AxVmDeviceConfig::new(vec![])).unwrap()
+}
+
+fn irq_resource(line: u32, trigger: InterruptTriggerMode) -> Resource {
+    Resource::IrqLine { line, trigger }
+}
+
+fn resource_device(name: &str, resources: Vec<Resource>) -> Arc<MockResourceDevice> {
+    Arc::new(MockResourceDevice::new(name, resources))
 }
 
 fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
@@ -877,4 +921,240 @@ fn test_sysreg_range_interior_address_dispatch() {
             .handle_sys_reg_read(SysRegAddr::new(0x111), AccessWidth::Qword)
             .is_err()
     );
+}
+
+#[test]
+fn test_irq_line_resource_accepts_full_identifier_range_without_bus_dispatch() {
+    let mut devices = empty_devices();
+
+    for line in [0, 63, 64, 255, 256, u32::MAX] {
+        devices
+            .register(resource_device(
+                "irq-only",
+                vec![irq_resource(line, InterruptTriggerMode::EdgeTriggered)],
+            ))
+            .unwrap_or_else(|error| panic!("IRQ line {line} was rejected: {error}"));
+    }
+
+    assert_eq!(devices.devices().count(), 6);
+    assert!(
+        devices
+            .handle_mmio_read(GuestPhysAddr::from(0), AccessWidth::Dword)
+            .is_err()
+    );
+    assert!(
+        devices
+            .handle_port_read(Port::new(0), AccessWidth::Byte)
+            .is_err()
+    );
+    assert!(
+        devices
+            .handle_sys_reg_read(SysRegAddr::new(0), AccessWidth::Qword)
+            .is_err()
+    );
+}
+
+#[test]
+fn test_irq_line_resource_rejects_duplicate_declarations_and_cross_device_conflicts() {
+    let mut devices = empty_devices();
+    let duplicate = resource_device(
+        "duplicate",
+        vec![
+            irq_resource(10, InterruptTriggerMode::EdgeTriggered),
+            irq_resource(10, InterruptTriggerMode::LevelTriggered),
+        ],
+    );
+
+    assert!(matches!(
+        devices.register(duplicate),
+        Err(RegistryError::InvalidResource {
+            reason: InvalidResourceReason::DuplicateIrqLine { line: 10 },
+            ..
+        })
+    ));
+    assert_eq!(devices.devices().count(), 0);
+
+    let existing_device = devices
+        .register(resource_device(
+            "owner",
+            vec![irq_resource(20, InterruptTriggerMode::EdgeTriggered)],
+        ))
+        .unwrap();
+    assert_eq!(
+        devices.register(resource_device(
+            "contender",
+            vec![irq_resource(20, InterruptTriggerMode::LevelTriggered)],
+        )),
+        Err(RegistryError::IrqLineConflict {
+            line: 20,
+            existing_device,
+        })
+    );
+}
+
+#[test]
+fn test_failed_registration_does_not_reserve_an_earlier_irq_line() {
+    let cases = [
+        (
+            "zero-sized MMIO",
+            30,
+            Resource::MmioRange {
+                base: 0x1000,
+                size: 0,
+            },
+            InvalidResourceReason::ZeroSized,
+        ),
+        (
+            "overflowing MMIO",
+            31,
+            Resource::MmioRange {
+                base: u64::MAX - 1,
+                size: 4,
+            },
+            InvalidResourceReason::AddressOverflow,
+        ),
+        (
+            "zero-sized port range",
+            32,
+            Resource::PortRange {
+                base: 0x3f8,
+                size: 0,
+            },
+            InvalidResourceReason::ZeroSized,
+        ),
+        (
+            "overflowing port range",
+            33,
+            Resource::PortRange {
+                base: u16::MAX - 1,
+                size: 4,
+            },
+            InvalidResourceReason::AddressOverflow,
+        ),
+        (
+            "zero-sized system register range",
+            34,
+            Resource::SysReg {
+                addr: 0x100,
+                count: 0,
+            },
+            InvalidResourceReason::ZeroSized,
+        ),
+        (
+            "overflowing system register range",
+            35,
+            Resource::SysReg {
+                addr: u32::MAX - 1,
+                count: 4,
+            },
+            InvalidResourceReason::AddressOverflow,
+        ),
+    ];
+
+    for (case, line, invalid_resource, expected_reason) in cases {
+        let mut devices = empty_devices();
+        let error = devices
+            .register(resource_device(
+                "invalid",
+                vec![
+                    irq_resource(line, InterruptTriggerMode::EdgeTriggered),
+                    invalid_resource,
+                ],
+            ))
+            .unwrap_err();
+
+        let RegistryError::InvalidResource { reason, .. } = error else {
+            panic!("{case} returned an unexpected error: {error:?}");
+        };
+        assert_eq!(reason, expected_reason, "{case}");
+        assert_eq!(devices.devices().count(), 0, "{case}");
+        assert!(
+            devices
+                .register(resource_device(
+                    "replacement",
+                    vec![irq_resource(line, InterruptTriggerMode::EdgeTriggered)],
+                ))
+                .is_ok(),
+            "{case} leaked IRQ line {line}"
+        );
+    }
+}
+
+#[test]
+fn test_bundle_irq_conflict_rolls_back_all_resources_from_prior_devices() {
+    let mut devices = empty_devices();
+    devices
+        .register(resource_device(
+            "existing",
+            vec![irq_resource(40, InterruptTriggerMode::EdgeTriggered)],
+        ))
+        .unwrap();
+
+    let mut bundle = DeviceBundle::new();
+    bundle.push(DeviceRegistration::Device(resource_device(
+        "bundle-first",
+        vec![
+            Resource::MmioRange {
+                base: 0x20_000,
+                size: 0x100,
+            },
+            irq_resource(41, InterruptTriggerMode::EdgeTriggered),
+        ],
+    )));
+    bundle.push(DeviceRegistration::Device(resource_device(
+        "bundle-conflict",
+        vec![irq_resource(40, InterruptTriggerMode::LevelTriggered)],
+    )));
+
+    assert!(matches!(
+        devices.register_bundle(bundle),
+        Err(DeviceManagerError::Registry(
+            RegistryError::IrqLineConflict { line: 40, .. }
+        ))
+    ));
+    assert_eq!(devices.devices().count(), 1);
+
+    devices
+        .register(resource_device(
+            "replacement",
+            vec![
+                Resource::MmioRange {
+                    base: 0x20_000,
+                    size: 0x100,
+                },
+                irq_resource(41, InterruptTriggerMode::EdgeTriggered),
+            ],
+        ))
+        .expect("bundle rollback must release both MMIO and IRQ resources");
+}
+
+#[test]
+fn test_device_can_declare_mmio_and_irq_resources_together() {
+    let mut devices = empty_devices();
+    devices
+        .register(resource_device(
+            "mmio-and-irq",
+            vec![
+                Resource::MmioRange {
+                    base: 0x30_000,
+                    size: 0x100,
+                },
+                irq_resource(50, InterruptTriggerMode::LevelTriggered),
+            ],
+        ))
+        .unwrap();
+
+    assert_eq!(
+        devices
+            .handle_mmio_read(GuestPhysAddr::from(0x30_040), AccessWidth::Dword)
+            .unwrap(),
+        0x5a
+    );
+    assert!(matches!(
+        devices.register(resource_device(
+            "irq-conflict",
+            vec![irq_resource(50, InterruptTriggerMode::EdgeTriggered)],
+        )),
+        Err(RegistryError::IrqLineConflict { line: 50, .. })
+    ));
 }

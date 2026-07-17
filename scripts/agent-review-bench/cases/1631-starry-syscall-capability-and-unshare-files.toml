@@ -1,0 +1,21 @@
+id = "1631-starry-syscall-capability-and-unshare-files"
+pr = 1631
+title = "修复 Starry syscall：模块权限与 CLONE_FILES 隔离语义"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "330b9ce2d52bd1269766bfc63201d23bf88c140f"
+head = "aff819c2ab54619eb21c341f027461a739f2e909"
+source = "https://github.com/rcore-os/tgoskits/pull/1631#pullrequestreview-4718750863"
+
+[[expected]]
+id = "finit-module-bypasses-cap-sys-module"
+path = "os/StarryOS/kernel/src/syscall/kmod.rs"
+line = 47
+severity = "major"
+description = "finit_module 入口只校验 flags，没有像 init_module 一样要求 CAP_SYS_MODULE。非特权进程可使用 flags=0 的 finit_module 继续读取模块并调用 init_module 实现，从而绕过本 PR 新增的模块加载权限检查；Linux 对两个加载入口都要求该 capability，并返回 EPERM。"
+
+[[expected]]
+id = "unshare-clone-files-replaces-process-scope"
+path = "os/StarryOS/kernel/src/syscall/task/namespace.rs"
+line = 48
+severity = "major"
+description = "unshare(CLONE_FILES) 通过 ProcessData 的共享 scope 替换 FD_TABLE。clone(CLONE_THREAD) 会复用该 ProcessData，因此同进程其他线程也会切换到新表；Linux 语义要求只解除调用线程与原文件表的共享关系，其他线程继续使用原表。现有测试没有覆盖这个多线程差异。"

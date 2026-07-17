@@ -13,11 +13,11 @@
 // limitations under the License.
 
 mod accessors;
-#[cfg(all(feature = "tracing", feature = "vmx"))]
+#[cfg(feature = "tracing")]
 mod diff;
 #[allow(unused_imports)]
 pub use accessors::*;
-#[cfg(all(feature = "tracing", feature = "vmx"))]
+#[cfg(feature = "tracing")]
 pub(crate) use diff::GeneralRegistersDiff;
 
 /// General-purpose registers for the 64-bit x86 architecture.
@@ -77,7 +77,6 @@ impl GeneralRegisters {
     }
 }
 
-#[cfg(feature = "vmx")]
 macro_rules! save_regs_to_stack {
     () => {
         "
@@ -100,7 +99,6 @@ macro_rules! save_regs_to_stack {
     };
 }
 
-#[cfg(feature = "vmx")]
 macro_rules! restore_regs_from_stack {
     () => {
         "

@@ -398,7 +398,7 @@ setup_qemu_x86_64_linux() {
     run_cmd cp configs/board/qemu-x86_64-linux.toml tmp/configs/
 
     info "Preparing Linux guest config file..."
-    run_cmd cp configs/vms/qemu/x86_64/linux-vmx-smp1.toml tmp/configs/linux-x86_64-qemu-smp1.toml
+    run_cmd cp configs/vms/qemu/x86_64/linux-smp1.toml tmp/configs/linux-x86_64-qemu-smp1.toml
     run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_linux/linux-qemu"|g' tmp/configs/linux-x86_64-qemu-smp1.toml
 
     info "Preparing QEMU config file..."

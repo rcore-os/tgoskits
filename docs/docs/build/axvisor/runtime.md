@@ -5,91 +5,82 @@ sidebar_label: "运行"
 
 # Axvisor 运行
 
-`cargo xtask axvisor qemu/uboot/board` 在构建基础上增加运行环节：将编译好的 Axvisor 和 Guest VM 配置部署到 QEMU 虚拟机、U-Boot 引导或远程板卡中执行。本节描述 Axvisor 三种运行目标的特有行为；通用的 QEMU 配置获取、ostool 执行机制详见 [参数与配置](../configuration)，构建详见 [Axvisor 构建](./build)。
+Axvisor 的 QEMU 流程把 host 启动配置、hypervisor 构建配置、VM 描述和 rootfs 选择分开处理。`axvisor/rootfs.rs` 只补 rootfs drive 和检查 `to_bin`/UEFI 契约；它不会根据架构擅自注入 CPU、firmware 或 guest 启动参数。
 
-Axvisor 是三套子系统中**运行环境最特殊**的：loongarch64 需要 LVZ 扩展版 QEMU，且需要为 Guest VM 准备 rootfs 和 UEFI firmware。
+## 1. QEMU 启动
 
-## 子命令
-
-| 子命令 | 运行目标 | 说明 |
-|--------|----------|------|
-| `cargo axvisor qemu` | QEMU 虚拟机 | 编译并在 QEMU 中运行（含 rootfs/guest 镜像准备） |
-| `cargo axvisor uboot` | U-Boot 引导 | 编译并通过 U-Boot 运行 |
-| `cargo axvisor board` | 远程板卡 | 编译并在远程板卡运行 |
-
-## QEMU 运行
+Axvisor QEMU 运行先选择 rootfs，再读取 host 启动 TOML 并检查产物格式；VM 配置只提供 guest 语义。下图对应 `axvisor/rootfs.rs::qemu()` 的主要步骤。
 
 ```mermaid
 flowchart TD
-    A["cargo axvisor qemu --vmconfigs <cfg>"] --> B["构建（见 Axvisor 构建）"]
-    B --> C["QEMU 配置获取<br/>configs/qemu/qemu-{arch}.toml / --qemu-config"]
-    C --> D["rootfs + guest 镜像准备"]
-    D --> E{"loongarch64?"}
-    E -->|"是"| F["定位 LVZ QEMU<br/>+ guest UEFI firmware"]
-    E -->|"否"| G["Tool::cargo_run(Qemu)"]
-    F --> G
-    G --> H["QEMU 启动 + 输出收集"]
+    A["axvisor qemu"] --> B["解析 Build Config / --vmconfigs"]
+    B --> C["选择并确保 rootfs"]
+    C --> D["加载 --qemu-config 或 configs/qemu/qemu-<arch>.toml"]
+    D --> E["替换或插入 rootfs -drive"]
+    E --> F["检查 UEFI + to_bin"]
+    F --> G["ostool cargo_run"]
 ```
 
-### QEMU 配置获取
+默认 QEMU 模板位于：
 
-Axvisor 未显式指定 `--qemu-config` 时，使用 `os/axvisor/configs/qemu/qemu-{arch}.toml` 预置模板。
+```text
+os/axvisor/configs/qemu/qemu-<arch>.toml
+```
 
-### rootfs 与 guest 镜像准备
+QEMU TOML 拥有 machine、CPU、accelerator、firmware、device、UEFI 和 `to_bin`。x86 VMX、SVM、UEFI 等场景分别通过对应 test case 的 build/QEMU TOML 表达。
 
-Axvisor 在 QEMU 运行前会准备所有 `--vmconfigs` 引用的 rootfs 和 guest 镜像。rootfs 选择支持三级回退（详见 [参数与配置](../configuration)）：用户显式 `--rootfs` → VM config 同目录下的 `rootfs.img` → managed rootfs。
+### 1.1 根文件系统
 
-### LoongArch LVZ QEMU
+QEMU rootfs 路径的选择顺序为：
 
-Axvisor 的 loongarch64 target 需要带 **LVZ（Loongson Virtualization Extension）** 的定制 QEMU，标准发行版的 QEMU 不包含此扩展。`AppContext::scoped_qemu_path()` 按以下优先级定位 LVZ 版 QEMU：
+1. CLI `--rootfs`，经 image storage 解析后的路径；
+2. 第一个 VM config 中 `[kernel].kernel_path` 同目录的现有 `rootfs.img`；
+3. 当前 arch 的 managed `rootfs-<arch>-alpine.img`。
 
-1. `AXBUILD_QEMU_SYSTEM_LOONGARCH64`（指向可执行文件）
-2. `AXBUILD_QEMU_DIR`（指向目录）
-3. `$HOME/QEMU-LVZ/build`、`$HOME/qemu-lvz/build`
-4. workspace 根及其祖先目录下的 `QEMU-LVZ/build`、`qemu-lvz/build`
+显式 rootfs 或 managed rootfs 会在启动前确保可用；若 VM 配置已有 kernel sibling `rootfs.img`，它被视为用例/guest 自己管理的镜像，axbuild 不额外下载默认 rootfs。最终路径由 `patch_qemu_rootfs_path()` 放入 QEMU drive；若模板漏掉 `-drive`，补丁会插入一个 `disk0` raw drive。
 
-找到后通过 `PathRestoreGuard`（RAII）临时把该目录注入 PATH 最前面，运行结束后恢复原始 PATH。
+### 1.2 启动产物
 
-### LoongArch Linux Guest UEFI firmware
+`build` 默认产出 ELF。QEMU 路径读取实际 TOML 后将 `cargo.to_bin` 设为 `qemu.to_bin`：
 
-若 `--vmconfigs` 中的 Linux guest 使用 `/guest/linux/linux-qemu`，`axvisor/rootfs.rs` 会把 VM config 复制到 `tmp/axbuild/axvisor/loongarch64/` 并填入可找到的 LoongArch UEFI firmware 路径，搜索顺序：
+- `to_bin = true` 时，运行器为 QEMU 准备 BIN；
+- `to_bin = false` 时直接保留 ELF；
+- `uefi = true` 且 `to_bin = false` 是明确错误。Axvisor 在启动前报告该错误，要求配置显式设置 `to_bin = true`。
 
-1. `/tmp/ostool/ovmf/loongarch64/code.fd`
-2. `tmp/ostool/ovmf/loongarch64/code.fd`
-3. `tmp/loongarch-uefi-stage1/assets/qemu-binary/QEMU_EFI.fd`
+仓库的 Axvisor x86_64 和 loongarch64 默认 QEMU 配置均将 UEFI 和 BIN 选择写在 TOML 中。guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 与 `uefi_firmware_path`），不由 axbuild 运行时重写。
 
-## U-Boot 运行
+### 1.3 LVZ QEMU
 
-`cargo axvisor uboot` 编译后通过 U-Boot 运行，调用 `Tool::cargo_run(Uboot)`。U-Boot 配置通过 `--uboot-config` 指定。U-Boot 运行模式用于需要通过 U-Boot 引导加载器的物理板卡场景。
+在 `loongarch64` 上，`AppContext::scoped_qemu_path()` 会为 Cargo/QEMU 调用选择 LVZ QEMU：
 
-## 板卡运行
+1. `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 指定的可执行文件；
+2. `AXBUILD_QEMU_DIR` 指定的目录；
+3. `$HOME/QEMU-LVZ/build` 或 `$HOME/qemu-lvz/build`；
+4. workspace 根及其祖先的 `QEMU-LVZ/build` 或 `qemu-lvz/build`。
 
-`cargo axvisor board` 编译后在远程板卡运行，通过 ostool-server 交互。需要指定 `--server` 和 `--port` 参数或通过 `cargo xtask board config` 预先配置。板卡管理命令详见 [板卡管理](../board)。
+找到后临时把目录置于 `PATH` 前端，结束后恢复。其余 QEMU 参数仍由 TOML 给出。
 
-## 参数
+## 2. U-Boot 启动
 
-**通用参数**（`qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
+`axvisor uboot` 通过 `--uboot-config` 或 ostool 的配置发现执行 build+run。
 
-**QEMU 额外参数**：`--qemu-config <PATH>`、`--rootfs <IMAGE>`
-**Board 额外参数**：`--board-config <PATH>`、`-b/--board-type <TYPE>`、`--server <HOST>`、`--port <PORT>`
+## 3. 板卡启动
 
-## 用法示例
+`axvisor board` 通过 ostool-server 运行；显式 `--board-config` 优先，否则 axbuild 解析当前 Cargo 配置对应的 board run config。它复用 Build Config 的 VM 列表和环境变量。
+
+## 4. 命令示例
+
+以下命令覆盖 aarch64 guest、x86 VMX case 和 LoongArch LVZ 启动三个不同的运行契约。
 
 ```bash
-# 构建 + QEMU 运行（默认 aarch64）
-cargo axvisor build
-cargo axvisor qemu --vmconfigs os/axvisor/configs/vm/aarch64-linux.toml
+# aarch64 QEMU guest
+cargo xtask axvisor qemu \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
 
-# 多个 Guest
-cargo axvisor qemu \
-    --vmconfigs configs/vm/aarch64-linux.toml \
-    --vmconfigs configs/vm/aarch64-starry.toml
+# x86 UEFI/VMX case 使用它自己的启动契约
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 
-# loongarch64（自动定位 LVZ QEMU）
-cargo axvisor qemu --arch loongarch64 --vmconfigs configs/vm/loongarch64-linux.toml
-
-# 板卡流程
-cargo axvisor config ls
-cargo axvisor defconfig <board>
-cargo axvisor board
+# LoongArch LVZ
+cargo xtask axvisor qemu --arch loongarch64 \
+  --vmconfigs os/axvisor/configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml
 ```

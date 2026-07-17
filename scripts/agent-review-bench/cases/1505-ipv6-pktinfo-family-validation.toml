@@ -5,7 +5,6 @@ remote = "https://github.com/rcore-os/tgoskits.git"
 base = "882e07fd2d1581a8a9882d397946db25a974bd15"
 head = "dfde82ef6b58b6944613d1421bec297327e5f7da"
 source = "https://github.com/rcore-os/tgoskits/pull/1505#discussion_r3526033263"
-fixed_by = "0ec97c6b71dd63783db596f599b97b4142f31851"
 
 [[expected]]
 id = "ipv6-pktinfo-bypasses-socket-family-check"
