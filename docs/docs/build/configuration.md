@@ -5,297 +5,203 @@ sidebar_label: "参数与配置"
 
 # 参数与配置
 
-axbuild 管理两类核心配置文件：Snapshot 为 CLI 提供参数回退，Build Info 收敛构建参数。动态平台硬件信息由运行时发现，不再由 axbuild 生成 .axconfig.toml。
+axbuild 将一次构建或运行拆成四类相互独立的输入：命令行参数负责本次选择，Snapshot 负责复用上次选择，Build Config 声明编译能力，QEMU/U-Boot/Board Config 声明启动方式。`context/resolve.rs` 和各系统的 `build/` 模块将这些输入解析为确定的请求和 Cargo 配置。
 
-1. **Snapshot**（`tmp/axbuild/.{os}.toml`）—— 最近一次命令参数的持久化，使短命令可以复用之前的 `--arch`、`--package` 等参数
-2. **Build Info**（`tmp/axbuild/config/<package>/build-<target>.toml`）—— 构建配置核心，描述 features、环境变量和平台行为
-此外，**Arch / Target 映射**是配置解析的共享基础，维护 arch ↔ target 的对应关系和子系统默认值。三套子系统共享这套配置框架，但各有自己的默认值和定制行为。所有配置逻辑集中在 `scripts/axbuild/src/context/` 和 `scripts/axbuild/src/build.rs` 中。
+| 配置 | 典型位置 | 负责内容 | 不负责内容 |
+| --- | --- | --- | --- |
+| Snapshot | `tmp/axbuild/.arceos.toml` 等 | 最近使用的 package、arch、target、config 和运行配置路径 | Cargo feature、QEMU 参数 |
+| Build Config | `tmp/axbuild/config/<package>/build-<target>.toml` | feature、环境变量、日志、CPU 数，以及系统专属字段 | firmware、CPU 型号、ELF/BIN 转换 |
+| Board Build Config | `os/<system>/configs/board/*.toml` | checked-in 的 target、能力和板卡默认值 | QEMU 命令行 |
+| QEMU Config | `os/<system>/configs/qemu/qemu-<arch>.toml` 或测试目录 | QEMU 参数、UEFI、`to_bin`、成功/失败判定 | Cargo feature |
+| U-Boot / Board Run Config | 显式路径或 ostool 约定位置 | 下载、部署和运行协议 | 构建能力选择 |
 
-## Arch / Target 映射
+对应源码集中在 `scripts/axbuild/src/context/`、`build/` 以及各系统的 `config.rs`、`build/`、`rootfs.rs` 中。
 
-`context/arch.rs` 维护统一的 arch ↔ target 映射表，三套子系统共享映射关系，但默认值不同。
+## 1. 请求解析
 
-TGOSKits 支持四种 CPU 架构，每种架构对应一个固定的 target triple。`context/arch.rs` 中的 `resolve_arch_and_target()` 函数负责处理用户通过 `--arch` 和 `--target` 传入的参数，确保两者一致或在只指定其一时自动补全另一个。这种设计使得用户可以用简短的 `--arch aarch64` 代替完整的 `--target aarch64-unknown-none-softfloat`。
+`AppContext::prepare_*_request()` 将 CLI、已有 Snapshot 和 Build Config 中可作为选择器的字段合并为 `ResolvedBuildRequest`、`ResolvedStarryRequest` 或 `ResolvedAxvisorRequest`。解析在真正调用 Cargo 前完成，随后用户命令以 `SnapshotPersistence::Store` 写回快照；测试流程使用 `Discard`，不会污染开发者的最近选择。
 
-### 映射表
+### 1.1 架构映射
 
-| `--arch` | target triple | 说明 |
-|----------|---------------|------|
-| `aarch64` | `aarch64-unknown-none-softfloat` | ARM 64 位 |
-| `x86_64` | `x86_64-unknown-none` | x86 64 位 |
-| `riscv64` | `riscv64gc-unknown-none-elf` | RISC-V 64 位 |
-| `loongarch64` | `loongarch64-unknown-none-softfloat` | 龙芯 64 位 |
+`context/arch.rs` 只接受以下四组固定映射：
 
-### 解析规则
+| `arch` | 裸机逻辑 target | 默认 managed rootfs | musl 工具链前缀 |
+| --- | --- | --- | --- |
+| `aarch64` | `aarch64-unknown-none-softfloat` | `rootfs-aarch64-alpine.img` | `aarch64-linux-musl` |
+| `x86_64` | `x86_64-unknown-none` | `rootfs-x86_64-alpine.img` | `x86_64-linux-musl` |
+| `riscv64` | `riscv64gc-unknown-none-elf` | `rootfs-riscv64-alpine.img` | `riscv64-linux-musl` |
+| `loongarch64` | `loongarch64-unknown-none-softfloat` | `rootfs-loongarch64-alpine.img` | `loongarch64-linux-musl` |
 
-`resolve_arch_and_target()` 根据用户提供的参数组合选择对应的解析策略：
+### 1.2 默认选择
 
-```mermaid
-flowchart TD
-    A["resolve_arch_and_target()"] --> B{arch + target 都指定?}
-    B -->|是| C["校验匹配<br/>不匹配则报错"]
-    B -->|仅 arch| D["查表获取 target"]
-    B -->|仅 target| E["反向查表获取 arch"]
-    B -->|都不指定| F["使用子系统默认值"]
-```
+只传 `--arch` 时查表补齐 target，只传 `--target` 时反向补齐 arch；两者都传时必须严格匹配。不同系统未给出架构选择器时使用下表中的默认值。
 
-| 指定方式 | 行为 |
-|----------|------|
-| `--arch` + `--target` | 校验匹配，不匹配则报错 |
-| 仅 `--arch` | 自动查找 target |
-| 仅 `--target` | 自动反向查找 arch |
-| 都不指定 | 使用子系统默认值 |
-
-当用户同时提供 `--arch` 和 `--target` 时，系统会校验两者的映射关系，如果不匹配则立即报错，防止因参数不一致导致编译失败。四个分支中最常用的是"仅 `--arch`"和"都不指定"——前者允许用户快速切换架构，后者依赖 Snapshot 中保存的上次参数。
-
-### 默认值
-
-各子系统使用不同的默认架构，对应其最常用的开发和测试目标：
-
-| 子系统 | 默认 arch | 默认 target |
-|--------|-----------|-------------|
+| 系统 | 默认 arch | 默认 target |
+| --- | --- | --- |
 | ArceOS | `aarch64` | `aarch64-unknown-none-softfloat` |
 | StarryOS | `riscv64` | `riscv64gc-unknown-none-elf` |
 | Axvisor | `aarch64` | `aarch64-unknown-none-softfloat` |
 
-### 特殊行为
+逻辑 target 是用户和配置使用的裸机 target。采用 `ax-std` 的 Rust 构建会在内部映射到 `scripts/targets/std/pie/<arch>-unknown-linux-musl.json`，例如 `aarch64-unknown-none-softfloat` 映射为 `aarch64-unknown-linux-musl` 的 PIE JSON target。`AX_TARGET` 仍保存原始裸机 target，供内核构建上下文读取。
 
-除默认值差异外，各架构还有一些需要注意的特殊行为：
+## 2. 状态复用
 
-- **默认动态平台**：构建系统默认走 `axplat-dyn` 路径，Build Info 中不再提供旧平台选择开关。独立外部平台通过 `AX_PLATFORM_CRATE` 和对应 `ax-hal` feature 显式选择，详见 [平台层 / 平台契约](../architecture/platform/contract)。
-- **to_bin**：通用 ArceOS/Starry std 构建会生成 raw binary；Axvisor 另有覆盖：`aarch64`/`riscv64` 生成 bin，`x86_64`/`loongarch64` 保留 ELF。
-- **LoongArch QEMU**：运行 Axvisor loongarch64 时自动搜索 LVZ 版 QEMU（详见 [Axvisor 运行 §LoongArch LVZ QEMU](./axvisor/runtime#loongarch-lvz-qemu)）
+### 2.1 状态文件
 
-LoongArch QEMU 现在默认走 `axplat-dyn`，不再以平台 crate 作为当前平台路径。旧配置中的平台 feature 或 `--plat` 参数应迁移为动态平台写法：保留 `--arch loongarch64`，并按需保留 UEFI/设备等真实启动链能力开关；这些不是平台选择项。
+Snapshot 将最近成功解析的选择器写入系统独立文件；它保存请求状态，而不保存 Cargo feature 或 QEMU 参数本体。
 
-### 扩展字段
+| 系统 | 文件 | 系统专属字段 |
+| --- | --- | --- |
+| ArceOS | `tmp/axbuild/.arceos.toml` | `package` |
+| StarryOS | `tmp/axbuild/.starry.toml` | 固定 package `starryos`，不持久化 package |
+| Axvisor | `tmp/axbuild/.axvisor.toml` | `vmconfigs` |
 
-`ArchSpec` 除了 arch ↔ target 映射外，还为每个架构定义了用于 rootfs 管理、StarryOS 平台路径和 C 测试交叉编译的扩展字段：
+三者共同保存 `arch`、`target`、`smp`、`config`，并分别在 `[qemu]`、`[uboot]` 下保存运行配置路径。
 
-| 架构 | 默认 rootfs 镜像 | StarryOS 平台路径 | GNU 工具前缀 | qemu-user 二进制 |
-|------|-----------------|------------------|-------------|-----------------|
-| `aarch64` | `rootfs-aarch64-alpine.img` | 动态平台 | `aarch64-linux-musl` | `qemu-aarch64-static` |
-| `x86_64` | `rootfs-x86_64-alpine.img` | 动态平台 | `x86_64-linux-musl` | `qemu-x86_64-static` |
-| `riscv64` | `rootfs-riscv64-alpine.img` | 动态平台 | `riscv64-linux-musl` | `qemu-riscv64-static` |
-| `loongarch64` | `rootfs-loongarch64-alpine.img` | 动态平台 | `loongarch64-linux-musl` | `qemu-loongarch64-static` |
+### 2.2 合并规则
 
-这些字段由 `CrossCompileSpec` 承载，被 StarryOS 和 Axvisor 的 C/Python 测试用例的 prebuild 环境和 CMake 交叉编译流程所使用。动态平台支持的 QEMU 构建默认不再绑定静态 StarryOS 平台。
+Snapshot 不是无条件的“CLI 缺省值”。为避免把旧 target 的配置带入新 target，源码设置了交叉抑制和整体继承条件：
 
-## Snapshot
+- 显式 `--arch` 时不继承旧 `target`；显式 `--target` 或 Build Config 已给出 target 时不继承旧 `arch`。
+- 只有没有切换 package、arch、target 或 config 等选择器时，才继承旧的 Build Config 路径和 QEMU/U-Boot 路径。
+- ArceOS 的 package 优先级为 CLI → Build Config → Snapshot；若三者均无值，命令报错。含 `app-c` 的配置强制选择 `ax-libc`，与其他 package 选择冲突时直接报错。
+- StarryOS 的 `--smp`、Axvisor 的 `--smp` 均优先于 Snapshot；Axvisor 显式 `--vmconfigs` 优先于 Snapshot 和 Build Config。
+- `defconfig` 会更新 arch、target 和 config，并清除旧 QEMU/U-Boot 配置路径；Axvisor 保留已有 Snapshot 中的 `vmconfigs`。
 
-Snapshot 保存最近一次的参数状态，使短命令可以复用之前的 `--arch`、`--package` 等参数。
-
-Snapshot 机制解决了一个常见的工作流痛点：用户首次执行 `cargo xtask arceos build --package arceos-httpserver --arch aarch64` 后，后续只需 `cargo xtask arceos qemu` 即可自动复用之前的 package 和 arch 设置，无需每次都重复输入完整参数。Snapshot 以 TOML 文件的形式存储在 `tmp/axbuild/` 目录下，每次成功执行命令后自动更新。
-
-### 文件位置
-
-| 子系统 | 文件 |
-|--------|------|
-| ArceOS | `tmp/axbuild/.arceos.toml` |
-| StarryOS | `tmp/axbuild/.starry.toml` |
-| Axvisor | `tmp/axbuild/.axvisor.toml` |
-
-### 示例
-
-典型的 ArceOS Snapshot 文件内容如下，包含 package 名称、架构和 QEMU/U-Boot 运行配置：
+例如：
 
 ```toml
 # tmp/axbuild/.arceos.toml
 package = "arceos-httpserver"
 arch = "aarch64"
 target = "aarch64-unknown-none-softfloat"
+config = "tmp/axbuild/config/arceos-httpserver/build-aarch64-unknown-none-softfloat.toml"
 
 [qemu]
-qemu_config = "test-suit/arceos/..."
-
-[uboot]
-uboot_config = "..."
+qemu_config = "os/arceos/configs/qemu/qemu-aarch64.toml"
 ```
 
-### 读写时序
+该快照只展示可复用的选择器。下一次请求是否继承它仍由 CLI 是否显式切换 package、arch、target 或 config 决定。
 
-命令执行时 Snapshot 的加载与写回遵循严格的时序，确保 CLI 参数与持久化状态正确合并：
+`AXBUILD_NO_SNAPSHOT=1` 只禁止本次写回，不禁止读取已有 Snapshot。需要完全排除历史状态时，应显式给出关键选择器或删除对应 `.toml` 文件。
 
-```mermaid
-sequenceDiagram
-    participant CLI as 用户命令
-    participant Resolve as prepare_*_request()
-    participant Snap as snapshot.rs
-    participant FS as 文件系统
+## 3. 构建配置
 
-    CLI->>Resolve: CLI 参数
-    Resolve->>Snap: load_snapshot()
-    Snap->>FS: "读取 tmp/axbuild/.{os}.toml"
-    FS-->>Snap: TOML 内容或空
-    Snap-->>Resolve: Snapshot 结构体
-    Resolve->>Resolve: 合并 CLI + Snapshot<br/>(CLI 优先)
-    Resolve-->>CLI: ResolvedRequest + Snapshot
-    CLI->>Snap: store_snapshot()
-    Note over Snap: AXBUILD_NO_SNAPSHOT=1 时跳过写回
-    Snap->>FS: "写入 tmp/axbuild/.{os}.toml"
+共享的 `BuildInfo` 结构只有四个字段：
+
+```toml
+features = ["fs", "net", "ax-driver/virtio-blk"]
+log = "Warn"
+max_cpu_num = 4
+
+[env]
+BACKTRACE = "y"
+DWARF = "y"
 ```
 
-每次命令执行时，`resolve.rs` 先从文件系统加载 Snapshot，然后将 CLI 参数与 Snapshot 合并（CLI 显式指定的参数优先），最终得到完整的 `ResolvedRequest`。**合并后的参数在构建开始前即写回 Snapshot 文件**（而非构建成功后），由 `SnapshotPersistence` 控制是否写回。设置环境变量 `AXBUILD_NO_SNAPSHOT` 为任意非空且非 `0` 的值（如 `1`、`yes`、`true`）只会禁止本次命令写回 Snapshot；当前源码仍会读取已有 Snapshot，因此需要完全忽略历史参数时应显式传入关键参数或删除 `tmp/axbuild/.{os}.toml`。
+| 字段 | 默认值 | 源码行为 |
+| --- | --- | --- |
+| `features` | `[]` | 显式 Cargo 能力列表；排序、去重并按 `ax-std` 的公开 feature 边界转发 |
+| `log` | `Warn` | 转成 `AX_LOG=<小写级别>` |
+| `max_cpu_num` | 无 | 写入 `SMP`；大于 1 时显式增加 `smp` 能力；0 非法 |
+| `[env]` | 空表 | 原样加入 Cargo 环境；部分键会驱动工具链选项 |
 
-`SnapshotPersistence` 枚举控制是否写回：用户手动调用的命令使用 `Store`（保留参数供下次复用），测试套件使用 `Discard`（不污染用户的 Snapshot 文件）。
-
-### 合并策略
-
-CLI 参数与 Snapshot 的合并遵循"用户显式指定优先"原则：
-
-| 参数 | 规则 |
-|------|------|
-| `package`、`arch`、`target` | CLI 优先，回退 snapshot |
-| `smp` | CLI 覆盖 snapshot |
-| `qemu_config`、`uboot_config` | 仅完全继承 snapshot 时复用 |
-
-`qemu_config` 和 `uboot_config` 的合并策略比较特殊：只有当用户完全没有提供相关参数，且 Snapshot 中有值时才复用，避免将测试场景的配置意外带入正常开发流程。
-
-此外，`arch` 和 `target` 之间存在交叉抑制：当 CLI 指定了 `--arch` 时不会从 snapshot 继承 `target`（反之亦然），确保两者始终来自同一来源（CLI 或 snapshot），避免因 CLI 的 `--arch` 与 snapshot 的 `target` 不一致而产生错误组合。
-
-### 子系统 Snapshot 差异
-
-三套子系统的 Snapshot 结构因各自命令参数不同而存在差异：
-
-| 子系统 | 独有字段 | 说明 |
-|--------|---------|------|
-| **ArceOS** | `package`（必填） | 每个包对应独立应用，必须显式指定；Snapshot 中的 `package` 自动复用 |
-| **StarryOS** | `config` | Build Info 路径（使用 `--config` 指定或自动生成），Snapshot 保存最近使用的配置路径 |
-| **Axvisor** | `config`、`axvisor_dir`（惰性初始化） | Axvisor 源码目录在首次访问时通过 `cargo metadata` 惰性定位并缓存 |
-
-三者共享的字段：`arch`、`target`、`smp`。QEMU/U-Boot 运行时配置（`qemu_config`、`uboot_config`）在各自 Snapshot 的子结构中独立存储。
-
-## Build Info
-
-Build Info 是构建配置的核心数据结构，描述 features、环境变量和平台行为。
-
-Build Info 是连接用户参数与 Cargo 构建的桥梁。它将散落在各处的配置（CLI 参数、Snapshot、子系统默认值、平台约定）收敛为一个统一的数据结构，最终被转换为 ostool 的 `Cargo` 配置执行编译。Build Info 以 TOML 文件的形式持久化到 `tmp/axbuild/config/` 目录，用户可以通过编辑该文件直接微调构建参数（如添加 features、修改环境变量），而无需修改源码。
-
-### 文件位置
+默认路径由 `default_build_info_path_in_workspace()` 生成：
 
 ```text
-tmp/axbuild/config/
-└── <package>/build-<target>.toml
+tmp/axbuild/config/<package>/build-<logical-target>.toml
 ```
 
-由 `default_build_info_path_in_workspace()` 生成路径。可通过 `--config` 覆盖。
+其中 package 分别是 ArceOS app 名、`starryos` 和 `axvisor`。`--config <PATH>` 可覆盖默认路径。
 
-首次构建时，系统会在上述路径创建默认的 Build Info 文件；后续构建直接读取该文件。用户可以直接编辑该文件来调整 features、环境变量等配置，修改会在下次构建时生效。
+### 3.1 系统配置形态
 
-### BuildInfo
+三个系统共享 `BuildInfo`，但 board 文件提供的选择器和缺失默认配置的处理方式不同。下表对应各自的 `config.rs` 与 `build/load.rs`，用于判断某个字段应放入何处。
 
-三套子系统共用 `BuildInfo` 作为核心配置类型：
+| 系统 | 额外字段 | 缺失默认配置时 |
+| --- | --- | --- |
+| ArceOS | board 文件可含 `package`、`target`；C app 配置可含 `app-c` | `build`/`qemu` 优先复制 target 和 package 匹配的 `qemu-*` board；否则生成空能力配置 |
+| StarryOS | board 文件含 `target`，可有同名 `.its` | `build`/`qemu` 必须找到 target 对应的默认 `qemu-*` board 并复制；`.its` 一并复制 |
+| Axvisor | board 文件含 `target`、`vm_configs` | 读取配置时优先复制 target 匹配的默认 board；找不到才生成空能力配置 |
 
-```rust
-pub struct BuildInfo {
-    pub env: HashMap<String, String>,    // 构建时环境变量
-    pub features: Vec<String>,           // Cargo features
-    pub log: LogLevel,                   // 日志级别
-    pub max_cpu_num: Option<usize>,      // SMP 核数
-}
+`cargo xtask <system> defconfig <board>` 是显式选择板卡的入口；`config ls` 列出源码树中可以选择的名称。
+
+### 3.2 特性校验
+
+`BuildInfo::validate_features()` 在 Cargo 配置生成前检查所有 Build Config 和 `FEATURES` 输入。验证规则将 feature 归属限制在当前 Cargo 接口，并保证各系统只接收自己的配置字段：
+
+- `axstd` 与 `axstd/<feature>` 不属于有效 feature 名称；配置应使用 package 实际声明的 Cargo feature。
+- `dyn-plat`、`plat-dyn`、`axplat-dyn`、`ax-hal/plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 不属于有效 BuildInfo feature。
+- Build Config 根字段只接受 `env`、`features`、`log`、`max_cpu_num` 和系统专属字段；`std`、`plat_dyn` 会在 TOML 读取时报告结构错误。
+- `app-c` 只由 ArceOS 的 C app 路径消费；StarryOS 和 Axvisor 的配置读取器会拒绝该字段。
+- Axvisor 的 `reject_unsupported_nested_platform_features()` 额外检查 `axplat-dyn/*`、`ax-std/<platform>` 和裸平台名。
+
+`FEATURES` 提供以逗号或空白分隔的外部 feature 输入；`apply_makefile_features()` 对每项执行相同验证、规范化和去重，然后并入 BuildInfo。
+
+### 3.3 标准库构建
+
+ArceOS Rust app、StarryOS 和 Axvisor 共用 `into_prepared_base_cargo_config_with_metadata()`：
+
+1. 验证 `max_cpu_num` 和 feature。
+2. 将 `ax-std/foo` 规范成逻辑能力 `foo`，保留 `ax-hal/*`、`ax-driver/*`、`ax-runtime/*` 边界。
+3. 根据应用 package 和 `ax-std` 的 Cargo metadata，仅把实际存在的 feature 分发到应用或 `ax-std`。
+4. 将裸机 target 映射到 musl PIE JSON target，并启用 `build-std = ["std", "panic_abort"]`。
+5. 生成 `tmp/axbuild/std-libs/` 下的占位库和 linker wrapper，避免宿主静态库污染内核链接。
+6. 设置对应的 musl `CC_*`、`AR_*`、`CFLAGS_*` 和 bindgen 参数；release profile 使用 `panic = "abort"` 且关闭 LTO。
+
+Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
+
+| 条件 | 追加 rustflags |
+| --- | --- |
+| `DWARF=y/yes/1/true/on` | `-Cdebuginfo=2 -Cstrip=none -Cforce-frame-pointers=yes` |
+| `BACKTRACE=y/yes/1/true/on` | `-Cforce-frame-pointers=yes` |
+| feature 含 `stack-protector` | `-Zstack-protector=strong` |
+
+## 4. 产物与启动
+
+Cargo 基础配置以 `to_bin = false` 创建：`cargo xtask <system> build` 输出 ELF，运行器根据选中的启动配置准备实际加载的产物格式。
+
+需要 QEMU 启动时，`to_bin` 必须由所选 QEMU TOML 显式给出：
+
+```toml
+args = ["-machine", "virt"]
+uefi = false
+to_bin = true
 ```
 
-子系统定制：
-- **ArceOS**：构建配置外层是 `ArceosBuildConfig`，除扁平化的 `BuildInfo` 外还可包含 `app-c` 字段；若 `--config` 指向含 `app-c` 的配置且未显式 `--package`，请求会自动选择 `ax-libc` 并进入 C app 构建路径。
-- **StarryOS**：`default_starry_build_info_for_target()` 会先取 `BuildInfo::default()`，若目标支持动态平台则清空默认 features。
-- **Axvisor**：`default_axvisor_build_info()` 清空默认 features；board 配置可额外携带 `target` 和 `vm_configs`，并在构建时注入 `AXVISOR_VM_CONFIGS`。
+- `to_bin = true`：运行前由 ostool 从 ELF 准备 raw BIN。
+- `to_bin = false`：运行器直接使用 ELF。
+- `uefi = true`：Axvisor 强制要求同时显式设置 `to_bin = true`，否则在启动前报错。仓库内 ArceOS、StarryOS 的 x86_64/loongarch64 默认 UEFI 配置也遵循该组合。
+- QEMU machine、CPU、加速、firmware、UEFI 和设备参数由当前 TOML 提供；`apply_smp_qemu_arg()` 仅维护用户请求的 `-smp` 值。
 
-### 默认值
+测试或 app case 若配置了全局 `-snapshot`，UEFI 路径会将其改写为各 `-drive` 的 `snapshot=on`。这样系统盘保持写时复制，同时 EFI pflash/ESP 不会被全局 snapshot 语义错误地变成不可写状态。
 
-新建 BuildInfo 时使用以下默认值：
+## 5. 虚拟化后端
 
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `env` | `{}` | 默认不注入额外环境变量；网络地址等需要由具体 build config 或子系统配置显式提供 |
-| `features` | `[]` | 不补充应用 feature；应用和 build config 自行声明所需能力 |
-| `log` | `Warn` | 默认日志级别 |
-| `max_cpu_num` | `None` | 不限制（单核） |
+x86_64 的虚拟化后端属于 Build Config 的显式能力：Intel 配置声明 `vmx`，AMD 配置声明 `svm`。`patch_axvisor_cargo_config()` 将已解析的 feature 与 VM 配置写入 Cargo 环境；QEMU CPU flags 由测试或运行 TOML 声明，例如 VMX 用例使用 `+vmx-ept`，SVM 用例使用 `+svm,+npt,+nrip-save`。
 
-### 验证规则
+仓库中的参考配置包括：
 
-- `max_cpu_num`：值为 0 时报错（必须大于 0）
-- 旧 `plat_dyn` 字段：已移除，配置中出现该字段会报错
-
-### Axvisor x86 虚拟化后端
-
-Axvisor 会在 x86_64 运行时通过 CPUID 选择 Intel VMX 或 AMD SVM；build config 不得在 `features` 中声明 `vmx` 或 `svm`。axbuild 发现这两个遗留 feature 时会报错，避免构建配置与实际 CPU 能力不一致。
-
-### 加载流程
-
-`load_or_create_build_info()` 按以下逻辑获取或创建 Build Info 文件：
-
-```mermaid
-flowchart TD
-    A["load_or_create_build_info(path)"] --> B{文件存在?}
-    B -->|是| C["TOML 反序列化"]
-    B -->|否| D["使用默认模板"]
-    D --> E["写入文件"]
-    E --> F{子系统?}
-    F -->|Axvisor / StarryOS| G["尝试复制 board 默认配置"]
-    C --> H["返回 BuildInfo"]
-    G --> H
+```text
+test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
+test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
+os/axvisor/configs/board/qemu-x86_64.toml
 ```
 
-当 Build Info 文件不存在时，不同子系统的创建策略不同：
+## 6. 环境变量
 
-| 子系统 | 缺失时行为 |
-|--------|------------|
-| ArceOS | 写入 `ArceosBuildConfig::default_config()`，也就是默认 `BuildInfo` 加空 `app-c` |
-| StarryOS | 写入 `default_starry_build_info_for_target(target)`；不会自动复制 board 配置。需要板卡默认配置时应使用 `cargo starry defconfig <board>` |
-| Axvisor | 先在 `os/axvisor/configs/board/` 中查找 target 匹配的默认 board 配置并复制；找不到时写入清空 features 的默认 Axvisor BuildInfo |
+环境变量只用于兼容入口和运行环境覆盖，不应替代 Build Config 或启动 TOML。下表列出 axbuild 直接读取的外部变量及其职责。
 
-### 环境变量注入
+| 变量 | 作用 |
+| --- | --- |
+| `FEATURES` | 追加经验证的 Build Config feature，逗号或空白分隔 |
+| `AXBUILD_NO_SNAPSHOT` | 禁止本次写回 Snapshot，不影响读取 |
+| `AXBUILD_QEMU_SYSTEM_LOONGARCH64` | 指定 LoongArch LVZ QEMU 可执行文件 |
+| `AXBUILD_QEMU_DIR` | 指定 LoongArch LVZ QEMU 所在目录 |
+| `AXBUILD_TEST_TIMEOUT_SCALE` | 按整数倍放大测试 QEMU timeout |
+| `STARRY_APK_REGION` | Starry managed rootfs 的 APK 区域，支持 `china`/`cn`、`us`/`usa` |
+| `TGOS_IMAGE_LOCAL_STORAGE` | 覆盖 image storage 目录 |
+| `TGOS_IMAGE_REGISTRY_FALLBACK_URL` | 覆盖镜像注册表 fallback URL |
+| `AXBUILD_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 
-Build Info 的字段在编译时转换为以下环境变量：
-
-| 环境变量 | 来源 | 说明 |
-|----------|------|------|
-| `AX_LOG` | `log` | 日志级别 |
-| `SMP` | `max_cpu_num` | CPU 核数 |
-| `AX_IP` / `AX_GW` | `BuildInfo.env` 或具体配置文件 | QEMU slirp 网络 IP / 网关；默认 BuildInfo 不自动设置 |
-| `AX_PLATFORM` | 平台检测 | 平台名 |
-| `FEATURES` | 外部环境变量 | Makefile 兼容的 feature 注入（逗号/空格分隔） |
-| `AX_ARCH` | arch 解析 | 架构名 |
-| `AX_TARGET` | target 解析 | target triple |
-| `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置列表 |
-
-这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。其中 `AX_LOG` 控制日志过滤级别，`SMP` 决定系统启动的 CPU 核数。各子系统还会额外注入自己的环境变量（如 Axvisor 的 `AXVISOR_VM_CONFIGS`）。
-
-`FEATURES` 环境变量提供与传统 Makefile 工作流的兼容性：`makefile_features_from_env()` 解析逗号/空格分隔的 feature 列表，自动添加前缀族前缀后合并到 BuildInfo。
-
----
-
-## 环境变量速查表
-
-axbuild 在编译期和运行时使用多个环境变量，分布在配置、运行和测试各阶段。下表按类别汇总所有环境变量。
-
-### 编译期注入
-
-这些环境变量在 Cargo 编译时通过 `--env` 传递，被 OS 源码中的 `env!()` 宏在编译期读取。
-
-| 变量 | 来源 | 说明 |
-|------|------|------|
-| `AX_LOG` | `BuildInfo.log` | 日志过滤级别 |
-| `SMP` | `BuildInfo.max_cpu_num` | 启动 CPU 核数 |
-| `AX_IP` / `AX_GW` | `BuildInfo.env` | QEMU slirp 网络 IP / 网关 |
-| `AX_PLATFORM` | 平台检测 | 平台名（如 `riscv64-custom`；动态平台构建通常不设置） |
-| `AX_ARCH` | arch 解析 | CPU 架构名 |
-| `AX_TARGET` | target 解析 | target triple |
-| `AXVISOR_VM_CONFIGS` | `--vmconfigs` | VM 配置文件列表（仅 Axvisor） |
-| `FEATURES` | 外部环境变量 | Makefile 兼容 feature 注入（逗号/空格分隔） |
-
-### 运行时行为控制
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `AXBUILD_NO_SNAPSHOT` | — | 设为任意非空且非 `0` 的值（如 `1`）禁止本次命令写回 Snapshot；不跳过读取已有 Snapshot |
-| `AXBUILD_QEMU_SYSTEM_LOONGARCH64` | — | 指定 LVZ 扩展版 QEMU 可执行文件路径（仅 Axvisor loongarch64） |
-| `AXBUILD_QEMU_DIR` | — | 指定 LVZ 扩展版 QEMU 所在目录（仅 Axvisor loongarch64） |
-| `AXBUILD_TEST_TIMEOUT_SCALE` | `1.0` | 线性缩放所有测试用例超时值（CI 慢环境） |
-| `STARRY_APK_REGION` | `china` | StarryOS APK 镜像源区域：`china`/`cn`（`mirrors.cernet.edu.cn`）或 `us`/`usa`（`dl-cdn.alpinelinux.org`） |
-| `TGOS_IMAGE_LOCAL_STORAGE` | `<workspace>/tmp/axbuild/rootfs` | TGOS 镜像本地存储路径（覆盖 `ImageConfig.local_storage`，影响 `cargo xtask image` 与所有子系统的 rootfs 拉取） |
-| `TGOS_IMAGE_REGISTRY_FALLBACK_URL` | `.../rcore-os/tgosimages/.../v0.0.6.toml` | TGOS 镜像注册表的 fallback URL（当 `default.toml` 拉取失败时使用） |
-| `AXLOADER_X86_64_UEFI_FIRMWARE` | — | axloader HTTP smoke test 优先使用的 OVMF 固件路径（仅 `cargo xtask axloader test qemu`） |
-| `AXVISOR_X86_64_UEFI_FIRMWARE` | — | axloader HTTP smoke test 的兼容旧变量；Axvisor UEFI CI 也会用它向 `setup_qemu.sh` 传递 OVMF 路径 |
-| `AXBUILD_KEEP_QEMU_LOG` | — | 设为非空保留 QEMU 运行日志（用于 backtrace 符号化后的事后分析） |
-| `FEATURES` | — | 兼容传统 Makefile 工作流的 feature 注入（逗号/空格分隔，自动添加前缀族前缀） |
+`AX_LOG`、`SMP`、`AX_TARGET`、`AX_ARCH` 和 `AXVISOR_VM_CONFIGS` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。

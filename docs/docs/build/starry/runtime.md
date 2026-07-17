@@ -5,79 +5,69 @@ sidebar_label: "运行"
 
 # StarryOS 运行
 
-`cargo xtask starry qemu/uboot/board` 在构建基础上增加运行环节：将编译好的 StarryOS 内核部署到 QEMU 虚拟机、U-Boot 引导或远程板卡中执行。本节描述 StarryOS 三种运行目标的特有行为；通用的 QEMU 配置获取、ostool 执行机制详见 [参数与配置](../configuration)，构建详见 [StarryOS 构建](./build)。
+StarryOS 的 `qemu`、`uboot`、`board` 都先构建并后处理内核 ELF。QEMU 运行在此基础上选择 rootfs、读取启动 TOML、补充显式 SMP，并以配置要求决定是否准备 BIN。
 
-StarryOS 是三套子系统中**运行目标最全**的：同时支持 QEMU、U-Boot 和远程板卡，且运行强依赖 rootfs（Alpine/Debian 用户空间）。
+## 1. QEMU 启动
 
-## 子命令
-
-| 子命令 | 运行目标 | 说明 |
-|--------|----------|------|
-| `cargo starry qemu` | QEMU 虚拟机 | 编译并在 QEMU 中运行（含 rootfs 准备） |
-| `cargo starry uboot` | U-Boot 引导 | 编译并通过 U-Boot 运行 |
-| `cargo starry board` | 远程板卡 | 编译并在远程板卡运行 |
-
-## QEMU 运行
+QEMU 路径在内核 ELF 构建后补根文件系统和显式 SMP；启动 TOML 本身仍拥有 machine、UEFI 和设备参数。下图对应 `starry/rootfs.rs` 与 `run_qemu_artifact()` 的调用顺序。
 
 ```mermaid
 flowchart TD
-    A["cargo starry qemu"] --> B["构建（见 StarryOS 构建）"]
-    B --> C["QEMU 配置获取<br/>configs/qemu/qemu-{arch}.toml / --qemu-config"]
-    C --> D["rootfs 准备<br/>ensure_qemu_rootfs_ready"]
-    D --> E["注入 rootfs / 网络 / SMP 到 QEMU 配置"]
-    E --> F["Tool::cargo_run(Qemu)"]
-    F --> G["QEMU 启动 + 输出收集"]
+    A["starry qemu"] --> B["解析请求 / Build Config"]
+    B --> C["准备选中的 rootfs"]
+    C --> D["读取 QEMU TOML"]
+    D --> E["替换 rootfs drive，注入 --smp"]
+    E --> F["构建 ELF + kallsyms / 可选 uImage"]
+    F --> G["run_qemu"]
 ```
 
-### QEMU 配置获取
+未给出 `--qemu-config` 时，默认路径为：
 
-StarryOS 未显式指定 `--qemu-config` 时，使用 `os/StarryOS/configs/qemu/qemu-{arch}.toml` 预置模板。测试场景下每个用例有自己的 `qemu-{arch}.toml`，通过 `--qemu-config` 显式指定。
+```text
+os/StarryOS/configs/qemu/qemu-<arch>.toml
+```
 
-### rootfs 是一等公民
+QEMU 的 machine、CPU、UEFI、firmware 和 device 全部来自该文件。`--smp` 仅替换或追加 `-smp`；axbuild 不会为架构选择硬编码 CPU/firmware 参数。
 
-StarryOS 运行强依赖 rootfs。`cargo starry qemu` 在运行前自动准备 rootfs（`ensure_qemu_rootfs_ready`）：按架构默认镜像名（`rootfs-<arch>-alpine.img`）从 image storage 拉取。`--rootfs` 可显式指定镜像路径（裸关键词 `alpine`/`busybox`/`debian` 自动展开为 managed 镜像名）。rootfs 镜像的下载/缓存/注入逻辑详见 [镜像管理](../image)。
+### 1.1 根文件系统
 
-### DNS 与 APK 区域配置
+`starry/rootfs.rs` 按下列优先级选择 QEMU rootfs：
 
-StarryOS 在 rootfs 准备时额外完成两项 [ArceOS](../arceos/runtime) 和 [Axvisor](../axvisor/runtime) 不做的操作：
+1. `--rootfs <IMAGE>`，先经 image storage 解析；
+2. 默认 managed rootfs，即当前 arch 的 `rootfs-<arch>-alpine.img`。
 
-- **DNS 注入**（`starry/resolver.rs`）：读取宿主 DNS 配置写入 rootfs `/etc/resolv.conf`，过滤 loopback 和 QEMU slirp 地址
-- **APK 区域配置**（`starry/apk.rs`）：根据 `STARRY_APK_REGION` 重写 `/etc/apk/repositories` 镜像源（`china`/`cn` 用 `mirrors.cernet.edu.cn/alpine`，`us`/`usa` 用 `dl-cdn.alpinelinux.org`）
+在默认 QEMU 路径中，axbuild 确保 managed 镜像已存在，再通过 `patch_rootfs()` 更新 QEMU `-drive`。显式 rootfs 同样经过路径解析和存在性检查；它不会被默认镜像覆盖。
 
-## U-Boot 运行
+`rootfs` patch 同时依据 QEMU drive 合同处理启动和网络所需参数。应用和测试用例可声明自己的 rootfs 与资产流程，因此其行为以各 case 的 TOML 为准。
 
-`cargo starry uboot` 编译后通过 U-Boot 运行，调用 `Tool::cargo_run(Uboot)`。U-Boot 配置通过 `--uboot-config` 指定，否则由 ostool 自动检测。U-Boot 运行模式用于需要通过 U-Boot 引导加载器的场景（如物理板卡的网络启动）。
+### 1.2 启动产物
 
-## 板卡运行
+基础 Cargo 构建保留 ELF。QEMU TOML 的 `to_bin` 决定运行阶段是否生成 BIN；例如仓库的 aarch64/riscv64/x86_64 默认配置均明确设置该值。x86_64 与 loongarch64 默认配置启用 UEFI 且请求 BIN。
 
-`cargo starry board` 编译后在远程板卡运行，通过 ostool-server 交互。需要指定 `--server` 和 `--port` 参数或通过 `cargo xtask board config` 预先配置。板卡管理命令详见 [板卡管理](../board)。
+当应用或测试用例声明全局 `-snapshot` 且 QEMU 启用 UEFI 时，`apply_drive_snapshot_without_global_snapshot()` 删除全局标记，并给每个 `-drive` 加上 `snapshot=on`。这保留磁盘写时复制，同时避免全局 snapshot 破坏 EFI 可写设备的语义。
 
-板卡运行流程：编译 StarryOS → 发送固件和运行配置给 ostool-server → ostool-server 刷写固件到板卡 → 收集串口输出。
+## 2. U-Boot 启动
 
-## 参数
+`cargo xtask starry uboot` 读取 `--uboot-config`；未提供时使用 ostool 的 U-Boot 配置发现。构建完成的 ELF 先经过 kallsyms 和可选 ITS/uImage 后处理，再由 `run_prepared_uboot()` 启动。
 
-**通用参数**（`qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--smp`、`--debug`。默认架构 `riscv64`。
+## 3. 板卡启动
 
-**QEMU 额外参数**：`--qemu-config <PATH>`、`--rootfs <IMAGE>`
-**Board 额外参数**：`--board-config <PATH>`、`-b/--board-type <TYPE>`、`--server <HOST>`、`--port <PORT>`
+`cargo xtask starry board` 通过 ostool-server 运行。显式 `--board-config` 优先；否则在 workspace 中为当前 Cargo 配置查找或创建 board run config。axbuild 先构建并后处理 ELF，再使用 Cargo 配置的 `to_bin` 调用 `board_prepared_elf()`。
 
-## 用法示例
+## 4. 命令示例
+
+这些命令分别展示默认 managed rootfs、显式启动配置和两个非 QEMU 运行目标。
 
 ```bash
-# 默认 riscv64 在 QEMU 运行
-cargo starry qemu
+# 默认 riscv64 QEMU 与 managed rootfs
+cargo xtask starry qemu
 
-# 切换架构
-cargo starry qemu --arch aarch64
+# 指定 rootfs 与启动配置
+cargo xtask starry qemu --arch aarch64 \
+  --rootfs rootfs-aarch64-alpine.img \
+  --qemu-config os/StarryOS/configs/qemu/qemu-aarch64.toml --smp 4
 
-# 显式指定 rootfs
-cargo starry qemu --rootfs alpine
-
-# U-Boot 运行
-cargo starry uboot
-
-# 板卡运行
-cargo starry config ls
-cargo starry defconfig orangepi-5-plus
-cargo starry board
+# U-Boot 与板卡
+cargo xtask starry uboot --uboot-config path/to/uboot.toml
+cargo xtask starry board --board-config path/to/board.toml
 ```
