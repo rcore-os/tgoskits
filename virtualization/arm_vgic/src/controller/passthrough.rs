@@ -117,7 +117,7 @@ impl GicV3Controller {
     }
 
     pub(super) fn activate_physical_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
-        let (interrupts, guest_private) = {
+        let guest_private = {
             let state = self.inner.state.lock();
             state.redistributor(vcpu, "activate physical interrupts")?;
             if state.active_vcpus.contains(&vcpu) {
@@ -126,12 +126,9 @@ impl GicV3Controller {
                     detail: alloc::format!("vCPU {} is already loaded", vcpu.raw()),
                 });
             }
-            (
-                state.physical_interrupts_for_vcpu(vcpu)?,
-                state
-                    .redistributor(vcpu, "snapshot private interrupts before load")?
-                    .private_interrupt_state()?,
-            )
+            state
+                .redistributor(vcpu, "snapshot private interrupts before load")?
+                .private_interrupt_state()?
         };
         let owned = self.inner.config.guest_private_interrupts();
         let host_private = backend_result(self.inner.backend.load_physical_private_interrupts(
@@ -139,24 +136,6 @@ impl GicV3Controller {
             owned,
             &guest_private,
         ))?;
-        for (activated, (binding, state)) in interrupts.iter().enumerate() {
-            if let Err(error) = self.activate_physical_interrupt(*binding, *state) {
-                self.roll_back_physical_interrupt_activation(&interrupts[..=activated]);
-                let mut discarded_guest = guest_private.clone();
-                if let Err(rollback_error) = self.inner.backend.save_physical_private_interrupts(
-                    vcpu,
-                    owned,
-                    &mut discarded_guest,
-                    &host_private,
-                ) {
-                    log::warn!(
-                        "failed to restore host private interrupts after SPI activation failure: \
-                         {rollback_error}"
-                    );
-                }
-                return backend_result(Err(error));
-            }
-        }
         let mut state = self.inner.state.lock();
         if !state.active_vcpus.insert(vcpu) {
             drop(state);
@@ -176,46 +155,8 @@ impl GicV3Controller {
         Ok(())
     }
 
-    fn activate_physical_interrupt(
-        &self,
-        binding: PhysicalInterruptBinding,
-        state: PhysicalInterruptState,
-    ) -> Result<(), crate::GicV3BackendError> {
-        self.inner
-            .backend
-            .configure_physical_interrupt(binding, state.configuration)?;
-        if state.enabled
-            && let Err(error) = self
-                .inner
-                .backend
-                .set_physical_interrupt_enabled(binding, true)
-        {
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn roll_back_physical_interrupt_activation(
-        &self,
-        interrupts: &[(PhysicalInterruptBinding, PhysicalInterruptState)],
-    ) {
-        for (binding, state) in interrupts.iter().rev() {
-            if state.enabled
-                && let Err(error) = self
-                    .inner
-                    .backend
-                    .set_physical_interrupt_enabled(*binding, false)
-            {
-                log::warn!(
-                    "failed to roll back physical interrupt activation for {:?}: {error}",
-                    binding.host()
-                );
-            }
-        }
-    }
-
     pub(super) fn deactivate_physical_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
-        let (bindings, mut guest_private, host_private) = {
+        let (mut guest_private, host_private) = {
             let state = self.inner.state.lock();
             if !state.active_vcpus.contains(&vcpu) {
                 return Ok(());
@@ -231,34 +172,19 @@ impl GicV3Controller {
                     ),
                 })?;
             (
-                state.enabled_physical_interrupts(vcpu)?,
                 state
                     .redistributor(vcpu, "snapshot private interrupts before save")?
                     .private_interrupt_state()?,
                 host_private,
             )
         };
-        let mut first_error = None;
-        for binding in bindings {
-            if let Err(error) = self
-                .inner
-                .backend
-                .set_physical_interrupt_enabled(binding, false)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
         let owned = self.inner.config.guest_private_interrupts();
-        if let Err(error) = self.inner.backend.save_physical_private_interrupts(
+        let save_result = self.inner.backend.save_physical_private_interrupts(
             vcpu,
             owned,
             &mut guest_private,
             &host_private,
-        ) && first_error.is_none()
-        {
-            first_error = Some(error);
-        }
+        );
         {
             let mut state = self.inner.state.lock();
             state
@@ -267,10 +193,7 @@ impl GicV3Controller {
             state.private_host_snapshots.remove(&vcpu);
             state.active_vcpus.remove(&vcpu);
         }
-        match first_error {
-            Some(error) => backend_result(Err(error)),
-            None => Ok(()),
-        }
+        backend_result(save_result)
     }
 
     pub(super) fn synchronize_physical_private_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
@@ -376,12 +299,10 @@ impl GicV3Controller {
                     .backend
                     .configure_physical_interrupt(change.binding, change.previous.configuration);
             }
-            if physical_enabled != change.previous.enabled {
-                let _ = self
-                    .inner
-                    .backend
-                    .set_physical_interrupt_enabled(change.binding, change.previous.enabled);
-            }
+            let _ = self
+                .inner
+                .backend
+                .set_physical_interrupt_enabled(change.binding, change.previous.enabled);
             return Err(error);
         }
         Ok(())
@@ -550,32 +471,6 @@ impl ControllerState {
                 interrupt.trigger(),
             ),
         })
-    }
-
-    fn physical_interrupts_for_vcpu(
-        &self,
-        vcpu: GicVcpuId,
-    ) -> VgicResult<Vec<(PhysicalInterruptBinding, PhysicalInterruptState)>> {
-        let mut interrupts = Vec::new();
-        for (spi, binding) in &self.physical_interrupts {
-            if binding.target() == vcpu {
-                interrupts.push((*binding, self.physical_interrupt_state(*spi)?));
-            }
-        }
-        Ok(interrupts)
-    }
-
-    fn enabled_physical_interrupts(
-        &self,
-        vcpu: GicVcpuId,
-    ) -> VgicResult<Vec<PhysicalInterruptBinding>> {
-        let mut bindings = Vec::new();
-        for (spi, binding) in &self.physical_interrupts {
-            if binding.target() == vcpu && self.distributor.interrupt(*spi)?.enabled() {
-                bindings.push(*binding);
-            }
-        }
-        Ok(bindings)
     }
 
     fn restore_physical_interrupt_state_changes(

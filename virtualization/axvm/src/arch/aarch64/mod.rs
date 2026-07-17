@@ -273,7 +273,7 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::SendIPI { value } => {
                 ipi::handle(vm, vcpu.id(), SendIpiExit { sgi1r: value })
             }
-            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::resume())),
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Continue),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
     }

@@ -17,6 +17,7 @@ const SYSTEM_RESET: u64 = 9;
 const FEATURES: u64 = 10;
 
 const PSCI_VERSION_1_0: u64 = 1 << 16;
+const SMCCC_VERSION_FUNCTION: u64 = 0x8000_0000;
 const TOS_NOT_PRESENT_MP: u64 = 2;
 const SUCCESS: u64 = 0;
 const NOT_SUPPORTED: u64 = u64::MAX;
@@ -56,6 +57,9 @@ pub(crate) fn decode(function: u64, args: [u64; 3]) -> Option<PsciCall> {
 }
 
 fn feature_result(function: u64) -> u64 {
+    if function == SMCCC_VERSION_FUNCTION {
+        return SUCCESS;
+    }
     let Some(descriptor) = FunctionDescriptor::decode(function) else {
         return NOT_SUPPORTED;
     };

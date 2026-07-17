@@ -209,6 +209,16 @@ fn aarch64_passthrough_masks_host_irqs_across_private_irq_context_switch() {
 }
 
 #[test]
+fn aarch64_internal_exit_keeps_interrupt_context_loaded() {
+    let source = include_str!("../src/arch/aarch64/mod.rs");
+
+    assert!(
+        source.contains("ArmVmExit::Nothing => Ok(BoundVcpuExit::Continue)"),
+        "an exit handled entirely inside arm_vcpu must resume within the current run slice"
+    );
+}
+
+#[test]
 fn production_sources_keep_architecture_cfg_inside_arch_module() {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let violations = find_target_arch_cfg_outside_arch(&source_root, &source_root);

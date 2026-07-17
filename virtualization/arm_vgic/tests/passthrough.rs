@@ -250,7 +250,7 @@ fn passthrough_vcpu_binding_never_uses_virtual_list_registers() {
 }
 
 #[test]
-fn passthrough_spi_is_enabled_only_while_target_vcpu_is_loaded() {
+fn passthrough_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
     const GICD_ISENABLER1: u64 = 0x104;
     const GICD_ICENABLER1: u64 = 0x184;
 
@@ -263,19 +263,10 @@ fn passthrough_spi_is_enabled_only_while_target_vcpu_is_loaded() {
         .unwrap();
     let physical_binding = backend.records.lock().unwrap().bound_interrupts[0];
 
+    binding.load().unwrap();
     controller
         .write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
         .unwrap();
-    assert!(
-        backend
-            .records
-            .lock()
-            .unwrap()
-            .enabled_interrupts
-            .is_empty()
-    );
-
-    binding.load().unwrap();
     binding.save().unwrap();
     binding.load().unwrap();
     controller
@@ -286,17 +277,43 @@ fn passthrough_spi_is_enabled_only_while_target_vcpu_is_loaded() {
     let enabled_interrupts = backend.records.lock().unwrap().enabled_interrupts.clone();
     assert_eq!(
         enabled_interrupts,
-        vec![
-            (physical_binding, true),
-            (physical_binding, false),
-            (physical_binding, true),
-            (physical_binding, false),
-        ]
+        vec![(physical_binding, true), (physical_binding, false)]
     );
 }
 
 #[test]
-fn passthrough_activation_failure_disables_the_failing_spi_and_restores_private_state() {
+fn passthrough_vcpu_reload_does_not_rewrite_distributor_spi_state() {
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    controller
+        .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
+        .unwrap();
+    backend
+        .records
+        .lock()
+        .unwrap()
+        .configured_interrupts
+        .clear();
+
+    binding.load().unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+
+    assert!(
+        backend
+            .records
+            .lock()
+            .unwrap()
+            .configured_interrupts
+            .is_empty(),
+        "vCPU context switches must not restore Distributor state from a stale software snapshot"
+    );
+}
+
+#[test]
+fn passthrough_vcpu_save_keeps_owned_distributor_spi_enabled() {
     const GICD_ISENABLER1: u64 = 0x104;
 
     let backend = Arc::new(PhysicalBackend::default());
@@ -306,26 +323,63 @@ fn passthrough_activation_failure_disables_the_failing_spi_and_restores_private_
     controller
         .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
         .unwrap();
+
+    binding.load().unwrap();
     controller
         .write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
         .unwrap();
+    backend.records.lock().unwrap().enabled_interrupts.clear();
+
+    binding.save().unwrap();
+
+    assert!(
+        backend
+            .records
+            .lock()
+            .unwrap()
+            .enabled_interrupts
+            .is_empty(),
+        "Distributor SPI state belongs to the VM device lease, not a vCPU run slice"
+    );
+}
+
+#[test]
+fn passthrough_spi_enable_failure_restores_disabled_hardware_and_software_state() {
+    const GICD_ISENABLER1: u64 = 0x104;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    controller
+        .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
+        .unwrap();
+    binding.load().unwrap();
     backend.records.lock().unwrap().fail_next_enable = true;
 
-    assert!(matches!(binding.load(), Err(VgicError::Backend { .. })));
+    assert!(matches!(
+        controller.write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32),),
+        Err(VgicError::Backend { .. })
+    ));
 
-    let (physical_binding, enabled_interrupts, private_save_count) = {
+    let (physical_binding, enabled_interrupts) = {
         let records = backend.records.lock().unwrap();
         (
             records.bound_interrupts[0],
             records.enabled_interrupts.clone(),
-            records.private_saves.len(),
         )
     };
     assert_eq!(
         enabled_interrupts,
         vec![(physical_binding, true), (physical_binding, false)]
     );
-    assert_eq!(private_save_count, 1);
+    assert_eq!(
+        controller
+            .read_distributor(GICD_ISENABLER1, AccessWidth::Dword)
+            .unwrap()
+            & (1 << (spi.raw() - 32)),
+        0
+    );
 }
 
 #[test]

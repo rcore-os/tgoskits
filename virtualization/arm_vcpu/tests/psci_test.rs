@@ -39,6 +39,11 @@ fn features_report_only_vm_implemented_calls() {
         psci::decode(0x8400_000a, [0xc400_0001, 0, 0]),
         Some(PsciCall::Complete(u64::MAX))
     );
+    assert_eq!(
+        psci::decode(0x8400_000a, [0x8000_0000, 0, 0]),
+        Some(PsciCall::Complete(0)),
+        "an exposed SMCCC v1.1 transport requires PSCI_FEATURES to advertise the version call"
+    );
 }
 
 #[test]
