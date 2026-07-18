@@ -14,7 +14,7 @@ args = [
     "-snapshot",
 ]
 
-uefi = false
+uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/net-bench-tap.sh"
