@@ -56,7 +56,8 @@ usage: bash apps/starry/net-bench/run-linux-baseline.sh [arch] [scenario] [--rep
 目的：使用与 Starry 相同的 QEMU+vhost 配置运行 Linux guest，建立性能基线。
 
 arch:
-  aarch64     仅支持 aarch64（当前限制）
+  aarch64     TAP+vhost-net (qemu/vhost-aarch64-kvm.toml 拓扑)
+  x86_64      TAP+vhost-net (qemu/vhost-x86_64-kvm.toml 拓扑)
 
 scenario:
   vhost       TAP+vhost-net, smp=1 (主力拓扑)
@@ -69,12 +70,14 @@ options:
 前置条件:
   1. vhost 环境已配置: sudo bash apps/starry/net-bench/bin/setup
   2. iperf3 已安装在 guest（通过 init script 或 rootfs）
+  3. guest 内核：$LINUX_DIR/vmlinuz；x86_64 缺失时自动
+     通过 apt-get download 拉取 Ubuntu generic 内核（virtio 均为 built-in）
 
 测试拓扑对齐 (qemu-plan §6.1):
   - 相同的 vhost-net + KVM + virtio-net-pci
-  - 相同的 mq/vectors/offload 参数
   - 相同的网络 IP 配置（192.168.100.1/24）
-  - 相同的测试负载（iperf3 tcp1/tcp4/tcp1r/udp1g/udp64）
+  - 相同的测试负载与参数（镜像 net-bench-common.sh：iperf3 -t 5，
+    tcp1/tcp4/tcp1r/udp1g/udp64，warmup 1 + 测量 5）
 EOF
 }
 
@@ -117,23 +120,29 @@ validate_initramfs() {
 }
 
 # 定位与 Starry 同源的受管 Alpine ext4 rootfs 镜像（内含 busybox/iperf3/ip/nc）。
+# 兼容平铺 (rootfs/<name>) 与嵌套 (rootfs/<name>/<name>) 两种受管布局；
 # 缺失时尝试通过 xtask 拉取；仍失败则明确报错。
 locate_alpine_image() {
     local image_name="rootfs-${ARCH}-alpine.img"
-    local img="$WORKSPACE/tmp/axbuild/rootfs/$image_name/$image_name"
+    local flat="$WORKSPACE/tmp/axbuild/rootfs/$image_name"
+    local nested="$WORKSPACE/tmp/axbuild/rootfs/$image_name/$image_name"
 
-    if [[ ! -f "$img" ]]; then
+    if [[ ! -f "$flat" && ! -f "$nested" ]]; then
         echo "=== Alpine rootfs image missing, fetching via xtask ===" >&2
         ( cd "$WORKSPACE" && cargo xtask starry rootfs --arch "$ARCH" ) >&2 || {
             echo "error: failed to ensure Alpine rootfs via 'cargo xtask starry rootfs --arch $ARCH'" >&2
             return 1
         }
     fi
-    [[ -f "$img" ]] || {
-        echo "error: managed Alpine rootfs not found at $img" >&2
-        return 1
-    }
-    printf '%s\n' "$img"
+    local img
+    for img in "$flat" "$nested"; do
+        if [[ -f "$img" ]]; then
+            printf '%s\n' "$img"
+            return 0
+        fi
+    done
+    echo "error: managed Alpine rootfs not found at $flat (or $nested)" >&2
+    return 1
 }
 
 # 准备 Linux guest initramfs：从受管 Alpine rootfs 提取真实的
@@ -194,8 +203,10 @@ ip route add default via 192.168.100.1
 
 echo "=== Linux baseline: starting net-bench tests ==="
 HOST_IP="192.168.100.1"
+PORT=5201
+DURATION=5
 
-# Mirror net-bench-common.sh run_test — keep in sync.
+# Mirror net-bench-common.sh run_test — keep in sync (duration/port/loads).
 run_test() {
     test_id="$1"
     shift
@@ -213,7 +224,7 @@ run_test() {
         echo "NET_STATS_BEGIN warmup=$warm"
         cat /proc/net/dev
         echo "NET_STATS_END"
-        if iperf3 -c "$HOST_IP" -t 10 -J "$@"; then
+        if iperf3 -c "$HOST_IP" -p "$PORT" -t "$DURATION" -J "$@"; then
             echo "NET_BENCH_END test=$test_id iter=$iter"
         else
             echo "NET_BENCH_END test=$test_id iter=$iter"
@@ -239,11 +250,11 @@ for i in $(seq 1 15); do
     sleep 1
 done
 
-run_test tcp1  -P 1
+run_test tcp1
 run_test tcp4  -P 4
-run_test tcp1r -P 1 -R
+run_test tcp1r -R
 run_test udp1g -u -b 1G
-run_test udp64 -u -b 0 -l 64
+run_test udp64 -u -l 64 -b 100M
 
 echo "NET_BENCH_PASSED"
 poweroff -f
@@ -251,8 +262,22 @@ INIT_SCRIPT
 
     chmod +x "$tmpdir/init"
 
+    # 仅打包基准必需的最小集合。完整 Alpine 测试 rootfs（含 /opt、/guest 等
+    # 测试资产，>1.5G）会超出 initramfs 解包内存预算：-m 2G 下内核报
+    # "Initramfs unpacking failed: write error" 并 panic。最小集合 =
+    # busybox(+applet 符号链接) + iperf3 及其共享库 + /etc 基础配置。
+    local staging="$LINUX_DIR/initramfs-staging"
+    rm -rf "$staging"
+    mkdir -p "$staging"/{dev,proc,sys,tmp,run,root,var,usr/bin,usr/lib}
+    cp -a "$tmpdir/bin" "$tmpdir/sbin" "$tmpdir/lib" "$tmpdir/etc" "$staging/"
+    cp -a "$tmpdir/usr/bin/iperf3" "$staging/usr/bin/"
+    [[ -e "$tmpdir/usr/bin/nc" ]] && cp -a "$tmpdir/usr/bin/nc" "$staging/usr/bin/"
+    # libiperf.so.0 的 NEEDED 依赖链：libcrypto.so.3 + musl（musl 已随 /lib 拷贝）。
+    cp -a "$tmpdir"/usr/lib/libiperf.so* "$tmpdir"/usr/lib/libcrypto.so* "$staging/usr/lib/"
+    cp -a "$tmpdir/init" "$staging/init"
+
     # 打包成 cpio.gz
-    ( cd "$tmpdir" && find . | cpio -o -H newc 2>/dev/null | gzip ) > "$rootfs"
+    ( cd "$staging" && find . | cpio -o -H newc 2>/dev/null | gzip ) > "$rootfs"
 
     # 自校验：确保新生成的 initramfs 真实可用
     validate_initramfs "$rootfs" || {
@@ -261,6 +286,38 @@ INIT_SCRIPT
     }
 
     echo "=== Linux initramfs created: $rootfs ($(du -h "$rootfs" | cut -f1)) ==="
+}
+
+# 确保 x86_64 guest 内核可用：优先 $LINUX_DIR/vmlinuz；缺失时通过
+# apt-get download 拉取 Ubuntu generic 内核并解包（该内核 virtio_net/
+# virtio_pci/failover 均为 built-in，无需向 initramfs 注入模块）。
+ensure_x86_kernel() {
+    local vmlinuz="$LINUX_DIR/vmlinuz"
+    [[ -f "$vmlinuz" ]] && return 0
+
+    command -v apt-get  >/dev/null 2>&1 || { echo "error: apt-get unavailable; place an x86_64 kernel at $vmlinuz" >&2; return 1; }
+    command -v dpkg-deb >/dev/null 2>&1 || { echo "error: dpkg-deb unavailable; place an x86_64 kernel at $vmlinuz" >&2; return 1; }
+
+    local pkg
+    pkg="$(apt-cache search --names-only '^linux-image-unsigned-[0-9.-]+-generic$' \
+        | awk '{print $1}' | sort -V | tail -1)"
+    [[ -n "$pkg" ]] || { echo "error: no linux-image-unsigned-*-generic candidate found" >&2; return 1; }
+
+    echo "=== Fetching x86_64 guest kernel: $pkg ===" >&2
+    local dl_dir="$LINUX_DIR/kernel-pkg"
+    rm -rf "$dl_dir"
+    mkdir -p "$dl_dir"
+    ( cd "$dl_dir" && apt-get download "$pkg" >&2 && dpkg-deb -x "$pkg"_*.deb extract/ ) || {
+        echo "error: failed to download/extract $pkg" >&2
+        return 1
+    }
+    local bz
+    bz="$(find "$dl_dir/extract/boot" -maxdepth 1 -name 'vmlinuz-*' | head -1)"
+    [[ -n "$bz" ]] || { echo "error: vmlinuz not found inside $pkg" >&2; return 1; }
+    cp "$bz" "$vmlinuz"
+    basename "$bz" | sed 's/^vmlinuz-//' > "$LINUX_DIR/kernel-version"
+    rm -rf "$dl_dir"
+    echo "=== x86_64 guest kernel ready: $vmlinuz ($(cat "$LINUX_DIR/kernel-version")) ===" >&2
 }
 
 # 运行 Linux baseline 测试
@@ -276,31 +333,42 @@ run_linux_test() {
     local kernel_img=""
     if [[ -f "$LINUX_DIR/vmlinuz" ]]; then
         kernel_img="$LINUX_DIR/vmlinuz"
-    elif [[ "$(uname -m)" == "aarch64" && -f "/boot/vmlinuz-$(uname -r)" ]]; then
+    elif [[ "$(uname -m)" == "$ARCH" && -f "/boot/vmlinuz-$(uname -r)" ]]; then
         kernel_img="/boot/vmlinuz-$(uname -r)"
     fi
     if [[ -z "$kernel_img" ]]; then
-        echo "error: no usable aarch64 Linux kernel found" >&2
-        echo "hint: place an aarch64 kernel at $LINUX_DIR/vmlinuz, or run on an aarch64 host" >&2
+        echo "error: no usable $ARCH Linux kernel found" >&2
+        echo "hint: place a $ARCH kernel at $LINUX_DIR/vmlinuz, or run on a $ARCH host" >&2
         return 1
     fi
     echo "=== Using kernel: $kernel_img ===" | tee -a "$log_file"
 
-    # QEMU 参数（对齐 qemu/vhost-aarch64-kvm.toml 的拓扑）
+    # QEMU 参数：网络设备/后端与 Starry 对应 vhost-<arch>-kvm.toml 完全一致
+    # （plain virtio-net-pci + tap,vhost=on，不额外附加 mq/vectors/offload）。
     local qemu_cmd=(
-        qemu-system-aarch64
-        -machine virt -cpu host
+        "qemu-system-$ARCH"
+        -cpu host
         -accel kvm
         -m 2G
         -smp "$smp"
         -kernel "$kernel_img"
         -initrd "$LINUX_DIR/initramfs.cpio.gz"
-        -append "console=ttyAMA0 quiet"
-        -device "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,mq=on,vectors=10,csum=on,gso=on,host_tso4=on,host_tso6=on,guest_tso4=on,guest_tso6=on"
-        -netdev "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on,queues=4"
+        -device "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57"
+        -netdev "tap,id=net0,ifname=tap0,script=no,downscript=no,vhost=on"
         -nographic
         -serial mon:stdio
+        -no-reboot
     )
+    # panic=-1: 内核 panic（如 init 失败退出）立即触发重启请求，配合
+    # -no-reboot 让 QEMU 直接退出，避免失败场景空耗 300s 超时。
+    case "$ARCH" in
+        aarch64)
+            qemu_cmd+=(-machine virt -append "console=ttyAMA0 quiet panic=-1")
+            ;;
+        x86_64)
+            qemu_cmd+=(-append "console=ttyS0 quiet panic=-1")
+            ;;
+    esac
 
     # 启动 iperf3 server
     echo "=== Starting iperf3 server on $TAP_HOST_IP:5201 ===" | tee -a "$log_file"
@@ -334,12 +402,18 @@ main() {
         exit 0
     fi
 
-    if [[ "$ARCH" != "aarch64" ]]; then
-        echo "error: only aarch64 is supported" >&2
-        exit 1
-    fi
+    case "$ARCH" in
+        aarch64|x86_64) ;;
+        *)
+            echo "error: unsupported arch '$ARCH' (aarch64|x86_64)" >&2
+            exit 1
+            ;;
+    esac
 
     check_prereq
+    if [[ "$ARCH" == "x86_64" ]]; then
+        ensure_x86_kernel || exit 1
+    fi
     prepare_linux_rootfs
 
     # 确定 smp 参数
@@ -361,6 +435,7 @@ main() {
         echo "host_nproc  : $(nproc 2>/dev/null || echo '?')"
         echo "qemu        : $(qemu-system-"$ARCH" --version 2>/dev/null | head -1)"
         echo "iperf3      : $(iperf3 --version 2>/dev/null | head -1)"
+        echo "guest_kernel: $(cat "$LINUX_DIR/kernel-version" 2>/dev/null || echo 'external (see run log)')"
         echo "kvm         : present"
         echo "vhost_net   : present"
         echo "topology    : same as Starry (vhost-net + KVM + virtio-net-pci)"

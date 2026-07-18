@@ -11,3 +11,6 @@ linux-baseline/initramfs.cpio.gz
 linux-baseline/rootfs-build/
 linux-baseline/vmlinuz
 linux-baseline/*.img
+linux-baseline/kernel-pkg/
+linux-baseline/kernel-version
+linux-baseline/initramfs-staging/
