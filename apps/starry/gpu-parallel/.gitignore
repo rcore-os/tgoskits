@@ -1,0 +1,6 @@
+target/
+*.spv
+*_full_api
+vk_parallel
+cl_parallel
+*.o
