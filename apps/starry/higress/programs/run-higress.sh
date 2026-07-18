@@ -55,9 +55,13 @@ tlsq() {
 }
 tlsinfo() { openssl s_client -connect 127.0.0.1:10443 -servername localhost </dev/null 2>&1; }
 
+# Envoy is a large binary; on the emulated riscv64/loongarch64 targets its
+# startup (extension registration, cluster + listener init) can take a couple of
+# minutes under TCG before the server reaches LIVE, so the readiness budget is
+# generous. It returns as soon as /ready reports LIVE, so fast arches pay nothing.
 wait_ready() { # tries
     i=0
-    while [ "$i" -lt "${1:-60}" ]; do
+    while [ "$i" -lt "${1:-300}" ]; do
         [ "$(ab /ready)" = "LIVE" ] && return 0
         sleep 1; i=$((i+1))
     done
@@ -94,7 +98,7 @@ sleep 2
 
 # --- 3. baseline Envoy (enable_reuse_port:false) ---
 envoy_pid=$(start_envoy "$CONF_DIR/bootstrap.yaml" 1)
-if wait_ready 60; then
+if wait_ready 300; then
     # admin endpoints
     ck_eq  "admin: /ready LIVE"            "$(ab /ready)" "LIVE"
     ck_has "admin: /stats server.state"    "$(ab /stats)" "server.state"
@@ -204,9 +208,18 @@ sleep 2
 
 # --- 4. reuse_port:true (exercises SO_REUSEPORT) ---
 envoy_rp_pid=$(start_envoy "$CONF_DIR/bootstrap-reuseport.yaml" 2)
-if wait_ready 60; then
+if wait_ready 300; then
     ck_eq  "reuse_port: /ready LIVE"       "$(ab /ready)" "LIVE"
-    ck_has "reuse_port: listener serves"   "$(hb /)" "BACKEND=backend_a"
+    # The reuse_port data listener (:10000) can accept a beat after admin /ready
+    # first reports LIVE on the freshly restarted server, so give the first
+    # proxied request a few tries before asserting it reaches the backend.
+    rp=""; i=0
+    while [ "$i" -lt 10 ]; do
+        rp=$(hb /)
+        case "$rp" in *BACKEND=backend_a*) break ;; esac
+        sleep 1; i=$((i+1))
+    done
+    ck_has "reuse_port: listener serves"   "$rp" "BACKEND=backend_a"
 else
     echo "  FAIL | reuse_port Envoy did not become ready (SO_REUSEPORT?)"
     tail -40 "$WORK/envoy-2.log" 2>/dev/null || true
