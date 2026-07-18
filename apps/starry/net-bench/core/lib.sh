@@ -257,7 +257,8 @@ nb_write_fingerprint() {
 
 # ---- 结果汇总 ------------------------------------------------------------
 
-# nb_summarize <summary_file> <run_log...> — 调用 summarize.py 产出 mean/stddev。
+# nb_summarize <summary_file> <run_log...> [--perf <perf_file>...]
+# 调用 summarize.py 产出 mean/stddev。所有额外参数（含 --perf）透传给 summarize.py。
 nb_summarize() {
     local summary_file="$1"; shift
     if ! command -v python3 >/dev/null 2>&1; then

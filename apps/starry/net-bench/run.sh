@@ -14,6 +14,7 @@
 #   --accel A      kvm|tcg（默认：同架构且 /dev/kvm 可用时 kvm，否则 tcg）
 #   --repeat N     每个场景重启 QEMU 跑 N 次，汇总跨启动方差（默认 1）
 #   --no-summary   跳过 summarize.py 汇总
+#   --with-perf    在 QEMU 外侧采集 perf stat CPU 计数器
 #   -h, --help     显示帮助
 #
 # 兼容旧用法：前两个位置参数仍按 [arch] [scenario] 解析。
@@ -31,6 +32,7 @@ SCENARIO="vhost"
 ACCEL=""
 REPEAT=1
 DO_SUMMARY=true
+WITH_PERF=false
 
 usage() {
     cat >&2 <<EOF
@@ -42,6 +44,7 @@ options:
   --accel A      kvm|tcg（默认：同架构且 /dev/kvm 可用时 kvm，否则 tcg）
   --repeat N     每场景重启 QEMU 跑 N 次并汇总（默认 1）
   --no-summary   跳过自动汇总
+  --with-perf    在 QEMU 外侧采集 perf stat CPU 计数器
   -h, --help     显示帮助
 
 scenario 说明:
@@ -69,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --repeat) REPEAT="${2:-}"; shift 2 ;;
         --repeat=*) REPEAT="${1#*=}"; shift ;;
         --no-summary) DO_SUMMARY=false; shift ;;
+        --with-perf) WITH_PERF=true; shift ;;
         -h|--help|help) usage; exit 0 ;;
         -*) nb_error "未知选项: $1"; usage; exit 1 ;;
         *) positional+=("$1"); shift ;;
@@ -117,9 +121,18 @@ run_one() {
         nb_section "运行 StarryOS net-bench ($ARCH, $scenario, repeat $rep/$REPEAT)"
         # guest 走 DHCP 获取地址（SLIRP 由 QEMU usermode 应答；TAP/vhost 由 host
         # bridge 上的 DHCP 服务应答，见 nb_check_tap）。无需注入 AX_* 环境变量。
-        (cd "$NB_WORKSPACE" && \
-            cargo xtask starry app qemu --test-case net-bench --arch "$ARCH" \
-                --qemu-config "$qemu_config") 2>&1 | tee "$result_file"
+        local perf_log="$NB_RESULTS_DIR/perf-$ARCH-$scenario-$TIMESTAMP-r${rep}.txt"
+        if [[ "$WITH_PERF" == "true" ]] && command -v perf >/dev/null 2>&1; then
+            (cd "$NB_WORKSPACE" && \
+                perf stat -e cycles,instructions,cache-references,cache-misses \
+                    -o "$perf_log" -- \
+                cargo xtask starry app qemu --test-case net-bench --arch "$ARCH" \
+                    --qemu-config "$qemu_config") 2>&1 | tee "$result_file"
+        else
+            (cd "$NB_WORKSPACE" && \
+                cargo xtask starry app qemu --test-case net-bench --arch "$ARCH" \
+                    --qemu-config "$qemu_config") 2>&1 | tee "$result_file"
+        fi
 
         nb_stop_iperf3
         run_logs+=("$result_file")
@@ -127,9 +140,16 @@ run_one() {
     done
 
     if [[ "$DO_SUMMARY" == "true" ]]; then
+        local perf_args=()
+        if [[ "$WITH_PERF" == "true" ]]; then
+            for ((rep = 1; rep <= REPEAT; rep++)); do
+                local pf="$NB_RESULTS_DIR/perf-$ARCH-$scenario-$TIMESTAMP-r${rep}.txt"
+                [[ -f "$pf" ]] && perf_args+=(--perf "$pf")
+            done
+        fi
         nb_summarize \
             "$NB_RESULTS_DIR/summary-$ARCH-$scenario-$TIMESTAMP.txt" \
-            "${run_logs[@]}"
+            "${run_logs[@]}" "${perf_args[@]}"
     fi
 }
 

@@ -195,17 +195,38 @@ ip route add default via 192.168.100.1
 echo "=== Linux baseline: starting net-bench tests ==="
 HOST_IP="192.168.100.1"
 
+# Mirror net-bench-common.sh run_test — keep in sync.
 run_test() {
     test_id="$1"
     shift
-    echo "NET_BENCH_BEGIN test=$test_id iter=0 warmup=1"
-    iperf3 -c "$HOST_IP" -t 10 -J "$@" || true
-    echo "NET_BENCH_END test=$test_id iter=0"
-
-    for iter in 1 2 3 4 5; do
-        echo "NET_BENCH_BEGIN test=$test_id iter=$iter warmup=0"
-        iperf3 -c "$HOST_IP" -t 10 -J "$@"
-        echo "NET_BENCH_END test=$test_id iter=$iter"
+    local warmup_iters=1
+    local measured_iters=5
+    local iter=0
+    local total=$((warmup_iters + measured_iters))
+    while [ "$iter" -lt "$total" ]; do
+        if [ "$iter" -lt "$warmup_iters" ]; then
+            warm=1
+        else
+            warm=0
+        fi
+        echo "NET_BENCH_BEGIN test=$test_id iter=$iter warmup=$warm"
+        echo "NET_STATS_BEGIN warmup=$warm"
+        cat /proc/net/dev
+        echo "NET_STATS_END"
+        if iperf3 -c "$HOST_IP" -t 10 -J "$@"; then
+            echo "NET_BENCH_END test=$test_id iter=$iter"
+        else
+            echo "NET_BENCH_END test=$test_id iter=$iter"
+            if [ "$warm" -eq 0 ]; then
+                echo "NET_BENCH_FAILED: $test_id iteration $iter"
+                exit 1
+            fi
+            echo "NET_BENCH_WARN: $test_id warmup iteration $iter failed (ignored)"
+        fi
+        echo "NET_STATS_BEGIN warmup=$warm"
+        cat /proc/net/dev
+        echo "NET_STATS_END"
+        iter=$((iter + 1))
     done
 }
 

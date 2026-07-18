@@ -18,38 +18,54 @@ import re
 from typing import Dict, Optional, Tuple
 
 
-def parse_summary(file_path: str) -> Dict[str, Tuple[float, float]]:
+def parse_summary(file_path: str) -> Dict[str, Tuple[float, float, str]]:
     """
-    解析 summarize.py 输出的 summary 文件
+    Parse summarize.py output into {label: (mean, stddev, unit)}.
 
-    返回: {test_id: (mean, stddev)}
+    Handles both legacy "±" and current "+/-" separators, and skips
+    non-matching header sections (/proc/net/dev, Protocol Overhead,
+    CPU Efficiency) that precede the per-test data.
     """
     results = {}
 
     with open(file_path, 'r') as f:
         content = f.read()
 
-    # 匹配格式：TCP 1-stream (uplink):    93.1 ± 2.4 Mbit/s
-    # 或：      UDP 64B (PPS):           12345 ± 678 pkt/s
-    pattern = r'(\w+(?:\s+\w+)*?)\s*:\s*([\d.]+)\s*±\s*([\d.]+)\s*(\w+/s)'
+    # Match section headers and throughput lines.
+    # Section:  "## TCP 1-stream (uplink)  (test=tcp1)"
+    # Metric:   "  throughput : 93.2 +/- 2.4 Mbit/s (n=5, warmup=1)"
+    _SECTION_RE = re.compile(r"^##\s+(.+?)\s+\(test=(\S+)\)\s*$")
+    _METRIC_RE = re.compile(
+        r"^\s+throughput\s*:\s*([\d.]+)\s*(?:±|\+/-)\s*([\d.]+)\s*(\S+/s)"
+    )
 
-    for match in re.finditer(pattern, content):
-        label = match.group(1).strip()
-        mean = float(match.group(2))
-        stddev = float(match.group(3))
-        unit = match.group(4)
+    current_test_id = None
+    for line in content.splitlines():
+        sec = _SECTION_RE.match(line)
+        if sec:
+            current_test_id = sec.group(2)
+            label = sec.group(1).strip()
+            continue
+        if current_test_id is None:
+            continue
+        m = _METRIC_RE.match(line)
+        if m:
+            mean = float(m.group(1))
+            stddev = float(m.group(2))
+            unit = m.group(3)
 
-        # 标准化单位到 Mbit/s 或 pkt/s
-        if 'Gbit' in unit:
-            mean *= 1000
-            stddev *= 1000
-            unit = 'Mbit/s'
-        elif 'Kbit' in unit:
-            mean /= 1000
-            stddev /= 1000
-            unit = 'Mbit/s'
+            # Normalize to Mbit/s or pkt/s
+            if 'Gbit' in unit:
+                mean *= 1000
+                stddev *= 1000
+                unit = 'Mbit/s'
+            elif 'Kbit' in unit:
+                mean /= 1000
+                stddev /= 1000
+                unit = 'Mbit/s'
 
-        results[label] = (mean, stddev, unit)
+            results[current_test_id] = (mean, stddev, unit)
+            current_test_id = None  # consume the section
 
     return results
 
@@ -69,40 +85,37 @@ def print_comparison(starry_results: Dict, linux_results: Dict):
     print("=" * 100)
     print()
 
-    # 标准化 test 名称映射
+    # Map test_id to display label (aligned with summarize.py TEST_LABELS).
     test_labels = {
-        'TCP 1-stream (uplink)': 'tcp1',
-        'TCP 4-stream (uplink)': 'tcp4',
-        'TCP 1-stream (downlink)': 'tcp1r',
-        'UDP 1Gbit target': 'udp1g',
-        'UDP 64B (PPS)': 'udp64',
+        'tcp1': 'TCP 1-stream (uplink)',
+        'tcp4': 'TCP 4-stream (uplink)',
+        'tcp1r': 'TCP 1-stream (reverse/downlink)',
+        'udp1g': 'UDP 1G target (large packets)',
+        'udp64': 'UDP 64B small-packet PPS',
     }
 
     print(f"{'Test':<30} {'Starry':<25} {'Linux Baseline':<25} {'Starry/Linux':<15}")
     print("-" * 100)
 
-    for label, test_id in test_labels.items():
-        starry_data = starry_results.get(label)
-        linux_data = linux_results.get(label)
+    for test_id, label in test_labels.items():
+        starry_data = starry_results.get(test_id)
+        linux_data = linux_results.get(test_id)
 
         if starry_data and linux_data:
             s_mean, s_std, s_unit = starry_data
             l_mean, l_std, l_unit = linux_data
-
             percentage = compute_percentage(s_mean, l_mean)
-
-            starry_str = f"{s_mean:.1f} ± {s_std:.1f} {s_unit}"
-            linux_str = f"{l_mean:.1f} ± {l_std:.1f} {l_unit}"
+            starry_str = f"{s_mean:.1f} +/- {s_std:.1f} {s_unit}"
+            linux_str = f"{l_mean:.1f} +/- {l_std:.1f} {l_unit}"
             pct_str = f"{percentage:.1f}%"
-
             print(f"{label:<30} {starry_str:<25} {linux_str:<25} {pct_str:<15}")
         elif starry_data:
             s_mean, s_std, s_unit = starry_data
-            starry_str = f"{s_mean:.1f} ± {s_std:.1f} {s_unit}"
+            starry_str = f"{s_mean:.1f} +/- {s_std:.1f} {s_unit}"
             print(f"{label:<30} {starry_str:<25} {'N/A':<25} {'N/A':<15}")
         elif linux_data:
             l_mean, l_std, l_unit = linux_data
-            linux_str = f"{l_mean:.1f} ± {l_std:.1f} {l_unit}"
+            linux_str = f"{l_mean:.1f} +/- {l_std:.1f} {l_unit}"
             print(f"{label:<30} {'N/A':<25} {linux_str:<25} {'N/A':<15}")
 
     print("-" * 100)
@@ -110,9 +123,9 @@ def print_comparison(starry_results: Dict, linux_results: Dict):
 
     # 计算平均达成率
     percentages = []
-    for label in test_labels.keys():
-        starry_data = starry_results.get(label)
-        linux_data = linux_results.get(label)
+    for test_id in test_labels:
+        starry_data = starry_results.get(test_id)
+        linux_data = linux_results.get(test_id)
         if starry_data and linux_data:
             pct = compute_percentage(starry_data[0], linux_data[0])
             percentages.append(pct)
@@ -126,9 +139,9 @@ def print_comparison(starry_results: Dict, linux_results: Dict):
     print("Key Gaps (methodology §6.2):")
     print()
 
-    for label, test_id in test_labels.items():
-        starry_data = starry_results.get(label)
-        linux_data = linux_results.get(label)
+    for test_id, label in test_labels.items():
+        starry_data = starry_results.get(test_id)
+        linux_data = linux_results.get(test_id)
 
         if starry_data and linux_data:
             s_mean = starry_data[0]

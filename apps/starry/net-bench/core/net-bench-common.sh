@@ -33,6 +33,9 @@ fail() {
 # Runs WARMUP warmup iterations followed by ITERS measured iterations, each
 # wrapped in BEGIN/END markers. Warmup failures are tolerated; measured
 # failures abort the whole benchmark.
+#
+# /proc/net/dev snapshots are emitted before and after each iperf3 call so
+# summarize.py can compute per-interface L2 byte/packet deltas.
 run_test() {
     test_id="$1"
     shift
@@ -45,6 +48,9 @@ run_test() {
             warm=0
         fi
         echo "${RESULT_PREFIX}_BEGIN test=${test_id} iter=${iter} warmup=${warm}"
+        echo "NET_STATS_BEGIN warmup=${warm}"
+        cat /proc/net/dev
+        echo "NET_STATS_END"
         if iperf3 -c "$HOST_IP" -p "$PORT" -t "$DURATION" -J "$@"; then
             echo "${RESULT_PREFIX}_END test=${test_id} iter=${iter}"
         else
@@ -54,6 +60,9 @@ run_test() {
             fi
             echo "${RESULT_PREFIX}_WARN: ${test_id} warmup iteration ${iter} failed (ignored)"
         fi
+        echo "NET_STATS_BEGIN warmup=${warm}"
+        cat /proc/net/dev
+        echo "NET_STATS_END"
         iter=$((iter + 1))
     done
 }

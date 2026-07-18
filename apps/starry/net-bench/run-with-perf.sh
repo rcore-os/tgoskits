@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # apps/starry/net-bench/run-with-perf.sh — 集成 perf stat 采集 cycles/instructions
 #
+# ⚠️  DEPRECATED: 请使用 `run.sh --with-perf` 代替。
+#    本脚本将继续保留以支持额外的 LLC-load-misses 计数器，但新的开发应
+#    优先使用 `run.sh --with-perf`（该入口将 perf 输出传给 summarize.py
+#    统一渲染 CPU Efficiency 章节，并提供 IPC 和 cache-miss-rate）。
+#
 # 用法: bash run-with-perf.sh [--arch A] [--scenario S] [--accel A]
 #
 # 目标：在运行 net-bench 的同时，用 perf stat 采集 CPU 性能计数器，
