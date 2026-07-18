@@ -132,7 +132,7 @@
 | CPU 标识 | 用 `#[def_percpu]` 保存 `CPU_ID`、是否 BSP |
 | 当前任务指针 | 保存当前核正在运行的 task 指针 |
 | 调度器状态 | 保存 run queue、idle task、时钟状态等 |
-| 虚拟化每核状态 | 保存当前物理核上的 VMM/per-CPU VMX/EL2 状态 |
+| 虚拟化每核状态 | 保存当前物理核上的 VMM/per-CPU VMX、SVM 或 EL2 状态 |
 | SMP 辅助数据 | 保存 IPI、启动辅助或局部缓存数据 |
 
 ### 2.3 典型初始化链路

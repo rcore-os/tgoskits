@@ -105,7 +105,6 @@ pub(super) async fn load_patched_qemu_config(
     } else if apply_default_args {
         patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None, mode)?;
     }
-    qemu_test::apply_dynamic_platform_qemu_boot(&mut qemu, cargo);
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
 
     Ok(qemu)

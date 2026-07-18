@@ -13,7 +13,7 @@ use super::{
     types::{StarryAppCase, StarryAppKind},
 };
 use crate::{
-    context::starry_target_for_arch_checked,
+    context::{DEFAULT_STARRY_ARCH, starry_target_for_arch_checked},
     test::{
         case::TestQemuCase,
         qemu::{self as qemu_test},
@@ -47,7 +47,7 @@ pub(crate) async fn prepare_qemu_app_case(
                 .and_then(arch_from_qemu_config_path)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "x86_64".to_string());
+        .unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
     let build_config_path = discover_optional_build_config(&app.case_dir, &target)?;
     let fields = qemu_config_path
@@ -171,7 +171,7 @@ pub(super) fn resolve_qemu_config(
         return Ok(Some(resolve_case_relative_path(&app.case_dir, path)));
     }
 
-    let arch = arch.unwrap_or("x86_64");
+    let arch = arch.unwrap_or(DEFAULT_STARRY_ARCH);
     let path = app.case_dir.join(qemu_config_name(arch));
     if path.is_file() {
         return Ok(Some(path));

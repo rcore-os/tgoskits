@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use lazy_static::lazy_static;
@@ -61,14 +61,16 @@ pub static ALLOC_SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
 /// It simulates memory allocation and deallocation without actual hardware interaction.
 pub struct MockHal {}
 
-/// A utility decorator for test functions that require the MockHal state to be reset before execution.
-pub fn mock_hal_test<F, R>(test_fn: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let _guard = TEST_MUTEX.lock().unwrap();
+/// Keeps shared MockHal state isolated for the lifetime of a test.
+pub struct MockHalTestGuard {
+    _mutex: MutexGuard<'static, ()>,
+}
+
+/// Reset MockHal state and serialize the caller against other MockHal tests.
+pub fn mock_hal_test() -> MockHalTestGuard {
+    let mutex = TEST_MUTEX.lock().unwrap();
     MockHal::reset_state();
-    test_fn()
+    MockHalTestGuard { _mutex: mutex }
 }
 
 impl MockHal {

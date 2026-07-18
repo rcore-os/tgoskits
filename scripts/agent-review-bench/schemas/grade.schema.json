@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["matches"],
+  "properties": {
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_id", "finding_indices", "reason"],
+        "properties": {
+          "expected_id": { "type": "string" },
+          "finding_indices": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

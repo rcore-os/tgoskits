@@ -1,85 +1,19 @@
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    process::Command as StdCommand,
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::{Args, Subcommand};
-use log::warn;
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
-    run::qemu::QemuConfig,
 };
 
 use crate::{
-    context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
+    context::{
+        AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence,
+        resolve_arceos_arch_and_target,
+    },
     test::host_http::HostHttpServerGuard,
 };
-
-const DEFAULT_TEST_DISK_IMAGE_SIZE: &str = "64M";
-
-/// Prepare runtime disk images referenced by QEMU configs.
-pub(super) fn ensure_qemu_runtime_assets(
-    workspace_root: &Path,
-    qemu: &QemuConfig,
-) -> anyhow::Result<()> {
-    let mut seen = BTreeSet::new();
-    for image in qemu_runtime_disk_images(qemu) {
-        if !seen.insert(image.clone()) {
-            continue;
-        }
-        ensure_fat32_image(
-            &image,
-            DEFAULT_TEST_DISK_IMAGE_SIZE,
-            should_recreate_runtime_image(workspace_root, &image),
-        )?;
-    }
-    Ok(())
-}
-
-/// Create a FAT32 disk image at `path` with the given `size` if it does not
-/// already exist.
-fn ensure_fat32_image(image: &Path, size: &str, recreate: bool) -> anyhow::Result<()> {
-    if image.exists() && !recreate {
-        return Ok(());
-    }
-    let msg = format!("generating {}", image.display());
-    println!("{msg} ...");
-    if let Some(parent) = image.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if image.exists() {
-        std::fs::remove_file(image)?;
-    }
-    let ran = |cmd: &mut StdCommand| -> anyhow::Result<()> {
-        let name = cmd.get_program().to_string_lossy().to_string();
-        cmd.status()
-            .with_context(|| format!("failed to run `{name}`"))?
-            .success()
-            .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("`{name}` exited with non-zero status"))
-    };
-    ran(StdCommand::new("truncate").args(["-s", size]).arg(image))?;
-    ran(StdCommand::new("mkfs.fat")
-        .args(["-F", "32"])
-        .arg(image)
-        .stdout(std::process::Stdio::null()))?;
-    println!("{msg} ... done");
-    Ok(())
-}
-
-fn qemu_runtime_disk_images(qemu: &QemuConfig) -> Vec<PathBuf> {
-    crate::rootfs::qemu::drive_file_paths(qemu)
-        .into_iter()
-        .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some("disk.img"))
-        .collect()
-}
-
-fn should_recreate_runtime_image(workspace_root: &Path, image: &Path) -> bool {
-    image.starts_with(crate::context::axbuild_tmp_dir(workspace_root).join("runtime-assets"))
-}
 
 mod board;
 pub mod build;
@@ -241,16 +175,36 @@ impl ArceOS {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
+        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let mut build_args = BuildCliArgs::from(&args.build);
+        if build_args.package.is_none() && build_args.config.is_none() {
+            // Bare `arceos qemu` is a command-level default: select the matching
+            // board template, whose package and features define the runnable app.
+            // Explicit package/config selectors remain fully authoritative.
+            let (_, target) =
+                resolve_arceos_arch_and_target(build_args.arch.clone(), build_args.target.clone())?;
+            let board = board::default_qemu_board(self.app.workspace_root(), &target, None)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing ArceOS QEMU default config for target `{target}` under {}",
+                        board::board_dir(self.app.workspace_root())
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|_| "os/arceos/configs/board".to_string())
+                    )
+                })?;
+            build_args.config = Some(board.path);
+        }
         let request = self.prepare_request(
-            (&args.build).into(),
+            build_args,
             args.qemu_config,
             None,
             SnapshotPersistence::Store,
         )?;
+        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -327,22 +281,46 @@ impl ArceOS {
         Ok(request)
     }
 
+    fn ensure_default_build_config_for_request(
+        &self,
+        request: &ResolvedBuildRequest,
+        command: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(board) = config::ensure_default_build_config_for_target(
+            self.app.workspace_root(),
+            &request.package,
+            &request.target,
+            &request.build_info_path,
+        )? {
+            println!(
+                "generated missing ArceOS {command} build config {} from board {}",
+                request.build_info_path.display(),
+                board.name
+            );
+        }
+        Ok(())
+    }
+
     pub(super) async fn load_qemu_config(
         &mut self,
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
     ) -> anyhow::Result<Option<ostool::run::qemu::QemuConfig>> {
-        let mut qemu = match request.qemu_config.as_deref() {
+        let qemu = match request.qemu_config.as_deref() {
             Some(path) => self
                 .app
                 .read_qemu_config_from_path_for_cargo(cargo, path)
                 .await
                 .map(Some)?,
-            None => None,
+            None => {
+                let path =
+                    default_qemu_config_template_path(self.app.workspace_root(), &request.arch);
+                self.app
+                    .read_qemu_config_from_path_for_cargo(cargo, &path)
+                    .await
+                    .map(Some)?
+            }
         };
-        if let Some(qemu) = qemu.as_mut() {
-            crate::test::qemu::apply_dynamic_platform_qemu_boot(qemu, cargo);
-        }
         Ok(qemu)
     }
 
@@ -437,7 +415,6 @@ impl ArceOS {
                 if !extra_rustflags.is_empty() {
                     bail!("ArceOS board extra rustflags are only supported for RustStd packages");
                 }
-                let request = c_app_internal_request(&request);
                 let cargo = build::load_c_app_cargo_config(&request)?;
                 let board_config = self
                     .load_board_config(&cargo, board_config_path.as_deref())
@@ -462,12 +439,26 @@ impl ArceOS {
         cargo: Cargo,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let qemu = self.load_qemu_config(&request, &cargo).await?;
-        if let Some(qemu) = qemu.as_ref() {
-            ensure_qemu_runtime_assets(self.app.workspace_root(), qemu)?;
-        }
+        let mut qemu = self
+            .load_qemu_config(&request, &cargo)
+            .await?
+            .with_context(|| {
+                format!(
+                    "missing ArceOS QEMU config for target `{}`; pass --qemu-config or add {}",
+                    request.target,
+                    default_qemu_config_template_path(self.app.workspace_root(), &request.arch)
+                        .display()
+                )
+            })?;
+        // ArceOS currently boots its default QEMU path from a fresh FAT32 image.
+        // Keep this distinct from the image-managed rootfs used by StarryOS and
+        // Axvisor until their runtime filesystem contracts are unified.
+        crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
+        rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
         let _host_http_server = start_qemu_host_http_server(&request)?;
-        self.app.qemu(cargo, request.build_info_path, qemu).await
+        self.app
+            .qemu(cargo, request.build_info_path, Some(qemu))
+            .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
@@ -481,7 +472,6 @@ impl ArceOS {
                     .map(|_| ())
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
-                let request = c_app_internal_request(&request);
                 let output = self.build_c_app_request(&request, app_dir, app_name)?;
                 println!("Built ArceOS C app ELF: {}", output.elf_path.display());
                 Ok(())
@@ -531,7 +521,6 @@ impl ArceOS {
         app_name: String,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
         let mut qemu = self
             .load_qemu_config(&request, &cargo)
@@ -543,8 +532,9 @@ impl ArceOS {
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
-        crate::test::qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
-        ensure_qemu_runtime_assets(self.app.workspace_root(), &qemu)?;
+        // See `run_qemu_request_with_cargo`: default ArceOS QEMU keeps a FAT32 rootfs.
+        crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
+        rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
@@ -559,7 +549,6 @@ impl ArceOS {
         app_name: String,
     ) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let request = c_app_internal_request(&request);
         let cargo = build::load_c_app_cargo_config(&request)?;
         let uboot = self
             .load_uboot_config(&request, &cargo)
@@ -576,25 +565,14 @@ impl ArceOS {
     }
 }
 
-fn warn_if_c_app_package_override(request: &ResolvedBuildRequest) {
-    if request.package != "ax-libc" {
-        warn!(
-            "ArceOS C app build ignores --package {}; using ax-libc internally",
-            request.package
-        );
-    }
-}
-
-fn c_app_internal_request(request: &ResolvedBuildRequest) -> ResolvedBuildRequest {
-    warn_if_c_app_package_override(request);
-    let mut request = request.clone();
-    request.package = "ax-libc".to_string();
-    request
+pub(crate) fn default_qemu_config_template_path(workspace_root: &Path, arch: &str) -> PathBuf {
+    workspace_root.join(format!("os/arceos/configs/qemu/qemu-{arch}.toml"))
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use ostool::run::qemu::QemuConfig;
     use tempfile::tempdir;
 
     use super::*;
@@ -655,35 +633,55 @@ mod tests {
     }
 
     #[test]
-    fn qemu_runtime_disk_images_finds_disk_img_drive_paths() {
-        let qemu = QemuConfig {
-            args: vec![
-                "-drive".to_string(),
-                "id=disk0,if=none,format=raw,file=/tmp/case/disk.img".to_string(),
-                "-drive".to_string(),
-                "id=rootfs,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
-            ],
-            ..Default::default()
-        };
+    fn standard_x86_64_and_loongarch64_qemu_configs_use_uefi_boot() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-        assert_eq!(
-            qemu_runtime_disk_images(&qemu),
-            vec![PathBuf::from("/tmp/case/disk.img")]
-        );
+        for (config_name, memory) in [
+            ("qemu-x86_64.toml", "512M"),
+            ("qemu-loongarch64.toml", "2G"),
+        ] {
+            let config_path = workspace.join("os/arceos/configs/qemu").join(config_name);
+            let config: QemuConfig =
+                toml::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+
+            assert!(config.uefi);
+            assert!(config.to_bin);
+            assert!(
+                config.args.windows(2).any(|args| args == ["-m", memory]),
+                "{config_name} must reserve {memory} for UEFI boot"
+            );
+        }
     }
 
     #[test]
-    fn should_recreate_only_tmp_runtime_asset_images() {
-        let workspace = Path::new("/workspace");
+    fn standard_config_templates_cover_every_supported_qemu_target() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-        assert!(should_recreate_runtime_image(
-            workspace,
-            Path::new("/workspace/tmp/axbuild/runtime-assets/apps/arceos/std/case/disk.img")
-        ));
-        assert!(!should_recreate_runtime_image(
-            workspace,
-            Path::new("/workspace/test-suit/arceos/rust/fs/shell/disk.img")
-        ));
+        for (arch, target) in [
+            ("aarch64", "aarch64-unknown-none-softfloat"),
+            ("x86_64", "x86_64-unknown-none"),
+            ("riscv64", "riscv64gc-unknown-none-elf"),
+            ("loongarch64", "loongarch64-unknown-none-softfloat"),
+        ] {
+            let qemu_path = workspace.join(format!("os/arceos/configs/qemu/qemu-{arch}.toml"));
+            let qemu: QemuConfig =
+                toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
+            assert!(!qemu.args.is_empty());
+
+            let board_path = workspace.join(format!("os/arceos/configs/board/qemu-{arch}.toml"));
+            let board = board::load_board_file(&board_path).unwrap();
+            assert_eq!(board.package, "arceos-helloworld");
+            assert_eq!(board.target, target);
+            assert!(board.build_config.build_info.features.is_empty());
+        }
+    }
+
+    #[test]
+    fn default_qemu_config_template_uses_arceos_config_directory() {
+        assert_eq!(
+            default_qemu_config_template_path(Path::new("/workspace"), "aarch64"),
+            PathBuf::from("/workspace/os/arceos/configs/qemu/qemu-aarch64.toml")
+        );
     }
 
     #[test]

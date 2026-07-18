@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    context::{ResolvedStarryRequest, STARRY_PACKAGE},
+    context::{ResolvedStarryRequest, STARRY_PACKAGE, find_workspace_root},
     starry::build::LogLevel,
 };
 
@@ -56,6 +56,14 @@ fn resolve_build_info_path_uses_default_starry_location() {
         root.path()
             .join("tmp/axbuild/config/starryos/build-aarch64-unknown-none-softfloat.toml")
     );
+}
+
+#[test]
+fn starry_manifest_declares_std_compat_for_dynamic_std_linking() {
+    let manifest =
+        fs::read_to_string(find_workspace_root().join("os/StarryOS/starryos/Cargo.toml")).unwrap();
+
+    assert!(manifest.contains("\"std-compat\""));
 }
 
 #[test]
@@ -110,30 +118,15 @@ fn load_build_info_writes_default_template_when_missing() {
 
     let build_info = load_build_info(&request).unwrap();
 
-    assert_eq!(
-        build_info,
-        default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
-    );
+    assert_eq!(build_info, default_starry_build_info());
     assert!(path.exists());
     let persisted: StarryBuildInfo = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted, build_info);
 }
 
 #[test]
-fn default_aarch64_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("aarch64-unknown-none-softfloat");
-    assert!(!build_info.features.contains(&"qemu".to_string()));
-}
-
-#[test]
-fn default_riscv64_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("riscv64gc-unknown-none-elf");
-    assert!(!build_info.features.contains(&"qemu".to_string()));
-}
-
-#[test]
-fn default_x86_starry_build_info_uses_dynamic_platform() {
-    let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
+fn default_starry_build_info_does_not_inject_features() {
+    let build_info = default_starry_build_info();
     assert!(build_info.features.is_empty());
 }
 
@@ -234,7 +227,7 @@ fn load_build_info_prefers_request_override_without_writing_file() {
     request.build_info_override = Some(StarryBuildInfo {
         log: LogLevel::Info,
         features: vec!["net".to_string()],
-        ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        ..default_starry_build_info()
     });
 
     let build_info = load_build_info(&request).unwrap();
@@ -279,7 +272,7 @@ fn patch_starry_cargo_config_injects_required_features_and_env() {
     assert_eq!(cargo.env.get("AX_PLATFORM").map(String::as_str), None);
     assert_eq!(cargo.env.get("AX_LOG").map(String::as_str), Some("info"));
     assert_eq!(cargo.env.get("CUSTOM").map(String::as_str), Some("1"));
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert!(cargo.post_build_cmds.is_empty());
 }
 
@@ -296,7 +289,7 @@ fn patch_starry_cargo_config_preserves_request_package() {
         qemu_config: None,
         uboot_config: None,
     };
-    let build_info = default_starry_build_info_for_target("x86_64-unknown-none");
+    let build_info = default_starry_build_info();
     let mut cargo = build_info.into_base_cargo_config_with_log(
         "placeholder".to_string(),
         request.target.clone(),
@@ -314,13 +307,13 @@ fn patch_starry_cargo_config_preserves_request_package() {
 }
 
 #[test]
-fn patch_starry_cargo_config_keeps_dynamic_platform_without_qemu() {
-    let request = request(
+fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
+    let mut request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    let build_info = StarryBuildInfo {
+    request.build_info_override = Some(StarryBuildInfo {
         env: HashMap::new(),
         features: vec![
             "common".to_string(),
@@ -330,32 +323,14 @@ fn patch_starry_cargo_config_keeps_dynamic_platform_without_qemu() {
         ],
         log: LogLevel::Info,
         max_cpu_num: Some(8),
-    };
-    let mut cargo = build_info.into_base_cargo_config_with_log(
-        STARRY_PACKAGE.to_string(),
-        "scripts/targets/std/pie/aarch64-unknown-linux-musl.json".to_string(),
-        Vec::new(),
-    );
+    });
 
-    let metadata = crate::build::workspace_metadata().unwrap();
-    patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
+    let err = load_cargo_config(&request).unwrap_err();
 
     assert!(
-        cargo
-            .features
-            .contains(&"ax-driver/rockchip-soc".to_string())
-    );
-    assert!(
-        cargo
-            .features
-            .contains(&"ax-driver/rockchip-sdhci".to_string())
-    );
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert!(!cargo.env.contains_key("AX_PLATFORM"));
-    assert_eq!(
-        cargo.target,
-        "scripts/targets/std/pie/aarch64-unknown-linux-musl.json"
+        err.to_string()
+            .contains("feature `plat-dyn` is no longer supported"),
+        "{err:#}"
     );
 }
 
@@ -368,7 +343,7 @@ fn patch_starry_cargo_config_keeps_qemu_as_capability_feature() {
     );
     let build_info = StarryBuildInfo {
         env: HashMap::new(),
-        features: vec!["qemu".to_string(), "plat-dyn".to_string()],
+        features: vec!["qemu".to_string()],
         log: LogLevel::Info,
         max_cpu_num: None,
     };
@@ -381,7 +356,6 @@ fn patch_starry_cargo_config_keeps_qemu_as_capability_feature() {
     let metadata = crate::build::workspace_metadata().unwrap();
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(cargo.features.contains(&"qemu".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
@@ -395,7 +369,7 @@ fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
     );
     let build_info = StarryBuildInfo {
         env: HashMap::new(),
-        features: vec!["ax-hal/plat-dyn".to_string(), "axplat-dyn/efi".to_string()],
+        features: vec!["axplat-dyn/efi".to_string()],
         log: LogLevel::Info,
         max_cpu_num: None,
     };
@@ -408,7 +382,6 @@ fn patch_starry_cargo_config_keeps_loongarch64_dynamic_platform_dynamic() {
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
 
     assert!(!cargo.features.contains(&"qemu".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/plat-dyn".to_string()));
     assert!(cargo.features.contains(&"axplat-dyn/efi".to_string()));
     assert!(!cargo.env.contains_key("AX_PLATFORM"));
 }
@@ -509,17 +482,15 @@ fn load_cargo_config_keeps_sg2002_as_device_feature_without_static_platform_alia
     );
     request.build_info_override = Some(StarryBuildInfo {
         features: vec![
-            "plat-dyn".to_string(),
             "starry-kernel/sg2002".to_string(),
             "axplat-dyn/thead-mae".to_string(),
         ],
-        ..default_starry_build_info_for_target("riscv64gc-unknown-none-elf")
+        ..default_starry_build_info()
     });
 
     let cargo = load_cargo_config(&request).unwrap();
     let removed_sg2002_platform = concat!("ax-hal/", "riscv64", "-sg2002");
 
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(cargo.features.contains(&"starry-kernel/sg2002".to_string()));
     assert!(
         cargo
@@ -546,7 +517,7 @@ fn load_cargo_config_keeps_pie_target_for_non_kmod_dynamic_platform_request() {
     );
     request.build_info_override = Some(StarryBuildInfo {
         features: vec!["ax-driver/virtio-blk".to_string()],
-        ..default_starry_build_info_for_target("aarch64-unknown-none-softfloat")
+        ..default_starry_build_info()
     });
 
     let cargo = load_cargo_config(&request).unwrap();
@@ -597,7 +568,7 @@ fn patch_starry_cargo_config_preserves_json_target() {
         qemu_config: None,
         uboot_config: None,
     };
-    let build_info = default_starry_build_info_for_target(&request.target);
+    let build_info = default_starry_build_info();
     let mut cargo = build_info.into_base_cargo_config_with_log(
         request.package.clone(),
         "scripts/targets/std/aarch64-unknown-linux-musl.json".to_string(),

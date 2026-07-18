@@ -82,8 +82,8 @@ qemu-system-loongarch64 --version
 Then use the unified `cargo xtask` entry point to run the three system paths:
 
 ```bash
-# ArceOS: run Hello World
-cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
+# ArceOS: run the default Hello World
+cargo xtask arceos qemu --arch aarch64
 
 # StarryOS: prepare rootfs before the first run
 cargo xtask starry rootfs --arch aarch64
@@ -93,7 +93,7 @@ cargo xtask starry qemu --arch aarch64
 cargo xtask axvisor qemu --arch aarch64
 ```
 
-If you only want the shortest path to a successful run, start with ArceOS Hello World. For more systems, architecture combinations, and QEMU options, see the [quick start overview](https://rcore-os.cn/tgoskits/docs/quickstart/overview) and [run and QEMU](https://rcore-os.cn/tgoskits/docs/build/run).
+If you only want the shortest path to a successful run, start with the default ArceOS Hello World app. Pass `--package arceos-shell` when you specifically need the interactive Shell. For more systems, architecture combinations, and QEMU options, see the [quick start overview](https://rcore-os.cn/tgoskits/docs/quickstart/overview) and [run and QEMU](https://rcore-os.cn/tgoskits/docs/build/run).
 
 ## 4. Contributing
 

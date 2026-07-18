@@ -256,7 +256,7 @@ case "$GUEST" in
   arceos)         CFG="qemu-aarch64|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|arceos/arceos-qemu|Hello, world!|rootfs-aarch64-alpine.img" ;;
   arceos-riscv64) CFG="qemu-riscv64|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|.github/workflows/qemu-riscv64.toml|arceos/arceos-qemu|Hello, world!|rootfs-riscv64-alpine.img" ;;
   linux)          CFG="qemu-aarch64|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-aarch64-alpine.img" ;;
-  linux-x86_64)   CFG="qemu-x86_64|qemu/x86_64/linux-vmx-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-x86_64-alpine.img" ;;
+  linux-x86_64)   CFG="qemu-x86_64|qemu/x86_64/linux-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-x86_64-alpine.img" ;;
   nimbos)         CFG="qemu-x86_64|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!|" ;;
   nimbos-uefi)    CFG="qemu-x86_64|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!|" ;;
   linux-x86_64-uefi) CFG="qemu-x86_64|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-x86_64-alpine.img" ;;

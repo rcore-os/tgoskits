@@ -68,6 +68,29 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
+fn axvisor_ax_std_dependency_declares_std_compat() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == AXVISOR_PACKAGE)
+        .unwrap();
+    let ax_std = package
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name == "ax-std")
+        .unwrap();
+
+    assert!(
+        ax_std
+            .features
+            .iter()
+            .any(|feature| feature == "std-compat"),
+        "Axvisor must declare ax-std/std-compat in its dependency instead of relying on axbuild"
+    );
+}
+
+#[test]
 fn resolve_build_info_path_uses_default_axvisor_location() {
     let root = tempdir().unwrap();
     let path = resolve_build_info_path(
@@ -212,6 +235,49 @@ log = "Info"
 }
 
 #[test]
+fn load_cargo_config_does_not_select_an_x86_backend() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("build-x86_64.toml");
+    fs::write(
+        &config_path,
+        r#"
+features = []
+log = "Info"
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+
+    assert!(!cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"svm".to_string()));
+}
+
+#[test]
+fn load_cargo_config_rejects_explicit_x86_backend_features() {
+    for feature in ["vmx", "svm"] {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(format!("build-x86_64-{feature}.toml"));
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+features = ["{feature}"]
+log = "Info"
+"#
+            ),
+        )
+        .unwrap();
+
+        let err =
+            load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap_err();
+
+        assert!(err.to_string().contains("selected from CPU capabilities"));
+        assert!(err.to_string().contains(&format!("`{feature}`")));
+    }
+}
+
+#[test]
 fn load_target_from_board_config_reads_target() {
     let root = tempdir().unwrap();
     let path = root.path().join("qemu-aarch64.toml");
@@ -306,7 +372,7 @@ fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
         "qemu-x86_64",
         r#"
 target = "x86_64-unknown-none"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 vm_configs = []
 "#,
@@ -332,7 +398,7 @@ vm_configs = []
         fs::read_to_string(board_path).unwrap()
     );
     assert!(cargo.features.contains(&"fs".to_string()));
-    assert!(cargo.features.contains(&"vmx".to_string()));
+    assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
@@ -411,7 +477,7 @@ fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     fs::write(
         &config_path,
         r#"
-features = ["ax-driver/virtio-blk", "fs", "vmx"]
+features = ["ax-driver/virtio-blk", "fs"]
 log = "Info"
 "#,
     )
@@ -452,7 +518,7 @@ fn load_cargo_config_defaults_x86_to_dynamic_platform_when_omitted() {
     fs::write(
         &config_path,
         r#"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 "#,
     )
@@ -488,7 +554,7 @@ fn load_cargo_config_applies_stack_protector_from_makefile_features() {
     fs::write(
         &config_path,
         r#"
-features = ["fs", "vmx"]
+features = ["fs"]
 log = "Info"
 "#,
     )
@@ -518,7 +584,7 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_keeps_loongarch_dynamic_axvisor_as_elf() {
+fn load_cargo_config_prepares_loongarch_dynamic_axvisor_runtime_artifact() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     fs::write(

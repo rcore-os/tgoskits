@@ -31,6 +31,31 @@ fn all_qemu_selection_skips_apps_without_matching_arch_config() {
 }
 
 #[test]
+fn all_qemu_selection_uses_starry_default_arch_without_an_arch_argument() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "qemu/apk-curl",
+        "qemu-x86_64.toml",
+        "args = []\n",
+    );
+    write_case_file(root.path(), "qemu/apt", "qemu-riscv64.toml", "args = []\n");
+    let args = ArgsAppQemu {
+        all: true,
+        test_case: None,
+        caps: Vec::new(),
+        arch: None,
+        qemu_config: None,
+        debug: false,
+    };
+
+    let apps = selected_apps(root.path(), &args, StarryAppKind::Qemu).unwrap();
+    let names = apps.into_iter().map(|app| app.name).collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["qemu/apt"]);
+}
+
+#[test]
 fn all_qemu_selection_skips_ignored_nested_app() {
     let root = tempdir().unwrap();
     write_case_file(

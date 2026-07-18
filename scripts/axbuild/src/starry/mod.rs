@@ -266,7 +266,6 @@ impl Starry {
             if case.snapshot && !qemu.args.iter().any(|arg| arg == "-snapshot") {
                 qemu.args.push("-snapshot".to_string());
             }
-            qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
             if qemu.uefi {
                 qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
             }
@@ -320,7 +319,6 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-        qemu::apply_dynamic_platform_qemu_boot(&mut qemu, &cargo);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),

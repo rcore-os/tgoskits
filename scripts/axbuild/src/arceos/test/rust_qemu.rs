@@ -15,7 +15,7 @@ use super::{
     types::{ArceosRustQemuCase, PreparedArceosRustQemuCase},
 };
 use crate::{
-    arceos::{ArceOS, build, ensure_qemu_runtime_assets},
+    arceos::{ArceOS, build, rootfs},
     context::SnapshotPersistence,
     test::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
@@ -96,7 +96,7 @@ pub(super) async fn prepare_rust_qemu_cases(
         );
         apply_rust_qemu_feature_overrides(&mut cargo, &mut qemu, case.feature.as_deref());
         qemu_test::apply_timeout_scale(&mut qemu);
-        ensure_qemu_runtime_assets(arceos.app.workspace_root(), &qemu)?;
+        rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
             host_symbolize_success_regex: rust_qemu_host_symbolize_success_regex(
                 case.feature.as_deref(),
@@ -169,6 +169,8 @@ fn is_lockdep_detect_feature(feature: &str) -> bool {
 }
 
 fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
+    // The feature comes from the explicitly selected ArceOS test case; the
+    // normal suite path never adds test-specific capabilities.
     if !cargo.features.iter().any(|existing| existing == feature) {
         cargo.features.push(feature.to_string());
         cargo.features.sort();
@@ -450,6 +452,19 @@ BT 0 ip=0x1 fp=0x2
             smp >= 2,
             "aarch64 task-ipi, task-smp-online, and task-stack-guard-page require SMP >= 2, got \
              {smp}"
+        );
+    }
+
+    #[test]
+    fn arceos_rust_aarch64_qemu_config_converts_high_half_kernel_to_bin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust");
+        let qemu_path = root.join("qemu-aarch64.toml");
+        let config: QemuConfig =
+            toml::from_str(&std::fs::read_to_string(qemu_path).unwrap()).unwrap();
+
+        assert!(
+            config.to_bin,
+            "the AArch64 kernel is linked at a high-half address and QEMU must load its raw BIN"
         );
     }
 

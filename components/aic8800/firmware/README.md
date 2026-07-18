@@ -6,12 +6,11 @@ repository.
 
 ## Provisioning
 
-The blobs are fetched on demand by the build tooling and verified byte-for-byte
-against pinned SHA-256 digests before use. Any `cargo xtask starry ...` or
-`cargo xtask clippy ...` invocation that compiles the `aic8800` crate downloads
-them into this directory automatically. See
-[`scripts/axbuild/src/firmware.rs`](../../../scripts/axbuild/src/firmware.rs)
-for the file manifest, digests, and source pin.
+The crate build script resolves the blobs on demand and verifies them
+byte-for-byte against pinned SHA-256 digests before writing them to Cargo's
+`OUT_DIR`. This directory is an optional local cache for offline builds; put
+verified blobs here, or set `AIC8800_FIRMWARE_DIR` to an external cache. See
+[`../build.rs`](../build.rs) for the file manifest, digests, and source pin.
 
 ## Source
 

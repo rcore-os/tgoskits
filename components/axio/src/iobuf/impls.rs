@@ -86,7 +86,7 @@ impl IoBufMut for VecDeque<u8> {
     }
 }
 
-impl IoBufMut for BorrowedCursor<'_> {
+impl IoBufMut for BorrowedCursor<'_, u8> {
     #[inline]
     fn remaining_mut(&self) -> usize {
         self.capacity()

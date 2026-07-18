@@ -48,6 +48,8 @@ pub(crate) fn write_defconfig(
     snapshot.arch = Some(arch_for_target_checked(&board.target)?.to_string());
     snapshot.target = Some(board.target);
     snapshot.config = Some(snapshot_path_value(workspace_root, &build_config_path));
+    snapshot.qemu.qemu_config = None;
+    snapshot.uboot.uboot_config = None;
     snapshot.store(workspace_root)?;
 
     Ok(build_config_path)
@@ -124,7 +126,8 @@ vm_configs = []
             Some("aarch64-unknown-none-softfloat")
         );
         assert_eq!(snapshot.vmconfigs, existing_snapshot.vmconfigs);
-        assert_eq!(snapshot.qemu.qemu_config, Some(qemu_config));
+        assert_eq!(snapshot.qemu.qemu_config, None);
+        assert_eq!(snapshot.uboot.uboot_config, None);
     }
 
     #[test]

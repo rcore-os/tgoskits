@@ -23,7 +23,7 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::AddrSpace;
+use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{
@@ -231,11 +231,11 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn mark_vcpu_exiting(&self) -> bool {
-        self.running_halting_vcpu_count.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |count| count.checked_sub(1),
-        ) == Ok(1)
+        self.running_halting_vcpu_count
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_sub(1)
+            })
+            == Ok(1)
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {

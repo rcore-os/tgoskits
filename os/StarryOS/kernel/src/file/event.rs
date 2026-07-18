@@ -41,7 +41,7 @@ impl FileLike for EventFd {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             let result = self
                 .count
-                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                .try_update(Ordering::Release, Ordering::Acquire, |count| {
                     if count > 0 {
                         let dec = if self.semaphore { 1 } else { count };
                         Some(count - dec)
@@ -77,7 +77,7 @@ impl FileLike for EventFd {
         block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
             let result = self
                 .count
-                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
+                .try_update(Ordering::Release, Ordering::Acquire, |count| {
                     if u64::MAX - count > value {
                         Some(count + value)
                     } else {
