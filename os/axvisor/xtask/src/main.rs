@@ -14,8 +14,30 @@
 
 //! Build tool for Axvisor hypervisor.
 //!
-//! This crate provides the `xtask` binary for building, running, and managing
-//! the Axvisor hypervisor project.
+//! This xtask delegates all logic to the shared [`axbuild`] library, keeping
+//! this binary as a thin CLI shim. Two kinds of commands are supported:
+//!
+//! * **Axvisor commands** (`build`, `qemu`, `board`, `test`, `uboot`,
+//!   `defconfig`, `config`) — parsed directly into [`axbuild::axvisor::Command`]
+//!   and executed via [`axbuild::axvisor::Axvisor`].
+//! * **Image commands** (`ls`, `pull`, `resize`, `check`, optionally prefixed
+//!   with `image`) — an `image` prefix is inserted if missing, then forwarded
+//!   to [`axbuild::run_from`] so axbuild's own CLI dispatches them as
+//!   `axbuild::Commands::Image(...)`.
+//!
+//! # Release / standalone distribution
+//!
+//! Inside the tgoskits workspace the dependency `axbuild = { workspace = true }`
+//! resolves via the workspace root. When `os/axvisor` is published or synced
+//! outside this workspace (e.g. as `arceos-hypervisor/axvisor`), one of the
+//! following must be done before `cargo run --bin xtask` will work:
+//!
+//! 1. Publish the `axbuild` crate to crates.io and change this dependency to
+//!    `axbuild = { version = "..." }` — keeps sharing a single implementation.
+//! 2. Extract an `axvisor-build` crate from `axbuild` and depend on that
+//!    instead — narrower dependency, more extraction work.
+//! 3. Vendor the needed build logic directly into this xtask (not recommended;
+//!    duplicates code and drifts over time).
 
 #![cfg_attr(not(any(windows, all(unix, not(target_env = "musl")))), no_main)]
 #![cfg_attr(not(any(windows, all(unix, not(target_env = "musl")))), no_std)]
@@ -30,26 +52,60 @@ use std::{
 };
 
 #[cfg(any(windows, all(unix, not(target_env = "musl"))))]
-#[derive(clap::Parser)]
-struct Cli {
-    #[command(subcommand)]
-    command: axbuild::axvisor::Command,
-}
-
-#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use clap::Parser;
 
-    let mut cli = Cli::parse_from(normalize_legacy_args(std::env::args_os()));
+    let raw_args = normalize_legacy_args(std::env::args_os());
     let invocation_dir = std::env::current_dir()?;
     let workspace_root = workspace_root();
-    normalize_command_paths(&mut cli.command, &invocation_dir, &workspace_root);
-    std::env::set_current_dir(&workspace_root)?;
-    axbuild::axvisor::Axvisor::new()?
-        .execute(cli.command)
-        .await?;
+
+    if is_image_subcommand(&raw_args) {
+        let ax_args = ensure_image_prefix(raw_args);
+        std::env::set_current_dir(&workspace_root)?;
+        axbuild::run_from(ax_args).await?;
+    } else {
+        let mut cli = AxvisorOnlyCli::parse_from(raw_args);
+        normalize_command_paths(&mut cli.command, &invocation_dir, &workspace_root);
+        std::env::set_current_dir(&workspace_root)?;
+        axbuild::axvisor::Axvisor::new()?
+            .execute(cli.command)
+            .await?;
+    }
+
     Ok(())
+}
+
+/// Detect whether the first positional argument after the binary name is an
+/// image subcommand or the `image` keyword itself.
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
+fn is_image_subcommand(args: &[OsString]) -> bool {
+    const IMAGE_SUBCOMMANDS: &[&str] = &["ls", "pull", "resize", "check"];
+    let first = args.iter().skip(1).find_map(|a| a.to_str());
+    match first {
+        Some("image") => true,
+        Some(cmd) => IMAGE_SUBCOMMANDS.contains(&cmd),
+        None => false,
+    }
+}
+
+/// Ensure the argument list contains `image` as the first subcommand so
+/// axbuild's own `Cli` dispatches it as `Commands::Image(...)`.
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
+fn ensure_image_prefix(mut args: Vec<OsString>) -> Vec<OsString> {
+    if args.get(1).and_then(|a| a.to_str()) == Some("image") {
+        return args;
+    }
+    args.insert(1, OsString::from("image"));
+    args
+}
+
+/// Parser that only recognises Axvisor subcommands.
+#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
+#[derive(clap::Parser)]
+struct AxvisorOnlyCli {
+    #[command(subcommand)]
+    command: axbuild::axvisor::Command,
 }
 
 #[cfg(not(any(windows, all(unix, not(target_env = "musl")))))]
@@ -102,7 +158,7 @@ fn normalize_command_paths(
     invocation_dir: &Path,
     workspace_root: &Path,
 ) {
-    use axbuild::axvisor::{Command, TestCommand, image};
+    use axbuild::axvisor::{Command, TestCommand};
 
     match command {
         Command::Build(args) => normalize_build_paths(args, invocation_dir, workspace_root),
@@ -118,12 +174,6 @@ fn normalize_command_paths(
         Command::Uboot(args) => {
             normalize_build_paths(&mut args.build, invocation_dir, workspace_root);
             normalize_existing_path(&mut args.uboot_config, invocation_dir, workspace_root);
-        }
-        Command::Image(args) => {
-            normalize_output_path(&mut args.overrides.local_storage, invocation_dir);
-            if let image::Command::Pull(args) = &mut args.command {
-                normalize_output_path(&mut args.output_dir, invocation_dir);
-            }
         }
         Command::Test(args) => match &mut args.command {
             TestCommand::Uboot(args) => {
@@ -170,14 +220,5 @@ fn resolve_existing_path(path: &Path, invocation_dir: &Path, workspace_root: &Pa
         workspace_path
     } else {
         cwd_path
-    }
-}
-
-#[cfg(any(windows, all(unix, not(target_env = "musl"))))]
-fn normalize_output_path(path: &mut Option<PathBuf>, invocation_dir: &Path) {
-    if let Some(path) = path
-        && path.is_relative()
-    {
-        *path = invocation_dir.join(&path);
     }
 }

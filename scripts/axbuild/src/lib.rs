@@ -105,6 +105,18 @@ pub async fn run() -> anyhow::Result<()> {
     run_root_cli(cli).await
 }
 
+/// Like [`run`], but parses from an explicit argument list instead of
+/// [`std::env::args_os`].  Used by external tools (e.g. the axvisor
+/// xtask) that dispatch a sub‑command through axbuild's own CLI.
+pub async fn run_from<I, T>(args: I) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = Cli::parse_from(args);
+    run_root_cli(cli).await
+}
+
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
