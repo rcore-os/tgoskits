@@ -36,6 +36,14 @@ mod manager;
 mod platform_irq;
 mod shell;
 
+#[cfg(feature = "backtrace")]
+fn init_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("{info}");
+        eprintln!("{}", axbacktrace::Backtrace::capture().kind("panic"));
+    }));
+}
+
 /// Axvisor kernel entry point.
 ///
 /// The startup sequence is:
@@ -45,6 +53,9 @@ mod shell;
 /// 3. Build and start configured guest VMs.
 /// 4. Enter the management shell after the default guests have exited.
 fn main() {
+    #[cfg(feature = "backtrace")]
+    init_panic_hook();
+
     banner::print_logo();
 
     info!("Starting virtualization...");
