@@ -1,6 +1,13 @@
 # Panic Backtrace
 
-> 当前仅对 **aarch64** 架构测试通过。x86_64、riscv64、loongarch64 的 frame pointer 约定不同，启用后需额外验证。
+> **架构支持状态**
+>
+> | 架构        | 状态        | 备注                                                           |
+> | ----------- | ----------- | -------------------------------------------------------------- |
+> | aarch64     | ✅ 已通过   | 完整 backtrace                                                 |
+> | riscv64     | ✅ 已通过   | 完整 backtrace                                                 |
+> | x86_64      | ✅ 已通过   | 完整 backtrace                                                 |
+> | loongarch64 | ✅ 已通过   | 完整 backtrace（需 QEMU-LVZ 容器）                              |
 
 ## 用法
 
