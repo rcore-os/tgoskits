@@ -353,6 +353,10 @@ impl UsbDeviceLease {
         self.manager
             .live_release_interface(self.stable_id, self.session_id, interface)
     }
+
+    pub(super) fn clear_halt(&self, endpoint: u8) -> AxResult<()> {
+        self.manager.live_clear_halt(self.stable_id, endpoint)
+    }
 }
 
 impl Drop for UsbDeviceLease {
@@ -798,6 +802,16 @@ impl UsbFsManager {
             Direction::Out => wait_control(live_device, TransferRequest::control_out(setup, data))
                 .map(|completion| completion.actual_length),
         }
+    }
+
+    fn live_clear_halt(&self, stable_id: UsbStableId, endpoint: u8) -> AxResult<()> {
+        self.live_ensure_configured(stable_id)?;
+        let live_device = self.live_device_by_id(stable_id)?;
+        wait_control(
+            live_device,
+            TransferRequest::control_out(clear_halt_setup(endpoint), &[]),
+        )?;
+        Ok(())
     }
 
     fn live_claim_interface(
@@ -1338,6 +1352,31 @@ fn recipient_from_raw(raw: u8) -> Recipient {
         1 => Recipient::Interface,
         2 => Recipient::Endpoint,
         _ => Recipient::Other,
+    }
+}
+
+fn clear_halt_setup(endpoint: u8) -> ControlSetup {
+    ControlSetup {
+        request_type: RequestType::Standard,
+        recipient: Recipient::Endpoint,
+        request: Request::ClearFeature,
+        value: 0,
+        index: endpoint as u16,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_halt_uses_standard_endpoint_clear_feature_request() {
+        let setup = clear_halt_setup(0x82);
+        assert_eq!(setup.request_type as u8, RequestType::Standard as u8);
+        assert_eq!(setup.recipient as u8, Recipient::Endpoint as u8);
+        assert_eq!(u8::from(setup.request), u8::from(Request::ClearFeature));
+        assert_eq!(setup.value, 0);
+        assert_eq!(setup.index, 0x82);
     }
 }
 
