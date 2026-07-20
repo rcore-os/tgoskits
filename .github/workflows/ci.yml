@@ -311,7 +311,6 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: full
-            upload_xtask_bin_artifact: true
           - name: Run spin-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -358,11 +357,31 @@ jobs:
       upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
       xtask_bin_artifact_name: tg-xtask-bin
 
+  build_xtask:
+    # Dedicated job that builds and uploads the tg-xtask binary artifact.
+    # Decoupling this from static_checks ensures container test jobs can
+    # always download the prebuilt binary, even if a sibling lint job is
+    # cancelled by fail-fast or skipped on a re-run.
+    name: Build tg-xtask binary
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    uses: ./.github/workflows/reusable-command.yml
+    with:
+      runs_on: '["ubuntu-latest"]'
+      use_container: true
+      command: cargo build -p tg-xtask
+      cache_key: ""
+      container_image: ${{ format('{0}:latest', needs.detect_changes.outputs.base_container_image) }}
+      fetch_depth: "1"
+      upload_xtask_bin_artifact: true
+      xtask_bin_artifact_name: tg-xtask-bin
+
   test_checks:
     name: ${{ matrix.name }}
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
+      - build_xtask
       - static_checks
     strategy:
       fail-fast: true
