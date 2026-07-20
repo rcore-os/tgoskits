@@ -296,16 +296,16 @@ if [[ "$GUEST" == "nimbos" || "$GUEST" == "nimbos-uefi" ]]; then
     echo "  -> Warning: failed to prepare NimbOS from tgosimages; falling back to cargo xtask image." >&2
     rm -rf "${IMAGE_DIR}"
     mkdir -p "${IMAGE_DIR}"
-    (cd "${REPO_ROOT}" && cargo xtask image pull "${IMAGE_NAME}")
+    (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}")
   fi
 elif [ ! -d "${IMAGE_DIR}" ]; then
   echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo xtask image..."
   echo "  -> Download attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-  if ! (cd "${REPO_ROOT}" && cargo xtask image pull "${IMAGE_NAME}"); then
+  if ! (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}"); then
     echo "  -> Attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS} failed. Trying to bootstrap registry..."
     bootstrap_image_registry
     echo "  -> Download attempt 2/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-    (cd "${REPO_ROOT}" && cargo xtask image pull "${IMAGE_NAME}")
+    (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}")
   fi
 else
   echo "  -> Found existing image directory: ${IMAGE_DIR}"
@@ -313,7 +313,7 @@ fi
 
 if [[ -n "${ROOTFS_IMAGE_NAME}" && ! -f "${ROOTFS_IMAGE}" ]]; then
   echo "  -> Rootfs image not found, downloading ${ROOTFS_IMAGE_NAME}..."
-  (cd "${REPO_ROOT}" && cargo xtask image pull "${ROOTFS_IMAGE_NAME}")
+  (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${ROOTFS_IMAGE_NAME}")
 fi
 
 if [ ! -f "${KERNEL_IMAGE}" ]; then
