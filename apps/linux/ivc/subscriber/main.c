@@ -52,6 +52,11 @@ int main(int argc, char *argv[]) {
             received++;
             empty_polls = 0;
             printf("linux ivc recv %lu/%lu: %s\n", received, target_count, message);
+            if (write(subscriber->fd, "ack from linux subscriber", 25) < 0) {
+                perror("Failed to send IVC ack");
+                ret = 6;
+                break;
+            }
         }
     }
     if (ret == 0) {
