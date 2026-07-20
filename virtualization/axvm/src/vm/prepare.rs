@@ -6,7 +6,7 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
+use axdevice::{DeviceFactoryRegistry, register_builtin_factories, register_linker_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
@@ -56,6 +56,7 @@ impl AxVM {
 pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories)?;
+    register_linker_factories(&mut factories)?;
     Ok(factories)
 }
 

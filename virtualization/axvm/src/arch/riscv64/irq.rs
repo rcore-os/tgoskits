@@ -17,8 +17,8 @@
 use alloc::sync::Arc;
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter,
+    DeviceBundle, DeviceFactory, DeviceFactoryContext, DeviceFactoryError, DeviceFactoryRegistry,
+    DeviceFactoryResult, DeviceRegistration, MmioDeviceAdapter,
 };
 use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
@@ -72,13 +72,13 @@ impl DeviceFactory for RiscvPlicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
+        _context: &dyn DeviceFactoryContext,
+    ) -> DeviceFactoryResult<DeviceBundle> {
         if config.base_gpa != self.base_gpa
             || config.length != self.length
             || config.cfg_list.as_slice() != [self.contexts_num]
         {
-            return Err(DeviceManagerError::InvalidConfig {
+            return Err(DeviceFactoryError::InvalidConfig {
                 operation: "build virtual PLIC",
                 detail: alloc::format!(
                     "factory configuration does not match device '{}'",

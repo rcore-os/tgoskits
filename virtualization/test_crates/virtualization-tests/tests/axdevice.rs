@@ -16,14 +16,14 @@ use std::sync::{Arc, Mutex};
 
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
-    register_builtin_factories,
+    DeviceFactoryContext, DeviceFactoryError, DeviceFactoryRegistry, DeviceFactoryResult,
+    DeviceManagerError, DeviceRegistration, IrqResolver, MmioDeviceAdapter, PollableDeviceOps,
+    PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
-    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, Port, PortRange,
-    RegistryError, Resource, SysRegAddr, SysRegAddrRange,
+    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, IrqResult, Port,
+    PortRange, RegistryError, Resource, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -212,7 +212,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioPollableDevice {
 }
 
 impl PollableDeviceOps for MockMmioPollableDevice {
-    fn poll(&self, now_ns: u64) -> DeviceManagerResult {
+    fn poll(&self, now_ns: u64) -> DeviceResult {
         self.polled_at.lock().unwrap().push(now_ns);
         Ok(())
     }
@@ -282,17 +282,12 @@ fn device_config(
 struct RejectingIrqResolver;
 
 impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(
-        &self,
-        line: usize,
-        _trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
+    fn resolve_irq(&self, line: usize, _trigger: InterruptTriggerMode) -> IrqResult<IrqLine> {
         Err(IrqError::Unsupported {
             line: IrqLineId(line),
             operation: "resolve test IRQ",
             detail: "test resolver rejects every line".into(),
-        }
-        .into())
+        })
     }
 }
 
@@ -306,16 +301,16 @@ impl DeviceFactory for MockMmioFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
+        _context: &dyn DeviceFactoryContext,
+    ) -> DeviceFactoryResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(DeviceManagerError::InvalidConfig {
+            return Err(DeviceFactoryError::InvalidConfig {
                 operation: "build mock MMIO device",
                 detail: "device address range overflows".into(),
             });
         };
         if config.length == 0 {
-            return Err(DeviceManagerError::InvalidConfig {
+            return Err(DeviceFactoryError::InvalidConfig {
                 operation: "build mock MMIO device",
                 detail: "device range is empty".into(),
             });

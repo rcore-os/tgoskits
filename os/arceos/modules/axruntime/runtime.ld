@@ -13,6 +13,11 @@ SECTIONS {
         __edriver_register = .;
 
         . = ALIGN(0x10);
+        __saxdevice_factory = .;
+        KEEP(*(.axdevice.factory*))
+        __eaxdevice_factory = .;
+
+        . = ALIGN(0x10);
         _ex_table_start = .;
         KEEP(*(__ex_table))
         _ex_table_end = .;

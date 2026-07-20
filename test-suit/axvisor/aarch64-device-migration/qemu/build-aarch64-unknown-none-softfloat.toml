@@ -1,0 +1,8 @@
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+features = [
+    "ax-driver/virtio-blk",
+    "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-smp1-gppt-gic.toml"]
