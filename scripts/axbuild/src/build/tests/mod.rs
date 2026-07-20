@@ -7,10 +7,6 @@ use walkdir::WalkDir;
 
 use super::*;
 
-fn metadata_for_manifest(manifest_path: &Path) -> cargo_metadata::Metadata {
-    workspace_metadata_root_manifest(manifest_path).unwrap()
-}
-
 fn repo_metadata() -> cargo_metadata::Metadata {
     workspace_metadata().unwrap()
 }

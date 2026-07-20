@@ -20,7 +20,7 @@ const config = {
   title: 'TGOSKits',
   tagline: '面向操作系统与虚拟化开发的统一集成工作区 —— ArceOS · StarryOS · Axvisor',
   favicon: 'images/site/favicon.ico',
-  url: 'https://rcore-os.github.io',
+  url: 'https://rcore-os.cn',
   baseUrl: '/tgoskits/',
   trailingSlash: false,
   organizationName: 'rcore-os',
@@ -88,6 +88,14 @@ const config = {
     ],
   ],
   themeConfig: {
+    algolia: {
+      appId: 'HETXPBD08D',
+      apiKey: '12cfa7e19141075aac2d0644cfda70c4',
+      // Set this after the first crawler run creates the index.
+      indexName: 'tgoskits',
+      contextualSearch: true,
+      searchPagePath: 'search',
+    },
     colorMode: {
       defaultMode: 'light',
       disableSwitch: false,

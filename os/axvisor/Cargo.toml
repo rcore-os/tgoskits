@@ -43,8 +43,6 @@ required-features = ["axtest"]
 default = []
 axtest = []
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
-vmx = ["axvm/vmx"]
-svm = ["axvm/svm"]
 sstc = ["axvm/sstc"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
@@ -67,7 +65,7 @@ anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
-ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv"] }
+ax-std = { workspace = true, features = ["ext-ld", "paging", "irq", "multitask", "task-ext", "smp", "hv", "std-compat"] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }

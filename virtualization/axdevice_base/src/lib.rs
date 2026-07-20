@@ -403,6 +403,20 @@ pub enum Resource {
         /// Number of registers in the range.
         count: u32,
     },
+    /// An exclusive IRQ line connected to the VM's interrupt fabric.
+    ///
+    /// The `line` is an architecture-neutral identifier on the virtual
+    /// interrupt controller input side (e.g. GSI, INTID, or PLIC source).
+    /// It is not a host `IrqId`, CPU trap vector, or physical IRQ.
+    ///
+    /// This stage only supports exclusive declaration. Sharing policy
+    /// will be added when a concrete device needs it.
+    IrqLine {
+        /// The interrupt line number.
+        line: u32,
+        /// The trigger mode configured for this line.
+        trigger: InterruptTriggerMode,
+    },
 }
 
 /// The reason a resource was rejected as structurally invalid during
@@ -427,6 +441,12 @@ pub enum InvalidResourceReason {
     /// dispatch index.
     #[error("device resources overlap")]
     OverlappingResources,
+    /// The device declared the same IRQ line more than once.
+    #[error("duplicate IRQ line {line}")]
+    DuplicateIrqLine {
+        /// The duplicated line number.
+        line: u32,
+    },
 }
 
 /// Errors that can be returned when registering a device.
@@ -474,6 +494,14 @@ pub enum RegistryError {
         required_arch: Arch,
         /// The architecture the hypervisor is currently built for.
         current_arch: Arch,
+    },
+    /// Two devices claim the same IRQ line.
+    #[error("IRQ line {line} conflicts with device {existing_device:?}")]
+    IrqLineConflict {
+        /// The IRQ line the new device is attempting to register.
+        line: u32,
+        /// The device that already owns the conflicting IRQ line.
+        existing_device: DeviceId,
     },
 }
 

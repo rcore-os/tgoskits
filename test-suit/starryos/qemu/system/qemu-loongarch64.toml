@@ -23,7 +23,8 @@ args = [
     "-device",
     "virtio-tablet-pci",
 ]
-uefi = false
+# The std/PIC test image must be loaded through the LoongArch UEFI handoff.
+uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [

@@ -8,8 +8,8 @@ readme = "README.md"
 description = "AIC8800 Wi-Fi driver core (SDIO, firmware, WPA2, SoftAP). OS-independent; runtime capabilities are injected via aic8800::WifiRuntime."
 # Vendor firmware blobs are not vendored into git or the package tarball; the
 # build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the
-# in-tree `firmware/` dir populated by `cargo xtask`, or the pinned upstream
-# source) and verifies each against its SHA-256. Only the top-level blob dir is
+# optional in-tree `firmware/` cache, or the pinned upstream source) and
+# verifies each against its SHA-256. Only the top-level blob dir is
 # excluded — the leading slash anchors the glob to the package root so it does
 # NOT also match the `src/fw/firmware/` source module (required to build).
 # Without the anchor, `firmware/` matches at any depth and the tarball drops

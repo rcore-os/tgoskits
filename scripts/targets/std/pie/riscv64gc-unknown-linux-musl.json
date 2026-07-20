@@ -25,6 +25,7 @@
   "pre-link-args": {
     "gnu-lld": [
       "-pie",
+      "--no-relax",
       "--gc-sections",
       "-znorelro",
       "-znostart-stop-gc",

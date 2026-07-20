@@ -22,6 +22,10 @@ qemu = [
   "starry-kernel/input",
   "starry-kernel/vsock", # auxiliary features
 ]
+# The profiling command selects this package-level preset; axbuild must not assemble the
+# individual driver feature list at runtime.
+qperf = ["ax-driver/virtio-blk", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
+qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 
 k230 = [
@@ -45,7 +49,9 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+# Starry links Rust `std` dynamically on the musl target; keep the libc
+# compatibility surface in the package manifest rather than axbuild.
+ax-std = { workspace = true, features = ["ext-ld", "std-compat", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }

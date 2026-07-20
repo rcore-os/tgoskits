@@ -1,7 +1,11 @@
 use core::convert::TryFrom;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    clippy::upper_case_acronyms,
+    reason = "AMD APM exit-code names are architectural spellings"
+)]
 pub enum SvmExitCode {
     CR_READ(u8),
     CR_WRITE(u8),
@@ -147,7 +151,11 @@ impl TryFrom<u64> for SvmExitCode {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    clippy::upper_case_acronyms,
+    reason = "AMD APM intercept names are architectural spellings"
+)]
 pub enum SvmIntercept {
     INTR,
     NMI,

@@ -7,7 +7,9 @@ use std::{
 
 use tempfile::tempdir;
 
-use super::{app_qemu_test_case, load_qemu_app_case_fields, resolve_qemu_config};
+use super::{
+    app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
+};
 use crate::{
     starry::app::{
         StarryAppQemuCase, discover_apps,
@@ -37,6 +39,28 @@ fn qemu_config_selection_prefers_exact_arch_config() {
         .unwrap();
 
     assert_eq!(selected, exact);
+}
+
+#[tokio::test]
+async fn qemu_case_uses_starry_default_arch_without_an_arch_argument() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "qemu/apt",
+        "qemu-riscv64.toml",
+        "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = []\n",
+    );
+    let app = discover_apps(root.path())
+        .unwrap()
+        .into_iter()
+        .find(|app| app.name == "qemu/apt")
+        .unwrap();
+
+    let case = prepare_qemu_app_case(root.path(), &app, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(case.arch, crate::context::DEFAULT_STARRY_ARCH);
 }
 
 #[test]
@@ -270,7 +294,7 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
     let guest_runner = fs::read_to_string(&guest_runner_path).unwrap();
     assert!(
         guest_runner.contains("x86_64-unknown-linux-musl")
-            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-05-28\"")
+            && guest_runner.contains("TOOLCHAIN=\"nightly-2026-07-15\"")
             && guest_runner.contains("RUSTUP_TOOLCHAIN=\"starry-selfhost-")
             && guest_runner.contains("--default-toolchain none")
             && guest_runner.contains("export RUSTUP_TOOLCHAIN")

@@ -634,11 +634,7 @@ impl Parser {
 
         let mut rgb_data = Vec::with_capacity(width * height * 3);
 
-        for chunk in yuyv_data.chunks_exact(4) {
-            if chunk.len() < 4 {
-                break;
-            }
-
+        for chunk in yuyv_data.as_chunks::<4>().0 {
             let y1 = chunk[0] as f32;
             let u = chunk[1] as f32 - 128.0;
             let y2 = chunk[2] as f32;

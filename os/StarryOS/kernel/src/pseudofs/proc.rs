@@ -1233,6 +1233,9 @@ impl SimpleDirOps for ThreadDir {
                 "cmdline",
                 "comm",
                 "exe",
+                "environ",
+                "root",
+                "cwd",
                 "fd",
                 "uid_map",
                 "gid_map",
@@ -1366,6 +1369,24 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
                 Ok(task.as_thread().proc_data.exe_path.read().clone())
+            })
+            .into(),
+            "environ" => SimpleFile::new_regular(fs, move || {
+                let envp = task.as_thread().proc_data.envp.read();
+                let mut buf = Vec::new();
+                for env in envp.iter() {
+                    buf.extend_from_slice(env.as_bytes());
+                    buf.push(0);
+                }
+                Ok(buf)
+            })
+            .into(),
+            "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
+                Ok(task.as_thread().proc_data.root_path.read().clone())
+            })
+            .into(),
+            "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
+                Ok(task.as_thread().proc_data.cwd_path.read().clone())
             })
             .into(),
             "fd" => SimpleDir::new_maker(

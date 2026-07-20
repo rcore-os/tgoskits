@@ -1,8 +1,7 @@
 features = [
     "ax-driver/virtio-blk",
     "fs",
-    "svm",
 ]
 log = "Info"
 target = "x86_64-unknown-none"
-vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-svm-smp1.toml"]
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]

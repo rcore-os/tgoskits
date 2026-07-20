@@ -50,10 +50,10 @@ net = ["ax-posix-api/net", "ax-runtime/net", "fd"]
 
 # Libc features
 fd = ["ax-posix-api/fd"]
-pipe = ["ax-posix-api/pipe"]
-select = ["ax-posix-api/select"]
-poll = ["ax-posix-api/poll"]
-epoll = ["ax-posix-api/epoll"]
+pipe = ["ax-posix-api/pipe", "fd"]
+select = ["ax-posix-api/select", "fd"]
+poll = ["ax-posix-api/poll", "fd"]
+epoll = ["ax-posix-api/epoll", "fd"]
 
 [dependencies]
 ax-driver.workspace = true

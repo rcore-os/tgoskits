@@ -233,29 +233,7 @@ pub(super) fn std_target_json_path(target: &str) -> PathBuf {
     path.join(PIE_TARGET_DIR).join(format!("{target}.json"))
 }
 
-pub(crate) fn prepare_std_build_env(
-    envs: &mut HashMap<String, String>,
-    target: &str,
-    metadata: &Metadata,
-) -> anyhow::Result<()> {
-    prepare_std_build_env_for_package(envs, AXSTD_STD_PACKAGE, target, &[], metadata)
-}
-
-pub(super) fn prepare_std_build_env_for_package(
-    envs: &mut HashMap<String, String>,
-    package: &str,
-    target: &str,
-    features: &[String],
-    metadata: &Metadata,
-) -> anyhow::Result<()> {
-    envs.insert("AX_TARGET".to_string(), target.to_string());
-
-    let _ = (package, features, metadata);
-    Ok(())
-}
-
 pub(super) fn pass_std_build_nested_features(
-    _envs: &mut HashMap<String, String>,
     features: &mut Vec<String>,
     app_features: &[String],
     axstd_features: &[String],
@@ -264,9 +242,6 @@ pub(super) fn pass_std_build_nested_features(
 
     for feature in features.drain(..) {
         let feature = normalize_std_feature(&feature);
-        if is_removed_dynamic_platform_feature(&feature) {
-            continue;
-        }
         if matches!(feature.as_str(), "ax-std") {
             continue;
         }
@@ -288,25 +263,10 @@ pub(super) fn pass_std_build_nested_features(
         }
     }
 
-    if axstd_feature_is_available("std-compat", axstd_features) {
-        cargo_features.push("ax-std/std-compat".to_string());
-    }
-
     cargo_features.sort();
     cargo_features.dedup();
 
     *features = cargo_features;
-}
-
-pub(super) fn inject_arceos_feature_for_std_build(
-    features: &mut Vec<String>,
-    app_features: &[String],
-) {
-    if app_features.iter().any(|feature| feature == "arceos")
-        && !features.iter().any(|feature| feature == "arceos")
-    {
-        features.push("arceos".to_string());
-    }
 }
 
 pub(super) fn axstd_feature_name(feature: &str) -> &str {

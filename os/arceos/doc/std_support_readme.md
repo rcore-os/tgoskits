@@ -44,28 +44,24 @@ An app declares the ArceOS-side features it needs behind its app-local
 
 ```toml
 [features]
-default = []
-arceos = ["dep:ax-std", "ax-std/fs", "ax-std/net", "ax-std/multitask", "ax-std/irq"]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos", "ax-std/fs", "ax-std/net", "ax-std/multitask", "ax-std/irq"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true }
 ```
 
-Keep logging and normal Cargo features for app-local choices. For example:
+Keep normal Cargo features for app-local choices. For example:
 
 ```toml
 [features]
-default = []
+default = ["arceos"]
 dns = []
-
-[package.metadata.axstd]
-features = ["log-level-debug"]
 ```
 
-`axbuild` automatically enables `arceos` for ArceOS std builds when the app
-declares it. It combines app features and `package.metadata.axstd.features`,
-maps ArceOS backend features to `ax-std/*`, and adds the platform feature for
-the selected ArceOS target before linking the app.
+The application feature declaration is the source of truth. `axbuild` only
+translates features explicitly selected by the build configuration into Cargo
+arguments; it does not add the application's runtime baseline.
 
 ## Runtime compatibility
 

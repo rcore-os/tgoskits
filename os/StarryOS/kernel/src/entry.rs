@@ -76,7 +76,14 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
+        ProcessImage::new(
+            path.to_string(),
+            Arc::new(args.to_vec()),
+            Arc::new(envs.to_vec()),
+            auxv,
+            "/".to_string(),
+            "/".to_string(),
+        ),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,

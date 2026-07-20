@@ -499,19 +499,22 @@ impl TransportOps for StreamTransport {
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
         }
+        let mut peer_poll = None;
         if how.has_write() {
             self.tx_closed.store(true, Ordering::Release);
+            if let Some(chan) = self.channel.lock().as_ref() {
+                chan.my_tx_closed.store(true, Ordering::Release);
+                peer_poll = Some(chan.poll_update.clone());
+            }
         }
-        let peer_poll = if self.rx_closed.load(Ordering::Acquire)
+        if self.rx_closed.load(Ordering::Acquire)
             && self.tx_closed.load(Ordering::Acquire)
             && let Some(chan) = self.channel.lock().take()
         {
-            Some(chan.poll_update)
-        } else {
-            None
-        };
+            peer_poll.get_or_insert(chan.poll_update);
+        }
         if let Some(poll) = peer_poll {
-            // Channel closure is published before waking the peer.
+            // The peer-visible write closure is published before waking readers.
             unsafe { poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) };
         }
         if how.has_read() || how.has_write() {

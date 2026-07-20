@@ -5,59 +5,79 @@ sidebar_label: "构建"
 
 # Axvisor 构建
 
-`cargo xtask axvisor build` 把用户友好的高层参数转换为 Cargo 能理解的底层编译参数，最终调用 ostool 的 `cargo_build()` 完成 Axvisor（Hypervisor）编译。本节描述 Axvisor 构建的完整流程及其特有行为；通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)，运行详见 [Axvisor 运行](./runtime)。
+`cargo xtask axvisor build` 通过 `Axvisor::prepare_request()` 解析 arch、target、Build Config 和 VM 配置，然后调用 `axvisor/build/mod.rs::load_cargo_config()`。编译的固定 package 是 `axvisor`，直接构建结果为 ELF。
 
-构建过程与 [ArceOS](../arceos/build)、[StarryOS](../starry/build) 共享参数解析、arch/target 解析和 Build Info 加载逻辑。Axvisor 在 Build Info 默认值、旧平台选择项过滤和 VM 配置注入上有独有的行为。
+## 1. 构建流程
 
-## Axvisor 特有行为
+Axvisor 的构建先解析 VM 来源，再验证 feature 边界并生成 Cargo 环境；`AXVISOR_VM_CONFIGS` 只在最终装配阶段写入。下图展示各阶段的职责顺序。
 
-### 编译 Hypervisor + 多 Guest VM 配置
+```mermaid
+flowchart TD
+    A["axvisor build"] --> B["prepare_axvisor_request"]
+    B --> C["解析 arch / target / Snapshot / vmconfigs"]
+    C --> D["加载或生成 Axvisor Build Config"]
+    D --> E["合并 FEATURES 与 CLI --smp"]
+    E --> F["验证平台 feature 边界"]
+    F --> G["BuildInfo → std PIE Cargo"]
+    G --> H["AXVISOR_VM_CONFIGS / AX_ARCH / AX_TARGET"]
+    H --> I["ostool cargo_build → ELF"]
+```
 
-与 [ArceOS](../arceos/build)（app 模块化）和 [StarryOS](../starry/build)（单内核）不同，Axvisor 编译的是**虚拟机监控器**本身，同时需要管理一个或多个 Guest VM 的配置（`--vmconfigs`）。`--vmconfigs <PATH>...` 指定 VM 配置文件列表，每个 VM 配置描述一个 Guest（如 Linux、StarryOS guest）的内存、CPU、设备和启动来源。
+### 1.1 配置装载
 
-### 默认架构 `aarch64`
+默认配置路径为：
 
-Axvisor 默认架构为 `aarch64`（`aarch64-unknown-none-softfloat`）。详见 [参数与配置 §默认值](../configuration#默认值)。
+```text
+tmp/axbuild/config/axvisor/build-<target>.toml
+```
 
-### Build Info 默认值：优先复制板卡配置
+文件存在时可以是纯 `BuildInfo`，也可以是含 `target` 和 `vm_configs` 的 board 文件。`load_build_config()` 的行为如下：
 
-Axvisor 首次构建时（无 Build Info）会**优先从 `os/axvisor/configs/board/` 查找与 target 匹配的默认板卡配置并复制**到 Build Info 路径（`tmp/axbuild/config/<pkg>/build-<target>.toml`），找不到时才写入清空 features 的默认 BuildInfo。这与 ArceOS（`ArceosBuildConfig::default_config()`）和 StarryOS（`default_starry_build_info_for_target()`）直接写入代码默认值不同。
+1. 若是 board 文件，读取其 target、BuildInfo 和 VM 列表；CLI `--smp` 覆盖其中 CPU 数。
+2. 若是纯 BuildInfo，使用已解析请求的 target，VM 列表为空。
+3. 若文件缺失，寻找 `os/axvisor/configs/board/` 下名称以 `qemu-` 开头且 target 匹配的 board；找到即复制并加载。
+4. 若仍找不到，创建 `features = []` 的默认 BuildInfo。
 
-### 旧平台选择项过滤
+这解释了为何选择一个 board config 可以同时确定驱动能力、CPU 数和默认 VM 列表；而手工的 BuildInfo 只负责编译能力。
 
-Axvisor 的旧 board 配置中可能声明 `defplat`、`myplat`、`plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 或 `axplat-dyn/*` 等历史平台选择项。当前构建固定走动态平台路径，`axbuild` 在 Build Info 读取和最终 Cargo 配置组装时过滤这些 feature，避免旧平台选择项泄漏到当前构建。
+### 1.2 特性校验
 
-## 注入的环境变量
+加载后，axbuild 合并 `FEATURES` 环境变量并校验 feature。公共验证器检查 Cargo feature 名称，Axvisor 还检查以下嵌套平台形式：
 
-Axvisor 在 Cargo 配置组装阶段额外注入环境变量（与 ArceOS/StarryOS 不同）：
+- `axplat-dyn/*`；
+- `ax-std/<platform>` 这类嵌套平台选择；
+- 直接把已登记 axplat 平台名作为 feature。
 
-| 环境变量 | 值 | 用途 |
-|----------|-----|------|
-| `AX_ARCH` | 当前 arch | 编译期读取 |
-| `AX_TARGET` | 当前 target triple | 编译期读取 |
-| `AXVISOR_VM_CONFIGS` | `--vmconfigs` 列表 | 编译期读取 VM 配置 |
+这些验证将硬件能力、平台选择和虚拟化后端分别约束在 Board、VM 与 QEMU 配置层。
 
-构建使用动态平台链接脚本 `Taxplat.x`。硬件信息来自启动时的固件表、FDT/ACPI 和 `somehal`/`axplat-dyn` 运行时发现结果；`axbuild` 不再生成 `.axconfig.toml`，也不再向 Cargo 注入 `AX_CONFIG_PATH`。
+### 1.3 Cargo 装配
 
-## 用法示例
+共享 BuildInfo 将裸机 target 映射到 musl PIE JSON target，开启 std-aware 构建，并准备交叉 C 环境、linker wrapper 和占位库。Axvisor 之后：
+
+- 固定 Cargo package 和 binary 为 `axvisor`；
+- 写入 `AX_ARCH` 与原始裸机 `AX_TARGET`；
+- 选择 CLI `--vmconfigs`，或在 CLI 为空时选择 Build Config 的 `vm_configs`；
+- 非空 VM 列表以平台路径分隔符写入 `AXVISOR_VM_CONFIGS`；
+- 对 feature 排序去重。
+
+基础 Cargo 的 `to_bin` 固定为 `false`。`axvisor build` 因而只保证 ELF；QEMU 路径在读取 TOML 后再明确设置其 `to_bin`。
+
+## 2. 虚拟化后端
+
+构建 x86 guest 场景时，Build Config 选择 `vmx` 或 `svm` feature，QEMU TOML 声明对应 CPU 扩展。该组合将 Intel、AMD 和 CI 场景的虚拟化要求保留在可审阅的配置中。
+
+## 3. 命令示例
+
+这些命令分别验证默认构建、board-derived VM 配置以及 CLI 对 VM 列表的覆盖。
 
 ```bash
-# 构建 Axvisor（默认 aarch64）
-cargo axvisor build
+# 直接构建
+cargo xtask axvisor build --arch aarch64
 
-# 指定 Guest VM 配置
-cargo axvisor build --vmconfigs os/axvisor/configs/vm/aarch64-linux.toml
+# 使用 board-derived 配置与其 VM 列表
+cargo xtask axvisor build --config os/axvisor/configs/board/qemu-x86_64.toml
 
-# 多个 Guest
-cargo axvisor build \
-    --vmconfigs configs/vm/aarch64-linux.toml \
-    --vmconfigs configs/vm/aarch64-starry.toml
-
-# loongarch64
-cargo axvisor build --arch loongarch64
-
-# 板卡配置流程
-cargo axvisor config ls
-cargo axvisor defconfig <board>
-cargo axvisor build
+# 用 CLI 覆盖 VM 列表
+cargo xtask axvisor build --arch x86_64 \
+  --vmconfigs os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml
 ```

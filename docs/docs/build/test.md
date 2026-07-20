@@ -7,16 +7,18 @@ sidebar_label: "Std 白名单测试"
 
 `cargo xtask test` 是 axbuild 在 host 端执行的 Rust std 测试入口。它不是 `cargo test --workspace`：TGOSKits workspace 中混合了大量 `#![no_std]` 内核 crate，它们无法在标准 `cargo test` 环境下运行；盲目全量测试会因平台/特性不兼容大面积失败。本命令只对一份**显式维护的白名单**中的 crate 逐一执行 `cargo test -p <package>`，确保这些已知能在 host 环境通过测试的 crate（如纯算法库、工具库、无硬件依赖的组件）保持回归覆盖。
 
-## 为什么需要白名单
+## 1. 白名单边界
 
-TGOSKits workspace 目前包含近 150 个 crate，其中绝大多数是面向裸机/内核环境的 `#![no_std]` crate，依赖 `axcpu`、特定 target triple、`axconfig.toml` 等才能编译。直接对全 workspace 跑 `cargo test` 会触发两类系统性失败：
+TGOSKits workspace 目前包含近 150 个 crate，其中绝大多数是面向裸机/内核环境的 `#![no_std]` crate，依赖 `axcpu`、特定 target triple 和明确的内核 feature 组合才能编译。直接对全 workspace 跑 `cargo test` 会触发两类系统性失败：
 
 1. **`no_std` crate 无法在 std 环境编译**：这些 crate 的 `#[cfg(test)]` 模块通常不存在，或依赖内核特性。
 2. **target/feature 不匹配**：许多 crate 需要 `--target aarch64-unknown-none-softfloat` 和特定 feature 组合才能编译，host 端 `cargo test` 无法满足。
 
 白名单机制把 host 可测的 crate（算法库、工具库、序列化库等）显式列出，CI 对这一固定集合做全量回归，既保证覆盖又避免噪声。
 
-## 架构概览
+## 2. 执行架构
+
+标准测试将白名单解析和逐包执行分开，以便在 host 环境稳定验证明确支持的 crate。下图对应 `run_std_test_command()` 的主要数据流。
 
 ```mermaid
 flowchart TB
@@ -59,7 +61,7 @@ flowchart TB
     EMPTY -->|否| BAIL
 ```
 
-## 白名单文件
+## 3. 白名单数据
 
 白名单位于 `scripts/test/std_crates.csv`，格式极简——每行一个包名，首行为表头 `package`：
 
@@ -80,7 +82,7 @@ scope-local
 
 当前白名单包含约 50 个 crate，覆盖架构寄存器、错误码、I/O 抽象、锁原语、内存地址、页表项、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
 
-### 解析与校验
+### 3.1 解析校验
 
 `parse_std_crates_csv` 对 CSV 内容执行严格校验，确保白名单与 workspace 实际状态一致：
 
@@ -94,11 +96,11 @@ scope-local
 
 所有错误信息都带**行号**，便于快速定位 CSV 中的问题条目。`workspace_package_names` 通过 `cargo metadata`（`--no-deps` 模式，因为只需要 workspace 成员信息）获取当前 workspace 的全部成员包名集合——这意味着如果某个包被从 workspace 移除但 CSV 未同步更新，校验阶段就会报错。
 
-### BOM 处理
+### 3.2 编码处理
 
 CSV 文件首行可能包含 UTF-8 BOM（`\u{feff}`），常见于 Windows 编辑器保存的文件。`parse_std_crates_csv` 通过 `header.trim_start_matches('\u{feff}')` 自动去除 BOM 后再校验表头，确保跨平台兼容。
 
-## 执行模型
+## 4. 测试执行
 
 `run_std_test_command` 是 CLI 入口（`Commands::Test` → `test::std::run_std_test_command()`）。加载白名单后，`run_std_tests` 对每个包依次执行 `cargo test -p <package>`：
 
@@ -119,7 +121,7 @@ fn cargo_test_args(package: &str) -> Vec<String> {
 
 非 fail-fast 的设计动机：std 测试是回归门禁，开发者需要一次性看到所有失败包，而非逐个修复后再跑。这与 [Clippy](./clippy) 的 fail-fast（快速暴露首个问题以减少 CI 资源占用）形成互补——两者面向不同场景。
 
-### 执行输出
+### 4.1 进度输出
 
 每个包执行时打印进度和结果：
 
@@ -136,7 +138,11 @@ failed: memory_addr
 
 进度前缀 `[N/M]` 中 M 是白名单总数，N 是当前序号（从 1 开始）。
 
-## 结果汇总
+### 4.2 运行约束
+
+白名单测试固定使用 host target，不展开 feature，也不会因一个 package 失败提前停止。这个约束使输出能够一次性覆盖所有白名单成员。
+
+## 5. 结果汇总
 
 全部包执行完毕后，根据 `failed` 列表判定最终结果：
 
@@ -147,7 +153,7 @@ failed: memory_addr
 
 失败列表以逗号分隔，按执行顺序（非字母序）排列。
 
-## CargoRunner 抽象与可测试性
+## 6. 执行抽象
 
 `CargoRunner` trait 把"执行 cargo test"这一副作用抽象出来，便于单元测试：
 
@@ -163,7 +169,7 @@ trait CargoRunner {
 - 执行器：多包部分失败时正确收集全部失败包名、全部通过时返回空失败列表
 - workspace 集成：`workspace_package_name_extraction_reads_current_workspace` 确认能正确读取当前 workspace 的包名
 
-## 白名单维护
+## 7. 白名单维护
 
 白名单不是静态的——随着 workspace 演进，新的可测 crate 需要加入，不再适用的需要移除。审计与更新流程由 `update-std-tests` 技能封装（`.claude/skills/update-std-tests/SKILL.md`）：
 
@@ -173,14 +179,18 @@ trait CargoRunner {
 
 手动编辑 CSV 时，确保每个新增包名是 workspace 成员且 `cargo test -p <pkg>` 在 host 通过即可。
 
-## 模块组成
+## 8. 模块职责
+
+白名单测试代码集中在 std 测试模块及其可替换的 CargoRunner 抽象中。下表说明各部分在校验和执行阶段的职责。
 
 | 代码位置 | 作用 |
 |----------|------|
 | `scripts/axbuild/src/test/std.rs` | 全部逻辑：CLI 入口 `run_std_test_command`、CSV 解析 `parse_std_crates_csv`、执行器 `run_std_tests` + `CargoRunner` trait、单元测试 |
 | `scripts/test/std_crates.csv` | 白名单数据（包名一行一个，首行表头 `package`） |
 
-## 用法
+## 9. 命令示例
+
+该命令没有运行参数；它读取固定 CSV 并输出每个 package 的进度和最终汇总。
 
 ```bash
 # 运行白名单中所有 crate 的 std 测试（CI 默认）

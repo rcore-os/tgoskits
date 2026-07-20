@@ -25,7 +25,7 @@ args = [
 
 timeout = 120
 uefi = false
-to_bin = false
+to_bin = true
 success_regex = ["ArceOS test suite run OK!"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
 

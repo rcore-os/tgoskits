@@ -98,7 +98,6 @@ impl<H: X86HostOps> Drop for PhysFrame<H> {
     }
 }
 
-#[cfg(feature = "svm")]
 pub(crate) fn alloc_contiguous_frames<H: X86HostOps>(
     frame_count: usize,
     frame_align: usize,
@@ -106,7 +105,6 @@ pub(crate) fn alloc_contiguous_frames<H: X86HostOps>(
     <H as X86HostOps>::alloc_contiguous_frames(frame_count, frame_align)
 }
 
-#[cfg(feature = "svm")]
 pub(crate) fn dealloc_contiguous_frames<H: X86HostOps>(
     start_paddr: X86HostPhysAddr,
     frame_count: usize,
@@ -114,12 +112,10 @@ pub(crate) fn dealloc_contiguous_frames<H: X86HostOps>(
     <H as X86HostOps>::dealloc_contiguous_frames(start_paddr, frame_count);
 }
 
-#[cfg(any(feature = "vmx", feature = "svm"))]
 pub(crate) fn read_guest_u8<H: X86HostOps>(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
     H::read_guest_u8(paddr)
 }
 
-#[cfg(any(feature = "vmx", feature = "svm"))]
 pub(crate) fn nanos_to_ticks<H: X86HostOps>(nanos: u64) -> u64 {
     H::nanos_to_ticks(nanos)
 }

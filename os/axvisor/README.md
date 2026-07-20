@@ -83,7 +83,7 @@ On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps th
 
 ## Compilation
 
-AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/category/quickstart) chapter in the configuration documentation.
+AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart) chapter in the configuration documentation.
 
 1. **List Available Boards**: Use `cargo xtask config ls` to view the available board names under `configs/board/`.
 

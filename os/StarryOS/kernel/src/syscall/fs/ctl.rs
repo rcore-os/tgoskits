@@ -90,6 +90,8 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let mut fs = FS_CONTEXT.lock();
     let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
+    let cwd = fs.current_dir().absolute_path()?.to_string();
+    *current().as_thread().proc_data.cwd_path.write() = cwd;
     Ok(0)
 }
 
@@ -97,7 +99,10 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    FS_CONTEXT.lock().set_current_dir(entry)?;
+    let mut fs = FS_CONTEXT.lock();
+    fs.set_current_dir(entry)?;
+    let cwd = fs.current_dir().absolute_path()?.to_string();
+    *current().as_thread().proc_data.cwd_path.write() = cwd;
     Ok(0)
 }
 
@@ -121,6 +126,11 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
         return Err(AxError::NotADirectory);
     }
     *fs = FsContext::new(loc);
+    let root = fs.root_dir().absolute_path()?.to_string();
+    let cwd = fs.current_dir().absolute_path()?.to_string();
+    let proc_data = current().as_thread().proc_data.clone();
+    *proc_data.root_path.write() = root;
+    *proc_data.cwd_path.write() = cwd;
     Ok(0)
 }
 
