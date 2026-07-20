@@ -979,29 +979,15 @@ fn dispatch_unicast_packet(
 ) -> bool {
     let routes = table.read();
     let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
-        warn!(
+        debug!(
             "No route found for source {} destination {}",
             src_addr, dst_addr
         );
         // The packet is dropped at the IP layer before reaching any device's
         // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
         // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
-        // per-device tx_dropped.  We attribute it to a device's tx_dropped as a
-        // known simplification until system-level SNMP counters are available.
-        if let Some(src_dev) = routes
-            .select_route_if(&src_addr, |_| true)
-            .and_then(|r| devices.get(r.dev))
-        {
-            src_dev.count_tx_dropped(1);
-        } else if let Some(lo_dev) = devices
-            .iter()
-            .find(|d| d.interface_id == InterfaceId::LOOPBACK)
-        {
-            // Fallback: source address not in any route table (e.g.
-            // unnumbered interface, removed address).  Attribute to
-            // loopback so the drop is at least observable.
-            lo_dev.count_tx_dropped(1);
-        }
+        // per-device tx_dropped.  Once system-level SNMP counters are available
+        // this should update IpOutNoRoutes instead.
         return false;
     };
 
@@ -1517,6 +1503,75 @@ mod tests {
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), None);
         assert!(queue.is_empty());
+    }
+
+    /// When no route exists for a destination, `dispatch_unicast_packet`
+    /// must NOT attribute the L3 drop to any interface's `tx_dropped`.
+    /// Linux accounts this as the system-wide `IpOutNoRoutes` SNMP counter;
+    /// per-interface tx_dropped is reserved for drops after an egress device
+    /// has been selected (e.g. queue full, MTU exceeded).  This test guards
+    /// against accidentally polluting interface counters via source-route
+    /// fallback (the primary path the old code used).  The secondary
+    /// loopback-only fallback (when the source address also has no covering
+    /// route) is not exercised here — it requires a loopback device — but
+    /// was removed together with the source-route path.
+    #[test]
+    fn no_route_does_not_count_interface_tx_dropped() {
+        use smoltcp::{iface::SocketSet, storage::PacketMetadata};
+
+        // Two devices with independent counters.
+        let dev0 = test_device_handle(Box::new(EmptyDevice));
+        let queues1 = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        let dev1 = DeviceHandle::new(IF1, Box::new(EmptyDevice), &queues1);
+        let devices = vec![dev0.clone(), dev1];
+
+        // Route table: only a subnet route for dev0, which covers the
+        // source address but NOT the destination.
+        let mut route_table = RouteTable::new();
+        route_table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::new(10, 0, 0, 0), 24),
+            Some(SRC0),
+            0,
+            IF0, // dev index in `devices`
+            SRC0,
+            100,
+        ));
+        let shared_table: SharedRouteTable = Arc::new(RwLock::new(route_table));
+
+        let mut rx_buffer: RouterPacketBuffer = PacketBuffer::new(
+            vec![PacketMetadata::EMPTY; 1],
+            vec![0u8; super::STANDARD_MTU],
+        );
+        let mut sockets = SocketSet::new(vec![]);
+
+        let src_addr = SRC0;
+        let dst_addr = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
+        let packet = [0u8; 64];
+
+        let before: Vec<_> = devices.iter().map(|d| d.stats()).collect();
+
+        let ok = dispatch_unicast_packet(
+            &mut rx_buffer,
+            &devices,
+            &shared_table,
+            src_addr,
+            dst_addr,
+            &packet,
+            &mut sockets,
+        );
+
+        assert!(!ok, "no-route dispatch must return false");
+
+        for (i, dev) in devices.iter().enumerate() {
+            let snap = dev.stats();
+            assert_eq!(
+                snap.tx_dropped, before[i].tx_dropped,
+                "device {i} tx_dropped changed from {} to {} after no-route dispatch",
+                before[i].tx_dropped, snap.tx_dropped,
+            );
+        }
     }
 }
 

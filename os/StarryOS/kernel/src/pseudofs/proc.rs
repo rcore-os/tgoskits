@@ -431,12 +431,11 @@ fn render_proc_net_snmp() -> String {
         .expect("write to String cannot fail");
     writeln!(
         buf,
-        "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors \
-         InCsumErrors IgnoredMulti MemErrors"
+        "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors \
+         IgnoredMulti MemErrors"
     )
     .expect("write to String cannot fail");
-    writeln!(buf, "Udp: 0 0 0 0 0 0 0 0 0")
-        .expect("write to String cannot fail");
+    writeln!(buf, "Udp: 0 0 0 0 0 0 0 0 0").expect("write to String cannot fail");
     buf
 }
 
@@ -1963,8 +1962,8 @@ mod tests {
 
     use super::{
         TaskStatusBase, TaskStatusFields, collect_cpu_presence, format_cpu_presence_hex,
-        format_cpu_presence_list, render_proc_bus_usb_devices_from_snapshots,
-        render_proc_net_dev, render_proc_net_snmp, render_task_status_fields,
+        format_cpu_presence_list, render_proc_bus_usb_devices_from_snapshots, render_proc_net_dev,
+        render_proc_net_snmp, render_task_status_fields,
     };
     use crate::{mm::ProcessMemStats, pseudofs::usbfs::UsbDeviceSnapshotInfo, task::Cred};
 
@@ -2186,11 +2185,13 @@ mod tests {
 
         assert_eq!(
             tcp_header_count, tcp_data_count,
-            "Tcp header/data field count mismatch: header={tcp_header_count:?}, data={tcp_data_count:?}"
+            "Tcp header/data field count mismatch: header={tcp_header_count:?}, \
+             data={tcp_data_count:?}"
         );
         assert_eq!(
             udp_header_count, udp_data_count,
-            "Udp header/data field count mismatch: header={udp_header_count:?}, data={udp_data_count:?}"
+            "Udp header/data field count mismatch: header={udp_header_count:?}, \
+             data={udp_data_count:?}"
         );
 
         // Sanity: both headers must be present
@@ -2229,7 +2230,10 @@ mod tests {
                         line.starts_with(" face |"),
                         "line 2 must start with ' face |'"
                     );
-                    assert!(line.contains("compressed"), "line 2 must contain 'compressed'");
+                    assert!(
+                        line.contains("compressed"),
+                        "line 2 must contain 'compressed'"
+                    );
                 }
                 _ => {
                     // Data line: exactly 17 whitespace-separated fields
