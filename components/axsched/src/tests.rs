@@ -30,6 +30,51 @@ macro_rules! def_test_sched {
             }
 
             #[test]
+            fn test_len() {
+                const NUM_TASKS: usize = 7;
+                let mut scheduler = <$scheduler>::new();
+                assert_eq!(scheduler.len(), 0);
+                assert!(scheduler.is_empty());
+                let mut tasks = Vec::new();
+                for i in 0..NUM_TASKS {
+                    let t = Arc::new(<$task>::new(i));
+                    tasks.push(t.clone());
+                    scheduler.add_task(t);
+                    assert_eq!(scheduler.len(), i + 1);
+                }
+                assert!(!scheduler.is_empty());
+                for k in 0..NUM_TASKS {
+                    assert_eq!(scheduler.len(), NUM_TASKS - k);
+                    let _ = scheduler.pick_next_task().unwrap();
+                }
+                assert_eq!(scheduler.len(), 0);
+                assert!(scheduler.pick_next_task().is_none());
+                assert_eq!(scheduler.len(), 0);
+                let mut scheduler = <$scheduler>::new();
+                for t in &tasks {
+                    scheduler.add_task(t.clone());
+                }
+                assert_eq!(scheduler.len(), NUM_TASKS);
+                assert!(scheduler.remove_task(&tasks[3]).is_some());
+                assert_eq!(scheduler.len(), NUM_TASKS - 1);
+            }
+
+            #[test]
+            fn test_steal() {
+                let mut scheduler = <$scheduler>::new();
+                assert!(scheduler.pick_stealable_task(|_| true).is_none());
+                for i in 0..5 {
+                    scheduler.add_task(Arc::new(<$task>::new(i)));
+                }
+                assert!(scheduler.pick_stealable_task(|_| false).is_none());
+                assert_eq!(scheduler.len(), 5);
+                let stolen = scheduler.pick_stealable_task(|v| *v == 3).unwrap();
+                assert_eq!(*stolen.inner(), 3);
+                assert_eq!(scheduler.len(), 4);
+                assert!(scheduler.pick_stealable_task(|v| *v == 3).is_none());
+            }
+
+            #[test]
             fn bench_yield() {
                 const NUM_TASKS: usize = 1_000_000;
                 const COUNT: usize = NUM_TASKS * 3;
