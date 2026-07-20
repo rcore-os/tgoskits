@@ -22,12 +22,11 @@ use std::{
     thread,
 };
 
+use net_stats_common::{RX_BYTES, RX_PKTS, TX_BYTES, TX_PKTS};
 use tokio::{signal, time};
 
-const TX_PKTS: u32 = 0;
-const TX_BYTES: u32 = 1;
-const RX_PKTS: u32 = 2;
-const RX_BYTES: u32 = 3;
+/// Shorthand for the net_stats PerCpuArray map type used by the loader.
+type NetStatsMap<'a> = PerCpuArray<&'a aya::maps::MapData, u64>;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -64,15 +63,17 @@ fn resolve_symbols(fragments: &[&str]) -> anyhow::Result<Vec<String>> {
 }
 
 /// Read per-CPU counter values and sum across all CPUs.
-fn per_cpu_sum(netstats: &PerCpuArray<&aya::maps::MapData, u64>, idx: u32) -> u64 {
-    netstats
-        .get(&idx, 0)
-        .ok()
-        .map(|vals| vals.iter().sum())
-        .unwrap_or(0)
+fn per_cpu_sum(netstats: &NetStatsMap<'_>, idx: u32) -> u64 {
+    match netstats.get(&idx, 0) {
+        Ok(vals) => vals.iter().sum(),
+        Err(e) => {
+            warn!("per_cpu_sum({idx}) failed: {e}");
+            0
+        }
+    }
 }
 
-fn print_stats(netstats: &PerCpuArray<&aya::maps::MapData, u64>) {
+fn print_stats(netstats: &NetStatsMap<'_>) {
     println!("NET_STATS_BEGIN");
     println!(
         "tx_pkts={}  tx_bytes={}",
@@ -103,6 +104,21 @@ async fn main() -> anyhow::Result<()> {
     let syms_tx = resolve_symbols(&["6ax_net", "6router", "12DeviceHandle", "8count_tx"])?;
     let syms_rx = resolve_symbols(&["6ax_net", "6router", "12DeviceHandle", "8count_rx"])?;
 
+    // Guard against silent double-counting if a future refactor causes
+    // the symbol to match multiple kallsyms entries.
+    anyhow::ensure!(
+        syms_tx.len() == 1,
+        "expected exactly 1 TX symbol, got {}: {:?}",
+        syms_tx.len(),
+        syms_tx
+    );
+    anyhow::ensure!(
+        syms_rx.len() == 1,
+        "expected exactly 1 RX symbol, got {}: {:?}",
+        syms_rx.len(),
+        syms_rx
+    );
+
     warn!("resolved tx={}, rx={}", syms_tx.len(), syms_rx.len());
 
     let rlim = libc::rlimit {
@@ -123,20 +139,21 @@ async fn main() -> anyhow::Result<()> {
         warn!("failed to initialize eBPF logger: {e}");
     }
 
-    macro_rules! attach_all {
-        ($ebpf:expr, $prog:literal, $syms:expr) => {{
+    // Each probe now matches exactly one symbol, so the attach loop is
+    // a single iteration. The helper macro encapsulates the load+attach
+    // pattern for readability.
+    macro_rules! attach_one {
+        ($ebpf:expr, $prog:literal, $sym:expr) => {{
             let p: &mut KProbe = $ebpf.program_mut($prog).unwrap().try_into()?;
             p.load()?;
-            for sym in &$syms {
-                p.attach(sym, 0)?;
-            }
+            p.attach($sym, 0)?;
         }};
     }
 
-    attach_all!(ebpf, "count_tx", syms_tx);
-    attach_all!(ebpf, "count_rx", syms_rx);
+    attach_one!(ebpf, "count_tx", &syms_tx[0]);
+    attach_one!(ebpf, "count_rx", &syms_rx[0]);
 
-    let netstats: PerCpuArray<_, u64> = PerCpuArray::try_from(ebpf.map("NETSTATS").unwrap())?;
+    let netstats: NetStatsMap<'_> = PerCpuArray::try_from(ebpf.map("NETSTATS").unwrap())?;
 
     if opt.once {
         print_stats(&netstats);
@@ -144,9 +161,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if opt.test {
-        // Self-contained loopback test: spawn a listener that echoes data,
-        // then connect to it and exchange a payload. This drives real
-        // ax_net socket I/O through the phy layer while probes are live.
+        // Self-contained loopback test.
+        //
+        // NOTE: This only exercises the loopback fast path
+        // (dispatch_unicast_packet, send_on_device). The device-worker
+        // paths (device_rx_worker, device_tx_worker) and deferred ARP
+        // counting are exercised by the router unit tests
+        // (l2_counter_tests in router.rs) but not by this e2e test.
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let server = thread::spawn(move || {

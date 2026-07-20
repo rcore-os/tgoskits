@@ -26,12 +26,7 @@ use aya_ebpf::{
     maps::PerCpuArray,
     programs::ProbeContext,
 };
-
-const TX_PKTS: u32 = 0;
-const TX_BYTES: u32 = 1;
-const RX_PKTS: u32 = 2;
-const RX_BYTES: u32 = 3;
-const MAP_SIZE: u32 = 4;
+use net_stats_common::{MAP_SIZE, RX_BYTES, RX_PKTS, TX_BYTES, TX_PKTS};
 
 #[map]
 static NETSTATS: PerCpuArray<u64> = PerCpuArray::<u64>::with_max_entries(MAP_SIZE, 0);
@@ -40,15 +35,24 @@ static NETSTATS: PerCpuArray<u64> = PerCpuArray::<u64>::with_max_entries(MAP_SIZ
 ///
 /// With `PerCpuArray`, `get_ptr_mut(idx)` returns a pointer into the
 /// *current CPU's* private slot, so the increment is naturally race-free.
+///
+/// Always inlined so the eBPF verifier can trivially prove bounded
+/// execution and won't reject the program for function calls.
 #[inline(always)]
 fn add_to(idx: u32, delta: u64) {
     if let Some(slot) = NETSTATS.get_ptr_mut(idx) {
+        // SAFETY: PerCpuArray::get_ptr_mut returns a valid, properly
+        // aligned pointer into the current CPU's private map slot.
+        // The slot is owned exclusively by this CPU (BPF execution is
+        // non-preemptible), so no concurrent modification is possible.
         unsafe { *slot += delta };
     }
 }
 
 // count_tx(&self, len: usize)
-//   x86_64: &self in rdi (arg 0), len in rsi (arg 1)
+//   The probe reads len from arg 1. aya's ProbeContext handles
+//   per-architecture register mapping (rdi/rsi on x86_64, x0/x1 on
+//   aarch64, a0/a1 on riscv64, a0/a1 on loongarch64).
 #[kprobe]
 pub fn count_tx(ctx: ProbeContext) -> u32 {
     if let Some(len) = ctx.arg::<usize>(1) {
@@ -59,7 +63,7 @@ pub fn count_tx(ctx: ProbeContext) -> u32 {
 }
 
 // count_rx(&self, len: usize)
-//   x86_64: &self in rdi (arg 0), len in rsi (arg 1)
+//   Same ABI as count_tx — len is always arg 1 regardless of architecture.
 #[kprobe]
 pub fn count_rx(ctx: ProbeContext) -> u32 {
     if let Some(len) = ctx.arg::<usize>(1) {
@@ -72,6 +76,9 @@ pub fn count_rx(ctx: ProbeContext) -> u32 {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // The eBPF verifier forbids infinite loops, so we use
+    // unreachable_unchecked to tell LLVM to elide the landing pad
+    // rather than emitting a loop {} that the verifier would reject.
     unsafe { core::hint::unreachable_unchecked() }
 }
 

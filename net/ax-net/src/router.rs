@@ -319,6 +319,16 @@ impl DeviceHandle {
     /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
     /// observers (e.g. `net_stats`) can attach to this function and see every
     /// increment of the RX byte/packet counters at a stable symbol.
+    ///
+    /// # Performance note
+    ///
+    /// `#[inline(never)]` adds a call/ret boundary (~2 instructions) around
+    /// two `fetch_add` operations that would otherwise be inlined directly
+    /// into each call site. At the current target throughput (< 100K packets
+    /// per second) the overhead is negligible. If higher throughput becomes a
+    /// concern, consider feature-gating the annotation behind an
+    /// `ebpf_observability` cfg flag so production builds can opt into full
+    /// inlining.
     #[inline(never)]
     fn count_rx(&self, len: usize) {
         // Relaxed ordering is sufficient: only the owning device worker writes
@@ -335,6 +345,16 @@ impl DeviceHandle {
     /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
     /// observers (e.g. `net_stats`) can attach to this function and see every
     /// increment of the TX byte/packet counters at a stable symbol.
+    ///
+    /// # Performance note
+    ///
+    /// `#[inline(never)]` adds a call/ret boundary (~2 instructions) around
+    /// two `fetch_add` operations that would otherwise be inlined directly
+    /// into each call site. At the current target throughput (< 100K packets
+    /// per second) the overhead is negligible. If higher throughput becomes a
+    /// concern, consider feature-gating the annotation behind an
+    /// `ebpf_observability` cfg flag so production builds can opt into full
+    /// inlining.
     #[inline(never)]
     fn count_tx(&self, len: usize) {
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);

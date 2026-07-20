@@ -2,6 +2,8 @@ args = [
     "-nographic",
     "-m",
     "512M",
+    "-smp",
+    "2",
     "-device",
     "virtio-blk-pci,drive=disk0",
     "-drive",
@@ -11,6 +13,10 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
+# UEFI boot is required for x86_64 PVH entry on QEMU ≥ 6.0 (the kernel
+# binary is loaded as a PVH-compatible ELF via the firmware hand-off,
+# avoiding the "Error loading uncompressed kernel without PVH ELF Note"
+# error seen with direct -kernel boot).
 uefi = true
 to_bin = false
 shell_prefix = "root@starry:"

@@ -9,7 +9,9 @@ Real-time network statistics monitoring for StarryOS using eBPF kprobes.
   (`DeviceHandle::count_tx` / `DeviceHandle::count_rx`) that maintain the
   kernel's own rx_packets/rx_bytes/tx_packets/tx_bytes counters
 - **Low overhead**: eBPF-based probing with per-CPU maps, no lock contention
-- **Cross-architecture**: supports x86_64, aarch64, riscv64, loongarch64
+- **Cross-architecture**: x86_64 validated; aarch64, riscv64, loongarch64
+  support claimed via Aya's architecture-agnostic `ProbeContext::arg()` but
+  pending runtime validation
 - **Protocol-agnostic**: counts all IP frames at the physical layer (TCP, UDP, ICMP, etc.)
 
 ## Usage
@@ -117,6 +119,12 @@ slot, eliminating cache-line contention and the need for atomic operations.
 The userspace loader aggregates by summing across all CPU slots when printing
 or testing.
 
+**Read-side note**: `per_cpu_sum` reads all per-CPU slots in a single
+`get()` call. Since eBPF programs may be concurrently incrementing slots on
+other CPUs, individual snapshots may show slight over/under counting. This is
+acceptable for monitoring and trending; the `--test` mode only checks that
+all counters are non-zero, which is not affected by this race.
+
 ## Building
 
 The eBPF program is built automatically as part of the StarryOS build:
@@ -141,8 +149,13 @@ Run automated validation:
 cargo xtask starry app qemu --test-case ebpf/net_stats --arch x86_64
 ```
 
-The test performs TCP and UDP loopback operations and verifies that all four
-counters (tx_pkts, tx_bytes, rx_pkts, rx_bytes) are non-zero.
+The test performs TCP and UDP loopback operations on 2 CPUs and verifies
+that all four counters (tx_pkts, tx_bytes, rx_pkts, rx_bytes) are non-zero.
+
+**Coverage note**: `--test` only exercises the loopback fast path
+(`dispatch_unicast_packet`, `send_on_device`). The device-worker paths
+(`device_rx_worker`, `device_tx_worker`) and deferred ARP counting are
+covered by router unit tests (`l2_counter_tests` in `router.rs`).
 
 ## Troubleshooting
 
