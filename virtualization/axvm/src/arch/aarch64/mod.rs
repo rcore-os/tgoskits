@@ -233,6 +233,14 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
+            ArmVmExit::DeactivateInterrupt { intid } => {
+                vm.prepared_interrupt_topology()?
+                    .deactivate_vcpu_interrupt(
+                        axdevice::VcpuInterruptId::new(vcpu.id()),
+                        axdevice::GuestInterruptId::new(intid),
+                    )?;
+                Ok(BoundVcpuExit::Continue)
+            }
             ArmVmExit::ExternalInterrupt => {
                 debug!("VM[{}] run VCpu[{}] handles a host IRQ", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Defer(

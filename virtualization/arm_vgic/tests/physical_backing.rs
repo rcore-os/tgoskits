@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex, Weak, mpsc},
     time::Duration,
 };
@@ -438,6 +439,67 @@ fn physical_spi_is_delivered_by_a_hardware_backed_lr() {
 }
 
 #[test]
+fn spilled_physical_active_delivery_keeps_its_backing_until_trapped_dir() {
+    const GICD_CTLR: u64 = 0;
+    const GICD_ISENABLER1: u64 = 0x104;
+    const GICD_IPRIORITYR: u64 = 0x400;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(
+        spi_config().with_list_register_count(1).unwrap(),
+        backend.clone(),
+    )
+    .unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let physical_spi = SpiId::new(40).unwrap();
+    let software_spi = SpiId::new(41).unwrap();
+    let physical_irq = PhysicalIrqId::new(1040);
+
+    controller
+        .bind_physical_spi(physical_spi, physical_irq, GicVcpuId::new(0))
+        .unwrap();
+    controller
+        .configure_spi_input(software_spi, TriggerMode::Edge)
+        .unwrap();
+    controller
+        .write_distributor(
+            GICD_IPRIORITYR + u64::from(software_spi.raw()),
+            AccessWidth::Byte,
+            0x20,
+        )
+        .unwrap();
+    controller
+        .write_distributor(
+            GICD_ISENABLER1,
+            AccessWidth::Dword,
+            (1 << (physical_spi.raw() - 32)) | (1 << (software_spi.raw() - 32)),
+        )
+        .unwrap();
+    controller
+        .write_distributor(GICD_CTLR, AccessWidth::Dword, 1 << 1)
+        .unwrap();
+
+    controller.forward_physical_spi(physical_spi).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(GicVcpuId::new(0));
+    binding.save().unwrap();
+
+    controller.pulse_spi(software_spi).unwrap();
+    binding.load().unwrap();
+    assert_eq!(
+        backend.loaded_intids(GicVcpuId::new(0)),
+        vec![IntId::Spi(software_spi)]
+    );
+
+    binding.deactivate(IntId::Spi(physical_spi)).unwrap();
+    binding.deactivate(IntId::Spi(physical_spi)).unwrap();
+
+    let records = backend.records.lock().unwrap();
+    assert_eq!(records.deactivated_interrupts.len(), 1);
+    assert_eq!(records.deactivated_interrupts[0].host(), physical_irq);
+}
+
+#[test]
 fn physical_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
@@ -810,33 +872,53 @@ struct PhysicalRecords {
     cpu_interface_loads: usize,
     cpu_interface_saves: usize,
     loaded_cpu_interfaces: Vec<CpuInterfaceState>,
+    current_cpu_interfaces: BTreeMap<GicVcpuId, CpuInterfaceState>,
     bound_interrupts: Vec<PhysicalInterruptBinding>,
     enabled_interrupts: Vec<(PhysicalInterruptBinding, bool)>,
     bound_msi: Vec<PhysicalMsiBinding>,
     signaled_msi: Vec<PhysicalMsiBinding>,
     unbound_interrupts: Vec<PhysicalInterruptBinding>,
     unbound_msi: Vec<PhysicalMsiBinding>,
+    deactivated_interrupts: Vec<PhysicalInterruptBinding>,
     fail_next_enable: bool,
 }
 
 impl GicV3Backend for PhysicalBackend {
     fn load_cpu_interface(
         &self,
-        _vcpu: GicVcpuId,
+        vcpu: GicVcpuId,
         state: &CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
         let mut records = self.records.lock().unwrap();
         records.cpu_interface_loads += 1;
         records.loaded_cpu_interfaces.push(state.clone());
+        records.current_cpu_interfaces.insert(vcpu, state.clone());
         Ok(())
     }
 
     fn save_cpu_interface(
         &self,
-        _vcpu: GicVcpuId,
-        _state: &mut CpuInterfaceState,
+        vcpu: GicVcpuId,
+        state: &mut CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
-        self.records.lock().unwrap().cpu_interface_saves += 1;
+        let mut records = self.records.lock().unwrap();
+        records.cpu_interface_saves += 1;
+        if let Some(current) = records.current_cpu_interfaces.get(&vcpu) {
+            *state = current.clone();
+        }
+        Ok(())
+    }
+
+    fn deactivate_physical_interrupt(
+        &self,
+        _vcpu: GicVcpuId,
+        binding: PhysicalInterruptBinding,
+    ) -> Result<(), GicV3BackendError> {
+        self.records
+            .lock()
+            .unwrap()
+            .deactivated_interrupts
+            .push(binding);
         Ok(())
     }
 
@@ -889,5 +971,29 @@ impl GicV3Backend for PhysicalBackend {
     fn unbind_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
         self.records.lock().unwrap().unbound_msi.push(binding);
         Ok(())
+    }
+}
+
+impl PhysicalBackend {
+    fn activate_all(&self, vcpu: GicVcpuId) {
+        let mut records = self.records.lock().unwrap();
+        if let Some(state) = records.current_cpu_interfaces.get_mut(&vcpu) {
+            for entry in state.list_registers_mut().iter_mut().flatten() {
+                entry.set_state(arm_vgic::InterruptState::Active);
+            }
+        }
+    }
+
+    fn loaded_intids(&self, vcpu: GicVcpuId) -> Vec<IntId> {
+        self.records
+            .lock()
+            .unwrap()
+            .current_cpu_interfaces
+            .get(&vcpu)
+            .into_iter()
+            .flat_map(CpuInterfaceState::list_registers)
+            .flatten()
+            .map(|entry| entry.intid())
+            .collect()
     }
 }

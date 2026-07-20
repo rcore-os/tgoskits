@@ -4,6 +4,14 @@ use alloc::vec;
 
 use crate::{IntId, InterruptState, PhysicalIrqId, Priority};
 
+const ICH_HCR_ENABLE: u64 = 1;
+const ICH_HCR_UIE: u64 = 1 << 1;
+const ICH_HCR_LRENPIE: u64 = 1 << 2;
+const ICH_HCR_NPIE: u64 = 1 << 3;
+const ICH_HCR_TDIR: u64 = 1 << 14;
+const ICH_HCR_EOI_COUNT_SHIFT: u32 = 27;
+const ICH_HCR_EOI_COUNT_MASK: u64 = 0x1f << ICH_HCR_EOI_COUNT_SHIFT;
+
 /// Source backing used for one virtual list-register delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ListRegisterBacking {
@@ -101,6 +109,36 @@ impl CpuInterfaceState {
     /// Updates ICH_HCR_EL2 state.
     pub fn set_hcr(&mut self, value: u64) {
         self.hcr = value;
+    }
+
+    pub(crate) fn take_eoi_count(&mut self) -> usize {
+        let count = ((self.hcr & ICH_HCR_EOI_COUNT_MASK) >> ICH_HCR_EOI_COUNT_SHIFT) as usize;
+        self.hcr &= !ICH_HCR_EOI_COUNT_MASK;
+        count
+    }
+
+    pub(crate) fn configure_delivery_traps(
+        &mut self,
+        pending_outside_lrs: bool,
+        active_outside_lrs: bool,
+        trap_deactivation: bool,
+    ) {
+        let managed =
+            ICH_HCR_UIE | ICH_HCR_LRENPIE | ICH_HCR_NPIE | ICH_HCR_TDIR | ICH_HCR_EOI_COUNT_MASK;
+        let mut hcr = (self.hcr & !managed) | ICH_HCR_ENABLE;
+        if pending_outside_lrs || active_outside_lrs {
+            hcr |= ICH_HCR_UIE;
+        }
+        if active_outside_lrs {
+            hcr |= ICH_HCR_LRENPIE;
+        }
+        if pending_outside_lrs {
+            hcr |= ICH_HCR_NPIE;
+        }
+        if trap_deactivation {
+            hcr |= ICH_HCR_TDIR;
+        }
+        self.hcr = hcr;
     }
 
     /// Returns ICH_VMCR_EL2 state.

@@ -22,7 +22,10 @@
 //! Software-backed and physical-backed SPIs may coexist in one controller.
 //! Physical backends receive only ownership-checked bindings and use HW-backed
 //! list registers; SGIs and PPIs remain VM-local, so guest Redistributor
-//! accesses can never alias host private-interrupt state.
+//! accesses can never alias host private-interrupt state. Pending and active
+//! deliveries may overflow the finite LR working set without losing their
+//! software/physical backing; maintenance state and trapped deactivation fold
+//! them back into the controller state.
 
 extern crate alloc;
 
@@ -47,5 +50,5 @@ pub use error::*;
 pub(crate) use interrupt::InterruptRecord;
 pub use its::{GuestMemory, GuestMemoryError};
 pub(crate) use its::{ItsAction, ItsState};
-pub(crate) use redistributor::RedistributorState;
+pub(crate) use redistributor::{QueuedDelivery, RedistributorState};
 pub use types::*;

@@ -1,10 +1,13 @@
 //! Interrupt-topology capabilities exposed by a GICv3 controller.
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
 
 use arm_vgic::{
-    EventId, GicAffinity, GicV3Controller, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, ItsDeviceId,
-    PpiId, SpiId, TriggerMode, VgicError, VgicResult,
+    EventId, GicAffinity, GicV3Controller, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, IntId,
+    ItsDeviceId, PpiId, SpiId, TriggerMode, VgicError, VgicResult,
 };
 use ax_kspin::SpinRaw;
 use axdevice_base::{
@@ -15,7 +18,8 @@ use axdevice_base::{
 
 use super::error::{device_manager_error, irq_error};
 use crate::{
-    DeviceManagerResult, MessageInterruptInputs, VcpuInterruptBinding, VcpuInterruptController,
+    DeviceManagerError, DeviceManagerResult, GuestInterruptId, MessageInterruptInputs,
+    VcpuInterruptBinding, VcpuInterruptController, VcpuInterruptDeactivation, VcpuInterruptId,
     VcpuInterruptPort, WiredInterruptInputs,
 };
 
@@ -24,6 +28,7 @@ pub(super) struct GicV3TopologyAdapter {
     controller: Arc<GicV3Controller>,
     wired_inputs: SpinRaw<BTreeMap<ControllerInputId, WiredIrqInput>>,
     private_inputs: SpinRaw<BTreeMap<(GicVcpuId, PpiId), WiredIrqInput>>,
+    vcpu_bindings: SpinRaw<BTreeMap<GicVcpuId, Weak<GicV3BindingAdapter>>>,
 }
 
 impl GicV3TopologyAdapter {
@@ -33,6 +38,7 @@ impl GicV3TopologyAdapter {
             controller,
             wired_inputs: SpinRaw::new(BTreeMap::new()),
             private_inputs: SpinRaw::new(BTreeMap::new()),
+            vcpu_bindings: SpinRaw::new(BTreeMap::new()),
         }
     }
 
@@ -134,15 +140,42 @@ impl VcpuInterruptController for GicV3TopologyAdapter {
         &self,
         port: VcpuInterruptPort,
     ) -> DeviceManagerResult<Arc<dyn VcpuInterruptBinding>> {
+        let vcpu = GicVcpuId::new(port.id().value());
         let binding = self
             .controller
             .attach_vcpu(
-                GicVcpuId::new(port.id().value()),
+                vcpu,
                 GicAffinity::from_mpidr(port.affinity().value()),
                 Arc::new(GicV3WakeAdapter { port }),
             )
             .map_err(device_manager_error)?;
-        Ok(Arc::new(GicV3BindingAdapter { binding }))
+        let binding = Arc::new(GicV3BindingAdapter { binding });
+        self.vcpu_bindings
+            .lock()
+            .insert(vcpu, Arc::downgrade(&binding));
+        Ok(binding)
+    }
+}
+
+impl VcpuInterruptDeactivation for GicV3TopologyAdapter {
+    fn deactivate(&self, vcpu: VcpuInterruptId, intid: GuestInterruptId) -> DeviceManagerResult {
+        let vcpu = GicVcpuId::new(vcpu.value());
+        let binding = self
+            .vcpu_bindings
+            .lock()
+            .get(&vcpu)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| DeviceManagerError::ResourceNotFound {
+                operation: "deactivate guest interrupt",
+                resource: alloc::format!("GICv3 binding for vCPU {}", vcpu.raw()),
+            })?;
+        let Ok(intid) = IntId::new(intid.value()) else {
+            return Ok(());
+        };
+        binding
+            .binding
+            .deactivate(intid)
+            .map_err(device_manager_error)
     }
 }
 

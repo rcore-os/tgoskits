@@ -7,7 +7,7 @@ use axdevice_base::{
     MsiDeviceId, MsiEndpoint, MsiEventId, WiredIrqInput,
 };
 
-use super::{VcpuInterruptController, WiredIrqRequest};
+use super::{VcpuInterruptController, VcpuInterruptDeactivation, WiredIrqRequest};
 
 /// Declares whether a controller is selected by legacy/default requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +90,7 @@ pub struct ControllerRegistration {
     wired_inputs: Option<Arc<dyn WiredInterruptInputs>>,
     message_inputs: Option<Arc<dyn MessageInterruptInputs>>,
     vcpu_controller: Option<Arc<dyn VcpuInterruptController>>,
+    vcpu_deactivation: Option<Arc<dyn VcpuInterruptDeactivation>>,
     cascade: Option<ControllerCascade>,
 }
 
@@ -102,6 +103,7 @@ impl ControllerRegistration {
             wired_inputs: None,
             message_inputs: None,
             vcpu_controller: None,
+            vcpu_deactivation: None,
             cascade: None,
         }
     }
@@ -121,6 +123,15 @@ impl ControllerRegistration {
     /// Adds vCPU attachment support.
     pub fn with_vcpu_controller(mut self, controller: Arc<dyn VcpuInterruptController>) -> Self {
         self.vcpu_controller = Some(controller);
+        self
+    }
+
+    /// Adds support for architecture-trapped interrupt deactivation.
+    pub fn with_vcpu_deactivation(
+        mut self,
+        deactivation: Arc<dyn VcpuInterruptDeactivation>,
+    ) -> Self {
+        self.vcpu_deactivation = Some(deactivation);
         self
     }
 
@@ -152,6 +163,10 @@ impl ControllerRegistration {
         self.vcpu_controller.as_ref()
     }
 
+    pub(crate) fn vcpu_deactivation(&self) -> Option<&Arc<dyn VcpuInterruptDeactivation>> {
+        self.vcpu_deactivation.as_ref()
+    }
+
     pub(crate) const fn cascade(&self) -> Option<&ControllerCascade> {
         self.cascade.as_ref()
     }
@@ -166,6 +181,7 @@ impl core::fmt::Debug for ControllerRegistration {
             .field("has_wired_inputs", &self.wired_inputs.is_some())
             .field("has_message_inputs", &self.message_inputs.is_some())
             .field("has_vcpu_controller", &self.vcpu_controller.is_some())
+            .field("has_vcpu_deactivation", &self.vcpu_deactivation.is_some())
             .field("cascade", &self.cascade)
             .finish()
     }

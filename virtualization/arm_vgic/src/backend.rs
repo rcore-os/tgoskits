@@ -172,6 +172,23 @@ pub trait GicV3Backend: Send + Sync {
         Ok(())
     }
 
+    /// Deactivates an owned physical interrupt after a trapped guest DIR.
+    ///
+    /// The controller invokes this only after removing the active delivery
+    /// from the current vCPU interface and validating the complete ownership
+    /// binding. A hardware-backed LR that retires normally does not use this
+    /// callback because the physical GIC performs that deactivation itself.
+    fn deactivate_physical_interrupt(
+        &self,
+        _vcpu: GicVcpuId,
+        _binding: PhysicalInterruptBinding,
+    ) -> Result<(), GicV3BackendError> {
+        Err(GicV3BackendError::new(
+            "deactivate physical interrupt",
+            "the backend does not support trapped physical interrupt deactivation",
+        ))
+    }
+
     /// Claims one physical interrupt for hardware-backed delivery.
     fn bind_physical_interrupt(
         &self,

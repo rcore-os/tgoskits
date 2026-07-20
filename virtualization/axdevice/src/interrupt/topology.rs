@@ -7,7 +7,7 @@ use ax_kspin::SpinRaw;
 use axdevice_base::{InterruptControllerId, InterruptEndpoint, IrqError, Resource, WiredIrqInput};
 
 use super::{
-    ControllerRef, ControllerRegistration, ControllerRole, InterruptClaimDomain,
+    ControllerRef, ControllerRegistration, ControllerRole, GuestInterruptId, InterruptClaimDomain,
     InterruptEndpointRegistration, InterruptPlanAuthority, MsiClaim, PlannedIrqConnection,
     PlannedMsiConnection, VcpuInterruptBinding, VcpuInterruptId, VcpuInterruptPort, WiredIrqClaim,
     WiredIrqRequest,
@@ -70,6 +70,15 @@ impl InterruptTopology {
                 detail: format!("controller {:?} exposes no capabilities", registration.id()),
             });
         }
+        if registration.vcpu_deactivation().is_some() && registration.vcpu_controller().is_none() {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register interrupt controller",
+                detail: format!(
+                    "controller {:?} exposes deactivation without a vCPU controller",
+                    registration.id()
+                ),
+            });
+        }
 
         let mut controllers = self.controllers.lock();
         if controllers
@@ -89,6 +98,16 @@ impl InterruptTopology {
             return Err(DeviceManagerError::ResourceConflict {
                 operation: "register interrupt controller",
                 detail: "a default interrupt controller is already registered".into(),
+            });
+        }
+        if registration.vcpu_deactivation().is_some()
+            && controllers
+                .iter()
+                .any(|entry| entry.registration.vcpu_deactivation().is_some())
+        {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "register interrupt controller",
+                detail: "a vCPU deactivation controller is already registered".into(),
             });
         }
         controllers.push(ControllerEntry {
@@ -277,6 +296,32 @@ impl InterruptTopology {
             binding.synchronize()?;
         }
         Ok(())
+    }
+
+    /// Routes a separately trapped CPU-interface deactivation to its owner.
+    pub fn deactivate_vcpu_interrupt(
+        &self,
+        vcpu: VcpuInterruptId,
+        intid: GuestInterruptId,
+    ) -> DeviceManagerResult {
+        if !self.finalized.load(Ordering::Acquire) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "deactivate guest interrupt",
+                detail: "the interrupt topology is not finalized".into(),
+            });
+        }
+        let deactivation = {
+            let controllers = self.controllers.lock();
+            controllers
+                .iter()
+                .find_map(|entry| entry.registration.vcpu_deactivation().cloned())
+                .ok_or_else(|| DeviceManagerError::Unsupported {
+                    operation: "deactivate guest interrupt",
+                    detail: "no registered controller owns trapped CPU-interface deactivation"
+                        .into(),
+                })?
+        };
+        deactivation.deactivate(vcpu, intid)
     }
 
     /// Returns whether the topology has completed cascade and vCPU binding.

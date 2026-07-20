@@ -286,6 +286,11 @@ pub enum ArmVmExit {
         /// Complete ICC_SGI1R_EL1 value, including affinity and range selector.
         value: u64,
     },
+    /// The guest wrote ICC_DIR_EL1 while deactivation trapping was enabled.
+    DeactivateInterrupt {
+        /// Guest-visible INTID carried by ICC_DIR_EL1.
+        intid: u32,
+    },
     /// The vCPU handled the event internally.
     Nothing,
 }

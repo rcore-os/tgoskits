@@ -25,7 +25,7 @@ success_regex = [
   "(?m)^guest test pass!\\s*$",
 ]
 shell_prefix = "~ #"
-shell_init_cmd = "pwd && echo 'guest test pass!'"
+shell_init_cmd = "start=$(date +%s) && sleep 2 && test $(( $(date +%s) - start )) -ge 2 && echo 'guest test pass!'"
 timeout = 120
 to_bin = true
 uefi = false

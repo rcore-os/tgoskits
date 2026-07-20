@@ -2,8 +2,11 @@
 
 use alloc::collections::BTreeMap;
 
-use arm_gic_driver::v3::{Affinity as PhysicalAffinity, Trigger as PhysicalTrigger};
-use arm_vgic::{GicV3BackendError, PhysicalInterruptBinding, PhysicalIrqId};
+use arm_gic_driver::{
+    checked_intid,
+    v3::{self, Affinity as PhysicalAffinity, Trigger as PhysicalTrigger},
+};
+use arm_vgic::{GicV3BackendError, GicVcpuId, PhysicalInterruptBinding, PhysicalIrqId};
 use ax_kspin::SpinNoIrq;
 use ax_std::os::arceos::modules::ax_hal::irq::{
     self as host_irq, CpuId, HwIrq, IrqAffinity, IrqDomainId, IrqId,
@@ -97,6 +100,45 @@ pub(super) fn prepare_enabled(
         host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))
             .map_err(|error| platform_error("route physical interrupt", irq, error))?;
     }
+    Ok(())
+}
+
+pub(super) fn deactivate(
+    backend: &AxvmGicV3Backend,
+    vcpu: GicVcpuId,
+    binding: PhysicalInterruptBinding,
+) -> Result<(), GicV3BackendError> {
+    if binding.target() != vcpu {
+        return Err(GicV3BackendError::new(
+            "deactivate physical interrupt",
+            alloc::format!(
+                "binding targets vCPU {}, but vCPU {} issued the deactivation",
+                binding.target().raw(),
+                vcpu.raw()
+            ),
+        ));
+    }
+    let route = backend.route(vcpu)?;
+    if crate::current_vcpu_id() != Some(vcpu.raw()) {
+        return Err(GicV3BackendError::new(
+            "deactivate physical interrupt",
+            alloc::format!(
+                "vCPU {} is not current on host CPU {}",
+                vcpu.raw(),
+                route.host_cpu
+            ),
+        ));
+    }
+    let irq = decode_irq(binding.host())?;
+    require_guest_owned(irq, backend.vm_id, "deactivate physical interrupt")?;
+    let intid = checked_intid(irq.hwirq.0, 1020).map_err(|error| {
+        GicV3BackendError::new(
+            "deactivate physical interrupt",
+            alloc::format!("host IRQ {irq:?} has an invalid GIC INTID: {error:?}"),
+        )
+    })?;
+    v3::dir(intid);
+    instruction_sync_barrier();
     Ok(())
 }
 

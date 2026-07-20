@@ -83,6 +83,17 @@ pub(super) fn hardware_list_register_count() -> usize {
     (ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1).min(16)
 }
 
+pub(super) fn require_deactivation_trap() -> Result<(), GicV3BackendError> {
+    if ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0 {
+        Ok(())
+    } else {
+        Err(GicV3BackendError::new(
+            "validate CPU interface",
+            "ICH_VTR_EL2 reports no ICH_HCR_EL2.TDIR support; active LR overflow is unsupported",
+        ))
+    }
+}
+
 fn require_current_vcpu(vcpu: GicVcpuId, operation: &'static str) -> Result<(), GicV3BackendError> {
     match crate::current_vcpu_id() {
         Some(current) if current == vcpu.raw() => Ok(()),

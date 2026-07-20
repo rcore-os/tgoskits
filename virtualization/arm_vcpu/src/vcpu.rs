@@ -467,6 +467,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         reg: usize,
     ) -> ArmVcpuResult<Option<ArmVmExit>> {
         const SYSREG_ICC_SGI1R_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
+        const SYSREG_ICC_DIR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x32_3016); // ICC_DIR_EL1
 
         match (addr, write) {
             (SYSREG_ICC_SGI1R_EL1, true) => {
@@ -475,6 +476,13 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             }
             (SYSREG_ICC_SGI1R_EL1, false) => {
                 // ICC_SGI1R_EL1 is WO, we take it as RAZ.
+                self.set_gpr(reg, 0);
+                Ok(Some(ArmVmExit::Nothing))
+            }
+            (SYSREG_ICC_DIR_EL1, true) => Ok(Some(ArmVmExit::DeactivateInterrupt {
+                intid: value as u32 & 0x00ff_ffff,
+            })),
+            (SYSREG_ICC_DIR_EL1, false) => {
                 self.set_gpr(reg, 0);
                 Ok(Some(ArmVmExit::Nothing))
             }

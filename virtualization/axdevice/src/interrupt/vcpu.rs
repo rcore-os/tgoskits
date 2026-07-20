@@ -21,6 +21,23 @@ impl VcpuInterruptId {
     }
 }
 
+/// Identifies one guest-visible interrupt at a CPU-interface boundary.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct GuestInterruptId(u32);
+
+impl GuestInterruptId {
+    /// Creates an identifier from an architecture-decoded guest INTID.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the guest-visible numeric identifier.
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
 /// Architecture-defined interrupt affinity associated with a vCPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
@@ -98,6 +115,17 @@ pub trait VcpuInterruptBinding: Send + Sync {
 
     /// Reconciles completed deliveries and makes pending work deliverable.
     fn synchronize(&self) -> DeviceManagerResult;
+}
+
+/// Optional CPU-interface capability for separately trapped deactivation.
+///
+/// Architectures such as GICv3 can split priority drop from interrupt
+/// deactivation. This capability routes that architectural operation back to
+/// the controller that owns the vCPU interface without exposing an injection
+/// API to devices or the VM runtime.
+pub trait VcpuInterruptDeactivation: Send + Sync {
+    /// Deactivates one guest interrupt for the currently loaded vCPU.
+    fn deactivate(&self, vcpu: VcpuInterruptId, intid: GuestInterruptId) -> DeviceManagerResult;
 }
 
 /// Associates an interrupt controller with vCPU ports.

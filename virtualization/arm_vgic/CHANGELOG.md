@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace the controller-wide emulated/passthrough mode with an SPI ownership
   policy and per-endpoint software or physical backing. One GIC can now deliver
   virtual-device IRQs and owned physical IRQs through the same CPU interface.
+- Rebuild the LR working set when active entries overflow, preserve software or
+  physical backing outside LRs, drive NPIE/LRENPIE/UIE/TDIR maintenance, and
+  reconcile EOImode 0 EOIcount or trapped EOImode 1 DIR without starving newer
+  pending interrupts.
 
 ### Removed
 

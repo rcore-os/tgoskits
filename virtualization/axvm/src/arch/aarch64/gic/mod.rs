@@ -167,6 +167,14 @@ impl GicV3Backend for AxvmGicV3Backend {
         Ok(())
     }
 
+    fn deactivate_physical_interrupt(
+        &self,
+        vcpu: GicVcpuId,
+        binding: PhysicalInterruptBinding,
+    ) -> Result<(), GicV3BackendError> {
+        physical_spi::deactivate(self, vcpu, binding)
+    }
+
     fn bind_physical_interrupt(
         &self,
         binding: PhysicalInterruptBinding,
@@ -224,6 +232,10 @@ pub(crate) fn backend(
 
 pub(crate) fn list_register_count() -> usize {
     cpu_interface::hardware_list_register_count()
+}
+
+pub(crate) fn require_deactivation_trap() -> Result<(), GicV3BackendError> {
+    cpu_interface::require_deactivation_trap()
 }
 
 pub(crate) fn resolve_physical_irq(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {

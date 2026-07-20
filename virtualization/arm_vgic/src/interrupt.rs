@@ -116,6 +116,15 @@ impl InterruptRecord {
         self.redelivery_pending = false;
     }
 
+    pub(crate) fn deactivate_inflight(&mut self, pending_in_delivery: bool) {
+        self.inflight = false;
+        self.active = false;
+        self.pending = pending_in_delivery
+            || self.redelivery_pending
+            || (self.trigger == TriggerMode::Level && self.line_asserted);
+        self.redelivery_pending = false;
+    }
+
     pub(crate) const fn priority(&self) -> Priority {
         self.priority
     }

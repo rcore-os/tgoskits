@@ -20,11 +20,11 @@ use std::{
 use axdevice::{
     AxVmDevices, ControllerCascade, ControllerInputId, ControllerRegistration, ControllerRole,
     Device, DeviceBundle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    InterruptControllerId, InterruptControllerOutput, InterruptTopology, InterruptTriggerMode,
-    IrqLine, IrqResult, MessageInterruptInputs, MessageInterruptSink, MsiDeviceId, MsiEndpoint,
-    MsiEventId, MsiMessage, VcpuInterruptAffinity, VcpuInterruptBinding, VcpuInterruptController,
-    VcpuInterruptId, VcpuInterruptPort, VcpuInterruptWake, WiredInterruptInputs, WiredIrqInput,
-    WiredIrqRequest, WiredIrqSink,
+    GuestInterruptId, InterruptControllerId, InterruptControllerOutput, InterruptTopology,
+    InterruptTriggerMode, IrqLine, IrqResult, MessageInterruptInputs, MessageInterruptSink,
+    MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage, VcpuInterruptAffinity, VcpuInterruptBinding,
+    VcpuInterruptController, VcpuInterruptDeactivation, VcpuInterruptId, VcpuInterruptPort,
+    VcpuInterruptWake, WiredInterruptInputs, WiredIrqInput, WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{BusAccess, BusResponse, DeviceError, InterruptSharing, Resource};
 
@@ -197,6 +197,14 @@ impl VcpuInterruptBinding for RecordingBinding {
 struct RecordingVcpuController {
     attached: Mutex<Vec<(VcpuInterruptId, VcpuInterruptAffinity)>>,
     events: Arc<Mutex<Vec<(&'static str, VcpuInterruptId)>>>,
+    deactivations: Mutex<Vec<(VcpuInterruptId, GuestInterruptId)>>,
+}
+
+impl VcpuInterruptDeactivation for RecordingVcpuController {
+    fn deactivate(&self, vcpu: VcpuInterruptId, intid: GuestInterruptId) -> DeviceManagerResult {
+        self.deactivations.lock().unwrap().push((vcpu, intid));
+        Ok(())
+    }
 }
 
 impl VcpuInterruptController for RecordingVcpuController {
@@ -535,6 +543,72 @@ fn attaches_vcpu_bindings_and_synchronizes_their_lifecycle() {
             ("save", VcpuInterruptId::new(3)),
         ]
     );
+}
+
+#[test]
+fn routes_trapped_deactivation_to_the_single_cpu_interface_owner() {
+    let (topology, _authority) = InterruptTopology::new();
+    let controller = Arc::new(RecordingVcpuController::default());
+    topology
+        .register_controller(
+            ControllerRegistration::new(ROOT, ControllerRole::Default)
+                .with_vcpu_controller(controller.clone())
+                .with_vcpu_deactivation(controller.clone()),
+        )
+        .unwrap();
+    topology
+        .finalize(&[VcpuInterruptPort::new(
+            VcpuInterruptId::new(2),
+            VcpuInterruptAffinity::new(0x100),
+            Arc::new(RecordingWake::default()),
+        )])
+        .unwrap();
+
+    topology
+        .deactivate_vcpu_interrupt(VcpuInterruptId::new(2), GuestInterruptId::new(47))
+        .unwrap();
+
+    assert_eq!(
+        *controller.deactivations.lock().unwrap(),
+        vec![(VcpuInterruptId::new(2), GuestInterruptId::new(47))]
+    );
+}
+
+#[test]
+fn rejects_multiple_cpu_interface_deactivation_owners() {
+    let (topology, _authority) = InterruptTopology::new();
+    let first = Arc::new(RecordingVcpuController::default());
+    let second = Arc::new(RecordingVcpuController::default());
+    topology
+        .register_controller(
+            ControllerRegistration::new(ROOT, ControllerRole::Default)
+                .with_vcpu_controller(first.clone())
+                .with_vcpu_deactivation(first),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        topology.register_controller(
+            ControllerRegistration::new(CHILD, ControllerRole::Secondary)
+                .with_vcpu_controller(second.clone())
+                .with_vcpu_deactivation(second)
+        ),
+        Err(DeviceManagerError::ResourceConflict { .. })
+    ));
+}
+
+#[test]
+fn rejects_deactivation_without_a_vcpu_controller() {
+    let (topology, _authority) = InterruptTopology::new();
+    let controller = Arc::new(RecordingVcpuController::default());
+
+    assert!(matches!(
+        topology.register_controller(
+            ControllerRegistration::new(ROOT, ControllerRole::Default)
+                .with_vcpu_deactivation(controller)
+        ),
+        Err(DeviceManagerError::InvalidInput { .. })
+    ));
 }
 
 #[test]

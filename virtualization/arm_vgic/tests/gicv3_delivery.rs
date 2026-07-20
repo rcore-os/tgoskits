@@ -22,6 +22,9 @@ const GICR_PROPBASER: u64 = 0x0070;
 const GICR_PENDBASER: u64 = 0x0078;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const ICH_HCR_UIE: u64 = 1 << 1;
+const ICH_HCR_LRENPIE: u64 = 1 << 2;
+const ICH_HCR_NPIE: u64 = 1 << 3;
+const ICH_HCR_TDIR: u64 = 1 << 14;
 
 #[test]
 fn physical_distributor_capabilities_are_not_fabricated_for_the_guest() {
@@ -308,6 +311,7 @@ fn lr_exhaustion_queues_and_refills_without_repeating_completed_edges() {
         1
     );
     assert_ne!(backend.loaded_hcr(0) & ICH_HCR_UIE, 0);
+    assert_ne!(backend.loaded_hcr(0) & ICH_HCR_NPIE, 0);
 
     backend.complete_all(0);
     binding.synchronize().unwrap();
@@ -328,6 +332,86 @@ fn lr_exhaustion_queues_and_refills_without_repeating_completed_edges() {
             .interrupt_state(None, IntId::Spi(second))
             .unwrap(),
         InterruptState::Inactive
+    );
+}
+
+#[test]
+fn active_lr_spills_for_a_higher_priority_pending_interrupt() {
+    let (controller, backend) = controller(1, 1);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let low_priority = SpiId::new(32).unwrap();
+    let high_priority = SpiId::new(33).unwrap();
+
+    for (spi, priority) in [(low_priority, 0xa0), (high_priority, 0x20)] {
+        controller
+            .write_distributor(
+                GICD_IPRIORITYR + u64::from(spi.raw()),
+                AccessWidth::Byte,
+                priority,
+            )
+            .unwrap();
+        enable_spi(&controller, spi);
+        controller
+            .configure_spi_input(spi, TriggerMode::Edge)
+            .unwrap();
+    }
+
+    controller.pulse_spi(low_priority).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(0);
+    binding.save().unwrap();
+
+    controller.pulse_spi(high_priority).unwrap();
+    binding.load().unwrap();
+
+    assert_eq!(backend.loaded_intids(0), vec![IntId::Spi(high_priority)]);
+    let hcr = backend.loaded_hcr(0);
+    assert_ne!(hcr & ICH_HCR_UIE, 0);
+    assert_ne!(hcr & ICH_HCR_LRENPIE, 0);
+    assert_eq!(hcr & ICH_HCR_NPIE, 0);
+    assert_ne!(hcr & ICH_HCR_TDIR, 0);
+}
+
+#[test]
+fn eoi_count_deactivates_an_active_interrupt_outside_the_lrs() {
+    let (controller, backend) = controller(1, 1);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let low_priority = SpiId::new(32).unwrap();
+    let high_priority = SpiId::new(33).unwrap();
+
+    for (spi, priority) in [(low_priority, 0xa0), (high_priority, 0x20)] {
+        controller
+            .write_distributor(
+                GICD_IPRIORITYR + u64::from(spi.raw()),
+                AccessWidth::Byte,
+                priority,
+            )
+            .unwrap();
+        enable_spi(&controller, spi);
+        controller
+            .configure_spi_input(spi, TriggerMode::Edge)
+            .unwrap();
+    }
+
+    controller.pulse_spi(low_priority).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(0);
+    binding.save().unwrap();
+    controller.pulse_spi(high_priority).unwrap();
+    binding.load().unwrap();
+
+    backend.set_eoi_count(0, 1);
+    binding.synchronize().unwrap();
+
+    assert_eq!(
+        controller
+            .interrupt_state(None, IntId::Spi(low_priority))
+            .unwrap(),
+        InterruptState::Inactive
+    );
+    assert_eq!(
+        backend.retired_interrupts(),
+        vec![(GicVcpuId::new(0), IntId::Spi(low_priority))]
     );
 }
 
@@ -621,6 +705,20 @@ impl TestBackend {
             for entry in state.list_registers_mut().iter_mut().flatten() {
                 entry.set_state(InterruptState::Active);
             }
+        }
+    }
+
+    fn set_eoi_count(&self, raw_vcpu: usize, count: u8) {
+        const ICH_HCR_EOI_COUNT_MASK: u64 = 0x1f << 27;
+
+        if let Some(state) = self
+            .interfaces
+            .lock()
+            .unwrap()
+            .get_mut(&GicVcpuId::new(raw_vcpu))
+        {
+            state
+                .set_hcr((state.hcr() & !ICH_HCR_EOI_COUNT_MASK) | (u64::from(count & 0x1f) << 27));
         }
     }
 

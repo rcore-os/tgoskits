@@ -80,8 +80,20 @@ bindings are likewise selected per `(DeviceId, EventId)`; events connected as
 software endpoints use the software ITS translation tables.
 
 SGIs and PPIs are always VM-local. `GicV3VcpuBinding::{load, save, synchronize}`
-saves the full virtual CPU interface, preserves software-pending work when LRs
-are full, and supports mixed software and HW-backed entries.
+saves the full virtual CPU interface and supports mixed software and HW-backed
+entries. LR refill rebuilds a bounded working set instead of pinning every
+active interrupt in hardware: pending work is selected before active overflow,
+while entries outside the LRs retain their complete pending/active state and
+backing. `ICH_HCR_EL2` NPIE, LRENPIE, and UIE request reconciliation when work
+remains outside the LRs.
+
+EOImode 0 overflow is reconciled through `ICH_HCR_EL2.EOIcount`. EOImode 1
+requires `ICC_DIR_EL1` to be trapped and routed to
+`GicV3VcpuBinding::deactivate`; an overflowed HW-backed entry is then
+deactivated through the ownership-checked physical backend rather than being
+converted into a software interrupt. The platform adapter must verify TDIR
+support before constructing the controller, or provide a complete common
+CPU-interface system-register trap implementation.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

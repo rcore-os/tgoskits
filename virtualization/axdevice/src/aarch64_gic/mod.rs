@@ -38,7 +38,8 @@ impl GicV3DeviceSet {
         let registration = ControllerRegistration::new(self.topology.id(), role)
             .with_wired_inputs(self.topology.clone())
             .with_message_inputs(self.topology.clone())
-            .with_vcpu_controller(self.topology.clone());
+            .with_vcpu_controller(self.topology.clone())
+            .with_vcpu_deactivation(self.topology.clone());
         bundle.push(DeviceRegistration::InterruptController(registration));
         for device in configured_mmio_devices(self.controller.clone()) {
             bundle.push(DeviceRegistration::Device(device));

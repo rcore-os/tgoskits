@@ -1,7 +1,7 @@
 //! vCPU CPU-interface lifecycle binding.
 
-use super::GicV3Controller;
-use crate::{CpuInterfaceState, GicVcpuId, VgicError, VgicResult, backend_result};
+use super::{GicV3Controller, state::DeliveryRetirement};
+use crate::{CpuInterfaceState, GicVcpuId, IntId, VgicError, VgicResult, backend_result};
 
 /// Per-vCPU lifecycle handle returned by [`GicV3Controller::attach_vcpu`].
 #[must_use = "dropping the binding detaches the vCPU from its Redistributor"]
@@ -84,7 +84,9 @@ impl GicV3VcpuBinding {
                 .save_cpu_interface(self.vcpu, &mut saved),
         );
         let merge_result = match save_result {
-            Ok(()) => self.merge_saved_state(saved, false),
+            Ok(()) => self
+                .merge_saved_state(saved, false)
+                .and_then(|retirements| self.apply_retirements(retirements)),
             Err(error) => Err(error),
         };
         self.controller
@@ -105,14 +107,46 @@ impl GicV3VcpuBinding {
                 .backend
                 .save_cpu_interface(self.vcpu, &mut saved),
         )?;
-        self.merge_saved_state(saved, true)?;
+        let retirements = self.merge_saved_state(saved, true)?;
         let state = self.cpu_interface_snapshot()?;
         backend_result(
             self.controller
                 .inner
                 .backend
                 .load_cpu_interface(self.vcpu, &state),
-        )
+        )?;
+        self.apply_retirements(retirements)
+    }
+
+    /// Applies one trapped guest deactivation to this vCPU's interrupt state.
+    ///
+    /// This operation is separate from interrupt injection: it consumes an
+    /// architectural CPU-interface action and preserves whether the active
+    /// delivery is software-owned or backed by an assigned physical IRQ.
+    pub fn deactivate(&self, intid: IntId) -> VgicResult {
+        let (retirement, state) = {
+            let mut controller = self.controller.inner.state.lock();
+            if !controller.active_vcpus.contains(&self.vcpu) {
+                return Err(VgicError::InvalidStateTransition {
+                    intid,
+                    operation: "deactivate virtual interrupt",
+                    detail: alloc::format!("vCPU {} is not loaded", self.vcpu.raw()),
+                });
+            }
+            let retirement = controller.deactivate_interrupt(self.vcpu, intid)?;
+            let Some(retirement) = retirement else {
+                return Ok(());
+            };
+            let state = controller.refill_cpu_interface(self.vcpu)?;
+            (retirement, state)
+        };
+        backend_result(
+            self.controller
+                .inner
+                .backend
+                .load_cpu_interface(self.vcpu, &state),
+        )?;
+        self.apply_retirements(core::iter::once(retirement))
     }
 
     /// Returns a snapshot useful to checked architecture adapters and tests.
@@ -127,20 +161,37 @@ impl GicV3VcpuBinding {
             .clone())
     }
 
-    fn merge_saved_state(&self, saved: CpuInterfaceState, refill: bool) -> VgicResult {
-        let retired = self
-            .controller
+    fn merge_saved_state(
+        &self,
+        saved: CpuInterfaceState,
+        refill: bool,
+    ) -> VgicResult<alloc::vec::Vec<DeliveryRetirement>> {
+        self.controller
             .inner
             .state
             .lock()
-            .merge_cpu_interface(self.vcpu, saved, refill)?;
+            .merge_cpu_interface(self.vcpu, saved, refill)
+    }
+
+    fn apply_retirements(
+        &self,
+        retirements: impl IntoIterator<Item = DeliveryRetirement>,
+    ) -> VgicResult {
         let mut first_error = None;
-        for intid in retired {
-            if let Err(error) = self
-                .controller
-                .inner
-                .backend
-                .retire_emulated_interrupt(self.vcpu, intid)
+        for retirement in retirements {
+            let result = match retirement {
+                DeliveryRetirement::Emulated { intid } => self
+                    .controller
+                    .inner
+                    .backend
+                    .retire_emulated_interrupt(self.vcpu, intid),
+                DeliveryRetirement::Physical { binding } => self
+                    .controller
+                    .inner
+                    .backend
+                    .deactivate_physical_interrupt(self.vcpu, binding),
+            };
+            if let Err(error) = result
                 && first_error.is_none()
             {
                 first_error = Some(error);

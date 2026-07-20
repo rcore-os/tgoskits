@@ -2,11 +2,17 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{ControllerState, GicV3VcpuWake};
+use super::{ControllerState, GicV3VcpuWake, SpiBacking};
 use crate::{
-    CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, LpiId,
-    PhysicalInterruptBinding, RedistributorState, SgiTarget, SpiId, VgicError, VgicResult,
+    CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, ListRegisterBacking,
+    ListRegisterState, LpiId, PhysicalInterruptBinding, QueuedDelivery, RedistributorState,
+    SgiTarget, SpiId, VgicError, VgicResult,
 };
+
+pub(super) enum DeliveryRetirement {
+    Emulated { intid: IntId },
+    Physical { binding: PhysicalInterruptBinding },
+}
 
 impl ControllerState {
     pub(super) fn redistributor(
@@ -207,7 +213,7 @@ impl ControllerState {
         vcpu: GicVcpuId,
         saved: CpuInterfaceState,
         refill: bool,
-    ) -> VgicResult<Vec<IntId>> {
+    ) -> VgicResult<Vec<DeliveryRetirement>> {
         let previous = self
             .redistributor(vcpu, "merge CPU interface")?
             .cpu_interface()
@@ -215,7 +221,7 @@ impl ControllerState {
         let current_list_registers = saved.list_registers().to_vec();
         self.redistributor_mut(vcpu, "merge CPU interface")?
             .replace_cpu_interface(saved);
-        let mut retired = Vec::new();
+        let mut retirements = Vec::new();
         for (index, (old, current)) in previous
             .list_registers()
             .iter()
@@ -223,21 +229,36 @@ impl ControllerState {
             .enumerate()
         {
             let synchronized = match (old, current) {
-                (Some(old), Some(current)) if current.intid() == old.intid() => Some((
-                    current.intid(),
-                    self.synchronize_inflight(vcpu, current.intid(), current.state())?,
-                )),
+                (Some(old), Some(current)) if current.intid() == old.intid() => {
+                    if current.backing() != old.backing() {
+                        return Err(VgicError::InvalidStateTransition {
+                            intid: current.intid(),
+                            operation: "synchronize CPU interface",
+                            detail: alloc::format!(
+                                "list-register backing changed from {:?} to {:?}",
+                                old.backing(),
+                                current.backing()
+                            ),
+                        });
+                    }
+                    Some((
+                        current.intid(),
+                        self.synchronize_inflight(vcpu, current.intid(), current.state())?,
+                    ))
+                }
                 (Some(old), Some(current)) => {
-                    self.complete_interrupt(vcpu, old.intid())?;
-                    retired.push(old.intid());
+                    if let Some(retirement) = self.complete_interrupt(vcpu, *old)? {
+                        retirements.push(retirement);
+                    }
                     Some((
                         current.intid(),
                         self.synchronize_inflight(vcpu, current.intid(), current.state())?,
                     ))
                 }
                 (Some(old), None) => {
-                    self.complete_interrupt(vcpu, old.intid())?;
-                    retired.push(old.intid());
+                    if let Some(retirement) = self.complete_interrupt(vcpu, *old)? {
+                        retirements.push(retirement);
+                    }
                     None
                 }
                 (None, Some(current)) => Some((
@@ -251,10 +272,24 @@ impl ControllerState {
                     .update_list_register_state(index, intid, state)?;
             }
         }
+        let eoi_count = self
+            .redistributor_mut(vcpu, "consume virtual EOI count")?
+            .take_eoi_count();
+        for _ in 0..eoi_count {
+            let Some(delivery) = self
+                .redistributor_mut(vcpu, "consume virtual EOI count")?
+                .take_next_active_outside()
+            else {
+                break;
+            };
+            if let Some(retirement) = self.deactivate_delivery(vcpu, delivery)? {
+                retirements.push(retirement);
+            }
+        }
         if refill {
             self.refill_cpu_interface(vcpu)?;
         }
-        Ok(retired)
+        Ok(retirements)
     }
 
     pub(super) fn refill_cpu_interface(
@@ -270,11 +305,14 @@ impl ControllerState {
                         resource: alloc::format!("Redistributor for vCPU {}", vcpu.raw()),
                         operation: "refill CPU interface",
                     })?;
-            let loaded = redistributor
+            let outcome = redistributor
                 .refill_list_registers(|spi| Ok(distributor.interrupt(spi)?.priority()))?;
-            (loaded, redistributor.cpu_interface().clone())
+            (outcome, redistributor.cpu_interface().clone())
         };
-        for intid in loaded {
+        for intid in loaded.spilled_pending {
+            self.cancel_inflight(vcpu, intid)?;
+        }
+        for intid in loaded.loaded {
             self.mark_inflight(vcpu, intid)?;
         }
         Ok(snapshot)
@@ -291,6 +329,21 @@ impl ControllerState {
                 .redistributor_mut(vcpu, "update LPI state")?
                 .lpi_mut(lpi)
                 .mark_inflight(),
+        }
+        Ok(())
+    }
+
+    fn cancel_inflight(&mut self, vcpu: GicVcpuId, intid: IntId) -> VgicResult {
+        match intid {
+            IntId::Spi(spi) => self.distributor.interrupt_mut(spi)?.cancel_inflight(),
+            IntId::Sgi(_) | IntId::Ppi(_) => self
+                .redistributor_mut(vcpu, "spill private interrupt from CPU interface")?
+                .private_mut(intid)?
+                .cancel_inflight(),
+            IntId::Lpi(lpi) => self
+                .redistributor_mut(vcpu, "spill LPI from CPU interface")?
+                .lpi_mut(lpi)
+                .cancel_inflight(),
         }
         Ok(())
     }
@@ -317,7 +370,12 @@ impl ControllerState {
         })
     }
 
-    fn complete_interrupt(&mut self, vcpu: GicVcpuId, intid: IntId) -> VgicResult {
+    fn complete_interrupt(
+        &mut self,
+        vcpu: GicVcpuId,
+        delivery: ListRegisterState,
+    ) -> VgicResult<Option<DeliveryRetirement>> {
+        let intid = delivery.intid();
         let repend = match intid {
             IntId::Spi(spi) => {
                 let interrupt = self.distributor.interrupt_mut(spi)?;
@@ -337,11 +395,99 @@ impl ControllerState {
                 interrupt.deliverable()
             }
         };
-        if repend {
-            self.redistributor_mut(vcpu, "requeue level interrupt")?
+        if repend && delivery.backing() == ListRegisterBacking::Software {
+            self.redistributor_mut(vcpu, "requeue software interrupt")?
                 .queue(intid);
         }
-        Ok(())
+        self.retirement_for(delivery.backing(), intid, false)
+    }
+
+    pub(super) fn deactivate_interrupt(
+        &mut self,
+        vcpu: GicVcpuId,
+        intid: IntId,
+    ) -> VgicResult<Option<DeliveryRetirement>> {
+        let Some(delivery) = self
+            .redistributor_mut(vcpu, "deactivate virtual interrupt")?
+            .take_active_delivery(intid)
+        else {
+            return Ok(None);
+        };
+        self.deactivate_delivery(vcpu, delivery)
+    }
+
+    fn deactivate_delivery(
+        &mut self,
+        vcpu: GicVcpuId,
+        delivery: QueuedDelivery,
+    ) -> VgicResult<Option<DeliveryRetirement>> {
+        let intid = delivery.intid();
+        let pending_in_delivery = delivery.state() == InterruptState::ActivePending
+            && delivery.backing() == ListRegisterBacking::Software;
+        let repend = match intid {
+            IntId::Spi(spi) => {
+                let interrupt = self.distributor.interrupt_mut(spi)?;
+                interrupt.deactivate_inflight(pending_in_delivery);
+                interrupt.deliverable()
+            }
+            IntId::Sgi(_) | IntId::Ppi(_) => {
+                let interrupt = self
+                    .redistributor_mut(vcpu, "deactivate private interrupt")?
+                    .private_mut(intid)?;
+                interrupt.deactivate_inflight(pending_in_delivery);
+                interrupt.deliverable()
+            }
+            IntId::Lpi(lpi) => {
+                let interrupt = self.redistributor_mut(vcpu, "deactivate LPI")?.lpi_mut(lpi);
+                interrupt.deactivate_inflight(pending_in_delivery);
+                interrupt.deliverable()
+            }
+        };
+        if repend && delivery.backing() == ListRegisterBacking::Software {
+            self.redistributor_mut(vcpu, "requeue deactivated interrupt")?
+                .queue(intid);
+        }
+        self.retirement_for(delivery.backing(), intid, true)
+    }
+
+    fn retirement_for(
+        &self,
+        backing: ListRegisterBacking,
+        intid: IntId,
+        explicit_deactivation: bool,
+    ) -> VgicResult<Option<DeliveryRetirement>> {
+        match backing {
+            ListRegisterBacking::Software => Ok(Some(DeliveryRetirement::Emulated { intid })),
+            ListRegisterBacking::Physical(_) if !explicit_deactivation => Ok(None),
+            ListRegisterBacking::Physical(host) => {
+                let IntId::Spi(spi) = intid else {
+                    return Err(VgicError::WrongIntIdClass {
+                        intid,
+                        operation: "deactivate physical interrupt",
+                    });
+                };
+                let Some(SpiBacking::Physical(binding)) = self.spi_backings.get(&spi).copied()
+                else {
+                    return Err(VgicError::InvalidStateTransition {
+                        intid,
+                        operation: "deactivate physical interrupt",
+                        detail: "the hardware-backed LR has no owned physical binding".into(),
+                    });
+                };
+                if binding.host() != host {
+                    return Err(VgicError::InvalidStateTransition {
+                        intid,
+                        operation: "deactivate physical interrupt",
+                        detail: alloc::format!(
+                            "the LR names host interrupt {}, but ownership names {}",
+                            host.raw(),
+                            binding.host().raw()
+                        ),
+                    });
+                }
+                Ok(Some(DeliveryRetirement::Physical { binding }))
+            }
+        }
     }
 }
 
