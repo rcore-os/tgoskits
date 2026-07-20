@@ -801,6 +801,29 @@ fn aarch64_hardware_forwarded_routes_separate_mpidr_from_host_cpu_index() {
     assert!(normalize < consume);
 }
 
+#[test]
+fn aarch64_guest_smc_does_not_implicitly_enter_host_secure_firmware() {
+    let exception = include_str!("../../arm_vcpu/src/exception.rs");
+    let library = include_str!("../../arm_vcpu/src/lib.rs");
+    let smccc = include_str!("../../arm_vcpu/src/smccc.rs");
+
+    assert!(exception.contains("crate::smccc::NOT_SUPPORTED"));
+    assert!(smccc.contains("VERSION_1_1"));
+    assert!(
+        exception.matches("handle_vm_firmware_call(ctx)").count() >= 2,
+        "both SMC and HVC conduits must use the VM-local firmware dispatcher"
+    );
+    assert!(
+        !exception.contains("smc_call("),
+        "an unowned guest SMC must not be forwarded to host secure firmware"
+    );
+    assert!(library.contains("mod smccc;"));
+    assert!(
+        !library.contains("mod smc;"),
+        "the vCPU core must not own an unrestricted host SMC backend"
+    );
+}
+
 fn find_target_arch_cfg_outside_arch(
     source_root: &std::path::Path,
     directory: &std::path::Path,

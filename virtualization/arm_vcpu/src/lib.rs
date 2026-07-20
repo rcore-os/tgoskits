@@ -27,7 +27,7 @@ mod exception;
 pub mod host;
 mod pcpu;
 mod psci;
-mod smc;
+mod smccc;
 mod types;
 mod vcpu;
 

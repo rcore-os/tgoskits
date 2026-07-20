@@ -193,6 +193,60 @@ fn hardware_forwarded_vm_replaces_the_protected_console_with_a_software_irq_uart
 }
 
 #[test]
+fn host_secure_firmware_channel_is_not_exposed_without_a_vm_capability() {
+    let host = host_fdt_with_host_scmi_channel();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let scmi = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/firmware/scmi")
+        .unwrap();
+    let cpu = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/cpus/cpu@0")
+        .unwrap();
+    assert_eq!(scmi.disposition(), DeviceDisposition::Unrepresentable);
+    assert_eq!(cpu.disposition(), DeviceDisposition::Structural);
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|range| range.contains(0x0010_3000)),
+        "host secure-firmware RAM must not become an identity mapping"
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/firmware/scmi").is_none());
+    assert!(
+        guest
+            .get_by_path_id("/reserved-memory/scmi-shmem@103000")
+            .is_none()
+    );
+    let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
+    for property in [
+        "clocks",
+        "clock-names",
+        "operating-points-v2",
+        "performance-domains",
+        "cpu-supply",
+        "power-domains",
+        "cpu-idle-states",
+    ] {
+        assert!(
+            cpu.get_property(property).is_none(),
+            "guest CPU retained host control property {property}"
+        );
+    }
+}
+
+#[test]
 fn passthrough_pcie_retains_its_embedded_legacy_interrupt_controller() {
     let host = host_fdt_with_pcie_legacy_interrupt_controller();
     let snapshot = whole_machine_snapshot(&host);
@@ -688,6 +742,80 @@ fn host_fdt_with_rockchip_fiq_debugger_console() -> Vec<u8> {
     fiq.set_property(u32_property("rockchip,baudrate", &[1_500_000]));
     fiq.set_property(u32_property("interrupts", &[0, 252, 8]));
     fiq.set_property(string_property("status", "okay"));
+
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_host_scmi_channel() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let root = fdt.root_id();
+
+    let reserved = fdt.add_node(root, Node::new("reserved-memory"));
+    fdt.node_mut(reserved)
+        .unwrap()
+        .set_property(u32_property("#address-cells", &[2]));
+    fdt.node_mut(reserved)
+        .unwrap()
+        .set_property(u32_property("#size-cells", &[2]));
+    fdt.node_mut(reserved)
+        .unwrap()
+        .set_property(Property::new("ranges", Vec::new()));
+    let shmem = fdt.add_node(reserved, Node::new("scmi-shmem@103000"));
+    fdt.node_mut(shmem)
+        .unwrap()
+        .set_property(string_property("compatible", "arm,scmi-shmem"));
+    fdt.node_mut(shmem)
+        .unwrap()
+        .set_property(u32_property("phandle", &[42]));
+    fdt.node_mut(shmem)
+        .unwrap()
+        .set_property(Property::new("no-map", Vec::new()));
+    fdt.view_typed_mut(shmem)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0010_3000, Some(0x1000))]);
+
+    let firmware = fdt.add_node(root, Node::new("firmware"));
+    let scmi = fdt.add_node(firmware, Node::new("scmi"));
+    fdt.node_mut(scmi)
+        .unwrap()
+        .set_property(string_property("compatible", "arm,scmi-smc"));
+    fdt.node_mut(scmi)
+        .unwrap()
+        .set_property(u32_property("shmem", &[42]));
+    fdt.node_mut(scmi)
+        .unwrap()
+        .set_property(u32_property("arm,smc-id", &[0x8200_0010]));
+    let clock = fdt.add_node(scmi, Node::new("protocol@14"));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("reg", &[0x14]));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("#clock-cells", &[1]));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("phandle", &[43]));
+    let performance = fdt.add_node(scmi, Node::new("protocol@13"));
+    fdt.node_mut(performance)
+        .unwrap()
+        .set_property(u32_property("reg", &[0x13]));
+    fdt.node_mut(performance)
+        .unwrap()
+        .set_property(u32_property("#performance-domain-cells", &[1]));
+    fdt.node_mut(performance)
+        .unwrap()
+        .set_property(u32_property("phandle", &[44]));
+
+    let cpu = fdt.get_by_path_id("/cpus/cpu@0").unwrap();
+    let cpu = fdt.node_mut(cpu).unwrap();
+    cpu.set_property(u32_property("clocks", &[43, 0]));
+    cpu.set_property(string_property("clock-names", "cpu"));
+    cpu.set_property(u32_property("performance-domains", &[44, 0]));
+    cpu.set_property(u32_property("operating-points-v2", &[45]));
+    cpu.set_property(u32_property("cpu-supply", &[46]));
+    cpu.set_property(u32_property("power-domains", &[47, 0]));
+    cpu.set_property(u32_property("cpu-idle-states", &[48]));
 
     fdt.encode().as_ref().to_vec()
 }

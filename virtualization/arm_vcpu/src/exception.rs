@@ -93,11 +93,9 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             // The `#imm`` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
 
-            // Is this a psci call?
-            //
-            // By convention, a psci call can use either the `hvc` or the `smc` instruction.
-            // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
-            if let Some(result) = handle_psci_call(ctx) {
+            // PSCI and SMCCC architecture calls may use either conduit. Keep
+            // their semantics inside the VM before considering VMM hypercalls.
+            if let Some(result) = handle_vm_firmware_call(ctx) {
                 return result;
             }
 
@@ -238,19 +236,26 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
     }))
 }
 
+fn handle_vm_firmware_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
+    if let Some(result) = handle_psci_call(ctx) {
+        return Some(result);
+    }
+    let result = crate::smccc::architecture_call(ctx.gpr[0], ctx.gpr[1])?;
+    ctx.gpr[0] = result;
+    Some(Ok(ArmVmExit::Nothing))
+}
+
 /// Handles SMC (Secure Monitor Call) exceptions.
 ///
-/// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
-/// Otherwise, it will forward the SMC call to the ATF directly.
+/// PSCI and architecture discovery are implemented as VM-local services. Other
+/// SMCCC owners require an explicit mediated capability above the vCPU
+/// boundary; forwarding arbitrary guest arguments into host secure firmware
+/// would let the guest address host resources that were never assigned to it.
 fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    // Is this a psci call?
-    if let Some(result) = handle_psci_call(ctx) {
+    if let Some(result) = handle_vm_firmware_call(ctx) {
         result
     } else {
-        // We just forward the SMC call to the ATF directly.
-        // The args are from lower EL, so it is safe to call the ATF.
-        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
-            unsafe { crate::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
+        ctx.gpr[0] = crate::smccc::NOT_SUPPORTED;
         Ok(ArmVmExit::Nothing)
     }
 }

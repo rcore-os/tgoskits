@@ -57,6 +57,9 @@ impl HostPlatformSnapshot {
                 descriptor = descriptor.with_compatible(compatible);
             }
             for dependency in dependencies.dependencies(node) {
+                if is_host_managed_cpu_property(&path, dependency.property()) {
+                    continue;
+                }
                 descriptor = descriptor.with_dependency(HostDeviceDependency::new(
                     HostDeviceId::new(dependency.provider())?,
                     dependency.property(),
@@ -154,6 +157,31 @@ fn parent_path(path: &str) -> Option<&str> {
     }
     let (parent, _) = path.rsplit_once('/')?;
     Some(if parent.is_empty() { "/" } else { parent })
+}
+
+pub(crate) fn is_direct_cpu_node(path: &str) -> bool {
+    let Some(cpu_path) = path.strip_prefix("/cpus/cpu@") else {
+        return false;
+    };
+    !cpu_path.is_empty() && !cpu_path.contains('/')
+}
+
+pub(crate) fn is_host_managed_cpu_property(path: &str, property: &str) -> bool {
+    if !is_direct_cpu_node(path) {
+        return false;
+    }
+    matches!(
+        property,
+        "clocks"
+            | "clock-names"
+            | "assigned-clocks"
+            | "assigned-clock-parents"
+            | "assigned-clock-rates"
+            | "operating-points-v2"
+            | "performance-domains"
+            | "power-domains"
+            | "cpu-idle-states"
+    ) || property.ends_with("-supply")
 }
 
 fn controller_supports_encoding(

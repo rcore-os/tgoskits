@@ -19,7 +19,9 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostFirmwareActivation, HostPlatformSnapshot, MachinePlanError,
-    MachinePlanResult, VmMachinePlan, is_planned_guest_firmware_infrastructure,
+    MachinePlanResult, VmMachinePlan,
+    fdt::{is_direct_cpu_node, is_host_managed_cpu_property},
+    is_planned_guest_firmware_infrastructure,
 };
 
 /// Guest-specific data used while filtering a host FDT snapshot.
@@ -70,6 +72,7 @@ pub fn generate_host_fdt(
     let mut source = Fdt::from_bytes(bytes).map_err(|error| MachinePlanError::InvalidFirmware {
         detail: format!("failed to parse captured host FDT: {error:?}"),
     })?;
+    sanitize_host_managed_cpu_properties(&mut source)?;
     sanitize_virtual_device_templates(&mut source, plan)?;
     let selected = selected_paths(plan, &mut source, config)?;
     let mut guest = clone_selected_tree(&source, &selected, config)?;
@@ -286,6 +289,37 @@ fn selected_cpu(source: &Fdt, node_id: NodeId, path: &str, config: &HostFdtConfi
     reg_id
         .or(unit_id)
         .is_some_and(|id| config.physical_cpu_ids.contains(&id))
+}
+
+fn sanitize_host_managed_cpu_properties(source: &mut Fdt) -> MachinePlanResult<()> {
+    let cpu_nodes = source
+        .iter_node_ids()
+        .filter_map(|node_id| {
+            let path = source.path_of(node_id);
+            is_direct_cpu_node(&path).then_some((node_id, path))
+        })
+        .collect::<Vec<_>>();
+    for (node_id, path) in cpu_nodes {
+        let properties = source
+            .node(node_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("captured host CPU node '{path}' disappeared"),
+            })?
+            .properties()
+            .iter()
+            .map(|property| property.name().to_string())
+            .filter(|property| is_host_managed_cpu_property(&path, property))
+            .collect::<Vec<_>>();
+        let node = source
+            .node_mut(node_id)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!("captured host CPU node '{path}' cannot be sanitized"),
+            })?;
+        for property in properties {
+            node.remove_property(&property);
+        }
+    }
+    Ok(())
 }
 
 fn sanitize_path_tables(guest: &mut Fdt) -> MachinePlanResult<()> {

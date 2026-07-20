@@ -17,6 +17,11 @@
 
 `arm_vcpu` 提供 OS-neutral 的 AArch64 vCPU core。它负责 EL2 guest entry/exit、guest register state、trap decode 和硬件虚拟化寄存器语义。宿主 OS/VMM 策略通过 `ArmHostOps` 提供；AxVM 接入层位于 `virtualization/axvm/src/arch/aarch64`。
 
+Guest PSCI 调用和受限的 SMCCC architecture discovery 由 VM 内部实现。未注册的
+SMCCC owner 默认被拒绝并返回 `SMCCC_RET_NOT_SUPPORTED`；如果 VMM 需要
+SCMI 或其他安全固件协议，必须提供经所有权校验的 mediated capability，
+不能把任意 guest SMC 参数直接转发给 host firmware。
+
 ## 快速开始
 
 ### 添加依赖

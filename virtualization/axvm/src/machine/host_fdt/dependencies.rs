@@ -326,12 +326,26 @@ fn property_dependencies(name: &str, bytes: &[u8], providers: &PhandleMap) -> Ve
 
 fn argument_cell_count(name: &str, cells: &BTreeMap<String, u32>) -> usize {
     let cell_property = match name {
-        "interrupt-parent" | "phy-handle" | "msi-parent" | "memory-region" | "syscon"
-        | "regmap" | "nvmem-cells" | "pinctrl-0" | "pinctrl-1" | "pinctrl-2" | "pinctrl-3"
-        | "pinctrl-4" | "remote-endpoint" => return 0,
+        "interrupt-parent"
+        | "phy-handle"
+        | "msi-parent"
+        | "memory-region"
+        | "shmem"
+        | "operating-points-v2"
+        | "cpu-idle-states"
+        | "syscon"
+        | "regmap"
+        | "nvmem-cells"
+        | "pinctrl-0"
+        | "pinctrl-1"
+        | "pinctrl-2"
+        | "pinctrl-3"
+        | "pinctrl-4"
+        | "remote-endpoint" => return 0,
         "clocks" | "assigned-clocks" | "assigned-clock-parents" => "#clock-cells",
         "resets" => "#reset-cells",
         "power-domains" => "#power-domain-cells",
+        "performance-domains" => "#performance-domain-cells",
         "phys" => "#phy-cells",
         "interrupts-extended" => "#interrupt-cells",
         "gpio" | "gpios" => "#gpio-cells",
@@ -376,6 +390,9 @@ fn is_phandle_property(name: &str) -> bool {
     matches!(
         name,
         "clocks"
+            | "cpu-idle-states"
+            | "operating-points-v2"
+            | "performance-domains"
             | "power-domains"
             | "phys"
             | "resets"
@@ -389,6 +406,7 @@ fn is_phandle_property(name: &str) -> bool {
             | "phy-handle"
             | "msi-parent"
             | "memory-region"
+            | "shmem"
             | "remote-endpoint"
             | "cooling-device"
             | "syscon"
