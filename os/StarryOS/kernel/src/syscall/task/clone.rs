@@ -126,7 +126,7 @@ impl CloneArgs {
             flags, exit_signal, ..
         } = self;
 
-        if *exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
+        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
             return Err(AxError::InvalidInput);
         }
         if flags.contains(CloneFlags::THREAD)
@@ -530,4 +530,33 @@ pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
 pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(uctx, flags, 0, 0, 0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use linux_raw_sys::general::SIGCHLD;
+
+    use super::{CloneArgs, CloneFlags};
+
+    #[test]
+    fn clone_parent_allows_nonzero_exit_signal() {
+        let args = CloneArgs {
+            flags: CloneFlags::PARENT,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn clone_thread_rejects_nonzero_exit_signal() {
+        let args = CloneArgs {
+            flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_err());
+    }
 }
