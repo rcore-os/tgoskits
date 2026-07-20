@@ -460,6 +460,28 @@ pub fn sys_symlinkat(
     let uid = cred.fsuid;
     let gid = cred.fsgid;
     with_fs(new_dirfd, |fs| {
+        let (parent, name) = fs.resolve_parent(Path::new(&linkpath))?;
+        match parent.lookup_no_follow(&name) {
+            Ok(_) => return Err(AxError::AlreadyExists),
+            Err(AxError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
+        let meta = parent.metadata()?;
+        if !cred.has_cap_dac_override() {
+            let can_create = if cred.fsuid == meta.uid {
+                meta.mode
+                    .contains(NodePermission::OWNER_WRITE | NodePermission::OWNER_EXEC)
+            } else if cred.in_group(meta.gid) {
+                meta.mode
+                    .contains(NodePermission::GROUP_WRITE | NodePermission::GROUP_EXEC)
+            } else {
+                meta.mode
+                    .contains(NodePermission::OTHER_WRITE | NodePermission::OTHER_EXEC)
+            };
+            if !can_create {
+                return Err(AxError::PermissionDenied);
+            }
+        }
         fs.symlink(target, linkpath, uid, gid)?;
         Ok(0)
     })
@@ -726,17 +748,20 @@ pub fn sys_utimensat(
         }
     }
 
-    let (atime, mtime) = if let Some(times) = times.nullable() {
+    let (atime, mtime, write_permission_suffices) = if let Some(times) = times.nullable() {
         // SAFETY: `timespec` is #[repr(C)] with only integer fields;
         // any bit pattern is a valid value.
         let [atime, mtime] = unsafe { times.vm_read_uninit()?.assume_init() };
+        let write_permission_suffices =
+            atime.tv_nsec == UTIME_NOW as _ && mtime.tv_nsec == UTIME_NOW as _;
         (
             utime_to_duration(&atime).transpose()?,
             utime_to_duration(&mtime).transpose()?,
+            write_permission_suffices,
         )
     } else {
         let time = wall_time();
-        (Some(time), Some(time))
+        (Some(time), Some(time), true)
     };
     if atime.is_none() && mtime.is_none() {
         return Ok(0);
@@ -752,7 +777,19 @@ pub fn sys_utimensat(
     if !cred.has_cap_fowner() {
         let meta = loc.metadata()?;
         if cred.fsuid != meta.uid {
-            return Err(AxError::OperationNotPermitted);
+            if !write_permission_suffices {
+                return Err(AxError::OperationNotPermitted);
+            }
+            let has_write = if cred.has_cap_dac_override() {
+                true
+            } else if cred.in_group(meta.gid) {
+                meta.mode.contains(NodePermission::GROUP_WRITE)
+            } else {
+                meta.mode.contains(NodePermission::OTHER_WRITE)
+            };
+            if !has_write {
+                return Err(AxError::PermissionDenied);
+            }
         }
     }
 

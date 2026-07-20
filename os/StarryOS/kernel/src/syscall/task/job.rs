@@ -37,7 +37,13 @@ pub fn sys_getpgrp() -> AxResult<isize> {
     Ok(curr.as_thread().proc_data.proc.group().pgid() as _)
 }
 
-pub fn sys_setpgid(pid: Pid, pgid: Pid) -> AxResult<isize> {
+pub fn sys_setpgid(pid: i32, pgid: i32) -> AxResult<isize> {
+    if pid < 0 || pgid < 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let pid = pid as Pid;
+    let pgid = pgid as Pid;
+
     let proc = &get_process_data(pid)?.proc;
 
     if pgid == 0 || pgid == proc.pid() {

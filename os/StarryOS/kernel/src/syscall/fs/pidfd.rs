@@ -100,12 +100,13 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
         check_kill_permission(proc_data.proc.pid())?;
     }
     let fd_entry = if is_current {
-        // Use the live fd table for the current process. `proc_data.scope` is only
-        // refreshed on clone/dup paths; syscalls like pipe() update ActiveScope only.
+        // Use the calling thread's live fd table, including any table installed
+        // by unshare(CLONE_FILES) or close_range(CLOSE_RANGE_UNSHARE).
         FD_TABLE.read().get(target_fd as usize).cloned()
     } else {
+        let task = get_task(proc_data.proc.pid())?;
         FD_TABLE
-            .scope(&proc_data.scope.read())
+            .scope(&task.as_thread().scope.read())
             .read()
             .get(target_fd as usize)
             .cloned()

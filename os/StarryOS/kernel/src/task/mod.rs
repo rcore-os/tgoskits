@@ -113,6 +113,13 @@ pub struct Thread {
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
+    /// Resources whose sharing is controlled by clone/unshare flags.
+    ///
+    /// Each thread owns its scope while individual entries may still point to
+    /// shared objects such as an fd table or filesystem context. Keeping the
+    /// association here lets `unshare(CLONE_FILES)` detach only its caller.
+    pub(crate) scope: RwLock<Scope>,
+
     /// The clear thread tid field
     ///
     /// See <https://manpages.debian.org/unstable/manpages-dev/set_tid_address.2.en.html#clear_child_tid>
@@ -217,6 +224,7 @@ impl Thread {
         proc_data: Arc<ProcessData>,
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
+        scope: Scope,
     ) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
@@ -227,6 +235,7 @@ impl Thread {
                 signal_mask,
             ),
             proc_data,
+            scope: RwLock::new(scope),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
             time: AssumeSync(RefCell::new(TimeManager::new())),
@@ -254,6 +263,26 @@ impl Thread {
             #[cfg(target_arch = "aarch64")]
             perf_counters: SpinNoIrq::new(Vec::new()),
         })
+    }
+
+    /// Mutate the current thread's resource scope.
+    ///
+    /// `TaskExt::on_enter` leaves the current task's active scope installed by
+    /// holding one read count on [`Self::scope`]. A syscall running in that task
+    /// must temporarily release that read count before taking the write side.
+    /// The closure runs with preemption and local IRQs disabled, so it should
+    /// only install already-prepared scope entries.
+    pub(crate) fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+        let _guard = NoPreemptIrqSave::new();
+        ActiveScope::set_global();
+        unsafe { self.scope.force_read_decrement() };
+        let mut scope = self.scope.write();
+        let ret = f(&mut scope);
+        drop(scope);
+        let scope = self.scope.read();
+        unsafe { ActiveScope::set(&scope) };
+        core::mem::forget(scope);
+        ret
     }
 
     /// Returns the user-visible TID for this thread.
@@ -498,7 +527,7 @@ impl Thread {
 #[extern_trait]
 impl TaskExt for Box<Thread> {
     fn on_enter(&self) {
-        let scope = self.proc_data.scope.read();
+        let scope = self.scope.read();
         unsafe { ActiveScope::set(&scope) };
         core::mem::forget(scope);
         // Program any per-task perf counters onto HW for this slice. Runs with
@@ -514,7 +543,7 @@ impl TaskExt for Box<Thread> {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
         ActiveScope::set_global();
-        unsafe { self.proc_data.scope.force_read_decrement() };
+        unsafe { self.scope.force_read_decrement() };
     }
 }
 
@@ -675,8 +704,6 @@ pub struct ProcessData {
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
-    /// The resource scope
-    pub scope: RwLock<Scope>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// The user heap top
@@ -881,7 +908,6 @@ impl ProcessData {
             aspace: SpinNoIrq::new(aspace),
             uprobe_manager: crate::kprobe::KprobeManager::new(),
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
-            scope: RwLock::new(Scope::new()),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
             rlim: RwLock::default(),
@@ -973,26 +999,6 @@ impl ProcessData {
         }
         let aspace = self.aspace.lock().clone();
         crate::mm::release_process_slot(&aspace);
-    }
-
-    /// Mutate the process scope from the current task.
-    ///
-    /// `TaskExt::on_enter` leaves the current task's active scope installed by
-    /// holding one read count on [`Self::scope`]. A syscall running in that task
-    /// must temporarily release that read count before taking the write side.
-    /// The closure runs with preemption and local IRQs disabled, so it should
-    /// only install already-prepared scope entries.
-    pub fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
-        let _guard = NoPreemptIrqSave::new();
-        ActiveScope::set_global();
-        unsafe { self.scope.force_read_decrement() };
-        let mut scope = self.scope.write();
-        let ret = f(&mut scope);
-        drop(scope);
-        let scope = self.scope.read();
-        unsafe { ActiveScope::set(&scope) };
-        core::mem::forget(scope);
-        ret
     }
 
     /// Get the top address of the user heap.
