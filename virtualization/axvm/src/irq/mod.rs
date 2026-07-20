@@ -20,6 +20,6 @@ pub trait RiscvPlatformIrqInjectorIf {
     /// Registers a callback that forwards a physical IRQ line into the current guest.
     fn register_virtual_irq_injector(injector: fn(usize) -> bool);
 
-    /// Routes physical PLIC IRQs that may be forwarded to a guest toward the vCPU CPU.
+    /// Routes and activates guest-owned physical PLIC IRQs on the vCPU CPU.
     fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]);
 }

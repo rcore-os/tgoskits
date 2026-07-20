@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
-use riscv_vcpu::RiscvVcpuCreateConfig;
+use riscv_vcpu::{RiscvGuestIsaConfig, RiscvVcpuCreateConfig};
 
 use super::{Riscv64Arch, irq, npt};
 use crate::{
@@ -64,10 +64,15 @@ fn init_vm_with(
             .image_config()
             .dtb_load_gpa
             .unwrap_or_default();
+        let guest_isa = match resources.config().machine_mode() {
+            axvm_types::VmMachineMode::Passthrough => RiscvGuestIsaConfig::inherited_host(),
+            axvm_types::VmMachineMode::Virtual => RiscvGuestIsaConfig::baseline(),
+        };
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
             Ok(RiscvVcpuCreateConfig {
                 hart_id: placement.id,
                 dtb_addr: dtb_addr.as_usize(),
+                isa: guest_isa,
             })
         })?;
         let mut devices = PreparedDevices::empty();
