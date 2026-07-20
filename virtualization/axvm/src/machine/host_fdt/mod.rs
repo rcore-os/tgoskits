@@ -19,7 +19,7 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostFirmwareActivation, HostPlatformSnapshot, MachinePlanError,
-    MachinePlanResult, VmMachinePlan,
+    MachinePlanResult, PlannedHostDevice, VmMachinePlan,
     fdt::{is_direct_cpu_node, is_host_managed_cpu_property},
     is_planned_guest_firmware_infrastructure,
 };
@@ -105,7 +105,7 @@ fn selected_paths(
         if matches!(
             device.disposition(),
             DeviceDisposition::Passthrough | DeviceDisposition::Structural
-        ) || selected_guest_firmware_infrastructure(plan, device.compatibles())
+        ) || selected_guest_firmware_infrastructure(plan, device)
         {
             selected.insert(path.into());
         }
@@ -149,8 +149,27 @@ fn selected_paths(
     Ok(selected)
 }
 
-fn selected_guest_firmware_infrastructure(plan: &VmMachinePlan, compatibles: &[String]) -> bool {
-    is_planned_guest_firmware_infrastructure(plan.interrupt_controller(), compatibles)
+fn selected_guest_firmware_infrastructure(
+    plan: &VmMachinePlan,
+    device: &PlannedHostDevice,
+) -> bool {
+    if device
+        .compatibles()
+        .iter()
+        .any(|compatible| compatible == "arm,gic-v3-its")
+    {
+        // A host may expose multiple physical ITS instances. The controller
+        // plan creates at most one VM-local software ITS aperture, so matching
+        // by compatible alone would leave unregistered host GITS windows in
+        // the guest FDT. Firmware visibility must follow the resolved resource
+        // identity consumed by the runtime controller.
+        let planned_its = match plan.interrupt_controller() {
+            Some(super::InterruptControllerPlan::Aarch64GicV3(gic)) => gic.its(),
+            _ => None,
+        };
+        return planned_its.is_some_and(|planned| device.mmio().first() == Some(&planned));
+    }
+    is_planned_guest_firmware_infrastructure(plan.interrupt_controller(), device.compatibles())
 }
 
 fn add_ancestors(paths: &mut BTreeSet<String>) {

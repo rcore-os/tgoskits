@@ -390,6 +390,32 @@ fn hardware_forwarding_replaces_the_unisolated_physical_its_with_a_software_its(
 }
 
 #[test]
+fn hardware_forwarding_exposes_only_the_planned_software_its_aperture() {
+    let host = host_fdt_with_two_nested_physical_its();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(
+        guest
+            .get_by_path_id("/soc/interrupt-controller@8000000/msi-controller@fe640000")
+            .is_some()
+    );
+    assert!(
+        guest
+            .get_by_path_id("/soc/interrupt-controller@8000000/msi-controller@fe660000")
+            .is_none(),
+        "host ITS instances without a matching VM-local aperture must not remain guest-visible"
+    );
+}
+
+#[test]
 fn hardware_forwarding_filters_devices_requiring_an_unisolated_physical_its() {
     let host = host_fdt_with_pcie_using_physical_its();
     let snapshot = whole_machine_snapshot(&host);
@@ -1049,6 +1075,39 @@ fn host_fdt_with_physical_its() -> Vec<u8> {
     fdt.view_typed_mut(its)
         .unwrap()
         .set_regs(&[RegInfo::new(0x0808_0000, Some(0x2_0000))]);
+
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_two_nested_physical_its() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let gic = fdt
+        .get_by_path_id("/soc/interrupt-controller@8000000")
+        .unwrap();
+    fdt.node_mut(gic)
+        .unwrap()
+        .set_property(u32_property("#address-cells", &[2]));
+    fdt.node_mut(gic)
+        .unwrap()
+        .set_property(u32_property("#size-cells", &[2]));
+    fdt.node_mut(gic)
+        .unwrap()
+        .set_property(Property::new("ranges", Vec::new()));
+
+    for base in [0xfe64_0000, 0xfe66_0000] {
+        let name = format!("msi-controller@{base:x}");
+        let its = fdt.add_node(gic, Node::new(&name));
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(string_property("compatible", "arm,gic-v3-its"));
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(Property::new("msi-controller", Vec::new()));
+        fdt.view_typed_mut(its)
+            .unwrap()
+            .set_regs(&[RegInfo::new(base, Some(0x2_0000))]);
+    }
 
     fdt.encode().as_ref().to_vec()
 }
