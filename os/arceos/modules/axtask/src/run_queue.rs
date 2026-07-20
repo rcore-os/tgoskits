@@ -58,6 +58,15 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info:
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
+/// Bitmask (bit `cpu_id`) of CPUs whose per-CPU run queue in [`RUN_QUEUES`] has
+/// been initialized. Round-robin spawn placement ([`select_run_queue_index`])
+/// must only target online queues: during early boot the secondaries have not
+/// yet written their `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized
+/// slot is a use of uninitialized memory (a near-null data abort). Set by each
+/// CPU as it initializes (see `init` / `init_secondary`).
+#[cfg(feature = "smp")]
+static RUN_QUEUE_ONLINE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -118,14 +127,23 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
 
     assert!(!cpumask.is_empty(), "No available CPU for task execution");
 
-    // Round-robin selection of the run queue index.
-    loop {
+    // Round-robin over CPUs that are both allowed by the affinity mask AND online
+    // (their run queue is initialized). The online gate matters during early boot,
+    // when secondaries have not yet registered their run queue — targeting one
+    // would dereference uninitialized memory in `get_run_queue`.
+    let online = RUN_QUEUE_ONLINE.load(Ordering::Acquire);
+    for _ in 0..crate::build_info::CPU_CAPACITY {
         let index =
             RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % crate::build_info::CPU_CAPACITY;
-        if cpumask.get(index) {
+        if cpumask.get(index) && (online & (1 << index)) != 0 {
             return index;
         }
     }
+    // No allowed-and-online CPU found in a full sweep (e.g. very early boot, or a
+    // task pinned to a not-yet-online CPU): fall back to the current CPU, whose
+    // run queue is necessarily initialized. If that violates affinity, the task
+    // migrates itself off on first run (see `migrate_current_to_affinity`).
+    this_cpu_id()
 }
 
 /// Retrieves a `'static` reference to the run queue corresponding to the given index.
@@ -455,14 +473,16 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, prefer the current CPU to keep the task's
-        // cache warm. Fall back to round-robin only when affinity forbids it.
-        let current_cpu = this_cpu_id();
-        let index = if task.cpumask().get(current_cpu) {
-            current_cpu
-        } else {
-            select_run_queue_index(task.cpumask())
-        };
+        // New tasks (spawn / clone) get round-robin placement across the CPUs
+        // their affinity allows, so a burst of threads spreads over the machine
+        // instead of piling onto the core that ran the spawning syscall. A fresh
+        // task has no warm cache to preserve, and with no load balancer to
+        // redistribute later (see the TODO above), initial placement is the only
+        // spreading we get — pinning every clone to the current CPU left all of a
+        // process's threads on the boot core (flat multi-core scaling). Wakeups
+        // still prefer the waking/last CPU for cache warmth; see
+        // `select_wake_run_queue`.
+        let index = select_run_queue_index(task.cpumask());
         AxRunQueueRef {
             inner: get_run_queue(index),
             state: irq_state,
@@ -494,10 +514,22 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let current_cpu = this_cpu_id();
         let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
-        let index = if cpumask.get(current_cpu) {
-            current_cpu
-        } else if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
+        let online = RUN_QUEUE_ONLINE.load(core::sync::atomic::Ordering::Acquire);
+        let is_online = |c: usize| (online & (1usize << c)) != 0;
+        // Prefer the CPU the woken task last ran on. This is cache-warm for the
+        // *woken* task and, crucially, keeps threads spread out: preferring the
+        // *waker's* CPU (as before) piled every worker onto one core whenever a
+        // barrier/broadcast wake fanned out from a single thread — that
+        // re-collapsed the round-robin spawn placement and was why multi-threaded
+        // workloads stayed on the boot core. Fall back to the waker's CPU, then
+        // round-robin; only ever select an online CPU.
+        let index = if last_cpu < crate::build_info::CPU_CAPACITY
+            && cpumask.get(last_cpu)
+            && is_online(last_cpu)
+        {
             last_cpu
+        } else if cpumask.get(current_cpu) {
+            current_cpu
         } else {
             select_run_queue_index(cpumask)
         };
@@ -1217,6 +1249,9 @@ pub(crate) fn init() {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    // Mark this CPU's run queue online so round-robin spawn placement may target it.
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1240,4 +1275,7 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
+    // Mark this CPU's run queue online so round-robin spawn placement may target it.
+    #[cfg(feature = "smp")]
+    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
 }
