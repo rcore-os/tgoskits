@@ -199,9 +199,17 @@ pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
     if dst.format.is_semiplanar()
         && let Some(uv) = dst.uv_phys_addr
     {
+        // Chroma row offset divides the luma row by the format's vertical subsampling:
+        // 2 for 4:2:0 (NV12/NV21), 1 for 4:2:2 (NV16 — full-height chroma).
         buf.set_register(
             registers::DST_CB_BASE_ADDR,
-            rect_base(uv, dst_rect.x, dst_rect.y / 2, dst.stride_bytes, 1),
+            rect_base(
+                uv,
+                dst_rect.x,
+                dst_rect.y / dst.format.chroma_v_subsampling(),
+                dst.stride_bytes,
+                1,
+            ),
         );
     }
 
@@ -269,9 +277,17 @@ pub fn encode_blit(blit: &Blit) -> crate::error::Result<CommandBuffer> {
     if src.format.is_semiplanar()
         && let Some(uv) = src.uv_phys_addr
     {
+        // Chroma row offset divides the luma row by the format's vertical subsampling:
+        // 2 for 4:2:0 (NV12/NV21), 1 for 4:2:2 (NV16 — full-height chroma).
         buf.set_register(
             registers::SRC_CB_BASE_ADDR,
-            rect_base(uv, src_rect.x, src_rect.y / 2, src.stride_bytes, 1),
+            rect_base(
+                uv,
+                src_rect.x,
+                src_rect.y / src.format.chroma_v_subsampling(),
+                src.stride_bytes,
+                1,
+            ),
         );
     }
 
@@ -1013,6 +1029,81 @@ mod mmu_off_tests {
         assert_eq!(
             cmd.register(registers::SRC_CB_BASE_ADDR),
             Some(0x4000_0000 + 64 * 48 + 2 * 64 + 8)
+        );
+    }
+
+    #[test]
+    fn blit_nv16_cropped_src_uv_offset() {
+        // NV16 is 4:2:2: chroma is FULL-height, so a non-zero Y crop's CbCr row offset uses the
+        // full y (not y/2 as for 4:2:0). Crop a 16x16 window at (8,4) from a 64x48 NV16 src.
+        let src = ImageDesc {
+            width: 64,
+            height: 48,
+            stride_bytes: 64,
+            format: PixelFormat::Nv16,
+            phys_addr: 0x4000_0000,
+            uv_phys_addr: Some(0x4000_0000 + 64 * 48),
+        };
+        let dst = ImageDesc::rgb(16, 16, 16 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let mut b = Blit::crop(
+            src,
+            Rect {
+                x: 8,
+                y: 4,
+                width: 16,
+                height: 16,
+            },
+            dst,
+        );
+        b.csc = Some(CscStandard::Bt601Limited);
+        let cmd = encode_blit(&b).unwrap();
+        // Y base: 0x4000_0000 + 4*64 + 8
+        assert_eq!(
+            cmd.register(registers::SRC_Y_RGB_BASE_ADDR),
+            Some(0x4000_0000 + 4 * 64 + 8)
+        );
+        // SRC_CB base: (0x4000_0000 + 64*48) + 4*64 + 8  (full y, not 4/2)
+        assert_eq!(
+            cmd.register(registers::SRC_CB_BASE_ADDR),
+            Some(0x4000_0000 + 64 * 48 + 4 * 64 + 8)
+        );
+    }
+
+    #[test]
+    fn blit_nv16_cropped_dst_uv_offset() {
+        // RGB src -> NV16 dst placed at a non-zero Y: the DST CbCr row offset also uses the
+        // full y for 4:2:2.
+        let src = ImageDesc::rgb(16, 16, 16 * 4, PixelFormat::Rgba8888, 0x4100_0000);
+        let dst = ImageDesc {
+            width: 64,
+            height: 48,
+            stride_bytes: 64,
+            format: PixelFormat::Nv16,
+            phys_addr: 0x4000_0000,
+            uv_phys_addr: Some(0x4000_0000 + 64 * 48),
+        };
+        let b = Blit::new(
+            src,
+            dst,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
+            Rect {
+                x: 8,
+                y: 4,
+                width: 16,
+                height: 16,
+            },
+            Some(CscStandard::Bt601Limited),
+        );
+        let cmd = encode_blit(&b).unwrap();
+        // DST_CB base: (0x4000_0000 + 64*48) + 4*64 + 8  (full y, not 4/2)
+        assert_eq!(
+            cmd.register(registers::DST_CB_BASE_ADDR),
+            Some(0x4000_0000 + 64 * 48 + 4 * 64 + 8)
         );
     }
 }

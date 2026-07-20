@@ -53,6 +53,17 @@ impl PixelFormat {
     pub const fn is_packed_yuv(self) -> bool {
         matches!(self, Self::Yuyv422 | Self::Uyvy422)
     }
+
+    /// Vertical chroma subsampling factor for semiplanar YUV: 2 for 4:2:0 (NV12/NV21),
+    /// 1 for 4:2:2 (NV16). The chroma plane addresses luma row `y` at row `y / factor`, so a
+    /// cropped/placed rect's CbCr row offset must divide `y` by this. Returns 1 for formats
+    /// without vertical chroma subsampling (the safe identity for non-semiplanar callers).
+    pub const fn chroma_v_subsampling(self) -> u32 {
+        match self {
+            Self::Nv12 | Self::Nv21 => 2,
+            _ => 1,
+        }
+    }
 }
 
 /// A windowed region within a surface (mirrors librga `im_rect`).
@@ -164,11 +175,7 @@ impl ImageDesc {
             if !matches!(self.format, PixelFormat::Nv16) && !self.height.is_multiple_of(2) {
                 return Err(RgaError::Invalid);
             }
-            let uv_rows = if matches!(self.format, PixelFormat::Nv16) {
-                self.height
-            } else {
-                self.height / 2
-            };
+            let uv_rows = self.height / self.format.chroma_v_subsampling();
             let uv_extent = (self.stride_bytes as u64)
                 .checked_mul(uv_rows as u64)
                 .ok_or(RgaError::Overflow)?;
@@ -192,11 +199,7 @@ impl ImageDesc {
             .checked_mul(self.height as u64)
             .ok_or(RgaError::Overflow)?;
         let uv = if self.format.is_semiplanar() {
-            let uv_rows = if matches!(self.format, PixelFormat::Nv16) {
-                self.height
-            } else {
-                self.height / 2
-            };
+            let uv_rows = self.height / self.format.chroma_v_subsampling();
             Some(
                 (self.stride_bytes as u64)
                     .checked_mul(uv_rows as u64)
