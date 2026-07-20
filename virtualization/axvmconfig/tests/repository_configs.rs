@@ -63,37 +63,32 @@ fn every_architecture_template_uses_the_typed_schema() {
 
 #[cfg(feature = "std")]
 #[test]
-fn x86_dma_passthrough_configs_keep_identity_ram_as_the_primary_region() {
+fn x86_backend_neutral_passthrough_config_keeps_identity_ram_as_the_primary_region() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .unwrap();
+    let path = workspace.join("os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+    let primary = config.memory.regions.first().unwrap();
 
-    for file_name in ["linux-vmx-smp1.toml", "linux-svm-smp1.toml"] {
-        let path = workspace
-            .join("os/axvisor/configs/vms/qemu/x86_64")
-            .join(file_name);
-        let source = std::fs::read_to_string(&path).unwrap();
-        let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
-        let primary = config.memory.regions.first().unwrap();
-
-        assert_eq!(
-            config.kernel.kernel_load_addr,
-            0x20_0000,
-            "{}",
-            path.display()
-        );
-        assert_eq!(primary.guest_base, 0, "{}", path.display());
-        assert_eq!(primary.size, 0x800_0000, "{}", path.display());
-        assert!(
-            matches!(
-                primary.backing,
-                axvmconfig::MemoryBackingConfig::IdentityAllocate
-            ),
-            "{}",
-            path.display()
-        );
-    }
+    assert_eq!(
+        config.kernel.kernel_load_addr,
+        0x20_0000,
+        "{}",
+        path.display()
+    );
+    assert_eq!(primary.guest_base, 0, "{}", path.display());
+    assert_eq!(primary.size, 0x800_0000, "{}", path.display());
+    assert!(
+        matches!(
+            primary.backing,
+            axvmconfig::MemoryBackingConfig::IdentityAllocate
+        ),
+        "{}",
+        path.display()
+    );
 }
 
 #[cfg(feature = "std")]
