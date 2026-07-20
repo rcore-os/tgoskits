@@ -56,6 +56,14 @@ fn main() {
     #[cfg(feature = "backtrace")]
     init_panic_hook();
 
+    // Test-only panic paths — gated behind dedicated features so they never
+    // activate in normal builds.  These are consumed by test-suit cases that
+    // verify the backtrace markers (or their absence) via QEMU regex matching.
+    #[cfg(feature = "test-backtrace-panic")]
+    panic!("axvisor backtrace smoke test: deliberate panic to verify backtrace output");
+    #[cfg(feature = "test-panic-no-backtrace")]
+    panic!("axvisor no-backtrace smoke test: panic without backtrace");
+
     banner::print_logo();
 
     info!("Starting virtualization...");
